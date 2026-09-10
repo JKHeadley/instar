@@ -1,0 +1,59 @@
+## What Changed
+
+OpenAI retired the gpt-5.4/5.5 generation of Codex models from the ChatGPT-account surface.
+Instar hardcoded those ids in every place it picks a Codex model, so **every internal Codex LLM
+call — every sentinel, gate and reflector — failed instantly on every machine**. The same
+retirement also killed `CODEX_CHATGPT_FALLBACK_MODEL`, the model the existing retirement
+self-heal retries onto, so the self-heal swapped one rejected model for another and the agent
+stayed dark.
+
+- `TIER_TO_MODEL` (adapter) and the session-launch codex tier map now resolve to live,
+  **probe-verified** ids: `gpt-5.6-sol` for fast/balanced, `gpt-6-astra` for capable. The two
+  `?? 'gpt-5.5'` codex last-resort defaults move with them.
+- `CODEX_CHATGPT_FALLBACK_MODEL` → `gpt-5.6-sol`, so the retirement self-heal retries onto a
+  model that answers.
+- `classifyCodexErrorMessage` now recognises Codex's **404** model-removal wording ("The model
+  `x` does not exist or you do not have access to it") in addition to the 400 "not supported"
+  wording. The 404 shape previously classified as `unknown`, so the self-heal could never fire
+  for it — a live floor alone would not have been enough.
+
+## Evidence
+
+Model ids are live-probed, never guessed. Probe run 2026-09-09 against a ChatGPT subscription:
+
+- Answered a trivial prompt: `gpt-5.6-sol`, `gpt-6-astra`.
+- HTTP 400 "not supported when using Codex with a ChatGPT account": `gpt-5.4-mini`, `gpt-5.4`,
+  `gpt-5.6`, `gpt-6`, `gpt-5.6-mini`, `gpt-6-mini`.
+- HTTP 404 "does not exist or you do not have access to it": `gpt-5.5`.
+
+Tests: `codex-model-tier-resolution.test.ts` (live mapping, floor liveness, floor reachability
+by the retry authority, retired-name regression guard across both resolvers, and a cross-check
+that every tier resolves inside `KNOWN_CODEX_MODEL_IDS`);
+`eventNormalizer.test.ts` (the 404 shape classifies as `unsupported`, quoting-style variants, a
+generic 404 does **not**, and both classifier-ordering bounds);
+`codex-cli-provider-execjson.test.ts` (end-to-end self-heal through the real exec-json spawn
+path, now asserted against the constant rather than a hardcoded name).
+
+The classifier branch position is load-bearing in both directions and is test-pinned: it sits
+below `auth`/`quota`/`rate-limit` so a combined message cannot mask a real auth or throttle
+failure, and above `timeout`/`network` because `/ECONN/i` matches inside Codex's own
+"**R-ECONN-ecting**... 2/5" retry prefix and would otherwise swallow the genuine outage message.
+
+## What to Tell Your User
+
+Your agent's background checks — the ones that watch for stuck sessions, review outgoing
+messages, and work out what a conversation is about — had stopped working, because the AI models
+they ask for were switched off by OpenAI. They now point at models that still exist, and the
+built-in recovery path can recognise both ways a model disappears instead of only one.
+
+Worth knowing: those checks were failing at **zero token cost**, so the bill looked healthy while
+they were doing nothing. Restoring them makes real spending appear where there was none. Most of
+each call's cost is fixed overhead the Codex CLI charges just for starting up, regardless of how
+small the question is — so if the total is more than the checks are worth, the lever is running
+**fewer** checks, not smaller ones.
+
+## Summary of New Capabilities
+
+No new capability. This restores an existing one: internal Codex-routed intelligence (sentinels,
+gates, reflectors) works again, and the model-retirement self-heal can now actually fire for
+both retirement shapes rather than only one.

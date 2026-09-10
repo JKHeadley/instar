@@ -12,7 +12,7 @@
  *
  * Three flows per the spec §Testing:
  *   1. codex present  → findings folded in, flag/banner read codex-cli:<model>,
- *      frontmatter gets `cross-model-review: "codex-cli:gpt-5.5"`.
+ *      frontmatter gets `cross-model-review: "codex-cli:<capable-tier id>"`.
  *   2. codex absent   → unavailable flag, round completes internal-only,
  *      report carries the UNAVAILABLE banner, spec is STILL taggable.
  *   3. degraded       → provider rejects; flag reads `degraded: <reason>`, does
@@ -24,6 +24,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+// Resolve the capable tier rather than hardcoding an id: OpenAI has retired the
+// codex capable model three times, and a literal here re-breaks on each move.
+import { resolveCliModelFlag } from '../../src/providers/adapters/openai-codex/models.js';
+const CAPABLE_ID = resolveCliModelFlag('capable');
+// Escaped for use inside the frontmatter regexes below (ids contain dots).
+const CAPABLE_RE = CAPABLE_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 import { fileURLToPath } from 'node:url';
 import {
   detectCrossModelReviewer,
@@ -152,18 +158,18 @@ describe('cross-model review flow — codex PRESENT', () => {
 
     expect(result.status).toBe('ok');
     expect(result.framework).toBe('codex-cli');
-    expect(result.model).toBe('gpt-5.5');
+    expect(result.model).toBe(CAPABLE_ID);
     expect(result.findings).toHaveLength(1);
     expect(result.findings![0].verdict).toBe('MINOR ISSUES');
-    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(result.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
 
     // Report banner.
-    expect(renderBanner(result)).toBe('## Cross-model review: codex-cli:gpt-5.5');
+    expect(renderBanner(result)).toBe(`## Cross-model review: codex-cli:${CAPABLE_ID}`);
 
     // Frontmatter stamp.
     stampTag(result);
     const out = fs.readFileSync(specPath, 'utf-8');
-    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.5"/);
+    expect(out).toMatch(new RegExp(`cross-model-review:\\s*"codex-cli:${CAPABLE_RE}"`));
     expect(out).toMatch(/review-convergence:/);
   });
 });
@@ -360,7 +366,7 @@ describe('cross-model review flow — DEGRADED', () => {
 
     expect(result.status).toBe('degraded');
     expect(result.reason).toBe('timeout');
-    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.5 (degraded: timeout)');
+    expect(result.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID} (degraded: timeout)`);
     // Crucially NOT unavailable — the framework IS present.
     expect(result.status).not.toBe('unavailable');
 
@@ -369,7 +375,7 @@ describe('cross-model review flow — DEGRADED', () => {
     // Degraded is still taggable (disclosure, not a gate).
     stampTag(result);
     const out = fs.readFileSync(specPath, 'utf-8');
-    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.5 \(degraded: timeout\)"/);
+    expect(out).toMatch(new RegExp(`cross-model-review:\\s*"codex-cli:${CAPABLE_RE} \\(degraded: timeout\\)"`));
     expect(out).toMatch(/review-convergence:/);
   });
 });

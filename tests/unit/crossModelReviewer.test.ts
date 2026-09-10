@@ -20,6 +20,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+// Resolve the capable tier rather than hardcoding an id: OpenAI has retired the
+// codex capable model three times, and a literal here re-breaks on each move.
+import { resolveCliModelFlag } from '../../src/providers/adapters/openai-codex/models.js';
+const CAPABLE_ID = resolveCliModelFlag('capable');
 import {
   detectCodexReviewer,
   detectCrossModelReviewer,
@@ -86,8 +90,8 @@ describe('detectCodexReviewer', () => {
     });
     expect(r.available).toBe(true);
     expect(r.framework).toBe('codex-cli');
-    // capable tier → gpt-5.5 per models.ts (the concrete id stays owned there).
-    expect(r.model).toBe('gpt-5.5');
+    // capable tier → resolved from models.ts (the concrete id stays owned there).
+    expect(r.model).toBe(CAPABLE_ID);
   });
 
   it('returns codex-not-authed when auth.json is missing', () => {
@@ -206,7 +210,7 @@ describe('buildCrossModelFlag (fallback states)', () => {
 describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   // crossFamily: true — these builders represent codex (a cross-model family);
   // aggregateRoundOutcomes counts only crossFamily:true successes (§5.2).
-  const ok = (model = 'gpt-5.5'): ReviewerResult => ({
+  const ok = (model = CAPABLE_ID): ReviewerResult => ({
     status: 'ok',
     framework: 'codex-cli',
     model,
@@ -216,9 +220,9 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   const degraded = (reason: string): ReviewerResult => ({
     status: 'degraded',
     framework: 'codex-cli',
-    model: 'gpt-5.5',
+    model: CAPABLE_ID,
     reason,
-    flag: `cross-model-review: codex-cli:gpt-5.5 (degraded: ${reason})`,
+    flag: `cross-model-review: codex-cli:${CAPABLE_ID} (degraded: ${reason})`,
     crossFamily: true,
   });
   const unavailable = (reason = 'codex-not-installed'): ReviewerResult => ({
@@ -231,12 +235,12 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   it('any successful round → the clean codex-cli flag (one real opinion is enough)', () => {
     const f = aggregateRoundOutcomes([degraded('timeout'), ok(), degraded('rate-limited')]);
     expect(f.status).toBe('available');
-    expect(f.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(f.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('uses the LAST successful round flag when multiple rounds succeed', () => {
-    const f = aggregateRoundOutcomes([ok('gpt-5.4'), ok('gpt-5.5')]);
-    expect(f.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    const f = aggregateRoundOutcomes([ok('gpt-5.4'), ok(CAPABLE_ID)]);
+    expect(f.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('framework present every round but ZERO succeeded → degraded-all-rounds (as loud as unavailable)', () => {
@@ -315,11 +319,11 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('ok');
     expect(r.framework).toBe('codex-cli');
-    expect(r.model).toBe('gpt-5.5');
+    expect(r.model).toBe(CAPABLE_ID);
     expect(r.verdict).toBe('SERIOUS ISSUES');
     expect(r.findings).toHaveLength(1);
-    expect(r.findings![0].reviewer).toBe('cross-model:codex-cli:gpt-5.5');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(r.findings![0].reviewer).toBe(`cross-model:codex-cli:${CAPABLE_ID}`);
+    expect(r.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('degraded: available but the provider throws → status degraded, does NOT collapse to unavailable', async () => {
@@ -331,7 +335,7 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('degraded');
     expect(r.reason).toBe('timeout');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5 (degraded: timeout)');
+    expect(r.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID} (degraded: timeout)`);
   });
 
   it('degraded: rate-limited provider error classifies as rate-limited', async () => {
@@ -353,7 +357,7 @@ describe('runCrossModelReview — the three outcome states', () => {
 // ── Driver parse ────────────────────────────────────────────────────────
 
 describe('parseReviewerReply', () => {
-  const tag = 'cross-model:codex-cli:gpt-5.5';
+  const tag = `cross-model:codex-cli:${CAPABLE_ID}`;
 
   it('parses a well-formed reply into a structured finding', () => {
     const f = parseReviewerReply(

@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenceProvider.js';
+import { CODEX_CHATGPT_FALLBACK_MODEL } from '../../src/providers/adapters/openai-codex/models.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const FAKE_CODEX_SCRIPT = `#!/bin/sh
@@ -178,7 +179,7 @@ for arg in "$@"; do
   prev="$arg"
 done
 echo "$model" >> "${calls}"
-if [ "$model" != "gpt-5.4-mini" ]; then
+if [ "$model" != "${CODEX_CHATGPT_FALLBACK_MODEL}" ]; then
   echo "${firstError}" >&2
   exit 1
 fi
@@ -202,8 +203,8 @@ ${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\n
       model: 'gpt-5.5',
       onModel: ({ model }) => models.push(model),
     })).resolves.toBe('RECOVERED');
-    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
-    expect(models).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', CODEX_CHATGPT_FALLBACK_MODEL]);
+    expect(models).toEqual(['gpt-5.5', CODEX_CHATGPT_FALLBACK_MODEL]);
   });
 
   it.each([
@@ -226,7 +227,7 @@ ${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\n
     const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
 
     await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow('fallback failed');
-    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', CODEX_CHATGPT_FALLBACK_MODEL]);
   });
 });
 

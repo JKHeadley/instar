@@ -2,7 +2,7 @@
   "$comment": "Doorway/Model Knowledge Registry — canonical/reviewed layer + staleness/drift gate for Instar's per-provider 'capable/latest' model pins. This file is the SINGLE human-edit surface that keeps the model registry from silently rotting. See docs/LLM-ROUTING-REGISTRY.md, docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md, and scripts/lint-model-registry-freshness.mjs. Two teeth: (1) STALENESS — lastReviewedAt must be within stalenessWindowDays; (2) DRIFT — every pinned capable model id must be a member of its door's DERIVED frontier set (the ids in doors[door].topModels[] carrying frontier:true — see §1.4 of the spec). topModels is the ONE hand-edited source of truth; the frontier set is a view of it and cannot diverge by construction. To pass the check a human must confirm each capable pin is genuinely current frontier AND bump lastReviewedAt. An un-reviewed list fails loudly.",
   "registrySchemaVersion": 2,
   "$schemaNote": "registrySchemaVersion 2 = the enriched Doorway/Model Knowledge Registry. Increment 1 (spec §Rollout step 1) added the per-door topModels[] frontier-derivation layer + the derived-frontier lint (report mode). Increment 2 (spec §Rollout step 2) ADDS the per-door probe{} block + candidateDoorways[] below — the metadata the deterministic prober (scripts/doorway-scan.mjs) reads to know HOW to re-verify each door — plus the live scan-state (.instar/state/doorway-scan.json) + the dark (enabled:false) doorway-scan job. Both additions are backward-compatible: the freshness lint ignores probe{}/candidateDoorways entirely (it reads only topModels/frontier/pins). GET /doorways is a LATER increment (spec §Rollout step 3) and is NOT wired yet.",
-  "lastReviewedAt": "2026-08-18",
+  "lastReviewedAt": "2026-09-10",
   "stalenessWindowDays": 45,
   "enforcement": "strict",
   "$enforcementNote": "'strict' = GATING (exits 1 on any finding: staleness, drift, or a flaggedStale row) — flipped from 'report' in rollout increment 5 (spec §Rollout step 5, the companion-gated activation) now that the prior flaggedStale door swaps are operator-confirmed + reconciled into topModels (flaggedStale is empty) and the derived-frontier drift + staleness teeth pass clean. This is the LIVE TEETH that the 'Keep the Doorway/Model Map Current' constitutional standard is ratified WITH (not ahead of). The lint runs in the `npm run lint` chain, so a future staleness age-out (lastReviewedAt exceeds stalenessWindowDays) or a pin drifting off its door's derived frontier set now FAILS CI — the anti-rot ratchet, by design. To revert to non-gating (dark/reversible rollback), set this field back to 'report'. Env INSTAR_MODEL_FRESHNESS_STRICT=1 forces strict for a one-off run regardless of this field.",
@@ -110,11 +110,20 @@
       },
       "topModels": [
         {
-          "id": "gpt-5.5",
+          "id": "gpt-6-astra",
           "role": "capable-openai",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-09-09",
+          "note": "Live-probed 2026-09-09 on the ChatGPT-account codex surface: answered a trivial prompt (15,449 input / 5 output). Promoted to frontier because the previous frontier id (gpt-5.5) was retired in the same sweep. Pricing not yet published for this id."
+        },
+        {
+          "id": "gpt-5.5",
+          "role": "retired-openai",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-09-09-probed-RETIRED",
+          "note": "Live probe 2026-09-09 returned 404 'The model `gpt-5.5` does not exist or you do not have access to it.' It was frontier:true only as a carry-over from the superseded hand-maintained allowlist and had never been verified. Kept as a row so historical benchmark references do not dangle; demoted from frontier because an unreachable id cannot be the frontier."
         },
         {
           "id": "gpt-5.6-sol",
@@ -125,7 +134,8 @@
             "outPerMtok": 30,
             "currency": "USD"
           },
-          "verifiedAt": "2026-07-09"
+          "verifiedAt": "2026-09-09",
+          "note": "Re-probed 2026-09-09: answered a trivial prompt (14,556 input / 5 output). Now the fast/balanced tier target AND the retirement safety floor (CODEX_CHATGPT_FALLBACK_MODEL), because the previous holder of both (gpt-5.4-mini) was retired."
         },
         {
           "id": "gpt-5.6-terra",
@@ -230,7 +240,7 @@
       "note": "CLAUDE_REVIEWER_DEFAULT_MODEL — the Anthropic clean-door reviewer pin (REVIEWER-DOOR-REWIRING §1.3). Extraction matches a frontier CONSTANT (not a capable:'…' tier decl), so the non-vacuity test (tests/unit/model-registry-freshness-reviewer-pin.test.ts) rots this constant and asserts the strict lint fails — closing the vacuous-tooth risk."
     }
   ],
-  "$flaggedStaleNote": "Both prior flagged pins RESOLVED (operator-confirmed 2026-07-03): gemini capable swapped gemini-2.5-pro -> gemini-3.1-pro-preview (pin + topModels updated in the same change); codex capable stays gpt-5.5. UPDATE 2026-07-09: the GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified (codex CLI >= 0.144.0) — the earlier 'gpt-5.6-sol is preview-only/gov-gated/unreachable' statement is now superseded. gpt-5.6-sol/terra/luna are RECOGNIZED (in codex-cli.topModels + the acceptance allowlists) but deliberately NOT promoted to frontier / the capable pin yet — the capable pin stays gpt-5.5 pending a benchmark-based promotion. Nothing pending confirmation (a benchmark-driven promotion of gpt-5.6-sol is a tracked follow-up, not a pending flagged pin).",
+  "$flaggedStaleNote": "Both prior flagged pins RESOLVED (operator-confirmed 2026-07-03): gemini capable swapped gemini-2.5-pro -> gemini-3.1-pro-preview (pin + topModels updated in the same change); codex capable stays gpt-5.5. UPDATE 2026-07-09: the GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified (codex CLI >= 0.144.0) — the earlier 'gpt-5.6-sol is preview-only/gov-gated/unreachable' statement is now superseded. gpt-5.6-sol/terra/luna are RECOGNIZED (in codex-cli.topModels + the acceptance allowlists) but deliberately NOT promoted to frontier / the capable pin yet — the capable pin stays gpt-5.5 pending a benchmark-based promotion. Nothing pending confirmation (a benchmark-driven promotion of gpt-5.6-sol is a tracked follow-up, not a pending flagged pin). UPDATE 2026-09-09: the deliberate 'not promoted to frontier yet' stance on the GPT-5.6 family is now moot for the capable pin — gpt-5.5 was RETIRED (404), so the capable pin moved to the live-probed gpt-6-astra and gpt-5.6-sol took the fast/balanced tier plus the retirement floor.",
   "flaggedStale": [],
   "$frontierAllowlistNote": "The hand-maintained frontierAllowlist{} was SUPERSEDED by derivation (spec §1.4): the frontier set for each door is now the ids in doors[door].topModels[] carrying frontier:true. This removes a second hand-maintained list (the rot this registry fights). The lint keeps a backward-compat path: a door with a literal frontierAllowlist[door] and NO topModels behaves exactly as before; a door with BOTH emits a transition finding so the old hand-list can't silently linger.",
   "$candidateDoorwaysNote": "candidateDoorways[] = the doorways the scan should PROBE FOR (spec §1.2/§2.5), INCLUDING ones not yet present in doors{}. A candidate reachable but absent from doors is surfaced as a newly-configured-doorway. The prober only activates a candidate whose probe.kind it supports; a candidate with no door entry / unsupported kind is recorded, never silently treated as reachable. openrouter / gemini-direct-api below are candidate-only (no door entry yet) so the candidate-detection machinery has real inputs to exercise.",
@@ -243,5 +253,5 @@
     "openrouter",
     "gemini-direct-api"
   ],
-  "$lastReviewNote": "2026-08-18 review (Echo). Every existing capable/latest PIN was checked and remains a member of its door's frontier set — no pin was changed, so this review alters NO routing behavior. What the review did find: the Anthropic frontier has moved to the Claude 5 family, so claude-opus-5 and claude-sonnet-5 were ADDED as frontier on the claude-code and anthropic-headless doors. claude-opus-4-8 was deliberately LEFT frontier:true rather than demoted: demoting it would fail the drift check for the pins that currently reference it, and re-pointing those pins is a fleet-wide routing decision that belongs in its own change with its own side-effects review — not bundled into an unrelated feature PR. This note is the dated record that the question is open."
+  "$lastReviewNote": "2026-09-10 review (Echo), triggered by a fleet-wide outage rather than the cadence: EVERY internal codex call was failing because the tier map, the retirement safety floor, and this registry's codex frontier id had all been retired by OpenAI. Live probe of nine ids on the ChatGPT-account codex surface: gpt-5.6-sol and gpt-6-astra ANSWERED; gpt-5.4-mini, gpt-5.4, gpt-5.6, gpt-6, gpt-5.6-mini and gpt-6-mini returned 400 'not supported when using Codex with a ChatGPT account'; gpt-5.5 returned 404. Changes: codex-cli frontier moves gpt-5.5 -> gpt-6-astra (gpt-5.5 demoted, kept as a row, marked retired); gpt-5.6-sol re-verified and is now both the fast/balanced target and the retirement floor. This DOES alter routing behavior, deliberately — the prior routing was to models that no longer exist. Note that gpt-5.5 had carried frontier:true purely as an unverified carry-over from the superseded hand-maintained allowlist, which is the exact rot this registry exists to catch; it was caught here by the pre-commit drift lint, not by the cadence review."
 }

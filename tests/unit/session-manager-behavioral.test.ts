@@ -237,12 +237,12 @@ describe('SessionManager behavioral tests', () => {
       });
 
       expect(session.framework).toBe('codex-cli');
-      expect(session.model).toBe('gpt-5.4-mini'); // haiku → light → gpt-5.4-mini on Codex (gpt-5.2 retired from ChatGPT-account Codex 2026-06-03)
+      expect(session.model).toBe('gpt-5.6-sol'); // haiku → light → gpt-5.6-sol on Codex (gpt-5.4-mini retired from ChatGPT-account Codex 2026-09-09)
       // And it must NOT leak the Claude tier alias onto a Codex session.
       expect(session.model).not.toBe('haiku');
 
       const saved = state.getSession(session.id);
-      expect(saved!.model).toBe('gpt-5.4-mini');
+      expect(saved!.model).toBe('gpt-5.6-sol');
       expect(saved!.framework).toBe('codex-cli');
     });
 
