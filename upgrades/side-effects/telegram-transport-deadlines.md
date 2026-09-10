@@ -185,11 +185,21 @@ cancellation case remains intact and renewed concurrence. Further full-run resul
 ## Class-Closure Declaration (display-only mirror)
 
 `defectClass: unbounded-self-action`, `closure: guard`.
-`guardEvidence`: ratchet, tests/unit/self-action-convergence.test.ts plus
-real-worker transport-deadlines.test.ts and recovery-review-budget.test.ts.
+`guardEvidence`: ratchet, tests/unit/telegram-origin/recovery-review-budget.test.ts,
+supplemented by real-worker transport-deadlines.test.ts and production-boot tests.
+The generic self-action registry does not register ordinary recoverHeld; its test
+is not the evidence for this claim. Independent audit corrected that citation.
 Recovery still reserves 15 minutes before review, preserves the original maximum
 six-hour deadline and existing child-attempt ceiling. Pre-network cancellation
 charges the original attempt and cannot reset identity, deadline or pacing. The
 control edge is original queued operation -> due recovery -> reviewed send;
 the durable interval settles repeated failure and the deadline/attempt limit
 terminates it. Unknown outcomes remain excluded from recovery.
+
+The actual recovery-budget test proves at most24 automatic recovery starts per
+original admitted operation over its default six-hour lifetime, exact due and
+expiry boundaries, competing owners, restart/re-admission persistence and unknown
+suppression. The production restart test connects that reservation to paid review;
+transport cases retain charged cancellation attempts and uncertainty fences.
+This is not a fleet-wide spending cap or a bound on newly created operations.
+Hooke independently re-read these concrete tests and concurred with the correction.

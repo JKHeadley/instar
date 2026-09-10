@@ -36,8 +36,8 @@
     "closure": "guard",
     "guardEvidence": {
       "enforcementType": "ratchet",
-      "citation": "tests/unit/self-action-convergence.test.ts",
-      "howCaught": "The ratchet and transport regressions preserve original identity, durable 15-minute pacing, six-hour deadline and attempt ceiling; cancellation cannot reset the loop and post-invocation uncertainty excludes resend."
+      "citation": "tests/unit/telegram-origin/recovery-review-budget.test.ts",
+      "howCaught": "The real durable reservation ratchet bounds each original admitted operation to 24 recovery starts over its default six-hour lifetime, with exact due/deadline boundaries, owner/restart persistence and unknown suppression. Production restart tests connect the brake to paid review; transport tests preserve attempt charging and ambiguity."
     }
   },
   "verdict": "pass"
