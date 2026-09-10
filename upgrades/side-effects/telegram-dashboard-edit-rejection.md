@@ -144,3 +144,31 @@ Class closure: unbounded-self-action is n/a for this bounded change. It removes
 an exception-driven extra send from one invocation and adds no autonomous retry
 controller. It does not claim to close the broader wake loop or cross-invocation
 replacement-custody class.
+
+The full run on d9d9dfa92a65 completed with exit 1: 3 failed and 51,883 passed tests (3
+failed/3,349 passed files); subsequent standalone integration and E2E stages did not
+run. All 5,579 frozen inputs were unchanged. Two token-redaction tests depended on the
+source spelling `throw new Error`; the runtime now assigns that error before attaching
+private rejection evidence. Replacements exercise actual JSON and non-JSON rejection
+paths, assert the sanitized request URL and absent fixture token, and independently
+verify one wire request carries the correct token URL. This covers request-URL
+redaction, not arbitrary response-body redaction.
+
+The third failure's final stack identifies prepareBot at production-Boot test 104,
+inside runWithSessionToken after its awaited observer refresh. The two recovery fixtures
+previously checked authorization earlier, before issuing the token. They now also
+observe the actual display authority immediately before their first preparation using
+the existing bounded helper. No preparation, admission, review, or delivery is retried;
+no production permission, timeout, or budget changes. The specific source of
+configuration invalidation remains unproved, and the fixture does not claim atomic
+readiness.
+
+Independent Boot reviews concurred with this exact setup correction conditional on the
+final preparation stack, now confirmed. Hooke concurred with both runtime-redaction
+replacements and recommended always restoring global stubs/temp files even if
+adapter.stop throws; that cleanup improvement is included. Focused validation and a
+fresh complete full run remain required on the correction.
+
+The corrected three-file run passed all 24 tests on the dashboard worktree, including
+the real production-Boot restart cases. Runtime source is unchanged from its passing
+build; full-suite validation and CI are still required.
