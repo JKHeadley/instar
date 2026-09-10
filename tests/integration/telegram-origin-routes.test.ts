@@ -350,7 +350,8 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(recovered[0].attempts[1]).toMatchObject({ phase: 'dispatched', outcome: 'accepted' });
     expect(recovered[0].children[0].state).toBe('accepted');
     } finally { await close(); }
-  });
+  // This exercises the real 30-second retry backoff; test:push defaults to 10 seconds.
+  }, 45_000);
   it('reuses an actual local review once and never treats caller proxy flags as a prepared-send exemption', async () => {
     const review = vi.fn(async (_text: string) => ({ pass: true, latencyMs: 1 }));
     const h = await appHarness({ messagingToneGate: { review } });
