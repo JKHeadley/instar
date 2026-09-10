@@ -78,13 +78,19 @@ export async function dispatchOriginBotEgress(input: {
   wire.prepare = async request => {
     const send = await prepareWire(request);
     const authority = owner.service.options.capacity;
-    const grant = await authority?.reserve(request.accountId);
-    if (!grant || !authority) throw new OriginCapacityUnavailable();
+    if (!authority) throw new OriginCapacityUnavailable();
     let available = true;
-    const valid = () => available && Date.now() < grant.expiresAt;
+    const valid = () => available;
     return { valid, cancel: () => { available = false; }, send: async () => {
       if (!valid()) { available = false; throw new OriginCapacityUnavailable(); }
-      available = false; // Never let a delayed/repeated closure use this grant.
+      // Latch before any await: even concurrent invocations get only one grant.
+      available = false;
+      // Durable claim/dispatch and policy checks have finished. Their latency
+      // must not consume this short-lived permission to start network work.
+      // Refusal here is a charged, provably pre-network failure; never erase
+      // the already-recorded dispatch intent or renew/refund a capacity debit.
+      const grant = await authority.reserve(request.accountId);
+      if (!grant || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
       if (!await authority.consume(grant) || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
       return send();
     } };

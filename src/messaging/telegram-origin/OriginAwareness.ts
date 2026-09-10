@@ -26,6 +26,10 @@ export function telegramOriginTransportAwareness(): string {
   return 'Telegram send deadlines: each network request gets its full timeout after origin review, recording and capacity preparation. A caller cancellation proven before network invocation leaves the original operation eligible for bounded recovery; it does not cancel durable message intent. Failure after network invocation remains uncertain and must not be replayed merely because it reports an abort or timeout. Slow review can still hold a message, and queued custody is not delivery confirmation.\n';
 }
 
+export function telegramOriginCapacityAwareness(): string {
+  return 'Telegram capacity checks: ordinary replies acquire the credential owner\'s short-lived capacity only after durable dispatch intent, immediately before network invocation. Storage preparation cannot use up that grant. An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit. The existing recovery pacing, deadline, ownership and shared rate limit remain in force. Never recreate a held message to obtain a new budget.\n';
+}
+
 export function telegramOriginAwareness(port: number): string {
   return `
 ### Telegram message origin
@@ -43,6 +47,7 @@ ${telegramOriginDashboardAwareness()}
 ${telegramOriginDetectorAwareness()}
 ${telegramOriginRecoveryAwareness()}
 ${telegramOriginTransportAwareness()}
+${telegramOriginCapacityAwareness()}
 Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
 Claude and Codex tool hooks direct raw Telegram writes to the recorded relay or typed browser broker. Managed Telegram profiles belong to the broker; generic browser tools cannot use them. This cooperative hook is not an operating-system sandbox. Other enabled harnesses must prove equivalent enrollment before activation; a hook being installed is not proof of complete sender coverage.
