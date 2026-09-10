@@ -45,6 +45,8 @@
  * discover the gap.
  */
 import { dispatchOriginBotEgress } from './telegram-origin/OriginBotEgress.js';
+import { OriginTransportCancelledBeforeNetwork } from './telegram-origin/OriginTransportCancellation.js';
+import { OriginCapacityUnavailable } from './telegram-origin/OriginEgressCapacity.js';
 import type { OriginPreparedBotOperation } from './telegram-origin/TelegramOriginService.js';
 import {
   assertOutgoingPayloadVisible,
@@ -329,12 +331,22 @@ function collectParams(url: string, body: RequestInit['body']): {
  * reader-visible content is unknown, so "no field" cannot be told apart from "not checked"), an
  * unparseable body, and a body shape that cannot be read without consuming it.
  */
+export interface TelegramRequestInit extends RequestInit {
+  /** Per native request, starting after origin review/storage/capacity. Caller
+   * cancellation remains independent. The deadline also covers receipt reading. */
+  networkTimeoutMs?: number;
+}
 export async function telegramFetch(
   url: string | URL,
-  init: RequestInit = {},
+  init: TelegramRequestInit = {},
   originNoticeCapability?: object,
   originPreparedOperation?: OriginPreparedBotOperation,
 ): Promise<Response> {
+  const networkTimeoutMs = init.networkTimeoutMs;
+  if (networkTimeoutMs !== undefined && (!Number.isSafeInteger(networkTimeoutMs) ||
+    networkTimeoutMs <= 0 || networkTimeoutMs > 2_147_483_647)) {
+    throw new TelegramEgressError('telegram-network-timeout-invalid');
+  }
   // The TYPE said `string`; the RUNTIME is what ships. Native `fetch` also accepts `URL` and `Request`
   // objects, and JavaScript callers are not bound by the signature — review pass 38 finding 3. A `URL`
   // is normalised to its string form and checked exactly like any other. A `Request` is REFUSED: its
@@ -495,15 +507,34 @@ export async function telegramFetch(
   // next person to write `outgoing.body = x ?? init.body` inherits a hole the comment promised was shut.
   const outgoing: RequestInit = {};
   for (const key of Object.keys(init)) {
-    if (key === 'body') continue;
+    if (key === 'body' || key === 'networkTimeoutMs') continue;
     (outgoing as Record<string, unknown>)[key] = (init as Record<string, unknown>)[key];
   }
   outgoing.body = checkedBody ?? null;
+  const network = async (networkUrl: string, networkInit: RequestInit, originManaged = false): Promise<Response> => {
+    // The proof is about invocation, not whether an arbitrary transport error
+    // says "aborted". No await separates this check from the native fetch call.
+    if (originManaged && networkInit.signal?.aborted) throw new OriginTransportCancelledBeforeNetwork();
+    if (networkTimeoutMs !== undefined) {
+      const deadline = AbortSignal.timeout(networkTimeoutMs);
+      networkInit = { ...networkInit, signal: networkInit.signal
+        ? AbortSignal.any([networkInit.signal, deadline]) : deadline };
+    }
+    try { return await fetch(networkUrl, networkInit); }
+    catch (error) {
+      // A caller can reuse an earlier known-unsent error as abort(reason).
+      // Once fetch was invoked even that same object is no longer proof.
+      if (error instanceof OriginTransportCancelledBeforeNetwork || error instanceof OriginCapacityUnavailable) {
+        throw new Error('telegram-network-invocation-failed', { cause: error });
+      }
+      throw error;
+    }
+  };
   if (method !== null) {
     const { params } = collectParams(href, checkedBody);
     const recorded = await dispatchOriginBotEgress({ method, url: href, init: outgoing, params,
-      noticeCapability: originNoticeCapability, preparedOperation: originPreparedOperation }, (sealedUrl, sealedInit) => fetch(sealedUrl, sealedInit));
+      noticeCapability: originNoticeCapability, preparedOperation: originPreparedOperation }, (sealedUrl, sealedInit) => network(sealedUrl, sealedInit, true));
     if (recorded) return recorded;
   }
-  return fetch(href, outgoing);
+  return network(href, outgoing);
 }

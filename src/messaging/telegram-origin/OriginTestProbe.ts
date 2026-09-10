@@ -39,7 +39,7 @@ export async function sendRecordedTestProbe(input: { projectDir: string; botToke
     await runtime.service.runAsAutomation('test-as-self', async () => {
       await telegramFetch(`https://api.telegram.org/bot${input.botToken}/sendMessage`, { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: input.chatId, text: `test-as-self ${input.nonce}` }),
-        signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, input.timeoutMs))) });
+        networkTimeoutMs: Math.max(1, Math.min(30_000, input.timeoutMs)) });
     });
   } finally { await runtime.close(); }
 }

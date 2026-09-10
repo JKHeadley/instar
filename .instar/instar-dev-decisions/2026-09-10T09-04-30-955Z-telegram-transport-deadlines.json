@@ -1,0 +1,44 @@
+{
+  "ts": "2026-09-10T09:04:30.955Z",
+  "slug": "telegram-transport-deadlines",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 119,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-egress.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginTestProbe.ts",
+      "src/messaging/telegram-origin/OriginTransportCancellation.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 77,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The ratchet and transport regressions preserve original identity, durable 15-minute pacing, six-hour deadline and attempt ceiling; cancellation cannot reset the loop and post-invocation uncertainty excludes resend."
+    }
+  },
+  "verdict": "pass"
+}

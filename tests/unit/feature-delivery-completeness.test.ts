@@ -245,6 +245,7 @@ describe('Feature Delivery Completeness', () => {
       ['Message origins on your phone:', 'telegramOriginDashboardAwareness'],
       ['Origin detector health:', 'telegramOriginDetectorAwareness'],
       ['Queued-message review pacing:', 'telegramOriginRecoveryAwareness'],
+      ['Telegram send deadlines:', 'telegramOriginTransportAwareness'],
     ];
     for (const [phrase, builder] of featureAddenda) {
       it(`origin addendum "${phrase}" reaches new and existing framework instructions`, () => {

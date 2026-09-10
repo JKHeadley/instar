@@ -7,6 +7,7 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -51,6 +52,7 @@ describe('scheduled completion through the production Telegram origin boundary',
     });
     vi.stubGlobal('fetch', wire);
 
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
     await scheduler.notifyJobComplete('session', 'fixture');
 
     expect(wire).toHaveBeenCalledOnce();

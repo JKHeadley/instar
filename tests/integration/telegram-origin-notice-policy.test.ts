@@ -10,6 +10,7 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { migrateSecrets } from '../../src/core/SecretMigrator.js';
 import { compileOriginWorker, compileOriginConfigWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
@@ -44,6 +45,11 @@ async function harness(enabled: boolean) {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topic, text }) });
       return { messageId: ((await response.json()) as any).result.message_id, timestamp: new Date().toISOString() };
     } } } as never));
+  await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
+  await vi.waitFor(() => {
+    expect(boot.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: !enabled });
+    if (enabled) expect(boot.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
+  }, { timeout: 12_500, interval: 50 });
   const failRecording = async () => { await boot.runtime.store.close(); await boot.runtime.spool.close(); stopped = true; };
   const send = () => request(app).post('/telegram/reply/42').set('Authorization', 'Bearer fixture-auth')
     .set('X-Instar-Origin-Session', token).send({ text: 'This ordinary answer must remain held while recording is unavailable.',

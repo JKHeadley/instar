@@ -22,7 +22,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, refreshOriginCanaryStartupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, refreshOriginCanaryStartupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -6250,6 +6250,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added queued-message review pacing awareness');
     }
 
+    if (!content.includes('Telegram send deadlines:')) {
+      content += '\n' + telegramOriginTransportAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram network deadline awareness');
+    }
+
     const refreshedOriginCanary = refreshOriginCanaryStartupAwareness(content);
     if (refreshedOriginCanary !== content) {
       content = refreshedOriginCanary;
@@ -10646,6 +10652,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Message origins on your phone:', telegramOriginDashboardAwareness],
         ['Origin detector health:', telegramOriginDetectorAwareness],
         ['Queued-message review pacing:', telegramOriginRecoveryAwareness],
+        ['Telegram send deadlines:', telegramOriginTransportAwareness],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
           appended = appended.trimEnd() + '\n\n' + render();

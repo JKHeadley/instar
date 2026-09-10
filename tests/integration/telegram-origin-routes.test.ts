@@ -1,3 +1,4 @@
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { wireTelegramSendSide } from '../../src/messaging/telegramSendSideComposition.js';
@@ -76,6 +77,29 @@ async function browserHarness(extra: Record<string, unknown> = {}) {
   return { ...h, invoke, executor, send };
 }
 describe('Telegram origin through the complete reply HTTP pipeline', () => {
+  it('starts the real adapter network deadline after the HTTP policy and origin claim', async () => {
+    let adapter: TelegramAdapter;
+    const h = await appHarness({ telegram: { sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args) } });
+    adapter = new TelegramAdapter({ token: h.botToken, chatId: '-100123' }, h.stateDir, { suppressLifelineAutoCreate: true });
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    const claim = h.runtime.store.claim.bind(h.runtime.store);
+    vi.spyOn(h.runtime.store, 'claim').mockImplementation(async input => {
+      expect(timeout).not.toHaveBeenCalled();
+      return claim(input);
+    });
+    try {
+      const response = await request(h.app).post('/telegram/reply/42')
+        .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
+        .send({ text: 'The requested delivery report is ready.' });
+      expect(response.status).toBe(200);
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      expect(h.network).toHaveBeenCalledOnce();
+      expect(h.network.mock.calls[0][1].signal).toBe(deadline.signal);
+      expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('accepted');
+    } finally { timeout.mockRestore(); await adapter.stop(); }
+  });
+
   it('paces repeated recovery reviews and exposes the durable delay through authenticated audit HTTP', async () => {
     const review = vi.fn(async (_text: string) => ({ pass: true, latencyMs: 1 }));
     const h = await appHarness({ messagingToneGate: { review } });

@@ -11,6 +11,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { originCertificationFixture } from '../helpers/originCertification.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -54,6 +55,7 @@ describe('production origin enrollment factory', () => {
     ]) });
     const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 7, chat: { id: -100123 }, message_thread_id: 43 } })));
     vi.stubGlobal('fetch', wire);
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '43' });
     await telegram.sendToTopic(43, 'Metadata remains recorded while release certification is missing.');
     expect(wire).toHaveBeenCalledTimes(1);
     const sent = (await boot.runtime.store.listOrigins()).records.filter(row => JSON.parse(row.record.envelopeJson).destination.topicId === '43');

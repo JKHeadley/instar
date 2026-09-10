@@ -45,6 +45,16 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
     return new Response(JSON.stringify({ ok: true, result: { message_id: 99, chat: { id: -100123 }, message_thread_id: body.message_thread_id } }));
   });
   vi.stubGlobal('fetch', wire);
+  // Boot starts independent observers; a config revision can invalidate its
+  // first snapshot before the five-second refresh. Establish real readiness
+  // before a test advances time, rotates secrets or destroys recording workers.
+  // Notice reservation may follow on the subsequent independent health tick.
+  await vi.waitFor(() => {
+    expect(current.runtime.options.display({ version: 1, transport: 'bot-api', accountId: '123', chatId: '-100123',
+      topicId: '42', messageId: null, inlineMessageId: null, scheduledMessageId: null })).toBeDefined();
+    expect(current.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: false });
+    expect(current.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
+  }, { timeout: 12_500, interval: 50 });
   const failRecording = async () => {
     await current.runtime.store.close(); await current.runtime.spool.close();
     storageFailed = true;
