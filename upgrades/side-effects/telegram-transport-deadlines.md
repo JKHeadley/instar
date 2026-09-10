@@ -255,3 +255,48 @@ certification. Enrollment plus HTTP/E2E notice tests passed21 cases. Hooke
 reviewed the actual amendment and concurred; its suggested state/subject pins
 were added. This test-only amendment adds no autonomous production action.
 Full combined release validation remains required; no incomplete run is green.
+
+## Seventh aggregate and separate updater fixture correction
+
+The seventh aggregate, at candidate ebfba9244 on released v1.3.1233, completed
+with exit1: 3344 passed files, one failed file, four skipped files; 51821 passed
+tests, one failed test, 29 skipped tests and three todo. Duration was3191.33s.
+All5375 frozen source/test files were unchanged. The dedicated integration/E2E
+commands did not start because the aggregate failed. The initial progress counter
+included individual passing tests; only these final summary counts are authoritative.
+
+The only failure was `update-checker-apply.test.ts`'s persistence assertion. It
+called real `npm view instar version`, then assumed a non-null saved result.
+Production correctly returns an unsaved current-version fallback on registry
+failure when there is no cache. The precise registry error was swallowed by that
+existing fallback; the15006ms duration alone does not establish its cause.
+The same file also launched a real rollback install and asserted only result shape.
+
+The original build exhausted its three fix cycles and was terminally escalated
+through the normal CLI. Its state, plan and audit were preserved in a read-only
+snapshot; counters were not reset and it was not marked complete. Hooke reviewed
+the escalation disposition: the independently diagnosed single-file updater
+fixture repair is a separate bounded task under existing authorization, not a new
+transport fix budget. The build skill excludes single-file edits and does not
+explicitly require operator permission for this correction. Further unexplained
+or production failures require new reassessment.
+
+Only the updater unit fixture changes: fixed installed/registry versions and
+mocked instance exec calls retain real check, persistence and rollback handling.
+Assertions now require actual update/changelog persistence, same-version behavior,
+offline fallback without invented state, unchanged offline cache, exact failed
+rollback invocation and retained metadata, plus no install on refusal paths.
+No production updater behavior, timeout or delivery implementation changed.
+The first focused run had43 passes and two failures because the new combined
+call-count/argument matcher is unavailable in the repository's Vitest version.
+Three matcher calls were replaced with equivalent separate count and argument
+assertions. The same three updater files then passed all45 tests. Hooke reviewed
+the actual correction and the compatibility amendment and concurred. A new full
+candidate run remains required. Later green validation will be recorded separately
+and cannot retroactively pass an earlier failed run.
+
+Audit erratum: the earlier enrollment-test trace mistakenly cited the nonexistent
+`docs/specs/TELEGRAM-MESSAGE-ORIGIN-SPEC.md`. The actual approved/converged transport
+spec read and used is `docs/specs/telegram-message-origin.md`. A fresh trace records
+the correct path; the original audit record is retained rather than rewritten.
+This corrects the citation, not the approved production contract or test behavior.
