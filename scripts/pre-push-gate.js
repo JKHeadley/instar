@@ -379,23 +379,71 @@ if (!process.env.CI) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
       let artifactFound = false;
 
-      if (fs.existsSync(sideEffectsDir)) {
-        const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
-        // Any fresh artifact from the last 24h counts — the in-flight notes name
-        // the change, the artifact reviews it, and the two are paired by the PR
-        // rather than by filename.
-        const recent = files.filter((f) => {
-          const stat = fs.statSync(path.join(sideEffectsDir, f));
-          return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
-        });
-        artifactFound = recent.length > 0;
+      // Pair the review to the WORK, not to the wall clock.
+      //
+      // This used to be "any artifact modified in the last 24h counts". That
+      // asks the wrong question. The in-flight fragments accumulate across many
+      // already-reviewed PRs until a release cut folds them away, so a batch
+      // that was fully reviewed on Tuesday starts FAILING on Thursday for no
+      // reason but elapsed time — the review did not stop existing, the window
+      // moved. Observed 2026-08-21: nine in-flight fragments, nine matching
+      // slug-named artifacts written the same day, gate refusing every push
+      // (including docs-only ones) because the newest artifact was ~41h old.
+      //
+      // The only way to satisfy a decayed window is to write a NEW artifact for
+      // work that already has one — which is precisely the placeholder-writing
+      // this check's own history warns about (see the comment above). A gate
+      // whose sole remedy is to produce a redundant document is teaching the
+      // wrong habit twice over.
+      //
+      // Compare instead against the newest thing actually waiting to ship: is
+      // there a review at least as recent as the newest in-flight fragment?
+      // Nothing is weakened — add an unreviewed fragment and the newest
+      // fragment outruns the newest artifact, and this still refuses — but the
+      // verdict no longer rots on its own while the facts stay unchanged.
+      const newestMtime = (dir, filter) => {
+        if (!fs.existsSync(dir)) return null;
+        let newest = null;
+        for (const f of fs.readdirSync(dir)) {
+          if (!filter(f)) continue;
+          try {
+            const m = fs.statSync(path.join(dir, f)).mtimeMs;
+            if (newest === null || m > newest) newest = m;
+          } catch {
+            // Unreadable entry: skip it rather than let one bad stat decide.
+          }
+        }
+        return newest;
+      };
+
+      const newestArtifact = newestMtime(sideEffectsDir, (f) => f.endsWith('.md'));
+      const newestFragment = newestMtime(
+        path.join(ROOT, 'upgrades', 'next'),
+        (f) => f.endsWith('.md')
+      );
+
+      if (newestArtifact !== null) {
+        if (newestFragment === null) {
+          // Legacy NEXT.md-only state (no fragment dir): fall back to the
+          // original freshness rule rather than passing on no evidence.
+          artifactFound = Date.now() - newestArtifact < 24 * 60 * 60 * 1000;
+        } else {
+          // Tolerance absorbs checkout/clone mtime ordering, where every file
+          // lands within the same moment and their relative order is arbitrary.
+          // It is far shorter than the gap between authoring a fragment and
+          // neglecting its review, so it cannot mask a genuinely missing one.
+          const SKEW_MS = 10 * 60 * 1000;
+          artifactFound = newestArtifact >= newestFragment - SKEW_MS;
+        }
       }
 
       if (!artifactFound) {
         errors.push(
-          `Your release-note fragment claims a fix/feature but no side-effects review artifact was written in the last 24h. ` +
-          `Add upgrades/side-effects/<slug>.md for this change (produced via the /instar-dev skill) — ` +
-          `do NOT create a version-named file to satisfy this check. ` +
+          `Your release-note fragment claims a fix/feature but no side-effects review artifact is as recent as it. ` +
+          `The newest upgrades/next/ fragment is newer than every file in upgrades/side-effects/, ` +
+          `which means the most recently added work has not been reviewed. ` +
+          `Add upgrades/side-effects/<slug>.md for THAT change (produced via the /instar-dev skill) — ` +
+          `do NOT create a version-named file, and do NOT re-touch an existing artifact, to satisfy this check. ` +
           `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
         );
       }

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-22T00:17:07.780Z",
+  "slug": "pre-push-side-effects-freshness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/pre-push-gate.js"
+    ],
+    "addedLines": 61,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
