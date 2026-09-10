@@ -164,7 +164,7 @@ export class TelegramOriginRuntime {
         if (!options.bot.token) throw new Error('origin-source-has-no-transport-credential');
         return telegramFetch(`https://api.telegram.org/bot${options.bot.token}/${request.method}`,
         { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-          signal: AbortSignal.timeout(10_000) }, capability);
+          networkTimeoutMs: 10_000 }, capability);
       },
     });
     // A tokenless source prepares and records evidence but owns no Bot API door.
@@ -349,7 +349,7 @@ export class TelegramOriginRuntime {
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
         await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-            signal: AbortSignal.timeout(10_000) }, undefined, operation);
+            networkTimeoutMs: 10_000 }, undefined, operation);
         recovered++;
         } catch (error) {
           // One held operation must not starve unrelated queued destinations.

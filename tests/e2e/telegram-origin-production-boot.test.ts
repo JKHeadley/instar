@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { bootTelegramOrigin } from '../../src/messaging/telegram-origin/TelegramOriginBoot.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { postOriginAutomationReply } from '../../src/messaging/telegram-origin/OriginAutomationReply.js';
@@ -9,6 +10,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { admission, compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import express from 'express';
 import { PendingRelayStore } from '../../src/messaging/pending-relay-store.js';
@@ -19,6 +21,62 @@ beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
 describe('Telegram origin production bootstrap', () => {
+  it('gives recovery after production restart a fresh network deadline after durable preparation', async () => {
+    const root = await mkdtemp('/tmp/origin-deadline-boot-');
+    cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-deadline-boot:cleanup' }); });
+    const stateDir = path.join(root, '.instar'); await mkdir(path.join(stateDir, 'state'), { recursive: true });
+    const config = { projectDir: root, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: '123:deadline-fixture', chatId: '-100123', lifelineTopicId: 7848 } }] };
+    await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config));
+    let lifecycle: OriginSessionLifecycle | undefined;
+    const start = async () => {
+      const boot = await bootTelegramOrigin({ config: config as never, token: '123:deadline-fixture', noticeOwner: true,
+        workerUrl: worker, holdsLease: () => true, isSessionLive: () => true,
+        attachSessionLifecycle: value => { lifecycle = value; }, diagnoseUnknown: vi.fn(async () => undefined), onNoticeState: vi.fn() });
+      cleanup.push(() => boot.close());
+      boot.runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }),
+        ...fixtureOriginContentDedup(stateDir) });
+      // A config revision can invalidate boot's initial snapshot. Wait for
+      // real authority readiness before testing transport recovery.
+      await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
+        accountId: '123', destination: { chatId: '-100123' },
+      } as never)).toBe(true), { timeout: 7000, interval: 100 });
+      return boot;
+    };
+    let boot = await start();
+    const token = await lifecycle!.issue({ sessionId: 'queued-deadline-session', harnessId: 'codex-cli', projectDir: root, configuredModel: 'selected-model' });
+    const operation = await boot.runtime.service.runWithSessionToken(token, () => boot.runtime.service.prepareBot({
+      method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'The report prepared before restart.' } }));
+    await boot.runtime.service.admit(operation);
+    await boot.close(); boot = await start();
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    const network = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.signal).toBe(deadline.signal); init.signal!.throwIfAborted();
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 81, chat: { id: -100123 }, message_thread_id: 42 } }));
+    });
+    vi.stubGlobal('fetch', network);
+    const claim = boot.runtime.store.claim.bind(boot.runtime.store);
+    vi.spyOn(boot.runtime.store, 'claim').mockImplementation(async input => { expect(timeout).not.toHaveBeenCalled(); return claim(input); });
+    const failures: string[] = [];
+    const execute = boot.runtime.service.executePreparedBot.bind(boot.runtime.service);
+    vi.spyOn(boot.runtime.service, 'executePreparedBot').mockImplementation(async (...args) => {
+      try { return await execute(...args); }
+      catch (error) { failures.push(error instanceof Error ? error.message : String(error)); throw error; }
+    });
+    try {
+      const result = await boot.runtime.recoverHeld();
+      expect(failures).toEqual([]);
+      expect(result).toEqual({ processed: 1, recovered: 1 });
+      expect(timeout).toHaveBeenCalledOnce(); expect(timeout).toHaveBeenCalledWith(10_000);
+      const audit = await boot.runtime.store.getOperation(operation.record.operationId);
+      expect(audit?.record.originId).toBe(operation.record.originId);
+      expect(audit?.operation).toMatchObject({ state: 'accepted', deadlineAt: operation.admission.deadlineAt });
+      expect(audit?.recovery).toMatchObject({ attempts: 1 });
+      expect(network).toHaveBeenCalledOnce();
+    } finally { timeout.mockRestore(); }
+  });
+
   it('retains the recovery review brake through a real production shutdown and restart', async () => {
     const root = await mkdtemp('/tmp/origin-review-boot-');
     cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-review-boot:cleanup' }); });
@@ -34,6 +92,11 @@ describe('Telegram origin production bootstrap', () => {
         attachSessionLifecycle: value => { lifecycle = value; }, diagnoseUnknown: vi.fn(async () => undefined), onNoticeState: vi.fn() });
       cleanup.push(() => boot.close());
       boot.runtime.attachSendPolicy({ review, authorizeDispatch: () => ({ ok: true }) });
+      // Review-budget assertions begin only after the real configuration
+      // observer permits preparation; boot's initial snapshot may be invalidated.
+      await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
+        accountId: '123', destination: { chatId: '-100123' },
+      } as never)).toBe(true), { timeout: 7000, interval: 100 });
       return boot;
     };
     let boot = await start();
@@ -102,6 +165,7 @@ describe('Telegram origin production bootstrap', () => {
     await vi.waitFor(async () => expect((await boot.runtime.status()).activation.observations).toEqual(expect.arrayContaining([
       expect.objectContaining({ obligation: 'send-policy', state: 'ready', reason: 'send-policy-authority-attached' }),
     ])), { timeout: 7000, interval: 100 });
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '77' });
     const server = await new Promise<import('node:http').Server>(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
     const updateText = 'The generated update includes the completed work and the detailed verification results.';

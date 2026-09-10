@@ -1,0 +1,32 @@
+<!-- bump: patch -->
+## What Changed
+
+Telegram network deadlines now begin when each actual request starts, after
+origin review, durable recording, attachment loading and credential preparation.
+Adapter and Lifeline sends, signed holder relays, recovery and fixed notices use
+the shared duration contract. Each message part receives a fresh deadline, which
+continues through reading the response body.
+
+Caller cancellation proven before the network call remains a known unsent
+attempt in the original outbox. It retains the original recovery limits. A timeout
+or cancellation after the call starts remains uncertain and cannot justify a
+second send. Even a reused cancellation error cannot change that distinction.
+
+## What to Tell Your User
+
+A slow review no longer uses up the time reserved for actually sending a Telegram
+message. This repairs one cause of held replies. Other failures can still hold
+messages, and an uncertain send is still protected against accidental duplicates.
+
+## Summary of New Capabilities
+
+- Message parts each receive a full network timeout after preparation.
+- Cancellation of one attempt does not discard the original queued message.
+- Existing agents receive the repair and explanation through normal updates.
+
+## Evidence
+
+Validation results and independent review are recorded in the side-effects
+artifact. Tests cover the real outbox, caller cancellation, split requests,
+attachments, receipt-body failures, HTTP adapter, signed mesh and production
+restart recovery. No live Telegram traffic is used by these tests.

@@ -70,6 +70,26 @@ async function boot(extra: { source?: Record<string, unknown>; owner?: Record<st
   return { owner, source, credential, send, sendOther, botNetwork, auditAssertion, revoke: () => { attestationRevoked = true; } };
 }
 describe('Telegram origin signed mesh HTTP pipeline', () => {
+  it('starts the holder network clock only after signed mesh admission and current policy', async () => {
+    const h = await boot();
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
+    const claim = h.owner.store.claim.bind(h.owner.store);
+    vi.spyOn(h.owner.store, 'claim').mockImplementation(async input => {
+      expect(timeout).not.toHaveBeenCalledWith(10_000);
+      return claim(input);
+    });
+    try {
+      await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+        topicId: 42, chatId: '-100123', text: 'The requested report from the source machine.', send: h.send })))
+        .resolves.toMatchObject({ messageId: 321 });
+      expect(timeout).toHaveBeenCalledWith(10_000);
+      expect(h.botNetwork).toHaveBeenCalledOnce();
+      expect(h.botNetwork.mock.calls[0][1].signal).toBe(deadline.signal);
+      expect((await h.owner.store.listOrigins()).records[0].children[0].state).toBe('accepted');
+    } finally { timeout.mockRestore(); }
+  });
+
   it('resolves a lost holder response from durable source evidence after a worker restart without resending', async () => {
     const h = await boot();
     let heldOperation = '';

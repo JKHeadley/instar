@@ -9,6 +9,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -33,11 +34,9 @@ describe('HTTP origin sends depend on the real renewed lease', () => {
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
     app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
-    // Boot/session setup writes machine evidence watched by the independent
-    // config authority. Let its real refresh settle before advancing only the
-    // lease clock; otherwise that unrelated startup invalidation masks the
-    // decision boundary this HTTP test is exercising.
-    await new Promise(resolve => setTimeout(resolve, 5500));
+    // Observe actual configuration readiness before advancing the lease clock;
+    // a startup invalidation must not mask the lease boundary under test.
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
     expect(boot.runtime.options.display({ chatId: '-100123', topicId: '42' } as never).agent?.enabled).toBe(false);
     const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 10, chat: { id: -100123 }, message_thread_id: 42 } })));
     vi.stubGlobal('fetch', wire);

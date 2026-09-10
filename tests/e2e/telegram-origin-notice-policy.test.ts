@@ -10,6 +10,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { migrateSecrets } from '../../src/core/SecretMigrator.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
 import type { OriginBotTransport } from '../../src/messaging/telegram-origin/TelegramOriginService.js';
+import type { OriginSourceHealth } from '../../src/messaging/telegram-origin/OriginDetectorHealth.js';
+import type { OutageNoticeState } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
@@ -29,9 +31,12 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
     authorized: true, clientPreferences: 'telegram-managed', optedOut: false,
     observerHealthy: true, observedAt: now, validUntil: now + 30_000, version: 'fixture-observation' };
   let ownsLease = true;
+  const noticeStates: OutageNoticeState[] = [];
   const current = await bootTelegramOrigin({ config: config as never, token: '123:notice-fixture', noticeOwner: true,
-    workerUrl: worker, configWorkerUrl: configWorker, holdsLease: () => ownsLease, diagnoseUnknown: async () => undefined, onNoticeState: () => undefined,
+    workerUrl: worker, configWorkerUrl: configWorker, holdsLease: () => ownsLease, diagnoseUnknown: async () => undefined,
+    onNoticeState: state => { noticeStates.push(state); if (noticeStates.length > 16) noticeStates.shift(); },
     ...(withAuthority ? { readAlertDestinationPolicy: () => policy } : {}) });
+  const bootReturnedAt = Date.now();
   let storageFailed = false;
   cleanups.push(async () => {
     // The deliberate permanent worker loss also prevents durable owner
@@ -45,6 +50,20 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
     return new Response(JSON.stringify({ ok: true, result: { message_id: 99, chat: { id: -100123 }, message_thread_id: body.message_thread_id } }));
   });
   vi.stubGlobal('fetch', wire);
+  // These are outages after the observer is operating, not startup tests.
+  // A first healthy snapshot can precede delayed startup watch events. Require
+  // one successful real post-boot read, then validate the actual authorities.
+  // This does not promise that later config invalidations cannot occur.
+  expect(typeof current.runtime.options.readDetectorHealth).toBe('function');
+  await vi.waitFor(() => {
+    const sources = current.runtime.options.readDetectorHealth!().sources as { config: OriginSourceHealth };
+    expect(sources.config).toMatchObject({ state: 'healthy', busy: false });
+    expect(sources.config.succeededAt).toBeGreaterThan(bootReturnedAt);
+    expect(current.runtime.options.display({ version: 1, transport: 'bot-api', accountId: '123', chatId: '-100123',
+      topicId: '42', messageId: null, inlineMessageId: null, scheduledMessageId: null })).toBeDefined();
+    expect(current.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: false });
+    expect(current.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
+  }, { timeout: 12_500, interval: 50 });
   const failRecording = async () => {
     await current.runtime.store.close(); await current.runtime.spool.close();
     storageFailed = true;
@@ -52,7 +71,9 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text: 'Held ordinary message' }) }))
       .rejects.toMatchObject({ reason: 'all-durable-recording-sinks-unavailable' });
   };
-  return { ...current, wire, failRecording, stateDir, config, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
+  const diagnostics = () => JSON.stringify({ noticeStates, sources: current.runtime.options.readDetectorHealth!().sources,
+    policy: current.runtime.options.getAlertPolicy('operator-attention-hub') });
+  return { ...current, wire, failRecording, stateDir, config, diagnostics, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
 }
 describe('production bootstrap outage authority separation', () => {
   it('rechecks notice permission after a capacity grant without consuming a revoked notice', async () => {
@@ -103,7 +124,8 @@ describe('production bootstrap outage authority separation', () => {
     await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub')).toMatchObject({
       notificationAttempted: false, notificationOutcome: 'queued', reason: 'credential-capacity-unavailable' }));
     expect(h.wire).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('accepted'), { timeout: 3000 });
+    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome,
+      h.diagnostics()).toBe('accepted'), { timeout: 3000 });
     expect(h.wire).toHaveBeenCalledTimes(2);
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
     await new Promise(resolve => setTimeout(resolve, 150)); expect(h.wire).toHaveBeenCalledTimes(2);

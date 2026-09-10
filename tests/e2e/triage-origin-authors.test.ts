@@ -7,6 +7,7 @@ import { triageOriginSender, readTriageSessionAuthor } from '../../src/monitorin
 import { StallTriageNurse } from '../../src/monitoring/StallTriageNurse.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 
 let worker: URL;
@@ -47,6 +48,7 @@ describe('production triage author binding', () => {
     boot.runtime.observer.track(boot.runtime.sessions.getBinding('triage-session')!, { path: source, nativeSessionId: 'native-triage' });
     const nativeAuthor = await readTriageSessionAuthor(boot.runtime, 'triage-session');
     const surfaceTriage = triageOriginSender(boot.runtime.service, 'triage-orchestrator', (topicId, text) => telegram.sendToTopic(topicId, text));
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
     await surfaceTriage(42, 'The scoped triage session found the cause.', nativeAuthor);
 
     const nurse = new StallTriageNurse({} as never, { intelligence: { evaluate: async (_prompt: string, options: any) => {

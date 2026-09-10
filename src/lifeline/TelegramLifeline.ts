@@ -2971,22 +2971,13 @@ export class TelegramLifeline {
     // pass 36 finding 6.
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    let response: Response;
-    try {
-      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
-      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
-      response = await telegramFetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sendParams.outgoingParams),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    // Origin review/storage/capacity must finish before this request's clock starts.
+    const response = await telegramFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sendParams.outgoingParams),
+      networkTimeoutMs: timeoutMs,
+    });
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after

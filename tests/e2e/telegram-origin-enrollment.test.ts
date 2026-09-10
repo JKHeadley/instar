@@ -11,6 +11,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { originCertificationFixture } from '../helpers/originCertification.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -37,7 +39,20 @@ describe('production origin enrollment factory', () => {
       workerUrl: worker, enrollmentPackageRoot: packageRoot, noticeOwner: true, holdsLease: () => true,
       listLiveSessions: () => [], diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
     let boot = await start(f.root); cleanups.push(() => boot.close());
-    const first = await boot.runtime.status();
+    // Completion is attainable after the independently refreshed destination
+    // observer becomes ready. Boot's inventory can precede that observation.
+    // Only this exact startup gap is retryable; other missing obligations
+    // still fail immediately, and no policy or permission is manufactured.
+    const readinessDeadline = performance.now() + 12_500;
+    let first = await boot.runtime.status();
+    while (performance.now() < readinessDeadline) {
+      const missing = first.activation.observations.filter(item => !['ready', 'not-applicable'].includes(item.state));
+      if (missing.length !== 1 || missing[0].obligation !== 'notice-policy' ||
+        missing[0].state !== 'unknown' || missing[0].subject !== 'operator-alert-destinations' ||
+        missing[0].reason !== 'notice-destination-or-policy-unavailable') break;
+      await delay(50);
+      first = await boot.runtime.status();
+    }
     expect(first.activation.observations.filter(item => !['ready', 'not-applicable'].includes(item.state))).toEqual([]);
     expect(first.activation.complete).toBe(true);
     await boot.close(); boot = await start(path.join(f.root, 'missing-release'));
@@ -54,6 +69,7 @@ describe('production origin enrollment factory', () => {
     ]) });
     const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 7, chat: { id: -100123 }, message_thread_id: 43 } })));
     vi.stubGlobal('fetch', wire);
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '43' });
     await telegram.sendToTopic(43, 'Metadata remains recorded while release certification is missing.');
     expect(wire).toHaveBeenCalledTimes(1);
     const sent = (await boot.runtime.store.listOrigins()).records.filter(row => JSON.parse(row.record.envelopeJson).destination.topicId === '43');

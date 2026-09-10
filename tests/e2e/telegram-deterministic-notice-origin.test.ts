@@ -9,6 +9,7 @@ import { sendDeterministicTelegramNotice, sendUnknownProducerTelegramNotice, wit
 import { QuotaNotifier } from '../../src/monitoring/QuotaNotifier.js';
 import { OriginAuthorCall } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 import { compileOriginWorker, compileOriginConfigWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let worker: URL, configWorker: URL;
@@ -38,6 +39,7 @@ async function boot(mode: 'send-only' | 'server-polling') {
   const adapter = new TelegramAdapter(telegramConfig as never, stateDir);
   const batcher = new NotificationBatcher(); batcher.configureBounds({ stateDir });
   wireTelegramSendSide({ mode, telegram: adapter, notificationBatcher: batcher, originService: runtime.service }); batcher.stop();
+  await waitForOriginDisplayReady(runtime, { chatId: '-100123', topicId: '42' });
   return { runtime, adapter, batcher, stateDir, wire };
 }
 

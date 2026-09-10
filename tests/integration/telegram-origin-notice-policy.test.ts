@@ -10,6 +10,8 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { migrateSecrets } from '../../src/core/SecretMigrator.js';
 import { compileOriginWorker, compileOriginConfigWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
+import type { OriginSourceHealth } from '../../src/messaging/telegram-origin/OriginDetectorHealth.js';
 
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
@@ -27,6 +29,7 @@ async function harness(enabled: boolean) {
   const boot = await bootTelegramOrigin({ config: config as never, token: '123:notice-http', noticeOwner: true,
     workerUrl: worker, configWorkerUrl: configWorker, holdsLease: () => true, isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
+  const bootReturnedAt = Date.now();
   let stopped = false;
   cleanup.push(async () => { if (stopped) await expect(boot.close()).rejects.toMatchObject({ code: 'origin-store-unavailable' }); else await boot.close(); });
   const token = await lifecycle!.issue({ sessionId: 'fixture-session', harnessId: 'codex-cli', projectDir: stateDir, configuredModel: 'configured-model' });
@@ -44,6 +47,17 @@ async function harness(enabled: boolean) {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topic, text }) });
       return { messageId: ((await response.json()) as any).result.message_id, timestamp: new Date().toISOString() };
     } } } as never));
+  await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
+  expect(typeof boot.runtime.options.readDetectorHealth).toBe('function');
+  await vi.waitFor(() => {
+    // Inject the outage only after an actual post-boot observation. Preserve
+    // the configured opt-out and the production fire-time permission checks.
+    const sources = boot.runtime.options.readDetectorHealth!().sources as { config: OriginSourceHealth };
+    expect(sources.config).toMatchObject({ state: 'healthy', busy: false });
+    expect(sources.config.succeededAt).toBeGreaterThan(bootReturnedAt);
+    expect(boot.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: !enabled });
+    if (enabled) expect(boot.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
+  }, { timeout: 12_500, interval: 50 });
   const failRecording = async () => { await boot.runtime.store.close(); await boot.runtime.spool.close(); stopped = true; };
   const send = () => request(app).post('/telegram/reply/42').set('Authorization', 'Bearer fixture-auth')
     .set('X-Instar-Origin-Session', token).send({ text: 'This ordinary answer must remain held while recording is unavailable.',

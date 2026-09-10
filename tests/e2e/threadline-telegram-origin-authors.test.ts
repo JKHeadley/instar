@@ -14,6 +14,7 @@ import { ThreadResumeMap } from '../../src/threadline/ThreadResumeMap.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { SalienceGate } from '../../src/threadline/SalienceGate.js';
 import { temporaryState, compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -32,6 +33,7 @@ describe('Threadline Telegram authors using production origin initialization', (
     const boot = await bootTelegramOrigin({ config: config as never, token: '123:fixture', noticeOwner: false, workerUrl: worker,
       holdsLease: () => true, diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
     close.push(boot.close);
+    await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
     const service = boot.runtime.service;
     const sink = async (topicId: number, text: string) => {
       const operation = service.prepareBot({ method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: topicId, text } });

@@ -91,12 +91,14 @@ describe('origin relay installed-upgrade parity', () => {
     expect(second.split('Origin lease renewal dependency:')).toHaveLength(2);
     expect(second.split('Message origins on your phone:')).toHaveLength(2);
     expect(second.split('Queued-message review pacing:')).toHaveLength(2);
+    expect(second.split('Telegram send deadlines:')).toHaveLength(2);
     expect(second).toBe(first);
     for (const shadow of shadows) {
       const content = fs.readFileSync(shadow, 'utf8');
       expect(content).toContain('Operator shadow note.');
       expect(content).toContain(telegramOriginRecoveryAwareness());
       expect(content.split('Queued-message review pacing:')).toHaveLength(2);
+      expect(content.split('Telegram send deadlines:')).toHaveLength(2);
       expect(content).toContain('messageOrigin.outageNotice.enabled');
       expect(content.split('Origin rollout certification:')).toHaveLength(2);
       expect(content.split('Origin lease renewal dependency:')).toHaveLength(2);

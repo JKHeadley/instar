@@ -5,12 +5,14 @@
  * error handling, and edge cases.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+type ExecSeam = { execAsync(cmd: string, args: string[], timeoutMs: number): Promise<string> };
 
 describe('UpdateChecker.applyUpdate()', () => {
   let tmpDir: string;
@@ -212,14 +214,19 @@ describe('UpdateChecker.fetchChangelog()', () => {
 describe('UpdateChecker.rollback()', () => {
   let tmpDir: string;
   let checker: UpdateChecker;
+  let exec: MockInstance<ExecSeam['execAsync']>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-rollback-'));
     fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
     checker = new UpdateChecker(tmpDir);
+    vi.spyOn(checker, 'getInstalledVersion').mockReturnValue('0.1.12');
+    exec = vi.spyOn(checker as unknown as ExecSeam, 'execAsync')
+      .mockRejectedValue(new Error('fixture install unavailable'));
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/update-checker-apply.test.ts:218' });
   });
 
@@ -229,6 +236,7 @@ describe('UpdateChecker.rollback()', () => {
     const result = await checker.rollback();
     expect(result.success).toBe(false);
     expect(result.message).toContain('No rollback info');
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it('canRollback returns true after saving rollback info', () => {
@@ -275,15 +283,21 @@ describe('UpdateChecker.rollback()', () => {
       updatedAt: new Date().toISOString(),
     }));
 
-    // npm install will fail in test environment, but we verify the structure
+    // Exercise real rollback handling without launching npm or using the network.
     const result = await checker.rollback();
-    expect(result).toHaveProperty('success');
-    expect(result).toHaveProperty('previousVersion');
-    expect(result).toHaveProperty('restoredVersion');
-    expect(result).toHaveProperty('message');
-    expect(typeof result.message).toBe('string');
-    expect(result.message.length).toBeGreaterThan(0);
-  }, 30000);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledWith('npm', [
+      'install', 'instar@0.1.11', '--ignore-scripts',
+      '--prefix', path.join(tmpDir, 'shadow-install'),
+    ], 120000);
+    expect(result).toEqual({
+      success: false, previousVersion: '0.1.12', restoredVersion: '0.1.12',
+      message: 'Rollback failed: fixture install unavailable',
+    });
+    expect(checker.getRollbackInfo()).toMatchObject({
+      previousVersion: '0.1.11', updatedVersion: '0.1.12',
+    });
+  });
 
   it('refuses rollback below the delivery compatibility floor while evidence is live', async () => {
     fs.writeFileSync(path.join(tmpDir, 'state', 'update-rollback.json'), JSON.stringify({
@@ -293,52 +307,83 @@ describe('UpdateChecker.rollback()', () => {
     const result = await checker.rollback();
     expect(result.success).toBe(false);
     expect(result.message).toContain('compatibility-projector floor');
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 
 describe('UpdateChecker.check() with changeSummary', () => {
   let tmpDir: string;
   let checker: UpdateChecker;
-  let originalFetch: typeof global.fetch;
+  let exec: MockInstance<ExecSeam['execAsync']>;
+  let changelog: MockInstance<UpdateChecker['fetchChangelog']>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-check-summary-'));
     fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
     checker = new UpdateChecker(tmpDir);
-    originalFetch = global.fetch;
+    vi.spyOn(checker, 'getInstalledVersion').mockReturnValue('0.1.11');
+    exec = vi.spyOn(checker as unknown as ExecSeam, 'execAsync').mockResolvedValue('0.1.12');
+    changelog = vi.spyOn(checker, 'fetchChangelog').mockResolvedValue('Fixed important bugs');
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
+    vi.restoreAllMocks();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/update-checker-apply.test.ts:299' });
   });
 
   it('includes changeSummary in UpdateInfo when update available', async () => {
-    // Mock fetchChangelog to return a summary
-    vi.spyOn(checker, 'fetchChangelog').mockResolvedValue('Fixed important bugs');
-
     const info = await checker.check();
-
-    // If update is available (depends on npm state), changeSummary should be populated
-    if (info.updateAvailable) {
-      expect(info.changeSummary).toBe('Fixed important bugs');
-    }
-    // Always has these fields
-    expect(info).toHaveProperty('currentVersion');
-    expect(info).toHaveProperty('latestVersion');
-    expect(info).toHaveProperty('checkedAt');
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledWith('npm', ['view', 'instar', 'version'], 15000);
+    expect(changelog).toHaveBeenCalledTimes(1);
+    expect(changelog).toHaveBeenCalledWith('0.1.12');
+    expect(info).toMatchObject({
+      currentVersion: '0.1.11', latestVersion: '0.1.12', updateAvailable: true,
+      changeSummary: 'Fixed important bugs', checkedAt: expect.any(String),
+    });
   });
 
   it('persists changeSummary to state file', async () => {
-    vi.spyOn(checker, 'fetchChangelog').mockResolvedValue('Big improvements');
+    changelog.mockResolvedValue('Big improvements');
+    const info = await checker.check();
+    expect(info.updateAvailable).toBe(true);
+    expect(info.changeSummary).toBe('Big improvements');
+    expect(checker.getLastCheck()).toEqual(info);
+    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'update-check.json'), 'utf8'))).toEqual(info);
+  });
 
-    await checker.check();
+  it('persists a same-version check without fetching a changelog', async () => {
+    exec.mockResolvedValue('0.1.11');
+    const info = await checker.check();
+    expect(info).toMatchObject({ currentVersion: '0.1.11', latestVersion: '0.1.11', updateAvailable: false });
+    expect(info.changeSummary).toBeUndefined();
+    expect(changelog).not.toHaveBeenCalled();
+    expect(checker.getLastCheck()).toEqual(info);
+  });
 
-    const lastCheck = checker.getLastCheck();
-    expect(lastCheck).not.toBeNull();
-    // changeSummary only present if updateAvailable is true
-    if (lastCheck!.updateAvailable) {
-      expect(lastCheck!.changeSummary).toBe('Big improvements');
-    }
+  it('returns a current-version fallback offline without inventing saved state', async () => {
+    exec.mockRejectedValue(new Error('fixture registry unavailable'));
+    const info = await checker.check();
+    expect(info).toEqual({
+      currentVersion: '0.1.11', latestVersion: '0.1.11', updateAvailable: false,
+      checkedAt: expect.any(String),
+    });
+    expect(changelog).not.toHaveBeenCalled();
+    expect(checker.getLastCheck()).toBeNull();
+    expect(fs.existsSync(path.join(tmpDir, 'state', 'update-check.json'))).toBe(false);
+  });
+
+  it('returns the unchanged saved result offline without overwriting it', async () => {
+    const saved = await checker.check();
+    const stateFile = path.join(tmpDir, 'state', 'update-check.json');
+    const bytes = fs.readFileSync(stateFile, 'utf8');
+    exec.mockRejectedValue(new Error('fixture registry unavailable'));
+    changelog.mockClear();
+    vi.mocked(checker.getInstalledVersion).mockReturnValue('0.1.13');
+
+    expect(await checker.check()).toEqual(saved);
+    expect(changelog).not.toHaveBeenCalled();
+    expect(checker.getLastCheck()).toEqual(saved);
+    expect(fs.readFileSync(stateFile, 'utf8')).toBe(bytes);
   });
 });

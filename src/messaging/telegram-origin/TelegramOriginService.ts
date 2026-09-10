@@ -14,6 +14,7 @@ import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
 import { nextOriginKnownFailure } from './OriginRetry.js';
+import { OriginTransportCancelledBeforeNetwork } from './OriginTransportCancellation.js';
 import { correlateBotReceipt, correlatePartialBotReceipt, replayBotReceipt } from './OriginBotReceipt.js';
 import type { OriginBotReceipt } from './OriginBotReceipt.js';
 import type { DerivedMaterializationInput, StoredChild } from './StoreTypes.js';
@@ -549,7 +550,7 @@ export class TelegramOriginService {
       let response: Response;
       try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
       catch (error) {
-        if (error instanceof OriginCapacityUnavailable) {
+        if (error instanceof OriginCapacityUnavailable || error instanceof OriginTransportCancelledBeforeNetwork) {
           // This in-process closure was invalidated before invoking network.
           // Retain the charged attempt once dispatch intent was durable. A
           // crash without this proof remains outcome-unknown on recovery.
