@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { TelegramLifeline } from '../../../src/lifeline/TelegramLifeline.js';
 import type { OriginSessionLifecycle } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
@@ -44,14 +44,26 @@ describe('Telegram network deadlines after origin preparation', () => {
   it('wires the Lifeline sender to a late network duration and preserves long-poll headroom', async () => {
     const h = await harness(), projectDir = temporaryState();
     mkdirSync(path.join(projectDir, '.instar'));
+    // This constructor-only fixture never starts a provider or tmux. Private
+    // fail-on-use executables remove unrelated host CLI prerequisites.
+    const codexPath = path.join(projectDir, 'fixture-codex'), tmuxPath = path.join(projectDir, 'fixture-tmux');
+    for (const binary of [codexPath, tmuxPath]) {
+      writeFileSync(binary, '#!/bin/sh\nprintf invoked > \"$0.invoked\"\nexit 91\n', { mode: 0o700 });
+    }
     writeFileSync(path.join(projectDir, '.instar/config.json'), JSON.stringify({
-      projectName: 'deadline-fixture', port: 4042, messaging: [{ type: 'telegram', enabled: true,
+      projectName: 'deadline-fixture', port: 4042,
+      sessions: { framework: 'codex-cli', frameworkBinaryPaths: { 'codex-cli': codexPath }, tmuxPath },
+      messaging: [{ type: 'telegram', enabled: true,
         config: { token: h.token, chatId: '-100123' } }],
     }));
     // Construct the actual class without starting polling or process supervision.
     const lifeline = new TelegramLifeline(projectDir) as unknown as {
       apiCall(method: string, params: Record<string, unknown>): Promise<unknown>;
+      projectConfig: { sessions: { framework: string; frameworkBinaryPaths: Record<string, string>; tmuxPath: string } };
     };
+    expect(lifeline.projectConfig.sessions.framework).toBe('codex-cli');
+    expect(lifeline.projectConfig.sessions.frameworkBinaryPaths['codex-cli']).toBe(codexPath);
+    expect(lifeline.projectConfig.sessions.tmuxPath).toBe(tmuxPath);
     const deadline = new AbortController();
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal);
     h.review.mockImplementation(async () => { expect(timeout).not.toHaveBeenCalled(); return { ok: true }; });
@@ -62,6 +74,8 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect(h.network.mock.calls[0][1].signal).toBe(deadline.signal);
     await lifeline.apiCall('getUpdates', { timeout: 30 });
     expect(timeout).toHaveBeenLastCalledWith(60_000);
+    expect(existsSync(`${codexPath}.invoked`)).toBe(false);
+    expect(existsSync(`${tmuxPath}.invoked`)).toBe(false);
   });
   it('starts the deadline only after policy, durable claim and capacity consumption', async () => {
     const h = await harness();

@@ -300,3 +300,28 @@ Audit erratum: the earlier enrollment-test trace mistakenly cited the nonexisten
 spec read and used is `docs/specs/telegram-message-origin.md`. A fresh trace records
 the correct path; the original audit record is retained rather than rewritten.
 This corrects the citation, not the approved production contract or test behavior.
+
+### Complete local validation and CI portability correction
+
+Candidate7e2eb5900 completed the full local test:all with exit0: aggregate3345
+passing files/51825 passing tests (4files/29tests skipped,3todo); dedicated
+integration518files/4184tests (2files/12tests skipped); dedicated E2E368files/3232tests
+(1file/7tests skipped,3todo). All5375 frozen source/test hashes remained unchanged.
+This is separate candidate evidence; the original exhausted build stays escalated.
+
+PR2018 CI run34479109543 then failed three unit shards. Both Node20 and22 exposed
+a dependency in the new Lifeline constructor fixture: omitted framework settings
+made real loadConfig require an installed Claude CLI. A bounded test-only correction
+supplies explicit codex-cli configuration and private fail-on-use provider/tmux
+executables, asserts the resolved fixture paths, and proves neither is launched.
+Actual configuration loading, Lifeline construction, policy timing and15s/60s
+network assertions remain intact. No production prerequisite or live config changes.
+
+Another shard reported pre-network capacity holds in the triage-author and
+attachment/companion lifecycle cases, plus source-lock contention and cleanup
+ENOTEMPTY in the feedback150k performance case. The annotations establish those
+outcomes, not their incidence or one shared cause. Those three files remain
+unchanged. All45 cases across them and the corrected deadline unit file passed
+locally. That does not count as a clean CI run or a correction of the independent
+contention mechanisms; the next candidate still requires clean full validation
+and CI. No attempt-limit, capacity TTL, lock bound or failed assertion was relaxed.
