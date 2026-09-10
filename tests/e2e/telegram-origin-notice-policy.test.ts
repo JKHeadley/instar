@@ -87,7 +87,7 @@ describe('production bootstrap outage authority separation', () => {
       notificationOutcome: 'suppressed', notificationAttempted: false, reason: 'destination-policy' }));
     expect(h.wire).not.toHaveBeenCalled();
   });
-  it.each(['before', 'after'] as const)('never invokes a late wire closure when capacity expires %s durable dispatch intent', async phase => {
+  it.each(['before-consume', 'after-consume'] as const)('never invokes a late wire closure when capacity expires %s', async phase => {
     const h = await boot(true, true);
     let prepared: Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>> | undefined;
     const execute = h.runtime.service.executePreparedBot.bind(h.runtime.service);
@@ -98,13 +98,18 @@ describe('production bootstrap outage authority separation', () => {
     });
     const actualNow = Date.now.bind(Date); let offset = 0;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => actualNow() + offset);
-    if (phase === 'before') {
-      const claim = h.runtime.store.claim.bind(h.runtime.store);
-      vi.spyOn(h.runtime.store, 'claim').mockImplementation(async input => { const result = await claim(input); offset = 500; return result; });
-    } else {
-      const mark = h.runtime.store.markDispatched.bind(h.runtime.store);
-      vi.spyOn(h.runtime.store, 'markDispatched').mockImplementation(async input => { const result = await mark(input); offset = 500; return result; });
-    }
+    const capacity = h.runtime.service.options.capacity!;
+    const reserve = capacity.reserve.bind(capacity), consume = capacity.consume.bind(capacity);
+    const reserveSpy = vi.spyOn(capacity, 'reserve').mockImplementation(async accountId => {
+      const grant = await reserve(accountId);
+      if (phase === 'before-consume') offset = 500;
+      return grant;
+    });
+    const consumeSpy = vi.spyOn(capacity, 'consume').mockImplementation(async grant => {
+      const result = await consume(grant);
+      if (phase === 'after-consume') offset = 500;
+      return result;
+    });
     try {
       await expect(telegramFetch('https://api.telegram.org/bot123:notice-fixture/sendMessage', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text: 'Expires before network' }) }))
@@ -112,8 +117,11 @@ describe('production bootstrap outage authority separation', () => {
       expect(prepared).toBeDefined(); await expect(prepared!.send()).rejects.toThrow('credential-capacity-unavailable');
       expect(h.wire).not.toHaveBeenCalled();
       const row = (await h.runtime.store.listOrigins()).records.find(row => row.attempts.length > 0)!;
-      expect(row.attempts[0]).toMatchObject({ phase: phase === 'before' ? 'claimed' : 'dispatched', outcome: 'known-failed' });
-    } finally { clock.mockRestore(); }
+      expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed' });
+      expect(row.attempts).toHaveLength(1);
+      expect(reserveSpy).toHaveBeenCalledTimes(1);
+      expect(consumeSpy).toHaveBeenCalledTimes(phase === 'before-consume' ? 0 : 1);
+    } finally { clock.mockRestore(); reserveSpy.mockRestore(); consumeSpy.mockRestore(); }
   });
   it('retains one notice while ordinary sends spend shared capacity, then drains without either recording worker', async () => {
     const h = await boot(true, true);

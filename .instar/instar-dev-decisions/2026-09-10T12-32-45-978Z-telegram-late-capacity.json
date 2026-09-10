@@ -1,0 +1,31 @@
+{
+  "ts": "2026-09-10T12:32:45.978Z",
+  "slug": "telegram-late-capacity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginBotEgress.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Moves existing one-use capacity reservation within an already-authorized send; no new automatic retry or autonomous controller. Original operation recovery pacing, charged attempts, deadline and unknown-outcome fences remain unchanged."
+  },
+  "verdict": "pass"
+}
