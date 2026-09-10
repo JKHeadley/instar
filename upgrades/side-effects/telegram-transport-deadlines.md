@@ -240,3 +240,18 @@ reviewed the actual two-file diff and concurred with the bounded observer
 precondition and preserved terminal semantics. A fresh full run is required.
 This test-only amendment creates no production autonomous action; the overall
 transport repair retains the recovery guard evidence declared above.
+
+## Enrollment startup observation
+
+The sixth aggregate ended with SIGTERM/exit143 before a summary; its initiator is
+unproven. It had 3089 passing-file lines and one reported enrollment failure.
+A separate exact reproduction failed with only notice-policy/unknown for
+operator-alert-destinations: notice-destination-or-policy-unavailable at the
+first Boot status. The completion-attainable test now polls real status for at
+most12.5 seconds, only for that exact startup observation. Any different or
+additional missing obligation fails immediately. No policy is renewed, no
+production permission is changed, and missing release evidence still fails
+certification. Enrollment plus HTTP/E2E notice tests passed21 cases. Hooke
+reviewed the actual amendment and concurred; its suggested state/subject pins
+were added. This test-only amendment adds no autonomous production action.
+Full combined release validation remains required; no incomplete run is green.
