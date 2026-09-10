@@ -203,3 +203,40 @@ suppression. The production restart test connects that reservation to paid revie
 transport cases retain charged cancellation attempts and uncertainty fences.
 This is not a fleet-wide spending cap or a bound on newly created operations.
 Hooke independently re-read these concrete tests and concurred with the correction.
+
+
+## Post-boot outage-fixture verification
+
+The fifth complete aggregate run finished with 3344 passed files and one failed
+file: 51805 passed tests and one failed test. The capacity-drain outage case
+became suppressed rather than accepted after its initial readiness check. The
+original assertion did not include the suppression reason, so its precise cause
+is unproven. The dedicated integration/E2E commands did not start after that
+aggregate failure. This is not a full-suite pass.
+
+A real compiled bootstrap probe, an instrumented execution of the existing test
+file, a predetermined four-run diagnostic batch, and one filename-instrumented
+execution all passed. These diagnostics do not replace release validation. The
+third fixed diagnostic run captured actual FSWatcher invalidation during an
+unchanged positive bot-only fixture before its observer recovered; no exact
+filename was captured for that event. The later filename diagnostic did not
+reproduce it. This establishes a reachable startup invalidation, not proof of the
+original failed capacity case's trigger.
+
+The E2E and HTTP outage fixtures now require one successful, idle, healthy config
+observation after Boot returned, within their existing bounded setup wait, before
+failing the recording workers once. Real display, policy, notice reservation and
+explicit opt-out checks remain. The external fixture policy retains its original
+observation/expiry; it is not renewed to pass the test. This establishes an
+operating observer, not a guarantee that all future filesystem events have drained.
+Startup-negative tests and runtime N6 terminal suppression remain unchanged.
+A bounded sixteen-state history plus current source health/policy appears in the
+capacity-drain assertion failure so another suppression provides its actual reason.
+No production runtime source changed in this correction. Both actual E2E/HTTP
+files passed all18 cases (echo-origin-notice-post-boot-targeted.log), including
+capacity drain, grant expiry before/after dispatch intent, failed recording workers,
+credential rotation, policy revocation and explicit opt-out. Hooke independently
+reviewed the actual two-file diff and concurred with the bounded observer
+precondition and preserved terminal semantics. A fresh full run is required.
+This test-only amendment creates no production autonomous action; the overall
+transport repair retains the recovery guard evidence declared above.
