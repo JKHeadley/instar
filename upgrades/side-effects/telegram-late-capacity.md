@@ -115,3 +115,22 @@ Boot restart. Build and lint passed. Full test:all and CI remain required
 before this repair's separate release. Class closure unbounded-self-action is n/a:
 this repair adds no automatic retry or autonomous actuation controller and claims
 no generic convergence coverage.
+
+### Existing HTTP capacity compatibility
+
+A later compatibility audit found the pre-existing reply-route test still expected
+zero attempts when shared capacity was exhausted. A focused run failed exactly on
+that obsolete expectation (one attempt was recorded). The updated test preserves
+the actual HTTP/IPC path and requires409, no wire call, one dispatched known-failed
+attempt, and subsequent acceptance on the same nonempty canonical operation ID.
+It also preserves the original deadline and maximum attempts, retains the first
+attempt unchanged and requires a second accepted attempt. The generic service
+contract for other transports that invalidate before dispatch remains unchanged
+and keeps its existing tests. A five-file compatibility run passed87 cases and
+failed this case because its earlier1251ms wait ignored the existing30-second
+known-failure backoff. The corrected case passed separately (one passed,25 skipped):
+free capacity alone cannot trigger recovery, a reservation before the persisted
+retry time is refused, and recovery succeeds after a real wait until that time.
+The charged child count advances from one to two. This is not a claim that a fresh
+combined88-case run passed. No production source change, delay reduction, or
+additional recovery permission is introduced; full validation remains pending.

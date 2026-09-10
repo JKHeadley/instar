@@ -310,7 +310,7 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('X-Instar-Origin-Session', h.sessionToken)).status).toBe(403);
     expect(h.network).not.toHaveBeenCalled();
   });
-  it('holds before claiming when the credential owner has spent its shared capacity, then recovers the same operation', async () => {
+  it('charges a capacity refusal after dispatch, then recovers the same operation within its original bounds', async () => {
     const h = await appHarness();
     const socketPath = path.join(h.runtime.options.storage.stateDir, 'test-capacity.sock');
     const close = await listenOriginNotices(socketPath, h.runtime.notifier, () => [], h.runtime.capacity);
@@ -319,13 +319,35 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     for (let i = 0; i < 10; i++) expect(await h.runtime.capacity.reserve('bot-1')).not.toBeNull();
     const response = await request(h.app).post('/telegram/reply/42').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-Origin-Session', h.sessionToken).send({ text: 'Here is the result you requested.' });
-    expect(response.status).toBeGreaterThanOrEqual(400); expect(h.network).not.toHaveBeenCalled();
+    expect(response.status).toBe(409); expect(h.network).not.toHaveBeenCalled();
     const rows = (await h.runtime.store.listOrigins()).records;
-    expect(rows).toHaveLength(1); expect(rows[0].attempts).toHaveLength(0); expect(rows[0].children[0].state).toBe('queued');
+    expect(rows).toHaveLength(1); expect(rows[0].attempts).toHaveLength(1);
+    expect(rows[0].attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed', reason: 'credential-capacity-unavailable' });
+    expect(rows[0].children[0].state).toBe('queued');
+    expect(rows[0].operation?.operationId).toEqual(expect.any(String));
+    expect(rows[0].operation?.operationId).not.toBe('');
+    expect(rows[0].operation?.maxAttempts).toBe(9);
+    expect(rows[0].children[0].attempts).toBe(1);
+    const retryAt = rows[0].attempts[0].nextAttemptAt!;
+    expect(retryAt).toEqual(expect.any(Number));
+    expect(retryAt).toBeGreaterThan(rows[0].attempts[0].resolvedAt!);
     await new Promise(resolve => setTimeout(resolve, 1251));
+    // Free capacity does not erase the charged failure's existing retry backoff.
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(h.network).not.toHaveBeenCalled();
+    expect(await h.runtime.store.reserveRecoveryAttempt({ operationId: rows[0].operation!.operationId, now: retryAt - 1 })).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 10));
     expect((await h.runtime.recoverHeld()).recovered).toBe(1); expect(h.network).toHaveBeenCalledOnce();
     const recovered = (await h.runtime.store.listOrigins()).records;
-    expect(recovered).toHaveLength(1); expect(recovered[0].record.operationId).toBe(rows[0].record.operationId);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].operation?.operationId).toBe(rows[0].operation!.operationId);
+    expect(recovered[0].record.originId).toBe(rows[0].record.originId);
+    expect(recovered[0].operation?.deadlineAt).toBe(rows[0].operation!.deadlineAt);
+    expect(recovered[0].operation?.maxAttempts).toBe(rows[0].operation!.maxAttempts);
+    expect(recovered[0].attempts).toHaveLength(2);
+    expect(recovered[0].children[0].attempts).toBe(2);
+    expect(recovered[0].attempts[0]).toEqual(rows[0].attempts[0]);
+    expect(recovered[0].attempts[1]).toMatchObject({ phase: 'dispatched', outcome: 'accepted' });
     expect(recovered[0].children[0].state).toBe('accepted');
     } finally { await close(); }
   });
