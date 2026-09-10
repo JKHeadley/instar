@@ -19,6 +19,40 @@ beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
 describe('Telegram origin production bootstrap', () => {
+  it('retains the recovery review brake through a real production shutdown and restart', async () => {
+    const root = await mkdtemp('/tmp/origin-review-boot-');
+    cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-review-boot:cleanup' }); });
+    const stateDir = path.join(root, '.instar'); await mkdir(path.join(stateDir, 'state'), { recursive: true });
+    const config = { projectDir: root, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: '123:review-fixture', chatId: '-100123', lifelineTopicId: 7848 } }] };
+    await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config));
+    let lifecycle: OriginSessionLifecycle | undefined;
+    const review = vi.fn(async () => { throw new Error('review service temporarily unavailable'); });
+    const start = async () => {
+      const boot = await bootTelegramOrigin({ config: config as never, token: '123:review-fixture', noticeOwner: true,
+        workerUrl: worker, holdsLease: () => true, isSessionLive: () => true,
+        attachSessionLifecycle: value => { lifecycle = value; }, diagnoseUnknown: vi.fn(async () => undefined), onNoticeState: vi.fn() });
+      cleanup.push(() => boot.close());
+      boot.runtime.attachSendPolicy({ review, authorizeDispatch: () => ({ ok: true }) });
+      return boot;
+    };
+    let boot = await start();
+    const token = await lifecycle!.issue({ sessionId: 'queued-session', harnessId: 'codex-cli', projectDir: root, configuredModel: 'selected-model' });
+    const operation = await boot.runtime.service.runWithSessionToken(token, () => boot.runtime.service.prepareBot({
+      method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'Here is the requested client report.' } }));
+    await boot.runtime.service.admit(operation);
+    expect(await boot.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
+    expect(review).toHaveBeenCalledOnce();
+    await boot.close();
+    boot = await start();
+    for (let n = 0; n < 12; n++) expect(await boot.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(review).toHaveBeenCalledOnce();
+    const audit = await boot.runtime.store.getOperation(operation.record.operationId);
+    expect(audit?.recovery).toMatchObject({ attempts: 1 });
+    expect(audit?.operation).toMatchObject({ deadlineAt: operation.admission.deadlineAt, state: 'admitted' });
+    expect(audit?.attempts).toEqual([]);
+  });
+
   it('loads real config/identity authorities, attaches session lifecycle, and records a hidden internal reply through HTTP', async () => {
     const root = await mkdtemp('/tmp/origin-boot-');
     cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-production-boot:cleanup' }); });

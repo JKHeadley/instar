@@ -19,6 +19,7 @@ import type {
 } from './StoreTypes.js';
 
 const SIX_HOURS = 6 * 60 * 60_000;
+const RECOVERY_REVIEW_INTERVAL_MS = 15 * 60_000;
 const MAX_LEASE_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BYTES = 64 * 1024 * 1024;
@@ -113,6 +114,8 @@ export class OriginStoreBackend {
       CREATE TABLE IF NOT EXISTS telegram_origin_metrics (metric TEXT PRIMARY KEY, count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_health (id INTEGER PRIMARY KEY CHECK(id=1), ticked_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_recovery_cursor (id INTEGER PRIMARY KEY CHECK(id=1), after_rowid INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS telegram_origin_recovery_schedule (
+        operation_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_owners (owner_boot_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS telegram_origin_platform_receipts (
         child_id TEXT NOT NULL, origin_id TEXT NOT NULL, transport TEXT NOT NULL, account_id TEXT NOT NULL,
@@ -410,6 +413,35 @@ export class OriginStoreBackend {
   takeRecoverableAdmissions(input: { limit?: number; now?: number } = {}): OriginAdmission[] {
     return this.readRecoverableAdmissions(input, true);
   }
+  /** Charge a recovery start BEFORE policy review or transport preparation.
+   * The canonical outbox serializes main/lifeline contenders and retains this
+   * brake through worker/process restarts. This is scheduling, not permission
+   * to send, and never consumes or resets the child's transport attempt budget.
+   * A crash consumes the interval; an uncertain write must never start review.
+   */
+  reserveRecoveryAttempt(input: { operationId: string; now?: number }): boolean {
+    id(input.operationId);
+    const now = input.now ?? Date.now();
+    integer(now, 0, Number.MAX_SAFE_INTEGER - RECOVERY_REVIEW_INTERVAL_MS);
+    return this.db.transaction(() => {
+      const eligible = this.db.prepare(`SELECT 1 FROM telegram_origin_operations o
+        WHERE o.operation_id=? AND o.kind='ordinary' AND o.state IN ('admitted','held','partial')
+        AND o.prepared_at<=? AND o.deadline_at>?
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_recovery_schedule r
+          WHERE r.operation_id=o.operation_id AND r.next_attempt_at>?)
+        AND EXISTS (SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
+          WHERE c.operation_id=o.operation_id AND c.state='queued' AND e.state='queued'
+          AND e.attempts<o.max_attempts AND (e.next_attempt_at IS NULL OR e.next_attempt_at<=?))
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id
+          AND c.state NOT IN ('queued','accepted'))`)
+        .get(input.operationId, now, now, now, new Date(now).toISOString());
+      if (!eligible) return false;
+      this.db.prepare(`INSERT INTO telegram_origin_recovery_schedule VALUES (?,1,?)
+        ON CONFLICT(operation_id) DO UPDATE SET attempts=attempts+1,next_attempt_at=excluded.next_attempt_at`)
+        .run(input.operationId, now + RECOVERY_REVIEW_INTERVAL_MS);
+      return true;
+    }).immediate();
+  }
   private readRecoverableAdmissions(input: { limit?: number; now?: number }, advance: boolean): OriginAdmission[] {
     const limit = input.limit ?? 10, now = input.now ?? Date.now();
     integer(limit, 1, 100);
@@ -417,12 +449,14 @@ export class OriginStoreBackend {
       const after = advance ? (this.db.prepare('SELECT after_rowid FROM telegram_origin_recovery_cursor WHERE id=1').get() as { after_rowid: number } | undefined)?.after_rowid ?? 0 : 0;
       const operations = this.db.prepare(`SELECT o.*,o.rowid recovery_rowid FROM telegram_origin_operations o
         WHERE o.kind='ordinary' AND o.state IN ('admitted','held','partial') AND o.deadline_at>?
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_recovery_schedule r
+          WHERE r.operation_id=o.operation_id AND r.next_attempt_at>?)
         AND EXISTS (SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
           WHERE c.operation_id=o.operation_id AND c.state='queued' AND e.state='queued'
           AND e.attempts<o.max_attempts AND (e.next_attempt_at IS NULL OR e.next_attempt_at<=?))
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id
           AND c.state NOT IN ('queued','accepted'))
-        ORDER BY CASE WHEN o.rowid>? THEN 0 ELSE 1 END,o.rowid LIMIT ?`).all(now, new Date(now).toISOString(), after, limit) as Array<DbOperation & { recovery_rowid: number }>;
+        ORDER BY CASE WHEN o.rowid>? THEN 0 ELSE 1 END,o.rowid LIMIT ?`).all(now, now, new Date(now).toISOString(), after, limit) as Array<DbOperation & { recovery_rowid: number }>;
       const admissions = operations.map(op => {
         const audit = this.getOrigin(op.origin_id);
         if (!audit) return fail('recovery-origin-missing');
@@ -705,7 +739,8 @@ export class OriginStoreBackend {
     const children = op ? this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[] : [];
     const attempts = op ? this.db.prepare('SELECT a.* FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id WHERE c.operation_id=? ORDER BY a.created_at,a.attempt_id').all(op.operation_id) as DbAttempt[] : [];
     const verification = this.db.prepare('SELECT evidence_json FROM telegram_origin_verifications WHERE origin_id=?').get(originId) as { evidence_json: string } | undefined;
-    return { sequence: row.sequence, record: storedRecord, ...(verification ? { acceptanceVerification: JSON.parse(verification.evidence_json) } : {}), ...(diagnostic ? { diagnostic: {
+    const recovery = op ? this.db.prepare('SELECT attempts,next_attempt_at nextAttemptAt FROM telegram_origin_recovery_schedule WHERE operation_id=?').get(op.operation_id) as OriginAuditRecord['recovery'] : undefined;
+    return { sequence: row.sequence, record: storedRecord, ...(recovery ? { recovery } : {}), ...(verification ? { acceptanceVerification: JSON.parse(verification.evidence_json) } : {}), ...(diagnostic ? { diagnostic: {
       ...diagnostic, state: diagnostic.state === 'pending' && diagnostic.createdAt + 30_000 < Date.now() ? 'unavailable' : diagnostic.state,
     } } : {}), operation: op ? { operationId: op.operation_id, preparedAt: op.prepared_at, deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, state: op.state } : null,
       children: children.map(child => ({ childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json, generation: child.generation, state: child.state, attempts: this.entry(child.delivery_id)?.attempts ?? 0 })),

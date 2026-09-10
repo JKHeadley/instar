@@ -139,6 +139,7 @@ export class OriginStore {
   recoverableAdmissions(input: { limit?: number; now?: number } = {}): Promise<OriginAdmission[]> { return this.call('recoverableAdmissions', input); }
   /** Advances a durable scan cursor; selection grants no execution claim. */
   takeRecoverableAdmissions(input: { limit?: number; now?: number } = {}): Promise<OriginAdmission[]> { return this.call('takeRecoverableAdmissions', input); }
+  reserveRecoveryAttempt(input: { operationId: string; now?: number }): Promise<boolean> { return this.call('reserveRecoveryAttempt', input); }
   isUnavailable(): boolean { return this.unavailable; }
   getChild(childId: string): Promise<StoredChild | null> { return this.call('getChild', childId); }
   getPayload(payloadId: string): Promise<Uint8Array> { return this.call('getPayload', payloadId); }

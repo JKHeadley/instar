@@ -126,6 +126,8 @@ export interface OriginAcceptanceVerification {
   keyStatusAtAcceptance: 'active';
 }
 export interface OriginAuditRecord {
+  /** Automatic recovery starts, separate from actual transport attempts. */
+  recovery?: { attempts: number; nextAttemptAt: number };
   acceptanceVerification?: OriginAcceptanceVerification;
   diagnostic?: { state: string; reason: string; createdAt: number; resolvedAt: number | null; diagnosis: string | null };
   sequence: number;

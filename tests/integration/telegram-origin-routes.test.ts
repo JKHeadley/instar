@@ -76,6 +76,45 @@ async function browserHarness(extra: Record<string, unknown> = {}) {
   return { ...h, invoke, executor, send };
 }
 describe('Telegram origin through the complete reply HTTP pipeline', () => {
+  it('paces repeated recovery reviews and exposes the durable delay through authenticated audit HTTP', async () => {
+    const review = vi.fn(async (_text: string) => ({ pass: true, latencyMs: 1 }));
+    const h = await appHarness({ messagingToneGate: { review } });
+    h.runtime.service.options.authorize = () => false;
+    const sent = await request(h.app).post('/telegram/reply/42')
+      .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
+      .send({ text: 'The client report is ready for your review.' });
+    expect(sent.status).toBe(409); expect(review).toHaveBeenCalledOnce();
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
+    expect(review).toHaveBeenCalledTimes(2);
+    for (let n = 0; n < 12; n++) expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(review).toHaveBeenCalledTimes(2); expect(h.network).not.toHaveBeenCalled();
+    const audit = await request(h.app).get('/telegram/origins').set('Authorization', 'Bearer agent-test')
+      .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
+    expect(audit.status).toBe(200);
+    expect(audit.body.records[0].recovery).toMatchObject({ attempts: 1 });
+    expect(audit.body.records[0].recovery.nextAttemptAt).toBeGreaterThan(Date.now() + 14 * 60_000);
+    expect(audit.body.records[0].attempts).toEqual([]);
+    // Advance only the real worker scheduler's explicit test clock. Network,
+    // policy, original custody and request bytes continue through production.
+    let due = audit.body.records[0].recovery.nextAttemptAt;
+    const take = h.runtime.store.takeRecoverableAdmissions.bind(h.runtime.store);
+    const reserve = h.runtime.store.reserveRecoveryAttempt.bind(h.runtime.store);
+    vi.spyOn(h.runtime.store, 'takeRecoverableAdmissions').mockImplementation(input => take({ ...input, now: due }));
+    vi.spyOn(h.runtime.store, 'reserveRecoveryAttempt').mockImplementation(input => reserve({ ...input, now: due }));
+    h.runtime.service.options.authorize = () => true;
+    review.mockImplementation(async () => ({ pass: false, advisory: true, rule: 'B21_USER_TASK_SUBSTITUTION',
+      issue: 'Current policy requires a revised response', suggestion: 'Revise', decisionRef: 'current-review', latencyMs: 1 }));
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
+    expect(review).toHaveBeenCalledTimes(3); expect(h.network).not.toHaveBeenCalled();
+    due += 15 * 60_000;
+    review.mockImplementation(async () => ({ pass: true, latencyMs: 1 }));
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 1 });
+    expect(review).toHaveBeenCalledTimes(4); expect(h.network).toHaveBeenCalledOnce();
+    const delivered = await h.runtime.store.getOperation(audit.body.records[0].operation.operationId);
+    expect(delivered?.operation?.state).toBe('accepted');
+    expect(delivered?.record.envelopeJson).toBe(audit.body.records[0].record.envelopeJson);
+  });
+
   it('records the fixed AutoUpdater notice through the authenticated apply route without accepting caller author claims', async () => {
     let updater: AutoUpdater;
     const proxy = { applyPendingUpdate: (options: never) => updater.applyPendingUpdate(options), getStatus: () => updater.getStatus() };

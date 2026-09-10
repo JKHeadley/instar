@@ -324,9 +324,10 @@ export class TelegramOriginRuntime {
             browser.executor.options.accountId === operation.record.destination.accountId &&
             browser.executor.options.transport === operation.record.destination.transport);
           if (candidates.length !== 1) continue; // Missing/ambiguous enrollment is a hold, never a profile guess.
-          processed++;
           try {
             if (!candidate.admitted) await this.service.admit(operation);
+            if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
+            processed++;
             await candidates[0].executor.execute(operation); recovered++;
           } catch (error) {
             console.warn('[telegram-origin] browser recovery retained operation', operation.record.operationId,
@@ -337,9 +338,14 @@ export class TelegramOriginRuntime {
         const owners = [this.options.bot, ...(this.options.additionalBots ?? [])].filter(bot =>
           bot.token && bot.accountId === operation.record.destination.accountId);
         if (owners.length !== 1) continue;
-        processed++;
         try {
         if (!candidate.admitted) await this.service.admit(operation);
+        // Pre-claim holds used to re-run paid review on every recovery tick.
+        // Reserve in the same durable owner before entering either review or
+        // transport. Memory-held candidates pass this gate too; a missing or
+        // timed-out reservation leaves the payload queued and spends no review.
+        if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
+        processed++;
         const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
         await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
