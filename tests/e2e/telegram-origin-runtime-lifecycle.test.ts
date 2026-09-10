@@ -71,10 +71,18 @@ describe('Telegram origin initialization and outage lifecycle', () => {
     const h = await boot();
     h.network.mockRejectedValue(new Error('response connection lost after dispatch'));
     const stateDir = h.runtime.options.storage.stateDir;
+    const sendFailures: unknown[] = [];
     const create = () => {
       const batcher = new NotificationBatcher();
       batcher.configureBounds({ stateDir });
-      batcher.setSendFunction(async () => { await h.send(); return { messageId: 0 }; });
+      batcher.setSendFunction(async () => {
+        try { await h.send(); return { messageId: 0 }; }
+        catch (error) {
+          sendFailures.push(error instanceof Error ? { name: error.name, message: error.message,
+            ...error } : error);
+          throw error;
+        }
+      });
       batcher.setOriginDeliveryResolver(id => originDeliveryConfirmed(h.runtime.store, id));
       return batcher;
     };
@@ -84,7 +92,7 @@ describe('Telegram origin initialization and outage lifecycle', () => {
     batcher = create();
     expect(await batcher.flush('SUMMARY')).toBe(0);
     expect(await batcher.flush('SUMMARY')).toBe(0);
-    expect(h.network).toHaveBeenCalledOnce();
+    expect(h.network, JSON.stringify(sendFailures)).toHaveBeenCalledOnce();
     const page = await h.runtime.store.listOrigins({ topicId: '42' });
     expect(page.records).toHaveLength(1);
     expect(page.records[0].operation?.state).toBe('outcome-unknown');

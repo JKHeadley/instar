@@ -325,3 +325,12 @@ unchanged. All45 cases across them and the corrected deadline unit file passed
 locally. That does not count as a clean CI run or a correction of the independent
 contention mechanisms; the next candidate still requires clean full validation
 and CI. No attempt-limit, capacity TTL, lock bound or failed assertion was relaxed.
+
+
+### CI hold diagnostics after complete candidate validation
+
+Candidate704b3e65b passed complete local test:all with the same aggregate, integration and E2E counts above; all5375 fingerprints matched. CI34489858714 passed all eight unit shards and Build, then failed one integration and one E2E case. The deterministic-notice HTTP case returned409; the ambiguous batcher-send lifecycle observed zero native calls. Neither assertion retained the underlying reason. The exact HTTP case and all26 HTTP cases passed unchanged locally. This is nonreproduction, not proof of grant expiry or a repaired flake.
+
+The bounded diagnostic change adds the HTTP response body to its existing200 assertion and captures/rethrows the same fixture send error for the existing exactlyone native-call assertion. No timing, grant, recovery bound, send authority or production code changes. Per docs/signal-vs-authority.md, this only surfaces test evidence and has no blocking authority. No over-block, under-block, or new decision interaction is introduced; the existing assertions stay strict. It is test-local on each machine, with no external or migration surface. Rollback removes diagnostic messages. Full candidate validation and clean CI remain required. The original exhausted build ledger remains escalated and unchanged.
+
+Both diagnostic files passed all52 tests in77.19s (`echo-deadline-ci-hold-diagnostics-targeted.log`). This targeted pass does not replace new full or CI validation.

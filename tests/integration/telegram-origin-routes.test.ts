@@ -457,7 +457,7 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     const token = h.runtime.service.issueAutomationReply('fixed-notice', 77, body, deterministicAutomationAuthor());
     const response = await request(h.app).post('/telegram/reply/77').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-Origin-Automation', token).send(body);
-    expect(response.status).toBe(200);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
     const page = await h.runtime.store.listOrigins();
     expect(JSON.parse(page.records[0].record.envelopeJson).model).toMatchObject({ status: 'not-applicable', reason: 'deterministic-automation' });
   });
