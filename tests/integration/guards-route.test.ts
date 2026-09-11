@@ -325,7 +325,9 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
   };
 
   it('stamps RECEIVER-side receipt time, persists durably, and reloads across a restart', () => {
-    let now = 1_781_300_000_000;
+    // Match the durable store's real clock; a fixed sample eventually expires
+    // under its 90-day retention policy and stops testing restart persistence.
+    let now = Date.now();
     const store = new GuardPostureStore(stateDir);
     const pool = new MachinePoolRegistry({
       listMachines: () => [{ machineId: 'm-peer', nickname: 'mini' }],
@@ -363,7 +365,7 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
   });
 
   it('persists a changed uninspectable key list even when every existing posture count stays equal', () => {
-    let now = 1_781_300_000_000;
+    let now = Date.now();
     const store = new GuardPostureStore(stateDir);
     const pool = new MachinePoolRegistry({
       listMachines: () => [{ machineId: 'm-peer', nickname: 'mini' }],
@@ -394,7 +396,7 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
   });
 
   it('a posture-less beat carries the previous block forward WITHOUT refreshing its age', () => {
-    let now = 1_781_300_000_000;
+    let now = Date.now();
     const pool = new MachinePoolRegistry({
       listMachines: () => [{ machineId: 'm-peer' }],
       clockSkewToleranceMs: 300_000,

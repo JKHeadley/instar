@@ -45,8 +45,13 @@ describe('Telegram origin production bootstrap', () => {
     };
     let boot = await start();
     const token = await lifecycle!.issue({ sessionId: 'queued-deadline-session', harnessId: 'codex-cli', projectDir: root, configuredModel: 'selected-model' });
-    const operation = await boot.runtime.service.runWithSessionToken(token, () => boot.runtime.service.prepareBot({
-      method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'The report prepared before restart.' } }));
+    const operation = await boot.runtime.service.runWithSessionToken(token, async () => {
+      // Session observation is asynchronous; observe display readiness after it,
+      // immediately before the first preparation (never retry the send).
+      await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
+      return boot.runtime.service.prepareBot({ method: 'sendMessage', accountId: '123',
+        params: { chat_id: '-100123', message_thread_id: 42, text: 'The report prepared before restart.' } });
+    });
     await boot.runtime.service.admit(operation);
     await boot.close(); boot = await start();
     const deadline = new AbortController();
@@ -101,8 +106,11 @@ describe('Telegram origin production bootstrap', () => {
     };
     let boot = await start();
     const token = await lifecycle!.issue({ sessionId: 'queued-session', harnessId: 'codex-cli', projectDir: root, configuredModel: 'selected-model' });
-    const operation = await boot.runtime.service.runWithSessionToken(token, () => boot.runtime.service.prepareBot({
-      method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'Here is the requested client report.' } }));
+    const operation = await boot.runtime.service.runWithSessionToken(token, async () => {
+      await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
+      return boot.runtime.service.prepareBot({ method: 'sendMessage', accountId: '123',
+        params: { chat_id: '-100123', message_thread_id: 42, text: 'Here is the requested client report.' } });
+    });
     await boot.runtime.service.admit(operation);
     expect(await boot.runtime.recoverHeld()).toEqual({ processed: 1, recovered: 0 });
     expect(review).toHaveBeenCalledOnce();

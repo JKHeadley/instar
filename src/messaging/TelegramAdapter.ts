@@ -1,4 +1,5 @@
 import { TelegramOriginHoldError } from './telegram-origin/types.js';
+import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
  *
@@ -2020,14 +2021,18 @@ export class TelegramAdapter implements MessagingAdapter {
         console.log(`[telegram] Edited dashboard message ${existingMessageId} in-place`);
         return { edited: true, messageId: existingMessageId, warnings }; // Success — no new message, no unread badge
       } catch (err) {
-        // Edit failed — message was deleted, or content unchanged. Fall through to send new.
-        const errStr = String(err);
-        if (errStr.includes('message is not modified')) {
+        const rejection = takeTelegramEditRejection(err, { method: 'editMessageText',
+          accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '',
+          params: { chat_id: this.config.chatId, message_id: existingMessageId } });
+        if (rejection === 'not-modified') {
           console.log(`[telegram] Dashboard message unchanged — skipping`);
           return { edited: true, messageId: existingMessageId, warnings };
         }
-        console.log(`[telegram] Dashboard message ${existingMessageId} edit failed, sending new: ${errStr}`);
-        warnings.push(`existing pinned message edit failed: ${errStr}`);
+        // A hold or uncertain edit cannot authorize another operation. Retain
+        // the original error and saved ID; only concrete deletion permits send.
+        if (rejection !== 'message-missing') throw err;
+        console.log(`[telegram] Dashboard message ${existingMessageId} no longer exists; replacing it`);
+        warnings.push('existing pinned message no longer exists');
       }
     }
 
@@ -2063,7 +2068,7 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.error(`[telegram] Failed to broadcast dashboard URL: ${detail}`);
-      throw new Error(`Telegram dashboard broadcast failed: ${detail}`);
+      throw err;
     }
   }
 
@@ -5838,6 +5843,7 @@ export class TelegramAdapter implements MessagingAdapter {
           await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
           return this.apiCall(method, params, retryCount + 1);
         } catch (retryErr) {
+          if (retryErr instanceof TelegramOriginHoldError) throw retryErr;
           if (retryErr instanceof Error && retryErr.message.includes('after')) throw retryErr;
           throw new Error(`Telegram API rate limited ${safeUrl} (429)`);
         }
@@ -5866,7 +5872,13 @@ export class TelegramAdapter implements MessagingAdapter {
         delete retryParams.parse_mode;
         return this.apiCall(method, retryParams, retryCount);
       }
-      throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${text}`);
+      const error = new Error(`Telegram API error ${safeUrl} (${response.status}): ${text}`);
+      let body: unknown;
+      try { body = JSON.parse(text); }
+      catch { throw error; } // Malformed platform responses grant no replacement evidence.
+      throw recordTelegramEditRejection(error, response.status, body, {
+        method, accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '', params: sendParams.outgoingParams,
+      });
     }
 
     const data = await response.json() as { ok: boolean; result: unknown };

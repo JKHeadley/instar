@@ -5,9 +5,11 @@
  * and apiCall timeout configuration.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { createTempProject } from '../helpers/setup.js';
 
 describe('TelegramAdapter — API edge cases', () => {
   const sourcePath = path.join(process.cwd(), 'src/messaging/TelegramAdapter.ts');
@@ -23,14 +25,23 @@ describe('TelegramAdapter — API edge cases', () => {
       expect(source).toContain('safeUrl');
     });
 
-    it('uses safeUrl in HTTP error messages (not raw URL)', () => {
-      // HTTP error messages (status code errors) should use safeUrl
-      const httpErrorLines = source.split('\n').filter(line =>
-        line.includes('throw new Error') && line.includes('Telegram API error')
-      );
-      expect(httpErrorLines.length).toBeGreaterThan(0);
-      for (const line of httpErrorLines) {
-        expect(line).toContain('safeUrl');
+    it.each([403, 500])('redacts the request URL in HTTP %s errors with a non-JSON body', async status => {
+      const project = createTempProject();
+      const token = '123456:edge-redaction-fixture';
+      const adapter = new TelegramAdapter({ token, chatId: '-100123' }, project.stateDir);
+      const wire = vi.fn(async (_url: string) => new Response('Gateway refused the request', { status }));
+      vi.stubGlobal('fetch', wire);
+      try {
+        // Exercise the real API boundary, including its malformed-body branch.
+        const api = adapter as unknown as { apiCall(method: string, params: Record<string, unknown>): Promise<unknown> };
+        const request = api.apiCall('getMe', {});
+        await expect(request).rejects.toThrow(`Telegram API error https://api.telegram.org/bot[REDACTED]/getMe (${status}): Gateway refused the request`);
+        await expect(request).rejects.not.toThrow(token);
+        expect(wire).toHaveBeenCalledOnce();
+        expect(wire.mock.calls[0]?.[0]).toBe(`https://api.telegram.org/bot${token}/getMe`);
+      } finally {
+        try { await adapter.stop(); }
+        finally { vi.unstubAllGlobals(); project.cleanup(); }
       }
     });
   });

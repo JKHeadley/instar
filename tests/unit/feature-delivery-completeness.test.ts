@@ -247,6 +247,7 @@ describe('Feature Delivery Completeness', () => {
       ['Queued-message review pacing:', 'telegramOriginRecoveryAwareness'],
       ['Telegram send deadlines:', 'telegramOriginTransportAwareness'],
       ['Telegram capacity checks:', 'telegramOriginCapacityAwareness'],
+      ['Dashboard edit rejection:', 'telegramDashboardEditAwareness'],
     ];
     for (const [phrase, builder] of featureAddenda) {
       it(`origin addendum "${phrase}" reaches new and existing framework instructions`, () => {
