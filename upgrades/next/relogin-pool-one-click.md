@@ -1,3 +1,5 @@
+<!-- bump: minor -->
+
 # One-click sign-in repair from the fleet dashboard
 
 ## What Changed
