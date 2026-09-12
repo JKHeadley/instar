@@ -1324,7 +1324,12 @@ export interface RouteContext {
     accountId: string;
     targetMachineId: string;
     mechanism: string;
+    episodeId?: string;
+    inputDigest?: string;
+    repairAction?: string;
   } | null) | null;
+  /** Atomically tombstone a delivered mandate after its exact bounds have been checked. */
+  consumeDeliveredMandate?: ((mandateId: string) => boolean) | null;
   /** WS5.2 R4a — operator/issuer side: deliver an issued account-follow-me mandate to a REMOTE
    *  target machine over the signed mesh (the new verb). Resolves the target's mesh address +
    *  signs the envelope with THIS machine's Ed25519 identity key. Returns the per-target outcome.
@@ -31028,8 +31033,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // Assisted subscription re-login: one verified approval, then the service
   // owns the bounded autonomous flow. The store exposes closed metadata only.
-  router.get('/subscription-relogin', (req, res) => {
-    if (!ctx.subscriptionRelogin) {
+  router.get('/subscription-relogin', async (req, res) => {
+    if (!ctx.subscriptionRelogin && req.query.scope !== 'pool') {
       res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
       return;
     }
@@ -31037,10 +31042,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const state = typeof req.query.state === 'string' ? req.query.state : undefined;
       const accountId = typeof req.query.accountId === 'string' ? req.query.accountId : undefined;
       const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
-      res.json({ enabled: true, episodes: ctx.subscriptionRelogin.store.list({
+      const localEpisodes = ctx.subscriptionRelogin?.store.list({
         state: state as import('../core/SubscriptionReloginStore.js').SubscriptionReloginState | undefined,
         accountId, limit,
-      }) });
+      }) ?? [];
+      if (req.query.scope !== 'pool') {
+        res.json({ enabled: true, episodes: localEpisodes });
+        return;
+      }
+      const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+      const selfMachineNickname = ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname;
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const unavailable: Array<{ machineId: string; reason: string }> = [];
+      const episodes = localEpisodes
+        .filter((episode) => {
+          if (episode.machineId === selfMachineId) return true;
+          failed.push({ machineId: selfMachineId, error: 'episode-machine-mismatch' });
+          return false;
+        })
+        .map((episode) => ({ ...episode, machineNickname: selfMachineNickname, remote: false }));
+      if (!ctx.subscriptionRelogin) unavailable.push({ machineId: selfMachineId, reason: 'feature-unavailable' });
+      const query = new URLSearchParams();
+      if (state) query.set('state', state);
+      if (accountId) query.set('accountId', accountId);
+      if (limit !== undefined) query.set('limit', String(limit));
+      const suffix = query.size > 0 ? `?${query.toString()}` : '';
+      await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async (peer) => {
+        try {
+          const response = await fetch(`${peer.url}/subscription-relogin${suffix}`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok) {
+            if (response.status === 503) {
+              unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
+              return;
+            }
+            failed.push({ machineId: peer.machineId, error: response.status === 401 || response.status === 403 ? 'unauthorized' : 'error' });
+            return;
+          }
+          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>> };
+          if (body.enabled === false) {
+            unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
+            return;
+          }
+          const nickname = ctx.machinePoolRegistry?.getCapacity(peer.machineId)?.nickname;
+          for (const episode of body.episodes ?? []) {
+            episodes.push({ ...episode, machineId: peer.machineId, machineNickname: nickname, remote: true } as typeof episodes[number]);
+          }
+        } catch (error) {
+          const name = error instanceof Error ? error.name : '';
+          failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+        }
+      }));
+      res.json({ enabled: true, episodes, scope: 'pool', pool: { failed, unavailable } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
     }
@@ -31086,6 +31141,159 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const status = message === 'relogin-episode-not-found' ? 404
         : /mismatch|approvable|conflict|closed|expired/.test(message) ? 409 : 500;
       res.status(status).json({ error: message });
+    }
+  });
+
+  // Target-local point of use for a one-click account×machine repair. The
+  // fronting dashboard has already verified recent operator presence and issued
+  // the same exact-bounds re-mint mandate used by Account Follow-Me. This route
+  // independently re-verifies that mandate for this account and this machine.
+  router.post('/subscription-relogin/:episodeId/approve-with-mandate', async (req, res) => {
+    if (!ctx.subscriptionRelogin || !ctx.coordination?.gate) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login or mandate gate is not configured' });
+      return;
+    }
+    const mandateId = typeof req.body?.mandateId === 'string' ? req.body.mandateId : '';
+    const accountId = typeof req.body?.accountId === 'string' ? req.body.accountId : '';
+    const repairAction = typeof req.body?.action === 'string' ? req.body.action : 'approve';
+    const targetMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    if (!mandateId || !accountId || !['approve', 'retry', 'cancel'].includes(repairAction)) {
+      res.status(400).json({ error: 'mandateId, accountId, and a valid action are required' });
+      return;
+    }
+    const episode = ctx.subscriptionRelogin.store.get(req.params.episodeId);
+    if (!episode) { res.status(404).json({ error: 're-login episode not found' }); return; }
+    if (episode.accountId !== accountId || episode.machineId !== targetMachineId) {
+      res.status(409).json({ error: 're-login episode does not match the authorized account and machine' });
+      return;
+    }
+    const actionAllowed = repairAction === 'approve' ? episode.state === 'suggested'
+      : repairAction === 'retry' ? episode.state === 'failed'
+        : !['succeeded', 'refused', 'cancelled'].includes(episode.state);
+    if (!actionAllowed) {
+      res.status(409).json({ error: 're-login episode is not eligible for this action' });
+      return;
+    }
+    const verdict = ctx.coordination.gate.evaluate({
+      action: 'account-follow-me',
+      params: { accountId, targetMachineId, mechanism: 're-mint', episodeId: episode.id,
+        inputDigest: episode.inputDigest, repairAction },
+      agentFp: resolveAgentFingerprint(ctx), mandateId,
+    });
+    if (verdict.decision !== 'allow') {
+      const delivered = ctx.verifyDeliveredMandate?.(mandateId);
+      if (!delivered || delivered.accountId !== accountId || delivered.targetMachineId !== targetMachineId ||
+          delivered.mechanism !== 're-mint' || delivered.episodeId !== episode.id ||
+          delivered.inputDigest !== episode.inputDigest || delivered.repairAction !== repairAction) {
+        res.status(403).json({ error: 'subscription re-login not authorized', reason: verdict.reason });
+        return;
+      }
+      if (!ctx.consumeDeliveredMandate?.(mandateId)) {
+        res.status(403).json({ error: 'subscription re-login authorization was already consumed' });
+        return;
+      }
+    } else {
+      const consumed = ctx.coordination.store.revoke(mandateId, 'consumed by subscription re-login');
+      if (!consumed?.revoked) {
+        res.status(403).json({ error: 'subscription re-login authorization could not be consumed' });
+        return;
+      }
+    }
+    try {
+      const result = repairAction === 'approve' ? await ctx.subscriptionRelogin.approve(episode.id)
+        : repairAction === 'retry' ? await ctx.subscriptionRelogin.retry?.(episode.id)
+          : await ctx.subscriptionRelogin.cancel(episode.id);
+      if (!result) throw new Error('re-login action is not configured');
+      res.status(repairAction === 'cancel' ? 200 : 202).json({ enabled: true, accepted: true, episode: result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 're-login approval failed';
+      res.status(/mismatch|approvable|conflict|closed|expired/.test(message) ? 409 : 500).json({ error: message });
+    }
+  });
+
+  // Fronting one-click route: recent dashboard unlock → exact account/machine
+  // mandate → signed mesh delivery → target-local point-of-use verification.
+  router.post('/subscription-relogin/repair-cell', async (req, res) => {
+    if (!ctx.coordination) {
+      res.status(503).json({ error: 'repair coordination is not configured' });
+      return;
+    }
+    if (!requireReloginOperatorPin(req, res)) return;
+    const accountId = typeof req.body?.accountId === 'string' ? req.body.accountId.trim() : '';
+    const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId.trim() : '';
+    const episodeId = typeof req.body?.episodeId === 'string' ? req.body.episodeId.trim() : '';
+    const repairAction = typeof req.body?.action === 'string' ? req.body.action : 'approve';
+    if (!accountId || !machineId || !episodeId || !['approve', 'retry', 'cancel'].includes(repairAction)) {
+      res.status(400).json({ error: 'accountId, machineId, episodeId, and a valid action are required' });
+      return;
+    }
+    const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    const isSelf = machineId === selfMachineId;
+    const peer = isSelf ? null : (ctx.resolvePeerUrls?.() ?? []).find((candidate) => candidate.machineId === machineId);
+    if (!isSelf && !peer) {
+      res.status(502).json({ error: 'target machine is not reachable right now', retryable: true });
+      return;
+    }
+    const base = isSelf ? `http://${ctx.config.host || '127.0.0.1'}:${ctx.config.port}` : peer!.url;
+    let targetEpisode: { id: string; accountId: string; machineId: string; state: string; inputDigest: string } | null = null;
+    if (isSelf) {
+      targetEpisode = ctx.subscriptionRelogin?.store.get(episodeId) ?? null;
+    } else {
+      try {
+        const response = await fetch(`${base}/subscription-relogin/${encodeURIComponent(episodeId)}/events`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5_000),
+        });
+        if (response.ok) targetEpisode = ((await response.json()) as { episode?: typeof targetEpisode }).episode ?? null;
+      } catch { /* typed unreachable response below */ }
+    }
+    if (!targetEpisode) {
+      res.status(isSelf && !ctx.subscriptionRelogin ? 503 : 404).json({ error: 'target repair episode is unavailable' });
+      return;
+    }
+    const targetActionAllowed = repairAction === 'approve' ? targetEpisode.state === 'suggested'
+      : repairAction === 'retry' ? targetEpisode.state === 'failed'
+        : !['succeeded', 'refused', 'cancelled'].includes(targetEpisode.state);
+    if (targetEpisode.accountId !== accountId || targetEpisode.machineId !== machineId || !targetActionAllowed) {
+      res.status(409).json({ error: 'target repair episode does not match this one-click approval' });
+      return;
+    }
+    let mandateId: string;
+    try {
+      const mandate = ctx.coordination.store.issue({
+        scope: 'subscription-relogin',
+        agents: [resolveAgentFingerprint(ctx), resolveAgentFingerprint(ctx)],
+        authorities: [{ action: 'account-follow-me', bounds: {
+          accountId, targetMachineId: machineId, mechanism: 're-mint', episodeId,
+          inputDigest: targetEpisode.inputDigest, repairAction,
+        } }],
+        author: 'justin', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+      });
+      mandateId = mandate.id;
+      if (!isSelf) {
+        if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
+          res.status(503).json({ error: 'cross-machine authorization delivery unavailable' });
+          return;
+        }
+        const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable: ctx.packageMandateForDelivery(mandate) });
+        if (!outcome.ok) {
+          res.status(502).json({ error: 'could not deliver repair authorization to the target machine', retryable: true });
+          return;
+        }
+      }
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'repair authorization failed' });
+      return;
+    }
+    try {
+      const response = await fetch(`${base}/subscription-relogin/${encodeURIComponent(episodeId)}/approve-with-mandate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mandateId, accountId, action: repairAction }), signal: AbortSignal.timeout(15_000),
+      });
+      const body = await response.json().catch(() => ({}));
+      res.status(response.status).json(body);
+    } catch {
+      res.status(502).json({ error: 'could not reach the machine doing the repair', retryable: true });
     }
   });
 
@@ -31672,6 +31880,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { mandateId, accountId } = b as { mandateId: string; accountId: string };
     const targetMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
 
+    // Authority separation: assisted-relogin mandates intentionally reuse the
+    // signed delivery transport, but they MUST NOT authorize generic enrollment.
+    // Reject any local mandate carrying the repair-only binding fields before
+    // consulting the generic gate (which evaluates only the generic subset).
+    const localMandate = ctx.coordination.store?.get?.(mandateId);
+    const localAuthority = localMandate?.authorities?.find((authority) => authority.action === 'account-follow-me');
+    const localBounds = (localAuthority?.bounds ?? {}) as Record<string, unknown>;
+    if (localBounds.episodeId !== undefined || localBounds.inputDigest !== undefined || localBounds.repairAction !== undefined) {
+      res.status(403).json({ error: 'repair-only mandate cannot authorize account enrollment' });
+      return;
+    }
+
     // THE AUTHORIZATION (deny-by-default): consult the operator mandate for THIS exact
     // (account, this machine, mechanism). A non-allow verdict STOPS — UNLESS a cross-machine
     // DELIVERED mandate authorizes it (the one-dashboard path, R4a). Never work around a deny.
@@ -31693,7 +31913,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         !!deliveredBounds &&
         deliveredBounds.accountId === accountId &&
         deliveredBounds.targetMachineId === targetMachineId &&
-        deliveredBounds.mechanism === 're-mint';
+        deliveredBounds.mechanism === 're-mint' &&
+        deliveredBounds.episodeId === undefined &&
+        deliveredBounds.inputDigest === undefined &&
+        deliveredBounds.repairAction === undefined;
       if (!deliveredOk) {
         res.status(403).json({ error: 'account follow-me not authorized', reason: verdict.reason });
         return;

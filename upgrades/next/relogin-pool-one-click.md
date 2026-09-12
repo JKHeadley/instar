@@ -1,0 +1,26 @@
+<!-- bump: minor -->
+
+# One-click sign-in repair from the fleet dashboard
+
+## What Changed
+
+- The Subscriptions grid now loads assisted re-login episodes from every reachable machine and binds each repair to the exact account×machine cell.
+- One **Repair sign-in** click after dashboard unlock issues a signed, exact-bounds re-mint mandate and starts the autonomous flow on the machine that owns the broken credential.
+- The target machine independently re-verifies the account, machine, episode, and mandate before acting. Ordinary API access remains insufficient.
+
+## What to Tell Your User
+
+When a Claude account needs authentication on a machine, unlock the dashboard and click **Repair sign-in** on that exact grid cell. Instar handles the routine login autonomously on the target machine. It asks for help only when the provider presents a genuine security challenge it is not allowed to bypass.
+
+## Summary of New Capabilities
+
+- Central, phone-friendly one-click repair across the machine fleet.
+- Machine-tagged repair progress and typed peer failures in one dashboard.
+- Signed cross-machine authorization with target-local point-of-use verification.
+- Single-use, 15-minute repair permissions with durable replay refusal.
+
+## Evidence
+
+- Focused dashboard, route, rendering, authority, and write-domain tests cover the one-click request, exact binding, remote episode aggregation, and deny/allow boundaries.
+- Target-side tests cover expiry, first-use consumption, replay refusal, and redelivery tombstones.
+- TypeScript build passes; full repository and remote CI remain release gates.

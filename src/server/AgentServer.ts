@@ -4392,8 +4392,14 @@ export class AgentServer {
               expectedOperatorMachineFingerprint: record.deliveredBy,
             });
             if (!accept.accepted) return null;
-            return readFollowMeBounds(accept.mandate);
+            if (accept.mandate.revoked || Date.now() > Date.parse(accept.mandate.expiresAt)) return null;
+            const bounds = readFollowMeBounds(accept.mandate);
+            if (!bounds) return null;
+            return bounds;
           }
+        : null,
+      consumeDeliveredMandate: this.deliveredMandateStore
+        ? (mandateId: string) => !!this.deliveredMandateStore!.consume(mandateId)
         : null,
       authorizationRequests: this.authorizationRequests,
       cutoverReadiness: this.cutoverReadiness,
@@ -6687,9 +6693,12 @@ export class AgentServer {
         .multiMachine?.accountFollowMe?.enabled,
       this.config,
     );
+    const reloginEnabled = this.config.subscriptionPool?.assistedRelogin?.enabled === true
+      && this.config.subscriptionPool.assistedRelogin.dryRun !== true;
     const result = acceptMandateDelivery(
       {
         enabled: () => enabled,
+        reloginEnabled: () => reloginEnabled,
         selfMachineId: () => this.meshSelfId ?? (this.config as { machineId?: string }).machineId ?? 'local',
         operatorMachinePublicKey: () => operatorPublicKeyPem,
         store: this.deliveredMandateStore,

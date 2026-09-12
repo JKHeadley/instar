@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { generateKeyPairSync } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
@@ -14,6 +16,16 @@ import type { InstarConfig } from '../../src/core/types.js';
 
 const roots: string[] = [];
 const servers: AgentServer[] = [];
+const appListeners: Array<() => Promise<void>> = [];
+
+async function listenAgent(server: AgentServer): Promise<string> {
+  return new Promise((resolve) => {
+    const listener = server.getApp().listen(0, () => {
+      appListeners.push(() => new Promise<void>((done) => listener.close(() => done())));
+      resolve(`http://127.0.0.1:${(listener.address() as AddressInfo).port}`);
+    });
+  });
+}
 
 function config(root: string): InstarConfig {
   const stateDir = path.join(root, '.instar');
@@ -39,6 +51,7 @@ function makeServer(cfg: InstarConfig, runtime?: any): AgentServer {
 }
 
 afterEach(async () => {
+  for (const close of appListeners.splice(0)) await close();
   for (const server of servers.splice(0)) await server.stop();
   for (const root of roots.splice(0)) {
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'subscription-relogin-lifecycle cleanup' });
@@ -96,6 +109,83 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
 
     await server.stop(); servers.splice(servers.indexOf(server), 1);
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('drives one unlocked-dashboard click through two real AgentServer compositions to the target episode', async () => {
+    const frontRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-front-e2e-')); roots.push(frontRoot);
+    const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-target-e2e-')); roots.push(targetRoot);
+    const frontCfg = config(frontRoot) as any;
+    const targetCfg = config(targetRoot) as any;
+    frontCfg.developmentAgent = true;
+    targetCfg.developmentAgent = true;
+    frontCfg.multiMachine = { accountFollowMe: { enabled: true } };
+    targetCfg.multiMachine = { accountFollowMe: { enabled: true } };
+    frontCfg.subscriptionPool = { assistedRelogin: { enabled: true, dryRun: false, mode: 'approval' } };
+    targetCfg.subscriptionPool = { assistedRelogin: { enabled: true, dryRun: false, mode: 'approval' } };
+    const targetStore = new SubscriptionReloginStore({ stateDir: targetCfg.stateDir, idFactory: () => 'repair-peer-e2e' });
+    const peerSuggested = targetStore.suggest({ sourceEpisodeId: 84, accountId: 'acct-peer', machineId: 'machine-target', mode: 'approval',
+      inputDigest: `sha256:${'d'.repeat(64)}`, profileId: 'profile-peer', framework: 'claude-code', provider: 'anthropic' });
+    const peerApproved = targetStore.approve(peerSuggested.id, { inputDigest: peerSuggested.inputDigest });
+    const peerStarting = targetStore.transition(peerSuggested.id, { expectedVersion: peerApproved.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    targetStore.transition(peerSuggested.id, { expectedVersion: peerStarting.version, to: 'failed',
+      eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+    const targetRetry = vi.fn(async (id: string) => targetStore.retryFailed(id, { inputDigest: targetStore.get(id)!.inputDigest }));
+    const target = new AgentServer({
+      config: targetCfg, meshSelfId: 'machine-target',
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, on: vi.fn() } as never,
+      state: new StateManager(targetCfg.stateDir),
+      subscriptionRelogin: { store: targetStore,
+        approve: async (id: string) => targetStore.approve(id, { inputDigest: targetStore.get(id)!.inputDigest }),
+        retry: targetRetry, cancel: async (id: string) => targetStore.cancel(id), close: () => targetStore.close() },
+    });
+    servers.push(target);
+    const targetUrl = await listenAgent(target);
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    let deliveredMandateId = '';
+    const front = new AgentServer({
+      config: frontCfg, meshSelfId: 'machine-front', localSigningKeyPem: privatePem,
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, on: vi.fn() } as never,
+      state: new StateManager(frontCfg.stateDir),
+      resolvePeerUrls: () => [{ machineId: 'machine-target', url: targetUrl }],
+      deliverMandateToMachine: async ({ portable }) => {
+        deliveredMandateId = portable.mandate.id;
+        const result = target.acceptDeliveredMandateCommand('machine-front', portable, publicPem);
+        return { ok: result.accepted, status: result.accepted ? 202 : 403, reason: result.reason };
+      },
+    });
+    servers.push(front);
+    const frontUrl = await listenAgent(front);
+
+    const pool = await fetch(`${frontUrl}/subscription-relogin?scope=pool`, {
+      headers: { Authorization: 'Bearer relogin-api-token' },
+    }).then((response) => response.json() as Promise<any>);
+    expect(pool.episodes).toContainEqual(expect.objectContaining({ id: 'repair-peer-e2e', machineId: 'machine-target', remote: true }));
+    const unlock = await fetch(`${frontUrl}/dashboard/unlock`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: '123456' }),
+    }).then((response) => response.json() as Promise<any>);
+    const started = await fetch(`${frontUrl}/subscription-relogin/repair-cell`, {
+      method: 'POST', headers: { Authorization: 'Bearer relogin-api-token', 'Content-Type': 'application/json',
+        'X-Instar-Operator-Session': unlock.operatorSessionToken },
+      body: JSON.stringify({ accountId: 'acct-peer', machineId: 'machine-target', episodeId: 'repair-peer-e2e', action: 'retry' }),
+    });
+    expect(started.status).toBe(202);
+    expect(targetStore.get('repair-peer-e2e')?.state).toBe('approved');
+    expect(targetRetry).toHaveBeenCalledOnce();
+
+    const approvedEpisode = targetStore.get('repair-peer-e2e')!;
+    const starting = targetStore.transition('repair-peer-e2e', { expectedVersion: approvedEpisode.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    targetStore.transition('repair-peer-e2e', { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+    const replay = await fetch(`${targetUrl}/subscription-relogin/repair-peer-e2e/approve-with-mandate`, {
+      method: 'POST', headers: { Authorization: 'Bearer relogin-api-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mandateId: deliveredMandateId, accountId: 'acct-peer', action: 'retry' }),
+    });
+    expect(replay.status).toBe(403);
+    expect(targetRetry).toHaveBeenCalledOnce();
   });
 
   it('exercises the same pre-listen late-binding seam used by production and refuses post-listen replacement', async () => {

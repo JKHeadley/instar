@@ -102,6 +102,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: 0.21.5
+        version: 0.21.5
       husky:
         specifier: ^9.1.7
         version: 9.1.7

@@ -33,6 +33,9 @@ export type MandateDeliveryResult =
 export interface AccountFollowMeMandateDeliveryDeps {
   /** Is account follow-me enabled (resolved dev-gate) on THIS machine? Dark ⇒ refuse everything. */
   enabled: () => boolean;
+  /** Assisted re-login may accept only episode-bound re-mint mandates even when
+   *  generic Account Follow-Me is dark. */
+  reloginEnabled?: () => boolean;
   /** This machine's id — the delivered mandate's targetMachineId MUST equal it (exact-bounds, R1). */
   selfMachineId: () => string;
   /**
@@ -53,7 +56,7 @@ export interface AccountFollowMeMandateDeliveryDeps {
  */
 export function readFollowMeBounds(
   mandate: PortableMandate['mandate'],
-): { accountId: string; targetMachineId: string; mechanism: string } | null {
+): { accountId: string; targetMachineId: string; mechanism: string; episodeId?: string; inputDigest?: string; repairAction?: string } | null {
   const authority = (mandate.authorities ?? []).find((a) => a.action === 'account-follow-me');
   if (!authority) return null;
   const b = (authority.bounds ?? {}) as Record<string, unknown>;
@@ -61,7 +64,11 @@ export function readFollowMeBounds(
   const targetMachineId = typeof b.targetMachineId === 'string' ? b.targetMachineId : '';
   const mechanism = typeof b.mechanism === 'string' ? b.mechanism : '';
   if (!accountId || !targetMachineId || !mechanism) return null;
-  return { accountId, targetMachineId, mechanism };
+  const episodeId = typeof b.episodeId === 'string' && b.episodeId ? b.episodeId : undefined;
+  const inputDigest = typeof b.inputDigest === 'string' && b.inputDigest ? b.inputDigest : undefined;
+  const repairAction = typeof b.repairAction === 'string' && b.repairAction ? b.repairAction : undefined;
+  return { accountId, targetMachineId, mechanism, ...(episodeId ? { episodeId } : {}),
+    ...(inputDigest ? { inputDigest } : {}), ...(repairAction ? { repairAction } : {}) };
 }
 
 /**
@@ -73,7 +80,7 @@ export function acceptMandateDelivery(
   sender: string,
   portable: PortableMandate | undefined | null,
 ): MandateDeliveryResult {
-  if (!deps.enabled()) return { accepted: false, reason: 'feature-disabled' };
+  if (!deps.enabled() && !deps.reloginEnabled?.()) return { accepted: false, reason: 'feature-disabled' };
   if (!portable || !portable.mandate || !portable.issuanceSignature) {
     return { accepted: false, reason: 'malformed-portable-mandate' };
   }
@@ -99,11 +106,20 @@ export function acceptMandateDelivery(
     deps.log?.(`[account-follow-me] mandate-deliver refused: ${accept.reason}`);
     return { accepted: false, reason: accept.reason };
   }
+  if (accept.mandate.revoked) return { accepted: false, reason: 'mandate-revoked' };
+  if (Date.now() > Date.parse(accept.mandate.expiresAt)) {
+    return { accepted: false, reason: 'mandate-expired' };
+  }
 
   // Exact-bounds (R1): the mandate MUST be a re-mint account-follow-me grant for THIS machine.
   // A foreign or mis-targeted mandate is refused — it can never be replayed for another machine.
   const bounds = readFollowMeBounds(accept.mandate);
   if (!bounds) return { accepted: false, reason: 'not-an-account-follow-me-mandate' };
+  const reloginBound = !!bounds.episodeId && !!bounds.inputDigest &&
+    ['approve', 'retry', 'cancel'].includes(bounds.repairAction ?? '');
+  if (reloginBound ? !deps.reloginEnabled?.() : !deps.enabled()) {
+    return { accepted: false, reason: 'feature-disabled' };
+  }
   if (bounds.targetMachineId !== deps.selfMachineId()) {
     deps.log?.(
       `[account-follow-me] mandate-deliver refused: target ${bounds.targetMachineId} !== this machine`,

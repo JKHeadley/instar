@@ -811,7 +811,7 @@ export function groupMatrixRowsByProvider(rows) {
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
  *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
-export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}) {
+export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = []) {
   if (!target) return;
   target.replaceChildren();
   const model = buildMatrixModel(poolScope, pendingScope, transient);
@@ -855,12 +855,38 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
     const tr = doc.createElement('tr');
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
+      const repair = Array.isArray(reloginEpisodes)
+        ? reloginEpisodes.find((episode) => episode && episode.accountId === c.accountId && episode.machineId === c.machineId)
+        : null;
+      const repairUnavailable = Array.isArray(reloginFailures)
+        && reloginFailures.some((failure) => failure && failure.machineId === c.machineId);
       // just-verified rides a transient highlight on an otherwise-active cell (D4 ceremony).
       const justVerified = c.state === 'just-verified' || (c.state === 'active' && c.detail && c.detail.state === 'just-verified');
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
       // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
       td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
-      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
+      if (repairUnavailable && ['needs-reauth', 'held', 'cant-resolve', 'expired', 'broken'].includes(c.state)) {
+        td.appendChild(el(doc, 'div', 'sub-account-repair-status', 'Repair status is unavailable for this machine.'));
+        td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'Wait for the machine connection to recover, then try again.'));
+      } else if (repair && ['suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving', 'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only', 'failed'].includes(repair.state)) {
+        const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
+          : repair.state === 'waiting-operator-only' ? 'Sign-in needs your help.'
+            : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
+              : 'Repairing sign-in…';
+        td.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+        const repairAction = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
+          : repair.state === 'failed' ? ['retry', 'Try repair again']
+            : ['cancel', 'Cancel repair'];
+        if (repairAction) {
+          const button = el(doc, 'button', `sub-matrix-repair sub-matrix-repair-${repairAction[0]}`, repairAction[1]);
+          button.setAttribute('data-matrix-relogin', '1');
+          button.setAttribute('data-repair-action', repairAction[0]);
+          button.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          button.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          button.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
+          td.appendChild(button);
+        }
+      } else if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
         // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →
         // "Sign in"; held/cant-resolve/expired/broken → "Retry". A needs-reauth account already
@@ -959,7 +985,9 @@ const URLS = {
   accountsPool: '/subscription-pool?scope=pool',
   startCell: '/subscription-pool/matrix/start-cell', // POST (PIN-gated) — start a cell's sign-in
   cancel: '/subscription-pool/follow-me/cancel', // POST (Bearer, no PIN) — cancel an in-flight cell (relay → self/peer)
-  relogin: '/subscription-relogin',
+  relogin: '/subscription-relogin?scope=pool',
+  reloginAction: '/subscription-relogin',
+  repairCell: '/subscription-relogin/repair-cell',
   provisionProfile: '/playwright-profiles/provision',
 };
 
@@ -1027,7 +1055,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
-    reloginWired: false, reloginEpisodes: [], profileProvisionWired: false,
+    reloginWired: false, reloginEpisodes: [], reloginFailures: [], profileProvisionWired: false,
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -1090,6 +1118,8 @@ export function createController(opts) {
     }
     state.offers = scanBody && Array.isArray(scanBody.offered) ? scanBody.offered : [];
     state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
+    state.reloginFailures = reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.failed)
+      ? reloginBody.pool.failed : [];
     if (els.profileProvision && !state.profileProvisionWired) {
       renderProfileProvisioner(doc, els.profileProvision);
       wireProfileProvisioner();
@@ -1242,14 +1272,18 @@ export function createController(opts) {
   function rerenderMatrixFromCache() {
     if (!els.matrix || !state.lastPoolBody) return;
     if (hasOpenInteraction(doc, els.matrix)) return;
-    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient);
+    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
   }
 
   function render(accountsBody, pendingBody, inUseBody, poolBody) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
-    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId, state.reloginEpisodes);
+    // The account-card pane is machine-local. Do not attach a remote machine's
+    // episode to a same-account local card; remote repairs belong to the exact
+    // account×machine matrix cell below.
+    const localReloginEpisodes = state.reloginEpisodes.filter((episode) => episode && episode.remote !== true);
+    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId, localReloginEpisodes);
     wireReloginActions();
     purgeTransients();
     // Episode reconciliation runs FIRST so a terminal transition it derives (expired /
@@ -1273,7 +1307,7 @@ export function createController(opts) {
     // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
     if (els.matrix) {
       if (!hasOpenInteraction(doc, els.matrix)) {
-        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient);
+        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
       } else {
         updateCountdowns(doc, els.matrix, now());
       }
@@ -1312,7 +1346,7 @@ export function createController(opts) {
 
   async function postReloginAction(episodeId, action, proof, button) {
     try {
-      const response = await fetchImpl(`${URLS.relogin}/${encodeURIComponent(episodeId)}/${action}`, {
+      const response = await fetchImpl(`${URLS.reloginAction}/${encodeURIComponent(episodeId)}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
         body: '{}',
@@ -1466,6 +1500,8 @@ export function createController(opts) {
     els.matrix.addEventListener('click', (ev) => {
       const t = ev.target;
       if (!t || typeof t.closest !== 'function') return;
+      const repairBtn = t.closest('[data-matrix-relogin]');
+      if (repairBtn && els.matrix.contains(repairBtn)) { onRepairTap(repairBtn); return; }
       const setupBtn = t.closest('[data-matrix-setup]');
       if (setupBtn && els.matrix.contains(setupBtn)) { onSetupTap(setupBtn); return; }
       const confirmBtn = t.closest('[data-matrix-confirm]');
@@ -1486,6 +1522,49 @@ export function createController(opts) {
     let s = cell.querySelector('.sub-matrix-status');
     if (!s) { s = el(doc, 'div', 'sub-matrix-status', ''); cell.appendChild(s); }
     s.textContent = text;
+  }
+
+  // One click after dashboard unlock authorizes exactly one account×machine
+  // repair. The short-lived operator proof stays on the fronting machine; the
+  // server converts it into an exact, signed mandate for the target machine.
+  function onRepairTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    const episodeId = btn.getAttribute('data-episode-id');
+    const action = btn.getAttribute('data-repair-action') || 'approve';
+    const proof = getOperatorSessionToken();
+    if (!accountId || !machineId || !episodeId) {
+      setCellStatus(cell, 'Couldn’t prepare this repair — refresh and try again.');
+      return;
+    }
+    if (!proof) {
+      setCellStatus(cell, 'Unlock the dashboard again, then tap Repair sign-in once.');
+      return;
+    }
+    btn.setAttribute('disabled', 'disabled');
+    setCellStatus(cell, 'Starting autonomous sign-in repair…');
+    void (async () => {
+      try {
+        const response = await fetchImpl(URLS.repairCell, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
+          body: JSON.stringify({ accountId, machineId, episodeId, action }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setCellStatus(cell, body.error || 'Couldn’t start the repair — try again.');
+          btn.removeAttribute('disabled');
+          return;
+        }
+        setCellStatus(cell, 'Repair started — Instar is handling the sign-in.');
+        await tick();
+      } catch {
+        setCellStatus(cell, 'Couldn’t reach the target machine — try again.');
+        btn.removeAttribute('disabled');
+      }
+    })();
   }
 
   // Expand the cell into a PIN input + Confirm (replacing the "Set up"/"Retry" button).

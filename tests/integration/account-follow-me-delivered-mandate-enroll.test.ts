@@ -41,7 +41,7 @@ const THIS_MACHINE = 'm_this_machine';
 function buildCtx(dir: string, opts: {
   decision: 'allow' | 'deny';
   /** What `verifyDeliveredMandate` returns for mandateId 'm-delivered' (null = none verified). */
-  deliveredBounds: { accountId: string; targetMachineId: string; mechanism: string } | null;
+  deliveredBounds: { accountId: string; targetMachineId: string; mechanism: string; episodeId?: string; inputDigest?: string; repairAction?: string } | null;
 }) {
   const pool = new SubscriptionPool({ stateDir: dir });
   pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
@@ -116,6 +116,19 @@ describe('enroll-start honors a delivered mandate (WS5.2 R4a one-dashboard)', ()
   it('(c2) gate DENY + delivered mandate targeting ANOTHER machine → 403 (cannot be replayed here)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-dm-'));
     const ctx = buildCtx(dir, { decision: 'deny', deliveredBounds: { accountId: 'a1', targetMachineId: 'm_some_other', mechanism: 're-mint' } });
+    const app = express(); app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+    const r = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm-delivered', accountId: 'a1' });
+    expect(r.status).toBe(403);
+  });
+
+  it('(c3) gate DENY + a valid repair-only delivered mandate → 403 (no cross-surface authority bleed)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-dm-'));
+    const ctx = buildCtx(dir, { decision: 'deny', deliveredBounds: {
+      accountId: 'a1', targetMachineId: THIS_MACHINE, mechanism: 're-mint',
+      episodeId: 'repair-1', inputDigest: `sha256:${'a'.repeat(64)}`, repairAction: 'approve',
+    } });
     const app = express(); app.use(express.json());
     app.use(createRoutes(ctx));
     server = await listen(app);
