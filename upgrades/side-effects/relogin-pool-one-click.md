@@ -43,7 +43,7 @@ No semantic judgment is added. Account id, machine id, episode id, signature val
 ## 5. Interactions
 
 - **Shadowing:** remote episodes are filtered out of machine-local account cards and rendered only on their exact matrix cells.
-- **Double-fire:** the durable episode state rejects an action once it is no longer valid; mandates are exact, action-bound, and expire after one hour.
+- **Double-fire:** the durable episode state rejects an action once it is no longer valid; mandates are exact, action-bound, single-use, and expire after 15 minutes.
 - **Races:** peer disappearance yields a typed retryable failure. Target state is re-read before approval.
 - **Feedback loops:** the route starts one existing bounded repair episode; it creates no new poller or retry loop.
 
