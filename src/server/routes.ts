@@ -31347,6 +31347,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   };
   const annotatePaneLiveness = <T extends { framework: string; configHome?: string }>(logins: T[]): Array<T & { paneAlive: boolean | null }> =>
     logins.map((l) => ({ ...l, paneAlive: enrollPaneAlive(l) }));
+  // The completion baseline is internal correlation state. Even though it is a
+  // keyed digest rather than a credential, it has no operator/UI purpose and
+  // must not cross the HTTP or peer boundary.
+  const publicPendingLogin = <T extends object>(login: T): Omit<T, 'authRevisionBaseline'> => {
+    const { authRevisionBaseline: _internal, ...visible } = login as T & { authRevisionBaseline?: unknown };
+    return visible as Omit<T, 'authRevisionBaseline'>;
+  };
 
   // D5 (topic 29836): a VALIDATED follow-me completion for an account id already in the pool
   // is a RE-AUTH (the operator's "Needs sign-in → Sign in" matrix path) — upsert it back to
@@ -31406,7 +31413,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/subscription-pool/pending-logins', async (req, res) => {
     // Every LOCAL login carries paneAlive (D5) — and the pool fan-out below inherits it from
     // each peer's own plain response, so the fronting dashboard sees liveness for every machine.
-    const localLogins = ctx.enrollmentWizard ? annotatePaneLiveness(ctx.enrollmentWizard.pending()) : [];
+    const localLogins = ctx.enrollmentWizard
+      ? annotatePaneLiveness(ctx.enrollmentWizard.pending()).map((login) => publicPendingLogin(login))
+      : [];
     // WS5.2 seam #3 — POOL-SCOPE merge: a follow-me login is created on the TARGET machine (e.g. the
     // Mac Mini), but the operator views their SINGLE (fronting) dashboard. Without this, the device-code
     // login link the operator must tap never surfaces — the proof stalls after Approve. ?scope=pool fans
@@ -31434,7 +31443,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const body = (await r.json()) as { logins?: Record<string, unknown>[] };
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const l of body.logins ?? []) {
-            remote.push({ ...l, machineId: l.machineId ?? p.machineId, machineNickname: l.machineNickname ?? nickname ?? undefined, remote: true });
+            const visible = publicPendingLogin(l);
+            remote.push({ ...visible, machineId: visible.machineId ?? p.machineId, machineNickname: visible.machineNickname ?? nickname ?? undefined, remote: true });
           }
         } catch (err) {
           // @silent-fallback-ok — a dark/slow peer degrades to a classified failed entry (never a 500);
@@ -31772,7 +31782,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       const login = await ctx.enrollmentWizard.start({ id, label, provider, framework, kind, configHome });
-      res.status(201).json({ enabled: true, login });
+      res.status(201).json({ enabled: true, login: publicPendingLogin(login) });
     } catch (err) {
       // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
       // No pending-login was issued (the store is written only after the drive
@@ -31939,7 +31949,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (enrollPaneAlive(inFlight) !== false) {
           // Alive or unverifiable → fail toward REUSE (never kill a possibly-healthy attempt).
           console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
-          res.status(201).json({ enabled: true, login: inFlight, reused: true });
+          res.status(201).json({ enabled: true, login: publicPendingLogin(inFlight), reused: true });
           return;
         }
         ctx.enrollmentWizard.abandon(inFlight.id);
@@ -31984,7 +31994,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         remote: true,
         remoteScrapeTimeoutMs,
       });
-      res.status(201).json({ enabled: true, login });
+      res.status(201).json({ enabled: true, login: publicPendingLogin(login) });
     } catch (err) {
       // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
       // The store is written ONLY after the drive succeeds, so a drive throw leaves NO
@@ -32117,7 +32127,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           res.status(409).json({
             code: 'login-expired-fresh-ready',
             error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
-            freshLogin,
+            freshLogin: publicPendingLogin(freshLogin),
           });
           return;
         } catch (err) {
@@ -32177,7 +32187,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const freshLogin = await ctx.enrollmentWizard.refresh(id);
       if (freshLogin) {
         res.status(409).json({ code: 'login-expired-fresh-ready',
-          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now', freshLogin });
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now', freshLogin: publicPendingLogin(freshLogin) });
       } else {
         res.status(410).json({ code: 'login-expired',
           error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
@@ -32522,7 +32532,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       const reissued = await ctx.enrollmentWizard.reissueExpired();
-      res.json({ enabled: true, reissued });
+      res.json({ enabled: true, reissued: reissued.map((login) => publicPendingLogin(login)) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'reissue sweep failed' });
     }
@@ -32558,7 +32568,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       await reverifyCompletedEnrollment(login);
-      res.json({ enabled: true, login });
+      res.json({ enabled: true, login: publicPendingLogin(login) });
     } finally {
       plainCompleteInFlight.delete(id);
     }
@@ -32592,7 +32602,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (result.outcome === 'held') {
         // Fail-closed: the account is NOT added to the pool; the gate already raised the
         // HIGH attention item for the operator.
-        res.json({ enabled: true, outcome: 'held', reason: result.reason, login: result.login });
+        res.json({ enabled: true, outcome: 'held', reason: result.reason, login: publicPendingLogin(result.login) });
         return;
       }
       // outcome === 'validated' — the email matched operator expectation; make it selectable.

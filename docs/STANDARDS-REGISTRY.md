@@ -1206,7 +1206,7 @@ here. Named rather than dropped, so the count reconciles for the next reader.
 forces a judgment-bound call to be logged with its context at the moment it is made — so the rating
 loop has no guaranteed input. The decision journal is the durable surface it writes to and it is
 queryable today; what is missing is the write at the chokepoint.
-**Sub-obligation countdown.** `2026-09-13` — tracked as `STD-SUBCOUNTDOWN-judgment-call-rating`.
+**Sub-obligation countdown.** `2026-09-21` — tracked as `STD-SUBCOUNTDOWN-judgment-call-rating`.
 
 ---
 
@@ -1253,7 +1253,7 @@ surfaces to hold it exist and are queryable — but nothing yet *forces* the wri
 residual is recognised, so an agent that escalates without journalling would breach this clause
 undetected. Recognising a residual is a judgment call, which is why this sits with the judgment-bound
 set rather than with the mechanised ones.
-**Sub-obligation countdown.** `2026-09-13` — tracked as `STD-SUBCOUNTDOWN-residual-collision-log`.
+**Sub-obligation countdown.** `2026-09-21` — tracked as `STD-SUBCOUNTDOWN-residual-collision-log`.
 
 ---
 

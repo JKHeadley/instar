@@ -12,7 +12,7 @@
  *     "not set up" copy, never a 503 / crash
  */
 // @ts-nocheck — the tab controller is browser-native ESM.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import express from 'express';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,6 +22,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
 import { PendingLoginStore } from '../../src/core/PendingLoginStore.js';
 import { EnrollmentWizard } from '../../src/core/EnrollmentWizard.js';
+import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { JSDOM } from 'jsdom';
 import { createController } from '../../dashboard/subscriptions.js';
@@ -51,7 +52,7 @@ const PANEL_HTML = `<!doctype html><body>
   </div>
 </body>`;
 
-function mountTab(baseUrl: string) {
+function mountTab(baseUrl: string, extra: Record<string, unknown> = {}) {
   const doc = new JSDOM(PANEL_HTML).window.document;
   const els = {
     accounts: doc.getElementById('subAccounts'),
@@ -59,7 +60,7 @@ function mountTab(baseUrl: string) {
     matrix: doc.getElementById('subMatrix'),
   };
   const fetchImpl = (url: string, init?: any) => fetch(baseUrl + url, init);
-  const c = createController({ doc, els, fetchImpl, now: () => Date.parse('2026-06-07T00:00:00Z') });
+  const c = createController({ doc, els, fetchImpl, now: () => Date.parse('2026-06-07T00:00:00Z'), ...extra });
   c._state.active = true; // enable a manual tick() (start() would also schedule)
   return { doc, els, c };
 }
@@ -166,6 +167,32 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
     await mounted.c.tick();
     expect(mounted.els.matrix.querySelector('.sub-matrix-in-progress')).toBeTruthy();
     expect(mounted.els.matrix.querySelector('.sub-matrix-signin').getAttribute('href')).toContain('/renewed');
+  });
+
+  it('a locked repair tap opens the dashboard PIN surface instead of becoming a dead-end instruction', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.addFixture({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    pool.update('a1', { status: 'needs-reauth' });
+    const reloginStore = new SubscriptionReloginStore({ stateDir: dir, idFactory: () => 'repair-locked' });
+    reloginStore.suggest({
+      sourceEpisodeId: 1, accountId: 'a1', machineId: 'm-self', mode: 'approval',
+      inputDigest: `sha256:${'b'.repeat(64)}`, profileId: 'profile-1',
+      framework: 'claude-code', provider: 'anthropic',
+    });
+    server = await bootApp({
+      config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(),
+      meshSelfId: 'm-self', subscriptionPool: pool,
+      subscriptionRelogin: { store: reloginStore },
+    });
+    const requestUnlock = vi.fn();
+    const { els, c } = mountTab(server.url, { requestUnlock });
+    await c.tick();
+
+    (els.accounts.querySelector('[data-relogin-action="approve"]') as HTMLElement).click();
+
+    expect(requestUnlock).toHaveBeenCalledTimes(1);
+    expect(els.accounts.textContent).toContain('Enter PIN, then try again');
   });
 
   it('feature OFF: both routes 200 { enabled:false } → friendly not-set-up copy', async () => {
