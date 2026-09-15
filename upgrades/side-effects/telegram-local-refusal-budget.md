@@ -69,3 +69,25 @@ Complete release validation on this base remains pending.
 ## Class-Closure Declaration (display-only mirror)
 
 Recovery continues through the existing paced recovery implementation; no new controller is introduced. The control edge is local refusal → original queued child → paced recovery. Its steady-state bounds are the existing 15-minute durable review reservation and original six-hour deadline; repeated invocation and process restarts cannot reset either. The executable twelve-refusal/one-attempt, original-deadline and restart tests exercise the accounting boundary in tests/unit/telegram-origin-store.test.ts and tests/e2e/telegram-origin-late-capacity-lifecycle.test.ts. The unbounded-self-action declaration cites those concrete bounds rather than claiming a new controller registration.
+
+## Release-run cleanup correction
+
+The frozen d9c2d0cc2 aggregate ended normally with51,936passing tests and one
+failure: the existing receipt-restart case exceeded its10-second afterEach
+cleanup limit after the delivery assertions passed. All5670frozen inputs were
+unchanged. The new local-refusal restart case passed. Dedicated integration
+and E2E stages did not run because the aggregate exit was nonzero.
+
+Independent tracing of this same lateCapacityHttpHarness/production Boot close
+path measured5763ms in notice-policy watcher close,1470ms in config-reader
+watcher close,0ms joining canaries, and3ms in runtime close. The reviewed
+correction gives this lifecycle fixture an explicit30-second cleanup bound,
+continues awaiting actual closure, and restores mocks in finally. No runtime
+deadline, delivery assertion, or retry policy changes. The production canary
+shutdown defect remains separately tracked in topic69507.
+<!-- tracked: topic-69507 -->
+
+After the run ended, the correction passed both lifecycle cases in
+/tmp/echo-local-refusal-cleanup-focused.log. Reviewer review_local_refusal
+concurred with applying the measured bound to this shared shutdown path.
+Fresh full validation and CI remain required.
