@@ -19,7 +19,10 @@ import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const close: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const cleanup of close.splice(0).reverse()) await cleanup(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  for (const cleanup of close.splice(0).reverse()) await cleanup();
+}, 30_000);
 describe('Threadline Telegram authors using production origin initialization', () => {
   it('records generated authors while keeping inbound peer prose unknown and retaining an outbound parent', async () => {
     const stateDir = temporaryState();

@@ -7,7 +7,15 @@ import { lateCapacityHttpHarness } from '../helpers/telegramLateCapacityHttp.js'
 let worker: URL;
 const closes: Array<() => Promise<void>> = [];
 beforeAll(async () => { worker = await compileOriginWorker(); });
-afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of closes.splice(0).reverse()) await close();
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 
 describe('late ordinary capacity is alive across production Boot restart', () => {
   it('records concrete receipts after slow durable dispatch before and after restart', async () => {

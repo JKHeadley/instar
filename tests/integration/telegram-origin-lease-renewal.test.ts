@@ -14,7 +14,15 @@ import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 describe('HTTP origin sends depend on the real renewed lease', () => {
   it.each([undefined, false])('preserves lease authority beyond 60s with renewal flag %s', async enabled => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });

@@ -19,7 +19,14 @@ import type { AddressInfo } from 'node:net';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 describe('Telegram origin production bootstrap', () => {
   it('gives recovery after production restart a fresh network deadline after durable preparation', async () => {
     const root = await mkdtemp('/tmp/origin-deadline-boot-');
@@ -40,7 +47,7 @@ describe('Telegram origin production bootstrap', () => {
       // real authority readiness before testing transport recovery.
       await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
         accountId: '123', destination: { chatId: '-100123' },
-      } as never)).toBe(true), { timeout: 7000, interval: 100 });
+      } as never)).toBe(true), { timeout: 20_000, interval: 100 });
       return boot;
     };
     let boot = await start();
@@ -101,7 +108,7 @@ describe('Telegram origin production bootstrap', () => {
       // observer permits preparation; boot's initial snapshot may be invalidated.
       await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
         accountId: '123', destination: { chatId: '-100123' },
-      } as never)).toBe(true), { timeout: 7000, interval: 100 });
+      } as never)).toBe(true), { timeout: 20_000, interval: 100 });
       return boot;
     };
     let boot = await start();

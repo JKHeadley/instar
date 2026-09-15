@@ -64,7 +64,8 @@ owned proof, authority-reader invalidation and no origin-row side effects.
 All three production Boot cases pass (133.5 seconds): default native resolver
 wiring, real owned checks with source failure/restoration, and resource shutdown
 after failed profile enrollment. Full-suite and CI release validation remain
-outstanding, separately after the first-priority local-refusal release.
+outstanding. This repair now precedes the local-refusal release because its
+known canary defect blocks that candidate's full validation.
 
 Independent reviewer review_local_refusal: concur with the runtime protocol and
 23 initial cases. Separate monotonic deadlines, normal exit before proof, joined
@@ -78,3 +79,51 @@ Tracked adjacent watchdog false interrupt: topic-69507. The conversation watchdo
 sent SIGINT to a legitimate long-running Vitest process in the separate primary
 release validation. This canary repair does not alter that watchdog; the current
 release validation uses a bounded supervised test job with durable logs and exits.
+
+
+## Release dependency and shared fixture corrections
+
+The separate local-refusal candidate's frozen full run ended normally with
+51,936 passing tests and one failure: the real detector HTTP health fixture
+observed ownedContracts.state=fail while config and noticePolicy were healthy.
+All 14,014 input hashes were unchanged. This matches the independently measured
+old canary cleanup failure class; that run did not expose per-attempt phase
+timing, so it is not new proof of the exact timing of each failed attempt.
+
+The canary commit was rebased unchanged onto v1.3.1239. An independent range-diff
+review confirmed equivalence and no dependency on local-refusal accounting.
+Fourteen files receive previously reviewed fixture corrections: awaited real
+Boot cleanup has a 30-second budget with existing restorations in finally, and
+the phone fixture explicitly asserts initial/post-save display convergence
+within 20 seconds with safe health metadata on failure. Its body budget is
+60 seconds. The two detector fixtures already had bounded cleanup; their
+canary-specific 145-second observation is preserved. The HTTP body remains
+180 seconds; the Boot body is 240 seconds to cover sequential recovery waits
+and its explicit awaited in-body close.
+Only the cleanup hunk is transferred to the late-capacity lifecycle fixture;
+no local-refusal accounting test or runtime change is imported.
+
+Reverse closure order, propagation of cleanup errors, delivery assertions,
+operator scope checks, and production authorization/read deadlines remain
+unchanged. Longer fixture waits still fail at their bounds. Independent reviewer
+review_local_refusal concurred with the actual transfer and rebase. Build passes
+on v1.3.1239. Initial combined focused validation passed all 55 tests in eight
+files (normal exit 0, 2026-09-15T08:55:49Z).
+
+A class-wide test audit found healthy-readiness waits shorter than two real
+refresh opportunities: two completion-relative five-second intervals plus two
+two-second reads can consume 14 seconds before scheduling margin. Seven files
+now allow 20 seconds for healthy config/display/authorization/policy readiness.
+The shared helper retains monotonic time and real timers for fake-interval lease
+tests. Unavailable/revocation checks, delivery deadlines, and independent
+enrollment-only probes are unchanged. The opt-out branch allows 20 seconds for
+a new parsed snapshot while its unreadable branch keeps seven seconds. Only the
+canary Boot body needs expansion: 145 + 20 + 8 + 20 seconds of sequential waits,
+with allowance for setup and explicit in-body close, fits 240 seconds.
+
+Independent reviewer review_local_refusal concurred with the actual seven-file
+diff and owning-body budget audit. Final readiness-focused validation passed
+all 36 tests in seven files (normal exit 0, 2026-09-15T09:06:33Z), including the
+real canary lifecycle, policy, enrollment, dashboard rejection, production Boot,
+and fake-interval lease consumer. Full lint passes. Full local suite and CI
+remain required before merge; no deployment is claimed.

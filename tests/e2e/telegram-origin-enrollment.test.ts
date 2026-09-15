@@ -17,7 +17,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanups.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 describe('production origin enrollment factory', () => {
   it('makes completion attainable from signed build evidence and real installed inventories, while missing evidence leaves metadata sends alive', async () => {
     const f = await originCertificationFixture();
@@ -43,7 +50,7 @@ describe('production origin enrollment factory', () => {
     // observer becomes ready. Boot's inventory can precede that observation.
     // Only this exact startup gap is retryable; other missing obligations
     // still fail immediately, and no policy or permission is manufactured.
-    const readinessDeadline = performance.now() + 12_500;
+    const readinessDeadline = performance.now() + 20_000;
     let first = await boot.runtime.status();
     while (performance.now() < readinessDeadline) {
       const missing = first.activation.observations.filter(item => !['ready', 'not-applicable'].includes(item.state));

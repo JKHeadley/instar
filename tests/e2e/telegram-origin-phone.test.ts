@@ -1,5 +1,5 @@
 // @ts-nocheck — real browser module exercised through DOM events and production HTTP.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,7 +17,10 @@ import { compileOriginWorker, compileOriginConfigWorker } from '../helpers/teleg
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { mountOriginPanel } from '../../dashboard/origin.js';
 const cleanup = [];
-afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  for (const fn of cleanup.splice(0).reverse()) await fn();
+}, 30_000);
 describe('phone origin operator lifecycle', () => {
   it('unlocks with a real PIN, reads durable origins and saves cosmetic preferences through rendered controls', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-phone-')), stateDir = path.join(root, '.instar');
@@ -48,11 +51,23 @@ describe('phone origin operator lifecycle', () => {
     const http = server.getApp().listen(0, '127.0.0.1'); cleanup.push(() => new Promise(resolve => http.close(resolve)));
     await new Promise(resolve => http.listening ? resolve() : http.once('listening', resolve));
     const base = `http://127.0.0.1:${http.address().port}`;
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-      try { if (boot.runtime.options.display({ chatId: '-100123', topicId: '42' }).agent.enabled === true) break; } catch { /* fixture waits for real config observer */ }
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    const waitForDisplay = async (enabled, phase) => {
+      // The independent loop waits 5s after each bounded 2s source attempt.
+      // Allow two refresh opportunities plus scheduling margin; never proceed
+      // without observing the actual current display authority.
+      await vi.waitFor(() => {
+        const configHealth = boot.runtime.options.readDetectorHealth().sources.config;
+        let observed;
+        try { observed = boot.runtime.options.display({ chatId: '-100123', topicId: '42' }).agent.enabled; }
+        catch (error) { observed = error instanceof Error && error.message === 'origin-display-authority-unavailable'
+          ? 'origin-display-authority-unavailable' : 'display-read-failed'; }
+        const diagnostic = { state: configHealth.state, reason: configHealth.reason,
+          revision: configHealth.revision, busy: configHealth.busy,
+          attemptedAt: configHealth.attemptedAt, succeededAt: configHealth.succeededAt };
+        expect(observed, `${phase} display convergence: ${JSON.stringify(diagnostic)}`).toBe(enabled);
+      }, { timeout: 20_000, interval: 100 });
+    };
+    await waitForDisplay(true, 'initial');
     boot.runtime.service.registerAutomationProducer('phone-fixture');
     const operation = boot.runtime.service.runAsAutomation('phone-fixture', () => boot.runtime.service.prepareBot({ method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'Private test content must not appear in the audit panel.' } }));
     await boot.runtime.service.admit(operation);
@@ -76,11 +91,7 @@ describe('phone origin operator lifecycle', () => {
     const save = [...panel.querySelectorAll('button')].find(button => button.textContent === 'Save display settings');
     panel.querySelector('[aria-label="Show origin details"]').checked = false; await save.onclick();
     expect(JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8')).messaging[0].config.messageOrigin.display.enabled).toBe(false);
-    const refreshDeadline = Date.now() + 10000;
-    while (Date.now() < refreshDeadline) {
-      try { if (boot.runtime.options.display({ chatId: '-100123', topicId: '42' }).agent.enabled === false) break; } catch { /* waits for independent observer */ }
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForDisplay(false, 'post-save');
     const hidden = boot.runtime.service.runAsAutomation('phone-fixture', () => boot.runtime.service.prepareBot({ method: 'sendMessage', accountId: '123', params: { chat_id: '-100123', message_thread_id: 42, text: 'Later private content.' } }));
     expect(hidden.record.display.enabled).toBe(false);
     const select = panel.querySelector('select'); select.value = '42'; select.onchange();
@@ -92,5 +103,5 @@ describe('phone origin operator lifecycle', () => {
     expect(JSON.parse(originalRow.record.envelopeJson).display.enabled).toBe(true);
     const modelWrite = await surface.applyWrite({ topicKey: '42', patch: { model: 'sonnet' }, principal: { kind: 'token' }, origin: 'http' });
     expect(modelWrite.refusedFields).toContain('model');
-  }, 30000);
+  }, 60_000);
 });

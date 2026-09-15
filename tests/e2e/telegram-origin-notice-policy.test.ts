@@ -16,7 +16,14 @@ import type { OutageNoticeState } from '../../src/messaging/telegram-origin/Tele
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanups.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 async function boot(withAuthority: boolean, allowOrdinary = false, vault = false) {
   const root = await mkdtemp('/tmp/origin-notice-policy-');
   cleanups.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-notice-policy:cleanup' }); });
@@ -63,7 +70,7 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
       topicId: '42', messageId: null, inlineMessageId: null, scheduledMessageId: null })).toBeDefined();
     expect(current.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: false });
     expect(current.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
-  }, { timeout: 12_500, interval: 50 });
+  }, { timeout: 20_000, interval: 50 });
   const failRecording = async () => {
     await current.runtime.store.close(); await current.runtime.spool.close();
     storageFailed = true;
@@ -180,7 +187,7 @@ describe('production bootstrap outage authority separation', () => {
       await vi.waitFor(() => {
         const current = h.runtime.options.getAlertPolicy('operator-attention-hub');
         expect(reason === 'unreadable' ? current === null : current?.optedOut).toBe(true);
-      }, { timeout: 7000 });
+      }, { timeout: reason === 'unreadable' ? 7000 : 20_000 });
     }
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
     await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
