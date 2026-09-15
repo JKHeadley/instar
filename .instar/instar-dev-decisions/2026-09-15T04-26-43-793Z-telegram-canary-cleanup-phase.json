@@ -1,0 +1,39 @@
+{
+  "ts": "2026-09-15T04:26:43.793Z",
+  "slug": "telegram-canary-cleanup-phase",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 170,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginDetectorCanary.ts",
+      "src/messaging/telegram-origin/OriginDetectorCanary.worker.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 119,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/unit/telegram-origin/detector-canary-cleanup.test.ts",
+      "howCaught": "Real worker failures, delayed cleanup, and repeated run/start calls prove no retry or recurrence after cleanup failure and retain one pending owner until termination/removal settle. Existing schedule tests enforce the startup and recurrence floors."
+    },
+    "component": "OriginDetectorCanary"
+  },
+  "verdict": "pass"
+}

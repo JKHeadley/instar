@@ -1379,7 +1379,7 @@ function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink)
  */
 const telegramOriginOwnedDetectorCanary: SelfActionController = {
   id: 'telegram-origin-owned-detector-canary', actionVerb: 'retry-owned-detector-canary-cycle',
-  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, 6s contract checks then 30s cleanup proof per attempt, ownership retained until termination and fixture removal settle, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
   modelsPath: 'src/messaging/telegram-origin/OriginDetectorCanary.ts',
   delegatedGiveUp: 'The instance closes or latches on unverified cleanup; each run has at most two timed worker attempts. Successful cleanup permits the next completion-relative cycle; restart resets this local state.',
   boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,

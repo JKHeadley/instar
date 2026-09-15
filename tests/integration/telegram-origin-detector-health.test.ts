@@ -7,7 +7,7 @@ import { detectorFixture, detectorWorkers } from '../helpers/originDetectorBoot.
 let workers: Awaited<ReturnType<typeof detectorWorkers>>;
 beforeAll(async () => { workers = await detectorWorkers(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); }, 30_000);
 it('serves real fresh detector health through the operator HTTP boundary without leaking config or creating origin rows', async () => {
   const fixture = await detectorFixture(workers); cleanup.push(fixture.cleanup);
   const boot = await fixture.boot(); cleanup.push(boot.close);
@@ -17,10 +17,11 @@ it('serves real fresh detector health through the operator HTTP boundary without
   expect((await request(app).get('/telegram/origins/status')).status).toBe(403);
   const get = () => request(app).get('/telegram/origins/status').set('X-Instar-Operator-Session', 'operator-proof');
   expect((await get()).body.detectorHealth.canaries.ownedContracts.state).toBe('pending');
+  // Startup 60s + two attempts of 6s checks and 30s cleanup, with scheduling margin.
   await vi.waitFor(async () => expect((await get()).body.detectorHealth).toMatchObject({
     sources: { config: { state: 'healthy' }, noticePolicy: { state: 'healthy' } },
     canaries: { ownedContracts: { state: 'pass' } },
-  }), { timeout: 75_000 });
+  }), { timeout: 145_000 });
   const response = await get(); expect(response.status).toBe(200);
   expect(response.body.detectorHealth.canaries.nativeModels).toMatchObject({ state: 'unavailable', providerExecutionVerified: false });
   expect(JSON.stringify(response.body.detectorHealth)).not.toMatch(/detector-fixture|\/tmp\//);
@@ -31,4 +32,4 @@ it('serves real fresh detector health through the operator HTTP boundary without
   // bounded two-second source read, without manually invoking either reader.
   await vi.waitFor(async () => expect((await get()).body.detectorHealth.sources.config.state).toBe('unavailable'), { timeout: 8000 });
   expect((await boot.runtime.store.listOrigins()).records).toEqual(originsBefore);
-}, 90_000);
+}, 180_000);

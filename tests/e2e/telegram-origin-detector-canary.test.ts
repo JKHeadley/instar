@@ -9,7 +9,10 @@ import { detectorFixture, detectorWorkers } from '../helpers/originDetectorBoot.
 let workers: Awaited<ReturnType<typeof detectorWorkers>>;
 beforeAll(async () => { workers = await detectorWorkers(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  try { for (const close of cleanup.splice(0).reverse()) await close(); }
+  finally { vi.restoreAllMocks(); }
+}, 30_000);
 it('wires the default configured native resolver and isolated adapter into fresh diagnostic health', async () => {
   const fixture = await detectorFixture(workers); cleanup.push(fixture.cleanup);
   (fixture.config as any).sessions = { frameworkBinaryPaths: { 'codex-cli': '/task-fixture/codex' } };
@@ -31,7 +34,8 @@ it('starts real owned canaries in production Boot and recovers actual vault-sour
   const boot = await fixture.boot(); cleanup.push(boot.close);
   const health = () => boot.runtime.options.readDetectorHealth!() as any;
   expect(health().canaries.ownedContracts.state).toBe('pending');
-  await vi.waitFor(() => expect(health().canaries.ownedContracts).toMatchObject({ state: 'pass', scope: 'owned-file-backed-secretstore-fixture', osKeychainVerified: false }), { timeout: 75_000 });
+  // Startup 60s + two attempts of 6s checks and 30s cleanup, with scheduling margin.
+  await vi.waitFor(() => expect(health().canaries.ownedContracts).toMatchObject({ state: 'pass', scope: 'owned-file-backed-secretstore-fixture', osKeychainVerified: false }), { timeout: 145_000 });
   await vi.waitFor(() => expect(health().sources).toMatchObject({ config: { state: 'healthy' }, noticePolicy: { state: 'healthy' } }), { timeout: 8000 });
   expect(health().canaries.nativeModels.state).toBe('unavailable');
   const original = await readFile(fixture.configPath, 'utf8');
@@ -42,7 +46,7 @@ it('starts real owned canaries in production Boot and recovers actual vault-sour
   await writeFile(fixture.configPath, original);
   await vi.waitFor(() => expect(health().sources.config.state).toBe('healthy'), { timeout: 8000 });
   await boot.close(); expect(health().sources.config.state).toBe('closed'); expect(health().canaries.ownedContracts.state).toBe('closed');
-}, 90_000);
+}, 180_000);
 it('closes actual runtime workers, source watchers and owner socket when profile enrollment fails before successful boot', async () => {
   const fixture = await detectorFixture(workers); cleanup.push(fixture.cleanup);
   await writeFile(path.join(fixture.stateDir, 'state/playwright-profiles.json'), '{malformed');

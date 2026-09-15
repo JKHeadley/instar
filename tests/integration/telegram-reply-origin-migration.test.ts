@@ -64,6 +64,35 @@ describe('origin relay installed-upgrade parity', () => {
     expect(migrate()).toEqual(first);
   });
 
+  it.each([false, true])('refreshes existing detector cleanup guidance in every framework, preserving custom prose (oldStartup=%s)', oldStartup => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-cleanup-awareness-'));
+    dirs.push(projectDir);
+    const files = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'].map(name => path.join(projectDir, name));
+    const sentence = 'Successful checks grant no send or ownership permission.';
+    const historical = `Operator quotation: ${sentence}`;
+    const startup = oldStartup ? 'The owned config/vault/hub checks run at startup and hourly by default in disposable state;' : 'The owned checks use disposable state;';
+    for (const file of files) fs.writeFileSync(file,
+      `# Existing agent\n\n### Telegram message origin\n\nOrigin detector health: ${startup} ${sentence} Operator diagnostic note.\n\n${historical}\n`);
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'),
+      port: 4042, hasTelegram: true, projectName: 'fixture' });
+    const migrate = () => {
+      const result = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] };
+      (migrator as unknown as { migrateClaudeMd(output: typeof result): void }).migrateClaudeMd(result);
+      (migrator as unknown as { migrateFrameworkShadowCapabilities(output: typeof result): void }).migrateFrameworkShadowCapabilities(result);
+      expect(result.errors).toEqual([]);
+      return files.map(file => fs.readFileSync(file, 'utf8'));
+    };
+    const first = migrate();
+    for (const content of first) {
+      expect(content).toContain('six seconds per attempt, followed by up to 30 seconds for verified cleanup');
+      expect(content).toContain('cannot pass until the worker exits and its fixture is removed');
+      expect(content).toContain('Operator diagnostic note.');
+      expect(content).toContain(historical);
+      expect(content.split('Owned contract checks have six seconds per attempt,')).toHaveLength(2);
+    }
+    expect(migrate()).toEqual(first);
+  });
+
   it('adds rollout certification guidance to an existing origin section once, preserving operator notes', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-awareness-migration-'));
     dirs.push(projectDir);
