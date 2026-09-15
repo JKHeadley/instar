@@ -192,7 +192,7 @@ describe('production bootstrap outage authority separation', () => {
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
     await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
     expect(h.wire).not.toHaveBeenCalled();
-  });
+  }, 35_000);
   it.each(['missing-topic', 'unknown'] as const)('never retries a notice after a concrete %s network outcome', async outcome => {
     const h = await boot(false);
     if (outcome === 'missing-topic') h.wire.mockImplementation(async () => new Response(JSON.stringify({ ok: false,

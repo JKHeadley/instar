@@ -182,7 +182,12 @@ describe('Telegram origin production bootstrap', () => {
     ])), { timeout: 7000, interval: 100 });
     await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '77' });
     const server = await new Promise<import('node:http').Server>(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
-    cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    cleanup.push(() => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+      // Native fetch keeps HTTP/1.1 sockets pooled. Waiting for that unrelated
+      // keep-alive during teardown can consume the whole hook budget.
+      server.closeAllConnections();
+    }));
     const updateText = 'The generated update includes the completed work and the detailed verification results.';
     const nativeFetch = globalThis.fetch, wire = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(init.body as string);

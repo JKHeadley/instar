@@ -11,3 +11,5 @@ If cleanup proof is missing, malformed, unsuccessful, or over its deadline, the 
 The existing startup wait, two-attempt ceiling, and completion-relative schedule remain. Every machine checks its own disposable state. Existing agents receive the same explanation as newly installed agents, without replacing their added notes. No stored delivery data needs migration. Rolling back restores the previous diagnostic timing; it does not replay any message.
 
 The acceptance evidence includes malformed and duplicated worker messages, both sides of each deadline, real worker teardown, HTTP health, production boot, and installed-instruction migration. Release readiness still requires the full local suite and normal CI gates.
+
+The release gates also found two nearby timing races under heavy load. Starting a storage worker now has a separate bounded allowance from asking an already-running worker to do one operation. Test receivers also announce when raw terminal mode is truly active before accepting a large tmux payload. These do not change who may send a message; they keep slow startup from being mistaken for broken storage or truncated input.

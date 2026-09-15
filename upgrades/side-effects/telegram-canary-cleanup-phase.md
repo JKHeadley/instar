@@ -360,3 +360,28 @@ and all three production-Boot E2E lifecycles pass. The exact HTTP case passed in
 124.4 seconds and the E2E file passed all three cases in 193.0 seconds under the
 same machine load that reproduced the prior fault. Full lint and build pass.
 Fresh full local `test:all` and CI are still required before merge/deployment.
+
+## Exact-head aggregate-load follow-up
+
+The first exact-head aggregate run and fresh CI exposed three additional load
+boundaries before merge. The local run timed out while a production-bootstrap
+test waited for an HTTP keep-alive socket during teardown. Node 22 CI also
+started an origin storage worker after its ordinary request deadline and raced a
+real tmux receiver before its child shell had entered raw TTY mode; the latter
+produced the characteristic Linux canonical-line length of 4,095 bytes.
+
+The follow-up keeps these concerns separate. Origin storage worker startup now
+has its own bounded 30-second budget instead of borrowing the much shorter
+already-running request budget. The production HTTP test explicitly closes its
+pooled connections. The real-tmux control now waits for a receiver-ready file
+written only after `stty raw`, so its byte-exact assertion measures tmux
+chunking rather than shell-startup scheduling. The outage-policy lifecycle's
+outer test bound now covers its already-declared 20-second readiness and
+7-second unreadable-state waits plus teardown.
+
+These changes do not loosen Telegram send authority, retry authority, durable
+custody, or the detector's cleanup proof. They remove unrelated scheduler and
+transport races from the evidence path while preserving finite failure bounds.
+Focused reruns pass the 32 cleanup protocol cases, all three real production
+bootstrap cases, and all three real-tmux ceiling cases under the same heavily
+loaded host.

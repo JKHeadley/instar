@@ -15,3 +15,5 @@ Existing detector health distinguishes active cleanup from completed proof. Star
 ## Evidence
 
 The separate side-effects artifact records the reproduced 15–43 second native watcher-close stall, the worker-boundary repair, boundary coverage and release validation. This fragment alone is not evidence that a release is active.
+
+Aggregate-load validation also separated storage-worker startup from ordinary request timing and made the real-tmux byte-exact control wait until its receiver has entered raw mode. These are bounded reliability fixes; they grant no new delivery authority.
