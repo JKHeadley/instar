@@ -9,6 +9,8 @@ import { originDetectorCanaryInterval } from './OriginConfig.js';
 import type { OriginCanaryHealth } from './OriginDetectorHealth.js';
 
 const CHECKS = ['encrypted-config-read', 'exact-hub-permission', 'opt-out-observed', 'hub-rebind-refused', 'credential-rotation-refused', 'malformed-source-refused'];
+type CleanupStage = 'awaiting-ack' | 'awaiting-exit' | 'terminating-worker' | 'removing-fixture';
+type CleanupFault = 'deadline-timer' | 'late-ack' | 'negative-ack' | 'worker-error' | 'worker-exit-without-ack' | 'worker-exit-nonzero' | 'operation-error' | 'deadline-after-cleanup';
 /** @self-action-controller: telegram-origin-owned-detector-canary
  * Fixed-cost diagnostic sentinel: a 60s startup floor, then a completion-relative
  * interval; two attempts maximum, one worker at a time, no transport capability.
@@ -78,11 +80,16 @@ export class OriginDetectorCanary {
     let protocolFailed = false;
     let cleanupAcknowledged = false;
     let cleanupDeadline: number | undefined;
+    let cleanupStage: CleanupStage = 'awaiting-ack';
+    let firstCleanupFault: string | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     let finishActive: ((passed: boolean) => void) | undefined;
     const contractDeadline = performance.now() + (this.options.timeoutMs ?? 6_000);
-    const failCleanup = () => {
-      this.cleanupFailed = true; this.failurePhase = 'cleanup';
+    const failCleanup = (fault: CleanupFault) => {
+      // Preserve the first failure: forced termination and the final deadline
+      // check can follow an earlier fault. Only fixed labels enter diagnostics.
+      firstCleanupFault ??= `cleanup:${fault}:${cleanupStage}`;
+      this.cleanupFailed = true; this.failurePhase = firstCleanupFault;
       this.health = { ...this.health, state: 'fail', reason: 'canary-cleanup-unverified', finishedAt: this.now(), validUntil: null };
       finishActive?.(false);
     };
@@ -90,7 +97,7 @@ export class OriginDetectorCanary {
       clearTimeout(timeout);
       if (cleanupDeadline !== undefined) return;
       cleanupDeadline = performance.now() + (this.options.cleanupTimeoutMs ?? 30_000);
-      cleanupTimer = setTimeout(failCleanup, this.options.cleanupTimeoutMs ?? 30_000);
+      cleanupTimer = setTimeout(() => failCleanup('deadline-timer'), this.options.cleanupTimeoutMs ?? 30_000);
     };
     const cancel = () => { expired = true; beginCleanup(); finishActive?.(false); };
     this.cancel = cancel;
@@ -129,19 +136,23 @@ export class OriginDetectorCanary {
             this.health = { ...this.health, state: 'running', reason: 'canary-cleanup-running', finishedAt: null, validUntil: null };
           } else if (message?.type === 'cleanup') {
             if (!checksReceived || cleanupAcknowledged || typeof message.verified !== 'boolean') { invalidProtocol(); return; }
-            if (!message.verified || cleanupDeadline === undefined || performance.now() >= cleanupDeadline) { failCleanup(); return; }
+            if (!message.verified) { failCleanup('negative-ack'); return; }
+            if (cleanupDeadline === undefined || performance.now() >= cleanupDeadline) { failCleanup('late-ack'); return; }
             cleanupAcknowledged = true;
+            cleanupStage = 'awaiting-exit';
             // Drain the worker's full protocol through its normal exit before
             // accepting proof. A duplicate queued after the acknowledgement
             // must not disappear in an immediate forced termination.
           } else invalidProtocol();
         });
-        const workerEnded = (code: number) => {
+        const workerEnded = (code: number, errored = false) => {
           if (done) return;
-          if (checksReceived && (!cleanupAcknowledged || code !== 0)) { failCleanup(); return; }
+          if (checksReceived && (!cleanupAcknowledged || code !== 0)) {
+            failCleanup(errored ? 'worker-error' : !cleanupAcknowledged ? 'worker-exit-without-ack' : 'worker-exit-nonzero'); return;
+          }
           finish(checksPassed && cleanupAcknowledged && code === 0);
         };
-        worker!.once('error', () => { protocolFailed = true; workerEnded(1); });
+        worker!.once('error', () => { protocolFailed = true; workerEnded(1, true); });
         worker!.once('exit', workerEnded);
       });
     } finally {
@@ -150,10 +161,10 @@ export class OriginDetectorCanary {
       // unavailable health but cannot prove that an OS resource has closed.
       beginCleanup();
       try {
-        if (worker) await worker.terminate();
-        if (directory) await SafeFsExecutor.safeRm(directory, { recursive: true, force: true, operation: 'origin-detector-canary-private-fixture-cleanup' });
-        if (cleanupDeadline !== undefined && performance.now() >= cleanupDeadline) failCleanup();
-      } catch { failCleanup(); throw new Error('canary-cleanup-unverified'); }
+        if (worker) { cleanupStage = 'terminating-worker'; await worker.terminate(); }
+        if (directory) { cleanupStage = 'removing-fixture'; await SafeFsExecutor.safeRm(directory, { recursive: true, force: true, operation: 'origin-detector-canary-private-fixture-cleanup' }); }
+        if (cleanupDeadline !== undefined && performance.now() >= cleanupDeadline) failCleanup('deadline-after-cleanup');
+      } catch { failCleanup('operation-error'); throw new Error('canary-cleanup-unverified'); }
       finally { clearTimeout(timeout); if (cleanupTimer) clearTimeout(cleanupTimer); if (this.cancel === cancel) this.cancel = undefined; }
     }
     return passed && cleanupAcknowledged && !protocolFailed && !expired && !this.cleanupFailed && !this.closed;

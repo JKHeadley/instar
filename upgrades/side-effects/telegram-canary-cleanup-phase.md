@@ -168,3 +168,34 @@ adjustments. After the frozen run ended and hashes were verified, focused
 validation passed all 11 tests across the real-process integration fixture and
 classification boundaries (normal exit 0, 2026-09-15T10:10:22Z). The corrected
 candidate still requires full local validation and fresh CI before release.
+
+
+## Remaining cleanup failure and bounded diagnostics
+
+Frozen candidate 5d8a3bea87905b163a4348b64734bc56a37f4b63 completed the aggregate
+with 51,970 passing tests, then dedicated integration with 4,207 passing tests
+and one real detector HTTP failure (2026-09-15T11:27:28Z). All 14,018 tracked
+input hashes were unchanged; dedicated E2E was not reached. CI passed against
+the corresponding merge tree, which does not override the local failure. The
+canary latched cleanup unavailable after one attempt while both actual authority
+readers were healthy. The previous fixed `cleanup` label cannot identify the
+first failing step. This remaining failure blocks release.
+
+Three bounded direct probes and one actual production-Boot HTTP lifecycle passed
+without reproducing it. Direct watcher closures took roughly 4.0, 12.5 and 6.6
+seconds; the Boot probe took 1.49 seconds, with immediate parent termination and
+9ms fixture removal. These observations locate latency in those successful
+probes only; they do not prove the cause of the full-run failure.
+
+The existing degradation reason now distinguishes fixed cleanup faults and stages:
+acknowledgement, natural worker exit, parent termination and fixture removal. The
+first fault is retained when later deadline or cleanup failures follow. No paths,
+exception text, worker payloads, credentials or timestamps enter those labels.
+Health schema/reasons, authority, protocol, resource ownership, retries, and
+6s/30s deadlines remain unchanged. Thirty focused boundary tests pass, including
+negative and late acknowledgements, abnormal exit versus error, failed termination,
+late final cleanup, first-fault preservation, and reporter redaction. A completed
+cycle report remains suppressed after close. Independent reviewer
+review_local_refusal concurs with the runtime and test diff. The next dedicated
+integration run is diagnostic; this addition does not claim to repair the still
+unreproduced failure.
