@@ -79,6 +79,31 @@ export function effectiveAccountStatus(account) {
   return account && account.status;
 }
 
+const KNOWN_REPAIR_STATES = new Set([
+  'suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
+  'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only',
+  'succeeded', 'refused', 'cancelled', 'failed',
+]);
+
+/** A suggested/failed repair is actionable only while current pool truth still says
+ *  the account cell needs authentication. Terminal repair rows remain durable audit
+ *  history, but must never shadow a newer Active observation or offer a retry that
+ *  the server's admission policy is required to refuse. In-flight states remain
+ *  visible because pool activation can precede the controller's final ledger close. */
+export function repairAppliesToCurrentState(repair, currentState) {
+  if (!repair || !KNOWN_REPAIR_STATES.has(repair.state)) return false;
+  if (repair.state === 'suggested' || repair.state === 'failed') {
+    return currentState === 'needs-reauth';
+  }
+  return true;
+}
+
+export function repairConflictMessage(error) {
+  return /^(?:retry|approval)-revalidation-refused:account-not-needs-reauth$/.test(
+    typeof error === 'string' ? error : '',
+  ) ? 'This account is already active. Refreshing its status…' : null;
+}
+
 const PROVIDER_WORDS = { anthropic: 'Claude', openai: 'Codex', 'github-copilot': 'Copilot', google: 'Gemini' };
 export function friendlyProvider(provider) {
   return PROVIDER_WORDS[typeof provider === 'string' ? provider : ''] || sanitizeForDisplay(provider, 'label');
@@ -294,8 +319,11 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     if (refAge) {
       card.appendChild(el(doc, 'div', 'sub-account-refresh', `Token auto-refreshed ${refAge}`));
     }
-    const repair = Array.isArray(reloginEpisodes)
+    const repairCandidate = Array.isArray(reloginEpisodes)
       ? reloginEpisodes.find((episode) => episode && a && episode.accountId === a.id)
+      : null;
+    const repair = repairAppliesToCurrentState(repairCandidate, effectiveAccountStatus(a))
+      ? repairCandidate
       : null;
     if (repair) {
       const repairBox = el(doc, 'div', 'sub-account-repair');
@@ -855,8 +883,11 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
     const tr = doc.createElement('tr');
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
-      const repair = Array.isArray(reloginEpisodes)
+      const repairCandidate = Array.isArray(reloginEpisodes)
         ? reloginEpisodes.find((episode) => episode && episode.accountId === c.accountId && episode.machineId === c.machineId)
+        : null;
+      const repair = repairAppliesToCurrentState(repairCandidate, c.state)
+        ? repairCandidate
         : null;
       const repairUnavailable = Array.isArray(reloginFailures)
         && reloginFailures.some((failure) => failure && failure.machineId === c.machineId);
@@ -1360,8 +1391,12 @@ export function createController(opts) {
       });
       if (!response.ok) {
         if (response.status === 401) requestUnlock();
-        button.textContent = response.status === 401 ? 'Enter PIN, then try again' : 'Couldn’t start — try again';
+        const body = await response.json().catch(() => ({}));
+        const resolvedConflict = repairConflictMessage(body.error);
+        button.textContent = response.status === 401 ? 'Enter PIN, then try again'
+          : resolvedConflict || 'Couldn’t start — try again';
         button.removeAttribute('disabled');
+        if (resolvedConflict) await tick();
         return;
       }
       await tick();
@@ -1564,10 +1599,12 @@ export function createController(opts) {
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
           if (response.status === 401) requestUnlock();
+          const resolvedConflict = repairConflictMessage(body.error);
           setCellStatus(cell, response.status === 401
             ? 'Enter your dashboard PIN, then tap Repair sign-in once.'
-            : body.error || 'Couldn’t start the repair — try again.');
+            : resolvedConflict || body.error || 'Couldn’t start the repair — try again.');
           btn.removeAttribute('disabled');
+          if (resolvedConflict) await tick();
           return;
         }
         setCellStatus(cell, 'Repair started — Instar is handling the sign-in.');
