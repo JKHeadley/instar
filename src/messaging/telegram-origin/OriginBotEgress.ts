@@ -18,6 +18,14 @@ const MESSAGE_METHODS = new Set(['sendMessage', 'editMessageText', 'editMessageC
 interface RegisteredBot { accountId: string; service: TelegramOriginService; producerId: string; }
 const owners = new Map<string, RegisteredBot>();
 let active = false;
+// Only this closure knows whether it reached the network callback. Error names
+// or codes supplied by that callback are not proof that a send never started.
+const localRefusals = new WeakMap<Error, Readonly<SealedBotRequest>>();
+export function consumeOriginLocalRefusal(error: unknown, request: Readonly<SealedBotRequest>): boolean {
+  if (!(error instanceof Error) || localRefusals.get(error) !== request) return false;
+  localRefusals.delete(error);
+  return true;
+}
 /** Installing the runtime closes the legacy bypass even on tokenless peers or
  * during failed credential enrollment. Closing a runtime never reopens it. */
 export function requirePreparedOriginEgress(): void { active = true; }
@@ -87,11 +95,17 @@ export async function dispatchOriginBotEgress(input: {
       available = false;
       // Durable claim/dispatch and policy checks have finished. Their latency
       // must not consume this short-lived permission to start network work.
-      // Refusal here is a charged, provably pre-network failure; never erase
-      // the already-recorded dispatch intent or renew/refund a capacity debit.
-      const grant = await authority.reserve(request.accountId);
-      if (!grant || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
-      if (!await authority.consume(grant) || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
+      // Retain dispatch intent and the capacity debit, but prove a local refusal
+      // so it need not spend the separate transport-attempt budget.
+      try {
+        const grant = await authority.reserve(request.accountId);
+        if (!grant || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
+        if (!await authority.consume(grant) || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
+      } catch {
+        const refusal = new OriginCapacityUnavailable();
+        localRefusals.set(refusal, request);
+        throw refusal;
+      }
       return send();
     } };
   };

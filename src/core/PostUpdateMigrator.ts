@@ -22,7 +22,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -6256,6 +6256,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram network deadline awareness');
     }
 
+    const refreshedCapacity = refreshOriginCapacityAwareness(content);
+    if (refreshedCapacity !== content) {
+      content = refreshedCapacity;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected local refusal transport budget awareness');
+    }
+
     if (!content.includes('Telegram capacity checks:')) {
       content += '\n' + telegramOriginCapacityAwareness();
       patched = true;
@@ -10688,6 +10695,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           appended = appended.trimEnd() + '\n\n' + render();
           mirrored++;
         }
+      }
+
+      const refreshedCapacityShadow = refreshOriginCapacityAwareness(appended);
+      if (refreshedCapacityShadow !== appended) {
+        appended = refreshedCapacityShadow;
+        mirrored++;
       }
 
       if (mirrored > 0) {

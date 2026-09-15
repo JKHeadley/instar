@@ -27,7 +27,7 @@ export function telegramOriginTransportAwareness(): string {
 }
 
 export function telegramOriginCapacityAwareness(): string {
-  return 'Telegram capacity checks: ordinary replies acquire the credential owner\'s short-lived capacity only after durable dispatch intent, immediately before network invocation. Storage preparation cannot use up that grant. An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit. The existing recovery pacing, deadline, ownership and shared rate limit remain in force. Never recreate a held message to obtain a new budget.\n';
+  return 'Telegram capacity checks: ordinary replies acquire the credential owner\'s short-lived capacity only after durable dispatch intent, immediately before network invocation. Storage preparation cannot use up that grant. A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain. The existing recovery pacing, deadline, ownership and shared rate limit remain in force. Never recreate a held message to obtain a new budget.\n';
 }
 
 export function telegramDashboardEditAwareness(): string {
@@ -84,4 +84,9 @@ export function refreshOriginCanaryCleanupAwareness(content: string): string {
     paragraph.includes('Owned contract checks have six seconds per attempt,') ? paragraph :
       paragraph.replace('Successful checks grant no send or ownership permission.',
         'Owned contract checks have six seconds per attempt, followed by up to 30 seconds for verified cleanup. Health remains running during cleanup and cannot pass until the worker exits and its fixture is removed. A cleanup failure latches unavailable health and prevents further attempts in that instance. Successful checks grant no send or ownership permission.'));
+}
+
+/** Patch only the exact shipped sentence; retain custom instructions. */
+export function refreshOriginCapacityAwareness(content: string): string {
+  return content.replace(/^Telegram capacity checks:[^\r\n]*$/gm, paragraph => paragraph.split('An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit.').join('A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain.'));
 }

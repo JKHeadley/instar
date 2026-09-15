@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { OriginBotTransport } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
+import { consumeOriginLocalRefusal } from '../../../src/messaging/telegram-origin/OriginBotEgress.js';
 import { compileOriginWorker } from '../../helpers/telegramOriginStore.js';
 import { lateCapacityHarness } from '../../helpers/telegramLateCapacity.js';
 
@@ -17,6 +18,43 @@ async function harness() {
 }
 
 describe('ordinary capacity acquired at the network boundary', () => {
+  it('binds local-refusal proof to one request and consumes it only once', async () => {
+    const h = await harness();
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockResolvedValue(null);
+    let proof: unknown, originalRequest: Parameters<typeof consumeOriginLocalRefusal>[1] | undefined;
+    const execute = h.runtime.service.executePreparedBot.bind(h.runtime.service);
+    vi.spyOn(h.runtime.service, 'executePreparedBot').mockImplementation((operation, transport) => {
+      const prepare = transport.prepare!;
+      transport.prepare = async request => {
+        const prepared = await prepare(request);
+        return { ...prepared, send: async () => {
+          try { return await prepared.send(); }
+          catch (error) {
+            proof = error; originalRequest = request;
+            expect(consumeOriginLocalRefusal(error, { ...request })).toBe(false);
+            throw error;
+          }
+        } };
+      };
+      return execute(operation, transport);
+    });
+    await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
+    expect(originalRequest).toBeDefined();
+    expect(consumeOriginLocalRefusal(proof, originalRequest!)).toBe(false);
+    expect((await h.runtime.store.listOrigins()).records[0].children[0].attempts).toBe(0);
+  });
+
+  it('keeps dispatch uncertain if local-refusal persistence fails before recovery', async () => {
+    const h = await harness();
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockResolvedValue(null);
+    vi.spyOn(h.runtime.store, 'recordOutcome').mockRejectedValue(new Error('outcome storage unavailable'));
+    await expect(h.send()).rejects.toMatchObject({ reason: 'origin-execution-state-unavailable' });
+    expect(h.network).not.toHaveBeenCalled();
+    await h.runtime.store.reapAbandoned(Date.now() + 60_001);
+    const row = (await h.runtime.store.listOrigins()).records[0];
+    expect(row.children[0]).toMatchObject({ attempts: 1, state: 'outcome-unknown' });
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
+  });
   it.each(['claim', 'markDispatched'] as const)('excludes delayed durable %s response from the short grant lifetime', async method => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
     const reserve = vi.spyOn(capacity, 'reserve'), consume = vi.spyOn(capacity, 'consume');
@@ -50,7 +88,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
     expect(h.network).not.toHaveBeenCalled();
   });
 
-  it('charges unavailable capacity after durable intent without invoking network', async () => {
+  it('retains local refusal audit without charging a transport attempt', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
     const reserve = vi.spyOn(capacity, 'reserve').mockResolvedValue(null);
     const consume = vi.spyOn(capacity, 'consume');
@@ -63,6 +101,8 @@ describe('ordinary capacity acquired at the network boundary', () => {
       reason: 'credential-capacity-unavailable' });
     expect(row.children[0].state).toBe('queued');
     expect(row.operation?.maxAttempts).toBe(9);
+    expect(row.children[0].attempts).toBe(0);
+    expect(row.attempts[0].nextAttemptAt).toBeGreaterThan(row.attempts[0].resolvedAt!);
   });
 
   it('reserves only after the real store confirms dispatch intent', async () => {
@@ -85,7 +125,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
     expect((await h.runtime.store.listOrigins()).records[0].attempts).toEqual([]);
   });
 
-  it.each(['refused', 'expired-response'] as const)('keeps %s consumption provably unsent and charged, without renewal', async mode => {
+  it.each(['refused', 'expired-response'] as const)('keeps %s consumption uncharged without renewing the capacity grant', async mode => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
     const reserve = vi.spyOn(capacity, 'reserve');
     const original = capacity.consume.bind(capacity);
@@ -101,6 +141,26 @@ describe('ordinary capacity acquired at the network boundary', () => {
     expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed',
       reason: 'credential-capacity-unavailable' });
     expect(row.children[0].state).toBe('queued');
+    expect(row.children[0].attempts).toBe(0);
+  });
+
+  it('does not refund an error of the same class thrown by the network callback', async () => {
+    const h = await harness();
+    h.network.mockRejectedValue(new OriginCapacityUnavailable());
+    await expect(h.send()).rejects.toMatchObject({ reason: 'transport-acceptance-unknown' });
+    expect(h.network).toHaveBeenCalledOnce();
+    const row = (await h.runtime.store.listOrigins()).records[0];
+    expect(row.children[0].attempts).toBe(1);
+    expect(row.children[0].state).toBe('outcome-unknown');
+  });
+
+  it('returns the transport attempt on a capacity IPC exception before network', async () => {
+    const h = await harness();
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockRejectedValue(new Error('IPC unavailable'));
+    await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
+    expect(h.network).not.toHaveBeenCalled();
+    const row = (await h.runtime.store.listOrigins()).records[0];
+    expect(row.children[0]).toMatchObject({ attempts: 0, state: 'queued' });
   });
 
   it('latches before reserve so concurrent and repeated closure calls cannot acquire another grant', async () => {

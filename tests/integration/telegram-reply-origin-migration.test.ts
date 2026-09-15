@@ -97,9 +97,9 @@ describe('origin relay installed-upgrade parity', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-awareness-migration-'));
     dirs.push(projectDir);
     const file = path.join(projectDir, 'CLAUDE.md');
-    fs.writeFileSync(file, '# Existing agent\n\n### Telegram message origin\n\nOperator note: preserve this workflow.\n');
+    fs.writeFileSync(file, '# Existing agent\n\n### Telegram message origin\n\nOperator note: preserve this workflow.\n' + telegramOriginCapacityAwareness().replace('A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain.', 'An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit.'));
     const shadows = ['AGENTS.md', 'GEMINI.md'].map(name => path.join(projectDir, name));
-    for (const shadow of shadows) fs.writeFileSync(shadow, '# Existing shadow\n\n### Telegram message origin\n\nOperator shadow note.\n');
+    for (const shadow of shadows) fs.writeFileSync(shadow, '# Existing shadow\n\n### Telegram message origin\n\nOperator shadow note.\n' + telegramOriginCapacityAwareness().replace('A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain.', 'An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit.'));
     const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'),
       port: 4042, hasTelegram: true, projectName: 'fixture' });
     const migrate = () => {
@@ -109,7 +109,10 @@ describe('origin relay installed-upgrade parity', () => {
       expect(result.errors).toEqual([]);
       return fs.readFileSync(file, 'utf8');
     };
+    const historical = 'Operator history: An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit.';
+    for (const target of [file, ...shadows]) fs.appendFileSync(target, '\n' + historical + '\n');
     const first = migrate();
+    expect(first).toContain(historical);
     expect(first).toContain(telegramOriginCertificationAwareness());
     expect(first).toContain(telegramOriginLeaseAwareness());
     expect(first).toContain(telegramOriginRecoveryAwareness());
@@ -127,6 +130,7 @@ describe('origin relay installed-upgrade parity', () => {
     for (const shadow of shadows) {
       const content = fs.readFileSync(shadow, 'utf8');
       expect(content).toContain('Operator shadow note.');
+      expect(content).toContain(historical);
       expect(content).toContain(telegramOriginRecoveryAwareness());
       expect(content).toContain(telegramOriginCapacityAwareness());
       expect(content.split('Queued-message review pacing:')).toHaveLength(2);

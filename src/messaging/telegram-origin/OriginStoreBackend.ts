@@ -552,6 +552,7 @@ export class OriginStoreBackend {
     if (input.receiptJson !== undefined) json(input.receiptJson, 64 * 1024);
     if ((input.outcome === 'accepted' || input.outcome === 'scheduled') && !input.receiptJson) return { recorded: false, reason: 'receipt-required' };
     if (input.nextAttemptAt !== undefined && input.outcome !== 'known-failed') return { recorded: false, reason: 'invalid-transition' };
+    if (input.localRefusal && (input.outcome !== 'known-failed' || input.reason !== 'credential-capacity-unavailable' || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
     const now = input.now ?? Date.now();
     return this.db.transaction((): OutcomeWriteResult => {
       const child = this.child(input.childId); if (!child) return { recorded: false, reason: 'stale-fence' };
@@ -560,7 +561,9 @@ export class OriginStoreBackend {
       if (!attempt || entry.entry_kind !== 'telegram-origin' || entry.claimed_by !== input.claimToken || entry.state !== 'claimed' || (entry.lease_until ?? 0) <= now) return { recorded: false, reason: 'stale-fence' };
       if (['accepted', 'scheduled'].includes(input.outcome) && attempt.phase !== 'dispatched') return { recorded: false, reason: 'not-dispatched' };
       if (attempt.outcome !== null) return { recorded: false, reason: 'invalid-transition' };
-      const retry = input.outcome === 'known-failed' && input.nextAttemptAt !== undefined && input.nextAttemptAt >= now && input.nextAttemptAt < op.deadline_at && entry.attempts < op.max_attempts;
+      if (input.localRefusal && attempt.phase !== 'dispatched') return { recorded: false, reason: 'not-dispatched' };
+      const attempts = entry.attempts - (input.localRefusal ? 1 : 0);
+      const retry = input.outcome === 'known-failed' && input.nextAttemptAt !== undefined && input.nextAttemptAt >= now && input.nextAttemptAt < op.deadline_at && attempts < op.max_attempts;
       const state = retry ? 'queued' : input.outcome;
       this.db.prepare('UPDATE telegram_origin_attempts SET outcome=?,receipt_json=?,resolved_at=? WHERE attempt_id=? AND outcome IS NULL').run(input.outcome, input.receiptJson ?? null, now, attempt.attempt_id);
       this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, input.reason ?? null, retry ? input.nextAttemptAt : null);
@@ -570,6 +573,10 @@ export class OriginStoreBackend {
       this.db.prepare('UPDATE entries SET state=?,claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,next_attempt_at=? WHERE delivery_id=? AND claimed_by=?')
         .run(retry ? 'queued' : input.outcome === 'outcome-unknown' ? 'delivered-ambiguous' : 'delivered-recovered', retry ? new Date(input.nextAttemptAt!).toISOString() : null, child.delivery_id, input.claimToken);
       this.event(attempt.attempt_id, `attempt:${input.outcome}`);
+      if (input.localRefusal) {
+        this.db.prepare('UPDATE entries SET attempts=MAX(0,attempts-1) WHERE delivery_id=?').run(child.delivery_id);
+        this.event(attempt.attempt_id, 'attempt:local-refusal-not-charged');
+      }
       if (!retry) this.event(`${child.child_id}:${input.outcome}`, `child:${input.outcome}`);
       this.refreshOperation(op.operation_id);
       return { recorded: true };

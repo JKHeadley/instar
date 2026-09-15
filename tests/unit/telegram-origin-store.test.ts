@@ -22,6 +22,59 @@ async function claimed(store: OriginStore, input = admission()) {
 }
 
 describe('Telegram origin worker/outbox', () => {
+  it('does not refund a local refusal after its claim lease expired', async () => {
+    const { store } = await open();
+    const { input, claim } = await claimed(store);
+    expect(await store.markDispatched(claim)).toBe(true);
+    const result = await store.recordOutcome({ ...claim, outcome: 'known-failed', localRefusal: true,
+      reason: 'credential-capacity-unavailable', now: Date.now() + 60_001 });
+    expect(result).toEqual({ recorded: false, reason: 'stale-fence' });
+    expect((await store.getOrigin(input.record.originId))?.children[0].attempts).toBe(1);
+  });
+
+  it('does not extend the original deadline when a local refusal cannot be retried', async () => {
+    const { store } = await open();
+    const { input, claim } = await claimed(store);
+    expect(await store.markDispatched(claim)).toBe(true);
+    expect(await store.recordOutcome({ ...claim, outcome: 'known-failed', localRefusal: true,
+      reason: 'credential-capacity-unavailable', nextAttemptAt: input.deadlineAt })).toEqual({ recorded: true });
+    const row = await store.getOrigin(input.record.originId);
+    expect(row?.children[0]).toMatchObject({ attempts: 0, state: 'known-failed' });
+    expect(row?.operation?.deadlineAt).toBe(input.deadlineAt);
+    expect(await store.recoverableAdmissions()).toEqual([]);
+  });
+  it('keeps transport budget through twelve paced local refusals and a worker restart', async () => {
+    let { store, stateDir } = await open();
+    let now = Date.now() - 60 * 60_000;
+    const input = admission('local-refusal-budget', now);
+    input.maxAttempts = 1;
+    await store.admit(input);
+    const child = input.children[0];
+    for (let n = 0; n < 12; n++) {
+      const result = await store.claim({ childId: child.childId, materializationId: child.materializations[0].materializationId,
+        ownerBootId: 'local-refusal-boot', leaseMs: 60_000, now });
+      expect(result.status).toBe('claimed');
+      if (result.status !== 'claimed') throw new Error('local refusal exhausted transport budget');
+      expect(result.child.attemptNumber).toBe(1);
+      expect(await store.markDispatched({ ...result.child, now })).toBe(true);
+      const outcome = { ...result.child, outcome: 'known-failed' as const, reason: 'credential-capacity-unavailable',
+        localRefusal: true, nextAttemptAt: now + 30_000, now };
+      expect(await store.recordOutcome(outcome)).toEqual({ recorded: true });
+      expect((await store.recordOutcome(outcome)).recorded).toBe(false);
+      expect((await store.getChild(child.childId))?.attempts).toBe(0);
+      expect(await store.recoverableAdmissions({ now: now + 29_999 })).toEqual([]);
+      now += 30_000;
+    }
+    await store.close();
+    store = (await open({ stateDir })).store;
+    const row = await store.getOrigin(input.record.originId);
+    expect(row?.attempts).toHaveLength(12);
+    expect(row?.children[0]).toMatchObject({ state: 'queued', attempts: 0 });
+    expect(row?.operation).toMatchObject({ deadlineAt: input.deadlineAt, maxAttempts: 1 });
+    expect(await store.recoverableAdmissions({ now })).toHaveLength(1);
+    expect(await store.recoverableAdmissions({ now: input.deadlineAt })).toEqual([]);
+  });
+
   it('opens a file worker when the parent uses stdin-only module flags', async () => {
     const previous = process.execArgv;
     process.execArgv = ['--input-type=module'];

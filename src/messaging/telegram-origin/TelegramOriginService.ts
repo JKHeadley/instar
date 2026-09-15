@@ -2,6 +2,7 @@
 // (docs/STANDARDS-REGISTRY.md). Recording and presentation are independent.
 import { sealOriginAdmission, validOriginAdmission } from './OriginAdmissionSeal.js';
 import { OriginCapacityUnavailable } from './OriginEgressCapacity.js';
+import { consumeOriginLocalRefusal } from './OriginBotEgress.js';
 import { recordTelegramEditRejection } from '../TelegramEditRejection.js';
 import type { OriginCapacityAuthority } from './OriginEgressCapacity.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -14,7 +15,7 @@ import { redact } from '../secret-patterns.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
-import { nextOriginKnownFailure } from './OriginRetry.js';
+import { nextOriginKnownFailure, nextOriginLocalRefusal } from './OriginRetry.js';
 import { OriginTransportCancelledBeforeNetwork } from './OriginTransportCancellation.js';
 import { correlateBotReceipt, correlatePartialBotReceipt, replayBotReceipt } from './OriginBotReceipt.js';
 import type { OriginBotReceipt } from './OriginBotReceipt.js';
@@ -551,15 +552,19 @@ export class TelegramOriginService {
       let response: Response;
       try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
       catch (error) {
-        if (error instanceof OriginCapacityUnavailable || error instanceof OriginTransportCancelledBeforeNetwork) {
-          // This in-process closure was invalidated before invoking network.
-          // Retain the charged attempt once dispatch intent was durable. A
-          // crash without this proof remains outcome-unknown on recovery.
-          const nextAttemptAt = nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
+        const localRefusal = consumeOriginLocalRefusal(error, request);
+        if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork) {
+          const reason = localRefusal ? 'credential-capacity-unavailable' : 'telegram-request-cancelled-before-network';
+          // Only a request-bound proof from the egress closure returns budget.
+          // A crash without that proof remains uncertain on recovery.
+          const nextAttemptAt = localRefusal
+            ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)
+            : nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
             maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now() });
-          await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: error.message,
+          await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason,
+            ...(localRefusal ? { localRefusal: true } : {}),
             ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
-          return this.#hold(operation, error.message);
+          return this.#hold(operation, reason);
         }
         await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
         throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');

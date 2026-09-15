@@ -1,5 +1,11 @@
 import { BACKOFF_SCHEDULE_MS } from '../../monitoring/delivery-failure-sentinel/recovery-policy.js';
 
+/** Local refusals retain a pacing interval and the original wall-clock bound. */
+export function nextOriginLocalRefusal(now: number, deadlineAt: number): number | undefined {
+  const next = now + BACKOFF_SCHEDULE_MS[0];
+  return Number.isSafeInteger(next) && next < deadlineAt ? next : undefined;
+}
+
 /** Only callers with definite non-delivery may schedule. The existing recovery
  * schedule and original outbox continue to own every attempt and deadline. */
 export function nextOriginKnownFailure(input: { attempt: number; maxAttempts: number; deadlineAt: number;
