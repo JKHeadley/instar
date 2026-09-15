@@ -119,3 +119,37 @@ All 49 focused tests across these 15 files passed in
 /tmp/echo-local-refusal-boot-cleanup-focused.log (normal exit 0).
 Lint passed in /tmp/echo-local-refusal-boot-cleanup-lint.log.
 Fresh full validation and final-candidate CI remain required.
+
+## Phone fixture observer convergence
+
+The frozen ca90f46d7 full run passed 51,937 aggregate tests and 4,201 dedicated
+integration tests. Dedicated E2E finished with 3,242 passing cases and one
+failure. The final stack points to message preparation after the phone display
+save at tests/e2e/telegram-origin-phone.test.ts:87: the preceding ten-second
+observer loop silently exhausted its deadline and continued despite unavailable
+display authority. All 14,014 frozen inputs were unchanged. This is a failed
+full run, even though all required CI checks passed.
+
+Both initial and post-save loops now explicitly assert the real runtime display
+value within 20 seconds. This permits two independent refresh opportunities
+(5-second scheduling delay, up to a 2-second failed or invalidated source read,
+another 5-second delay, and another bounded read) plus scheduling margin. This
+is a fixture allowance, not a new production service guarantee. Unabortable work
+can retain the existing read slot longer; a persistent failure still fails this
+test with phase-labelled state, reason, revision, busy flag and timestamps. No
+config values, tokens or arbitrary exception messages enter those diagnostics.
+The body budget is 60 seconds to accommodate the two observation waits and
+HTTP/DOM work; the separate 30-second cleanup bound is unchanged.
+
+Message preparation remains outside polling, immediately after successful
+observation. Disk persistence, actual new-message display settings, unchanged
+original envelopes, operator audit scope and model-write refusal assertions are
+preserved. Production source reads still have their two-second deadline,
+snapshots still require current authority and 30-second freshness, and no
+runtime or delivery policy changes are included. The observed test failure
+alone does not establish a production observer defect.
+
+Independent reviewer review_local_refusal concurred with the actual single-file
+diff. The dedicated phone E2E passed in
+/tmp/echo-local-refusal-phone-observer-focused.log. Fresh full validation and
+final-candidate CI remain required before release.
