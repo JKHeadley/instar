@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-15T00:25:12.000Z",
+  "reviewers": [
+    "echo:codex-cli",
+    "archimedes:codex-cli"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/subscription-relogin-deadline-family-review-2026-09-15.md",
+  "convergenceSha256": "f2bb29ea8bd4eec1fdfc1a9ae08b59e2f01fd3598e2d0f81f5cba798cc28d970",
+  "areas": {
+    "Building": {
+      "areaSha256": "235a1ba9f0cbcc5d3411483a889e8530e579cf63705e77b71ef62106c5dd3d54",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "e1f8094ca9e11b29e2497a7e6263eaafae0904b91fa235437bd96712005a995f",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "a7328fb1521c028944cb44336716647fb3b350d6edea3a865dc506e6ab07038a",
+      "verdict": "accepted"
+    }
+  }
+}
