@@ -286,3 +286,77 @@ so its existing conditional remote branches were not exercised; local tunnel
 and viewer assertions passed. No remote-reachability success is claimed. The
 post-change source audit leaves only the five confirmed configuration-only
 numeric matches. Full local validation and fresh CI still remain required.
+
+## Actual watcher-boundary repair after the interrupted full run
+
+Candidate 11d38c7b6 completed its frozen local `test:all` run with 51,972
+passing tests and two failures: the real canary unit and HTTP integration paths
+both latched `cleanup:deadline-timer:awaiting-ack`. CI was green, but that does
+not override the local failure. Direct instrumentation reproduced the cause
+outside Vitest: all six checks finished in roughly 320 ms, then synchronous
+`FSWatcher.close()` calls inside the disposable worker took 15–43 seconds on
+this macOS host. The timeout was therefore reporting a real cleanup-path stall,
+not a failed contract check and not merely an undersized test wait.
+
+The repair makes the worker thread itself the watcher cleanup boundary. The
+worker removes its exact private fixture through `SafeFsExecutor`, reports the
+worker-side monotonic check and cleanup completion instants, and acknowledges
+only when fixture removal succeeded. The parent validates the ordered proof,
+rejects missing, malformed, negative, or over-budget proof, then force-terminates
+that one disposable worker. Passing health still waits for the actual worker
+exit event and a second idempotent parent-side fixture removal. Legacy injected
+test workers without the new proof fields retain the previous normal-exit and
+deadline behavior.
+
+### Decision-point and principle review
+
+- **Modified decision point:** deterministic admission of `ownedContracts=pass`.
+  This is a hard protocol/resource invariant, not a judgment about message
+  meaning. No delivery, credential, retry, or content authority changes.
+- **Over-block:** a legitimate proof with inconsistent timestamps, a missing
+  `fixtureRemoved: true`, or cleanup duration at/above the configured bound is
+  rejected. The bundled worker emits the complete schema; legacy test workers
+  remain compatible through the old receive-time path.
+- **Under-block:** a substituted worker could claim false proof, but production
+  supplies the bundled owned worker URL. Even then, the parent independently
+  requires its actual exit and repeats exact-directory removal before pass.
+- **Level of abstraction:** watcher ownership belongs at the disposable worker
+  boundary. Serially closing individual native watcher handles inside that
+  worker duplicated the OS/thread teardown authority and caused the stall.
+- **Signal vs authority:** compliant with `docs/signal-vs-authority.md`. This is
+  structural validation of a diagnostic result, within the hard-invariant
+  exception; it adds no brittle message-flow blocker or conversational judgment.
+- **Judgment Within Floors:** no competing-signals heuristic is added. Ordered
+  proof, bounded elapsed time, exact fixture removal, and worker exit are fully
+  enumerable invariants.
+- **Interactions and races:** the parent clears the acknowledgement deadline
+  only after a valid worker-side proof, owns forced termination, retains the
+  single-flight slot until exit/removal settle, and preserves the first fixed
+  cleanup fault. A queued timely proof receives one poll turn before an
+  `awaiting-ack` timer classification, preventing parent event-loop stalls from
+  manufacturing a late acknowledgement. Failed cleanup still latches the
+  instance and prevents recurrence.
+- **External surface:** only detector-health timing/reason can change. No
+  Telegram request, message body, persistent delivery record, operator action,
+  URL, or user-facing notice is added. No operator surface is touched.
+- **Multi-machine posture:** machine-local by design because each machine probes
+  its own file/watcher runtime. It emits no notice, holds no durable state, and
+  generates no URL, so one-voice, replication, transfer, and remote-link
+  concerns do not apply.
+- **Rollback:** pure code/test rollback in the next patch; no data migration or
+  agent-state repair.
+
+This controller retains its registered two-attempt ceiling, startup and
+completion-relative schedule floors, cleanup-failure latch, and single-flight
+ownership. Class-closure remains `unbounded-self-action` with guard coverage at
+`tests/unit/self-action-convergence.test.ts`: the control-loop edge cannot start
+another attempt while `pending`, cleanup failure prevents rescheduling, and
+`close()` joins the owned worker. No agent-authored prompt/hook/config/skill
+defect is involved.
+
+Validation on the repaired candidate: 32 adversarial cleanup protocol cases,
+12 real-worker/native-lane unit cases, the real authenticated HTTP integration,
+and all three production-Boot E2E lifecycles pass. The exact HTTP case passed in
+124.4 seconds and the E2E file passed all three cases in 193.0 seconds under the
+same machine load that reproduced the prior fault. Full lint and build pass.
+Fresh full local `test:all` and CI are still required before merge/deployment.

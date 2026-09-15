@@ -50,6 +50,7 @@ it.each([
   ['duplicate checks', `parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});`],
   ['duplicate cleanup', `parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});parentPort.postMessage({type:'cleanup',verified:true});`],
   ['cleanup before checks', `parentPort.postMessage({type:'cleanup',verified:true});parentPort.postMessage({type:'checks',passed:true,checks});`],
+  ['unverified worker cleanup proof', `parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:false,completedAt:0});`],
   ['missing check result', `parentPort.postMessage({passed:true,checks});`],
 ])('rejects %s without producing passing health', async (_name, body) => {
   const canary = await fixture(body);
@@ -92,6 +93,23 @@ it('rejects a late cleanup acknowledgement even when its deadline callback is de
   await canary.run();
   expectFault('cleanup:late-ack:awaiting-ack');
   expect(canary.getHealth()).toMatchObject({ state: 'fail', reason: 'canary-cleanup-unverified', attempts: 1, checks: [] });
+});
+
+it('accepts cleanup completed before its deadline when parent receipt is event-loop delayed', async () => {
+  const canary = await fixture(`
+    const {performance}=await import('node:perf_hooks');
+    const {rm}=await import('node:fs/promises');
+    const {workerData}=await import('node:worker_threads');
+    parentPort.postMessage({type:'checks',passed:true,checks,checkedAt:performance.now()});
+    setTimeout(async()=>{await rm(workerData.directory,{recursive:true,force:true});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:true,completedAt:performance.now()})},50);`,
+  { cleanupTimeoutMs: 100 });
+  const run = canary.run();
+  await vi.waitFor(() => expect(canary.getHealth().reason).toBe('canary-cleanup-running'), { interval: 1 });
+  const stalledUntil = performance.now() + 200;
+  while (performance.now() < stalledUntil) { /* Deliberately stall only the parent thread. */ }
+  await run;
+  expect(canary.getHealth().state, JSON.stringify(report.mock.calls)).toBe('pass');
+  expect(canary.getHealth().attempts).toBe(1);
 });
 
 it('does not schedule automatic probes after a cleanup failure latches', async () => {

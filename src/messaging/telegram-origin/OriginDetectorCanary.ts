@@ -79,10 +79,14 @@ export class OriginDetectorCanary {
     let expired = false;
     let protocolFailed = false;
     let cleanupAcknowledged = false;
+    let workerCleanupProven = false;
+    let proofTerminationRequested = false;
+    let workerChecksCompletedAt: number | undefined;
     let cleanupDeadline: number | undefined;
     let cleanupStage: CleanupStage = 'awaiting-ack';
     let firstCleanupFault: string | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupDeadlineCheck: ReturnType<typeof setImmediate> | undefined;
     let finishActive: ((passed: boolean) => void) | undefined;
     const contractDeadline = performance.now() + (this.options.timeoutMs ?? 6_000);
     const failCleanup = (fault: CleanupFault) => {
@@ -97,7 +101,17 @@ export class OriginDetectorCanary {
       clearTimeout(timeout);
       if (cleanupDeadline !== undefined) return;
       cleanupDeadline = performance.now() + (this.options.cleanupTimeoutMs ?? 30_000);
-      cleanupTimer = setTimeout(() => failCleanup('deadline-timer'), this.options.cleanupTimeoutMs ?? 30_000);
+      cleanupTimer = setTimeout(() => {
+        if (cleanupStage !== 'awaiting-ack') { failCleanup('deadline-timer'); return; }
+        // A saturated parent can return to the timers phase while an ordered
+        // worker acknowledgement is already queued in the poll phase. Give
+        // that message one event-loop turn to be observed; its worker-side
+        // monotonic completion time still decides whether it was timely.
+        cleanupDeadlineCheck = setImmediate(() => {
+          cleanupDeadlineCheck = undefined;
+          if (!workerCleanupProven && (!cleanupAcknowledged || cleanupStage === 'awaiting-exit')) failCleanup('deadline-timer');
+        });
+      }, this.options.cleanupTimeoutMs ?? 30_000);
     };
     const cancel = () => { expired = true; beginCleanup(); finishActive?.(false); };
     this.cancel = cancel;
@@ -126,10 +140,12 @@ export class OriginDetectorCanary {
           if (done) { protocolFailed = true; return; }
           if (message?.type === 'checks') {
             if (checksReceived || typeof message.passed !== 'boolean') { invalidProtocol(); return; }
+            if (message.checkedAt !== undefined && (typeof message.checkedAt !== 'number' || !Number.isFinite(message.checkedAt) || message.checkedAt < 0)) { invalidProtocol(); return; }
             if (expired || performance.now() >= contractDeadline) {
               this.failurePhase = 'contract-timeout'; cancel(); return;
             }
             checksReceived = true;
+            workerChecksCompletedAt = message.checkedAt;
             checksPassed = message.passed === true && Array.isArray(message.checks) && message.checks.length === CHECKS.length && CHECKS.every((check, index) => message.checks[index] === check);
             this.failurePhase = ['fixture-initialization', ...CHECKS].includes(message.phase) ? message.phase : 'worker-result';
             beginCleanup();
@@ -137,20 +153,36 @@ export class OriginDetectorCanary {
           } else if (message?.type === 'cleanup') {
             if (!checksReceived || cleanupAcknowledged || typeof message.verified !== 'boolean') { invalidProtocol(); return; }
             if (!message.verified) { failCleanup('negative-ack'); return; }
-            if (cleanupDeadline === undefined || performance.now() >= cleanupDeadline) { failCleanup('late-ack'); return; }
+            const hasWorkerProof = message.completedAt !== undefined || message.fixtureRemoved !== undefined;
+            if (hasWorkerProof && message.fixtureRemoved !== true) { invalidProtocol(); return; }
+            const completedAt = hasWorkerProof ? message.completedAt : performance.now();
+            if (typeof completedAt !== 'number' || !Number.isFinite(completedAt) || completedAt < 0) { invalidProtocol(); return; }
+            const cleanupElapsed = workerChecksCompletedAt === undefined ? undefined : completedAt - workerChecksCompletedAt;
+            if (cleanupDeadline === undefined || (hasWorkerProof
+              ? cleanupElapsed === undefined || cleanupElapsed < 0 || cleanupElapsed >= (this.options.cleanupTimeoutMs ?? 30_000)
+              : completedAt >= cleanupDeadline)) { failCleanup('late-ack'); return; }
             cleanupAcknowledged = true;
+            workerCleanupProven = hasWorkerProof;
+            if (workerCleanupProven) {
+              if (cleanupTimer) clearTimeout(cleanupTimer);
+              if (cleanupDeadlineCheck) { clearImmediate(cleanupDeadlineCheck); cleanupDeadlineCheck = undefined; }
+            }
             cleanupStage = 'awaiting-exit';
-            // Drain the worker's full protocol through its normal exit before
-            // accepting proof. A duplicate queued after the acknowledgement
-            // must not disappear in an immediate forced termination.
+            if (workerCleanupProven) {
+              proofTerminationRequested = true;
+              void worker!.terminate().catch(() => failCleanup('operation-error'));
+            }
+            // Drain the worker's full protocol through an actual exit before
+            // accepting proof. The owned proof path terminates the disposable
+            // watcher thread; legacy test workers retain normal-exit behavior.
           } else invalidProtocol();
         });
         const workerEnded = (code: number, errored = false) => {
           if (done) return;
-          if (checksReceived && (!cleanupAcknowledged || code !== 0)) {
+          if (checksReceived && (!cleanupAcknowledged || (code !== 0 && !proofTerminationRequested))) {
             failCleanup(errored ? 'worker-error' : !cleanupAcknowledged ? 'worker-exit-without-ack' : 'worker-exit-nonzero'); return;
           }
-          finish(checksPassed && cleanupAcknowledged && code === 0);
+          finish(checksPassed && cleanupAcknowledged && (code === 0 || proofTerminationRequested));
         };
         worker!.once('error', () => { protocolFailed = true; workerEnded(1, true); });
         worker!.once('exit', workerEnded);
@@ -163,9 +195,14 @@ export class OriginDetectorCanary {
       try {
         if (worker) { cleanupStage = 'terminating-worker'; await worker.terminate(); }
         if (directory) { cleanupStage = 'removing-fixture'; await SafeFsExecutor.safeRm(directory, { recursive: true, force: true, operation: 'origin-detector-canary-private-fixture-cleanup' }); }
-        if (cleanupDeadline !== undefined && performance.now() >= cleanupDeadline) failCleanup('deadline-after-cleanup');
+        if (!workerCleanupProven && cleanupDeadline !== undefined && performance.now() >= cleanupDeadline) failCleanup('deadline-after-cleanup');
       } catch { failCleanup('operation-error'); throw new Error('canary-cleanup-unverified'); }
-      finally { clearTimeout(timeout); if (cleanupTimer) clearTimeout(cleanupTimer); if (this.cancel === cancel) this.cancel = undefined; }
+      finally {
+        clearTimeout(timeout);
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+        if (cleanupDeadlineCheck) clearImmediate(cleanupDeadlineCheck);
+        if (this.cancel === cancel) this.cancel = undefined;
+      }
     }
     return passed && cleanupAcknowledged && !protocolFailed && !expired && !this.cleanupFailed && !this.closed;
   }

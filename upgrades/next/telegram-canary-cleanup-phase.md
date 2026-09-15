@@ -2,11 +2,11 @@
 
 ## What Changed
 
-The owned configuration canary retains its six-second check deadline and now measures verified cleanup separately, with a 30-second bound. Passing health requires the complete ordered checks, cleanup acknowledgement, normal worker exit, termination and private-fixture removal. Missing or late cleanup latches unavailable health and prevents further attempts while retaining ownership until outstanding teardown settles.
+The owned configuration canary retains its six-second check deadline and now measures verified cleanup separately, with a 30-second bound. Its disposable worker removes the private fixture and reports worker-side completion timing; the parent then terminates the watcher thread as one owned resource boundary. Passing health requires complete ordered checks, valid cleanup proof, actual worker exit, and idempotent parent removal. Missing or late cleanup latches unavailable health and prevents further attempts while retaining ownership until outstanding teardown settles.
 
 ## What to Tell Your User
 
-A Telegram diagnostic can show cleanup running after its checks finish. Slow filesystem watcher shutdown no longer spends the check deadline. A passing diagnostic still does not prove that a message was delivered.
+A Telegram diagnostic can show cleanup running after its checks finish. Slow per-watcher shutdown no longer turns healthy checks into a false cleanup timeout. A passing diagnostic still does not prove that a message was delivered.
 
 ## Summary of New Capabilities
 
@@ -14,4 +14,4 @@ Existing detector health distinguishes active cleanup from completed proof. Star
 
 ## Evidence
 
-The separate side-effects artifact records measured watcher teardown, independent review, boundary coverage and release validation. This fragment alone is not evidence that a release is active.
+The separate side-effects artifact records the reproduced 15–43 second native watcher-close stall, the worker-boundary repair, boundary coverage and release validation. This fragment alone is not evidence that a release is active.
