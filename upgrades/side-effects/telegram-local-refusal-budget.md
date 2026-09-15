@@ -91,3 +91,31 @@ After the run ended, the correction passed both lifecycle cases in
 /tmp/echo-local-refusal-cleanup-focused.log. Reviewer review_local_refusal
 concurred with applying the measured bound to this shared shutdown path.
 Fresh full validation and CI remain required.
+
+## Complete shared Boot cleanup correction
+
+The subsequent frozen a80a5c915 full run passed 51,937 aggregate tests and
+4,201 dedicated integration tests. Dedicated E2E completed with 3,242 passing
+cases and one failure: the dashboard unchanged-no-op case completed its delivery
+assertions but exceeded the default 10-second afterEach cleanup deadline. All
+5,670 frozen inputs were unchanged. The runner exited normally with code 1;
+this result is not a green full suite.
+
+A read-only inventory found 15 remaining fixtures owning the same real Boot
+watcher shutdown, directly or through the detector/late-capacity helpers. Their
+cleanup hooks now have the same explicit 30-second bound as the corrected
+late-capacity lifecycle fixture. Reverse sequential awaited closure, close-error
+propagation, test-body deadlines and behavioral assertions are unchanged. Existing
+mock/global/timer restoration moves into finally in its original order; no new
+restorations are added. Finally executes when the awaited closure settles or
+rejects, not automatically when Vitest's external timeout fires. A genuine
+cleanup hang still fails, with up to 20 seconds more time before reporting.
+
+Independent reviewer review_local_refusal inspected the actual 15-file diff and
+concurred without a blocker. No runtime, global test configuration, production
+canary deadline, delivery policy or release gate changes are included.
+
+All 49 focused tests across these 15 files passed in
+/tmp/echo-local-refusal-boot-cleanup-focused.log (normal exit 0).
+Lint passed in /tmp/echo-local-refusal-boot-cleanup-lint.log.
+Fresh full validation and final-candidate CI remain required.
