@@ -31139,7 +31139,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (error) {
       const message = error instanceof Error ? error.message : 're-login approval failed';
       const status = message === 'relogin-episode-not-found' ? 404
-        : /mismatch|approvable|conflict|closed|expired/.test(message) ? 409 : 500;
+        : /mismatch|approvable|conflict|closed|expired|revalidation-refused/.test(message) ? 409 : 500;
       res.status(status).json({ error: message });
     }
   });
@@ -31207,7 +31207,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(repairAction === 'cancel' ? 200 : 202).json({ enabled: true, accepted: true, episode: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : 're-login approval failed';
-      res.status(/mismatch|approvable|conflict|closed|expired/.test(message) ? 409 : 500).json({ error: message });
+      res.status(/mismatch|approvable|conflict|closed|expired|revalidation-refused/.test(message) ? 409 : 500).json({ error: message });
     }
   });
 

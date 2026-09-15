@@ -96,6 +96,14 @@ describe('assisted re-login account controls', () => {
     renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'failed' }]);
     expect(target.querySelector('[data-relogin-action="retry"]')).toBeTruthy();
   });
+
+  it('does not offer a stale failed repair after current account truth is active', () => {
+    const account = [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active' }];
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'failed' }]);
+    expect(target.querySelector('[data-relogin-action="retry"]')).toBeNull();
+    expect(target.textContent).not.toContain('Sign-in repair stopped safely');
+  });
 });
 
 describe('friendly wording', () => {
@@ -406,6 +414,37 @@ describe('renderAccountMatrix', () => {
     ]);
     expect(refused.querySelector('[data-matrix-relogin]')).toBeNull();
     expect(refused.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('lets current Active truth suppress a stale failed repair episode', () => {
+    const active = el();
+    renderAccountMatrix(doc, active, poolScope, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-old', accountId: 'a1', machineId: 'm1', state: 'failed' },
+    ]);
+    const cell = active.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell!.textContent).toContain('Active');
+    expect(cell!.textContent).not.toContain('Sign-in repair stopped safely');
+    expect(cell!.querySelector('[data-repair-action="retry"]')).toBeNull();
+  });
+
+  it('applies only known repair states with current-state precedence', () => {
+    const render = (status: string, state: string) => {
+      const target = el();
+      renderAccountMatrix(doc, target, {
+        enabled: true,
+        accounts: [{ id: 'a1', email: 'a1@x.com', status, machineId: 'm1', machineNickname: 'Laptop' }],
+        pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+      }, { enabled: true, logins: [] }, {}, [
+        { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
+      ]);
+      return target.querySelector('[data-cell-key="a1::m1"]');
+    };
+
+    expect(render('active', 'suggested')!.querySelector('[data-matrix-relogin]')).toBeNull();
+    expect(render('needs-reauth', 'suggested')!.querySelector('[data-repair-action="approve"]')).toBeTruthy();
+    expect(render('needs-reauth', 'failed')!.querySelector('[data-repair-action="retry"]')).toBeTruthy();
+    expect(render('active', 'auth-verifying')!.textContent).toContain('Repairing sign-in');
+    expect(render('active', 'future-state')!.querySelector('[data-matrix-relogin]')).toBeNull();
   });
 
   it('suppresses manual sign-in when the machine repair status is unavailable', () => {

@@ -196,6 +196,35 @@ describe('/subscription-relogin routes', () => {
     expect(deliveredConsumeCalls).toBe(1);
   });
 
+  it('classifies point-of-use state revalidation refusals as conflicts', async () => {
+    retry.mockRejectedValueOnce(new Error('retry-revalidation-refused:account-not-needs-reauth'));
+    const approved = store.approve(episodeId, { inputDigest: store.get(episodeId)!.inputDigest });
+    const starting = store.transition(episodeId, { expectedVersion: approved.version, to: 'cli-starting',
+      eventClass: 'cli-starting', incrementAttempt: true });
+    store.transition(episodeId, { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+    const response = await api(`/subscription-relogin/${episodeId}/approve-with-mandate`, {
+      method: 'POST', body: JSON.stringify({ mandateId: 'mandate-1', accountId: 'acct-1', action: 'retry' }),
+    });
+    expect(response).toMatchObject({
+      status: 409,
+      body: { error: 'retry-revalidation-refused:account-not-needs-reauth' },
+    });
+  });
+
+  it('classifies direct approval state revalidation refusals as conflicts', async () => {
+    approve.mockRejectedValueOnce(new Error('approval-revalidation-refused:account-not-needs-reauth'));
+    const response = await api(`/subscription-relogin/${episodeId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': 'operator-proof' },
+      body: '{}',
+    });
+    expect(response).toMatchObject({
+      status: 409,
+      body: { error: 'approval-revalidation-refused:account-not-needs-reauth' },
+    });
+  });
+
   it('requires the operator PIN and starts exactly one immutable approval', async () => {
     const missing = await api(`/subscription-relogin/${episodeId}/approve`, { method: 'POST', body: '{}' });
     expect(missing.status).toBe(401);

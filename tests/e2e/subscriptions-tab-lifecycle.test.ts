@@ -195,6 +195,39 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
     expect(els.accounts.textContent).toContain('Enter PIN, then try again');
   });
 
+  it('current Active pool truth outranks a durable failed repair through the production HTTP lifecycle', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
+    const pool = new SubscriptionPool({ stateDir: dir });
+    pool.addFixture({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    pool.update('a1', { status: 'active' });
+    const reloginStore = new SubscriptionReloginStore({ stateDir: dir, idFactory: () => 'repair-stale' });
+    const suggested = reloginStore.suggest({
+      sourceEpisodeId: 1, accountId: 'a1', machineId: 'm-self', mode: 'approval',
+      inputDigest: `sha256:${'d'.repeat(64)}`, profileId: 'profile-1',
+      framework: 'claude-code', provider: 'anthropic',
+    });
+    const approved = reloginStore.approve(suggested.id, { inputDigest: suggested.inputDigest });
+    const starting = reloginStore.transition(suggested.id, {
+      expectedVersion: approved.version, to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true,
+    });
+    reloginStore.transition(suggested.id, {
+      expectedVersion: starting.version, to: 'failed', eventClass: 'provider-rejected', failureClass: 'provider-rejected',
+    });
+    server = await bootApp({
+      config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(),
+      meshSelfId: 'm-self', subscriptionPool: pool, subscriptionRelogin: { store: reloginStore },
+    });
+    const { els, c } = mountTab(server.url);
+    await c.tick();
+
+    const cell = els.matrix.querySelector('[data-cell-key="a1::m-self"]');
+    expect(cell.textContent).toContain('Active');
+    expect(cell.textContent).not.toContain('Sign-in repair stopped safely');
+    expect(cell.querySelector('[data-repair-action="retry"]')).toBeNull();
+    expect((await (await fetch(server.url + '/subscription-relogin?scope=pool')).json()).episodes)
+      .toContainEqual(expect.objectContaining({ id: 'repair-stale', state: 'failed' }));
+  });
+
   it('feature OFF: both routes 200 { enabled:false } → friendly not-set-up copy', async () => {
     server = await bootApp({ config: { authToken: 't', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() });
     // Routes are alive (not 503).
