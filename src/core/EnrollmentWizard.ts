@@ -125,6 +125,11 @@ export interface EnrollmentWizardConfig {
    * mistaken for this flow succeeding. Absent ⇒ no witness ⇒ previous behaviour.
    */
   credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
+  /** Opaque revision of a follow-me slot's auth material. Captured before an
+   * artifact is issued and compared later; unchanged/unknown fails closed. */
+  authRevisionWitness?: (
+    login: Pick<PendingLogin, 'framework' | 'configHome'>,
+  ) => Promise<string | null> | string | null;
 }
 
 export interface StartEnrollmentInput {
@@ -163,6 +168,8 @@ export class EnrollmentWizard {
   private readonly oracle?: IdentityOracle;
   private readonly emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
   private readonly credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
+  private readonly authRevisionWitness?: EnrollmentWizardConfig['authRevisionWitness'];
+  private readonly completionSweepInFlight = new Set<string>();
 
   constructor(cfg: EnrollmentWizardConfig) {
     this.store = cfg.store;
@@ -172,6 +179,7 @@ export class EnrollmentWizard {
     this.oracle = cfg.oracle;
     this.emitAttention = cfg.emitAttention;
     this.credentialWitness = cfg.credentialWitness;
+    this.authRevisionWitness = cfg.authRevisionWitness;
   }
 
   /** Default flow kind per provider: Codex/OpenAI and xAI/grok = device-code
@@ -221,6 +229,16 @@ export class EnrollmentWizard {
     // drive succeeds, so a drive throw leaves NO pending-login behind; we re-raise
     // it as a typed EnrollmentDriveError the caller renders as "couldn't start the
     // login on <nickname> — retry?", never an opaque 500 / silently-stuck pending.
+    let authRevisionBaseline: string | null | undefined;
+    if (input.expectedEmail && this.authRevisionWitness) {
+      try {
+        authRevisionBaseline = await this.authRevisionWitness(input);
+      } catch {
+        // @silent-fallback-ok: without a baseline the automatic completion
+        // sweep stays off; explicit paste-back remains available.
+        authRevisionBaseline = undefined;
+      }
+    }
     let artifact: LoginArtifact;
     try {
       artifact = await this.driveLogin({
@@ -252,6 +270,7 @@ export class EnrollmentWizard {
       verificationUrl: artifact.verificationUrl,
       userCode: artifact.userCode,
       expectedEmail: input.expectedEmail,
+      ...(authRevisionBaseline !== undefined ? { authRevisionBaseline } : {}),
       ttlMs: artifact.ttlMs,
     });
     this.logger.log(`[EnrollmentWizard] started ${kind} login for ${input.label} (${input.provider})`);
@@ -309,6 +328,11 @@ export class EnrollmentWizard {
             continue;
           }
         }
+        let authRevisionBaseline: string | null | undefined;
+        if (login.expectedEmail && this.authRevisionWitness) {
+          try { authRevisionBaseline = await this.authRevisionWitness(login); }
+          catch { authRevisionBaseline = undefined; }
+        }
         const fresh = await this.driveLogin({
           provider: login.provider,
           framework: login.framework,
@@ -322,6 +346,7 @@ export class EnrollmentWizard {
           verificationUrl: fresh.verificationUrl,
           userCode: fresh.userCode,
           ttlMs: fresh.ttlMs,
+          ...(authRevisionBaseline !== undefined ? { authRevisionBaseline } : {}),
         });
         if (updated) {
           reissued.push(updated);
@@ -377,6 +402,11 @@ export class EnrollmentWizard {
    */
   complete(id: string): PendingLogin | null {
     const login = this.store.complete(id);
+    this.ensureCompletedLoginReady(login);
+    return login;
+  }
+
+  private ensureCompletedLoginReady(login: PendingLogin | null): void {
     if (login && login.framework === 'claude-code' && login.configHome) {
       const ready = this.ensureReady(login.configHome);
       if (ready.patched) {
@@ -385,7 +415,6 @@ export class EnrollmentWizard {
         this.logger.warn(`[EnrollmentWizard] could not verify ${login.configHome} interactive-ready — ${ready.reason}`);
       }
     }
-    return login;
   }
 
   /**
@@ -415,6 +444,17 @@ export class EnrollmentWizard {
   > {
     const login = this.complete(id);
     if (!login) return { outcome: 'not-found' };
+
+    return this.validateFollowMeIdentity(login, targetMachineNickname);
+  }
+
+  private async validateFollowMeIdentity(
+    login: PendingLogin,
+    targetMachineNickname: string,
+  ): Promise<
+    | { outcome: 'validated'; login: PendingLogin; email: string }
+    | { outcome: 'held'; login: PendingLogin; reason: string; expected: string | null; got: string | null }
+  > {
 
     // Read the email the COMPLETED login actually authenticated as. No oracle / no config-home
     // / a probe failure are all treated as "unavailable" → the gate fails closed below.
@@ -465,8 +505,6 @@ export class EnrollmentWizard {
    * a plain enrollment's completion stays the explicit /enroll/:id/complete call.
    */
   async sweepFollowMeCompletions(deps: {
-    /** Does this login's config-home hold a landed credential? (fs probe injected by the caller) */
-    credentialReady: (login: PendingLogin) => boolean;
     /** Called on a VALIDATED completion so the caller adds the account to its pool. */
     onValidated: (login: PendingLogin, email: string) => void;
     targetMachineNickname?: string;
@@ -474,20 +512,52 @@ export class EnrollmentWizard {
     const results: Array<{ id: string; outcome: 'validated' | 'held' }> = [];
     for (const login of this.store.active()) {
       if (!login.expectedEmail || !login.configHome) continue;
-      let ready = false;
-      try { ready = deps.credentialReady(login); } catch { ready = false; }
-      if (!ready) continue;
-      const result = await this.completeFollowMe(login.id, deps.targetMachineNickname ?? 'this machine');
-      if (result.outcome === 'validated') {
-        try { deps.onValidated(result.login, result.email); } catch (err) {
-          this.logger.warn(`[EnrollmentWizard] completion-sweep pool-add failed for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+      if (this.completionSweepInFlight.has(login.id)) continue;
+      this.completionSweepInFlight.add(login.id);
+      try {
+        // Presence is not completion. Re-auth commonly starts in a slot that
+        // already contains settings and old auth material. Require the opaque auth
+        // revision to CHANGE from the baseline captured before this exact artifact.
+        if (!await this.authRevisionChanged(login)) continue;
+        const result = await this.validateFollowMeIdentity(login, deps.targetMachineNickname ?? 'this machine');
+        if (result.outcome === 'validated') {
+          try {
+            const completed = this.store.completeIfVersion(login.id, login.version, () => {
+              deps.onValidated(result.login, result.email);
+            });
+            if (completed) {
+              this.ensureCompletedLoginReady(completed);
+              results.push({ id: login.id, outcome: 'validated' });
+            }
+          } catch (err) {
+            // The store invokes this callback before its terminal CAS write. A
+            // failed pool finalization therefore leaves the login durably pending
+            // and eligible for the next bounded sweep.
+            this.logger.warn(`[EnrollmentWizard] completion-sweep pool-add failed for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          const completed = this.store.completeIfVersion(login.id, login.version, () => {});
+          if (completed) {
+            this.ensureCompletedLoginReady(completed);
+            results.push({ id: login.id, outcome: 'held' });
+          }
         }
-        results.push({ id: login.id, outcome: 'validated' });
-      } else if (result.outcome === 'held') {
-        results.push({ id: login.id, outcome: 'held' });
+      } finally {
+        this.completionSweepInFlight.delete(login.id);
       }
     }
     return results;
+  }
+
+  private async authRevisionChanged(login: PendingLogin): Promise<boolean> {
+    if (!this.authRevisionWitness || typeof login.authRevisionBaseline !== 'string' || login.authRevisionBaseline.length === 0) return false;
+    try {
+      const current = await this.authRevisionWitness(login);
+      return typeof current === 'string' && current.length > 0 && current !== login.authRevisionBaseline;
+    } catch {
+      // @silent-fallback-ok: an unreadable auth slot is not completion proof.
+      return false;
+    }
   }
 
   /** Look up a single login by id INCLUDING terminal/expired records (unlike

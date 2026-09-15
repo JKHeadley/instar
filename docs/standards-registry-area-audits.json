@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
-      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
-      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
-      "areaSha256": "16a13b300e851807fc8943e18caa421cb635ee46ef657fbbd4594390f4acb08c",
+      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
+      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
+      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
+      "areaSha256": "235a1ba9f0cbcc5d3411483a889e8530e579cf63705e77b71ef62106c5dd3d54",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -22,10 +22,10 @@
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
-      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
-      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
-      "areaSha256": "e6cb695f7f5de652f6a36cb40e8d70ae955e42704902f31efbeb4633d0aeb588",
+      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
+      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
+      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
+      "areaSha256": "e1f8094ca9e11b29e2497a7e6263eaafae0904b91fa235437bd96712005a995f",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
-      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
-      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
-      "areaSha256": "7d42dc13c242f17b8cb01ddd82ca252a7193f0745401d3100d76a875cbbe91e8",
+      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
+      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
+      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
+      "areaSha256": "a7328fb1521c028944cb44336716647fb3b350d6edea3a865dc506e6ab07038a",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

@@ -113,6 +113,21 @@ describe('/subscription-pool enrollment routes (integration)', () => {
     expect(res.body.logins[0]).toHaveProperty('paneAlive', null);
   });
 
+  it('never exposes the internal auth revision baseline on the pending-login API', async () => {
+    store.issue({
+      id: 'follow-me', label: 'follow-me', provider: 'anthropic', framework: 'claude-code',
+      kind: 'url-code-paste', configHome: '/slot/follow-me',
+      verificationUrl: 'https://claude.com/oauth', expectedEmail: 'a@example.test',
+      authRevisionBaseline: 'opaque-internal-revision',
+    });
+
+    const res = await api('/subscription-pool/pending-logins');
+
+    expect(res.status).toBe(200);
+    expect(res.body.logins[0].authRevisionBaseline).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain('opaque-internal-revision');
+  });
+
   it('GET /pending-logins annotates paneAlive from the live pane capture (true = alive, false = the pane is gone)', async () => {
     await api('/subscription-pool/enroll', {
       method: 'POST',
@@ -224,6 +239,23 @@ describe('/subscription-pool enrollment routes (integration)', () => {
     expect(res.body.enabled).toBe(true);
     expect(res.body.reissued).toHaveLength(1);
     expect(res.body.reissued[0].reissueCount).toBe(1);
+  });
+
+  it('POST /enroll/reissue-expired never exposes an internal auth revision', async () => {
+    store.issue({
+      id: 'follow-me', label: 'follow-me', provider: 'anthropic', framework: 'claude-code',
+      kind: 'url-code-paste', configHome: '/slot/follow-me',
+      verificationUrl: 'https://claude.com/oauth', expectedEmail: 'a@example.test',
+      authRevisionBaseline: 'opaque-reissue-baseline', ttlMs: 1,
+    });
+    clock += 2;
+
+    const res = await api('/subscription-pool/enroll/reissue-expired', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.reissued).toHaveLength(1);
+    expect(res.body.reissued[0].authRevisionBaseline).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain('opaque-reissue-baseline');
   });
 
   it('400 when required fields are missing', async () => {

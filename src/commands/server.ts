@@ -10,6 +10,7 @@ import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } fr
  */
 
 import { execFile, execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14469,6 +14470,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           return null;
         }
       },
+      // Claude's `.claude.json` is a settings file and commonly predates a
+      // repair, so its mere existence can never prove this login completed.
+      // Capture an HMAC revision of the machine-local keychain blob before the
+      // artifact is issued and require that revision to change. The auth bytes
+      // never leave memory; only the keyed digest enters pending state.
+      authRevisionWitness: async (login) => {
+        if (login.framework !== 'claude-code' || !login.configHome) return null;
+        const raw = await defaultKeychainExec.readService(credSwapService(login.configHome));
+        if (!raw) return null;
+        return createHmac('sha256', config.authToken ?? '').update(raw).digest('hex');
+      },
       driveLogin: new FrameworkLoginDriver({
         // Capture with `tmux capture-pane -J` so a hard-WRAPPED verification URL is
         // joined back into one line (the 2026-06-18 "code=t" truncation bug). Falls
@@ -14534,7 +14546,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
       enrollmentWizard
         .sweepFollowMeCompletions({
-          credentialReady: (l) => !!l.configHome && fs.existsSync(path.join(l.configHome, '.claude.json')),
           onValidated: (login, email) => {
             // Upsert (D5): a re-auth of an EXISTING pool account updates it back to
             // active; only a genuinely-new account is added (add() refuses dup ids).

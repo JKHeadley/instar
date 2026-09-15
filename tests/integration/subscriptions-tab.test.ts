@@ -10,7 +10,7 @@
  *   - a fetch failure drops the tick + keeps the prior paint (no exception escapes)
  */
 // @ts-nocheck — exercises the browser-native ESM module.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { createController } from '../../dashboard/subscriptions.js';
 
@@ -116,10 +116,12 @@ describe('Subscriptions tab controller (integration)', () => {
     fx.script['/subscription-pool'] = { body: { ...ACCOUNTS_OK, accounts: [{ ...ACCOUNTS_OK.accounts[0], status: 'needs-reauth' }] } };
     fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: true, logins: [] } };
     fx.script['/subscription-relogin?scope=pool'] = { body: { enabled: true, episodes: [{ id: 'repair-1', accountId: 'a1', state: 'suggested' }] } };
-    const c = ctl(); c._state.active = true; await c.tick();
+    const requestUnlock = vi.fn();
+    const c = ctl({ requestUnlock }); c._state.active = true; await c.tick();
     const button = els.accounts.querySelector('[data-relogin-action="approve"]') as HTMLElement;
     button.click(); await flush();
-    expect(button.textContent).toBe('Unlock the dashboard again');
+    expect(requestUnlock).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toBe('Enter PIN, then try again');
     expect(fx.calls.some((call) => call.url.endsWith('/approve'))).toBe(false);
   });
 
@@ -258,6 +260,58 @@ describe('Subscriptions tab controller (integration)', () => {
     expect(call?.init.headers['X-Instar-Operator-Session']).toBe('scoped-human-proof');
     expect(JSON.parse(call?.init.body)).toEqual({ accountId: 'a1', machineId: 'm2', episodeId: 'repair-remote', action: 'approve' });
     expect(els.matrix.querySelector('.sub-matrix-pin')).toBeNull();
+  });
+
+  it('opens the PIN overlay when a locked dashboard repair is tapped', async () => {
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: NO_PENDING };
+    fx.script['/subscription-pool?scope=pool'] = { body: {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mini' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    } };
+    fx.script['/subscription-relogin?scope=pool'] = { body: {
+      enabled: true, scope: 'pool',
+      episodes: [{ id: 'repair-remote', accountId: 'a1', machineId: 'm2', state: 'failed', remote: true }],
+    } };
+    const requestUnlock = vi.fn();
+    const c = ctl({ requestUnlock });
+    c._state.active = true;
+    await c.tick();
+
+    const button = els.matrix.querySelector('[data-matrix-relogin][data-machine-id="m2"]');
+    button.click();
+
+    expect(requestUnlock).toHaveBeenCalledTimes(1);
+    expect(els.matrix.textContent).toContain('Enter your dashboard PIN, then tap Repair sign-in once.');
+    expect(fx.calls.some((entry) => entry.url === '/subscription-relogin/repair-cell')).toBe(false);
+  });
+
+  it('reopens the PIN overlay when repair proof expires at the server', async () => {
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: NO_PENDING };
+    fx.script['/subscription-pool?scope=pool'] = { body: {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mini' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    } };
+    fx.script['/subscription-relogin?scope=pool'] = { body: {
+      enabled: true, scope: 'pool',
+      episodes: [{ id: 'repair-remote', accountId: 'a1', machineId: 'm2', state: 'failed', remote: true }],
+    } };
+    fx.script['/subscription-relogin/repair-cell'] = { status: 401, body: { error: 'operator proof expired' } };
+    const requestUnlock = vi.fn();
+    const c = ctl({ getOperatorSessionToken: () => 'expired-proof', requestUnlock });
+    c._state.active = true;
+    await c.tick();
+
+    const button = els.matrix.querySelector('[data-matrix-relogin][data-machine-id="m2"]');
+    button.click();
+    await flush();
+
+    expect(requestUnlock).toHaveBeenCalledTimes(1);
+    expect(els.matrix.textContent).toContain('Enter your dashboard PIN, then tap Repair sign-in once.');
+    expect(button.hasAttribute('disabled')).toBe(false);
   });
 
   const POOL_SCOPE = {

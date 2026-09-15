@@ -9857,6 +9857,10 @@
         __subController = __subModule.createController({
           doc: document, els, fetchImpl,
           getOperatorSessionToken: () => operatorSessionToken,
+          requestUnlock: () => {
+            document.getElementById('authOverlay').style.display = 'flex';
+            document.getElementById('pinInput').focus();
+          },
         });
       }
       __subController.start();

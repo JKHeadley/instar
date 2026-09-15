@@ -1045,6 +1045,7 @@ export function createController(opts) {
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (id) => clearTimeout(id),
     getOperatorSessionToken = () => '',
+    requestUnlock = () => {},
   } = opts;
 
   // matrixTransient: client-side last-attempt state per `${accountId}::${machineId}` cell (FD6 —
@@ -1139,7 +1140,11 @@ export function createController(opts) {
       const profileId = els.profileProvision.querySelector('[aria-label="Profile name"]')?.value?.trim() || '';
       const loginMethod = els.profileProvision.querySelector('[aria-label="Sign-in method"]')?.value || 'session-cookie';
       const status = els.profileProvision.querySelector('.sub-profile-status');
-      if (!proof) { status.textContent = 'Unlock the dashboard again, then retry.'; return; }
+      if (!proof) {
+        requestUnlock();
+        status.textContent = 'Enter your dashboard PIN, then retry.';
+        return;
+      }
       if (!identity || !profileId) { status.textContent = 'Enter the Google account and a profile name.'; return; }
       button.setAttribute('disabled', 'disabled');
       status.textContent = 'Preparing the private profile…';
@@ -1152,8 +1157,9 @@ export function createController(opts) {
           });
           const body = await response.json().catch(() => ({}));
           if (!response.ok) {
+            if (response.status === 401) requestUnlock();
             status.textContent = response.status === 401
-              ? 'Unlock the dashboard again, then retry.'
+              ? 'Enter your dashboard PIN, then retry.'
               : `Couldn’t create the profile: ${body.error || 'try again'}`;
             button.removeAttribute('disabled');
             return;
@@ -1336,7 +1342,8 @@ export function createController(opts) {
       if (!['approve', 'cancel', 'retry'].includes(action) || !episodeId) return;
       const proof = getOperatorSessionToken();
       if (!proof) {
-        button.textContent = 'Unlock the dashboard again';
+        requestUnlock();
+        button.textContent = 'Enter PIN, then try again';
         return;
       }
       button.setAttribute('disabled', 'disabled');
@@ -1352,7 +1359,8 @@ export function createController(opts) {
         body: '{}',
       });
       if (!response.ok) {
-        button.textContent = response.status === 401 ? 'Unlock the dashboard again' : 'Couldn’t start — try again';
+        if (response.status === 401) requestUnlock();
+        button.textContent = response.status === 401 ? 'Enter PIN, then try again' : 'Couldn’t start — try again';
         button.removeAttribute('disabled');
         return;
       }
@@ -1540,7 +1548,8 @@ export function createController(opts) {
       return;
     }
     if (!proof) {
-      setCellStatus(cell, 'Unlock the dashboard again, then tap Repair sign-in once.');
+      requestUnlock();
+      setCellStatus(cell, 'Enter your dashboard PIN, then tap Repair sign-in once.');
       return;
     }
     btn.setAttribute('disabled', 'disabled');
@@ -1554,7 +1563,10 @@ export function createController(opts) {
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
-          setCellStatus(cell, body.error || 'Couldn’t start the repair — try again.');
+          if (response.status === 401) requestUnlock();
+          setCellStatus(cell, response.status === 401
+            ? 'Enter your dashboard PIN, then tap Repair sign-in once.'
+            : body.error || 'Couldn’t start the repair — try again.');
           btn.removeAttribute('disabled');
           return;
         }
