@@ -199,3 +199,47 @@ cycle report remains suppressed after close. Independent reviewer
 review_local_refusal concurs with the runtime and test diff. The next dedicated
 integration run is diagnostic; this addition does not claim to repair the still
 unreproduced failure.
+
+
+## Pool fixture listener ownership correction
+
+The diagnostic candidate 0c327ce4f passed dedicated integration: 4,208 tests in
+520 files, including real detector HTTP health (83.6 seconds). All 14,019 tracked
+input hashes were unchanged. This did not reproduce the earlier cleanup fault.
+The required full local run was then started on the same frozen candidate.
+
+Fresh CI 34965209260 failed Node 22 shard 1 during pool-view-link-alive beforeAll:
+the real holder AgentServer could not bind fixed port 47262 (EADDRINUSE). Its
+9,450 tests passed, but one suite failed. Job 104367926455 checkout logs verify
+merge 886d8ea6ec0be058a632f8da520771fdd6c49f6e, with parents main v1.3.1239 and
+0c327ce4f. The source fixes holder/front ports at 47262/47261 without owning them
+before listen. The competing process cannot be identified from that CI error.
+The in-progress local full run was cancelled through its owned supervisor on
+2026-09-15T12:06:12Z, after 499 seconds, because this known fixture correction
+requires a new candidate. All 14,019 hashes were verified unchanged and its
+owned process group had no remaining members. That cancelled run is not a pass.
+
+The four related real-AgentServer pool fixtures (view link, reconciler, poll
+cache, and placement transfer) now bind port zero. A shared test helper reads
+the actual bound TCP listener after awaited start and rejects an absent or
+non-TCP address. That listener remains reserved through the fixture lifetime;
+there is no probe-and-release race, random port guess, or retry masking a bind
+failure. The holder URL is established before signed mesh proxy wiring, and
+all front/wired/dark URLs are established before their requests. SessionManagers
+do not launch sessions in these fixtures. Existing authentication, signed proxy,
+privacy/no-store, offline 503, ownership/transfer, and wired-versus-dark assertions
+and awaited cleanup remain unchanged. No production server behavior changes.
+
+This fixes the test resource-ownership layer and creates no diagnostic or
+authorization signal. It neither over-blocks legitimate production work nor
+weakens production checks. Rollback changes only test fixtures. The shared port
+47261 also appeared in the reconciler fixture; the narrow pool fixture population
+now contains no fixed 47xxx listener assignments. Existing pool streaming
+fixtures already use OS-assigned listeners and remain unchanged.
+
+Reviewer review_local_refusal prepared the five proposals outside the frozen
+tree; the primary independently reviewed them, removed extra blank lines, then
+applied them only after cancellation and input/ownership verification. Focused
+dedicated E2E validation passed all 14 tests across the four actual server
+fixtures (6.68 seconds, normal exit zero). Full local validation and fresh CI
+on the corrected candidate remain required.

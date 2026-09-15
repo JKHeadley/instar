@@ -37,12 +37,11 @@ import {
 } from '../../src/core/PoolLinkAssertion.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 const FRONTING = 'm_front';
 const HOLDER = 'm_hold';
 const TOKEN = 'ws44-e2e-token';
-const FRONT_PORT = 47261;
-const HOLD_PORT = 47262;
 
 describe('E2E: WS4.4 pool-view link proxy is ALIVE through the real AgentServer', () => {
   let dir: string;
@@ -54,8 +53,8 @@ describe('E2E: WS4.4 pool-view link proxy is ALIVE through the real AgentServer'
   const holderKeys = generateSigningKeyPair();
   let frontingProxy: PoolViewProxy;
   const KEYRING: Record<string, string> = { [FRONTING]: frontKeys.publicKey, [HOLDER]: holderKeys.publicKey };
-  const frontBase = `http://127.0.0.1:${FRONT_PORT}`;
-  const holdBase = `http://127.0.0.1:${HOLD_PORT}`;
+  let frontBase: string;
+  let holdBase: string;
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws44-alive-'));
@@ -102,14 +101,15 @@ describe('E2E: WS4.4 pool-view link proxy is ALIVE through the real AgentServer'
       },
     });
     holderServer = new AgentServer({
-      config: { projectName: 'ws44-holder', projectDir: dir, stateDir: dir, port: HOLD_PORT, authToken: TOKEN } as unknown as InstarConfig,
-      sessionManager: new SessionManager({ projectDir: dir, port: HOLD_PORT }),
+      config: { projectName: 'ws44-holder', projectDir: dir, stateDir: dir, port: 0, authToken: TOKEN } as unknown as InstarConfig,
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       viewer: holderViewer,
       meshRpcDispatcher: holderDispatcher,
       meshSelfId: HOLDER,
     });
     await holderServer.start();
+    holdBase = boundAgentServerBase(holderServer);
 
     // ── FRONTING server (poolLink wired; no local view) ──
     const frontingViewer = new PrivateViewer({ viewsDir: path.join(dir, 'fronting-views') });
@@ -148,14 +148,15 @@ describe('E2E: WS4.4 pool-view link proxy is ALIVE through the real AgentServer'
       },
     };
     frontingServer = new AgentServer({
-      config: { projectName: 'ws44-fronting', projectDir: dir, stateDir: dir, port: FRONT_PORT, authToken: TOKEN } as unknown as InstarConfig,
-      sessionManager: new SessionManager({ projectDir: dir, port: FRONT_PORT }),
+      config: { projectName: 'ws44-fronting', projectDir: dir, stateDir: dir, port: 0, authToken: TOKEN } as unknown as InstarConfig,
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       viewer: frontingViewer,
       poolLink,
       meshSelfId: FRONTING,
     });
     await frontingServer.start();
+    frontBase = boundAgentServerBase(frontingServer);
   }, 30000);
 
   afterAll(async () => {
