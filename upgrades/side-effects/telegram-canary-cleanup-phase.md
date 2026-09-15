@@ -127,3 +127,44 @@ all 36 tests in seven files (normal exit 0, 2026-09-15T09:06:33Z), including the
 real canary lifecycle, policy, enrollment, dashboard rejection, production Boot,
 and fake-interval lease consumer. Full lint passes. Full local suite and CI
 remain required before merge; no deployment is claimed.
+
+## Full-run watchdog fixture correction
+
+Frozen candidate d10015e35060ff41ec56c2d24cad48e8a258fd85 completed the aggregate
+suite normally on 2026-09-15T10:09:41Z: 51,969 tests passed and one failed.
+All 14,018 tracked input hashes were unchanged. The canary production Boot
+lifecycle and real HTTP detector health both passed (154.9 and 91.4 seconds).
+Dedicated integration and E2E phases were not reached because the aggregate
+failed. GitHub CI passed, including integration, build and 3,234 E2E tests;
+build and E2E checkout logs verify merge f4f24dbd9721fe4d9487bc4693cdab7189e21d9a,
+whose parents are current v1.3.1239 main and d10015e35. Those results do not
+establish a passing full local run.
+
+The single local failure was the watchdog real-esbuild fixture observing no
+protected service after a fixed 100ms post-spawn sleep. This installation's
+esbuild entrypoint is a Node shim that subsequently starts the native service;
+its spawn event does not establish native-process readiness. Installed version
+0.21.5 matches the fixture and discovery has no elapsed-time filter. This proves
+the fixture lacks readiness synchronization, not the exact timing of its failed
+attempt. The installer may instead replace the entrypoint with a native binary
+on another platform. The audit found no other real esbuild spawn-plus-100ms
+fixture in the test population.
+
+The correction polls actual production process discovery for up to five seconds,
+accepting only the spawned PID or its verified descendants. It detects early
+exit, preserves the watchdog judge/signal assertions, and verifies both exit
+and signal liveness. The test body allows 15 seconds for readiness plus a final
+in-flight bounded process snapshot. Cleanup ends the owned stdin, awaits closure,
+and uses strict process-table reads to verify captured owned resources are gone.
+A bounded fallback rechecks each owned identity before stopping descendants
+before their wrapper; uncertainty or incomplete cleanup fails the test. No
+production watchdog, classifier, deadline, permission, or signaling policy is
+changed. This also removes the former unawaited wrapper-only SIGKILL cleanup.
+
+Reviewer review_local_refusal drafted the correction outside the frozen tree;
+the primary independently reviewed ownership and cleanup, strengthened the root
+liveness fence and final assertions, and the reviewer concurred with those
+adjustments. After the frozen run ended and hashes were verified, focused
+validation passed all 11 tests across the real-process integration fixture and
+classification boundaries (normal exit 0, 2026-09-15T10:10:22Z). The corrected
+candidate still requires full local validation and fresh CI before release.
