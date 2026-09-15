@@ -30,13 +30,13 @@ import { OwnershipReconciler } from '../../src/core/OwnershipReconciler.js';
 import { LeaseAcquisitionTrigger } from '../../src/core/LeaseAcquisitionTrigger.js';
 import type { InstarConfig, MachineIdentity } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 function identity(machineId: string, name: string): MachineIdentity {
   return { machineId, signingPublicKey: 'sk', encryptionPublicKey: 'ek', name, platform: 'darwin-arm64', createdAt: new Date().toISOString(), capabilities: ['sessions'] };
 }
 
 describe('E2E: U4.1 pin persistence is ALIVE + the pin survives the lease handover', () => {
-  const PORT = 47317;
   const A = 'm_a'; // the PINNED machine ("run this on the mini")
   const B = 'm_b'; // THIS machine — becomes the placement router
   const TOKEN = 'e2e-u41-token';
@@ -46,7 +46,7 @@ describe('E2E: U4.1 pin persistence is ALIVE + the pin survives the lease handov
   let pinStore: TopicPlacementPinStore;
   let quarantine: TopicPinSkewQuarantine;
   let reconciler: OwnershipReconciler;
-  const base = `http://127.0.0.1:${PORT}`;
+  let base: string;
   const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
   beforeAll(async () => {
@@ -98,13 +98,13 @@ describe('E2E: U4.1 pin persistence is ALIVE + the pin survives the lease handov
       projectName: 'u41-alive-e2e',
       projectDir: dir,
       stateDir: dir,
-      port: PORT,
+      port: 0,
       authToken: TOKEN,
     } as unknown as InstarConfig;
 
     server = new AgentServer({
       config,
-      sessionManager: new SessionManager({ projectDir: dir, port: PORT }),
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       machinePoolRegistry: registry,
       sessionOwnershipRegistry: ownReg,
@@ -116,6 +116,7 @@ describe('E2E: U4.1 pin persistence is ALIVE + the pin survives the lease handov
       resolveRouterUrl: () => null, // this node answers as the holder
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {

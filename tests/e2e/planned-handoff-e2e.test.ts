@@ -43,6 +43,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-handoff-e2e-'));
@@ -115,8 +116,8 @@ const HISTORY: ThreadEntry[] = [
 ];
 
 describe('Planned handoff E2E (two real servers, full conductor)', () => {
-  const PORT_A = 19300 + Math.floor(Math.random() * 80);
-  const PORT_B = PORT_A + 1;
+  let baseA: string;
+  let baseB: string;
 
   let envA: ReturnType<typeof createMachineEnv>;
   let envB: ReturnType<typeof createMachineEnv>;
@@ -150,8 +151,8 @@ describe('Planned handoff E2E (two real servers, full conductor)', () => {
   }
 
   beforeAll(async () => {
-    envA = createMachineEnv('machine-a', PORT_A, 'awake');
-    envB = createMachineEnv('machine-b', PORT_B, 'standby');
+    envA = createMachineEnv('machine-a', 0, 'awake');
+    envB = createMachineEnv('machine-b', 0, 'standby');
     crossRegister(envA, envB);
 
     const stateA = new StateManager(envA.stateDir);
@@ -165,21 +166,21 @@ describe('Planned handoff E2E (two real servers, full conductor)', () => {
     coordB = new MultiMachineCoordinator(stateB, { stateDir: envB.stateDir });
     coordB.start();
 
-    const sessA = new SessionManager({ stateDir: envA.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: envA.projectDir, port: PORT_A });
-    const sessB = new SessionManager({ stateDir: envB.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: envB.projectDir, port: PORT_B });
+    const sessA = new SessionManager({ stateDir: envA.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: envA.projectDir, port: 0 });
+    const sessB = new SessionManager({ stateDir: envB.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: envB.projectDir, port: 0 });
 
     let seqA = 1;
     let seqB = 1;
     handoffWireA = new HandoffWireTransport({
       selfMachineId: envA.machineId,
       signingKeyPem: envA.signingKeys.privateKey,
-      peer: () => ({ machineId: envB.machineId, url: `http://127.0.0.1:${PORT_B}` }),
+      peer: () => ({ machineId: envB.machineId, url: baseB }),
       nextSequence: () => ++seqA,
     });
     handoffWireB = new HandoffWireTransport({
       selfMachineId: envB.machineId,
       signingKeyPem: envB.signingKeys.privateKey,
-      peer: () => ({ machineId: envA.machineId, url: `http://127.0.0.1:${PORT_A}` }),
+      peer: () => ({ machineId: envA.machineId, url: baseA }),
       nextSequence: () => ++seqB,
     });
 
@@ -215,7 +216,9 @@ describe('Planned handoff E2E (two real servers, full conductor)', () => {
     });
 
     await serverA.start();
+    baseA = boundAgentServerBase(serverA);
     await serverB.start();
+    baseB = boundAgentServerBase(serverB);
   }, 20000);
 
   afterAll(async () => {
@@ -261,7 +264,7 @@ describe('Planned handoff E2E (two real servers, full conductor)', () => {
 
   it('operator trigger is alive: POST /handoff/initiate returns the sentinel outcome', async () => {
     currentInitiate = async () => 'handed-off';
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/handoff/initiate`, {
+    const resp = await fetch(`${baseA}/handoff/initiate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${envA.config.authToken}` },
       body: '{}',
@@ -273,7 +276,7 @@ describe('Planned handoff E2E (two real servers, full conductor)', () => {
   });
 
   it('operator trigger 503s honestly when not wired (server B has no onHandoffInitiate)', async () => {
-    const resp = await fetch(`http://127.0.0.1:${PORT_B}/handoff/initiate`, {
+    const resp = await fetch(`${baseB}/handoff/initiate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${envB.config.authToken}` },
       body: '{}',

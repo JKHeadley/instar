@@ -29,15 +29,15 @@ import { writeHandbackLatch, readHandbackLatchRecord, clearHandbackLatch, readHa
 import type { InstarConfig } from '../../src/core/types.js';
 import type { SessionOwnershipRecord } from '../../src/core/SessionOwnership.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 describe('E2E: U4.2 stale-owner release + U4.4 lease hand-back are ALIVE through the real AgentServer', () => {
-  const PORT = 47317;
   const TOKEN = 'e2e-u4-token';
   const PIN = '135790';
   const SELF = 'm_self';
   const OWNER = 'm_owner';
   const PREFERRED = 'm_captain';
-  const base = `http://127.0.0.1:${PORT}`;
+  let base: string;
   const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
   let dir: string;
@@ -119,14 +119,14 @@ describe('E2E: U4.2 stale-owner release + U4.4 lease hand-back are ALIVE through
       projectName: 'u4-alive-e2e',
       projectDir: dir,
       stateDir: dir,
-      port: PORT,
+      port: 0,
       authToken: TOKEN,
       dashboardPin: PIN,
     } as unknown as InstarConfig;
 
     server = new AgentServer({
       config,
-      sessionManager: new SessionManager({ projectDir: dir, port: PORT }),
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       meshSelfId: SELF,
       staleOwnerEngine: engine,
@@ -138,6 +138,7 @@ describe('E2E: U4.2 stale-owner release + U4.4 lease hand-back are ALIVE through
       },
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {

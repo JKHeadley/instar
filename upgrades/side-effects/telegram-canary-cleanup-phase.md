@@ -243,3 +243,46 @@ applied them only after cancellation and input/ownership verification. Focused
 dedicated E2E validation passed all 14 tests across the four actual server
 fixtures (6.68 seconds, normal exit zero). Full local validation and fresh CI
 on the corrected candidate remain required.
+
+
+## Completing the enumerated real-listener population
+
+The first four-fixture correction committed as 54f3e5f0f with full lint passing.
+Its push completed normally (2026-09-15T12:14:07Z); the smoke listing timed out
+and was skipped, not passed. A broader source audit then examined 13 remaining
+files containing a real AgentServer construction, awaited start, and a numeric
+port assignment. Eight were genuine unreserved listeners: three fixed (U4.1 pin
+persistence, stale-owner handback, secret sync) and five randomized (reply marker,
+ingress, planned handoff, multi-machine HTTP, tunnel/private view). Five were
+configuration or migration literals whose actual listeners already use port zero.
+Those five remain unchanged. This is the enumerated source-search population,
+not a claim that every possible test listener pattern has been formally analyzed.
+
+The 54f3e5f0f full run was cancelled through its owned supervisor after 347
+seconds (2026-09-15T12:17:29Z) to complete that population before final validation.
+All 14,020 hashes were unchanged and its owned process group was empty before
+any tracked edit. This cancelled run is not a pass.
+
+The eight additional fixtures now use port zero and the same actual-bound-address
+helper. Identity-only peer fixtures retain their roles with a zero placeholder;
+all real signed requests use the listening server's actual URL. Planned handoff
+retains peer resolver closures, which read the assigned URLs only after both
+servers have started. The tunnel fixture retains the same real TunnelManager
+injected into AgentServer. Its test-owned TunnelConfig receives the bound port
+after server start and before explicit tunnel start; TunnelManager retains that
+config object and supplies its current port to provider.start, whose nonzero
+argument overrides the constructor placeholder. No private provider mutation,
+free-port probing, transport mocking, or retry behavior is introduced.
+
+All existing request bodies, signing, custody and lease assertions, startup order,
+authentication, and cleanup remain unchanged. The side effects remain test-only
+resource allocation: no production signaling or authority behavior changes.
+The primary reviewed the six reviewer-prepared proposals; the independent
+reviewer reviewed the primary's handoff/tunnel proposals against the actual
+transport, manager, provider, and AgentServer implementations and concurred.
+Focused dedicated E2E validation passed all 53 tests in 12 files (normal exit
+zero after 28.26 seconds). The real tunnel failed its external reachability check,
+so its existing conditional remote branches were not exercised; local tunnel
+and viewer assertions passed. No remote-reachability success is claimed. The
+post-change source audit leaves only the five confirmed configuration-only
+numeric matches. Full local validation and fresh CI still remain required.
