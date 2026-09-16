@@ -153,3 +153,28 @@ Independent reviewer review_local_refusal concurred with the actual single-file
 diff. The dedicated phone E2E passed in
 /tmp/echo-local-refusal-phone-observer-focused.log. Fresh full validation and
 final-candidate CI remain required before release.
+
+## Native canary aggregate-load correction
+
+The rebased `707febb49` candidate passed all 51,995 aggregate tests and all
+4,208 dedicated integration tests. Dedicated E2E then passed 3,242 tests and
+failed only the actual credential-free Codex native-format canary at its exact
+30-second production deadline. The same canary immediately passed directly in
+about 18 seconds and in its isolated E2E file in 29.48 seconds, proving the
+native format, both turns, six isolation controls, and cleanup were functional
+but leaving inadequate aggregate-load margin. Hosted CI passed all 26 checks.
+
+The canary's three independent network sabotage probes previously waited
+serially, permitting their fixed 1.5-second safety bounds to consume up to 4.5
+seconds before the native CLI started. They now execute concurrently with
+`Promise.all`, retaining the same fixed destinations, per-probe timeout,
+ordered six-control result, kernel sandbox, and fail-closed aggregate check.
+The production canary's 30-second deadline, two native turns, credential
+isolation, cleanup verification, and all delivery authority remain unchanged.
+This reduces avoidable fixture latency; it does not turn a timeout or failed
+control into a pass.
+
+Independent reviewer poller_second_pass concurred with the correction. It
+verified unchanged destinations and expectations, independent 1.5-second
+bounds, ordered `Promise.all` results, fail-closed six-control acceptance,
+bounded cleanup, and no authority widening. No blocker was found.

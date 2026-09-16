@@ -7,3 +7,5 @@ This repair changes the accounting at that boundary. The part of the server that
 Recovery still waits between tries and stops at the original deadline. A restart does not reset those limits. If the server crashes before saving the evidence, delivery stays uncertain; the repair does not guess that the message was unsent. Likewise, a timeout or error after calling Telegram cannot use this accounting change to authorize a duplicate send.
 
 Operators and agents should continue inspecting the original message rather than manually reposting it. This repair addresses local capacity refusals. It does not claim that every held message will arrive or that messages with unknown Telegram acceptance are resolved. The release must pass unit, HTTP, production-restart and full-suite checks before activation.
+
+Release validation also removed avoidable serial waiting between three independent native-canary network-isolation probes. The probes, their individual time limits, the 30-second overall canary deadline, and all fail-closed checks are unchanged; only their safe setup work now overlaps.
