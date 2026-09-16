@@ -10,8 +10,6 @@
  *   Client preferences remain Telegram-managed; no inference restores authority.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { watch } from 'node:fs';
-import type { FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalOrigin } from './CanonicalOrigin.js';
@@ -19,13 +17,14 @@ import { OriginConfigReader } from './OriginConfigReader.js';
 import { originOutageNoticeEnabled } from './OriginConfig.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
 import type { OriginSourceHealth } from './OriginDetectorHealth.js';
+import { OriginSourcePoller } from './OriginSourcePoller.js';
 
 /** Independent of the origin workers and their recovery loop. Only actual
  * configuration/hub reads refresh this source; fire-time access is memory-only.
- * Watch invalidation prevents known changes from riding the old 30s snapshot. */
+ * Source invalidation prevents known changes from riding the old 30s snapshot. */
 export class OriginNoticePolicyObserver {
   readonly #boot = randomUUID();
-  readonly #watchers = new Map<string, FSWatcher>();
+  readonly #sourcePoller: OriginSourcePoller;
   #snapshot: OriginNoticeDestinationPolicy | null = null;
   #revision = 0;
   #sequence = 0;
@@ -39,6 +38,10 @@ export class OriginNoticePolicyObserver {
   private constructor(readonly options: { stateDir: string; accountId: string; token?: string; now?: () => number; configReader?: OriginConfigReader }) {
     this.#configReader = options.configReader ?? new OriginConfigReader(options.stateDir);
     this.#unsubscribe = this.#configReader.onInvalidated(() => { this.#invalidate(); });
+    this.#sourcePoller = new OriginSourcePoller([
+      path.join(options.stateDir, 'config.json'),
+      path.join(options.stateDir, 'state', 'agent-attention-topic.json'),
+    ], () => { this.#invalidate(); void this.refresh(); });
   }
   static async open(options: { stateDir: string; accountId: string; token?: string; now?: () => number; configReader?: OriginConfigReader }): Promise<OriginNoticePolicyObserver> {
     const observer = new OriginNoticePolicyObserver(options);
@@ -53,21 +56,6 @@ export class OriginNoticePolicyObserver {
       attemptedAt: this.#attemptedAt, succeededAt: this.#succeededAt, busy: this.#refreshing !== null, revision: this.#revision };
   }
   #invalidate(): void { this.#revision++; this.#snapshot = null; }
-  #ensureWatchers(): boolean {
-    for (const [directory, filename] of [[this.options.stateDir, 'config.json'], [path.join(this.options.stateDir, 'state'), 'agent-attention-topic.json']]) {
-      if (this.#watchers.has(directory)) continue;
-      try {
-        const watcher = watch(directory, { persistent: false }, (_event, changed) => {
-          if (changed === null || String(changed) === filename || String(changed) === 'state') {
-            this.#invalidate(); void this.refresh();
-          }
-        });
-        watcher.on('error', () => { this.#invalidate(); watcher.close(); this.#watchers.delete(directory); });
-        this.#watchers.set(directory, watcher);
-      } catch { this.#snapshot = null; return false; }
-    }
-    return true;
-  }
   #schedule(): void {
     if (this.#closed) return;
     this.#timer = setTimeout(() => { this.#timer = null; void this.refresh().finally(() => this.#schedule()); }, 5000);
@@ -87,7 +75,7 @@ export class OriginNoticePolicyObserver {
     this.#attemptedAt = this.#now();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (!this.#ensureWatchers()) return;
+      await this.#sourcePoller.start();
       const [observation, hubBytes] = await Promise.race([
         Promise.all([this.#configReader.read(),
           readFile(path.join(this.options.stateDir, 'state', 'agent-attention-topic.json'), 'utf8')]),
@@ -120,6 +108,6 @@ export class OriginNoticePolicyObserver {
   close(): void {
     this.#closed = true; this.#unsubscribe(); if (!this.options.configReader) this.#configReader.close(); this.#invalidate();
     if (this.#timer) clearTimeout(this.#timer);
-    for (const watcher of this.#watchers.values()) watcher.close(); this.#watchers.clear();
+    this.#sourcePoller.close();
   }
 }

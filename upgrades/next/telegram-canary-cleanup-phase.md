@@ -17,3 +17,7 @@ Existing detector health distinguishes active cleanup from completed proof. Star
 The separate side-effects artifact records the reproduced 15–43 second native watcher-close stall, the worker-boundary repair, boundary coverage and release validation. This fragment alone is not evidence that a release is active.
 
 Aggregate-load validation also separated storage-worker startup from ordinary request timing and made the real-tmux byte-exact control wait until its receiver has entered raw mode. These are bounded reliability fixes; they grant no new delivery authority.
+
+Production configuration and notice-policy readers now avoid parent-process native filesystem watchers too. They poll exact source metadata on a short unrefed cadence, retain fail-closed invalidation and the existing five-second refresh/30-second expiry limits, and close by cancelling a timer. This removes the same macOS watcher-close stall from normal runtime teardown without changing delivery authority.
+
+That observer is registered in the self-action convergence ratchet, which enforces its 250 ms rate floor and deterministic close boundary.

@@ -385,3 +385,60 @@ transport races from the evidence path while preserving finite failure bounds.
 Focused reruns pass the 32 cleanup protocol cases, all three real production
 bootstrap cases, and all three real-tmux ceiling cases under the same heavily
 loaded host.
+
+## Production source-watcher closure under aggregate load
+
+The next exact-head aggregate run exposed the same native watcher class outside
+the disposable detector worker. A dashboard-origin lifecycle completed its
+delivery assertions, then spent more than 30 seconds in fixture teardown while
+`OriginConfigReader` and `OriginNoticePolicyObserver` synchronously closed
+parent-process `FSWatcher` handles. The focused file passed alone but took 33
+seconds; under aggregate load the affected recorded-missing-message case took
+37 seconds and its teardown hook timed out. This was a real production cleanup
+boundary, not an assertion wait.
+
+The two authority readers now observe their exact owned source files with one
+unrefed, overlap-suppressed stat poller. It fingerprints device, inode, size,
+mtime and ctime every 250 ms. Creation, replacement, mutation, deletion or an
+unreadable transition invalidates the existing projection; the established
+five-second source refresh and 30-second expiry remain unchanged. `close()` now
+cancels a timer synchronously instead of closing native filesystem watchers.
+An in-flight stat may finish, but the closed fence prevents it from invalidating
+or refreshing anything afterward.
+
+This changes no credential, destination, delivery, retry or lease authority.
+It narrows the observation mechanism while preserving the spec's at-most-five-
+second refresh requirement and fail-closed invalidation. Focused validation
+passed source creation/change/close, encrypted configuration, same-account
+credential rotation, corrupt source, opt-out and hub-rebind boundaries. The
+dashboard production lifecycle then passed all seven cases in 10 seconds under
+the same concurrent aggregate load, down from 33 seconds in the prior focused
+run and the 74-second failing aggregate file.
+
+The fixed-rate observer is registered as the
+`telegram-origin-source-poller` eternal-sentinel controller. The convergence
+ratchet proves its 250 ms rate floor and constant exact-file target under
+sustained pressure; overlap suppression, synchronous interval cancellation and
+the closed fence bound each live instance and prevent a late callback after
+shutdown.
+
+## Independent Phase 5 review — production source poller
+
+The second pass inspected the poller, both authority-source callers, their unit
+coverage, the production Boot lifecycle, the dashboard teardown regression, and
+the governing signal-versus-authority rule. The poller only emits machine-local
+change signals; it grants no delivery, credential, retry, or destination
+authority. Both callers serialize source work, reject revisions changed during
+a read, retain their five-second refresh and 30-second expiry fences, and prevent
+an in-flight stat from acting after synchronous timer cancellation. Exact-file
+metadata detects ordinary creation, replacement, mutation, deletion, and access
+transitions without creating cross-machine state or a second decision authority.
+
+The focused tests exercise mutation, deletion, late creation, post-close silence,
+encrypted credential rotation, corrupt sources, policy opt-out, hub rebinding,
+and the real production teardown that motivated the change. Direct poller tests
+do not isolate close during an intentionally stalled stat; the closed checks and
+post-close behavior make that a non-blocking coverage gap rather than a
+correctness defect.
+
+Concur with the review

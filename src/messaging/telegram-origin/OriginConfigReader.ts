@@ -10,12 +10,11 @@
  *   Never rederive credentials or permission through an LLM or stale cache.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { watch } from 'node:fs';
-import type { FSWatcher } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { OriginSourceHealth } from './OriginDetectorHealth.js';
+import { OriginSourcePoller } from './OriginSourcePoller.js';
 
 export interface OriginConfigObservation {
   config: Record<string, any>; observedAt: number; version: string; revision: number;
@@ -26,8 +25,8 @@ interface ConfigReadAttempt { cancelled: boolean; deadline: number; abort: Abort
  * authority from a cached merged config. Only one bounded read may be pending. */
 export class OriginConfigReader {
   readonly #boot = randomUUID();
-  readonly #watchers = new Map<string, FSWatcher>();
   readonly #listeners = new Set<() => void>();
+  readonly #sourcePoller: OriginSourcePoller;
   #resolvedDigest: string | null = null;
   #revision = 0; #sequence = 0; #closed = false; #healthy = false;
   #pending: Promise<OriginConfigObservation> | null = null;
@@ -35,7 +34,13 @@ export class OriginConfigReader {
   #attemptedAt: number | null = null;
   #succeededAt: number | null = null;
   #reason = 'source-not-read';
-  constructor(readonly stateDir: string, readonly workerUrl = new URL('./OriginConfigReader.worker.js', import.meta.url)) {}
+  constructor(readonly stateDir: string, readonly workerUrl = new URL('./OriginConfigReader.worker.js', import.meta.url)) {
+    this.#sourcePoller = new OriginSourcePoller([
+      path.join(stateDir, 'config.json'),
+      path.join(stateDir, 'secrets', 'config.secrets.enc'),
+      path.join(stateDir, 'machine', 'secrets-master.key'),
+    ], () => this.#invalidate());
+  }
   get revision(): number { return this.#revision; }
   getHealth(now = Date.now()): OriginSourceHealth {
     const stale = this.#succeededAt !== null && (now < this.#succeededAt || now - this.#succeededAt >= 30_000);
@@ -46,24 +51,7 @@ export class OriginConfigReader {
   onInvalidated(listener: () => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
   #invalidate(): void { this.#healthy = false; this.#reason = 'source-invalidated'; this.#revision++; for (const listener of this.#listeners) listener(); }
   async #watch(): Promise<void> {
-    for (const name of ['', 'secrets', 'machine']) {
-      const directory = path.join(this.stateDir, name);
-      if (this.#watchers.has(directory)) continue;
-      try {
-        const watcher = watch(directory, { persistent: false }, (_event, filename) => {
-          if (filename === null || ['config.json', 'config.secrets.enc', 'secrets-master.key', 'secrets', 'machine'].includes(String(filename))) {
-            if (String(filename) === 'secrets' || String(filename) === 'machine') {
-              const child = path.join(this.stateDir, String(filename)); this.#watchers.get(child)?.close(); this.#watchers.delete(child);
-            }
-            this.#invalidate();
-          }
-        });
-        watcher.on('error', () => { watcher.close(); this.#watchers.delete(directory); this.#invalidate(); });
-        this.#watchers.set(directory, watcher);
-      } catch (error) {
-        if (name === '' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-    }
+    await this.#sourcePoller.start();
   }
   read(): Promise<OriginConfigObservation> {
     if (this.#closed) return Promise.reject(new Error('origin-config-reader-closed'));
@@ -164,6 +152,6 @@ export class OriginConfigReader {
   close(): void {
     this.#closed = true;
     if (this.#active) { this.#active.cancelled = true; this.#active.abort.abort(); this.#active.cancel?.(); void this.#active.worker?.terminate(); }
-    for (const watcher of this.#watchers.values()) watcher.close(); this.#watchers.clear(); this.#invalidate(); this.#listeners.clear();
+    this.#sourcePoller.close(); this.#invalidate(); this.#listeners.clear();
   }
 }
