@@ -16,6 +16,18 @@ export interface ChromeCdpReloginBrowserOptions {
   operationTimeoutMs?: number;
 }
 
+/** Closed structural floor for OpenAI's device confirmation; consent prose can never enter this class. */
+export function isClosedOpenAiDeviceApproval(input: {
+  origin: string; pathname: string; hasAuthorize: boolean; body: string;
+}): boolean {
+  return input.origin === 'https://auth.openai.com'
+    && /^\/(?:codex\/)?device(?:\/|$)/.test(input.pathname)
+    && input.hasAuthorize
+    && /codex/.test(input.body)
+    && /device|verification code/.test(input.body)
+    && !/permission|access|scope|consent|grant|billing|organization/.test(input.body);
+}
+
 const CHROME_EXECUTABLE_CANDIDATES = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -97,27 +109,47 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     return this.evaluate<ReloginBrowserSnapshot>(`(() => {
       const expected = ${JSON.stringify(expectedIdentity)}.trim().toLowerCase();
       const body = (document.body?.innerText || '').toLowerCase();
-      const buttons = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]'));
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
       const buttonText = buttons.map((node) => ((node.textContent || node.getAttribute('value') || '')).trim().toLowerCase());
+      const googleEntryLabels = new Set(['continue with google', 'sign in with google', 'log in with google']);
+      const hasGoogleSignIn = buttonText.some((text) => googleEntryLabels.has(text));
       const has = (pattern) => pattern.test(body);
       const input = (selector) => !!document.querySelector(selector);
-      const expectedVisible = expected.length > 0 && Array.from(document.querySelectorAll('[data-email],li,div,[role="link"]'))
-        .some((node) => ((node.getAttribute('data-email') || node.textContent || '')).trim().toLowerCase().includes(expected));
+      const chooserNodes = Array.from(document.querySelectorAll('[data-email],[data-identifier],button,[role="button"],a,[role="link"],li'));
+      const nodeIdentities = (node) => {
+        const declared = (node.getAttribute('data-email') || node.getAttribute('data-identifier') || '').trim().toLowerCase();
+        if (declared) return [declared];
+        return ((node.textContent || '').toLowerCase().match(/[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/g) || []);
+      };
+      const matching = expected.length === 0 ? [] : chooserNodes.filter((node) => nodeIdentities(node).includes(expected));
+      const actionableMatches = matching.filter((node) => !matching.some((child) => child !== node && node.contains(child)));
+      const expectedMatchCount = actionableMatches.length;
+      const expectedVisible = expectedMatchCount === 1;
       const url = new URL(location.href);
       const requestedScopes = (url.searchParams.get('scope') || '').split(/[ ,]+/).filter(Boolean).slice(0, 20);
+      const hasAuthorize = buttonText.some((text) => /^(allow|authorize|approve|continue)$/.test(text));
+      const isClosedDeviceApproval = (${isClosedOpenAiDeviceApproval.toString()})({
+        origin: location.origin, pathname: location.pathname, hasAuthorize, body,
+      });
       let pageClass = 'unknown';
       if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
       else if (has(/check your phone|phone verification|text message|send a code to your phone/)) pageClass = 'phone-confirmation';
+      else if (hasGoogleSignIn) pageClass = 'provider-choice';
+      else if (location.origin === 'https://auth.openai.com'
+        && input('input[name*="code" i],input[id*="code" i],input[autocomplete="one-time-code"]')
+        && has(/device|enter.*code|verification code/)) pageClass = 'device-code';
       else if (input('input[autocomplete="one-time-code"],input[name*="totp" i],input[id*="totp" i]') || has(/authenticator (?:app|code)|verification code/)) pageClass = 'totp';
       else if (input('input[type="password"]')) pageClass = 'password';
       else if (input('input[type="email"],input[autocomplete="username"]')) pageClass = 'email';
-      else if (expectedVisible && has(/choose an account|select an account|continue as/)) pageClass = 'account-chooser';
+      else if (has(/choose an account|select an account|continue as/)) pageClass = 'account-chooser';
+      else if (isClosedDeviceApproval) pageClass = 'device-approval';
       else if (buttonText.some((text) => /^(allow|authorize|approve|continue)$/.test(text)) && has(/permission|access|authorize|allow/)) pageClass = 'authorize';
       else if (Array.from(document.querySelectorAll('code,pre,[data-testid*="code" i]')).some((node) => /^\S{8,512}$/.test((node.textContent || '').trim())) || has(/copy.*code|paste.*code|authorization code/)) pageClass = 'paste-code';
       else if (has(/authorization (?:complete|successful)|you (?:may|can) close this (?:window|tab)|successfully signed in/)) pageClass = 'success';
       return { origin: location.origin, pageClass, expectedAccountVisible: expectedVisible,
+        expectedAccountMatchCount: expectedMatchCount, hasGoogleSignIn,
         hasNext: buttonText.some((text) => /^(next|continue)$/.test(text)),
-        hasAuthorize: buttonText.some((text) => /^(allow|authorize|approve|continue)$/.test(text)),
+        hasAuthorize,
         requestedScopes };
     })()`);
   }
@@ -125,30 +157,40 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   async chooseExpectedAccount(expectedIdentity: string): Promise<void> {
     await this.evaluate<boolean>(`(() => {
       const expected = ${JSON.stringify(expectedIdentity)}.trim().toLowerCase();
-      const nodes = Array.from(document.querySelectorAll('[data-email],li,div,[role="link"]'));
-      const exact = nodes.find((node) => (node.getAttribute('data-email') || '').trim().toLowerCase() === expected);
-      const visible = exact || nodes.find((node) => (node.textContent || '').trim().toLowerCase().includes(expected));
-      if (!(visible instanceof HTMLElement)) return false;
-      visible.click(); return true;
+      const nodes = Array.from(document.querySelectorAll('[data-email],[data-identifier],button,[role="button"],a,[role="link"],li'));
+      const identities = (node) => {
+        const declared = (node.getAttribute('data-email') || node.getAttribute('data-identifier') || '').trim().toLowerCase();
+        if (declared) return [declared];
+        return ((node.textContent || '').toLowerCase().match(/[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/g) || []);
+      };
+      const matching = nodes.filter((node) => identities(node).includes(expected));
+      const actionable = matching.filter((node) => !matching.some((child) => child !== node && node.contains(child)));
+      if (actionable.length !== 1 || !(actionable[0] instanceof HTMLElement)) return false;
+      actionable[0].click(); return true;
     })()`, true);
   }
 
-  async fillPublic(field: 'email', value: string): Promise<void> {
-    await this.fill(field === 'email' ? 'input[type="email"],input[autocomplete="username"]' : '', value);
+  async fillPublic(field: 'email' | 'device-code', value: string): Promise<void> {
+    const selector = field === 'email'
+      ? 'input[type="email"],input[autocomplete="username"]'
+      : 'input[name*="code" i],input[id*="code" i],input[autocomplete="one-time-code"]';
+    await this.fillAndSubmit(selector, value);
   }
 
   async fillSecret(field: 'password' | 'totp', value: string): Promise<void> {
     const selector = field === 'password'
       ? 'input[type="password"]'
       : 'input[autocomplete="one-time-code"],input[name*="totp" i],input[id*="totp" i],input[type="tel"]';
-    await this.fill(selector, value);
+    await this.fillAndSubmit(selector, value);
   }
 
-  async click(action: 'next' | 'authorize'): Promise<void> {
-    const pattern = action === 'next' ? '^(next|continue)$' : '^(allow|authorize|approve|continue)$';
+  async click(action: 'next' | 'authorize' | 'google'): Promise<void> {
+    const pattern = action === 'next' ? '^(next|continue)$'
+      : action === 'google' ? '(continue|sign in|log in) with google'
+      : '^(allow|authorize|approve|continue)$';
     await this.evaluate<boolean>(`(() => {
       const re = new RegExp(${JSON.stringify(pattern)}, 'i');
-      const nodes = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]'));
+      const nodes = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
       const node = nodes.find((entry) => re.test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
       if (!(node instanceof HTMLElement)) return false;
       node.click(); return true;
@@ -209,7 +251,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     });
   }
 
-  private async fill(selector: string, value: string): Promise<void> {
+  private async fillAndSubmit(selector: string, value: string): Promise<void> {
     const expression = `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!(node instanceof HTMLInputElement)) return false;
@@ -217,9 +259,16 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       setter?.call(node, ${JSON.stringify(value)});
       node.dispatchEvent(new Event('input', { bubbles: true }));
       node.dispatchEvent(new Event('change', { bubbles: true }));
+      const buttons = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
+      const submit = buttons.find((entry) => /^(next|continue|sign in|verify|submit)$/i
+        .test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
+      if (submit instanceof HTMLElement) { submit.click(); return true; }
+      const form = node.closest('form');
+      if (form instanceof HTMLFormElement) { form.requestSubmit(); return true; }
       return true;
     })()`;
     await this.evaluate<boolean>(expression, true);
+    await this.wait(500);
   }
 
   private async evaluate<T>(expression: string, requireTruthy = false): Promise<T> {

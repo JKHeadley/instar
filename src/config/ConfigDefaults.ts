@@ -2155,6 +2155,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxAttempts: 3,
       retryBaseMs: 5_000,
       allowedScopes: ['user:profile'],
+      unattendedPolicy: {
+        identities: [],
+        minimumSuccessfulRepairs: 10,
+        minimumEvidenceDays: 30,
+      },
     },
     proactiveSwap: {
       // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.

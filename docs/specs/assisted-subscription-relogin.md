@@ -1,5 +1,5 @@
 ---
-title: "Assisted Subscription Re-Login — one approval, autonomous repair"
+title: "Automatic Subscription Re-Login — Claude Code and Codex"
 slug: assisted-subscription-relogin
 parent-principle: "No Manual Work (user *or* agent)"
 status: draft
@@ -17,28 +17,29 @@ cross-model-review: "codex-cli:gpt-5.5"
 cross-model-review-reason: "two successful rounds; claude-code clean-door degraded on execution"
 approved: true
 approved-by: "Justin (verified operator uid:7812716706), Telegram topic 33890, 2026-08-28 09:20 PDT"
-approval-context: "Approved the reviewed V1 boundary and directed the autonomous session to continue through full implementation, release, deployment, and live verification without stopping. At 2026-08-28 09:23 PDT Justin also preapproved required authentication decisions and required phone-complete dedicated Chrome-profile provisioning through secure links or the Instar dashboard, with no host-machine access. Separate authorization remains required before using any real operator-owned subscription as the canary."
+approval-context: "Approved the reviewed V1 boundary and directed the autonomous session to continue through full implementation, release, deployment, and live verification without stopping. At 2026-08-28 09:23 PDT Justin also preapproved required authentication decisions and required phone-complete dedicated Chrome-profile provisioning through secure links or the Instar dashboard, with no host-machine access. On 2026-09-15 in this topic, Justin explicitly expanded authority to no-click re-authentication for both Claude Code and Codex using the dedicated pre-signed-in Google profiles on each machine."
 single-run-completable: true
 frontloaded-decisions: 8
 cheap-to-change-tags: 0
 contested-then-cleared: 5
 ---
 
-# Assisted Subscription Re-Login
+# Automatic Subscription Re-Login
 
 ## 1. Outcome and boundary
 
-When a subscription account has a corroborated authentication failure, Instar offers the verified
-operator one repair approval. That approval authorizes one account, one machine, one bounded repair
-episode. After the click, Instar launches the provider-native login in the account's isolated slot,
+When a subscription account has a corroborated authentication failure, Instar launches one bounded
+repair for the exact account, provider, and machine when that email is explicitly admitted by the
+unattended policy. Approval mode remains available as a safer rollout/fallback. Instar launches the provider-native login in the account's isolated slot,
 drives the browser with the account's registered browser profile, completes any CLI paste-back,
 verifies the resulting provider identity, proves authenticated use, and closes the incident without
 requiring more routine operator work.
 
-The initial release is **approval-gated autonomous repair**. It does not silently enable unattended
-repairs. A later per-account `unattended` policy may remove the approval only after the same account,
-provider, and machine path has enough successful, identity-correct repair evidence. The unattended
-policy is an explicit operator choice, never inferred from use.
+Fleet defaults remain **approval-gated and dry-run-first**. Unattended repair is never silently
+enabled: it requires `mode: unattended`, an exact email in `unattendedPolicy.identities`, and the
+configured same-path evidence floors. Defaults remain 10 successful repairs across 30 days; a
+verified operator may deliberately lower those floors for a controlled exact-identity rollout.
+Neither metrics nor an LLM can add an identity or lower a floor.
 
 This is a repair system, not a credential copier. The provider's own login client writes the
 credential into the existing per-account config home. Instar stores no password, TOTP seed, OAuth
@@ -82,7 +83,7 @@ ambiguity, quota exhaustion, rate limits, and unmeasured cells never trigger re-
 
 ## 4. Authorization
 
-`POST /subscription-relogin/:episodeId/approve` accepts dashboard-PIN proof or a signed verified-
+In `approval` mode, `POST /subscription-relogin/:episodeId/approve` accepts dashboard-PIN proof or a signed verified-
 operator action token. The server resolves account, machine, expected identity, config home, and
 browser profile from authoritative stores; none are trusted from the request body.
 
@@ -96,6 +97,11 @@ An approval mandate is:
 
 Dashboard and Telegram actions carry only the opaque episode id. They never carry credentials,
 codes, email addresses, or login URLs.
+
+In `unattended` mode, the deterministic policy consumes the immutable digest without a human click
+only when the canonical subscription email exactly matches the configured identity allowlist and
+all evidence/security floors pass. The audit records `unattended-policy-approved`, never the false
+claim `operator-approved`.
 
 ## 5. Durable state machine
 
@@ -133,8 +139,12 @@ Each approved episode launches a bounded browser worker under a structured contr
 - if the registered login method is `password` or `password+totp`, resolves only the named vault
   refs inside the worker and submits them directly to the allowlisted origin; values never enter
   prompts, logs, state, screenshots, or API responses;
-- refuses password+phone-2fa, CAPTCHA, account chooser ambiguity, recovery-email changes, consent
-  expansion, billing prompts, or any unexpected origin;
+- refuses password+phone-2fa, CAPTCHA, an account chooser without exactly one canonical expected
+  identity on one actionable leaf, recovery-email changes, consent expansion, billing prompts, or
+  any unexpected origin; substring, missing, duplicate, and parent-container chooser matches refuse;
+- treats generic consent with no deterministically measured scope set as permission expansion;
+  OpenAI device approval is a separate closed class requiring the exact provider origin and device
+  path, a device-code artifact, and the absence of consent/scope-expansion signals;
 - returns a closed typed result plus redacted page-state evidence.
 
 A Tier-1 LLM supervisor validates each page transition against the deterministic contract. The LLM
@@ -217,13 +227,14 @@ repair cannot succeed.
 - `off`: no candidates, routes return typed disabled state.
 - `observe`: candidates and reasons only; no approval action.
 - `approval`: one-click approval, autonomous execution after approval. Initial live mode.
-- `unattended`: per-account opt-in; no approval click for corroborated incidents. Dark in the first
-  release, but the policy/state shape is included so enabling it later does not require migration.
+- `unattended`: exact-email opt-in; no approval click for corroborated incidents. Fleet-dark unless
+  an operator explicitly selects it and provides the identity allowlist.
 
-Graduation from `approval` to `unattended` requires at least 10 successful repairs for the exact
-provider/framework path across at least 30 days, zero identity mismatches, zero unexpected-origin
-events, and an explicit operator opt-in. Metrics are evidence for the option, never authority to
-enable it.
+Default graduation from `approval` to `unattended` requires at least 10 successful repairs for the
+exact account/provider/framework/machine path across at least 30 days, zero identity mismatches,
+zero unexpected-origin events, and an explicit operator opt-in. The minimum-success and evidence-day
+floors are operator-configurable for a controlled exact-identity rollout; lowering them never removes
+the exact allowlist or zero-security-event requirements. Metrics are evidence, never authority.
 
 ## 9. Surfaces
 
@@ -292,8 +303,9 @@ approval-mode canary against a disposable/test identity before any real subscrip
 | Anthropic-direct, existing authenticated profile | Provider-native approval reaches identity oracle, authenticated probe, active pool, and exact incident closure | Wrong/absent identity and multiple identities refuse before approval |
 | Anthropic-direct, password | Named password vault binding is resolved only inside the worker; exact-origin submit completes the same four-part success proof | Missing binding, unexpected origin, chooser, CAPTCHA, phone/risk challenge, or added scope refuses without retry |
 | Anthropic-direct, password + TOTP | Named password and TOTP bindings are submitted only to the allowlisted page and produce the same independent success proof | Stale/rejected TOTP retries only within the single attempt contract; recovery/MFA-setting changes refuse |
-| Google identity for Anthropic | Exact Google tuple and canonical post-login Anthropic identity both match before activation | Any Google chooser, alias ambiguity, delegated/managed ambiguity, or consent expansion refuses |
+| Google identity for Anthropic | An exact expected-identity Google chooser selection and canonical post-login Anthropic identity both match before activation | Missing/multiple expected identity, alias ambiguity, delegated/managed ambiguity, or consent expansion refuses |
 | Claude URL + paste-back | Public artifact is bounded/reissuable; returned code is memory-only and delivered through the readiness-checked pane; live credential oracle and authenticated use corroborate completion | Expired artifact reissues within budget; dead pane, uncertain submission, or credential/identity disagreement cannot succeed |
+| Google identity for OpenAI/Codex | Public device code is entered only at the exact OpenAI origin; the matching Google profile completes provider-native login; Codex's credential witness and authenticated-use probe corroborate completion without Claude paste-back | Wrong identity, unknown origin, expanded scope, CAPTCHA/phone challenge, expired code, or missing Codex credential refuses/pauses without claiming success |
 
 Every row requires unit coverage of the decision boundaries, integration coverage through the real
 worker/controller seam, and an AgentServer E2E witness that the enabled production dependency is
@@ -329,29 +341,30 @@ machine does not inherit or guess its authority.
 | Decision point | Class | Floor / authority |
 |---|---|---|
 | Admit a repair candidate | `invariant` | Closed conjunction of ready pool authority, corroborated open incident, exact cell/profile/identity mapping, supported method, and closed breaker. Absence/ambiguity refuses. |
-| Approve an episode | `invariant` | Only a short-lived proof minted by dashboard PIN unlock (or explicit PIN fallback) may consume the immutable episode digest. The ordinary agent bearer token is insufficient. |
+| Approve an episode | `invariant` | Approval mode requires a short-lived dashboard/operator proof. Unattended mode may consume the immutable digest only through exact-email opt-in plus the configured same-path evidence floors, and records a distinct policy audit event. |
 | Choose a browser action | `judgment-candidate` | Deterministic page classifier supplies a closed state and closed allowed-action list; Tier-1 supervisor chooses only within it. Invalid output refuses. Account/origin/scope/secrets/success remain outside LLM authority. |
 | Classify provider challenge | `invariant` | CAPTCHA, phone confirmation, unexpected origin, scope expansion, and wrong identity have fixed conservative outcomes; automating around anti-abuse controls is forbidden. |
 | Retry a failure | `invariant` | Only the closed transient taxonomy retries, under attempt/reissue/time/backoff budgets. Security terminals never retry. |
 | Declare repair success | `invariant` | Requires independent identity oracle, authenticated provider use, active pool state, and closure of the exact source incident. No proxy symbol alone suffices. |
-| Graduate to unattended | `invariant` | Dark in v1. Future admission requires explicit per-account opt-in plus the fixed evidence floor; metrics cannot self-enable authority. |
+| Graduate to unattended | `invariant` | Requires explicit exact-email opt-in, operator-configured evidence floors, and zero wrong-identity/unexpected-origin history; metrics cannot self-enable authority. |
 
 ## 15. Frontloaded Decisions
 
 | ID | Resolution |
 |---|---|
-| FD1 | First release mode is `approval`, not unattended. One operator click scopes one exact episode; everything routine afterward is autonomous. |
+| FD1 | Fleet default remains `approval`; verified-operator exact-identity deployments may select `unattended` to remove the repeated click. |
 | FD2 | Fleet defaults remain `enabled:false`, `dryRun:true`, `mode:approval`. Echo is promoted locally only after clean gates and a controlled canary. Existing operator-set values are preserved by add-missing migration. |
-| FD3 | Initial provider/framework support is Anthropic Claude Code only, through exact provider-owned origins and either one exact Anthropic-direct or Google browser identity mapping. |
+| FD3 | Supported pairs are exactly Anthropic/Claude Code and OpenAI/Codex. Both use exact provider-owned origins and one exact direct-or-Google browser identity mapping; crossed pairs refuse. |
 | FD4 | Password and TOTP are vault-name bindings stored on the profile account. Secret values are resolved only inside the worker and never enter LLM input, repair state, logs, screenshots, APIs, or messages. |
 | FD5 | Machine-local state is required by physical credential locality; no cross-machine replay/replication is added. Attention uses the single existing hub. |
 | FD6 | The browser supervisor remains mandatory Tier 1, but holds no authority beyond selecting one deterministic allowed action. |
 | FD7 | Retry/time limits are 3 attempts, 2 artifact reissues, and 10 minutes per episode; three failed episodes in 24 hours open the durable breaker. |
 | FD8 | Rollback is the config kill switch (`enabled:false`) followed by a code revert. Durable redacted rows may remain for audit; no credential cleanup is required because Instar never owns the provider credential. |
 
-No unresolved user decision remains in the implementation. Enabling `unattended`, broadening provider
-origins/scopes, adding a new provider, or using a real operator-owned identity for canary is a new
-authority decision and is outside this release.
+No unresolved user decision remains in the implementation. Justin explicitly authorized unattended
+Claude Code and Codex repair for the registered subscription identities in Telegram topic 33890 on
+2026-09-15. Broadening origins/scopes, adding another provider, or bypassing a provider security
+challenge remains outside this authority.
 
 ## 16. State-symbol verification
 

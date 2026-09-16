@@ -14775,14 +14775,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         const notify = telegram ? async (episode: import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode,
           deliveryKey: string, kind: 'approval' | 'operator-only' | 'terminal') => {
+          const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
           const summary = kind === 'approval'
-            ? 'A Claude Code subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.'
+            ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.`
             : kind === 'operator-only'
               ? 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.'
               : episode.state === 'succeeded'
-                ? 'Claude Code subscription sign-in was repaired and verified.'
-                : `Claude Code subscription repair ended in ${episode.state}. Open Subscriptions for the redacted audit.`;
-          await telegram!.createAttentionItem({ id: deliveryKey.replace(/:/g, '-'), title: 'Claude Code sign-in repair',
+                ? `${doorway} subscription sign-in was repaired and verified.`
+                : `${doorway} subscription repair ended in ${episode.state}. Open Subscriptions for the redacted audit.`;
+          await telegram!.createAttentionItem({ id: deliveryKey.replace(/:/g, '-'), title: `${doorway} sign-in repair`,
             summary, description: summary, category: 'subscription-relogin',
             priority: kind === 'terminal' && episode.state === 'succeeded' ? 'NORMAL' : 'HIGH',
             sourceContext: 'assisted-subscription-relogin' });
@@ -14796,7 +14797,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           resolveSecret: async (name) => { const value = vault.get(name); return typeof value === 'string' ? value : null; },
           supervise: async ({ snapshot, allowedActions }) => {
             const prompt = [
-              'You are a Tier-1 validator for a bounded Claude sign-in browser worker.',
+              'You are a Tier-1 validator for a bounded subscription sign-in browser worker.',
               'Choose exactly one action from allowedActions. Output only that action token.',
               'You cannot authorize an account, broaden scopes/origins, retrieve secrets, or declare success.',
               `closedSnapshot=${JSON.stringify(snapshot)}`,
@@ -14821,6 +14822,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
           allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
+          unattendedPolicy: reloginCfg.unattendedPolicy,
         });
         subscriptionReloginRuntime.start();
         console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')}`));

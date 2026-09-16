@@ -44,6 +44,12 @@ export interface SubscriptionReloginStoreOptions {
   stateDir: string; now?: () => number; idFactory?: () => string;
   databaseFactory?: (file: string, opts?: Database.Options) => BetterSqliteDatabase;
 }
+export interface SubscriptionReloginEvidence {
+  successfulRepairs: number;
+  oldestSuccessAt: string | null;
+  identityMismatches: number;
+  unexpectedOrigins: number;
+}
 
 const TERMINAL = new Set<SubscriptionReloginState>(['succeeded', 'refused', 'cancelled', 'failed']);
 const TRANSITIONS: Readonly<Record<SubscriptionReloginState, readonly SubscriptionReloginState[]>> = {
@@ -171,7 +177,8 @@ export class SubscriptionReloginStore {
     })();
   }
 
-  approve(id: string, input: { inputDigest: string; at?: string; ttlMs?: number }): SubscriptionReloginEpisode {
+  approve(id: string, input: { inputDigest: string; at?: string; ttlMs?: number;
+    authority?: 'operator' | 'unattended-policy' }): SubscriptionReloginEpisode {
     const ep = this.mustGet(id);
     if (ep.inputDigest !== input.inputDigest) throw new SubscriptionReloginConflictError('approval-input-digest-mismatch');
     if (ep.state !== 'suggested' && ep.state !== 'waiting-operator-only')
@@ -179,7 +186,9 @@ export class SubscriptionReloginStore {
     const at = input.at ?? this.isoNow();
     const ttl = Math.max(1, Math.min(3_600_000, Math.floor(input.ttlMs ?? 900_000)));
     return this.transition(id, { expectedVersion: ep.version, to: 'approved', at,
-      eventClass: ep.state === 'suggested' ? 'operator-approved' : 'operator-resumed',
+      eventClass: input.authority === 'unattended-policy'
+        ? 'unattended-policy-approved'
+        : (ep.state === 'suggested' ? 'operator-approved' : 'operator-resumed'),
       approvedAt: at, approvalExpiresAt: new Date(Date.parse(at) + ttl).toISOString(), clearFailure: true });
   }
 
@@ -265,6 +274,24 @@ export class SubscriptionReloginStore {
     return this.db.prepare('SELECT * FROM repair_events WHERE episodeId=? ORDER BY id DESC LIMIT ?')
       .all(normalizeId(episodeId, 'episode'), Math.max(1, Math.min(500, Math.floor(limit)))) as SubscriptionReloginEvent[];
   }
+  /** Authoritative aggregate over every retained episode; never use the bounded display list for policy. */
+  getUnattendedEvidence(accountId: string, machineId: string, provider: string,
+    framework: string): SubscriptionReloginEvidence {
+    const row = this.db.prepare(`SELECT
+      SUM(CASE WHEN state='succeeded' THEN 1 ELSE 0 END) successfulRepairs,
+      MIN(CASE WHEN state='succeeded' THEN finishedAt ELSE NULL END) oldestSuccessAt,
+      SUM(CASE WHEN failureClass='wrong-identity' THEN 1 ELSE 0 END) identityMismatches,
+      SUM(CASE WHEN failureClass IN ('unexpected-origin','permission-expansion') THEN 1 ELSE 0 END) unexpectedOrigins
+      FROM repair_episodes WHERE accountId=? AND machineId=? AND provider=? AND framework=?`)
+      .get(normalizeId(accountId, 'account'), normalizeId(machineId, 'machine'),
+        normalizeId(provider, 'provider'), normalizeId(framework, 'framework')) as Record<string, unknown>;
+    return {
+      successfulRepairs: Number(row.successfulRepairs ?? 0),
+      oldestSuccessAt: typeof row.oldestSuccessAt === 'string' ? row.oldestSuccessAt : null,
+      identityMismatches: Number(row.identityMismatches ?? 0),
+      unexpectedOrigins: Number(row.unexpectedOrigins ?? 0),
+    };
+  }
   isBreakerOpen(accountId: string, provider: string, windowMs = 24 * 60 * 60_000, threshold = 3): boolean {
     const account = normalizeId(accountId, 'account');
     const normalizedProvider = normalizeId(provider, 'provider');
@@ -273,6 +300,11 @@ export class SubscriptionReloginStore {
       AND state='succeeded' AND finishedAt>=? ORDER BY finishedAt DESC LIMIT 1`)
       .get(account, normalizedProvider, cutoff) as { finishedAt: string } | undefined;
     const since = success?.finishedAt ?? cutoff;
+    const securityEvent = this.db.prepare(`SELECT 1 present FROM repair_episodes WHERE accountId=? AND provider=?
+      AND state IN ('failed','refused') AND finishedAt>?
+      AND failureClass IN ('wrong-identity','unexpected-origin','permission-expansion','captcha','phone-confirmation')
+      LIMIT 1`).get(account, normalizedProvider, since);
+    if (securityEvent) return true;
     const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_episodes WHERE accountId=? AND provider=?
       AND state IN ('failed','refused') AND finishedAt>?`).get(account, normalizedProvider, since) as { n: number };
     return Number(row.n) >= Math.max(1, Math.min(10, Math.floor(threshold)));

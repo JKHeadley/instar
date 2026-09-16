@@ -32,6 +32,7 @@ function fixture(states: ReloginBrowserSnapshot[]) {
   const request = {
     artifact,
     verificationUrl: 'https://claude.ai/oauth/authorize?opaque=1',
+    provider: 'anthropic' as const,
     expectedIdentity: 'operator@example.com',
     loginMethod: 'password+totp' as const,
     secretRefs: { password: 'password-ref', totp: 'totp-ref' },
@@ -42,7 +43,7 @@ function fixture(states: ReloginBrowserSnapshot[]) {
 
 function state(pageClass: ReloginBrowserSnapshot['pageClass'], extra: Partial<ReloginBrowserSnapshot> = {}): ReloginBrowserSnapshot {
   return { origin: 'https://accounts.google.com', pageClass, expectedAccountVisible: true,
-    hasNext: true, hasAuthorize: false, requestedScopes: [], ...extra };
+    hasGoogleSignIn: false, hasNext: true, hasAuthorize: false, requestedScopes: [], ...extra };
 }
 
 describe('AnthropicReloginBrowserDriver', () => {
@@ -61,6 +62,23 @@ describe('AnthropicReloginBrowserDriver', () => {
     expect(JSON.stringify(f.supervise.mock.calls)).not.toContain('JBSWY3DPEHPK3PXP');
     expect(f.browser.close).toHaveBeenCalledOnce();
     expect(f.seatLease.release).toHaveBeenCalledWith('subscription-relogin:attempt-1');
+  });
+
+  it('drives both provider-owned Continue with Google entry and an OpenAI device code without operator clicks', async () => {
+    const f = fixture([
+      state('device-code', { origin: 'https://auth.openai.com' }),
+      state('provider-choice', { origin: 'https://auth.openai.com', hasGoogleSignIn: true }),
+      state('account-chooser'),
+      state('device-approval', { origin: 'https://auth.openai.com', hasAuthorize: true }),
+      state('success', { origin: 'https://auth.openai.com' }),
+    ]);
+    const result = await f.driver.drive({ ...f.request, provider: 'openai',
+      verificationUrl: 'https://auth.openai.com/codex/device',
+      artifact: { ...artifact, kind: 'device-code', userCode: 'ABCD-1234' } });
+    expect(result).toEqual({ outcome: 'approved' });
+    expect(f.browser.fillPublic).toHaveBeenCalledWith('device-code', 'ABCD-1234');
+    expect(f.browser.click).toHaveBeenCalledWith('google');
+    expect(f.browser.chooseExpectedAccount).toHaveBeenCalledWith('operator@example.com');
   });
 
   it('refuses a busy host browser seat before opening or resolving any secret', async () => {
@@ -98,6 +116,31 @@ describe('AnthropicReloginBrowserDriver', () => {
     expect(f.browser.click).not.toHaveBeenCalled();
   });
 
+  it('refuses an unmeasured generic consent page before the authorize click', async () => {
+    const f = fixture([state('authorize', { origin: 'https://claude.ai', hasAuthorize: true,
+      requestedScopes: [] })]);
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'operator-only', failureClass: 'permission-expansion' });
+    expect(f.browser.click).not.toHaveBeenCalled();
+  });
+
+  it('does not let a Codex device artifact turn an unmeasured consent page into a safe device approval', async () => {
+    const f = fixture([state('authorize', { origin: 'https://auth.openai.com', hasAuthorize: true,
+      requestedScopes: [] })]);
+    const request = { ...f.request, provider: 'openai' as const,
+      verificationUrl: 'https://auth.openai.com/codex/device',
+      artifact: { ...artifact, kind: 'device-code' as const, userCode: 'ABCD-1234' } };
+    expect(await f.driver.drive(request)).toEqual({ outcome: 'operator-only', failureClass: 'permission-expansion' });
+    expect(f.browser.click).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 2])('refuses a chooser unless exactly one expected identity leaf exists (count=%i)', async (count) => {
+    const f = fixture([state('account-chooser', {
+      expectedAccountVisible: count === 1, expectedAccountMatchCount: count,
+    })]);
+    expect(await f.driver.drive(f.request)).toEqual({ outcome: 'refused', failureClass: 'wrong-identity' });
+    expect(f.browser.chooseExpectedAccount).not.toHaveBeenCalled();
+  });
+
   it('requires secret refs for secret-bearing pages and never substitutes an LLM guess', async () => {
     const f = fixture([state('password')]);
     const result = await f.driver.drive({ ...f.request, secretRefs: {} });
@@ -120,6 +163,6 @@ describe('AnthropicReloginBrowserDriver', () => {
     expect(safeAllowedUrl('https://platform.claude.com/oauth/code/callback')).toBe(true);
     expect(safeAllowedUrl('http://claude.ai/oauth')).toBe(false);
     expect(safeAllowedUrl('https://user:pass@claude.ai/oauth')).toBe(false);
-    expect(allowedActions(state('password'), { loginMethod: 'session-cookie', secretRefs: {} })).toEqual([]);
+    expect(allowedActions(state('password'), { artifact, loginMethod: 'session-cookie', secretRefs: {} })).toEqual([]);
   });
 });

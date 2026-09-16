@@ -7185,18 +7185,26 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
-    // Assisted re-login awareness for existing agents. Keep this adjacent to
-    // the passive ledger bullet: the ledger observes; this separately scoped,
-    // operator-approved controller repairs only corroborated incidents.
+    const legacyAssistedReloginBullet = '- **Assisted sign-in repair (one approval, then autonomous)** — when a corroborated Claude Code authentication incident opens, `GET /subscription-relogin` shows the exact account/profile repair proposal. The operator taps **Repair sign-in** once in the dashboard; the bounded flow then handles provider-native login, CLI completion, identity verification, authenticated-use proof, pool recovery, and exact incident closure. CAPTCHA, phone confirmation, unexpected origins, identity ambiguity, or permission expansion stop in an operator-only/refused state. Never ask for or paste credentials into chat. Cancel: `POST /subscription-relogin/EPISODE/cancel`; inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
+    const automaticReloginBullet = '- **Automatic subscription sign-in repair (Claude Code + Codex)** — when a corroborated authentication incident opens, `GET /subscription-relogin` shows the exact account/profile repair. Approval mode asks for one dashboard tap; unattended mode removes that tap only for exact emails listed in `subscriptionPool.assistedRelogin.unattendedPolicy.identities` after the configured same-path evidence floors. The bounded flow uses that identity\'s dedicated pre-signed-in Google/browser profile, completes provider-native login, verifies the CLI identity and authenticated use, restores the pool cell, and closes the exact source incident. CAPTCHA, phone confirmation, unexpected origins, identity ambiguity, or permission expansion stop in an operator-only/refused state. Never ask for or paste credentials into chat. Cancel: `POST /subscription-relogin/EPISODE/cancel`; inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
+
+    // Upgrade agents that already received the Claude-only/approval-only text.
+    if (content.includes(legacyAssistedReloginBullet)) {
+      content = content.replace(legacyAssistedReloginBullet, automaticReloginBullet);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: upgraded assisted sign-in repair awareness for Claude Code and Codex');
+    }
+
+    // Automatic re-login awareness for existing agents. Keep this adjacent to
+    // the passive ledger bullet: the ledger observes; this exact-identity,
+    // policy-bounded controller repairs only corroborated incidents.
     if (
       content.includes('Sign-in reliability history (passive, never repair authority)') &&
-      !content.includes('Assisted sign-in repair (one approval, then autonomous)')
+      !content.includes('Automatic subscription sign-in repair (Claude Code + Codex)')
     ) {
       const ledgerEnd = 'or “was this a real auth failure or a credential-store visibility gap?”.';
-      const repairBullet =
-        '\n- **Assisted sign-in repair (one approval, then autonomous)** — when a corroborated Claude Code authentication incident opens, `GET /subscription-relogin` shows the exact account/profile repair proposal. The operator taps **Repair sign-in** once in the dashboard; the bounded flow then handles provider-native login, CLI completion, identity verification, authenticated-use proof, pool recovery, and exact incident closure. CAPTCHA, phone confirmation, unexpected origins, identity ambiguity, or permission expansion stop in an operator-only/refused state. Never ask for or paste credentials into chat. Cancel: `POST /subscription-relogin/EPISODE/cancel`; inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
       if (content.includes(ledgerEnd)) {
-        content = content.replace(ledgerEnd, ledgerEnd + repairBullet);
+        content = content.replace(ledgerEnd, `${ledgerEnd}\n${automaticReloginBullet}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added assisted subscription sign-in repair awareness');
       }
@@ -7205,7 +7213,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
     // Fleet one-click assisted re-login awareness for existing agents that
     // already received the original local-controller bullet.
     if (
-      content.includes('Assisted sign-in repair (one approval, then autonomous)') &&
+      content.includes('Automatic subscription sign-in repair (Claude Code + Codex)') &&
       !content.includes('One-click repair across all machines')
     ) {
       const repairEnd = 'inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
