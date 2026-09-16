@@ -13,6 +13,9 @@ describe('assisted subscription re-login config migration parity', () => {
       maxAttempts: 3,
       retryBaseMs: 5_000,
       allowedScopes: ['user:profile'],
+      unattendedPolicy: {
+        identities: [], minimumSuccessfulRepairs: 10, minimumEvidenceDays: 30,
+      },
     });
   });
 
@@ -23,6 +26,7 @@ describe('assisted subscription re-login config migration parity', () => {
     applyDefaults(config, getMigrationDefaults());
     expect(config.subscriptionPool.assistedRelogin).toMatchObject({
       enabled: true, mode: 'approval', dryRun: false, tickMs: 30_000, maxAttempts: 3,
+      unattendedPolicy: { identities: [], minimumSuccessfulRepairs: 10, minimumEvidenceDays: 30 },
     });
   });
 });

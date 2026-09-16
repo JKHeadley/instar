@@ -4230,8 +4230,8 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
-    /** Approval-gated autonomous repair for corroborated Claude Code sign-in failures.
-     *  Absent/off stays dark. `unattended` remains evidence- and opt-in-gated by policy. */
+    /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
+     *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
     assistedRelogin?: {
       enabled?: boolean;
       mode?: 'observe' | 'approval' | 'unattended';
@@ -4240,6 +4240,14 @@ export interface InstarConfig {
       maxAttempts?: number;
       retryBaseMs?: number;
       allowedScopes?: string[];
+      unattendedPolicy?: {
+        /** Exact subscription emails allowed to repair without a dashboard approval. */
+        identities?: string[];
+        /** Evidence floor per exact account/provider/machine path. Default 10. */
+        minimumSuccessfulRepairs?: number;
+        /** Age of the oldest successful repair required in days. Default 30. */
+        minimumEvidenceDays?: number;
+      };
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
     };

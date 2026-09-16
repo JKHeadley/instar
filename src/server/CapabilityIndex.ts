@@ -107,7 +107,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionRelogin',
     prefixes: ['/subscription-relogin'],
-    description: 'Approval-gated assisted Claude Code sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair proposal; one operator click authorizes a bounded autonomous provider-native login. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident.',
+    description: 'Bounded Claude Code and Codex sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair; approval mode uses one operator click, while unattended mode requires an exact identity allowlist plus configured evidence floors. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident.',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionRelogin,
       mode: ctx.config.subscriptionPool?.assistedRelogin?.enabled === true

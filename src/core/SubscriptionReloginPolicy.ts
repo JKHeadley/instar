@@ -11,7 +11,7 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'malformed-response',
   'still-authfailed-after-refresh',
 ]);
-const SUPPORTED_FRAMEWORKS = new Set(['claude-code']);
+const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
 const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp']);
 
 export type SubscriptionReloginRefusal =
@@ -65,6 +65,8 @@ export interface SubscriptionReloginAdmissionInput {
     evidenceDays: number;
     identityMismatches: number;
     unexpectedOrigins: number;
+    minimumSuccessfulRepairs?: number;
+    minimumEvidenceDays?: number;
   };
 }
 
@@ -94,7 +96,8 @@ export function evaluateSubscriptionReloginAdmission(
   if (!ACTIONABLE_CAUSES.has(input.sourceEpisode.causeClass)) return refuse('cause-not-actionable');
   if (input.hasLiveRepair) return refuse('repair-already-live');
   if (input.hasLivePendingLogin) return refuse('pending-login-already-live');
-  if (!SUPPORTED_FRAMEWORKS.has(input.account.framework)) return refuse('framework-not-supported');
+  if (!SUPPORTED_PROVIDER_PATHS.has(`${input.account.provider}:${input.account.framework}`))
+    return refuse('framework-not-supported');
   if (!input.profile) return refuse('profile-unresolved');
   if (input.profile.ambiguous) return refuse('profile-ambiguous');
   if (!input.profile.dirExists) return refuse('profile-directory-missing');
@@ -129,9 +132,11 @@ export function evaluateSubscriptionReloginAdmission(
 }
 
 function unattendedGraduated(value: SubscriptionReloginAdmissionInput['unattended']): boolean {
+  const minimumSuccessfulRepairs = Math.max(0, Math.floor(value?.minimumSuccessfulRepairs ?? 10));
+  const minimumEvidenceDays = Math.max(0, Math.floor(value?.minimumEvidenceDays ?? 30));
   return value?.explicitlyEnabled === true
-    && value.successfulRepairs >= 10
-    && value.evidenceDays >= 30
+    && value.successfulRepairs >= minimumSuccessfulRepairs
+    && value.evidenceDays >= minimumEvidenceDays
     && value.identityMismatches === 0
     && value.unexpectedOrigins === 0;
 }

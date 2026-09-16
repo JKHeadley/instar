@@ -279,6 +279,7 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
     expect(init.subscriptionPool.assistedRelogin).toMatchObject({
       enabled: false, dryRun: true, mode: 'approval', maxAttempts: 3,
       tickMs: 30_000, retryBaseMs: 5_000, allowedScopes: ['user:profile'],
+      unattendedPolicy: { identities: [], minimumSuccessfulRepairs: 10, minimumEvidenceDays: 30 },
     });
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-migration-e2e-')); roots.push(root);

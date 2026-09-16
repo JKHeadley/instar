@@ -75,6 +75,18 @@ describe('evaluateSubscriptionReloginAdmission', () => {
     }
   });
 
+  it('admits the exact OpenAI/Codex provider path and refuses crossed provider/framework pairs', () => {
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: {
+      ...valid().account, provider: 'openai', framework: 'codex-cli',
+    } }))).toMatchObject({ admitted: true, mode: 'approval' });
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: {
+      ...valid().account, provider: 'anthropic', framework: 'codex-cli',
+    } }))).toEqual({ admitted: false, reason: 'framework-not-supported' });
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: {
+      ...valid().account, provider: 'openai', framework: 'claude-code',
+    } }))).toEqual({ admitted: false, reason: 'framework-not-supported' });
+  });
+
   it('never lets metrics turn unattended mode on without explicit opt-in and all evidence floors', () => {
     const near = evaluateSubscriptionReloginAdmission(valid({
       configuredMode: 'unattended',
@@ -86,6 +98,22 @@ describe('evaluateSubscriptionReloginAdmission', () => {
       unattended: { explicitlyEnabled: true, successfulRepairs: 10, evidenceDays: 30, identityMismatches: 0, unexpectedOrigins: 0 },
     }));
     expect(graduated).toMatchObject({ admitted: true, mode: 'unattended', unattendedHeld: false });
+
+    const exactOperatorCanary = evaluateSubscriptionReloginAdmission(valid({
+      configuredMode: 'unattended',
+      unattended: { explicitlyEnabled: true, successfulRepairs: 0, evidenceDays: 0,
+        identityMismatches: 0, unexpectedOrigins: 0,
+        minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    }));
+    expect(exactOperatorCanary).toMatchObject({ admitted: true, mode: 'unattended', unattendedHeld: false });
+
+    const unsafeHistory = evaluateSubscriptionReloginAdmission(valid({
+      configuredMode: 'unattended',
+      unattended: { explicitlyEnabled: true, successfulRepairs: 100, evidenceDays: 365,
+        identityMismatches: 1, unexpectedOrigins: 0,
+        minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    }));
+    expect(unsafeHistory).toMatchObject({ admitted: true, mode: 'approval', unattendedHeld: true });
   });
 
   it('binds the approval digest to every action-authority coordinate', () => {

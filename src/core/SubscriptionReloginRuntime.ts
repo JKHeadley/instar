@@ -28,6 +28,11 @@ export interface SubscriptionReloginRuntimeDeps {
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   allowedScopes?: string[]; tickMs?: number; maxAttempts?: number; retryBaseMs?: number;
+  unattendedPolicy?: {
+    identities?: string[];
+    minimumSuccessfulRepairs?: number;
+    minimumEvidenceDays?: number;
+  };
   now?: () => number;
 }
 
@@ -42,20 +47,22 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
   const store = new SubscriptionReloginStore({ stateDir: deps.stateDir, now });
   const seatLease = new PlaywrightSeatLease({ now });
   const authenticated = new Set<string>();
+  const identityMismatches = new Map<string, string>();
 
   const source = (episode: SubscriptionReloginEpisode): SubscriptionLoginEpisode | null =>
     deps.ledger.listEpisodes({ accountId: episode.accountId, limit: 100 })
       .find((item) => item.id === episode.sourceEpisodeId && item.machineId === episode.machineId) ?? null;
   const account = (episode: SubscriptionReloginEpisode): SubscriptionAccount | null => deps.pool.get(episode.accountId);
   const profileContext = (acct: SubscriptionAccount) => {
-    // Claude subscriptions may authenticate directly with Anthropic credentials
-    // or through Google. Resolve both closed provider paths and require exactly
-    // one account/profile mapping; never guess between them.
+    // Both subscription providers may authenticate directly or through Google.
+    // Resolve only the provider's closed paths and require exactly one mapping;
+    // never guess between identities or reuse a sibling provider's profile.
     const profiles = deps.profiles.listProfiles();
     const candidates: Array<{ detail: PlaywrightProfileDetail;
       browserAccount: PlaywrightAccount & { danglingRefs: string[] } }> = [];
     let registryAmbiguous = false;
-    for (const service of ['anthropic', 'google']) {
+    const services = acct.provider === 'openai' ? ['openai', 'google'] : ['anthropic', 'google'];
+    for (const service of services) {
       const resolution = deps.profiles.resolve(service, acct.email);
       if (resolution.ambiguous) registryAmbiguous = true;
       if (!resolution.profile) continue;
@@ -103,7 +110,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       }
       if (!login) throw new Error('login-artifact-unavailable');
       return { attemptId: login.id, kind: login.kind, expiresAt: login.ttlExpiresAt,
-        reissueCount: login.reissueCount };
+        userCode: login.userCode, reissueCount: login.reissueCount };
     },
     driveBrowser: async (episode, artifact, signal) => {
       const acct = mustAccount(account(episode));
@@ -112,12 +119,16 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       if (!detail?.userDataDir || !browserAccount) return { outcome: 'refused', failureClass: 'wrong-identity' };
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, supervise: deps.supervise, seatLease, now });
-      return driver.drive({ artifact, verificationUrl: login.verificationUrl, expectedIdentity: acct.email,
+      if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
+        return { outcome: 'refused', failureClass: 'provider-rejected' };
+      return driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
+        expectedIdentity: acct.email,
         loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
         allowedScopes: deps.allowedScopes ?? [] }, signal);
     },
     finishCli: async (episode, code, signal) => {
       const login = pending(episode.accountId); if (!login) throw new Error('login-artifact-unavailable');
+      if (login.kind === 'device-code') return await credentialReady(login) ? 'complete' : 'pending';
       const result = await deps.pasteBack.finish(login, code, signal);
       if (result === 'complete') return 'complete';
       if (result === 'pending') return 'pending';
@@ -127,7 +138,23 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       const acct = mustAccount(account(episode));
       const result = await deps.identityOracle.resolveSlotTenant(acct.configHome);
       if ('unavailable' in result || !result.email) return 'unavailable';
-      return normalize(result.email) === normalize(acct.email) ? 'match' : 'mismatch';
+      if (normalize(result.email) === normalize(acct.email)) return 'match';
+      identityMismatches.set(episode.id, result.email);
+      return 'mismatch';
+    },
+    quarantineIdentityMismatch: async (episode) => {
+      const acct = mustAccount(account(episode));
+      const actualEmail = identityMismatches.get(episode.id);
+      if (!actualEmail) throw new Error('identity-mismatch-evidence-missing');
+      const actualAccountId = deps.pool.list().find((candidate) =>
+        candidate.provider === acct.provider && normalize(candidate.email) === normalize(actualEmail))?.id
+        ?? 'unrecognized-provider-identity';
+      const at = new Date(now()).toISOString();
+      deps.pool.update(acct.id, { identityDrifted: true, identityDrift: {
+        expectedAccountId: acct.id, actualAccountId, actualEmail, slot: acct.configHome,
+        detectedAt: at, lastConfirmedAt: at, repairState: 'owner-relogin-required',
+      } });
+      identityMismatches.delete(episode.id);
     },
     verifyAuthenticatedUse: async (episode) => {
       const acct = mustAccount(account(episode));
@@ -148,6 +175,9 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
 
   const admissionFor = (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode, currentEpisodeId?: string) => {
     const { resolved, detail, browserAccount } = profileContext(acct);
+    const evidence = store.getUnattendedEvidence(acct.id, deps.machineId, acct.provider, acct.framework);
+    const oldestSuccessAt = evidence.oldestSuccessAt === null ? null : Date.parse(evidence.oldestSuccessAt);
+    const optedInIdentities = deps.unattendedPolicy?.identities ?? [];
     return evaluateSubscriptionReloginAdmission({ configuredMode: deps.mode,
       poolAuthority: deps.pool.getAvailability().state, account: { id: acct.id, machineId: deps.machineId,
         status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email) },
@@ -157,7 +187,17 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       profile: detail && browserAccount ? { id: detail.id, ambiguous: resolved.ambiguous === true,
         dirExists: detail.dirExists, dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
         loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs } : null,
-      breakerOpen: store.isBreakerOpen(acct.id, acct.provider) });
+      breakerOpen: store.isBreakerOpen(acct.id, acct.provider),
+      unattended: {
+        explicitlyEnabled: optedInIdentities.some((identity) => normalize(identity) === normalize(acct.email)),
+        successfulRepairs: evidence.successfulRepairs,
+        evidenceDays: oldestSuccessAt === null || !Number.isFinite(oldestSuccessAt)
+          ? 0 : Math.max(0, Math.floor((now() - oldestSuccessAt) / 86_400_000)),
+        identityMismatches: evidence.identityMismatches,
+        unexpectedOrigins: evidence.unexpectedOrigins,
+        minimumSuccessfulRepairs: deps.unattendedPolicy?.minimumSuccessfulRepairs,
+        minimumEvidenceDays: deps.unattendedPolicy?.minimumEvidenceDays,
+      } });
   };
   const scanCandidates = async () => {
     if (deps.pool.getAvailability().state !== 'ready') return [];

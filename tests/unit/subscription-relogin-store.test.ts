@@ -167,6 +167,48 @@ describe('SubscriptionReloginStore', () => {
     store.close();
   });
 
+  it.each(['wrong-identity', 'unexpected-origin', 'permission-expansion', 'captcha', 'phone-confirmation'] as const)(
+    'opens the account/provider breaker immediately for security failure %s', (failureClass) => {
+      const { store, suggest } = fixture();
+      const suggested = suggest();
+      const approved = store.approve(suggested.id, { inputDigest: suggested.inputDigest });
+      const starting = store.transition(approved.id, { expectedVersion: approved.version,
+        to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+      const ready = store.transition(starting.id, { expectedVersion: starting.version,
+        to: 'artifact-ready', eventClass: 'artifact-ready' });
+      const driving = store.transition(ready.id, { expectedVersion: ready.version,
+        to: 'browser-driving', eventClass: 'browser-driving' });
+      store.transition(driving.id, { expectedVersion: driving.version,
+        to: failureClass === 'wrong-identity' || failureClass === 'unexpected-origin' ? 'refused' : 'failed',
+        eventClass: 'security-terminal', failureClass });
+      expect(store.isBreakerOpen('acct-1', 'anthropic')).toBe(true);
+      store.close();
+    });
+
+  it('computes unattended security evidence over all retained rows, not the 500-row display window', () => {
+    const { store, suggest } = fixture();
+    const security = suggest({ sourceEpisodeId: 1 });
+    const securityApproved = store.approve(security.id, { inputDigest: security.inputDigest });
+    const securityStarted = store.transition(securityApproved.id, { expectedVersion: securityApproved.version,
+      to: 'cli-starting', eventClass: 'cli-starting' });
+    const securityReady = store.transition(securityStarted.id, { expectedVersion: securityStarted.version,
+      to: 'artifact-ready', eventClass: 'artifact-ready' });
+    const securityDriving = store.transition(securityReady.id, { expectedVersion: securityReady.version,
+      to: 'browser-driving', eventClass: 'browser-driving' });
+    store.transition(securityDriving.id, { expectedVersion: securityDriving.version, to: 'refused',
+      eventClass: 'wrong-identity', failureClass: 'wrong-identity' });
+    for (let sourceEpisodeId = 2; sourceEpisodeId <= 501; sourceEpisodeId++) {
+      const row = suggest({ sourceEpisodeId });
+      const approved = store.approve(row.id, { inputDigest: row.inputDigest });
+      store.transition(approved.id, { expectedVersion: approved.version, to: 'failed',
+        eventClass: 'ordinary-failure', failureClass: 'provider-rejected' });
+    }
+    expect(store.list({ accountId: 'acct-1', limit: 500 })).toHaveLength(500);
+    expect(store.getUnattendedEvidence('acct-1', 'machine-1', 'anthropic', 'claude-code'))
+      .toMatchObject({ identityMismatches: 1, unexpectedOrigins: 0 });
+    store.close();
+  });
+
   it('allows an explicit retry only for a non-security failed terminal and resets its budgets', () => {
     const { store, suggest } = fixture();
     const suggested = suggest();

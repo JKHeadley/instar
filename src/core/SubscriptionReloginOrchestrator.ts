@@ -7,6 +7,8 @@ import type {
 export interface ReloginArtifact {
   attemptId: string;
   kind: 'device-code' | 'url-code-paste';
+  /** Public provider artifact used by device-code flows (Codex/OpenAI). */
+  userCode?: string;
   expiresAt: string;
   reissueCount: number;
 }
@@ -30,6 +32,8 @@ export interface SubscriptionReloginOrchestratorDeps {
   /** Readiness-checks the pane and never blind-types. The code is memory-only. */
   finishCli: (episode: SubscriptionReloginEpisode, pasteCode: string | undefined, signal: AbortSignal) => Promise<'complete' | 'pending'>;
   verifyIdentity: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<'match' | 'mismatch' | 'unavailable'>;
+  /** Quarantines a credential that resolved to the wrong provider identity before any further use. */
+  quarantineIdentityMismatch: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<void>;
   verifyAuthenticatedUse: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<boolean>;
   /** Applies the verified recovery to the existing pool/ledger authorities. Must be idempotent. */
   finalizeSuccess: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<void>;
@@ -185,7 +189,14 @@ export class SubscriptionReloginOrchestrator {
         return 'unavailable' as const;
       });
       if (identity === 'aborted') return this.cancelledResult(ep);
-      if (identity === 'mismatch') return this.fail(ep, 'wrong-identity', 'identity-mismatch', 'refused');
+      if (identity === 'mismatch') {
+        try { await this.deps.quarantineIdentityMismatch(ep, signal); }
+        catch {
+          return this.fail(ep, 'authority-degraded', 'identity-quarantine-failed', 'failed');
+        }
+        if (signal.aborted) return this.cancelledResult(ep);
+        return this.fail(ep, 'wrong-identity', 'identity-mismatch-quarantined', 'refused');
+      }
       if (identity === 'unavailable') return this.retry(ep, 'verification-failed');
       ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'auth-verifying',
         eventClass: 'identity-verified', at: this.isoNow() });

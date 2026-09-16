@@ -30,7 +30,8 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added assisted subscription sign-in repair awareness');
     expect(first.upgraded).toContain('CLAUDE.md: added fleet one-click sign-in repair awareness');
     const once = fs.readFileSync(target, 'utf8');
-    expect(once).toContain('Assisted sign-in repair (one approval, then autonomous)');
+    expect(once).toContain('Automatic subscription sign-in repair (Claude Code + Codex)');
+    expect(once).toContain('unattendedPolicy.identities');
     expect(once).toContain('One-click repair across all machines');
     expect(once).toContain('POST /subscription-relogin/repair-cell');
     expect(once).toContain('Never ask for or paste credentials into chat');

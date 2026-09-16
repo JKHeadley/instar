@@ -34,6 +34,7 @@ function fixture() {
     driveBrowser: vi.fn(async () => ({ outcome: 'approved' as const, pasteCode: 'one-time-code' })),
     finishCli: vi.fn(async () => 'complete' as const),
     verifyIdentity: vi.fn(async () => 'match' as const),
+    quarantineIdentityMismatch: vi.fn(async () => undefined),
     verifyAuthenticatedUse: vi.fn(async () => true),
     finalizeSuccess: vi.fn(async () => { sourceOpen = false; active = true; }),
     accountActive: vi.fn(() => active),
@@ -134,6 +135,18 @@ describe('SubscriptionReloginOrchestrator', () => {
     ports.driveBrowser.mockResolvedValue({ outcome: 'refused', failureClass: 'wrong-identity' });
     const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
     expect(result.episode).toMatchObject({ state: 'refused', failureClass: 'wrong-identity', attemptCount: 1 });
+    store.close();
+  });
+
+  it('quarantines a post-login identity mismatch before refusing the episode', async () => {
+    const { store, approved, ports } = fixture();
+    ports.verifyIdentity.mockResolvedValue('mismatch');
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(ports.quarantineIdentityMismatch).toHaveBeenCalledWith(
+      expect.objectContaining({ id: approved.id }), expect.any(AbortSignal));
+    expect(result.episode).toMatchObject({ state: 'refused', failureClass: 'wrong-identity' });
+    expect(store.listEvents(approved.id).map((event) => event.eventClass))
+      .toContain('identity-mismatch-quarantined');
     store.close();
   });
 

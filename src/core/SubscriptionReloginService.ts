@@ -50,12 +50,16 @@ export class SubscriptionReloginService {
   }
 
   async approve(episodeId: string): Promise<SubscriptionReloginEpisode> {
+    return this.approveWithAuthority(episodeId, 'operator');
+  }
+
+  private async approveWithAuthority(episodeId: string, authority: 'operator' | 'unattended-policy'): Promise<SubscriptionReloginEpisode> {
     const episode = this.mustGet(episodeId);
     if (episode.mode === 'observe') throw new Error('relogin-observe-only');
     const verdict = await this.deps.revalidate(episode);
     if (!verdict.admissible) throw new Error(`approval-revalidation-refused:${verdict.reason}`);
     if (verdict.inputDigest !== episode.inputDigest) throw new Error('approval-input-digest-mismatch');
-    const approved = this.deps.store.approve(episode.id, { inputDigest: verdict.inputDigest });
+    const approved = this.deps.store.approve(episode.id, { inputDigest: verdict.inputDigest, authority });
     void this.runEpisode(approved.id);
     return approved;
   }
@@ -84,7 +88,8 @@ export class SubscriptionReloginService {
         try { episode = this.deps.store.suggest(candidate); }
         catch { continue; }
         if (candidate.mode === 'unattended' && episode.state === 'suggested') {
-          try { await this.approve(episode.id); } catch { /* revalidation refusal leaves suggestion visible */ }
+          try { await this.approveWithAuthority(episode.id, 'unattended-policy'); }
+          catch { /* revalidation refusal leaves suggestion visible */ }
         }
       }
       const runnable = this.deps.store.list({ limit: 500 }).filter((episode) =>

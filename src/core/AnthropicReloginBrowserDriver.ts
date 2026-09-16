@@ -3,7 +3,9 @@ import type { BrowserRepairResult, ReloginArtifact } from './SubscriptionRelogin
 
 export type ReloginBrowserAction =
   | 'choose-expected-account'
+  | 'click-google-signin'
   | 'fill-email'
+  | 'fill-device-code'
   | 'fill-password'
   | 'fill-totp'
   | 'click-next'
@@ -15,10 +17,14 @@ export type ReloginBrowserAction =
 export interface ReloginBrowserSnapshot {
   origin: string;
   pageClass:
-    | 'account-chooser' | 'email' | 'password' | 'totp' | 'authorize'
+    | 'provider-choice' | 'account-chooser' | 'email' | 'device-code' | 'device-approval'
+    | 'password' | 'totp' | 'authorize'
     | 'paste-code' | 'success' | 'captcha' | 'phone-confirmation'
     | 'permission-expansion' | 'unknown';
   expectedAccountVisible: boolean;
+  /** Exact actionable chooser leaves matching the canonical expected identity. */
+  expectedAccountMatchCount?: number;
+  hasGoogleSignIn: boolean;
   hasNext: boolean;
   hasAuthorize: boolean;
   requestedScopes: string[];
@@ -28,10 +34,11 @@ export interface ReloginBrowserPort {
   open(url: string): Promise<void>;
   snapshot(expectedIdentity: string): Promise<ReloginBrowserSnapshot>;
   chooseExpectedAccount(expectedIdentity: string): Promise<void>;
-  fillPublic(field: 'email', value: string): Promise<void>;
+  /** Implementations fill and submit the current public form atomically. */
+  fillPublic(field: 'email' | 'device-code', value: string): Promise<void>;
   /** Implementations must submit directly; never log, snapshot, or return value. */
   fillSecret(field: 'password' | 'totp', value: string): Promise<void>;
-  click(action: 'next' | 'authorize'): Promise<void>;
+  click(action: 'next' | 'authorize' | 'google'): Promise<void>;
   readPasteCode(): Promise<string | null>;
   wait(ms: number): Promise<void>;
   close(): Promise<void>;
@@ -40,6 +47,7 @@ export interface ReloginBrowserPort {
 export interface AnthropicReloginBrowserRequest {
   artifact: ReloginArtifact;
   verificationUrl: string;
+  provider: 'anthropic' | 'openai';
   expectedIdentity: string;
   loginMethod: 'session-cookie' | 'password' | 'password+totp';
   secretRefs: { password?: string; totp?: string };
@@ -62,12 +70,18 @@ export interface AnthropicReloginBrowserDriverDeps {
   maxSteps?: number;
 }
 
-const ALLOWED_ORIGINS = [
+const ANTHROPIC_ORIGINS = [
   'https://claude.ai',
   'https://claude.com',
   'https://platform.claude.com',
   'https://console.anthropic.com',
   'https://auth.anthropic.com',
+  'https://accounts.google.com',
+];
+const OPENAI_ORIGINS = [
+  'https://auth.openai.com',
+  'https://chatgpt.com',
+  'https://platform.openai.com',
   'https://accounts.google.com',
 ];
 
@@ -82,7 +96,7 @@ export class AnthropicReloginBrowserDriver {
   }
 
   async drive(request: AnthropicReloginBrowserRequest, signal: AbortSignal = new AbortController().signal): Promise<BrowserRepairResult> {
-    if (!safeAllowedUrl(request.verificationUrl)) return { outcome: 'refused', failureClass: 'unexpected-origin' };
+    if (!safeAllowedUrl(request.verificationUrl, request.provider)) return { outcome: 'refused', failureClass: 'unexpected-origin' };
     if (Date.parse(request.artifact.expiresAt) <= this.now()) return { outcome: 'transient', failureClass: 'artifact-expired' };
     const holderId = `subscription-relogin:${request.artifact.attemptId}`;
     const lease = this.deps.seatLease.acquire(holderId, 'subscription re-login');
@@ -95,7 +109,8 @@ export class AnthropicReloginBrowserDriver {
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
         const snapshot = await this.deps.browser.snapshot(request.expectedIdentity);
-        if (!ALLOWED_ORIGINS.includes(snapshot.origin)) return { outcome: 'refused', failureClass: 'unexpected-origin' };
+        if (!allowedOrigins(request.provider).includes(snapshot.origin))
+          return { outcome: 'refused', failureClass: 'unexpected-origin' };
         if (!scopesAllowed(snapshot.requestedScopes, request.allowedScopes))
           return { outcome: 'operator-only', failureClass: 'permission-expansion' };
         if (snapshot.pageClass === 'captcha') return { outcome: 'operator-only', failureClass: 'captcha' };
@@ -103,6 +118,14 @@ export class AnthropicReloginBrowserDriver {
           return { outcome: 'operator-only', failureClass: 'phone-confirmation' };
         if (snapshot.pageClass === 'permission-expansion')
           return { outcome: 'operator-only', failureClass: 'permission-expansion' };
+        if (snapshot.pageClass === 'account-chooser'
+          && (snapshot.expectedAccountMatchCount ?? (snapshot.expectedAccountVisible ? 1 : 0)) !== 1)
+          return { outcome: 'refused', failureClass: 'wrong-identity' };
+        if (snapshot.pageClass === 'authorize' && snapshot.requestedScopes.length === 0)
+          return { outcome: 'operator-only', failureClass: 'permission-expansion' };
+        if (snapshot.pageClass === 'device-approval'
+          && (request.provider !== 'openai' || request.artifact.kind !== 'device-code'))
+          return { outcome: 'refused', failureClass: 'provider-rejected' };
         if (snapshot.pageClass === 'success') return { outcome: 'approved' };
         if (snapshot.pageClass === 'paste-code') {
           const code = await this.deps.browser.readPasteCode();
@@ -130,7 +153,12 @@ export class AnthropicReloginBrowserDriver {
   private async perform(action: ReloginBrowserAction, req: AnthropicReloginBrowserRequest): Promise<boolean> {
     switch (action) {
       case 'choose-expected-account': await this.deps.browser.chooseExpectedAccount(req.expectedIdentity); return true;
+      case 'click-google-signin': await this.deps.browser.click('google'); return true;
       case 'fill-email': await this.deps.browser.fillPublic('email', req.expectedIdentity); return true;
+      case 'fill-device-code': {
+        if (req.artifact.kind !== 'device-code' || !req.artifact.userCode) return false;
+        await this.deps.browser.fillPublic('device-code', req.artifact.userCode); return true;
+      }
       case 'fill-password': {
         if (req.loginMethod === 'session-cookie' || !req.secretRefs.password) return false;
         let secret = await this.deps.resolveSecret(req.secretRefs.password);
@@ -157,27 +185,41 @@ export class AnthropicReloginBrowserDriver {
 
 export function allowedActions(
   snapshot: ReloginBrowserSnapshot,
-  request: Pick<AnthropicReloginBrowserRequest, 'loginMethod' | 'secretRefs'>,
+  request: Pick<AnthropicReloginBrowserRequest, 'artifact' | 'loginMethod' | 'secretRefs'>,
 ): ReloginBrowserAction[] {
   switch (snapshot.pageClass) {
-    case 'account-chooser': return snapshot.expectedAccountVisible ? ['choose-expected-account'] : [];
-    case 'email': return ['fill-email', ...(snapshot.hasNext ? ['click-next' as const] : [])];
+    case 'provider-choice': return snapshot.hasGoogleSignIn ? ['click-google-signin'] : [];
+    case 'account-chooser': return (snapshot.expectedAccountMatchCount ?? (snapshot.expectedAccountVisible ? 1 : 0)) === 1
+      ? ['choose-expected-account'] : [];
+    case 'email': return ['fill-email'];
+    case 'device-code': return request.artifact?.kind === 'device-code' && request.artifact.userCode
+      ? ['fill-device-code'] : [];
     case 'password': return request.loginMethod !== 'session-cookie' && request.secretRefs.password
-      ? ['fill-password', ...(snapshot.hasNext ? ['click-next' as const] : [])] : [];
+      ? ['fill-password'] : [];
     case 'totp': return request.loginMethod === 'password+totp' && request.secretRefs.totp
-      ? ['fill-totp', ...(snapshot.hasNext ? ['click-next' as const] : [])] : [];
+      ? ['fill-totp'] : [];
+    case 'device-approval': return request.artifact?.kind === 'device-code' && snapshot.hasAuthorize
+      ? ['click-authorize'] : [];
     case 'authorize': return snapshot.hasAuthorize ? ['click-authorize'] : [];
     case 'unknown': return ['wait'];
     default: return [];
   }
 }
 
-export function safeAllowedUrl(value: string): boolean {
+export function safeAllowedUrl(
+  value: string,
+  provider?: AnthropicReloginBrowserRequest['provider'],
+): boolean {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password) return false;
-    return ALLOWED_ORIGINS.includes(url.origin);
+    return provider ? allowedOrigins(provider).includes(url.origin)
+      : [...ANTHROPIC_ORIGINS, ...OPENAI_ORIGINS].includes(url.origin);
   } catch { /* @silent-fallback-ok — false is the explicit fail-closed URL-validation verdict */ return false; }
+}
+
+function allowedOrigins(provider: AnthropicReloginBrowserRequest['provider']): string[] {
+  return provider === 'openai' ? OPENAI_ORIGINS : ANTHROPIC_ORIGINS;
 }
 
 function scopesAllowed(requested: string[], allowed: string[]): boolean {

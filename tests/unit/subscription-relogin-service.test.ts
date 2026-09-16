@@ -55,4 +55,20 @@ describe('SubscriptionReloginService', () => {
     expect(delivered).toHaveBeenCalledOnce();
     store.close();
   });
+
+  it('auto-approves an unattended candidate with a distinct non-operator audit event', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-service-unattended-')); dirs.push(stateDir);
+    const store = new SubscriptionReloginStore({ stateDir, idFactory: () => 'repair-auto' });
+    const candidate = { sourceEpisodeId: 3, accountId: 'acct-1', machineId: 'machine-1', mode: 'unattended' as const,
+      inputDigest: `sha256:${'c'.repeat(64)}`, profileId: 'profile-1', framework: 'codex-cli', provider: 'openai' };
+    const orchestrator = { tick: vi.fn(async () => ({ outcome: 'waiting' })) } as unknown as SubscriptionReloginOrchestrator;
+    const service = new SubscriptionReloginService({ store, orchestrator,
+      scanCandidates: async () => [candidate],
+      revalidate: async () => ({ admissible: true, inputDigest: candidate.inputDigest }) });
+    await service.tick();
+    expect(store.get('repair-auto')?.state).toBe('approved');
+    expect(store.listEvents('repair-auto').map((event) => event.eventClass))
+      .toEqual(['unattended-policy-approved', 'candidate-admitted']);
+    store.close();
+  });
 });
