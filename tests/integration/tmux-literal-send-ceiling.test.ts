@@ -43,6 +43,7 @@ function startReceiver(): { session: string; outFile: string } {
   const dir = mkdtempSync(join(tmpdir(), 'tmux-ceiling-'));
   dirs.push(dir);
   const outFile = join(dir, 'received.txt');
+  const readyFile = join(dir, 'receiver-ready');
   const session = `ceiling-test-${process.pid}-${sessions.length}`;
   sessions.push(session);
   // `stty raw` matters: in canonical mode the tty line discipline caps a single
@@ -50,8 +51,12 @@ function startReceiver(): { session: string; outFile: string } {
   // failure that looks like the bug under test.
   execFileSync(tmuxPath, [
     'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
-    `stty raw -echo; cat > ${outFile}`,
+    `stty raw -echo; printf 1 > ${readyFile}; cat > ${outFile}`,
   ], { encoding: 'utf-8', timeout: 10_000 });
+  // tmux creating the pane does not mean the child shell has applied raw mode.
+  // Sending before this handshake races the canonical TTY line limit (4095 B
+  // on Linux), which looks exactly like a dropped tmux chunk.
+  if (drain(readyFile, 1, 10_000, 30_000) !== 1) throw new Error('tmux receiver did not become ready');
   return { session, outFile };
 }
 

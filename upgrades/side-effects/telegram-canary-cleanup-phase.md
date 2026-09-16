@@ -1,0 +1,444 @@
+# Owned Telegram canary cleanup phases — side-effects review
+
+Governing approved/converged spec: docs/specs/telegram-message-origin.md. Fresh
+helper-created worktree fix/telegram-canary-cleanup-phase from canonical
+https://github.com/JKHeadley/instar.git at 15cd5876d6d285a39fc105aeb57e5fde705ad540,
+v1.3.1238. Existing approved private overview is linked in that spec.
+
+## Evidence and intended outcome
+
+Independent tracing found all six checks completed in about 318 ms, followed by
+synchronous native watcher shutdown. One success spent 1298 ms closing observer
+watchers and 3150 ms closing reader watchers; a failed cycle stalled at observer
+close until both six-second attempts timed out. A separate production Boot trace
+measured 5763 ms and 1470 ms in those closes, then 3 ms in runtime close. Logs:
+/tmp/echo-review-canary-direct.log and /tmp/echo-review-network-lifecycle-close.log.
+
+The current six-second timer includes cleanup and is not a hard total duration
+bound because actual termination remains awaited after timeout. The approved
+spec does not prescribe six seconds. The existing controller declaration requires
+sequential bounded attempts, verified cleanup ownership, a cleanup-failure latch,
+and startup/recurrence floors. Preserve six seconds for contract checks and use
+a separate explicitly chosen 30-second cleanup deadline justified by these timings.
+
+## Principle check and side effects
+
+This changes diagnostic health, not credentials, delivery permission, retry custody,
+or source authority. Health stays non-passing until all cleanup is verified.
+Over-block: malformed protocol rejects the attempt and permits at most one retry.
+Failed or unverified cleanup latches unavailable health even if checks succeeded;
+actual source readers retain their own authority. Under-block: early success messages, duplicates, late results and missing
+cleanup must never establish passing health. Ownership remains held while cleanup
+is unresolved. At most two workers run sequentially and recurrence remains
+completion-relative; restart waits 60 seconds.
+
+The additional cleanup time can delay diagnostic completion and close(), but never
+permits overlapping workers or healthy status before teardown. Deadlines are
+bounded observations, not promises that an unabortable OS close returns by then.
+Signals expose only fixed phases/reasons, never fixture content or paths.
+
+Machine-local by design: each canary owns a private fixture and process resources;
+no network transport or remote authority is created. Rollback restores the older
+probe accounting and needs no stored-data migration. Existing-install awareness
+will receive a guarded update alongside generated instructions.
+
+Class unbounded-self-action: preserve existing registered owned-canary controller,
+single-flight ownership, cleanup-failure latch, two-attempt limit, and schedule floors.
+Update its declaration to state the separate contract and cleanup bounds.
+
+## Validation
+
+The protocol-compatibility regression failed against the previous parent using
+the new checks-first fixture: that parent could accept the new early check result
+without understanding its separate cleanup message. The old production worker
+reported after its own finally block; its actual defect was classifying timely
+checks as failed while native watcher teardown consumed the shared deadline.
+The corrected protocol passes 25 boundary cases, including delayed timer callbacks,
+late termination and removal, duplicate messages, cancellation after a real worker
+starts, and no automatic scheduling after a cleanup failure. Twelve existing real
+worker/native-lane cases, six scheduling cases, and six installed-migration cases
+also pass (49 focused cases). Build and lint pass. An initial test-source quote
+error was corrected before the real-worker suite ran successfully. The actual
+operator HTTP health test passes (69.7 seconds), including startup wait, fresh
+owned proof, authority-reader invalidation and no origin-row side effects.
+All three production Boot cases pass (133.5 seconds): default native resolver
+wiring, real owned checks with source failure/restoration, and resource shutdown
+after failed profile enrollment. Full-suite and CI release validation remain
+outstanding. This repair now precedes the local-refusal release because its
+known canary defect blocks that candidate's full validation.
+
+Independent reviewer review_local_refusal: concur with the runtime protocol and
+23 initial cases. Separate monotonic deadlines, normal exit before proof, joined
+termination/removal, single-flight ownership and cleanup-failure latch hold. The
+two recommended additional boundary cases are now included and pass. Final
+review also concurs with the guarded awareness migration, controller declaration,
+and 145-second successful-path wait (60 + 2 * (6 + 30) = 132 seconds plus margin).
+The reviewer requested the protocol/latch wording corrections now applied above.
+
+Tracked adjacent watchdog false interrupt: topic-69507. The conversation watchdog
+sent SIGINT to a legitimate long-running Vitest process in the separate primary
+release validation. This canary repair does not alter that watchdog; the current
+release validation uses a bounded supervised test job with durable logs and exits.
+
+
+## Release dependency and shared fixture corrections
+
+The separate local-refusal candidate's frozen full run ended normally with
+51,936 passing tests and one failure: the real detector HTTP health fixture
+observed ownedContracts.state=fail while config and noticePolicy were healthy.
+All 14,014 input hashes were unchanged. This matches the independently measured
+old canary cleanup failure class; that run did not expose per-attempt phase
+timing, so it is not new proof of the exact timing of each failed attempt.
+
+The canary commit was rebased unchanged onto v1.3.1239. An independent range-diff
+review confirmed equivalence and no dependency on local-refusal accounting.
+Fourteen files receive previously reviewed fixture corrections: awaited real
+Boot cleanup has a 30-second budget with existing restorations in finally, and
+the phone fixture explicitly asserts initial/post-save display convergence
+within 20 seconds with safe health metadata on failure. Its body budget is
+60 seconds. The two detector fixtures already had bounded cleanup; their
+canary-specific 145-second observation is preserved. The HTTP body remains
+180 seconds; the Boot body is 240 seconds to cover sequential recovery waits
+and its explicit awaited in-body close.
+Only the cleanup hunk is transferred to the late-capacity lifecycle fixture;
+no local-refusal accounting test or runtime change is imported.
+
+Reverse closure order, propagation of cleanup errors, delivery assertions,
+operator scope checks, and production authorization/read deadlines remain
+unchanged. Longer fixture waits still fail at their bounds. Independent reviewer
+review_local_refusal concurred with the actual transfer and rebase. Build passes
+on v1.3.1239. Initial combined focused validation passed all 55 tests in eight
+files (normal exit 0, 2026-09-15T08:55:49Z).
+
+A class-wide test audit found healthy-readiness waits shorter than two real
+refresh opportunities: two completion-relative five-second intervals plus two
+two-second reads can consume 14 seconds before scheduling margin. Seven files
+now allow 20 seconds for healthy config/display/authorization/policy readiness.
+The shared helper retains monotonic time and real timers for fake-interval lease
+tests. Unavailable/revocation checks, delivery deadlines, and independent
+enrollment-only probes are unchanged. The opt-out branch allows 20 seconds for
+a new parsed snapshot while its unreadable branch keeps seven seconds. Only the
+canary Boot body needs expansion: 145 + 20 + 8 + 20 seconds of sequential waits,
+with allowance for setup and explicit in-body close, fits 240 seconds.
+
+Independent reviewer review_local_refusal concurred with the actual seven-file
+diff and owning-body budget audit. Final readiness-focused validation passed
+all 36 tests in seven files (normal exit 0, 2026-09-15T09:06:33Z), including the
+real canary lifecycle, policy, enrollment, dashboard rejection, production Boot,
+and fake-interval lease consumer. Full lint passes. Full local suite and CI
+remain required before merge; no deployment is claimed.
+
+## Full-run watchdog fixture correction
+
+Frozen candidate d10015e35060ff41ec56c2d24cad48e8a258fd85 completed the aggregate
+suite normally on 2026-09-15T10:09:41Z: 51,969 tests passed and one failed.
+All 14,018 tracked input hashes were unchanged. The canary production Boot
+lifecycle and real HTTP detector health both passed (154.9 and 91.4 seconds).
+Dedicated integration and E2E phases were not reached because the aggregate
+failed. GitHub CI passed, including integration, build and 3,234 E2E tests;
+build and E2E checkout logs verify merge f4f24dbd9721fe4d9487bc4693cdab7189e21d9a,
+whose parents are current v1.3.1239 main and d10015e35. Those results do not
+establish a passing full local run.
+
+The single local failure was the watchdog real-esbuild fixture observing no
+protected service after a fixed 100ms post-spawn sleep. This installation's
+esbuild entrypoint is a Node shim that subsequently starts the native service;
+its spawn event does not establish native-process readiness. Installed version
+0.21.5 matches the fixture and discovery has no elapsed-time filter. This proves
+the fixture lacks readiness synchronization, not the exact timing of its failed
+attempt. The installer may instead replace the entrypoint with a native binary
+on another platform. The audit found no other real esbuild spawn-plus-100ms
+fixture in the test population.
+
+The correction polls actual production process discovery for up to five seconds,
+accepting only the spawned PID or its verified descendants. It detects early
+exit, preserves the watchdog judge/signal assertions, and verifies both exit
+and signal liveness. The test body allows 15 seconds for readiness plus a final
+in-flight bounded process snapshot. Cleanup ends the owned stdin, awaits closure,
+and uses strict process-table reads to verify captured owned resources are gone.
+A bounded fallback rechecks each owned identity before stopping descendants
+before their wrapper; uncertainty or incomplete cleanup fails the test. No
+production watchdog, classifier, deadline, permission, or signaling policy is
+changed. This also removes the former unawaited wrapper-only SIGKILL cleanup.
+
+Reviewer review_local_refusal drafted the correction outside the frozen tree;
+the primary independently reviewed ownership and cleanup, strengthened the root
+liveness fence and final assertions, and the reviewer concurred with those
+adjustments. After the frozen run ended and hashes were verified, focused
+validation passed all 11 tests across the real-process integration fixture and
+classification boundaries (normal exit 0, 2026-09-15T10:10:22Z). The corrected
+candidate still requires full local validation and fresh CI before release.
+
+
+## Remaining cleanup failure and bounded diagnostics
+
+Frozen candidate 5d8a3bea87905b163a4348b64734bc56a37f4b63 completed the aggregate
+with 51,970 passing tests, then dedicated integration with 4,207 passing tests
+and one real detector HTTP failure (2026-09-15T11:27:28Z). All 14,018 tracked
+input hashes were unchanged; dedicated E2E was not reached. CI passed against
+the corresponding merge tree, which does not override the local failure. The
+canary latched cleanup unavailable after one attempt while both actual authority
+readers were healthy. The previous fixed `cleanup` label cannot identify the
+first failing step. This remaining failure blocks release.
+
+Three bounded direct probes and one actual production-Boot HTTP lifecycle passed
+without reproducing it. Direct watcher closures took roughly 4.0, 12.5 and 6.6
+seconds; the Boot probe took 1.49 seconds, with immediate parent termination and
+9ms fixture removal. These observations locate latency in those successful
+probes only; they do not prove the cause of the full-run failure.
+
+The existing degradation reason now distinguishes fixed cleanup faults and stages:
+acknowledgement, natural worker exit, parent termination and fixture removal. The
+first fault is retained when later deadline or cleanup failures follow. No paths,
+exception text, worker payloads, credentials or timestamps enter those labels.
+Health schema/reasons, authority, protocol, resource ownership, retries, and
+6s/30s deadlines remain unchanged. Thirty focused boundary tests pass, including
+negative and late acknowledgements, abnormal exit versus error, failed termination,
+late final cleanup, first-fault preservation, and reporter redaction. A completed
+cycle report remains suppressed after close. Independent reviewer
+review_local_refusal concurs with the runtime and test diff. The next dedicated
+integration run is diagnostic; this addition does not claim to repair the still
+unreproduced failure.
+
+
+## Pool fixture listener ownership correction
+
+The diagnostic candidate 0c327ce4f passed dedicated integration: 4,208 tests in
+520 files, including real detector HTTP health (83.6 seconds). All 14,019 tracked
+input hashes were unchanged. This did not reproduce the earlier cleanup fault.
+The required full local run was then started on the same frozen candidate.
+
+Fresh CI 34965209260 failed Node 22 shard 1 during pool-view-link-alive beforeAll:
+the real holder AgentServer could not bind fixed port 47262 (EADDRINUSE). Its
+9,450 tests passed, but one suite failed. Job 104367926455 checkout logs verify
+merge 886d8ea6ec0be058a632f8da520771fdd6c49f6e, with parents main v1.3.1239 and
+0c327ce4f. The source fixes holder/front ports at 47262/47261 without owning them
+before listen. The competing process cannot be identified from that CI error.
+The in-progress local full run was cancelled through its owned supervisor on
+2026-09-15T12:06:12Z, after 499 seconds, because this known fixture correction
+requires a new candidate. All 14,019 hashes were verified unchanged and its
+owned process group had no remaining members. That cancelled run is not a pass.
+
+The four related real-AgentServer pool fixtures (view link, reconciler, poll
+cache, and placement transfer) now bind port zero. A shared test helper reads
+the actual bound TCP listener after awaited start and rejects an absent or
+non-TCP address. That listener remains reserved through the fixture lifetime;
+there is no probe-and-release race, random port guess, or retry masking a bind
+failure. The holder URL is established before signed mesh proxy wiring, and
+all front/wired/dark URLs are established before their requests. SessionManagers
+do not launch sessions in these fixtures. Existing authentication, signed proxy,
+privacy/no-store, offline 503, ownership/transfer, and wired-versus-dark assertions
+and awaited cleanup remain unchanged. No production server behavior changes.
+
+This fixes the test resource-ownership layer and creates no diagnostic or
+authorization signal. It neither over-blocks legitimate production work nor
+weakens production checks. Rollback changes only test fixtures. The shared port
+47261 also appeared in the reconciler fixture; the narrow pool fixture population
+now contains no fixed 47xxx listener assignments. Existing pool streaming
+fixtures already use OS-assigned listeners and remain unchanged.
+
+Reviewer review_local_refusal prepared the five proposals outside the frozen
+tree; the primary independently reviewed them, removed extra blank lines, then
+applied them only after cancellation and input/ownership verification. Focused
+dedicated E2E validation passed all 14 tests across the four actual server
+fixtures (6.68 seconds, normal exit zero). Full local validation and fresh CI
+on the corrected candidate remain required.
+
+
+## Completing the enumerated real-listener population
+
+The first four-fixture correction committed as 54f3e5f0f with full lint passing.
+Its push completed normally (2026-09-15T12:14:07Z); the smoke listing timed out
+and was skipped, not passed. A broader source audit then examined 13 remaining
+files containing a real AgentServer construction, awaited start, and a numeric
+port assignment. Eight were genuine unreserved listeners: three fixed (U4.1 pin
+persistence, stale-owner handback, secret sync) and five randomized (reply marker,
+ingress, planned handoff, multi-machine HTTP, tunnel/private view). Five were
+configuration or migration literals whose actual listeners already use port zero.
+Those five remain unchanged. This is the enumerated source-search population,
+not a claim that every possible test listener pattern has been formally analyzed.
+
+The 54f3e5f0f full run was cancelled through its owned supervisor after 347
+seconds (2026-09-15T12:17:29Z) to complete that population before final validation.
+All 14,020 hashes were unchanged and its owned process group was empty before
+any tracked edit. This cancelled run is not a pass.
+
+The eight additional fixtures now use port zero and the same actual-bound-address
+helper. Identity-only peer fixtures retain their roles with a zero placeholder;
+all real signed requests use the listening server's actual URL. Planned handoff
+retains peer resolver closures, which read the assigned URLs only after both
+servers have started. The tunnel fixture retains the same real TunnelManager
+injected into AgentServer. Its test-owned TunnelConfig receives the bound port
+after server start and before explicit tunnel start; TunnelManager retains that
+config object and supplies its current port to provider.start, whose nonzero
+argument overrides the constructor placeholder. No private provider mutation,
+free-port probing, transport mocking, or retry behavior is introduced.
+
+All existing request bodies, signing, custody and lease assertions, startup order,
+authentication, and cleanup remain unchanged. The side effects remain test-only
+resource allocation: no production signaling or authority behavior changes.
+The primary reviewed the six reviewer-prepared proposals; the independent
+reviewer reviewed the primary's handoff/tunnel proposals against the actual
+transport, manager, provider, and AgentServer implementations and concurred.
+Focused dedicated E2E validation passed all 53 tests in 12 files (normal exit
+zero after 28.26 seconds). The real tunnel failed its external reachability check,
+so its existing conditional remote branches were not exercised; local tunnel
+and viewer assertions passed. No remote-reachability success is claimed. The
+post-change source audit leaves only the five confirmed configuration-only
+numeric matches. Full local validation and fresh CI still remain required.
+
+## Actual watcher-boundary repair after the interrupted full run
+
+Candidate 11d38c7b6 completed its frozen local `test:all` run with 51,972
+passing tests and two failures: the real canary unit and HTTP integration paths
+both latched `cleanup:deadline-timer:awaiting-ack`. CI was green, but that does
+not override the local failure. Direct instrumentation reproduced the cause
+outside Vitest: all six checks finished in roughly 320 ms, then synchronous
+`FSWatcher.close()` calls inside the disposable worker took 15–43 seconds on
+this macOS host. The timeout was therefore reporting a real cleanup-path stall,
+not a failed contract check and not merely an undersized test wait.
+
+The repair makes the worker thread itself the watcher cleanup boundary. The
+worker removes its exact private fixture through `SafeFsExecutor`, reports the
+worker-side monotonic check and cleanup completion instants, and acknowledges
+only when fixture removal succeeded. The parent validates the ordered proof,
+rejects missing, malformed, negative, or over-budget proof, then force-terminates
+that one disposable worker. Passing health still waits for the actual worker
+exit event and a second idempotent parent-side fixture removal. Legacy injected
+test workers without the new proof fields retain the previous normal-exit and
+deadline behavior.
+
+### Decision-point and principle review
+
+- **Modified decision point:** deterministic admission of `ownedContracts=pass`.
+  This is a hard protocol/resource invariant, not a judgment about message
+  meaning. No delivery, credential, retry, or content authority changes.
+- **Over-block:** a legitimate proof with inconsistent timestamps, a missing
+  `fixtureRemoved: true`, or cleanup duration at/above the configured bound is
+  rejected. The bundled worker emits the complete schema; legacy test workers
+  remain compatible through the old receive-time path.
+- **Under-block:** a substituted worker could claim false proof, but production
+  supplies the bundled owned worker URL. Even then, the parent independently
+  requires its actual exit and repeats exact-directory removal before pass.
+- **Level of abstraction:** watcher ownership belongs at the disposable worker
+  boundary. Serially closing individual native watcher handles inside that
+  worker duplicated the OS/thread teardown authority and caused the stall.
+- **Signal vs authority:** compliant with `docs/signal-vs-authority.md`. This is
+  structural validation of a diagnostic result, within the hard-invariant
+  exception; it adds no brittle message-flow blocker or conversational judgment.
+- **Judgment Within Floors:** no competing-signals heuristic is added. Ordered
+  proof, bounded elapsed time, exact fixture removal, and worker exit are fully
+  enumerable invariants.
+- **Interactions and races:** the parent clears the acknowledgement deadline
+  only after a valid worker-side proof, owns forced termination, retains the
+  single-flight slot until exit/removal settle, and preserves the first fixed
+  cleanup fault. A queued timely proof receives one poll turn before an
+  `awaiting-ack` timer classification, preventing parent event-loop stalls from
+  manufacturing a late acknowledgement. Failed cleanup still latches the
+  instance and prevents recurrence.
+- **External surface:** only detector-health timing/reason can change. No
+  Telegram request, message body, persistent delivery record, operator action,
+  URL, or user-facing notice is added. No operator surface is touched.
+- **Multi-machine posture:** machine-local by design because each machine probes
+  its own file/watcher runtime. It emits no notice, holds no durable state, and
+  generates no URL, so one-voice, replication, transfer, and remote-link
+  concerns do not apply.
+- **Rollback:** pure code/test rollback in the next patch; no data migration or
+  agent-state repair.
+
+This controller retains its registered two-attempt ceiling, startup and
+completion-relative schedule floors, cleanup-failure latch, and single-flight
+ownership. Class-closure remains `unbounded-self-action` with guard coverage at
+`tests/unit/self-action-convergence.test.ts`: the control-loop edge cannot start
+another attempt while `pending`, cleanup failure prevents rescheduling, and
+`close()` joins the owned worker. No agent-authored prompt/hook/config/skill
+defect is involved.
+
+Validation on the repaired candidate: 32 adversarial cleanup protocol cases,
+12 real-worker/native-lane unit cases, the real authenticated HTTP integration,
+and all three production-Boot E2E lifecycles pass. The exact HTTP case passed in
+124.4 seconds and the E2E file passed all three cases in 193.0 seconds under the
+same machine load that reproduced the prior fault. Full lint and build pass.
+Fresh full local `test:all` and CI are still required before merge/deployment.
+
+## Exact-head aggregate-load follow-up
+
+The first exact-head aggregate run and fresh CI exposed three additional load
+boundaries before merge. The local run timed out while a production-bootstrap
+test waited for an HTTP keep-alive socket during teardown. Node 22 CI also
+started an origin storage worker after its ordinary request deadline and raced a
+real tmux receiver before its child shell had entered raw TTY mode; the latter
+produced the characteristic Linux canonical-line length of 4,095 bytes.
+
+The follow-up keeps these concerns separate. Origin storage worker startup now
+has its own bounded 30-second budget instead of borrowing the much shorter
+already-running request budget. The production HTTP test explicitly closes its
+pooled connections. The real-tmux control now waits for a receiver-ready file
+written only after `stty raw`, so its byte-exact assertion measures tmux
+chunking rather than shell-startup scheduling. The outage-policy lifecycle's
+outer test bound now covers its already-declared 20-second readiness and
+7-second unreadable-state waits plus teardown.
+
+These changes do not loosen Telegram send authority, retry authority, durable
+custody, or the detector's cleanup proof. They remove unrelated scheduler and
+transport races from the evidence path while preserving finite failure bounds.
+Focused reruns pass the 32 cleanup protocol cases, all three real production
+bootstrap cases, and all three real-tmux ceiling cases under the same heavily
+loaded host.
+
+## Production source-watcher closure under aggregate load
+
+The next exact-head aggregate run exposed the same native watcher class outside
+the disposable detector worker. A dashboard-origin lifecycle completed its
+delivery assertions, then spent more than 30 seconds in fixture teardown while
+`OriginConfigReader` and `OriginNoticePolicyObserver` synchronously closed
+parent-process `FSWatcher` handles. The focused file passed alone but took 33
+seconds; under aggregate load the affected recorded-missing-message case took
+37 seconds and its teardown hook timed out. This was a real production cleanup
+boundary, not an assertion wait.
+
+The two authority readers now observe their exact owned source files with one
+unrefed, overlap-suppressed stat poller. It fingerprints device, inode, size,
+mtime and ctime every 250 ms. Creation, replacement, mutation, deletion or an
+unreadable transition invalidates the existing projection; the established
+five-second source refresh and 30-second expiry remain unchanged. `close()` now
+cancels a timer synchronously instead of closing native filesystem watchers.
+An in-flight stat may finish, but the closed fence prevents it from invalidating
+or refreshing anything afterward.
+
+This changes no credential, destination, delivery, retry or lease authority.
+It narrows the observation mechanism while preserving the spec's at-most-five-
+second refresh requirement and fail-closed invalidation. Focused validation
+passed source creation/change/close, encrypted configuration, same-account
+credential rotation, corrupt source, opt-out and hub-rebind boundaries. The
+dashboard production lifecycle then passed all seven cases in 10 seconds under
+the same concurrent aggregate load, down from 33 seconds in the prior focused
+run and the 74-second failing aggregate file.
+
+The fixed-rate observer is registered as the
+`telegram-origin-source-poller` eternal-sentinel controller. The convergence
+ratchet proves its 250 ms rate floor and constant exact-file target under
+sustained pressure; overlap suppression, synchronous interval cancellation and
+the closed fence bound each live instance and prevent a late callback after
+shutdown.
+
+## Independent Phase 5 review — production source poller
+
+The second pass inspected the poller, both authority-source callers, their unit
+coverage, the production Boot lifecycle, the dashboard teardown regression, and
+the governing signal-versus-authority rule. The poller only emits machine-local
+change signals; it grants no delivery, credential, retry, or destination
+authority. Both callers serialize source work, reject revisions changed during
+a read, retain their five-second refresh and 30-second expiry fences, and prevent
+an in-flight stat from acting after synchronous timer cancellation. Exact-file
+metadata detects ordinary creation, replacement, mutation, deletion, and access
+transitions without creating cross-machine state or a second decision authority.
+
+The focused tests exercise mutation, deletion, late creation, post-close silence,
+encrypted credential rotation, corrupt sources, policy opt-out, hub rebinding,
+and the real production teardown that motivated the change. Direct poller tests
+do not isolate close during an intentionally stalled stat; the closed checks and
+post-close behavior make that a non-blocking coverage gap rather than a
+correctness defect.
+
+Concur with the review

@@ -16,7 +16,14 @@ import type { OriginSourceHealth } from '../../src/messaging/telegram-origin/Ori
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 async function harness(enabled: boolean) {
   const stateDir = temporaryState(); await mkdir(path.join(stateDir, 'state'), { recursive: true });
   const config = { projectDir: stateDir, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
@@ -57,7 +64,7 @@ async function harness(enabled: boolean) {
     expect(sources.config.succeededAt).toBeGreaterThan(bootReturnedAt);
     expect(boot.runtime.options.getAlertPolicy('operator-attention-hub')).toMatchObject({ authorized: true, optedOut: !enabled });
     if (enabled) expect(boot.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('reserved');
-  }, { timeout: 12_500, interval: 50 });
+  }, { timeout: 20_000, interval: 50 });
   const failRecording = async () => { await boot.runtime.store.close(); await boot.runtime.spool.close(); stopped = true; };
   const send = () => request(app).post('/telegram/reply/42').set('Authorization', 'Bearer fixture-auth')
     .set('X-Instar-Origin-Session', token).send({ text: 'This ordinary answer must remain held while recording is unavailable.',

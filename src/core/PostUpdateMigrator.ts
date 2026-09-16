@@ -22,7 +22,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -6268,11 +6268,11 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added dashboard edit rejection awareness');
     }
 
-    const refreshedOriginCanary = refreshOriginCanaryStartupAwareness(content);
+    const refreshedOriginCanary = refreshOriginCanaryCleanupAwareness(refreshOriginCanaryStartupAwareness(content));
     if (refreshedOriginCanary !== content) {
       content = refreshedOriginCanary;
       patched = true;
-      result.upgraded.push('CLAUDE.md: refreshed origin canary startup wait awareness');
+      result.upgraded.push('CLAUDE.md: refreshed origin canary startup and cleanup awareness');
     }
 
     if (!content.includes('Origin lease renewal dependency:')) {
@@ -10632,7 +10632,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         continue;
       }
 
-      let appended = refreshOriginCanaryStartupAwareness(shadowContent);
+      let appended = refreshOriginCanaryCleanupAwareness(refreshOriginCanaryStartupAwareness(shadowContent));
       let mirrored = appended === shadowContent ? 0 : 1;
       for (const marker of markers) {
         if (appended.includes(marker)) continue;

@@ -3,7 +3,7 @@ export function telegramOriginDashboardAwareness(): string {
 }
 
 export function telegramOriginDetectorAwareness(): string {
-  return 'Origin detector health: `GET /telegram/origins/status` includes `detectorHealth`, separating fresh source observations, fixed-input canary checks, native hook proof and current-model evidence. Automatic owned and native canaries wait 60 seconds after every startup, then recur after completion (hourly by default); a restart restarts the wait, so pending health during that minute is expected. The owned checks use disposable state; `messageOrigin.detectorCanary.intervalMs` accepts 60000 through 604800000. Successful checks grant no send or ownership permission. Reads do not refresh evidence timestamps; pending, failed, stale and unavailable states remain explicit. Native canary support is reported per harness; a hook proof or regression fixture does not prove model extraction. These diagnostics do not copy live credentials, change operator settings or send Telegram messages.\n';
+  return 'Origin detector health: `GET /telegram/origins/status` includes `detectorHealth`, separating fresh source observations, fixed-input canary checks, native hook proof and current-model evidence. Automatic owned and native canaries wait 60 seconds after every startup, then recur after completion (hourly by default); a restart restarts the wait, so pending health during that minute is expected. The owned checks use disposable state; `messageOrigin.detectorCanary.intervalMs` accepts 60000 through 604800000. Owned contract checks have six seconds per attempt, followed by up to 30 seconds for verified cleanup. Health remains running during cleanup and cannot pass until the worker exits and its fixture is removed. A cleanup failure latches unavailable health and prevents further attempts in that instance. Successful checks grant no send or ownership permission. Reads do not refresh evidence timestamps; pending, failed, stale and unavailable states remain explicit. Native canary support is reported per harness; a hook proof or regression fixture does not prove model extraction. These diagnostics do not copy live credentials, change operator settings or send Telegram messages.\n';
 }
 
 export function telegramOriginNoticeAwareness(): string {
@@ -76,4 +76,12 @@ Setup completion uses the authenticated loopback endpoint \`POST /telegram/setup
 export function refreshOriginCanaryStartupAwareness(content: string): string {
   return content.replace(/^Origin detector health:[^\r\n]*$/gm, paragraph =>
     paragraph.replace('The owned config/vault/hub checks run at startup and hourly by default in disposable state;', 'Automatic owned and native canaries wait 60 seconds after every startup, then recur after completion (hourly by default); a restart restarts the wait, so pending health during that minute is expected. The owned checks use disposable state;'));
+}
+
+/** Update the shipped detector sentence only; retain operator prose and quotes. */
+export function refreshOriginCanaryCleanupAwareness(content: string): string {
+  return content.replace(/^Origin detector health:[^\r\n]*$/gm, paragraph =>
+    paragraph.includes('Owned contract checks have six seconds per attempt,') ? paragraph :
+      paragraph.replace('Successful checks grant no send or ownership permission.',
+        'Owned contract checks have six seconds per attempt, followed by up to 30 seconds for verified cleanup. Health remains running during cleanup and cannot pass until the worker exits and its fixture is removed. A cleanup failure latches unavailable health and prevents further attempts in that instance. Successful checks grant no send or ownership permission.'));
 }

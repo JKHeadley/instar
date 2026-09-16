@@ -26,6 +26,7 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { signRequest } from '../../src/server/machineAuth.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-http-e2e-'));
@@ -120,9 +121,8 @@ function crossRegister(
 }
 
 describe('Multi-Machine HTTP E2E', () => {
-  // Use ports in high range to avoid conflicts
-  const PORT_A = 19100 + Math.floor(Math.random() * 100);
-  const PORT_B = PORT_A + 1;
+  let baseA: string;
+  let baseB: string;
 
   let envA: ReturnType<typeof createMachineEnv>;
   let envB: ReturnType<typeof createMachineEnv>;
@@ -139,8 +139,8 @@ describe('Multi-Machine HTTP E2E', () => {
 
   beforeAll(async () => {
     // Create machine environments
-    envA = createMachineEnv('machine-a', PORT_A, 'awake');
-    envB = createMachineEnv('machine-b', PORT_B, 'standby');
+    envA = createMachineEnv('machine-a', 0, 'awake');
+    envB = createMachineEnv('machine-b', 0, 'standby');
     crossRegister(envA, envB);
 
     // Create coordinators — A must start first and write heartbeat before B starts
@@ -166,14 +166,14 @@ describe('Multi-Machine HTTP E2E', () => {
       claudePath: 'claude',
       tmuxPath: 'tmux',
       projectDir: envA.projectDir,
-      port: PORT_A,
+      port: 0,
     });
     const sessB = new SessionManager({
       stateDir: envB.stateDir,
       claudePath: 'claude',
       tmuxPath: 'tmux',
       projectDir: envB.projectDir,
-      port: PORT_B,
+      port: 0,
     });
 
     // Outgoing-side handoff wire for server A. peer() is unused here (these
@@ -206,7 +206,9 @@ describe('Multi-Machine HTTP E2E', () => {
     });
 
     await serverA.start();
+    baseA = boundAgentServerBase(serverA);
     await serverB.start();
+    baseB = boundAgentServerBase(serverB);
   }, 15000);
 
   afterAll(async () => {
@@ -223,18 +225,18 @@ describe('Multi-Machine HTTP E2E', () => {
   it('both servers are listening and respond', async () => {
     // Health endpoint may error due to tmux not being available in test env,
     // but the server itself should be responding (not connection refused)
-    const respA = await fetch(`http://127.0.0.1:${PORT_A}/health`);
+    const respA = await fetch(`${baseA}/health`);
     // Any HTTP response means the server is up — status may be 500 if tmux is unavailable
     expect(respA.status).toBeGreaterThan(0);
 
-    const respB = await fetch(`http://127.0.0.1:${PORT_B}/health`);
+    const respB = await fetch(`${baseB}/health`);
     expect(respB.status).toBeGreaterThan(0);
   });
 
   // ── Machine Auth ────────────────────────────────────────────────
 
   it('rejects unsigned requests to machine endpoints', async () => {
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/heartbeat`, {
+    const resp = await fetch(`${baseA}/api/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ holder: 'fake', timestamp: new Date().toISOString(), expiresAt: new Date().toISOString() }),
@@ -254,7 +256,7 @@ describe('Multi-Machine HTTP E2E', () => {
 
     const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, heartbeat, 1);
 
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/heartbeat`, {
+    const resp = await fetch(`${baseA}/api/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(heartbeat),
@@ -278,7 +280,7 @@ describe('Multi-Machine HTTP E2E', () => {
       createPairingSession({ code: 'TEST-CODE-1234', expiryMs: 600_000 }),
     );
 
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/pair`, {
+    const resp = await fetch(`${baseA}/api/pair`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -300,7 +302,7 @@ describe('Multi-Machine HTTP E2E', () => {
   // ── Full Handoff Flow ──────────────────────────────────────────
 
   it('full challenge-response handoff: B takes over from A', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
 
     // Step 1: B requests a challenge from A
     const challengeHeaders = signRequest(envB.machineId, envB.signingKeys.privateKey, {}, 10);
@@ -354,7 +356,7 @@ describe('Multi-Machine HTTP E2E', () => {
     envA.mgr.updateRole(envB.machineId, 'standby');
     coordA.promoteToAwake('test re-promotion');
 
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
 
     // Get a challenge
     const challengeHeaders = signRequest(envB.machineId, envB.signingKeys.privateKey, {}, 20);
@@ -384,7 +386,7 @@ describe('Multi-Machine HTTP E2E', () => {
   });
 
   it('rejects replayed challenge', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
 
     // Get a challenge
     const challengeHeaders = signRequest(envB.machineId, envB.signingKeys.privateKey, {}, 30);
@@ -428,7 +430,7 @@ describe('Multi-Machine HTTP E2E', () => {
   // 503-when-unwired integration test is what "feature is alive" means here.
 
   it('planned-handoff begin: B\'s signed manifest reaches A\'s onHandoffBegin', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
     const body = {
       manifest: {
         tailSeq: 7,
@@ -450,7 +452,7 @@ describe('Multi-Machine HTTP E2E', () => {
   });
 
   it('planned-handoff ack: B\'s signed echo resolves A\'s pending awaitAck', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
     const ackEcho: HandoffAck = {
       tailSeq: 42,
       ingressPosition: { platform: 'telegram', cursor: 1234, capturedAt: new Date().toISOString() },
@@ -475,7 +477,7 @@ describe('Multi-Machine HTTP E2E', () => {
   });
 
   it('planned-handoff yield: B\'s signed yield fires A\'s registered handler', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
     let fired = false;
     handoffWireA.onYield(() => { fired = true; });
 
@@ -491,7 +493,7 @@ describe('Multi-Machine HTTP E2E', () => {
   });
 
   it('rejects an unsigned ack (401) and a malformed echo (400)', async () => {
-    const baseUrl = `http://127.0.0.1:${PORT_A}`;
+    const baseUrl = baseA;
     // Unsigned → machine auth rejects before the handler.
     const unsigned = await fetch(`${baseUrl}/api/handoff/ack`, {
       method: 'POST',
@@ -525,7 +527,7 @@ describe('Multi-Machine HTTP E2E', () => {
     };
 
     const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, syncBody, 40);
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/sync/state`, {
+    const resp = await fetch(`${baseA}/api/sync/state`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(syncBody),
@@ -545,7 +547,7 @@ describe('Multi-Machine HTTP E2E', () => {
     };
 
     const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, syncBody, 41);
-    const resp = await fetch(`http://127.0.0.1:${PORT_A}/api/sync/state`, {
+    const resp = await fetch(`${baseA}/api/sync/state`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(syncBody),

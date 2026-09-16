@@ -1379,7 +1379,7 @@ function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink)
  */
 const telegramOriginOwnedDetectorCanary: SelfActionController = {
   id: 'telegram-origin-owned-detector-canary', actionVerb: 'retry-owned-detector-canary-cycle',
-  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, 6s contract checks then 30s cleanup proof per attempt, ownership retained until termination and fixture removal settle, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
   modelsPath: 'src/messaging/telegram-origin/OriginDetectorCanary.ts',
   delegatedGiveUp: 'The instance closes or latches on unverified cleanup; each run has at most two timed worker attempts. Successful cleanup permits the next completion-relative cycle; restart resets this local state.',
   boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
@@ -1399,6 +1399,26 @@ const telegramOriginNativeModelCanary: SelfActionController = {
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
   makeUnderPressure: makeOriginCanaryCyclePressure,
 };
+const telegramOriginSourcePoller: SelfActionController = {
+  id: 'telegram-origin-source-poller', actionVerb: 'refresh-origin-source-observation',
+  models: 'OriginSourcePoller fixed-rate exact-file metadata observation: one overlap-suppressed pass no sooner than every 250ms; close synchronously cancels recurrence and a closed fence suppresses any late callback.',
+  modelsPath: 'src/messaging/telegram-origin/OriginSourcePoller.ts',
+  delegatedGiveUp: 'The owning reader or observer calls close(), which cancels the sole interval immediately; in-flight stat completion cannot emit after the closed fence.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 40, tickMs: 250,
+  eternalSentinel: { reason: 'Constant-size metadata observation over a fixed exact-file set; one overlap-suppressed pass per 250ms floor and no source mutation or transport authority.', rateFloorMs: 250 },
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Reconstruction first captures a baseline and waits a full 250ms interval, so restart cannot create a callback burst.' },
+  makeUnderPressure(f, sink) {
+    let nextPollAt = f.clock.nowMs() + 250;
+    return { tick() {
+      sink.considered++;
+      if (f.clock.nowMs() < nextPollAt) return;
+      sink.emit({ verb: 'refresh-origin-source-observation', target: 'exact-authority-source-set' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      nextPollAt = f.clock.nowMs() + 250;
+    } };
+  },
+};
 function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
   // The production classes schedule this same startup delay on each start().
   let nextCycleAt = f.clock.nowMs() + 60_000;
@@ -1412,6 +1432,7 @@ function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { 
 }
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  telegramOriginSourcePoller,
   telegramOriginOwnedDetectorCanary,
   telegramOriginNativeModelCanary,
   telegramBrowserCanaryRecovery,

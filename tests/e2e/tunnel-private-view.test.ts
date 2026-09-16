@@ -18,10 +18,11 @@ import os from 'node:os';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { PrivateViewer } from '../../src/publishing/PrivateViewer.js';
-import { TunnelManager } from '../../src/tunnel/TunnelManager.js';
+import { TunnelManager, type TunnelConfig } from '../../src/tunnel/TunnelManager.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 const SKIP = process.env.SKIP_E2E === '1';
 
@@ -47,7 +48,6 @@ describe('Tunnel + Private Viewer E2E', () => {
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
   let tunnelUrl: string;
-  const TEST_PORT = 14040 + Math.floor(Math.random() * 1000);
 
   beforeAll(async () => {
     if (SKIP) return;
@@ -58,12 +58,13 @@ describe('Tunnel + Private Viewer E2E', () => {
       viewsDir: path.join(stateDir, 'views'),
     });
 
-    tunnel = new TunnelManager({
+    const tunnelConfig: TunnelConfig = {
       enabled: true,
       type: 'quick',
-      port: TEST_PORT,
+      port: 0,
       stateDir,
-    });
+    };
+    tunnel = new TunnelManager(tunnelConfig);
 
     const mockSM = createMockSessionManager();
 
@@ -71,7 +72,7 @@ describe('Tunnel + Private Viewer E2E', () => {
       projectName: 'tunnel-e2e-test',
       projectDir: stateDir,
       stateDir,
-      port: TEST_PORT,
+      port: 0,
       sessions: {
         tmuxPath: '/usr/bin/tmux',
         claudePath: '/usr/bin/claude',
@@ -107,6 +108,9 @@ describe('Tunnel + Private Viewer E2E', () => {
 
     // Start the HTTP server
     await server.start();
+    // TunnelManager retains this owned config and supplies its current port to
+    // provider.start(), overriding the constructor-time placeholder.
+    tunnelConfig.port = Number(new URL(boundAgentServerBase(server)).port);
 
     // Start the tunnel (this connects to Cloudflare — may take 10-30s)
     try {

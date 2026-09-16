@@ -13,7 +13,14 @@ import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 describe('normal non-development origin startup lease lifetime', () => {
   it('records a real HTTP reply after the default 60-second lease window with real timers and unchanged epoch', async () => {
     const lease = await originLeaseDependencyFixture(); cleanup.push(lease.close);

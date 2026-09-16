@@ -11,7 +11,9 @@ import type { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/
 export async function waitForOriginDisplayReady(runtime: TelegramOriginRuntime,
   destination: { chatId: string | null; topicId: string | null }) {
   assert.equal(typeof runtime.options.display, 'function', 'production display authority must be wired');
-  const deadline = performance.now() + 12_500;
+  // Two 5s completion-relative refresh intervals and two 2s reads can
+  // require 14s; leave scheduling margin while retaining real authority checks.
+  const deadline = performance.now() + 20_000;
   for (;;) {
     let projection;
     try {

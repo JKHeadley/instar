@@ -13,7 +13,14 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 
 describe('production triage author binding', () => {
   it('records a native observed triage model, the actual nurse call, and honest missing-session evidence', async () => {

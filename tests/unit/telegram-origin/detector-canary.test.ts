@@ -65,7 +65,7 @@ describe('owned detector known-state canary', () => {
     expect(JSON.stringify(canary.getHealth())).not.toMatch(/canary-only|\/tmp\//);
   });
   it('requires the complete ordered behavioral checks, retrying once without accepting an arbitrary success flag', async () => {
-    const bad = await worker("import {parentPort} from 'node:worker_threads';parentPort.postMessage({passed:true,checks:[]});");
+    const bad = await worker("import {parentPort} from 'node:worker_threads';parentPort.postMessage({type:'checks',passed:true,checks:[]});parentPort.postMessage({type:'cleanup',verified:true});");
     const canary = new OriginDetectorCanary({ workerUrl: bad, configWorkerUrl }); cleanups.push(() => canary.close());
     await canary.run(); expect(canary.getHealth()).toMatchObject({ state: 'fail', attempts: 2, checks: [] });
   });

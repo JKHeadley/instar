@@ -12,10 +12,14 @@ import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
+// Real Boot teardown awaits native watcher closure on macOS.
 afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) await close();
-  vi.unstubAllGlobals();
-});
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 
 describe('scheduled completion through the production Telegram origin boundary', () => {
   it('keeps one uncertain operation and the original topic when Telegram loses its response', async () => {

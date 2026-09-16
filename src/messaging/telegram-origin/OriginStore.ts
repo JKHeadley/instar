@@ -52,6 +52,12 @@ function workerInputBytes(input: unknown, maximum: number): number {
   return bytes;
 }
 const READS = new Set(['getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
+// Request deadlines protect an already-running worker operation. Starting a
+// fresh worker is a different boundary: under host pressure Node can defer the
+// worker bootstrap well beyond an ordinary DB request without the worker being
+// unhealthy. Keep startup bounded, but do not let the shorter request budget
+// misclassify scheduler delay as a storage outage.
+const WORKER_STARTUP_TIMEOUT_MS = 30_000;
 
 export class OriginStore {
   private readonly worker: Worker;
@@ -72,7 +78,7 @@ export class OriginStore {
     // A file worker must not inherit stdin/eval-only flags or parent preload hooks.
     this.worker = new Worker(workerUrl, { workerData: { options, mode }, env, execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 384 } });
     this.ready = new Promise<void>((resolve, reject) => {
-      const startup = setTimeout(() => { reject(new OriginStoreUnavailableError('origin worker startup timed out', false)); this.fail(); }, this.timeoutMs);
+      const startup = setTimeout(() => { reject(new OriginStoreUnavailableError('origin worker startup timed out', false)); this.fail(); }, WORKER_STARTUP_TIMEOUT_MS);
       this.worker.once('message', (message: { ready?: boolean; error?: string }) => {
         clearTimeout(startup);
         if (message.ready) resolve();

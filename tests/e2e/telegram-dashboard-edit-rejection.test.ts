@@ -12,10 +12,15 @@ import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => void | Promise<void>> = [];
+// Real Boot teardown awaits native watcher closure on macOS.
 afterEach(async () => {
-  for (const close of cleanup.splice(0).reverse()) await close();
-  vi.restoreAllMocks(); vi.unstubAllGlobals();
-});
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 
 async function fixture() {
   // macOS's long os.tmpdir() exceeds the Unix-domain socket path limit.
@@ -39,7 +44,7 @@ async function fixture() {
   await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: null });
   await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
     accountId: '123', destination: { chatId: '-100123' },
-  } as never)).toBe(true), { timeout: 7000 });
+  } as never)).toBe(true), { timeout: 20_000 });
   const telegram = new TelegramAdapter(telegramConfig, stateDir, { suppressLifelineAutoCreate: true });
   cleanup.push(() => telegram.stop());
   return { ...boot, telegram, saved, savedPath, loseLease: () => { ownsLease = false; } };

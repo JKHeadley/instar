@@ -19,7 +19,14 @@ import type { AddressInfo } from 'node:net';
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanup.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 describe('Telegram origin production bootstrap', () => {
   it('gives recovery after production restart a fresh network deadline after durable preparation', async () => {
     const root = await mkdtemp('/tmp/origin-deadline-boot-');
@@ -40,7 +47,7 @@ describe('Telegram origin production bootstrap', () => {
       // real authority readiness before testing transport recovery.
       await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
         accountId: '123', destination: { chatId: '-100123' },
-      } as never)).toBe(true), { timeout: 7000, interval: 100 });
+      } as never)).toBe(true), { timeout: 20_000, interval: 100 });
       return boot;
     };
     let boot = await start();
@@ -101,7 +108,7 @@ describe('Telegram origin production bootstrap', () => {
       // observer permits preparation; boot's initial snapshot may be invalidated.
       await vi.waitFor(async () => expect(await boot.runtime.service.options.authorize({
         accountId: '123', destination: { chatId: '-100123' },
-      } as never)).toBe(true), { timeout: 7000, interval: 100 });
+      } as never)).toBe(true), { timeout: 20_000, interval: 100 });
       return boot;
     };
     let boot = await start();
@@ -175,7 +182,12 @@ describe('Telegram origin production bootstrap', () => {
     ])), { timeout: 7000, interval: 100 });
     await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '77' });
     const server = await new Promise<import('node:http').Server>(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
-    cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    cleanup.push(() => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+      // Native fetch keeps HTTP/1.1 sockets pooled. Waiting for that unrelated
+      // keep-alive during teardown can consume the whole hook budget.
+      server.closeAllConnections();
+    }));
     const updateText = 'The generated update includes the completed work and the detailed verification results.';
     const nativeFetch = globalThis.fetch, wire = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(init.body as string);

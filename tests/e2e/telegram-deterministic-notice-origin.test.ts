@@ -15,7 +15,14 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 let worker: URL, configWorker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); configWorker = await compileOriginConfigWorker(); });
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.unstubAllGlobals(); });
+// Real Boot teardown awaits native watcher closure on macOS.
+afterEach(async () => {
+  try {
+    for (const close of cleanups.splice(0).reverse()) await close();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}, 30_000);
 async function boot(mode: 'send-only' | 'server-polling') {
   const root = await mkdtemp('/tmp/origin-fixed-notices-'), stateDir = path.join(root, '.instar');
   cleanups.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:fixed-notice-origin' }); });
