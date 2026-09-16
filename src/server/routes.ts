@@ -135,6 +135,10 @@ import {
 import { resolveStandardsRegistry, type RegistryResolution } from '../core/standardsRegistryPath.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
+import {
+  applySubscriptionReloginOperatorConfig,
+  validateSubscriptionReloginOperatorInput,
+} from '../core/SubscriptionReloginOperatorConfig.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -31033,6 +31037,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // Assisted subscription re-login: one verified approval, then the service
   // owns the bounded autonomous flow. The store exposes closed metadata only.
+  router.post('/subscription-relogin/configure', (req, res) => {
+    const operatorSession = req.get('X-Instar-Operator-Session');
+    if (!ctx.verifyDashboardOperatorSession?.(operatorSession)) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const parsed = validateSubscriptionReloginOperatorInput(req.body);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error });
+      return;
+    }
+    try {
+      const result = applySubscriptionReloginOperatorConfig({
+        stateDir: ctx.config.stateDir,
+        runtimeConfig: ctx.config,
+        requested: parsed.value,
+      });
+      res.status(202).json({
+        ok: true,
+        configured: true,
+        changed: result.changed,
+        mode: result.config.dryRun === true ? 'observe' : result.config.mode,
+        identities: result.config.unattendedPolicy?.identities ?? [],
+        restartRequested: result.restartRequested,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   router.get('/subscription-relogin', async (req, res) => {
     if (!ctx.subscriptionRelogin && req.query.scope !== 'pool') {
       res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });

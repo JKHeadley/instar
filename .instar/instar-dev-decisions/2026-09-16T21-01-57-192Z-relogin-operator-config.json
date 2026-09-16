@@ -1,0 +1,31 @@
+{
+  "ts": "2026-09-16T21:01:57.192Z",
+  "slug": "relogin-operator-config",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 171,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 169,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

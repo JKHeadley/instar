@@ -117,6 +117,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         : 'off',
       endpoints: [
         'GET /subscription-relogin',
+        'POST /subscription-relogin/configure',
         'GET /subscription-relogin/:episodeId/events',
         'POST /subscription-relogin/repair-cell',
         'POST /subscription-relogin/:episodeId/approve',
