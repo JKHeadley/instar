@@ -69,6 +69,29 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
     expect(response.body).toMatchObject({ enabled: false });
   });
 
+  it('keeps the operator-gated remote configuration route alive through the real AgentServer auth stack', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-config-e2e-')); roots.push(root);
+    const cfg = config(root);
+    fs.writeFileSync(path.join(cfg.stateDir, 'config.json'), JSON.stringify(cfg, null, 2));
+    const server = makeServer(cfg);
+    await server.start();
+    const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
+    expect(unlock.status).toBe(200);
+    const configured = await request(server.getApp()).post('/subscription-relogin/configure')
+      .set('Authorization', 'Bearer relogin-api-token')
+      .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken)
+      .send({
+        enabled: true,
+        mode: 'unattended',
+        dryRun: false,
+        unattendedPolicy: { identities: ['echo@sagemindai.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+      });
+    expect(configured.status).toBe(202);
+    expect(configured.body).toMatchObject({ configured: true, mode: 'unattended', restartRequested: true });
+    expect(JSON.parse(fs.readFileSync(path.join(cfg.stateDir, 'state', 'restart-requested.json'), 'utf8')))
+      .toMatchObject({ requestedBy: 'subscription-relogin-operator-config', plannedRestart: true });
+  });
+
   it('is alive through real auth, PIN unlock, one click, durable CAS, and clean shutdown', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-live-e2e-')); roots.push(root);
     const cfg = config(root);

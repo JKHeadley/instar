@@ -57,6 +57,7 @@ describe('/subscription-relogin routes', () => {
     revoke = vi.fn(() => ({ id: 'mandate-1', revoked: { at: new Date().toISOString(), reason: 'consumed' } }));
     deliveredConsumeCalls = 0;
     config = { authToken: 'test', dashboardPin: '123456', stateDir: dir, port: 0 };
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
     const app = express(); app.use(express.json());
     app.use(createRoutes({
       config,
@@ -86,6 +87,47 @@ describe('/subscription-relogin routes', () => {
   const api = (url: string, init?: RequestInit) => fetch(server.url + url, {
     headers: { 'Content-Type': 'application/json' }, ...init,
   }).then(async (response) => ({ status: response.status, body: await response.json() }));
+
+  it('PIN-gates unattended configuration, persists exact identities, audits, and requests a supervised restart', async () => {
+    const body = {
+      enabled: true,
+      mode: 'unattended',
+      dryRun: false,
+      unattendedPolicy: {
+        identities: [' Echo@SageMindAI.io ', 'echo@sagemindai.io'],
+        minimumSuccessfulRepairs: 0,
+        minimumEvidenceDays: 0,
+      },
+    };
+    expect((await api('/subscription-relogin/configure', { method: 'POST', body: JSON.stringify(body) })).status).toBe(401);
+    const accepted = await api('/subscription-relogin/configure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': 'operator-proof' },
+      body: JSON.stringify(body),
+    });
+    expect(accepted).toMatchObject({
+      status: 202,
+      body: { configured: true, mode: 'unattended', identities: ['echo@sagemindai.io'], restartRequested: true },
+    });
+    const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+    expect(persisted.subscriptionPool.assistedRelogin).toMatchObject({
+      enabled: true, mode: 'unattended', dryRun: false,
+      unattendedPolicy: { identities: ['echo@sagemindai.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    });
+    expect((config as any).subscriptionPool).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'state', 'restart-requested.json'), 'utf8'))).toMatchObject({
+      requestedBy: 'subscription-relogin-operator-config', plannedRestart: true,
+    });
+    const audit = fs.readFileSync(path.join(dir, 'logs', 'subscription-relogin-config.jsonl'), 'utf8');
+    expect(audit).toContain('operator-configured');
+    expect(audit).toContain('echo@sagemindai.io');
+    const replay = await api('/subscription-relogin/configure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': 'operator-proof' },
+      body: JSON.stringify(body),
+    });
+    expect(replay).toMatchObject({ status: 202, body: { configured: true, changed: false, restartRequested: false } });
+  });
 
   it('serves bounded closed-metadata episode and event views', async () => {
     const list = await api('/subscription-relogin?state=suggested&limit=1');
