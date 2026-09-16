@@ -92,6 +92,9 @@ export interface OutcomeInput extends ClaimFence {
   reason?: string;
   /** Retry only a definitive known-failed result; same original budget/deadline. */
   nextAttemptAt?: number;
+  /** Trusted egress closure proved it never invoked transport. Retain audit;
+   * return only this claim's transport budget, never a credential debit. */
+  localRefusal?: boolean;
   now?: number;
 }
 export interface DerivedMaterializationInput {

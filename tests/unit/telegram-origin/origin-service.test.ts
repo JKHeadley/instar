@@ -89,15 +89,15 @@ describe('origin service durable delivery', () => {
       ownerBootId: 'boot-1', leaseMs: 60_000 });
     expect(next.status).toBe('claimed'); if (next.status === 'claimed') expect(next.child.attemptNumber).toBe(1);
   });
-  it('retains the charged attempt when capacity expires after durable dispatch intent, with known non-egress evidence', async () => {
+  it('keeps an unproven transport refusal charged and uncertain after durable dispatch intent', async () => {
     const h = await harness();
     const transport = Object.assign(h.network, { prepare: async () => ({ valid: () => true, cancel: vi.fn(),
       send: async () => { throw new OriginCapacityUnavailable(); } }) });
     await expect(h.service.runAsAutomation('telegram-server', () => h.service.sendBot(h.input, transport)))
-      .rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
+      .rejects.toMatchObject({ reason: 'transport-acceptance-unknown' });
     const row = (await h.store.listOrigins()).records[0];
-    expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed', reason: 'credential-capacity-unavailable' });
-    expect(row.children[0].state).toBe('queued'); expect(h.network).not.toHaveBeenCalled();
+    expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'outcome-unknown', reason: 'transport-acceptance-unknown' });
+    expect(row.children[0]).toMatchObject({ state: 'outcome-unknown', attempts: 1 }); expect(h.network).not.toHaveBeenCalled();
     expect(await h.store.releaseUndispatchedClaim(row.attempts[0] as never)).toBe(false);
   });
   it('rotates memory-only held candidates and releases expired live capacity with separate bounded history', async () => {

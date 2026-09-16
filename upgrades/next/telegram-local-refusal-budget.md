@@ -1,0 +1,17 @@
+# Preserve Telegram transport attempts during local capacity refusals
+
+## What Changed
+
+The prepared Bot API boundary supplies request-bound evidence when capacity acquisition fails before network invocation. A claim-fenced transaction keeps the failure audit while returning that transport attempt. Original deadlines, retry pacing, credential debits and uncertain-delivery safeguards remain in force. Existing agent instructions receive an idempotent correction describing the accounting.
+
+## What to Tell Your User
+
+A temporary local send-capacity refusal no longer exhausts a queued reply's transport attempts before contacting Telegram. Recovery still has a deadline; queued does not mean delivered.
+
+## Summary of New Capabilities
+
+No new command. Existing origin audit retains each local refusal while transport counters exclude proven non-invocations.
+
+## Evidence
+
+Targeted unit, canonical-store, authenticated HTTP and production-restart coverage includes repeated refusals, one-attempt budgets, false proof, persistence failure, lease expiry and migration. Validation results are recorded in the side-effects artifact; this fragment alone is not release evidence.

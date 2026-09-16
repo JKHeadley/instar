@@ -18,6 +18,25 @@ afterEach(async () => {
 }, 30_000);
 
 describe('late ordinary capacity is alive across production Boot restart', () => {
+  it('preserves an uncharged local refusal and its pacing across production restart', async () => {
+    const h = await lateCapacityHttpHarness(worker, true); closes.push(h.close);
+    vi.spyOn(h.runtime.service.options.capacity!, 'reserve').mockResolvedValue(null);
+    const response = await request(h.app).post('/telegram/reply/42')
+      .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
+      .send({ text: 'The requested report remains queued during local capacity refusal.' });
+    expect(response.status).toBe(409);
+    expect(h.network).not.toHaveBeenCalled();
+    const original = (await h.runtime.store.listOrigins()).records[0];
+    expect(original.children[0]).toMatchObject({ attempts: 0, state: 'queued' });
+    expect(original.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed' });
+    await h.restart();
+    const restored = await h.runtime.store.getOrigin(original.record.originId);
+    expect(restored?.children[0]).toMatchObject({ attempts: 0, state: 'queued' });
+    expect(restored?.operation?.deadlineAt).toBe(original.operation?.deadlineAt);
+    expect(restored?.attempts).toEqual(original.attempts);
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(h.network).not.toHaveBeenCalled();
+  });
   it('records concrete receipts after slow durable dispatch before and after restart', async () => {
     const h = await lateCapacityHttpHarness(worker, false); closes.push(h.close);
     let firstOperation: string | undefined;

@@ -310,7 +310,7 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       .set('X-Instar-Origin-Session', h.sessionToken)).status).toBe(403);
     expect(h.network).not.toHaveBeenCalled();
   });
-  it('charges a capacity refusal after dispatch, then recovers the same operation within its original bounds', async () => {
+  it('paces an uncharged local refusal, then recovers the same operation within its original bounds', async () => {
     const h = await appHarness();
     const socketPath = path.join(h.runtime.options.storage.stateDir, 'test-capacity.sock');
     const close = await listenOriginNotices(socketPath, h.runtime.notifier, () => [], h.runtime.capacity);
@@ -327,12 +327,12 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(rows[0].operation?.operationId).toEqual(expect.any(String));
     expect(rows[0].operation?.operationId).not.toBe('');
     expect(rows[0].operation?.maxAttempts).toBe(9);
-    expect(rows[0].children[0].attempts).toBe(1);
+    expect(rows[0].children[0].attempts).toBe(0);
     const retryAt = rows[0].attempts[0].nextAttemptAt!;
     expect(retryAt).toEqual(expect.any(Number));
     expect(retryAt).toBeGreaterThan(rows[0].attempts[0].resolvedAt!);
     await new Promise(resolve => setTimeout(resolve, 1251));
-    // Free capacity does not erase the charged failure's existing retry backoff.
+    // Free capacity does not erase the local refusal's retry backoff.
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(h.network).not.toHaveBeenCalled();
     expect(await h.runtime.store.reserveRecoveryAttempt({ operationId: rows[0].operation!.operationId, now: retryAt - 1 })).toBe(false);
@@ -345,7 +345,7 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(recovered[0].operation?.deadlineAt).toBe(rows[0].operation!.deadlineAt);
     expect(recovered[0].operation?.maxAttempts).toBe(rows[0].operation!.maxAttempts);
     expect(recovered[0].attempts).toHaveLength(2);
-    expect(recovered[0].children[0].attempts).toBe(2);
+    expect(recovered[0].children[0].attempts).toBe(1);
     expect(recovered[0].attempts[0]).toEqual(rows[0].attempts[0]);
     expect(recovered[0].attempts[1]).toMatchObject({ phase: 'dispatched', outcome: 'accepted' });
     expect(recovered[0].children[0].state).toBe('accepted');
