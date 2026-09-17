@@ -180,6 +180,12 @@ export interface SessionManagerConfig {
    * stands) so genuine outages aren't masked. Future-spawn only.
    */
   claudeCodeMaxRetries?: number;
+  /**
+   * Resume Follows the Account (docs/specs/resume-follows-account.md §3.4).
+   * `enabled: false` turns off transcript placement at launch and the
+   * dead-pane checks, restoring the previous behaviour. Absent = on.
+   */
+  resumeFollowsAccount?: { enabled?: boolean };
   /** Path to the framework CLI binary for the agent's primary framework.
    *  Misnamed for v0.x compat — actually holds whichever framework binary
    *  was selected (claude OR codex OR …). New code should consult

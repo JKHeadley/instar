@@ -51,7 +51,7 @@ vi.mock('node:child_process', () => {
 });
 
 // Import after mock
-import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionManager, RESUME_REOPEN_FAILED_NOTE } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { InputGuard } from '../../src/core/InputGuard.js';
@@ -383,7 +383,9 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
       bootstrapConversationIds: [730044],
     });
 
-    expect(spawn).toHaveBeenCalledWith('resume bootstrap', 'slack-name', expect.objectContaining({
+    // The retry carries the in-band "could not be reopened" note ahead of the
+    // original bootstrap (Resume Follows the Account §3.2, P24 disclosure).
+    expect(spawn).toHaveBeenCalledWith(`${RESUME_REOPEN_FAILED_NOTE}\n\nresume bootstrap`, 'slack-name', expect.objectContaining({
       slackChannelId: 'C123', slackThreadTs: '1722.1', bootstrapConversationIds: [730044],
       awaitInitialInjection: true,
     }));

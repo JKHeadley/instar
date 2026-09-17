@@ -32,6 +32,7 @@
  */
 
 import fs from 'node:fs';
+import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import path from 'node:path';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import {
@@ -77,6 +78,7 @@ function transcriptRelPath(projectsDir: string, uuid: string): string | null {
   return null;
 }
 
+/** @deprecated Use `placeResumeTranscript` (claudeResumeTranscript.ts), which picks the freshest copy and never overwrites a diverged one. Kept for existing callers and tests. */
 export function ensureResumeTranscriptInConfigHome(uuid: string, targetConfigHome: string): boolean {
   try {
     const home = process.env.HOME || '';
@@ -515,9 +517,12 @@ export class SessionRefresh {
       if (accountSwap?.configHome && !fresh) {
         const resumeUuid = stateSession.claudeSessionId;
         if (resumeUuid) {
-          const ok = ensureResumeTranscriptInConfigHome(resumeUuid, accountSwap.configHome);
+          // Same freshest-copy, never-delete placement the topic spawn uses
+          // (Resume Follows the Account §3.1) — the old first-found copy could be stale.
+          const outcome = await placeResumeTranscript(resumeUuid, accountSwap.configHome);
+          const ok = outcome === 'present' || outcome === 'copied' || outcome === 'replaced' || outcome === 'forked';
           console.log(
-            `[SessionRefresh] account-swap continuity: transcript ${ok ? 'ensured in' : 'NOT found for'} ${accountSwap.configHome} (uuid=${resumeUuid}, sessionName=${sessionName})`,
+            `[SessionRefresh] account-swap continuity: transcript ${ok ? `ensured in (${outcome})` : `NOT placed (${outcome}) for`} ${accountSwap.configHome} (uuid=${resumeUuid}, sessionName=${sessionName})`,
           );
         } else {
           console.log(

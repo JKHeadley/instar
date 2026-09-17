@@ -7156,6 +7156,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 - See the pool + each account's live quota: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/subscription-pool\` · one account's quota + burn: \`GET /subscription-pool/:id/quota\` · poll all now: \`POST /subscription-pool/poll\`.
 - **Quota across ALL my machines** (pool-scope read) — \`GET /subscription-pool?scope=pool\` fans out to every ONLINE peer's plain pool, tags each account with the machine holding it (\`machineId\`/\`machineNickname\`/\`remote:true\`), and merges into ONE dark-peer-tolerant object \`{ enabled, accounts:[...], pool:{ selfMachineId, peersQueried, peersOk, failed }, scope:'pool' }\`. A down/slow/unauth peer is a classified \`pool.failed\` row (normalized reason — never a peer URL or token), never a silent omission and never a 500. Per-machine seat is meaningful, so the SAME account on two machines stays individually visible (never coalesced). Single-machine → the plain self-only view tagged \`scope:'pool'\`. Use this when the operator asks "how much quota is left across ALL my machines?".
 - **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
+- **Conversation follows its login** — when a Telegram or Slack topic restarts under a different pool account, its conversation is copied into that account's login folder first (never deleting or overwriting a divergent copy), so \`--resume\` finds it. If no copy exists, the topic starts from recent messages and I'm told so. A resume that crashes at startup is detected from the pane's exit and retried fresh once, with the crash output in the server log. Off switch: \`sessions.resumeFollowsAccount.enabled: false\` (applies on restart). User asks "why did my topic lose its memory / show 'No conversation found'?" → check the server log for \`Resume placement\` and \`exited during startup\` lines.
 - **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (\`all-hot\` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via \`state/swap-ledger.jsonl\`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (\`subscriptionPool.proactiveSwap.antiThrash.dryRun\`); the work gate's \`subscriptionPool.swapContinuity.enabled\` is restart-required. "Why didn't my session swap?" → \`GET /subscription-pool/proactive-swap\` \`brakes\`/\`deferrals\` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with \`force:true\`.
 - **Credential identity drift is self-healing safety state** — quota follows the account proven by the live token, never a stale slot label. \`GET /subscription-pool\` exposes \`identityDrifted\` + credential-free evidence; drifted slots are excluded from capacity and every swap target. Repair is planned/audited through the existing staged credential-swap machinery, with a live identity pre-flight before every swap; uncertainty quarantines. A login absent from this machine becomes an owner re-login commitment with enrollment links (Claude logins are never copied across machines).
@@ -7272,6 +7273,24 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(preLimitAnchor, preLimitAnchor + antiThrashBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool anti-thrash brakes + work-gate bullet');
+      }
+    }
+
+    // Resume Follows the Account (docs/specs/resume-follows-account.md) — existing
+    // agents learn that a topic's conversation follows its pool login and where to
+    // look when a topic reports "No conversation found". Inserted after the
+    // Continuity guarantee bullet; content-sniffed on the bullet title.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Conversation follows its login')
+    ) {
+      const continuityIdx = content.indexOf('- **Continuity guarantee**');
+      if (continuityIdx !== -1) {
+        const eol = content.indexOf('\n', continuityIdx);
+        const insertAt = eol === -1 ? content.length : eol;
+        content = content.slice(0, insertAt) + '\n' + "- **Conversation follows its login** — when a Telegram or Slack topic restarts under a different pool account, its conversation is copied into that account's login folder first (never deleting or overwriting a divergent copy), so `--resume` finds it. If no copy exists, the topic starts from recent messages and I'm told so. A resume that crashes at startup is detected from the pane's exit and retried fresh once, with the crash output in the server log. Off switch: `sessions.resumeFollowsAccount.enabled: false` (applies on restart). User asks \"why did my topic lose its memory / show 'No conversation found'?\" → check the server log for `Resume placement` and `exited during startup` lines." + content.slice(insertAt);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool conversation-follows-login bullet');
       }
     }
 

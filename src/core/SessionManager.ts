@@ -105,6 +105,7 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -325,6 +326,9 @@ export function deriveTargetKey(sessionId: string): DerivedTarget {
 /** Sessions younger than this get their pane tail sampled each monitor tick
  *  so a self-exit during startup leaves evidence (see `startupTails`). */
 const STARTUP_TAIL_WINDOW_MS = 120_000;
+/** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
+export const RESUME_REOPEN_FAILED_NOTE =
+  'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
 /** Lines captured per startup-tail sample — enough to show a menu/banner/error,
  *  small enough to be a negligible per-tick cost. */
 const STARTUP_TAIL_LINES = 15;
@@ -5663,6 +5667,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`Cannot interact with protected session: ${tmuxSession}`);
     }
 
+    if (this.tmuxSessionExists(tmuxSession) && this.resumeFollowsAccountEnabled() && this.isPaneDead(tmuxSession)) {
+      // A same-name session whose Claude process already exited: reusing it
+      // would type the bootstrap into a dead pane. Record why it died, remove
+      // it, and spawn fresh below (spec §3.2).
+      this.logDeadPaneEvidence(tmuxSession, 'Spawn found a dead same-name session');
+      this.terminalExitCodes.delete(tmuxSession);
+      try {
+        const stale = this.listRunningSessions().find((r) => r.tmuxSession === tmuxSession);
+        if (stale) {
+          stale.status = 'failed';
+          stale.endedAt = new Date().toISOString();
+          this.state.saveSession(stale);
+        }
+      } catch { /* @silent-fallback-ok — state cleanup is best-effort; the monitor also ends the record */ }
+      try {
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`], { stdio: 'ignore', timeout: 5000 }));
+      } catch { /* @silent-fallback-ok — already gone */ }
+    }
     if (this.tmuxSessionExists(tmuxSession)) {
       // Session already exists — just reuse it. The initial message is
       // instar-composed bootstrap content (F7) — mark it first-party so the
@@ -5678,7 +5700,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return tmuxSession;
     }
 
-    const effectiveInitialMessage = this.withBuildContextRestoreNote(
+    let effectiveInitialMessage = this.withBuildContextRestoreNote(
       tmuxSession,
       initialMessage,
       options?.resumeSessionId,
@@ -5780,6 +5802,43 @@ rm()  { "${shimRunner}" rm  "$@"; }
         effectiveConfigHome,
         explicitConfigHome ? 'interactive account-swap' : 'interactive pin',
       );
+    }
+    // Resume Follows the Account (docs/specs/resume-follows-account.md §3.1).
+    // Claude opens a resume transcript only from the login folder it runs
+    // under. When a topic conversation is launched under a pool/swap login,
+    // place the freshest copy there first; if none exists (or the id is an
+    // internal one-shot call), launch fresh instead of letting Claude exit
+    // with "No conversation found".
+    let resumeReopenFailed = false;
+    if (
+      options?.resumeSessionId &&
+      framework === 'claude-code' &&
+      effectiveConfigHome &&
+      (options.telegramTopicId !== undefined || options.slackChannelId) &&
+      this.resumeFollowsAccountEnabled()
+    ) {
+      const outcome = await placeResumeTranscript(options.resumeSessionId, effectiveConfigHome);
+      console.log(`[SessionManager] Resume placement for "${tmuxSession}": ${outcome} (uuid=${options.resumeSessionId}, home=${effectiveConfigHome})`);
+      if (outcome === 'not-found' || outcome === 'one-shot') {
+        resumeReopenFailed = true;
+        options = { ...options, resumeSessionId: undefined };
+      }
+      if (outcome === 'not-found' || outcome === 'one-shot' || outcome === 'forked') {
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.resumePlacement',
+          primary: 'Place the topic conversation in the login the session launches under',
+          fallback: outcome === 'forked'
+            ? 'A diverged copy in the target login was set aside and the freshest copy placed'
+            : 'The session launched without its earlier conversation',
+          reason: `Why: resume placement outcome ${outcome}`,
+          impact: outcome === 'forked'
+            ? 'No data lost; the diverged copy is kept beside the transcript'
+            : 'The session starts from recent topic messages instead of the full conversation',
+        });
+      }
+    }
+    if (resumeReopenFailed && effectiveInitialMessage) {
+      effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
@@ -6042,7 +6101,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     originalName: string | undefined,
     initialMessage: string,
     readyTimeout: number,
-    options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; bootstrapConversationIds?: number[] },
+    options?: {
+      telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; bootstrapConversationIds?: number[];
+      // Carried into the single fresh-spawn retry so it relaunches the same session shape (spec §3.2).
+      framework?: IntelligenceFramework; cwd?: string; defaultModel?: string; thinkingMode?: import('./topicProfileValidation.js').ThinkingMode; effort?: import('./topicProfileValidation.js').EffortLevel; configHome?: string; subscriptionAccountId?: string;
+    },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
     if (ready) {
@@ -6075,7 +6138,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //       carrying the same initial message.
     //   (b) tmux is alive but readiness probe couldn't see the prompt. Best
     //       effort: inject anyway, the original behavior.
-    const stillAlive = this.tmuxSessionExists(tmuxSession);
+    // A crashed Claude leaves a DEAD pane inside a tmux session that still
+    // exists (remain-on-exit failed). Session existence is not "Claude is
+    // running" — read the pane's exit fact (spec §3.2).
+    const sessionExists = this.tmuxSessionExists(tmuxSession);
+    const paneDead = sessionExists && this.resumeFollowsAccountEnabled() && this.isPaneDead(tmuxSession);
+    if (paneDead) {
+      this.logDeadPaneEvidence(tmuxSession, options?.resumeSessionId ? 'Resumed session exited during startup' : 'Session exited during startup');
+      this.terminalExitCodes.delete(tmuxSession);
+    }
+    const stillAlive = sessionExists && !paneDead;
     if (!stillAlive && options?.resumeSessionId) {
       console.warn(`[SessionManager] Resume failed for "${tmuxSession}" (UUID ${options.resumeSessionId}) — tmux died during startup. Falling back to fresh spawn.`);
 
@@ -6113,12 +6185,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // would not preserve the auto-generated `interactive-${ts}` form.
       // resumeSessionId is intentionally omitted to break the bad-UUID cycle.
       try {
-        await this.spawnInteractiveSession(initialMessage, originalName, {
+        const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
+          ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
+          : initialMessage;
+        await this.spawnInteractiveSession(retryMessage, originalName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
           bootstrapConversationIds: options.bootstrapConversationIds,
           awaitInitialInjection: true,
+          // Relaunch the same session shape; a caller-pinned login is kept, a
+          // pool-resolved one is chosen again by the resolver (spec §3.2).
+          ...(options.framework ? { framework: options.framework } : {}),
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(options.defaultModel ? { defaultModel: options.defaultModel } : {}),
+          ...(options.thinkingMode ? { thinkingMode: options.thinkingMode } : {}),
+          ...(options.effort ? { effort: options.effort } : {}),
+          ...(options.configHome ? { configHome: options.configHome } : {}),
+          ...(options.subscriptionAccountId ? { subscriptionAccountId: options.subscriptionAccountId } : {}),
         });
         console.log(`[SessionManager] Fresh-spawn fallback injected for "${tmuxSession}" (durable custody cleared only after verified acceptance).`);
       } catch (err) {
@@ -6199,6 +6283,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // (The pending-inject record is deliberately NOT cleared here — the boot
     // sweep reports the loss loudly instead of letting it vanish.)
     console.error(`[SessionManager] Session not ready in "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
+    if (paneDead) {
+      // Remove the dead session so the next inbound message spawns cleanly
+      // instead of reusing a pane with no process (spec §3.2).
+      try {
+        await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`]);
+      } catch { /* @silent-fallback-ok — already gone */ }
+    }
     DegradationReporter.getInstance().report({
       feature: 'SessionManager.handleReadyAndInject',
       primary: 'Wait for session ready, inject initial message',
@@ -7468,9 +7559,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const start = Date.now();
     // Wait a minimum startup delay before checking (Claude needs time to load)
     await new Promise(r => setTimeout(r, 3000));
+    let polls = 0;
     while (Date.now() - start < timeoutMs) {
       if (!this.tmuxSessionExists(tmuxSession)) {
         console.error(`[SessionManager] Session "${tmuxSession}" died during startup`);
+        return false;
+      }
+      // Every 2 s, also read the pane-exit fact: a crashed Claude keeps its
+      // session (remain-on-exit failed), so existence alone would wait out the
+      // whole timeout (spec §3.2).
+      if (++polls % 4 === 0 && this.resumeFollowsAccountEnabled() && this.isPaneDead(tmuxSession)) {
+        console.error(`[SessionManager] Session "${tmuxSession}" exited during startup (dead pane)`);
         return false;
       }
       if (this.detectClaudePrompt(tmuxSession)) {
@@ -7571,6 +7670,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!this.tmuxSessionExists(tmuxSession)) {
       return false;
     }
+    if (this.resumeFollowsAccountEnabled() && this.isPaneDead(tmuxSession)) {
+      return false;
+    }
 
     // Extended wait: the session is alive but prompt wasn't detected.
     // Give it one more chance with a 15-second grace period.
@@ -7606,6 +7708,52 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — session existence check
       return false;
     }
+  }
+
+  /** Resume Follows the Account kill switch (spec §3.4). Absent = on. */
+  private resumeFollowsAccountEnabled(): boolean {
+    return this.config.resumeFollowsAccount?.enabled !== false;
+  }
+
+  /**
+   * True only when tmux positively reports the pane's process has exited
+   * (`pane_dead` = 1). Topic panes keep `remain-on-exit failed`, so a crashed
+   * Claude leaves a dead pane inside a session that `has-session` still reports
+   * as existing. Any probe error or other output returns false, preserving the
+   * previous behaviour. Standard: "Verify the State, Not Its Symbol".
+   */
+  isPaneDead(tmuxSession: string): boolean {
+    try {
+      const out = withSyncOp(() => execFileSync(this.config.tmuxPath, ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_dead}||#{pane_dead_status}'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      })).trim();
+      const [dead, status] = out.split('||');
+      if (dead !== '1') return false;
+      const code = Number(status);
+      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+      return true;
+    } catch {
+      // @silent-fallback-ok — an unprobeable pane is treated as alive (previous behaviour).
+      return false;
+    }
+  }
+
+  /** Log the tail of a dead pane before it is killed, so the crash reason survives. */
+  private logDeadPaneEvidence(tmuxSession: string, context: string): void {
+    let tail = '';
+    try {
+      tail = withSyncOp(() => execFileSync(this.config.tmuxPath, ['capture-pane', '-p', '-t', `=${tmuxSession}:`, '-S', '-20'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      })).split('\n').map((l) => l.trimEnd()).filter(Boolean).slice(-8).join(' | ');
+    } catch {
+      // @silent-fallback-ok — evidence capture is best-effort; the kill proceeds.
+    }
+    const code = this.terminalExitCodes.get(tmuxSession);
+    console.warn(`[SessionManager] ${context}: pane in "${tmuxSession}" exited${code !== undefined ? ` with status ${code}` : ''}. Last output: ${tail.slice(0, 600) || '(none captured)'}`);
   }
 
   private generateId(): string {
