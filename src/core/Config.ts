@@ -1038,6 +1038,10 @@ export function loadConfig(projectDir?: string): InstarConfig {
     port: (fileConfig.port as number | undefined) ?? 4040,
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
+    ...(fileConfig.sessions?.resumeFollowsAccount &&
+    typeof fileConfig.sessions.resumeFollowsAccount === 'object'
+      ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }
+      : {}),
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
     // Per-component framework routing (docs/specs/per-component-framework-routing.md).
     // LOAD-PATH FIX (2026-06-06): this field was documented + consumed

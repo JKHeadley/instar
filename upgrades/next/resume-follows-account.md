@@ -1,0 +1,29 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Telegram and Slack topic conversations now survive a subscription-pool account change. Claude keeps each conversation inside the folder of the login it ran under, so a topic restarted under a different pool account used to fail with "No conversation found", exit within seconds, and loop on every message. Before such a restart, instar now places the freshest copy of the conversation into the login the session will use. It never deletes a copy: an older copy is replaced only when it is provably an earlier part of the newer one, and a copy that diverged is kept beside it under a `.forked-<timestamp>` name. If no copy exists, the topic starts fresh from its recent messages and the session is told the earlier conversation could not be reopened.
+
+A Claude process that exits during startup is now detected from the tmux pane's exit flag instead of from whether the tmux session exists, so the existing one-time fresh retry runs within about two seconds. The retry keeps the session's framework, working directory, model, thinking settings and pinned login, and the crash output is written to the server log. Dead same-name sessions are no longer reused.
+
+The resume-pointer heartbeat no longer guesses a topic's conversation from the newest transcript file (on busy agents that was an internal one-shot call). It records only the id Claude reports, skips dead and missing panes, and finds transcripts under pooled login folders. Pointers saved by the old guess are ignored and expire on their own.
+
+## What to Tell Your User
+
+If a conversation topic ever stopped answering after your agent switched between Claude subscriptions, with "Session respawned" followed by silence, that is fixed. Your topics now keep their conversation when the agent moves them to another subscription, and a restart that fails recovers on its own within seconds instead of looping. Nothing needs to be done. One topic may start fresh once after this update if its saved pointer came from the old guessing behaviour.
+
+## Summary of New Capabilities
+
+- Topic conversations follow their pool account across restarts, with a never-delete copy rule.
+- Startup crashes are detected from the pane's exit, logged with their output, and retried once with the same session settings.
+- The resume pointer never guesses; legacy guessed pointers are ignored.
+- Off switch: `sessions.resumeFollowsAccount.enabled: false` in `.instar/config.json` (applies on restart).
+
+## Evidence
+
+- Incident: sagemind topic "GCI MCP servers" (2026-09-16) looped on "No conversation found" after its account reached its weekly limit; the forensic chain and measurements are in `docs/specs/resume-follows-account.md` §1.
+- Unit: placement (freshest copy, byte-prefix replace, diverged copy kept, duplicate folders, attachments, one-shot refusal, invalid ids); dead-pane handling both ways including the kill switch; resume-pointer store with no guessing and pooled logins; migration parity for the CLAUDE.md bullet.
+- Integration: a pinned topic spawn with the conversation only in another login resumes it; with no copy it launches fresh with the in-band note; unbound spawns and the kill switch are unchanged.
+- E2E: against a real tmux server on a private socket, a crashed pane still reports as an existing session, is detected dead, and is skipped by the heartbeat; a running pane is recorded; a missing session is skipped.
