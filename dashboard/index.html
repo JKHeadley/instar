@@ -3744,6 +3744,11 @@
       .sub-quota-pct { opacity:.65; }
       .sub-quota-track { height:8px; border-radius:4px; background:var(--border,#2a2a2a); overflow:hidden; }
       .sub-quota-fill { height:100%; background:linear-gradient(90deg,#4caf80,#3a9); }
+      /* Severity bands (dashboard/subscriptions.js quotaSeverity): <75% ok, 75-89% warn, >=90% critical.
+         Colour is redundant with the always-present "N% used" text, never the only signal. */
+      .sub-quota-fill.sub-quota-ok { background:linear-gradient(90deg,#4caf80,#3a9); }
+      .sub-quota-fill.sub-quota-warn { background:linear-gradient(90deg,#f59e0b,#e0900a); }
+      .sub-quota-fill.sub-quota-critical { background:linear-gradient(90deg,#f87171,#ef4444); }
       .sub-pending { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:12px 16px; margin-bottom:10px; }
       .sub-pending-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
       .sub-pending-label { font-weight:600; }
