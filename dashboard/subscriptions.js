@@ -202,18 +202,45 @@ function el(doc, tag, cls, text) {
   return node;
 }
 
+// Quota-bar severity thresholds. A single green bar made a 92%-consumed account
+// read the same as a 4%-consumed one at a glance, so the bar communicated width
+// only. These bands give it colour as well: comfortable / getting tight / about
+// to wall. PRESENTATION ONLY — nothing routes, sheds, or swaps on this class;
+// placement and load-shedding keep reading the numeric quota they always read.
+export const QUOTA_WARN_PCT = 75;
+export const QUOTA_CRITICAL_PCT = 90;
+
+/** Severity band for an already-clamped 0–100 integer. */
+export function quotaSeverity(usedPct) {
+  const used = clampPct(usedPct);
+  if (used >= QUOTA_CRITICAL_PCT) return 'critical';
+  if (used >= QUOTA_WARN_PCT) return 'warn';
+  return 'ok';
+}
+
+// Severity → STATIC class literal. The map is the reason the class attribute stays
+// a fixed literal (the file's safety contract): the severity is chosen from a
+// closed set of three, never interpolated from data.
+const QUOTA_FILL_CLASS = Object.freeze({
+  ok: 'sub-quota-fill sub-quota-ok',
+  warn: 'sub-quota-fill sub-quota-warn',
+  critical: 'sub-quota-fill sub-quota-critical',
+});
+
 /** A labelled quota bar. `pct` is clamped to a 0–100 NUMBER before it reaches the
- *  only dynamic attribute (style width); the percent text is also from that number. */
+ *  only dynamic attribute (style width); the percent text is also from that number.
+ *  The fill also carries a severity class derived from that same clamped number. */
 export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
   const wrap = el(doc, 'div', 'sub-quota');
   const used = clampPct(pct);
+  const severity = quotaSeverity(used);
   const head = el(doc, 'div', 'sub-quota-head');
   head.appendChild(el(doc, 'span', 'sub-quota-label', sanitizeForDisplay(label, 'label')));
   const resetTxt = resetIso ? countdown(resetIso, now, { expiredWord: 'resetting' }) : '';
   head.appendChild(el(doc, 'span', 'sub-quota-pct', `${used}% used${resetTxt ? ` · resets in ${resetTxt}` : ''}`));
   wrap.appendChild(head);
   const track = el(doc, 'div', 'sub-quota-track');
-  const fill = el(doc, 'div', 'sub-quota-fill');
+  const fill = el(doc, 'div', QUOTA_FILL_CLASS[severity]); // static literal from a closed set
   fill.style.width = `${used}%`; // safe: `used` is a clamped integer
   track.appendChild(fill);
   wrap.appendChild(track);

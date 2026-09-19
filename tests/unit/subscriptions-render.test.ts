@@ -19,6 +19,9 @@ import {
   countdown,
   relativeAge,
   quotaBar,
+  quotaSeverity,
+  QUOTA_WARN_PCT,
+  QUOTA_CRITICAL_PCT,
   renderAccounts,
   renderPendingLogins,
   renderDisabled,
@@ -122,6 +125,46 @@ describe('quotaBar', () => {
     expect(fill.style.width).toBe('100%'); // clamped from 171.6
     expect(bar.querySelector('.sub-quota-pct')!.textContent).toContain('100% used');
     expect(bar.querySelector('.sub-quota-pct')!.textContent).toContain('resets in 2h');
+  });
+
+  // Severity bands. Both sides of BOTH boundaries, so an off-by-one in either
+  // comparison fails here rather than shipping a bar that reads one band early.
+  it.each([
+    [0, 'ok'],
+    [74, 'ok'],
+    [QUOTA_WARN_PCT - 1, 'ok'],
+    [QUOTA_WARN_PCT, 'warn'],
+    [89, 'warn'],
+    [QUOTA_CRITICAL_PCT - 1, 'warn'],
+    [QUOTA_CRITICAL_PCT, 'critical'],
+    [100, 'critical'],
+  ])('quotaSeverity(%i) → %s', (pct, expected) => {
+    expect(quotaSeverity(pct)).toBe(expected);
+  });
+
+  it('severity is derived from the CLAMPED number, not the raw input', () => {
+    expect(quotaSeverity(1000)).toBe('critical'); // clamps to 100
+    expect(quotaSeverity(-50)).toBe('ok'); // clamps to 0
+    expect(quotaSeverity('not a number')).toBe('ok'); // non-finite → 0
+    expect(quotaSeverity(74.6)).toBe('warn'); // rounds to 75, crossing the band
+  });
+
+  it('the fill carries its severity class alongside the base class', () => {
+    const cls = (pct: number) =>
+      (quotaBar(doc, 'Weekly', pct, null, NOW).querySelector('.sub-quota-fill') as HTMLElement)
+        .getAttribute('class');
+    expect(cls(22)).toBe('sub-quota-fill sub-quota-ok');
+    expect(cls(83)).toBe('sub-quota-fill sub-quota-warn');
+    expect(cls(100)).toBe('sub-quota-fill sub-quota-critical');
+  });
+
+  it('the class attribute stays a closed-set literal — no data reaches it', () => {
+    // A hostile percent must not be able to smuggle anything into the attribute:
+    // the severity map is keyed by one of exactly three strings.
+    const fill = quotaBar(doc, 'Weekly', '50" onload="x' as unknown as number, null, NOW)
+      .querySelector('.sub-quota-fill') as HTMLElement;
+    expect(fill.getAttribute('class')).toBe('sub-quota-fill sub-quota-ok');
+    expect(fill.style.width).toBe('0%'); // non-finite → clamped to 0
   });
 });
 
