@@ -7722,6 +7722,23 @@ Check where codex account usage sits without the interactive TUI. The codex CLI 
       result.upgraded.push('CLAUDE.md: added Codex Usage (/codex/usage) awareness (codex-usage-visibility)');
     }
 
+    // codex-live-quota-visibility (Agent Awareness + Migration Parity): existing
+    // agents whose CLAUDE.md already carries the Codex Usage section must learn
+    // that readings are now LIVE-FIRST (zero-spend app-server read; rollout tail
+    // is the fallback) and that \`usage.source\` names which path answered —
+    // otherwise a deployed agent keeps describing its own readings as
+    // rollout-only and days-stale. Content-sniff on the live-path marker;
+    // appended as its own note so it lands regardless of which historical
+    // wording of the Codex Usage section is installed.
+    if (content.includes('/codex/usage') && !content.includes('codex-app-server')) {
+      const codexLiveQuotaNote = `
+- **Codex readings are LIVE-FIRST (zero-spend):** \`GET /codex/usage\` and the subscription-pool quota poll now ask the codex CLI's app-server for the account's CURRENT limits first (the same call its own /status makes — no tokens, no quota, current even for a walled account that writes no rollout records), falling back to the rollout files only when the live read can't answer. \`usage.source\` / \`lastQuota.source\` say which path answered (\`codex-app-server\` = live, \`codex-rollout\` = fallback — a fallback reading is only as fresh as the account's last completed turn). Rollback lever: \`subscriptionPool.codexLiveQuota: false\`.
+`;
+      content += '\n' + codexLiveQuotaNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added live-first Codex quota awareness (codex-live-quota-visibility)');
+    }
+
     // subscription-path-routing (Agent Awareness + Migration Parity): existing
     // agents must learn the June-15 lever exists — the registry introspection
     // route and the intelligence.subscriptionPath mode switch. Content-sniff

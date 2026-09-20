@@ -4260,6 +4260,11 @@ export interface InstarConfig {
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */
     swapSoftThresholdPct?: number;
+    /** Live codex quota reads via `codex app-server` (zero token/quota spend;
+     *  the same call the codex /status screen makes). ON by default — every
+     *  failure falls back to the rollout-tail reader, so `false` only forces
+     *  the old rollout-only behaviour. */
+    codexLiveQuota?: boolean;
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */

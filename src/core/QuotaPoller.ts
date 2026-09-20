@@ -106,6 +106,17 @@ export interface QuotaPollerConfig {
   refresher?: AccountRefresher;
   /** Injected for tests; defaults to the rollout-backed Codex usage reader. */
   codexUsageReader?: CodexUsageReader;
+  /**
+   * The zero-spend LIVE codex reader (`codex app-server` →
+   * account/rateLimits/read). Tried FIRST for codex accounts; any failure
+   * falls back to `codexUsageReader` (the rollout tail), so the worst case is
+   * exactly the rollout-only behaviour. DELIBERATELY no real default: absent
+   * or null means rollout-only, and the production implementation is injected
+   * once at server composition via `buildCodexLiveUsageReader` — so a test
+   * that builds a poller without injecting one can never spawn a real
+   * `codex` subprocess. Config lever: `subscriptionPool.codexLiveQuota: false`.
+   */
+  codexLiveUsageReader?: CodexUsageReader | null;
   /** Clock injection for Codex reset-boundary normalization. */
   now?: () => number;
   /** Logger (defaults to console). */
@@ -370,6 +381,7 @@ export class QuotaPoller {
   private readonly tokenResolver: TokenResolver;
   private readonly refresher: AccountRefresher;
   private readonly codexUsageReader: CodexUsageReader;
+  private readonly codexLiveUsageReader: CodexUsageReader | null;
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
@@ -398,6 +410,7 @@ export class QuotaPoller {
     this.refresher =
       config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
     this.codexUsageReader = config.codexUsageReader ?? readLatestCodexUsage;
+    this.codexLiveUsageReader = config.codexLiveUsageReader ?? null;
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
@@ -585,7 +598,21 @@ export class QuotaPoller {
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
       const nowMs = this.now();
       const nowIso = new Date(nowMs).toISOString();
-      const usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
+      // Live-first: the app-server read is authoritative and current even for a
+      // WALLED account (which writes no rollout records at all — the dawn@ case,
+      // 2026-09-20) and costs zero quota. Any failure — binary missing, spawn
+      // error, timeout, protocol drift — degrades to the rollout tail, i.e. to
+      // exactly the previous behaviour. The live reader never throws, but the
+      // guard also catches an injected test reader that does.
+      let usage: CodexUsageSnapshot | null = null;
+      if (this.codexLiveUsageReader) {
+        try {
+          usage = await this.codexLiveUsageReader({ codexHome: slotAccount.configHome, nowMs });
+        } catch {
+          usage = null; // @silent-fallback-ok: rollout tail below is the designed fallback
+        }
+      }
+      if (!usage) usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
       if (!usage) return null;
       const window = (value: CodexUsageSnapshot['primary']) => {
         if (!value) return undefined;
@@ -602,7 +629,7 @@ export class QuotaPoller {
       const fiveHour = window(shortWindow);
       const sevenDay = window(longWindow);
       const snap: AccountQuotaSnapshot = {
-        source: 'codex-rollout',
+        source: usage.source,
         measuredAt: usage.capturedAt ?? nowIso,
       };
       if (fiveHour) snap.fiveHour = fiveHour;

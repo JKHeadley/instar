@@ -54,8 +54,13 @@ export interface CodexRateWindow {
 
 /** A point-in-time snapshot of codex account rate-limit usage. */
 export interface CodexUsageSnapshot {
-  source: 'codex-rollout';
-  /** The rollout file the snapshot was read from. */
+  /**
+   * Which read path produced this snapshot: the on-disk rollout tail, or the
+   * live `codex app-server` account/rateLimits/read exchange (zero-spend; see
+   * codexLiveRateLimitReader.ts).
+   */
+  source: 'codex-rollout' | 'codex-app-server';
+  /** The rollout file the snapshot was read from ('' for the live path). */
   rolloutPath: string;
   /** Thread UUID parsed from the rollout filename, or null. */
   threadId: string | null;

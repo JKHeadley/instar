@@ -14340,8 +14340,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // pool is non-empty (started below); on-demand polling is always available
     // via POST /subscription-pool/poll.
     const { QuotaPoller } = await import('../core/QuotaPoller.js');
+    const { buildCodexLiveUsageReader } = await import(
+      '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js'
+    );
     const quotaPoller = new QuotaPoller({
       pool: subscriptionPool,
+      // Zero-spend live codex quota (app-server account/rateLimits/read). ON by
+      // default; `subscriptionPool.codexLiveQuota: false` forces rollout-only.
+      codexLiveUsageReader: buildCodexLiveUsageReader(config.subscriptionPool),
       loginObservationSink: subscriptionLoginLedger
         ? (input) => subscriptionLoginLedger!.recordObservation(input)
         : undefined,
