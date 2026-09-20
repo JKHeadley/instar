@@ -40,6 +40,7 @@ import child_process, {
   type SpawnSyncReturns,
 } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { resolveNpmInvocation } from '../utils/npmInvocation.js';
 
 const require = createRequire(import.meta.url);
 
@@ -441,15 +442,27 @@ class NativeModuleHealerImpl {
     // `--ignore-scripts` on the from-source fallback keeps it scoped (no arbitrary
     // postinstalls). The prebuilt attempt MUST run scripts (that is how
     // prebuild-install fetches the binary), so it is a plain `npm install`.
+    //
+    // npm on disk is not always a JS entry point: version managers (mise,
+    // asdf) ship `bin/npm` as a bash wrapper — `node <bash-script>` dies with
+    // a SyntaxError before npm ever runs. Resolve the real npm-cli.js first.
+    const npmInvocation = resolveNpmInvocation(npmPath, process.execPath);
+    if (!npmInvocation) {
+      event.errorTail = 'could not resolve an npm invocation';
+      console.error(`[${component}] NativeModuleHealer: ${event.errorTail}`);
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return false;
+    }
     const attempts: string[][] = [
-      [npmPath, 'install', installSpec, '--no-save', '--prefix', installPrefix],
-      [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
+      ['install', installSpec, '--no-save', '--prefix', installPrefix],
+      ['rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
     ];
     let result: SpawnSyncReturns<string> | null = null;
     for (const args of attempts) {
       try {
         // Namespace access so tests can monkey-patch child_process.spawnSync.
-        result = child_process.spawnSync(process.execPath, args, {
+        result = child_process.spawnSync(npmInvocation.command, [...npmInvocation.argsPrefix, ...args], {
           encoding: 'utf-8',
           timeout: 120_000,
           cwd: installPrefix,
@@ -759,9 +772,21 @@ class NativeModuleHealerImpl {
       ).version as string) || '';
     } catch { /* version optional */ }
     const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+    // See healBetterSqlite3: never run `node <npm-bin>` — the bin may be a
+    // version-manager bash wrapper (mise/asdf); resolve the real npm-cli.js.
+    const npmInvocation = resolveNpmInvocation(npmPath, process.execPath);
+    if (!npmInvocation) {
+      event.errorTail = 'could not resolve an npm invocation';
+      this.logHealEvent(event);
+      this.lastResult = event;
+      return {
+        outcome: 'failure',
+        details: { reason: event.errorTail, attemptId: ctx.attemptId },
+      };
+    }
     const attempts: string[][] = [
-      [npmPath, 'install', installSpec, '--no-save', '--prefix', installPrefix],
-      [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
+      ['install', installSpec, '--no-save', '--prefix', installPrefix],
+      ['rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
     ];
     let result: SpawnSyncReturns<string> | null = null;
     let lastSpawnErr = '';
@@ -769,7 +794,7 @@ class NativeModuleHealerImpl {
       if (ctx.abortSignal.aborted) break;
       try {
         // Use namespace access so tests can monkey-patch `child_process.spawnSync`.
-        result = child_process.spawnSync(process.execPath, args, {
+        result = child_process.spawnSync(npmInvocation.command, [...npmInvocation.argsPrefix, ...args], {
           encoding: 'utf-8',
           timeout: timeoutMs,
           cwd: installPrefix,
