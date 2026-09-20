@@ -365,6 +365,51 @@ describe('QuotaPoller', () => {
     expect(q.fiveHour).toBeUndefined();
   });
 
+  // An entitlement/credits-only codex account answers the poll but reports no
+  // usage window at all. That must reach the dashboard as its OWN state — a
+  // blank card reading "No quota reading yet" implies a poll is still pending,
+  // when no future poll can ever produce a number for this account.
+  it('marks a windowless (entitlement-only) codex reading as noQuotaWindow', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-09-20T17:59:00.000Z', model: null, planType: null, rateLimitReachedType: null,
+        primary: null,
+        secondary: null,
+        windowsUnavailable: true,
+      }),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-entitlement', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-entitlement')!.lastQuota!;
+    expect(q.noQuotaWindow).toBe(true);
+    expect(q.fiveHour).toBeUndefined();
+    expect(q.sevenDay).toBeUndefined();
+    expect(q.measuredAt).toBe('2026-09-20T17:59:00.000Z');
+  });
+
+  // The other side of that boundary: a reader that simply found nothing carries
+  // no flag, so "nothing to read" never masquerades as "reports no window".
+  it('does NOT mark noQuotaWindow when a codex reading has windows', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-09-20T17:59:00.000Z', model: null, planType: 'prolite', rateLimitReachedType: null,
+        primary: { usedPercent: 86, remainingPercent: 14, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+        secondary: null,
+      }),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-windowed', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-windowed')!.lastQuota!;
+    expect(q.noQuotaWindow).toBeUndefined();
+    expect(q.sevenDay?.utilizationPct).toBe(86);
+  });
+
   it('normalizes a Codex window to fresh 0% after its known reset passes', async () => {
     const now = Date.parse('2026-06-08T00:00:00Z');
     const p = new QuotaPoller({

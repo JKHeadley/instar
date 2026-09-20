@@ -1,0 +1,24 @@
+{
+  "ts": "2026-09-20T18:49:00.277Z",
+  "slug": "codex-quota-entitlement-record",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 88,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/QuotaPoller.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/providers/adapters/openai-codex/observability/codexRateLimitReader.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

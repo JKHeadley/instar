@@ -104,6 +104,14 @@ export interface AccountQuotaSnapshot {
   /** Which read path produced this snapshot (decision C provenance). */
   source?: SubscriptionQuotaSourceValue;
   measuredAt?: string;
+  /**
+   * The account produced a usage reading that reports NO window at all (a
+   * codex entitlement/credits-only account). Distinct from an absent snapshot,
+   * which means we found nothing to read. Display-only: it lets the dashboard
+   * name the condition instead of implying a poll is still pending. It never
+   * feeds placement, shedding or swap decisions.
+   */
+  noQuotaWindow?: boolean;
 }
 
 export interface SubscriptionAccount {

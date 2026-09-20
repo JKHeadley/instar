@@ -75,6 +75,17 @@ export interface CodexUsageSnapshot {
   primary: CodexRateWindow | null;
   /** The weekly rolling window (window_minutes 10080), or null if absent. */
   secondary: CodexRateWindow | null;
+  /**
+   * True when the account's rollouts carried rate-limit records but NONE of
+   * them reported a usage window — i.e. the only records were entitlement /
+   * credits families (currently `premium`). Both `primary` and `secondary` are
+   * null in that case, exactly as they would be if nothing were found at all,
+   * so this flag is the ONLY way a consumer can tell "this account reports no
+   * usage window" apart from "we found no reading". Consumers must treat it as
+   * a SIGNAL (render it honestly, skip a pointless re-poll) — never as an
+   * authority to route, shed or swap on.
+   */
+  windowsUnavailable?: boolean;
 }
 
 export interface ReadCodexUsageOptions {
@@ -96,6 +107,11 @@ const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\
  * Read the freshest codex rate-limit snapshot from disk. Returns null when
  * there is no codex rollout with a rate-limit-bearing token_count event
  * (e.g. a pure-Claude agent, or a session that has not completed a turn yet).
+ *
+ * When rollouts DO carry rate-limit records but none of them reports a usage
+ * window (an entitlement/credits-only account), the returned snapshot has both
+ * windows null and `windowsUnavailable: true` — a distinct, honest state from
+ * the null "nothing found" return.
  */
 export async function readLatestCodexUsage(
   opts: ReadCodexUsageOptions = {},
@@ -105,6 +121,11 @@ export async function readLatestCodexUsage(
   const maxRollouts = opts.maxRolloutsScanned ?? DEFAULT_MAX_ROLLOUTS;
 
   const rollouts = await listAllRollouts(opts.codexHome, maxRollouts);
+  // A windowed reading always wins. A window-less (entitlement-only) reading is
+  // held back as a fallback: an account whose NEWEST rollout ends on the
+  // session-close `premium` record still has its real quota a few rollouts
+  // further down, and returning the entitlement record first would hide it.
+  let windowless: CodexUsageSnapshot | null = null;
   for (const { path: rolloutPath } of rollouts) {
     let tail: string;
     try {
@@ -113,9 +134,11 @@ export async function readLatestCodexUsage(
       continue;
     }
     const snapshot = parseUsageFromTail(tail, rolloutPath, nowMs);
-    if (snapshot) return snapshot;
+    if (!snapshot) continue;
+    if (!snapshot.windowsUnavailable) return snapshot;
+    windowless ??= snapshot;
   }
-  return null;
+  return windowless;
 }
 
 /**
@@ -128,8 +151,13 @@ export function parseUsageFromTail(
   nowMs: number,
 ): CodexUsageSnapshot | null {
   const lines = tail.split('\n');
+  // The newest CODEX-family record that actually carries a usage window.
   let rateLimits: Record<string, unknown> | null = null;
   let capturedAt: string | null = null;
+  // The newest record of ANY family that carries no window — the fallback that
+  // lets a caller tell "this account reports no window" from "nothing found".
+  let windowlessLimits: Record<string, unknown> | null = null;
+  let windowlessCapturedAt: string | null = null;
   let model: string | null = null;
 
   for (const line of lines) {
@@ -147,8 +175,24 @@ export function parseUsageFromTail(
     const payload = obj.payload as Record<string, unknown> | undefined;
     if (!payload) continue;
     if (payload.type === 'token_count' && payload.rate_limits) {
-      rateLimits = payload.rate_limits as Record<string, unknown>;
-      capturedAt = typeof obj.timestamp === 'string' ? obj.timestamp : capturedAt;
+      const candidate = payload.rate_limits as Record<string, unknown>;
+      const ts = typeof obj.timestamp === 'string' ? obj.timestamp : null;
+      // Codex appends a SECOND token_count record for a different limit family
+      // (currently `premium`) when a session closes. Those entitlement records
+      // carry no windows, and taking the newest record blindly let that one
+      // final line erase a whole session's worth of real quota — which is why
+      // an account's card went blank the moment its session ended. Keep
+      // backwards compatibility with older rollouts that omitted limit_id.
+      const limitId = candidate.limit_id;
+      const isCodexFamily = limitId === undefined || limitId === 'codex';
+      const hasWindow = isRateWindowObject(candidate.primary) || isRateWindowObject(candidate.secondary);
+      if (isCodexFamily && hasWindow) {
+        rateLimits = candidate;
+        capturedAt = ts ?? capturedAt;
+      } else if (!hasWindow) {
+        windowlessLimits = candidate;
+        windowlessCapturedAt = ts ?? windowlessCapturedAt;
+      }
     } else if (payload.type === undefined && obj.type === 'turn_context') {
       // turn_context nests its fields directly under payload.
       const m = payload.model;
@@ -156,22 +200,30 @@ export function parseUsageFromTail(
     }
   }
 
-  if (!rateLimits) return null;
+  const chosen = rateLimits ?? windowlessLimits;
+  if (!chosen) return null;
+  const windowsUnavailable = rateLimits === null;
 
-  return {
+  const snapshot: CodexUsageSnapshot = {
     source: 'codex-rollout',
     rolloutPath,
     threadId: parseThreadId(rolloutPath),
-    capturedAt,
+    capturedAt: windowsUnavailable ? windowlessCapturedAt : capturedAt,
     model,
-    planType: typeof rateLimits.plan_type === 'string' ? rateLimits.plan_type : null,
+    planType: typeof chosen.plan_type === 'string' ? chosen.plan_type : null,
     rateLimitReachedType:
-      typeof rateLimits.rate_limit_reached_type === 'string'
-        ? rateLimits.rate_limit_reached_type
+      typeof chosen.rate_limit_reached_type === 'string'
+        ? chosen.rate_limit_reached_type
         : null,
-    primary: parseWindow(rateLimits.primary, nowMs),
-    secondary: parseWindow(rateLimits.secondary, nowMs),
+    primary: parseWindow(chosen.primary, nowMs),
+    secondary: parseWindow(chosen.secondary, nowMs),
   };
+  if (windowsUnavailable) snapshot.windowsUnavailable = true;
+  return snapshot;
+}
+
+function isRateWindowObject(value: unknown): boolean {
+  return !!value && typeof value === 'object';
 }
 
 function parseWindow(raw: unknown, nowMs: number): CodexRateWindow | null {

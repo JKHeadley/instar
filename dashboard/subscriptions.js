@@ -194,6 +194,23 @@ export function relativeAge(iso, now = Date.now()) {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
+/**
+ * Age text for a quota reading that is old enough to mislead, else ''.
+ *
+ * Codex quota is read from the account's own session log, so it only advances
+ * when something actually runs on that account. An idle account keeps serving
+ * its last number indefinitely. Below the threshold the age is noise; above it,
+ * showing the bar without the age asserts a freshness we do not have.
+ */
+export const STALE_READING_MS = 6 * 60 * 60 * 1000;
+
+export function staleReadingAge(iso, now = Date.now()) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return '';
+  if (now - t < STALE_READING_MS) return '';
+  return relativeAge(iso, now);
+}
+
 // ── DOM helpers (textContent ONLY — never innerHTML) ────────────────────────
 function el(doc, tag, cls, text) {
   const node = doc.createElement(tag);
@@ -325,6 +342,16 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       if (q.fiveHour) card.appendChild(quotaBar(doc, '5-hour', q.fiveHour.utilizationPct, q.fiveHour.resetsAt, now));
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
       if (q.fable) card.appendChild(quotaBar(doc, 'Fable 5', q.fable.utilizationPct, q.fable.resetsAt, now));
+      // A codex reading is only as fresh as the account's last completed turn —
+      // an idle account can sit on a days-old number. Name the age once it is
+      // old enough to mislead, so a stale bar never reads as "right now".
+      const age = staleReadingAge(q.measuredAt, now);
+      if (age) card.appendChild(el(doc, 'div', 'sub-account-quota-age', `Reading from ${age}`));
+    } else if (q && q.noQuotaWindow) {
+      // The account answered and reported no usage window at all (an
+      // entitlement/credits-only codex account). "yet" would promise a reading
+      // that no future poll can produce — name the condition instead.
+      card.appendChild(el(doc, 'div', 'sub-account-noquota', 'This account reports no usage window.'));
     } else {
       // Round-11 (security, grok-build spec §6.1): "yet" reads as PENDING, but
       // for a framework with no usage surface at all (grok-build) unknown is

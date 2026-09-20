@@ -18,6 +18,7 @@ import {
   friendlyProvider,
   countdown,
   relativeAge,
+  staleReadingAge,
   quotaBar,
   quotaSeverity,
   QUOTA_WARN_PCT,
@@ -168,6 +169,17 @@ describe('quotaBar', () => {
   });
 });
 
+describe('staleReadingAge', () => {
+  it('is empty below the threshold and an age above it', () => {
+    expect(staleReadingAge(new Date(NOW - 60 * 60 * 1000).toISOString(), NOW)).toBe('');
+    expect(staleReadingAge(new Date(NOW - 7 * 60 * 60 * 1000).toISOString(), NOW)).toBe('7h ago');
+  });
+  it('is empty for a missing or unparseable timestamp', () => {
+    expect(staleReadingAge(undefined, NOW)).toBe('');
+    expect(staleReadingAge('not a date', NOW)).toBe('');
+  });
+});
+
 describe('renderAccounts', () => {
   it('empty → friendly empty message', () => {
     const t = el();
@@ -238,6 +250,43 @@ describe('renderAccounts', () => {
     expect(t.querySelector('.sub-account-noquota')).toBeTruthy();
     expect(t.querySelector('.sub-account-noquota')!.textContent).toContain('yet');
   });
+  it('an entitlement-only codex account names the condition instead of implying a pending read', () => {
+    // The account ANSWERED the poll and reported no usage window at all. "yet"
+    // would promise a number no future poll can produce (the dawn@ case).
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'c', nickname: 'dawn', provider: 'openai', framework: 'codex-cli', status: 'active',
+      lastQuota: { source: 'codex-rollout', measuredAt: '2026-06-07T00:00:00Z', noQuotaWindow: true },
+    }], NOW);
+    const line = t.querySelector('.sub-account-noquota');
+    expect(line).toBeTruthy();
+    expect(line!.textContent).toContain('no usage window');
+    expect(line!.textContent).not.toContain('yet');
+  });
+
+  it('an account with NO reading at all still reads as pending, not as "no window"', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'c2', nickname: 'codey', provider: 'openai', framework: 'codex-cli', status: 'active',
+    }], NOW);
+    expect(t.querySelector('.sub-account-noquota')!.textContent).toContain('yet');
+  });
+
+  it('a stale reading is labelled with its age; a fresh one is not', () => {
+    const card = (measuredAt) => {
+      const t = el();
+      renderAccounts(doc, t, [{
+        id: 'c3', nickname: 'amrch', provider: 'openai', framework: 'codex-cli', status: 'active',
+        lastQuota: { source: 'codex-rollout', measuredAt, sevenDay: { utilizationPct: 86, resetsAt: '2026-06-09T00:00:00Z' } },
+      }], NOW);
+      return t.querySelector('.sub-account-quota-age');
+    };
+    // Codex quota only advances when something runs on the account, so a bar
+    // shown without its age asserts a freshness we do not have.
+    expect(card('2026-06-01T00:00:00Z')!.textContent).toBe('Reading from 6d ago');
+    expect(card('2026-06-06T23:30:00Z')).toBeNull();
+  });
+
   it('a grok account names the PERMANENT condition instead of implying a pending read', () => {
     // grok-build has no usage surface at all, so no poll will ever produce a
     // snapshot — "yet" would promise a reading that cannot arrive (round-11).

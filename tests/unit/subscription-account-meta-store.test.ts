@@ -72,6 +72,18 @@ describe('subscription-account-meta schema (WS5.2 §6.1a)', () => {
     expect(validate(wellFormed({ status: 'pwned' }))).toBeNull();
   });
 
+  it('accepts the noQuotaWindow display marker as a strict boolean, and rejects any other type', () => {
+    // Ships with the entitlement-record reader fix: an account that answered
+    // but reports no usage window carries this display-only marker, and it
+    // must survive replication (the receive clamp rejects unknown keys, so
+    // omitting it here would strand the whole projection on peers).
+    const ok = validate(wellFormed({ quota: { noQuotaWindow: true, measuredAt: '2026-09-20T18:00:00Z' } }));
+    expect(ok).not.toBeNull();
+    expect((ok as Record<string, any>).quota.noQuotaWindow).toBe(true);
+    expect(validate(wellFormed({ quota: { noQuotaWindow: 'yes' } }))).toBeNull();
+    expect(validate(wellFormed({ quota: { noQuotaWindow: 1 } }))).toBeNull();
+  });
+
   it('REJECTS a malformed quota (non-numeric utilizationPct, unparseable resetsAt, extra key)', () => {
     expect(validate(wellFormed({ quota: { fiveHour: { utilizationPct: 'lots', resetsAt: '2026-06-17T00:00:00Z' } } }))).toBeNull();
     expect(validate(wellFormed({ quota: { fiveHour: { utilizationPct: 1, resetsAt: 'not-a-date' } } }))).toBeNull();
