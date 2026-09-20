@@ -607,6 +607,10 @@ export class QuotaPoller {
       };
       if (fiveHour) snap.fiveHour = fiveHour;
       if (sevenDay) snap.sevenDay = sevenDay;
+      // The account answered, but reported no usage window (entitlement/credits
+      // only). Carry that through so the dashboard can say so plainly rather
+      // than show "No quota reading yet", which reads as a pending poll.
+      if (!fiveHour && !sevenDay && usage.windowsUnavailable) snap.noQuotaWindow = true;
       const attributedId = slotAccount.id;
       const priorLast = this.lastByAccount.get(attributedId);
       if (priorLast) this.prevByAccount.set(attributedId, priorLast);
