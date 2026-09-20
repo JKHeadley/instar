@@ -31,6 +31,9 @@ function createMockSessionManager() {
 }
 
 describe('Codex usage E2E lifecycle (feature is alive)', () => {
+  // Controllable fake for the live app-server reader (see server construction).
+  let liveAnswer: import('../../src/providers/adapters/openai-codex/observability/codexRateLimitReader.js').CodexUsageSnapshot | null = null;
+  const liveCalls: Array<string | null> = [];
   let tmpDir: string;
   let stateDir: string;
   let codexHome: string;
@@ -78,7 +81,19 @@ describe('Codex usage E2E lifecycle (feature is alive)', () => {
       messaging: [], monitoring: {}, updates: {},
     } as InstarConfig;
 
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as any,
+      state: new StateManager(stateDir),
+      // The PRODUCTION composition wires the real zero-spend live reader
+      // (buildCodexLiveUsageReader). The suite injects a controllable fake
+      // through the SAME option seam so the live-first plumbing is exercised
+      // end-to-end without ever spawning a real `codex` subprocess.
+      codexLiveUsageReader: async (opts) => {
+        liveCalls.push(opts?.codexHome ?? null);
+        return liveAnswer;
+      },
+    });
     await server.start();
     app = server.getApp();
   });
@@ -99,6 +114,26 @@ describe('Codex usage E2E lifecycle (feature is alive)', () => {
     expect(res.body.usage.primary.usedPercent).toBe(13);
     expect(res.body.usage.model).toBe('gpt-5.5');
     expect(res.body.usage.source).toBe('codex-rollout');
+  });
+
+  it('live-first: a live app-server answer wins over the rollout tail, through the production wiring', async () => {
+    liveAnswer = {
+      source: 'codex-app-server', rolloutPath: '', threadId: null,
+      capturedAt: '2026-09-20T18:00:00.000Z', model: null, planType: 'pro', rateLimitReachedType: 'rate_limit_reached',
+      primary: { usedPercent: 100, remainingPercent: 0, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+      secondary: null,
+    };
+    try {
+      const res = await request(app).get('/codex/usage').query({ codexHome }).set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.available).toBe(true);
+      expect(res.body.usage.source).toBe('codex-app-server');
+      expect(res.body.usage.primary.usedPercent).toBe(100);
+      // Wiring integrity: the injected reader was consulted with the query's home.
+      expect(liveCalls[liveCalls.length - 1]).toBe(codexHome);
+    } finally {
+      liveAnswer = null;
+    }
   });
 
   it('returns 200 + available:false when there is no codex data', async () => {

@@ -1257,6 +1257,14 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** Zero-spend live codex quota reader (`codex app-server` →
+   *  account/rateLimits/read), injected at composition via
+   *  buildCodexLiveUsageReader. Absent/null → GET /codex/usage stays
+   *  rollout-only — the hermetic default, so route tests never spawn a real
+   *  `codex` subprocess. */
+  codexLiveUsageReader?: ((opts?: { codexHome?: string }) => Promise<
+    import('../providers/adapters/openai-codex/observability/codexRateLimitReader.js').CodexUsageSnapshot | null
+  >) | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
   /** Bounded action-only Close-the-Loop reach for undated high/critical actions. */
   undatedActionResurfacer?: import('../monitoring/UndatedActionResurfacer.js').UndatedActionResurfacer | null;
@@ -14498,10 +14506,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? req.query.codexHome
         : undefined;
     let usage = null;
-    try {
-      usage = await readLatestCodexUsage({ codexHome });
-    } catch {
-      usage = null;
+    // Live-first (zero-spend `codex app-server` read — current even for a
+    // WALLED account that writes no rollout records); the rollout tail is the
+    // fallback. Same order as QuotaPoller; the reader arrives via composition
+    // (buildCodexLiveUsageReader), so `subscriptionPool.codexLiveQuota: false`
+    // — or a test ctx that injects none — is rollout-only.
+    if (ctx.codexLiveUsageReader) {
+      try {
+        usage = await ctx.codexLiveUsageReader({ codexHome });
+      } catch {
+        usage = null; // @silent-fallback-ok: rollout tail below is the designed fallback
+      }
+    }
+    if (!usage) {
+      try {
+        usage = await readLatestCodexUsage({ codexHome });
+      } catch {
+        usage = null;
+      }
     }
     if (!usage) {
       res.json({

@@ -1,0 +1,38 @@
+{
+  "ts": "2026-09-20T19:30:51.764Z",
+  "slug": "codex-live-quota-read",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 10,
+  "loc": 365,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/subscriptionEnums.ts",
+      "src/core/types.ts",
+      "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+      "src/providers/adapters/openai-codex/observability/codexRateLimitReader.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 356,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not a new self-triggered loop: codexLiveRateLimitReader performs ONE bounded, deadline-killed (10s, child killed on settle/timeout/error/exit) subprocess exchange per invocation, and it is invoked only by the EXISTING QuotaPoller cadence (the already-governing controller, 15-min interval, sequential per account) and the existing on-demand GET /codex/usage route. It adds no loop, no retry, no respawn, no notify — a failure returns null once and the caller falls back to the rollout reader in the same call."
+  },
+  "verdict": "blocked"
+}

@@ -159,6 +159,7 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -1040,6 +1041,12 @@ export class AgentServer {
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
+    /** Test/composition override for the zero-spend live codex quota reader.
+     *  undefined → built from config (production); null → rollout-only. Tests
+     *  inject a fake so no real `codex` subprocess ever spawns in a suite. */
+    codexLiveUsageReader?: ((opts?: { codexHome?: string }) => Promise<
+      import('../providers/adapters/openai-codex/observability/codexRateLimitReader.js').CodexUsageSnapshot | null
+    >) | null;
     /** Test seam for canonical stage-evidence resolution; production leaves undefined. */
     stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
     /** Project drift checker (Phase 1b connect-the-dots). Optional —
@@ -4346,6 +4353,12 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
+      // here — the composition root — so tests that build routes with a bare
+      // ctx stay rollout-only and never spawn a real `codex` subprocess.
+      codexLiveUsageReader: options.codexLiveUsageReader !== undefined
+        ? options.codexLiveUsageReader
+        : buildCodexLiveUsageReader(this.config.subscriptionPool),
       featureMetricsLedger: this.featureMetricsLedger,
       blockerLifecycleService: this.blockerLifecycleService,
       benchmarkDivergenceAnalyzer: this.benchmarkDivergenceAnalyzer,

@@ -365,6 +365,72 @@ describe('QuotaPoller', () => {
     expect(q.fiveHour).toBeUndefined();
   });
 
+  // ── Live-first codex read (zero-spend app-server path) ──────────────────
+  const liveSnap = (used: number) => ({
+    source: 'codex-app-server' as const, rolloutPath: '', threadId: null,
+    capturedAt: '2026-09-20T18:00:00.000Z', model: null, planType: 'pro', rateLimitReachedType: null,
+    primary: { usedPercent: used, remainingPercent: 100 - used, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+    secondary: null,
+  });
+  const rolloutSnap = (used: number) => ({
+    source: 'codex-rollout' as const, rolloutPath: '/rollout.jsonl', threadId: 't',
+    capturedAt: '2026-09-14T15:00:00.000Z', model: null, planType: 'pro', rateLimitReachedType: null,
+    primary: { usedPercent: used, remainingPercent: 100 - used, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+    secondary: null,
+  });
+
+  it('prefers the live app-server read over the rollout tail, and records its provenance', async () => {
+    let rolloutCalls = 0;
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexLiveUsageReader: async () => liveSnap(100),
+      codexUsageReader: async () => { rolloutCalls++; return rolloutSnap(86); },
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-live', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-live')!.lastQuota!;
+    // The WALLED account's live 100% wins over the stale rollout 86% — the
+    // exact case the live path exists for (a walled account writes no rollout).
+    expect(q.sevenDay?.utilizationPct).toBe(100);
+    expect(q.source).toBe('codex-app-server');
+    expect(q.measuredAt).toBe('2026-09-20T18:00:00.000Z');
+    expect(rolloutCalls).toBe(0); // no wasted disk scan when live answers
+  });
+
+  it('falls back to the rollout tail when the live read returns null OR throws', async () => {
+    const cases: Array<[string, () => Promise<never>]> = [
+      ['codex-fallback-null', (async () => null) as never],
+      ['codex-fallback-throw', (async () => { throw new Error('spawn failed'); }) as never],
+    ];
+    for (const [id, liveReader] of cases) {
+      const p = new QuotaPoller({
+        pool,
+        now: () => Date.parse('2026-09-20T18:00:00Z'),
+        codexLiveUsageReader: liveReader,
+        codexUsageReader: async () => rolloutSnap(86),
+      });
+      pool.addFixture({ ...ACCT, id, provider: 'openai', framework: 'codex-cli' });
+      await p.pollAll();
+      const q = pool.get(id)!.lastQuota!;
+      expect(q.sevenDay?.utilizationPct).toBe(86);
+      expect(q.source).toBe('codex-rollout');
+    }
+  });
+
+  it('codexLiveUsageReader: null disables the live path entirely (rollout-only rollback lever)', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexLiveUsageReader: null,
+      codexUsageReader: async () => rolloutSnap(42),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-live-off', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    expect(pool.get('codex-live-off')!.lastQuota!.sevenDay?.utilizationPct).toBe(42);
+    expect(pool.get('codex-live-off')!.lastQuota!.source).toBe('codex-rollout');
+  });
+
   // An entitlement/credits-only codex account answers the poll but reports no
   // usage window at all. That must reach the dashboard as its OWN state — a
   // blank card reading "No quota reading yet" implies a poll is still pending,
