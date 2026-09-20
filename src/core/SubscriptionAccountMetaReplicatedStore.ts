@@ -98,7 +98,7 @@ function validateQuota(v: unknown): Record<string, unknown> | null | undefined {
   if (typeof v !== 'object' || Array.isArray(v)) return null;
   const q = v as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  const knownQuota = ['fiveHour', 'sevenDay', 'fable', 'perModel', 'extraUsage', 'source', 'measuredAt'];
+  const knownQuota = ['fiveHour', 'sevenDay', 'fable', 'perModel', 'extraUsage', 'source', 'measuredAt', 'noQuotaWindow'];
   for (const k of Object.keys(q)) if (!knownQuota.includes(k)) return null; // extra key → reject
 
   for (const win of ['fiveHour', 'sevenDay', 'fable'] as const) {
@@ -137,6 +137,13 @@ function validateQuota(v: unknown): Record<string, unknown> | null | undefined {
   if (q.measuredAt !== undefined) {
     if (!isIso8601(q.measuredAt)) return null;
     out.measuredAt = q.measuredAt;
+  }
+  if (q.noQuotaWindow !== undefined) {
+    // Display-only marker ("the account answered but reports no usage window").
+    // Strict boolean like every other clamped field — a peer cannot smuggle
+    // anything else through it.
+    if (typeof q.noQuotaWindow !== 'boolean') return null;
+    out.noQuotaWindow = q.noQuotaWindow;
   }
   return out;
 }

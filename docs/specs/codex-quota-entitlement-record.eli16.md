@@ -34,6 +34,8 @@ The fix teaches the reader to tell the two kinds apart and keep the newest recor
 
 **Prevents "we have no information" from being dressed up as information.** There are now three distinct states and they stay distinct: we found a usage number; the account answered and reported no usage window; we found nothing at all. Before, the last two looked identical on screen. A missing reading is still reported as missing — the fix never fills a gap with a guess.
 
+**Prevents the new flag from breaking machine-to-machine sync.** When the same agent runs on several machines, each machine shares a small summary of its accounts with the others, and the receiving side is strict: a summary containing a field it doesn't recognise is thrown away whole. The new "reports no usage window" flag has been added to that shared vocabulary as a strict yes/no value, so a summary carrying it still crosses. A machine still running the previous release ignores such a summary until it updates — a brief stale view during a rolling update, never a wrong number.
+
 **Prevents an old number from passing as a current one.** Showing a bar with no age attached is a claim about freshness we cannot actually make. The age label makes the claim honest, and only appears once the age is big enough to matter.
 
 ## What ships when
