@@ -1064,6 +1064,18 @@ export class MessagingToneGate {
     this.configOrGetter = config;
   }
 
+  /**
+   * Optional measure-only observer (the Jev signal-layer shadow, spec
+   * docs/specs/jev-signal-layer-shadow.md). It is handed each candidate at the
+   * top of review() and is NEVER awaited: `observe` returns synchronously and
+   * never throws, so the verdict and its latency do not depend on it.
+   */
+  private signalShadow: { observe(text: string): void } | null = null;
+
+  setSignalShadow(shadow: { observe(text: string): void } | null): void {
+    this.signalShadow = shadow;
+  }
+
   /** Resolve config live each review so the kill-switch is honored without a restart. */
   private getConfig(): ToneGateConfig {
     try {
@@ -1077,6 +1089,13 @@ export class MessagingToneGate {
 
   async review(text: string, context: ToneReviewContext): Promise<ToneReviewResult> {
     const start = Date.now();
+    // Measure-only shadow: synchronous and never awaited. Guarded here too, so
+    // even a misbehaving observer can never affect a verdict.
+    try {
+      this.signalShadow?.observe(text);
+    } catch {
+      // @silent-fallback-ok — a measure-only observer failing must never touch the verdict path.
+    }
     // The router mints the decision-quality correlation id synchronously at
     // entry (before the first attempt) and hands it to this callback. Captured
     // here so an ADVISORY verdict can carry it back to the agent as
