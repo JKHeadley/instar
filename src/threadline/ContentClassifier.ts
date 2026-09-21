@@ -65,6 +65,10 @@ const BUILTIN_PATTERNS: Array<{ regex: RegExp; label: string }> = [
   { regex: /sk-[a-zA-Z0-9]{20,}/, label: 'API key (sk-* pattern)' },
   { regex: /sk-ant-api[a-zA-Z0-9-]{20,}/, label: 'Anthropic API key' },
   { regex: /ghp_[a-zA-Z0-9]{36,}/, label: 'GitHub personal access token' },
+  // Modern sk-family keys (OpenAI project/service-account/admin/None, OpenRouter)
+  // and GitHub fine-grained tokens — the patterns above miss both shapes.
+  { regex: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}/, label: 'API key (modern sk-* forms)' },
+  { regex: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{40,}/, label: 'GitHub fine-grained personal access token' },
   { regex: /gho_[a-zA-Z0-9]{36,}/, label: 'GitHub OAuth token' },
   { regex: /xoxb-[0-9]{10,}-[a-zA-Z0-9-]+/, label: 'Slack bot token' },
   { regex: /xoxp-[0-9]{10,}-[a-zA-Z0-9-]+/, label: 'Slack user token' },

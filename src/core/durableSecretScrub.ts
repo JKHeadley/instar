@@ -94,10 +94,12 @@ interface ScrubPattern {
 
 /**
  * The authoritative pattern set — the UNION of the three pre-existing copies
- * (spec Frontloaded Decision #1). ORDER MATTERS for overlap resolution: the
- * more-specific prefix patterns (anthropic before generic openai `sk-`, stripe
- * `sk_` before generic) sit earlier so the greedy first-wins overlap resolver
- * labels a span with its most-specific kind.
+ * (spec Frontloaded Decision #1). Overlap precedence is decided by the resolver,
+ * NOT by array order: overlapping spans are sorted by start position, then
+ * longest match wins; array order only breaks an exact start+end tie (stable
+ * sort). The more-specific prefix patterns still sit before the generic ones so
+ * those exact ties label a span with its most-specific kind — do not "restore"
+ * order-based precedence on the strength of an older reading of this comment.
  *
  * LINEARITY CONTRACT (spec §2): every pattern uses SINGLE quantifiers over
  * character classes with no nesting — no `(x+)+` / `(x*)*` shapes — so a
@@ -114,8 +116,20 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   { kind: 'stripe-key', regex: /sk_(?:live|test)_[A-Za-z0-9]{12,}/gd },
   // Generic provider keys: sk-/pk-/rk- prefixed (OpenAI + generic).
   { kind: 'openai-key', regex: /\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}/gd },
+  // Modern sk-family provider keys: OpenAI project / service-account / admin /
+  // None forms, and OpenRouter (sk-or-v1-). The generic pattern above cannot
+  // see these: it needs 16 unbroken alphanumerics straight after `sk-`, and each
+  // of these puts a short word and a hyphen there. Anchored by a lookbehind, not
+  // \b: \b misses an underscore-joined key (MY_KEY_sk-proj-…), while NO anchor
+  // refuses kebab slugs whose word ends in "sk" (task-proj-<long-slug>). Spec:
+  // docs/specs/outbound-credential-wall-modern-key-formats.md.
+  { kind: 'openai-key', regex: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}/gd },
   // GitHub PAT / OAuth / app tokens (ghp_/gho_/ghu_/ghs_/ghr_).
   { kind: 'github-token', regex: /\bgh[pousr]_[A-Za-z0-9]{20,}/gd },
+  // GitHub fine-grained personal access tokens (issued ~82 chars; the 40 floor
+  // sits far below real length and far above any identifier). Same anchor
+  // reasoning as the sk-family entry above.
+  { kind: 'github-token', regex: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{40,}/gd },
   // Google API keys (AIza + 35 url-safe chars).
   { kind: 'google-api-key', regex: /\bAIza[A-Za-z0-9_-]{35}/gd },
   // Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs- + segments.
@@ -132,14 +146,22 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   },
   // JWTs: three base64url segments. Known FP suspect on dotted identifiers
   // (spec rollout step 2) — surfaced per-pattern-kind in the dry-run soak.
-  { kind: 'jwt', regex: /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{16,}\b/gd },
+  // First segment capped at 1024: an uncapped `{16,}` rescans the rest of an
+  // unbroken run from EVERY word boundary inside it, which is quadratic (814 ms
+  // at 64 KB, minutes at the 1 MB scrub ceiling). The cap makes each attempt
+  // bounded and loses no detection — a JWT header segment is far shorter.
+  { kind: 'jwt', regex: /\b[A-Za-z0-9_-]{16,1024}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{16,}\b/gd },
   // Bearer tokens.
   { kind: 'bearer-token', regex: /Bearer\s+[A-Za-z0-9_\-.]{20,}/gd },
   // URLs with embedded credentials (scheme://user:pass@host) — redact the
   // credential group (group 1), keep the scheme/host structure readable.
   {
     kind: 'url-embedded-credential',
-    regex: /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gd,
+    // Scheme capped at 64: an uncapped `*` let every position in a long run
+    // start a scan to the run's end — quadratic, on the non-overridable wall
+    // (2.4 s at 64 KB). The regex still starts within 64 chars of the `://`,
+    // so every credentialed URL is still detected.
+    regex: /([a-z][a-z0-9+.-]{0,63}:\/\/)[^/\s:@]+:[^/\s@]+@/gd,
     group: undefined, // whole match replaced; the scheme is short + re-derivable
   },
   // Labelled secret pairs (token=…, api_key: …, password "…") — redact only the

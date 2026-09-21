@@ -94,7 +94,7 @@ const LEGACY_MARKER = '💬 This Threadline conversation is now tied to this top
 // appear constantly in legitimate technical conversation ("token refresh", "API key
 // rotation") — matching them would degrade most real summaries. We only block actual
 // credential-looking VALUES here, not topic vocabulary.
-const SECRET_VALUE_RE = /(sk-[A-Za-z0-9]{6,}|xox[baprs]-[A-Za-z0-9-]{6,}|gh[pousr]_[A-Za-z0-9]{6,}|AKIA[0-9A-Z]{8,}|-----BEGIN[ A-Z]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,})/;
+const SECRET_VALUE_RE = /(sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{6,}|xox[baprs]-[A-Za-z0-9-]{6,}|gh[pousr]_[A-Za-z0-9]{6,}|AKIA[0-9A-Z]{8,}|-----BEGIN[ A-Z]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,})/;
 // An assignment form ("password: hunter2", "api_key=abc123…") — only checked on RAW
 // inbound message text (the Tier-B snippet), where a literal value could be pasted.
 const SECRET_ASSIGN_RE = /(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*\S{6,}/i;

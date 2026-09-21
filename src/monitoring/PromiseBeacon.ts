@@ -489,7 +489,7 @@ function humanizeMs(ms: number): string {
  */
 function redactSecrets(excerpt: string): string {
   if (!excerpt) return '';
-  const SECRET = /\b(sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
+  const SECRET = /\b(sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
   return SECRET.test(excerpt) ? '' : excerpt;
 }
 

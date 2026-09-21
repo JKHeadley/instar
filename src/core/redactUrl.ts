@@ -37,6 +37,7 @@ const TOKEN_PATTERNS: RegExp[] = [
   /xox[baprs]-[A-Za-z0-9-]{10,}/g,        // Slack tokens
   /\d{8,10}:[A-Za-z0-9_-]{30,}/g,         // Telegram bot tokens (id:secret) — no \b: the API path form is /bot<id>:<secret>/
   /sk-[A-Za-z0-9]{20,}/g,                 // OpenAI-style keys
+  /sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}/g,  // modern sk-family (OpenAI project/svcacct/admin/None, OpenRouter)
 ];
 
 /**

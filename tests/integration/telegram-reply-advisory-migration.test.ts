@@ -523,6 +523,65 @@ describe('live-credential hard wall through POST /telegram/reply', () => {
     expect(sent).toHaveLength(0);
   });
 
+  // Modern key formats (spec: outbound-credential-wall-modern-key-formats).
+  // Keys generated at test time in the issued shape; nothing committed.
+  const modernKey = () => `sk-proj-${require('node:crypto').randomBytes(90).toString('base64url')}`;
+  const fineGrained = () => {
+    const c = require('node:crypto');
+    const an = (n: number) => c.randomBytes(n).toString('hex').slice(0, n);
+    return `github_pat_${an(22)}_${an(59)}`;
+  };
+
+  it('refuses a modern OpenAI project key and a GitHub fine-grained token', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    for (const [i, key] of [modernKey(), fineGrained()].entries()) {
+      const res = await reply(310 + i, `Here it is: ${key}`);
+      expect(res.status).toBe(422);
+      expect(res.body.blockedBy).toBe('credential-exposure-guard');
+      expect(JSON.stringify(res.body)).not.toContain(key.slice(0, 16));
+    }
+    expect(sent).toHaveLength(0);
+  });
+
+  it('refuses a key on a PROXY reply — the proxy skip bypasses tone judgment, not the wall', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await reply(312, `status ping ${modernKey()}`, { isProxy: true });
+    expect(res.status).toBe(422);
+    expect(res.body.blockedBy).toBe('credential-exposure-guard');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a clean PROXY reply still sends (the proxy path is otherwise unchanged)', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await reply(313, 'Still working on it — about two more minutes.', { isProxy: true });
+    expect(res.status).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('refuses a key in a LANED attention item — the lane bypasses tone, not the wall', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await fetch(`${server.url}/attention`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'agent:cw-lane-test',
+        title: 'Health notice',
+        summary: `Recovered the integration using ${fineGrained()}`,
+        priority: 'medium',
+        source: 'agent',
+        lane: 'agent-health',
+      }),
+    });
+    const body = await res.json().catch(() => ({})) as any;
+    expect(res.status).toBe(422);
+    expect(body.blockedBy).toBe('credential-exposure-guard');
+    expect(sent).toHaveLength(0);
+  });
+
   it('does not touch an ordinary message that merely mentions a secret by NAME', async () => {
     const sent: Array<{ topicId: number; text: string }> = [];
     server = await listen(buildApp({ toneGate: null, sent }));
