@@ -3837,6 +3837,24 @@ export interface InstarConfig {
    * migration. See src/core/LlmCircuitBreaker.ts.
    */
   intelligence?: {
+    /**
+     * Jev signal-layer shadow (docs/specs/jev-signal-layer-shadow.md). DARK by
+     * default. Measure-only: compares Jev (TypeSafe AI) against the B1–B7
+     * deterministic detectors on real tone-gate candidates and decides nothing.
+     * Inert unless enabled AND soakEndsAt is a future ISO instant AND the vault
+     * holds `typesafe_api_key`. Read live per candidate (no restart).
+     */
+    jevSignalShadow?: {
+      enabled?: boolean;
+      /** 0..1 share of candidates shadowed (default 1). */
+      sampleRate?: number;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500). */
+      timeoutMs?: number;
+      /** The mechanical soak bound: inert at or after this instant, and when null. */
+      soakEndsAt?: string | null;
+    };
     circuitBreaker?: {
       /** Master switch for the rate-limit circuit breaker (default: true). */
       enabled?: boolean;

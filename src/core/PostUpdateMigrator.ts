@@ -11724,6 +11724,21 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         : 'config.json: seeded dark Codex session lifecycle rollout gates');
     }
 
+    // Jev signal-layer shadow (docs/specs/jev-signal-layer-shadow.md): add the
+    // DARK default block when absent, so an operator can switch it on by editing
+    // one field. Existence-checked, never overwrites an operator's values.
+    {
+      const intel: Record<string, unknown> = (config.intelligence && typeof config.intelligence === 'object') ? config.intelligence as Record<string, unknown> : {};
+      if (!intel.jevSignalShadow || typeof intel.jevSignalShadow !== 'object') {
+        intel.jevSignalShadow = { enabled: false, sampleRate: 1, model: 'jev-1.13.0', timeoutMs: 1500, soakEndsAt: null };
+        config.intelligence = intel;
+        patched = true;
+        result.upgraded.push('config.json: added dark intelligence.jevSignalShadow default block');
+      } else {
+        result.skipped.push('config.json: intelligence.jevSignalShadow already present');
+      }
+    }
+
     // Auto-generate dashboardPin if missing — the dashboard should always be
     // accessible via PIN, not bearer token. Users don't need to know about tokens.
     if (!config.dashboardPin && config.authToken) {

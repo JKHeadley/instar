@@ -18219,6 +18219,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
       });
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
+      // Jev signal-layer shadow (dark by default; spec
+      // docs/specs/jev-signal-layer-shadow.md). Always constructed so the live
+      // config can switch it on without a restart; it is inert unless enabled,
+      // inside its soak window, and a vault key exists.
+      try {
+        const { buildJevSignalShadow } = await import('../core/JevSignalShadow.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        const { SecretStore } = await import('../core/SecretStore.js');
+        const shadow = buildJevSignalShadow({
+          readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+          bootBlock: config.intelligence?.jevSignalShadow,
+          readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+          stateDir: config.stateDir,
+          metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+        });
+        messagingToneGate.setSignalShadow(shadow);
+      } catch (err) {
+        console.log(pc.yellow(`  Jev signal shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+      }
     } else {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));
     }
