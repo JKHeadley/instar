@@ -161,6 +161,14 @@ An autonomous window is active only while FIVE independently observed predicates
  * exact historical stock bytes may be replaced by the current bundle; any
  * customization changes the hash and is refused. Keep this list append-only.
  */
+/**
+ * Exact SHA-256 of the canonical PREPARATION_CARRIER-era stop hook — the stock
+ * bytes deployed everywhere the preparation-carrier upgrade ran. This is the
+ * predecessor identity for the VAULT_AUTH_RESOLVE upgrade below.
+ */
+export const AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256 =
+  '72027309f142305a19f407c5bfe138dde73ab9470d7fb87e406c8040ae3ada70';
+
 export const AUTONOMOUS_STOP_HOOK_STOCK_SHA256 = [
   'af4b8a3666d10f3ea0e351798b045e04b1386aaf53e98eb966e96fade9ef6cbb',
   'b8fc09c2294a62d74d015094c4e0161418a972d468383ee58601fc4f918f7a0a',
@@ -4844,11 +4852,63 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // for anchor-compatible recent revisions so stock-derived customizations survive.
     // Older canonical stock bytes use the exact historical SHA-256 allowlist;
     // every unknown layout is refused rather than overwritten.
+    const upgradeVaultAuthResolve = (): void => {
+      // Marker bumped `PREPARATION_CARRIER` → `VAULT_AUTH_RESOLVE`: every server
+      // call in the bundled hook now resolves the bearer token vault-aware
+      // (config string first, else the encrypted vault via secret-get.mjs). On a
+      // vault-migrated agent the old inline config read printed the SecretMigrator
+      // placeholder and every hook call 403'd. Exact-stock replacement only;
+      // customized hook bytes remain untouched.
+      const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (vault-aware bearer-token resolution)';
+      try {
+        const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(deployed)) return;
+        const current = fs.readFileSync(deployed, 'utf8');
+        if (current.includes('VAULT_AUTH_RESOLVE')) return; // already current — idempotent
+        const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+        const stock = currentSha256 === AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256
+          || (AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256);
+        if (!stock) {
+          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for vault-auth upgrade)`);
+          return;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
+        if (!fs.existsSync(bundled)) {
+          result.errors.push(`${relPath} migration: bundled hook is missing`);
+          return;
+        }
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (!next.includes('VAULT_AUTH_RESOLVE')) {
+          result.errors.push(`${relPath} migration: bundled hook lacks VAULT_AUTH_RESOLVE`);
+          return;
+        }
+        const tempPath = `${deployed}.vault-auth.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          fs.writeFileSync(tempPath, next, { mode: 0o755 });
+          fs.renameSync(tempPath, deployed);
+        } finally {
+          if (fs.existsSync(tempPath)) {
+            SafeFsExecutor.safeRmSync(tempPath, {
+              force: true,
+              operation: 'PostUpdateMigrator:migrateAutonomousStopHookTopicKeyed:vault-auth-temp-cleanup',
+            });
+          }
+        }
+        result.upgraded.push(label);
+      } catch (err) {
+        result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     upgradeAutonomousHookStateParse();
     // Marker bumped `STATE_PARSE_LOUD` → `PREPARATION_CARRIER`: an inactive
     // autonomous record no longer masks the bounded continuation authority.
     // Exact-stock replacement only; customized hook bytes remain untouched.
     upgradePreparationCarrier();
+    // Marker bumped `PREPARATION_CARRIER` → `VAULT_AUTH_RESOLVE` (hook): see
+    // upgradeVaultAuthResolve above — vault-aware bearer-token resolution.
+    upgradeVaultAuthResolve();
     // setup-autonomous.sh marker bumped through `W32_PREPARING_LIVENESS`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
     // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so
@@ -4885,6 +4945,18 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'W32_PREPARING_LIVENESS',
       'SCOPE_ACCRETION',
       'skills/autonomous/scripts/setup-autonomous.sh (W32 preparation-aware active state)',
+    );
+    // Marker bumped `W32_PREPARING_LIVENESS` → `VAULT_AUTH_RESOLVE`: the bundled
+    // setup resolves the bearer token vault-aware (config string first, else the
+    // encrypted vault via secret-get.mjs) for the can-start, registration and
+    // native-goal calls, and a REFUSED registration (401/403) is LOUD — fatal on
+    // an admission-enforcing install, where an unregistered run sits "preparing"
+    // forever (the 2026-09-19 silent no-start). Customized scripts untouched.
+    upgrade(
+      '.claude/skills/autonomous/scripts/setup-autonomous.sh',
+      'VAULT_AUTH_RESOLVE',
+      'W32_PREPARING_LIVENESS',
+      'skills/autonomous/scripts/setup-autonomous.sh (vault-aware auth + loud registration refusal)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
