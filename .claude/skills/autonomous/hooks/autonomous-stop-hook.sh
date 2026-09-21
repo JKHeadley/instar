@@ -124,6 +124,26 @@ LEGACY_STATE=".instar/autonomous-state.local.md"
 MULTI_DIR=".instar/autonomous"
 LIVENESS_SECS="${INSTAR_AUTONOMOUS_LIVENESS_SECS:-120}"
 
+# ── VAULT_AUTH_RESOLVE — the server bearer token, vault-aware. config.json's
+# authToken becomes a SecretMigrator placeholder ({"secret": true}) once an
+# agent's secrets move to the encrypted vault; the old inline reads then printed
+# the literal placeholder and every server call 403'd — on an admission-enforcing
+# install the run registered nothing and sat "preparing" forever (the 2026-09-19
+# silent no-start). Prefer a real string from config; otherwise read the vault
+# via the hardened secret-get script (value to stdout only, never logged).
+resolve_auth_token() {
+  local t
+  t=$(python3 -c "import json
+try:
+ v=json.load(open('.instar/config.json')).get('authToken','')
+ print(v if isinstance(v,str) else '')
+except Exception: print('')" 2>/dev/null || echo "")
+  if [[ -n "$t" ]]; then printf '%s' "$t"; return 0; fi
+  if [[ -f .instar/scripts/secret-get.mjs ]]; then
+    node .instar/scripts/secret-get.mjs authToken 2>/dev/null || true
+  fi
+}
+
 # The sole shell adapter for bounded task continuation. The TypeScript store and
 # authenticated decision route remain the mutation/decision authority.
 continuation_decision() {
@@ -132,7 +152,7 @@ continuation_decision() {
   [[ -n "$MY_TOPIC" ]] || return 0
   local port auth agent_id decision reason
   port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-  auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  auth=$(resolve_auth_token)
   agent_id=$(python3 -c "import json;c=json.load(open('.instar/config.json'));print(c.get('projectName') or c.get('agentName') or 'local-stop-hook')" 2>/dev/null | tr -d '\r\n' || echo "local-stop-hook")
   [[ -n "$agent_id" ]] || agent_id="local-stop-hook"
   decision=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}' \
@@ -471,7 +491,7 @@ run_end_call() {
   fi
   local re_port re_auth
   re_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-  re_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  re_auth=$(resolve_auth_token)
   jq -nc --arg r "$reason" --arg id "${RUN_ID:-}" --argjson met "$re_met" --argjson terminal "$terminal" \
     --argjson configured "$re_configured" --arg outcome "$re_outcome" --arg exit "$re_exit" \
     '{reason:$r,met:$met,terminal:$terminal,realcheck:(if $configured then ({configured:true,outcome:$outcome} + (if $exit != "" then {exitCode:($exit|tonumber)} else {} end)) else {configured:false} end)} + (if $id != "" then {runId:$id} else {} end)' 2>/dev/null \
@@ -570,7 +590,7 @@ if [[ "$GOAL_MODE" == "native" ]]; then
   native_goal_clear() {
     local port auth
     port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-    auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    auth=$(resolve_auth_token)
     jq -nc --arg t "$REPORT_TOPIC" '{topicId:$t}' \
       | curl -s -m 10 -H "Authorization: Bearer $auth" -H 'Content-Type: application/json' \
         --data-binary @- "http://localhost:${port}/autonomous/native-goal/clear" >/dev/null 2>&1 || true
@@ -825,7 +845,7 @@ cd_raise_attention_item() {
   fi
   local at_port at_auth at_id at_summary
   at_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-  at_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  at_auth=$(resolve_auth_token)
   # One item per run (id keyed on topic+started_at): a re-fire within the same run
   # reuses the id so the attention store de-dups rather than piling up items.
   at_id="autonomous-hard-blocker-${REPORT_TOPIC:-none}-$(printf '%s' "${STARTED_AT:-}" | tr -cd '0-9')"
@@ -918,7 +938,7 @@ p13_stop_allowed() {
   fi
   [[ -z "$p13_tail" ]] && return 0
   p13_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-  p13_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  p13_auth=$(resolve_auth_token)
   if [[ "$CD_ENABLED" == "1" ]]; then
     local sig; sig=$(build_signals_json "$stop_kind" "false")
     p13_payload=$(jq -nc --arg t "$p13_tail" --argjson sig "$sig" '{transcriptTail:$t, signals:$sig}')
@@ -1037,7 +1057,7 @@ realcheck_raise_attention() {
   fi
   local at_port at_auth at_id
   at_port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-  at_auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  at_auth=$(resolve_auth_token)
   at_id="autonomous-realcheck-stuck-${REPORT_TOPIC:-none}-$(printf '%s' "${STARTED_AT:-}" | tr -cd '0-9')"
   jq -nc \
     --arg id "$at_id" \
@@ -1222,7 +1242,7 @@ run_verification() {
   #    authToken literal + a generic Bearer token.
   local rc_leak=0 rc_auth_val
   if [[ "$(hb_leak_hit "$rc_utf8")" == "1" ]]; then rc_leak=1; fi
-  rc_auth_val=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  rc_auth_val=$(resolve_auth_token)
   if [[ $rc_leak -eq 0 ]] && [[ -n "$rc_auth_val" ]] && printf '%s' "$rc_utf8" | grep -qF "$rc_auth_val" 2>/dev/null; then rc_leak=1; fi
   if [[ $rc_leak -eq 0 ]] && printf '%s' "$rc_utf8" | grep -qE 'Bearer [A-Za-z0-9._-]{20,}' 2>/dev/null; then rc_leak=1; fi
   if [[ $rc_leak -eq 1 ]]; then
@@ -1458,7 +1478,7 @@ if [[ "${CD_BLOCK_TERMINAL:-}" != "true" ]] && [[ -n "$COMPLETION_CONDITION" ]] 
       | jq -r '.message.content | map(select(.type=="text")) | map(.text) | join("\n")' 2>/dev/null \
       | tail -c 8000 || echo "")
     EVAL_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-    EVAL_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+    EVAL_AUTH=$(resolve_auth_token)
     # SCOPE_ACCRETION — echo topicId/runId/sessionId so the server resolves the
     # run against its OWN registration record (R35 arming; R36 registered-
     # condition authority; §6 runId pair check). Empty fields are omitted.
