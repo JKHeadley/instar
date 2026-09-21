@@ -47,6 +47,8 @@ const REDACT_PATTERNS: RegExp[] = [
   /(password|passwd|secret|token)\s*[:=]\s*\S+/gi,
   /sk-[A-Za-z0-9]{20,}/g,
   /ghp_[A-Za-z0-9]{36}/g,
+  /sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}/g,
+  /github_pat_[A-Za-z0-9_]{40,}/g,
   /gho_[A-Za-z0-9]{36}/g,
   /xox[baprs]-[A-Za-z0-9\-]+/g,
   /AKIA[0-9A-Z]{16}/g,

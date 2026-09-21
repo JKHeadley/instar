@@ -33,7 +33,7 @@ export interface GuardResult {
 const RAW_TELEGRAM_TOKEN = /^\d{8,10}:[A-Za-z0-9_-]{30,}$/;
 
 /** A GitHub/Slack/OpenAI token shape, for the raw-token-on-cli guard. */
-const RAW_OTHER_TOKEN = /^(gh[posru]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,})$/;
+const RAW_OTHER_TOKEN = /^(gh[posru]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}|sk-[A-Za-z0-9]{20,})$/;
 
 /** True if `value` looks like a raw secret token (must NOT be accepted on argv). */
 export function isRawToken(value: string): boolean {

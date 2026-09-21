@@ -131,18 +131,42 @@ export interface OutboundCredentialDetection {
  */
 export const MAX_SCAN_BYTES = 1_000_000;
 
+/**
+ * Invisible interleave characters stripped before the wall scans. The `u` flag
+ * is load-bearing: without it `\p{Cf}` compiles but silently matches the literal
+ * text "p{Cf}". Covers the Unicode format category (zero-width family, U+2060,
+ * U+FEFF, directional marks, the soft hyphen U+00AD) plus the two invisible
+ * classes that live OUTSIDE Cf in Mn: the combining grapheme joiner U+034F and
+ * variation selectors U+FE00-U+FE0F.
+ *
+ * Only the wall strips. The durable scrubber must NOT: its redaction spans are
+ * offsets into the original text, and stripping would corrupt them. The wall
+ * returns only a boolean + kind, so it is free to normalise.
+ */
+const INVISIBLE_INTERLEAVE = /[\p{Cf}\u034F\uFE00-\uFE0F]/gu;
+
 export function detectOutboundCredential(text: string): OutboundCredentialDetection {
   if (!text) return { detected: false };
+  // The size bound is checked on the RAW length, before normalising, so an
+  // oversize input still fails closed exactly as before.
   if (text.length > MAX_SCAN_BYTES) return { detected: true, kind: 'oversize-unscannable' };
   try {
-    for (const pattern of DURABLE_SECRET_PATTERNS) {
-      if (!HARD_WALL_CREDENTIAL_KINDS.has(pattern.kind)) continue;
-      // The shared patterns carry the /g flag, so lastIndex is stateful across
-      // calls on a shared RegExp object. Reset before every test.
-      pattern.regex.lastIndex = 0;
-      if (pattern.regex.test(text)) {
+    // Scan the RAW text and, when it differs, the stripped text. Raw-only would
+    // miss a key interleaved with invisible characters; stripped-only would
+    // miss a key an invisible character was SEPARATING from a preceding letter
+    // (`ENV<ZWSP>ghp_…`: raw has a word boundary, stripped glues it shut).
+    const stripped = text.replace(INVISIBLE_INTERLEAVE, '');
+    const variants = stripped === text ? [text] : [text, stripped];
+    for (const scanned of variants) {
+      for (const pattern of DURABLE_SECRET_PATTERNS) {
+        if (!HARD_WALL_CREDENTIAL_KINDS.has(pattern.kind)) continue;
+        // The shared patterns carry the /g flag, so lastIndex is stateful across
+        // calls on a shared RegExp object. Reset before every test.
         pattern.regex.lastIndex = 0;
-        return { detected: true, kind: pattern.kind };
+        if (pattern.regex.test(scanned)) {
+          pattern.regex.lastIndex = 0;
+          return { detected: true, kind: pattern.kind };
+        }
       }
     }
   } catch {

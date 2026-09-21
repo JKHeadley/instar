@@ -337,6 +337,25 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
     expect(sent).toHaveLength(0);
   });
 
+  it('the wall refuses the MODERN key formats on the real boot (sk-proj-, github_pat_)', async () => {
+    // Generated in the issued shape at test time — nothing committed.
+    const c = await import('node:crypto');
+    const keys = [
+      `sk-proj-${c.randomBytes(90).toString('base64url')}`,
+      `github_pat_${c.randomBytes(11).toString('hex')}_${c.randomBytes(30).toString('hex').slice(0, 59)}`,
+    ];
+    for (const [i, key] of keys.entries()) {
+      const res = await request(app)
+        .post(`/telegram/reply/${9010 + i}`)
+        .set({ Authorization: `Bearer ${AUTH}` })
+        .send({ text: `the key is ${key}` });
+      expect(res.status).toBe(422);
+      expect(res.body.blockedBy).toBe('credential-exposure-guard');
+      expect(JSON.stringify(res.body)).not.toContain(key.slice(0, 16));
+    }
+    expect(sent).toHaveLength(0);
+  });
+
   it('a clean message DOES send on the same boot (the wall is not a blanket refusal)', async () => {
     const res = await request(app)
       .post('/telegram/reply/9003')

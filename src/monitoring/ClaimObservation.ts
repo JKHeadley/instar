@@ -150,7 +150,7 @@ export function prepareClaimObservation(message: string, evidence: TurnEvidence)
   let serial = 0;
   const placeholder = (kind: string): string => `[REDACTED_${kind}_${String(++serial).padStart(2, '0')}]`;
   const redact = (value: string): string => value
-    .replace(/(?:gh[pousr]_[A-Za-z0-9]{20,}|\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b\d{6,12}:[A-Za-z0-9_-]{30,}\b|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b)/gi,
+    .replace(/(?:(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{40,}|gh[pousr]_[A-Za-z0-9]{20,}|\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b\d{6,12}:[A-Za-z0-9_-]{30,}\b|\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b)/gi,
       () => placeholder('SECRET'))
     .replace(/https?:\/\/[^\s)\]}]+/gi, () => placeholder('URL'))
     .replace(/(?:^|\s)(?:\/[A-Za-z0-9._-]+){2,}/g, (match) => `${match.startsWith(' ') ? ' ' : ''}${placeholder('PATH')}`)

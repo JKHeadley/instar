@@ -3439,6 +3439,27 @@ export function createRoutes(ctx: RouteContext): Router {
     return { ok: true };
   }
 
+  /**
+   * The live-credential wall ALONE, for the send paths that deliberately skip the
+   * full outbound authority (proxy/system-template replies, Agent-Health-lane
+   * attention items). Those skips exist to bypass tone/jargon JUDGMENT; they
+   * were never meant to bypass the one non-overridable check, which previously
+   * lived only inside `evaluateOutbound`. Same 422 body as the in-funnel wall.
+   * Returns true when it refused (response already written).
+   * Spec: docs/specs/outbound-credential-wall-modern-key-formats.md.
+   */
+  function refuseIfCredential(text: string, res: ExpressResponse): boolean {
+    const cred = detectOutboundCredential(text);
+    if (!cred.detected || !cred.kind) return false;
+    res.status(422).json({
+      error: credentialGuardMessage(cred.kind),
+      blockedBy: 'credential-exposure-guard',
+      credentialKind: cred.kind,
+      overridable: false,
+    });
+    return true;
+  }
+
   async function evaluateOutbound(
     text: string,
     channel: string,
@@ -16634,6 +16655,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // relaying). The holder is the single Telegram owner and the correct place to
     // gate. (Direct, non-relay sends still gate locally — unchanged.)
     const willRelay = typeof ctx.telegram.willRelay === 'function' && ctx.telegram.willRelay();
+    // The proxy/system-template skip below bypasses tone judgment, not the
+    // credential wall. (A willRelay hand-off is walled by the lease holder's
+    // own receive path, which re-enters the full authority.)
+    if ((isProxy || isSystemTemplate) && refuseIfCredential(text, res)) return;
     if (!isProxy && !isSystemTemplate && !willRelay) {
       if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
@@ -17941,6 +17966,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // construction, so they bypass the per-topic outbound gate (which exists to
     // suppress jargon/no-CTA topic spawns). Skipping it here prevents a
     // well-formed lane heads-up from being silently 422'd and never delivered.
+    // The lane skips the per-topic tone/jargon authority below, but never the
+    // live-credential wall.
+    if (lane && refuseIfCredential(candidate, res)) return;
     if (!lane) {
       const blocked = await checkOutboundMessage(candidate, 'telegram', res, {
         messageKind: isHealthAlert ? 'health-alert' : 'reply',

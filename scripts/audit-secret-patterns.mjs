@@ -23,6 +23,7 @@ export const AUDIT_SECRET_PATTERNS = [
   { name: 'github-oauth', re: /\bgho_[A-Za-z0-9]{36,}\b/ },
   { name: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
   { name: 'openai-key', re: /\bsk-[A-Za-z0-9]{20,}\b/ },
+  { name: 'openai-key-modern', re: /\bsk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{32,}/ },
   { name: 'anthropic-key', re: /\bsk-ant-[A-Za-z0-9-]{20,}\b/ },
   { name: 'google-api-key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { name: 'private-key-block', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/ },
