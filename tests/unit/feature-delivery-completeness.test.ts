@@ -124,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
       '### Telegram message origin',
+      '### Jev Job-Completion Audit', // jev-job-supervision: the dark observe-only audit card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       // duplicate-session-standdown: both audiences (capability + the muzzled
       // session's behavioral contract) ship via generateClaudeMd AND a
       // content-sniffed migrateClaudeMd entry — full template↔migrator parity.

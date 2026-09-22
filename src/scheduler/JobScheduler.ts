@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { parseInstrumentAssessment } from '../core/InstrumentAssessment.js';
+import type { JevJobCompletionAudit } from './JevJobCompletionAudit.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -1400,6 +1401,7 @@ export class JobScheduler {
       const rawOutput = [stdout, stderr].filter(Boolean).join('\n');
       const output = rawOutput.slice(-1000);
       const lastAssessment = parseInstrumentAssessment(rawOutput) ?? undefined;
+      const startedAtMs = Date.parse(this.state.getJobState(job.slug)?.lastRun ?? '') || Date.now();
       // Charter clause 1(c): durable job state is saved BEFORE the run-history
       // completion is recorded, matching the model-session and wake-reaper paths.
       // A crash between the two must never leave a completed run pointing at
@@ -1414,6 +1416,14 @@ export class JobScheduler {
         nextScheduled: this.getNextRun(job.slug),
       });
       this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
+      try {
+        this.jevAudit?.capture({
+          runId, slug: job.slug, goal: job.description ?? job.slug, result: 'success',
+          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects,
+          completionAudit: job.completionAudit, workDir: path.dirname(this.stateDir),
+          startedAtMs, instrumentAssessment: lastAssessment,
+        });
+      } catch { /* @silent-fallback-ok — the audit must never break completion handling. */ }
       this.clearFailureAlertState(job.slug);
       this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
@@ -1439,6 +1449,15 @@ export class JobScheduler {
         nextScheduled: this.getNextRun(job.slug),
       });
       this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
+      try {
+        this.jevAudit?.capture({
+          runId, slug: job.slug, goal: job.description ?? job.slug, result,
+          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects,
+          completionAudit: job.completionAudit, workDir: path.dirname(this.stateDir),
+          startedAtMs: Date.parse(previous?.lastRun ?? '') || Date.now(),
+          instrumentAssessment: lastAssessment,
+        });
+      } catch { /* @silent-fallback-ok — the audit must never break completion handling. */ }
       void this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
       this.releaseClaim(job.slug, 'failure');
       this.scheduleRetry(job.slug, 'error');
@@ -1759,6 +1778,16 @@ export class JobScheduler {
   /**
    * Called when a job's session completes. Updates job state and notifies via messenger.
    */
+  /** Observe-only Jev completion audit (spec: jev-job-supervision.md).
+   * Optional; capture() is fire-and-forget and never awaited. */
+  private jevAudit: JevJobCompletionAudit | null = null;
+  setJevAudit(audit: JevJobCompletionAudit | null): void {
+    this.jevAudit = audit;
+  }
+  getJevAudit(): JevJobCompletionAudit | null {
+    return this.jevAudit;
+  }
+
   async notifyJobComplete(sessionId: string, tmuxSession: string): Promise<void> {
     // Find which job this session belongs to by looking up session state
     const session = this.state.getSession(sessionId);
@@ -1806,6 +1835,24 @@ export class JobScheduler {
       }
 
       this.activeRunIds.delete(session.name);
+
+      // Jev completion audit CAPTURE — bounded sync work, everything else
+      // detached; strictly BEFORE the IntegrationGate await below (tested
+      // ordering invariant; spec jev-job-supervision.md §A).
+      try {
+        this.jevAudit?.capture({
+          runId,
+          slug: job.slug,
+          goal: job.description ?? job.slug,
+          result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
+          trigger: session.triggeredBy,
+          output,
+          declaredEffects: job.declaredEffects,
+          completionAudit: job.completionAudit,
+          workDir: path.dirname(this.stateDir),
+          startedAtMs: Date.parse(existingState?.lastRun ?? '') || Date.now(),
+        });
+      } catch { /* @silent-fallback-ok — the audit must never break completion handling. */ }
     }
 
     // Signal claim completion (Phase 4C — Gap 5; WS4.3 journal-lease cutover).

@@ -271,6 +271,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+
+  // POST /jev-audit/batch — the Jev job-completion audit batch
+  // (jev-job-supervision spec). Writes ONLY this machine's evidence packs
+  // (state/jev-supervision-evidence), verdict rows (logs/) and retention
+  // sweep; each machine audits its own scheduler's runs by design.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/jev-audit/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'observe-only research rows about THIS machine\'s scheduler runs; nothing consumes them on any decision path, so no cross-machine convergence is needed',
+    },
+  });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // ── Jobs-as-agent.md mutation surface (dashboard Phase 4) ────────────────

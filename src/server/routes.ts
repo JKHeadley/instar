@@ -19689,6 +19689,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /jev-audit/batch — one batch pass of the Jev job-completion audit
+  // (spec: docs/specs/jev-job-supervision.md §B). The `jev-completion-audit`
+  // built-in job drives the cadence. Observe-only: audits evidence packs and
+  // writes verdict rows; decides nothing. Also runs the retention sweep.
+  // There is deliberately NO read surface for the rows (machine-local files).
+  // @write-domain:machine-local — writes only this machine's evidence packs,
+  // verdict rows and retention sweep; each machine audits its own scheduler.
+  router.post('/jev-audit/batch', async (_req, res) => {
+    const audit = ctx.scheduler?.getJevAudit();
+    if (!audit) {
+      res.status(503).json({ error: 'jev job-completion audit not constructed on this agent' });
+      return;
+    }
+    try {
+      const sweep = await audit.sweepRetention();
+      const result = await audit.runBatch();
+      res.json({ ...result, retentionRemoved: sweep.removed });
+    } catch (err) {
+      res.status(500).json({ error: `jev-audit batch failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
   // POST /decision-quality/grade-pass — the deterministic grading pass the
   // hourly llm-decision-grading job triggers (§5.5). Body `{}` (all knobs come
   // from config). Walks NEW decision rows since the durable per-decision-point

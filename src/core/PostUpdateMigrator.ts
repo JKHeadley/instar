@@ -35,6 +35,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
+import { jevJobCompletionAuditAwareness } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6316,6 +6317,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram origin detector health awareness');
     }
 
+    if (!content.includes('### Jev Job-Completion Audit')) {
+      content += jevJobCompletionAuditAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev job-completion audit awareness card');
+    }
+
     if (!content.includes('Queued-message review pacing:')) {
       content += '\n' + telegramOriginRecoveryAwareness();
       patched = true;
@@ -10503,6 +10510,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Telegram message origin',
+      // Jev job-completion audit: framework-agnostic server behavior (capture
+      // happens in the scheduler), so a Codex/Gemini agent must be able to
+      // explain it honestly too — especially that it is dark by default.
+      '### Jev Job-Completion Audit',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
@@ -11808,6 +11819,20 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         result.upgraded.push('config.json: added dark intelligence.jevSignalShadow default block');
       } else {
         result.skipped.push('config.json: intelligence.jevSignalShadow already present');
+      }
+    }
+
+    // Jev job-completion audit (docs/specs/jev-job-supervision.md): add the
+    // DARK default block when absent. Existence-checked, never overwrites.
+    {
+      const intel: Record<string, unknown> = (config.intelligence && typeof config.intelligence === 'object') ? config.intelligence as Record<string, unknown> : {};
+      if (!intel.jevJobCompletionAudit || typeof intel.jevJobCompletionAudit !== 'object') {
+        intel.jevJobCompletionAudit = { enabled: false, model: 'jev-1.13.0', timeoutMs: 2500, soakEndsAt: null, dailyCallCap: 1500, batchIntervalHours: 6 };
+        config.intelligence = intel;
+        patched = true;
+        result.upgraded.push('config.json: added dark intelligence.jevJobCompletionAudit default block');
+      } else {
+        result.skipped.push('config.json: intelligence.jevJobCompletionAudit already present');
       }
     }
 
