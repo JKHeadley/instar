@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Session, IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
-import { SessionActivitySentinel } from '../../src/monitoring/SessionActivitySentinel.js';
+import { SessionActivitySentinel, DIGEST_LLM_TIMEOUT_MS } from '../../src/monitoring/SessionActivitySentinel.js';
 import { EpisodicMemory } from '../../src/memory/EpisodicMemory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -294,6 +294,10 @@ describe('SessionActivitySentinel', () => {
       const call = intelligence._calls[0];
       expect(call.options?.model).toBe('fast');
       expect(call.options?.temperature).toBe(0.3);
+      // Background digests must not ride the provider's 30s default: on Codex
+      // they take ~30s, and a timeout discards input tokens already spent.
+      expect(call.options?.timeoutMs).toBe(DIGEST_LLM_TIMEOUT_MS);
+      expect(DIGEST_LLM_TIMEOUT_MS).toBeGreaterThan(30_000);
     });
 
     it('includes session name and job in LLM prompt', async () => {
@@ -482,6 +486,9 @@ describe('SessionActivitySentinel', () => {
       const synthesis = memory.getSynthesis('session-1');
       expect(synthesis).not.toBeNull();
       expect(synthesis!.sessionId).toBe('session-1');
+      // Both the digest and the synthesis calls carry the explicit budget.
+      expect(intelligence._calls.length).toBeGreaterThanOrEqual(2);
+      for (const c of intelligence._calls) expect(c.options?.timeoutMs).toBe(DIGEST_LLM_TIMEOUT_MS);
     });
 
     it('returns report with zero digests for empty sessions', async () => {
