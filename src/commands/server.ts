@@ -14447,10 +14447,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       store: pendingLoginStore,
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       // WS5.2 §5.3/S7 — the follow-me completion gate reads the minted login's account email
-      // from its config-home slot (the Anthropic OAuth profile endpoint) and validates it against
-      // operator expectation before the account is selectable. Same oracle the credential-location
-      // ledger uses; one process-wide oracle keeps identity evidence coherent.
-      oracle: credentialIdentityOracle,
+      // from its config-home slot and validates it against operator expectation before the
+      // account is selectable.
+      //
+      // This MUST be the COMPOSITE oracle. `CredentialIdentityOracle` speaks only the Anthropic
+      // OAuth profile endpoint, so handed a Codex home it returns `unavailable` — the gate then
+      // sees no email and holds every Codex enrollment forever with `missing-completed-email`,
+      // no matter how many times it is retried. That is precisely the failure
+      // CompositeCredentialIdentityOracle was introduced to end (it reads the Codex `auth.json`
+      // id_token locally), but the wizard was never switched over to it. Observed live: a Codex
+      // credential written correctly, `codex login status` reporting logged-in, and the account
+      // still refused registration.
+      oracle: subscriptionIdentityOracle,
       // A HELD follow-me completion (surprise/mismatched/unverifiable email) raises a HIGH
       // attention item for the operator. Map the email-gate's {id,title,body,priority,source}
       // shape onto the telegram attention-queue createAttentionItem shape.
@@ -14524,6 +14532,36 @@ export async function startServer(options: StartOptions): Promise<void> {
           // source of truth — see there for why a framework with no verified
           // isolation var gets NONE rather than a misleading one.
           const isolationEnv = enrollmentIsolationEnv(framework, configHome);
+          // The per-account config home must EXIST before the login runs. `codex`
+          // exits immediately when CODEX_HOME points at a missing directory, so a
+          // first-time enrollment (whose slot has never been created) died in under
+          // a second and the scraper then watched a dead pane until its timeout,
+          // reporting the misleading `login artifact not found`. Verified on a live
+          // machine: same command, missing dir → instant exit; dir created first →
+          // prints the verification URL + code. Creating it here covers every
+          // enrollment path because they all spawn through this one callback.
+          //
+          // TWO BOUNDS, both deliberate:
+          //  - Only when this framework HAS an isolation var. `enrollmentIsolationEnv`
+          //    returns {} for a framework with no verified isolation variable (gemini-cli,
+          //    pi-cli), whose login writes to the AMBIENT home — creating the allocated
+          //    slot there would leave a permanently empty directory that never receives a
+          //    credential. Same principle as the mapping itself: no isolation var, no slot.
+          //  - Only an ABSOLUTE path. `POST /subscription-pool/enroll` takes `configHome`
+          //    straight from the request body, so without this the SERVER would recursively
+          //    create a caller-named relative path against its own cwd. The child CLI might
+          //    have created that path anyway, but that is the CLI's choice at its own
+          //    privilege — not the server doing it unconditionally, before anything else
+          //    validates the value.
+          if (configHome && Object.keys(isolationEnv).length > 0 && path.isAbsolute(configHome)) {
+            try {
+              fs.mkdirSync(configHome, { recursive: true, mode: 0o700 });
+            } catch (err) {
+              throw new Error(
+                `could not create the login config home ${configHome}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
           const env = { ...isolationEnv, ...enrollmentBrowserEnv(openBrowser) };
           const prefix = Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
           const cmd = prefix ? `env ${prefix} ${baseCmd}` : baseCmd;
