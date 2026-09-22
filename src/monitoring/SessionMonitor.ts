@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionRecovery, RecoveryResult } from './SessionRecovery.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface SessionMonitorConfig {
   /** Enable the session monitor (default: true) */
@@ -112,7 +113,7 @@ export class SessionMonitor extends EventEmitter {
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
     this.deps = deps;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
     this.loadCtxNotified();
   }
 

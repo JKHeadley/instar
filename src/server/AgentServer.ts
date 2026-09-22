@@ -253,6 +253,7 @@ import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubs
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -271,10 +272,7 @@ export function readMentorConfigFromDisk(
     if (!parsed.mentor || typeof parsed.mentor !== 'object' || Array.isArray(parsed.mentor)) {
       return fallback;
     }
-    return {
-      ...DEFAULT_MENTOR_CONFIG,
-      ...(parsed.mentor as Partial<MentorConfig>),
-    };
+    return mergeDefaults(DEFAULT_MENTOR_CONFIG, (parsed.mentor as Partial<MentorConfig>));
   } catch {
     return fallback;
   }
@@ -5404,10 +5402,7 @@ export class AgentServer {
 
   /** Snapshot of mentee config for the receiver-wiring installer. */
   private getMenteeConfigSnapshot(): MenteeConfig {
-    return {
-      ...DEFAULT_MENTEE_CONFIG,
-      ...((this.config as unknown as { mentee?: Partial<MenteeConfig> }).mentee ?? {}),
-    };
+    return mergeDefaults(DEFAULT_MENTEE_CONFIG, ((this.config as unknown as { mentee?: Partial<MenteeConfig> }).mentee ?? {}));
   }
 
   /**
@@ -5427,10 +5422,7 @@ export class AgentServer {
 
   /** Snapshot of mentor config for use outside the runner's getConfig closure. */
   private getMentorConfigSnapshot(): MentorConfig {
-    return {
-      ...DEFAULT_MENTOR_CONFIG,
-      ...((this.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}),
-    };
+    return mergeDefaults(DEFAULT_MENTOR_CONFIG, ((this.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}));
   }
 
   /**
@@ -5489,10 +5481,7 @@ export class AgentServer {
     options: { config: { stateDir?: string }; intelligence?: import('../core/types.js').IntelligenceProvider | null },
     serverDataDir: string,
   ): MentorOnboardingRunner {
-    const startupMentorConfig: MentorConfig = {
-      ...DEFAULT_MENTOR_CONFIG,
-      ...((options.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}),
-    };
+    const startupMentorConfig: MentorConfig = mergeDefaults(DEFAULT_MENTOR_CONFIG, ((options.config as unknown as { mentor?: Partial<MentorConfig> }).mentor ?? {}));
     const getConfig = (): MentorConfig => readMentorConfigFromDisk(options.config.stateDir, startupMentorConfig);
     const intelligence = options.intelligence ?? null;
     const self = this;

@@ -1,3 +1,4 @@
+import { mergeDefaults } from './mergeDefaults.js';
 /**
  * OscillationBreaker — the F6 oscillation brake for the seamless orchestrator
  * (spec: llm-seamlessness-orchestrator.md §F6 + Tier-1 "oscillation breaker blacklists + raises one item").
@@ -40,7 +41,7 @@ export class OscillationBreaker {
   private readonly blacklistedUntil = new Map<number, number>();
 
   constructor(config?: Partial<OscillationBreakerConfig>, now?: () => number) {
-    this.cfg = { ...DEFAULT_OSCILLATION_CONFIG, ...config };
+    this.cfg = mergeDefaults(DEFAULT_OSCILLATION_CONFIG, config);
     this.now = now ?? (() => Date.now());
   }
 

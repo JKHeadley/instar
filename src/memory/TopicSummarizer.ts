@@ -18,6 +18,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_TOPIC_SUMMARIZE } from '../data/provenanceCoverage.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export const TOPIC_SUMMARIZER_PROMPT_ID = 'topic-summarize-v1';
 
@@ -160,7 +161,7 @@ export class TopicSummarizer {
   ) {
     this.intelligence = intelligence;
     this.topicMemory = topicMemory;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**

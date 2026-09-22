@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from './IdentityStore.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -236,10 +237,7 @@ export class FileClassifier {
       ...DEFAULT_LOCKFILE_PATTERNS,
       ...(config.extraLockfilePatterns ?? []),
     ];
-    this.regenCommands = {
-      ...DEFAULT_REGEN_COMMANDS,
-      ...(config.extraRegenCommands ?? {}),
-    };
+    this.regenCommands = mergeDefaults(DEFAULT_REGEN_COMMANDS, (config.extraRegenCommands ?? {}));
     this.binaryExtensions = new Set([
       ...DEFAULT_BINARY_EXTENSIONS,
       ...(config.extraBinaryExtensions ?? []),

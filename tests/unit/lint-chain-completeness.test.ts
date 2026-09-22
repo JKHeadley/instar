@@ -42,6 +42,10 @@ const REQUIRED_LINTS = [
   // the inverse check caught that I had not, which is the ratchet working on
   // the author who wrote the previous entry's note about exactly this.
   'lint-framework-list-completeness.mjs',
+  // 2026-09-21 (wedge-sentinel-undefined-tick): refuses `{ ...DEFAULTS, ...cfg }`
+  // merges that let an undefined value erase a default — the mechanism behind
+  // ContextWedgeSentinel's ~1ms scan loop. Registered in the same change.
+  'lint-no-undefined-erasing-default-merge.js',
   // Not a `lint-*` name — which is exactly why the first version of the inverse check
   // could not see it, and why it was unprotected.
   'check-codex-rule1-drift.js',

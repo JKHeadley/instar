@@ -43,6 +43,7 @@
 import type { Session } from '../core/types.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
 import { buildReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface ReapEvent {
   session: Pick<Session, 'name' | 'tmuxSession'>;
@@ -201,7 +202,7 @@ export class ReapNotifier {
 
   constructor(deps: ReapNotifierDeps, opts?: Partial<ReapNotifierOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_REAP_NOTIFIER_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_REAP_NOTIFIER_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

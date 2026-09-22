@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/mergeDefaults.ts",
+      "reason": "Pure shallow defaults-merge helper (no I/O, no state, no delivery logic) reached only through the excluded SessionLivenessOracle.ts; outside Stage-B canaried delivery behavior and covered by its own unit tests (tests/unit/core/mergeDefaults.test.ts)"
+    },
+    {
       "file": "src/core/AgentRegistryPaths.ts",
       "reason": "Shared agent registry path/test-isolation utility reached through excluded Config.ts; outside Stage-B canaried delivery behavior, with unchanged default registry location and separate registry-path tests"
     },

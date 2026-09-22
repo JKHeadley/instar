@@ -23,6 +23,7 @@
 
 import { EventEmitter } from 'node:events';
 import { matchMcpSignature, type McpProcessSignature } from './mcpProcessSignatures.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface McpProcessReaperConfig {
   enabled: boolean;
@@ -176,7 +177,7 @@ export class McpProcessReaper extends EventEmitter {
   constructor(deps: McpProcessReaperDeps, cfg?: Partial<McpProcessReaperConfig>) {
     super();
     this.deps = deps;
-    this.cfg = { ...DEFAULT_MCP_PROCESS_REAPER_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_MCP_PROCESS_REAPER_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

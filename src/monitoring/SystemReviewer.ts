@@ -22,6 +22,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -251,12 +252,10 @@ export class SystemReviewer extends EventEmitter {
 
   constructor(config: Partial<SystemReviewerConfig>, deps: SystemReviewerDeps) {
     super();
-    // Strip undefined values so DEFAULT_SYSTEM_REVIEWER_CONFIG defaults are preserved.
-    // Spreading { disabledProbes: undefined } would override the default [] causing TypeError.
-    const cleanConfig = Object.fromEntries(
-      Object.entries(config).filter(([, v]) => v !== undefined),
-    ) as Partial<SystemReviewerConfig>;
-    this.config = { ...DEFAULT_SYSTEM_REVIEWER_CONFIG, ...cleanConfig };
+    // mergeDefaults skips undefined values, so DEFAULT_SYSTEM_REVIEWER_CONFIG's
+    // defaults survive — spreading { disabledProbes: undefined } over them once
+    // erased the default [] and caused a TypeError (the class mergeDefaults closes).
+    this.config = mergeDefaults(DEFAULT_SYSTEM_REVIEWER_CONFIG, config);
     this.deps = deps;
     this.historyFile = path.join(deps.stateDir, 'review-history.jsonl');
     this.deadLetterFile = path.join(deps.stateDir, 'doctor-dead-letter.jsonl');

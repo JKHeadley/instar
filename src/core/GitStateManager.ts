@@ -17,6 +17,7 @@ import { SafeGitExecutor } from './SafeGitExecutor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { GitStateConfig, GitLogEntry, GitStatus } from './types.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 const ALLOWED_REMOTE_SCHEMES = [
   /^https:\/\//,
@@ -104,7 +105,7 @@ export class GitStateManager {
 
   constructor(stateDir: string, config?: Partial<GitStateConfig>) {
     this.stateDir = path.resolve(stateDir);
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**

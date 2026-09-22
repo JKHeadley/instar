@@ -19,6 +19,7 @@
  */
 
 import type { BoundarySignal } from './EpisodicMemory.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -84,7 +85,7 @@ export class ActivityPartitioner {
   private readonly config: ActivityPartitionerConfig;
 
   constructor(config?: Partial<ActivityPartitionerConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**

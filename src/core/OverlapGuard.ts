@@ -11,6 +11,7 @@
  */
 
 import type { WorkLedger, OverlapWarning, OverlapTier, LedgerEntry } from './WorkLedger.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ export class OverlapGuard {
     this.workLedger = config.workLedger;
     this.machineId = config.machineId;
     this.userId = config.userId;
-    this.notification = { ...DEFAULT_NOTIFICATION, ...config.notification };
+    this.notification = mergeDefaults(DEFAULT_NOTIFICATION, config.notification);
     this.oppositionPatterns = config.oppositionPatterns ?? DEFAULT_OPPOSITION_PATTERNS;
     this.onAlert = config.onAlert;
     this.onBlock = config.onBlock;

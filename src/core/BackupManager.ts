@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -224,8 +225,7 @@ export class BackupManager {
       new Set<string>([...DEFAULT_CONFIG.includeFiles, ...userIncludes]),
     );
     this.config = {
-      ...DEFAULT_CONFIG,
-      ...config,
+      ...mergeDefaults(DEFAULT_CONFIG, config),
       includeFiles: mergedIncludes,
     };
     this.isSessionActive = isSessionActive;

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export interface CodexTaskContinuationConfig {
   enabled?: boolean;
@@ -127,7 +128,7 @@ export class CodexTaskContinuationStore {
 
   constructor(stateDir: string, config: CodexTaskContinuationConfig = {}) {
     this.root = path.join(stateDir, 'continuation');
-    this.cfg = { ...DEFAULTS, ...config };
+    this.cfg = mergeDefaults(DEFAULTS, config);
   }
 
   get enabled(): boolean { return this.cfg.enabled; }

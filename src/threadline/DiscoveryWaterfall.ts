@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * DiscoveryWaterfall — Three-tier agent discovery.
  *
@@ -101,7 +102,7 @@ export class DiscoveryWaterfall {
     const startTime = Date.now();
     const limit = options.limit ?? 10;
     const skipStages = new Set(options.skipStages ?? []);
-    const timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    const timeouts = mergeDefaults(DEFAULT_TIMEOUTS, options.timeouts);
 
     const allAgents: DiscoveredAgent[] = [];
     const stages: DiscoveryResult['stages'] = [];

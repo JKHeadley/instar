@@ -11,6 +11,7 @@ import { CREDENTIAL_SHARE_OP, type AgentTrustManager, type AgentTrustLevel } fro
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { PAIR_VERIFY_OP, processPairVerifyReceipt } from './PairVerifyReceipt.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -427,10 +428,7 @@ export class InboundMessageGate {
   }
 
   private getRateLimits(trust: AgentTrustLevel) {
-    return {
-      ...DEFAULT_RATE_LIMITS[trust],
-      ...this.config.rateLimits?.[trust],
-    };
+    return mergeDefaults(DEFAULT_RATE_LIMITS[trust], this.config.rateLimits?.[trust]);
   }
 
   /**

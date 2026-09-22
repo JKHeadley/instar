@@ -37,6 +37,7 @@
 import type { PendingRelayRow, DeliveryState } from '../messaging/pending-relay-store.js';
 import { parseReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface ReapNoticeDrainStore {
   selectClaimableReapNotices(nowIso: string, limit?: number): PendingRelayRow[];
@@ -114,7 +115,7 @@ export class ReapNoticeDrain {
 
   constructor(deps: ReapNoticeDrainDeps, opts?: Partial<ReapNoticeDrainOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_REAP_NOTICE_DRAIN_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_REAP_NOTICE_DRAIN_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

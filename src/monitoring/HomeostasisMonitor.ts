@@ -21,6 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ export class HomeostasisMonitor {
           sessionStartTimestamp: parsed.sessionStartTimestamp ?? new Date().toISOString(),
           totalPauses: parsed.totalPauses ?? 0,
           totalCommits: parsed.totalCommits ?? 0,
-          thresholds: { ...DEFAULT_THRESHOLDS, ...parsed.thresholds },
+          thresholds: mergeDefaults(DEFAULT_THRESHOLDS, parsed.thresholds),
           history: parsed.history ?? [],
         };
       } catch {

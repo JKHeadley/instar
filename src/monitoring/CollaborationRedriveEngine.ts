@@ -34,6 +34,7 @@ import type { CommitmentTracker, Commitment } from './CommitmentTracker.js';
 import type { CompletionEvaluator } from '../core/CompletionEvaluator.js';
 import type { ThreadlineClient } from '../threadline/client/ThreadlineClient.js';
 import type { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Public types ──────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ export class CollaborationRedriveEngine {
   private escalationLogCache: Record<string, string> | null = null;
 
   constructor(deps: CollaborationRedriveDeps, cfg: Partial<CollaborationRedriveConfig> = {}) {
-    this.cfg = { ...DEFAULT_REDRIVE_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_REDRIVE_CONFIG, cfg);
     this.deps = deps;
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? {

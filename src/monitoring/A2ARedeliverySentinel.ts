@@ -22,6 +22,7 @@
  */
 
 import type { A2ADeliveryTracker, A2ADeliveryEntry } from '../threadline/A2ADeliveryTracker.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** A redelivery attempt: re-send the message body to the peer. Returns whether
  *  the transport accepted it. Resolving false (or throwing) leaves the message
@@ -87,7 +88,7 @@ export class A2ARedeliverySentinel {
   private timer: NodeJS.Timeout | null = null;
 
   constructor(deps: A2ARedeliveryDeps, cfg: Partial<A2ARedeliveryConfig> = {}) {
-    this.cfg = { ...DEFAULT_A2A_REDELIVERY_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_A2A_REDELIVERY_CONFIG, cfg);
     this.deps = deps;
     this.now = deps.now ?? (() => Date.now());
     this.log = deps.log ?? {

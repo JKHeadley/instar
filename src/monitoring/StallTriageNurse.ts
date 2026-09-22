@@ -34,6 +34,7 @@ import type {
   TriageDeps,
   ProcessInfo,
 } from './StallTriageNurse.types.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // Re-export types for convenience
 export type {
@@ -216,8 +217,7 @@ export class StallTriageNurse extends EventEmitter {
       ? resolveModelId(tierResolved)
       : tierResolved;
     this.config = {
-      ...DEFAULT_CONFIG,
-      ...opts?.config,
+      ...mergeDefaults(DEFAULT_CONFIG, opts?.config),
       framework: mergedFramework,
       model: finalModel,
     };

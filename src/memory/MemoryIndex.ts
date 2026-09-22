@@ -28,6 +28,7 @@ import type {
 } from '../core/types.js';
 import { chunkMarkdown, chunkJson, chunkJsonl } from './Chunker.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -99,7 +100,7 @@ export class MemoryIndex {
 
   constructor(stateDir: string, config?: Partial<MemorySearchConfig>) {
     this.stateDir = path.resolve(stateDir);
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
     this.dbPath = path.isAbsolute(this.config.dbPath)
       ? this.config.dbPath
       : path.join(this.stateDir, this.config.dbPath);
