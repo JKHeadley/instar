@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * closeoutLivenessSnapshot.ts — the machine-local liveness snapshot that backs
  * the post-transfer closeout's liveness gate (Part C of
@@ -148,7 +149,7 @@ export class CloseoutLivenessSnapshot {
 
   constructor(deps: SnapshotDeps, cfg?: Partial<SnapshotConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_SNAPSHOT_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_SNAPSHOT_CONFIG, (cfg ?? {}));
   }
 
   /** The staleness bound: 2× the refresh cadence (ms). */

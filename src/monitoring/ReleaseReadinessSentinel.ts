@@ -39,6 +39,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** Parsed subset of `analyze-release.js --json` the sentinel needs. */
 export interface AnalyzerReport {
@@ -174,7 +175,7 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     cfg: ReleaseReadinessSentinelConfig = {},
   ) {
     super();
-    this.cfg = { ...DEFAULTS, ...cfg };
+    this.cfg = mergeDefaults(DEFAULTS, cfg);
   }
 
   start(): void {

@@ -41,6 +41,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { evidenceEligible, clampWorkEvidence, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type ResumePriorityClass = 'interactive' | 'job' | 'other';
 
@@ -257,7 +258,7 @@ export class ResumeQueue {
 
   constructor(deps: ResumeQueueDeps, cfg?: Partial<ResumeQueueConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_RESUME_QUEUE_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_RESUME_QUEUE_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     const stateRoot = path.join(deps.stateDir, 'state');
     this.statePath = path.join(stateRoot, 'resume-queue.json');

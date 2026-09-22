@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * OutboundContentDedup — suppress the agent re-sending the SAME conversational
  * reply to the same topic within a window.
@@ -94,7 +95,7 @@ export class OutboundContentDedup {
     now: () => number = Date.now,
     store: import('./OutboundDedupStore.js').OutboundDedupStore | null = null,
   ) {
-    this.cfg = { ...DEFAULTS, ...cfg };
+    this.cfg = mergeDefaults(DEFAULTS, cfg);
     this.now = now;
     this.store = store;
   }

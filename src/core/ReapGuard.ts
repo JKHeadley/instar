@@ -25,6 +25,7 @@
 
 import type { Session } from './types.js';
 import type { WorkEvidenceName } from './WorkEvidence.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export type ReapConfidence = 'high' | 'low';
 
@@ -88,7 +89,7 @@ export class ReapGuard {
 
   constructor(deps: ReapGuardDeps, opts?: Partial<ReapGuardOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_REAP_GUARD_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_REAP_GUARD_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

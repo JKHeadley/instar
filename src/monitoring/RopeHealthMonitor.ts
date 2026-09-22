@@ -54,6 +54,7 @@ import {
   parseTailscaleStatus,
   soonestKeyExpiry,
 } from '../core/tailscaleStatusParser.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type RopeHealthCondition = 'ok' | 'degraded' | 'peer-offline' | 'auth-rejected' | 'urgent' | 'unknown';
 
@@ -332,7 +333,7 @@ export class RopeHealthMonitor {
 
   constructor(deps: RopeHealthMonitorDeps, cfg?: Partial<RopeHealthMonitorConfig>) {
     this.d = deps;
-    this.cfg = { ...ROPE_HEALTH_DEFAULTS, ...cfg };
+    this.cfg = mergeDefaults(ROPE_HEALTH_DEFAULTS, cfg);
     this.loadState();
   }
 

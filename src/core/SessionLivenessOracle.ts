@@ -1,3 +1,4 @@
+import { mergeDefaults } from './mergeDefaults.js';
 /**
  * SessionLivenessOracle — the single, tri-state answer to "is this tmux session
  * alive?" for every autonomous session killer.
@@ -121,7 +122,7 @@ export class SessionLivenessOracle {
 
   constructor(deps: SessionLivenessOracleDeps, cfg?: Partial<SessionLivenessOracleConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_LIVENESS_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_LIVENESS_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

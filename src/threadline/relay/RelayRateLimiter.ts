@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 /**
  * RelayRateLimiter — Rate limiting for the relay server.
  *
@@ -40,7 +41,7 @@ export class RelayRateLimiter {
   private readonly nowFn: () => number;
 
   constructor(config?: Partial<RelayRateLimitConfig>, nowFn?: () => number) {
-    this.config = { ...DEFAULTS, ...config };
+    this.config = mergeDefaults(DEFAULTS, config);
     this.nowFn = nowFn ?? (() => Date.now());
   }
 

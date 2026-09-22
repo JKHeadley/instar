@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -96,7 +97,7 @@ export class RateLimiter {
     this.threadlineDir = path.join(options.stateDir, 'threadline');
     fs.mkdirSync(this.threadlineDir, { recursive: true });
     this.filePath = path.join(this.threadlineDir, 'rate-limits.json');
-    this.config = { ...DEFAULT_RATE_LIMITS, ...options.config };
+    this.config = mergeDefaults(DEFAULT_RATE_LIMITS, options.config);
     this.nowFn = options.nowFn ?? (() => Date.now());
     this.windows = new Map();
     this.loadFromDisk();

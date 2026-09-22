@@ -29,6 +29,7 @@ import type { BotParameters, OriginDisplaySettings, OriginLimits, OriginPlatform
 import type { OriginSessionRegistry } from './OriginSessionRegistry.js';
 import type { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
 import type { AdmissionResult, ClaimInput, ClaimResult, ClaimFence, EvidenceReceipt, OriginAdmission, OutcomeInput, OutcomeWriteResult, StoredOriginInput, OriginAuditRecord, OriginListQuery, OriginListPage, OriginMetrics } from './StoreTypes.js';
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 export interface OriginServiceStore {
   getOperation?(operationId: string): Promise<OriginAuditRecord | null>;
@@ -104,7 +105,7 @@ export class TelegramOriginService {
   #heldBytes = 0;
   #lastMetrics: OriginMetrics | null = null;
   constructor(readonly options: OriginServiceOptions) {
-    this.#limits = { ...DEFAULT_ORIGIN_LIMITS, ...options.limits };
+    this.#limits = mergeDefaults(DEFAULT_ORIGIN_LIMITS, options.limits);
     for (const n of Object.values(this.#limits)) if (!Number.isSafeInteger(n) || n <= 0) throw new Error('origin: positive finite limits required');
     this.registerAutomationProducer('telegram-server');
   }

@@ -31,6 +31,7 @@ import { RegistryStore } from './RegistryStore.js';
 import { RegistryAuth } from './RegistryAuth.js';
 import type { RegistryEntry, RegistrySearchParams } from './RegistryStore.js';
 import type { MessageEnvelope } from './types.js';
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 type ResolvedRelayServerConfig = Omit<Required<RelayServerConfig>, 'rateLimitConfig' | 'a2aRateLimitConfig' | 'offlineQueueConfig' | 'abuseDetectorConfig'> & {
   rateLimitConfig?: Partial<import('./RelayRateLimiter.js').RelayRateLimitConfig>;
@@ -74,7 +75,7 @@ export class RelayServer {
   private readonly registryAgentRateLimits = new Map<string, { count: number; resetAt: number }>();
 
   constructor(config?: Partial<RelayServerConfig>) {
-    this.config = { ...DEFAULTS, ...config };
+    this.config = mergeDefaults(DEFAULTS, config);
     const relayId = config?.relayId ?? `relay-threadline-${Date.now().toString(36)}`;
     const dataDir = config?.registryDataDir ?? './data';
 

@@ -23,6 +23,7 @@ import type {
 } from './StallTriageNurse.types.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { unknownAutomationAuthor, type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ export class TriageOrchestrator extends EventEmitter {
     super();
     this.deps = deps;
     this.state = opts?.state ?? null;
-    this.config = { ...DEFAULT_CONFIG, ...opts?.config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, opts?.config);
 
     // Ensure evidence directory exists
     try {

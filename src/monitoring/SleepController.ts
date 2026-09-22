@@ -15,6 +15,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** Live inputs sampled once per tick. All timestamps are epoch ms. */
 export interface SleepInput {
@@ -207,7 +208,7 @@ export class SleepController {
     private readonly deps: SleepControllerDeps,
     private readonly opts: SleepControllerOptions & { tickIntervalMs?: number },
   ) {
-    this.thresholds = { ...DEFAULT_SLEEP_THRESHOLDS, ...(opts.thresholds ?? {}) };
+    this.thresholds = mergeDefaults(DEFAULT_SLEEP_THRESHOLDS, (opts.thresholds ?? {}));
   }
 
   /** Begin ticking on the configured cadence. No-op when not enabled (the audit

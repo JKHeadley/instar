@@ -176,3 +176,47 @@ describe('ContextWedgeSentinel — end-to-end through SentinelNotifier', () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+// ── Regression (2026-09-21): production cfg shape must not spin the scan loop ──
+// server.ts passes `{ enabled, tickIntervalMs: wedgeCfg.tickIntervalMs,
+// confirmWindowMs: wedgeCfg.confirmWindowMs }` where wedgeCfg is the operator's
+// `monitoring.contextWedgeSentinel` (shipped as `{ "enabled": true }`), so both
+// timing keys arrive undefined. The buggy build ran the loop every ~1ms.
+describe('ContextWedgeSentinel wiring — scan cadence with the shipped config shape', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('captures each live session once per 20s through buildContextWedgeDeps', async () => {
+    let captures = 0;
+    const surface: SentinelSessionSurface = {
+      captureOutput: () => { captures++; return 'working normally'; },
+      isSessionAlive: () => true,
+      sendKey: () => true,
+      listRunningSessions: () => [
+        { tmuxSession: 's1' }, { tmuxSession: 's2' }, { tmuxSession: 's3' },
+      ],
+    };
+    const wedgeCfg: { enabled: boolean; tickIntervalMs?: number; confirmWindowMs?: number } = { enabled: true };
+    const sentinel = new ContextWedgeSentinel(
+      buildContextWedgeDeps({
+        sessions: surface,
+        escalate: async () => {},
+        autoRecovery: { enabled: false, dryRun: true },
+        freshRespawn: async () => true,
+      }),
+      {
+        enabled: wedgeCfg.enabled,
+        tickIntervalMs: wedgeCfg.tickIntervalMs,
+        confirmWindowMs: wedgeCfg.confirmWindowMs,
+      },
+    );
+    sentinel.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(captures).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(captures).toBe(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(captures).toBe(12);
+    sentinel.stop();
+  });
+});

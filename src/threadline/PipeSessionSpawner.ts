@@ -24,6 +24,7 @@ import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.
 import { buildHeadlessLaunch } from '../core/frameworkSessionLaunch.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { boundedHead, boundedTail } from '../core/boundedInput.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /**
  * Bound on the joined thread history handed to the summarizer.
@@ -295,8 +296,7 @@ export class PipeSessionSpawner {
 
   constructor(config: Partial<PipeSessionConfig> & { stateDir: string }) {
     this.config = {
-      ...DEFAULT_CONFIG,
-      ...config,
+      ...mergeDefaults(DEFAULT_CONFIG, config),
       tmpDir: config.tmpDir || path.join(config.stateDir, 'tmp'),
     };
 

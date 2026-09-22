@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from '../core/IdentityStore.js';
 import type { InstarConfig, FileViewerConfig } from '../core/types.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
@@ -373,10 +374,7 @@ async function appendAuditLog(
 export function createFileRoutes(options: { config: InstarConfig; liveConfig?: { set(path: string, value: unknown): void } }): Router {
   const router = Router();
   const projectDir = options.config.projectDir;
-  const config: FileViewerConfig = {
-    ...DEFAULT_FILE_VIEWER_CONFIG,
-    ...options.config.dashboard?.fileViewer,
-  };
+  const config: FileViewerConfig = mergeDefaults(DEFAULT_FILE_VIEWER_CONFIG, options.config.dashboard?.fileViewer);
 
   const liveConfig = options.liveConfig ?? null;
 

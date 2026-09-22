@@ -40,6 +40,7 @@ import {
   type WorkingSetManifestResult,
 } from './WorkingSetManifest.js';
 import type { OwnAutonomousRuns } from './CoherenceJournalReader.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Wire shapes ─────────────────────────────────────────────────────
 
@@ -347,7 +348,7 @@ export class WorkingSetPuller {
    * staggered drain, and pending-pull filing off `needsPendingPull`.
    */
   async pullTopic(topic: number): Promise<PullReport> {
-    const caps = { ...DEFAULT_WORKING_SET_CAPS, ...this.d.caps };
+    const caps = mergeDefaults(DEFAULT_WORKING_SET_CAPS, this.d.caps);
     const report: PullReport = { topic, files: [], assembledBytes: 0, needsPendingPull: false };
 
     let first: ServeResult;

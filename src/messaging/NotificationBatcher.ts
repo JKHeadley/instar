@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { requireDeliverySink, reportDeliverySinkFailure } from './DeliverySinkFailure.js';
 import { composeAutomationAuthors, unknownAutomationAuthor, type OriginAutomationAuthor } from './telegram-origin/OriginAutomationAuthor.js';
 import { TelegramOriginHoldError } from './telegram-origin/types.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type NotificationTier = 'IMMEDIATE' | 'SUMMARY' | 'DIGEST';
 
@@ -224,7 +225,7 @@ export class NotificationBatcher {
   private foldedItems = 0;
 
   constructor(config?: Partial<BatcherConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   setSendFunction(sendFn: SendFunction, options: { supportsLogicalIds?: boolean } = {}): void {

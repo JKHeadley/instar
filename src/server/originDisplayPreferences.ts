@@ -7,6 +7,7 @@ import { topicDisplayRevision } from '../core/TopicProfileStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { resolveOriginDisplay } from '../messaging/telegram-origin/OriginPresentation.js';
 import { validateProfileFields } from '../core/topicProfileValidation.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 const revision = (value: string) => createHash('sha256').update(value).digest('hex');
 /** The existing config-file authority, narrowed to cosmetic bits and operator proof.
@@ -59,7 +60,7 @@ export function mountOriginDisplayPreferences(router: Router, ctx: RouteContext)
       } else {
         const current = read();
         if (current.revision !== body.revision) { res.status(409).json({ error: 'settings-changed-refresh-required' }); return; }
-        const { version: _resolvedVersion, ...display } = resolveOriginDisplay({ ...current.defaults, ...validated.patch.messageOriginDisplay });
+        const { version: _resolvedVersion, ...display } = resolveOriginDisplay(mergeDefaults(current.defaults, validated.patch.messageOriginDisplay));
         current.telegram.messageOrigin = { ...current.telegram.messageOrigin, display };
         const temporary = `${current.file}.${randomUUID()}.tmp`;
         try {

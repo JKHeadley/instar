@@ -28,6 +28,7 @@ import type { MemoryEntity, ScoredEntity } from '../core/types.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { rankWorkingSet, topicIntentToWorkingSet, playbookManifestToWorkingSet, type WorkingSetItem } from './WorkingSet.js';
 import { estimateTokens } from './Chunker.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -122,7 +123,7 @@ export class WorkingMemoryAssembler {
     this.episodicMemory = config.episodicMemory;
     this.topicIntentStore = config.topicIntentStore;
     this.stateDir = config.stateDir;
-    this.budgets = { ...DEFAULT_BUDGETS, ...config.tokenBudgets };
+    this.budgets = mergeDefaults(DEFAULT_BUDGETS, config.tokenBudgets);
   }
 
   /**
