@@ -45,6 +45,7 @@ import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
 } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
+import { JsonlUsageIndex } from './JsonlUsageIndex.js';
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -69,7 +70,19 @@ export interface CollectorConfig {
     enabled: boolean;
     /** Directory where Claude Code stores project JSONL files */
     claudeProjectsDir?: string;
+    /**
+     * Max transcript bytes the built-in incremental index reads per poll
+     * (default 256 MiB). Only used when no usageTotalsSource is wired.
+     */
+    maxBytesPerPass?: number;
   };
+  /**
+   * Token-total source for the fallback estimate: returns total billed tokens
+   * at or after `sinceMs`, or null when unavailable. Production wires the
+   * TokenLedger (an incremental SQLite index over the same transcripts) via
+   * setUsageTotalsSource(), so the fallback never reads transcript files itself.
+   */
+  usageTotalsSource?: UsageTotalsSource;
   /** Retry configuration for API calls */
   retry?: Partial<RetryConfig>;
   /** Max concurrent API calls for multi-account polling (default: 2) */
@@ -80,6 +93,17 @@ export interface CollectorConfig {
   staleAfterMs?: number;
   /** Custom fetch function (for testing) */
   fetchFn?: typeof globalThis.fetch;
+}
+
+/** Total billed tokens at or after `sinceMs`, or null when the source is unavailable. */
+export type UsageTotalsSource = (sinceMs: number) => number | null;
+
+/** Parse the `retry-after: N` hint carried in OAuth error messages (seconds). */
+export function parseRetryAfterSeconds(message: string): number | null {
+  const m = message.match(/retry-after[:\s]+(\d+)/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 const DEFAULT_RETRY: RetryConfig = {
@@ -204,10 +228,16 @@ export class RetryHelper {
         // Calculate backoff delay
         let delayMs = config.baseDelayMs * Math.pow(2, attempt);
 
-        // Check for Retry-After hint
-        const retryAfterMatch = lastError.message.match(/retry-after[:\s]+(\d+)/i);
-        if (retryAfterMatch) {
-          delayMs = Math.max(delayMs, parseInt(retryAfterMatch[1], 10) * 1000);
+        // Check for Retry-After hint. When the server asks us to wait longer
+        // than we are willing to sleep, retrying early is futile and only
+        // prolongs the rate limit — surface the error so the caller can back
+        // off for the full window instead.
+        const retryAfterSec = parseRetryAfterSeconds(lastError.message);
+        if (retryAfterSec !== null) {
+          if (retryAfterSec * 1000 > config.maxDelayMs) {
+            throw lastError;
+          }
+          delayMs = Math.max(delayMs, retryAfterSec * 1000);
         }
 
         // Apply jitter
@@ -557,6 +587,11 @@ export class QuotaCollector extends EventEmitter {
   private oauthBackoffUntil: number | null = null;
   private static readonly OAUTH_429_TRIP_COUNT = 3;
   private static readonly OAUTH_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
+  /** Upper bound on an honored retry-after window (guards a bogus huge value). */
+  private static readonly OAUTH_MAX_RETRY_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
+  private usageTotalsSource: UsageTotalsSource | null;
+  private jsonlIndex: JsonlUsageIndex | null = null;
+  private reportedNoFallbackSource = false;
 
   constructor(
     provider: CredentialProvider | null,
@@ -574,6 +609,7 @@ export class QuotaCollector extends EventEmitter {
       ...config,
     };
     this.retryConfig = { ...DEFAULT_RETRY, ...config.retry };
+    this.usageTotalsSource = config.usageTotalsSource ?? null;
     this.budget = new RequestBudget(this.config.requestBudgetPer5Min);
     this.limiter = new ConcurrencyLimiter(this.config.concurrencyLimit);
     this.poller = new AdaptivePoller();
@@ -711,7 +747,19 @@ export class QuotaCollector extends EventEmitter {
           let breakerJustTripped = false;
           if (is429) {
             this.oauthConsecutive429s++;
-            if (this.oauthConsecutive429s >= QuotaCollector.OAUTH_429_TRIP_COUNT) {
+            // Honor an explicit retry-after window immediately: re-polling inside
+            // it can only extend the rate limit. (retry-after: 0 is a blip and
+            // falls through to the consecutive-count breaker below.)
+            const retryAfterSec = parseRetryAfterSeconds(msg);
+            if (retryAfterSec !== null && retryAfterSec > 0) {
+              const waitMs = Math.min(retryAfterSec * 1000, QuotaCollector.OAUTH_MAX_RETRY_AFTER_MS);
+              this.oauthBackoffUntil = Math.max(this.oauthBackoffUntil ?? 0, Date.now() + waitMs);
+              breakerJustTripped = true;
+              errors.push(
+                `OAuth rate-limited (429, retry-after ${retryAfterSec}s) — ` +
+                `pausing OAuth for ${Math.round(waitMs / 60000)} minutes`,
+              );
+            } else if (this.oauthConsecutive429s >= QuotaCollector.OAUTH_429_TRIP_COUNT) {
               this.oauthBackoffUntil = Date.now() + QuotaCollector.OAUTH_BACKOFF_MS;
               const backoffMin = Math.round(QuotaCollector.OAUTH_BACKOFF_MS / 60000);
               breakerJustTripped = true;
@@ -753,7 +801,7 @@ export class QuotaCollector extends EventEmitter {
       // Step 3: JSONL fallback if OAuth failed/disabled
       if (!result.success && this.config.jsonlFallback?.enabled !== false) {
         try {
-          const jsonlResult = this.collectFromJsonl();
+          const jsonlResult = await this.collectFromJsonl(errors);
           if (jsonlResult) {
             result = {
               ...result,
@@ -959,37 +1007,78 @@ export class QuotaCollector extends EventEmitter {
 
   // ── Private: JSONL Fallback ──────────────────────────────────────
 
-  private collectFromJsonl(): QuotaState | null {
-    const projectsDir = this.getJsonlDir();
-    if (!fs.existsSync(projectsDir)) return null;
+  /**
+   * Wire the token-total source for the fallback estimate (production: the
+   * TokenLedger, built later in AgentServer). Once set, the fallback reads no
+   * transcript files itself.
+   */
+  setUsageTotalsSource(source: UsageTotalsSource | null): void {
+    this.usageTotalsSource = source;
+  }
 
-    // Look at files from the last 7 days
+  /** True when a usage-totals source (e.g. the TokenLedger) is wired. */
+  hasUsageTotalsSource(): boolean {
+    return this.usageTotalsSource !== null;
+  }
+
+  /**
+   * Estimated weekly usage from the last 7 days of transcript token totals.
+   *
+   * Never blocks the event loop (incident 2026-09-22 — the old synchronous
+   * full rescan froze the server for 30-80s per poll while OAuth was 429'd):
+   *  1. A wired usageTotalsSource (TokenLedger) answers with one indexed query.
+   *  2. Otherwise the built-in JsonlUsageIndex reads only newly appended bytes,
+   *     asynchronously and within a per-pass byte budget. A pass that has not
+   *     caught up yet yields NO estimate rather than an undercount.
+   */
+  private async collectFromJsonl(errors: string[]): Promise<QuotaState | null> {
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const files = JsonlParser.findFiles(projectsDir, sevenDaysAgo);
-    if (files.length === 0) return null;
+    let totalBilled: number | null;
 
-    const windowStart = new Date(sevenDaysAgo);
-    const windowEnd = new Date();
-    let totalCounts: JsonlTokenCounts = {
+    if (this.usageTotalsSource) {
+      totalBilled = this.usageTotalsSource(sevenDaysAgo);
+      if (totalBilled === null) {
+        errors.push('JSONL fallback: usage ledger unavailable');
+        return null;
+      }
+    } else {
+      const projectsDir = this.getJsonlDir();
+      if (!fs.existsSync(projectsDir)) return null;
+      if (!this.jsonlIndex) {
+        this.jsonlIndex = new JsonlUsageIndex({
+          claudeProjectsDir: projectsDir,
+          maxBytesPerPass: this.config.jsonlFallback?.maxBytesPerPass,
+        });
+      }
+      const pass = await this.jsonlIndex.update(sevenDaysAgo);
+      if (!pass.complete) {
+        errors.push(
+          `JSONL fallback: transcript index still catching up (${Math.round(pass.bytesRead / 1048576)} MiB read this pass) — no estimate yet`,
+        );
+        if (!this.reportedNoFallbackSource) {
+          this.reportedNoFallbackSource = true;
+          DegradationReporter.getInstance().report({
+            feature: 'QuotaCollector.collect.jsonlFallback',
+            primary: 'Estimate quota from the token ledger',
+            fallback: 'Building an incremental transcript index across several polls',
+            reason: 'No token ledger wired; the transcript index has not caught up yet',
+            impact: 'No estimated quota reading until the index catches up (OAuth readings unaffected)',
+          });
+        }
+        return null;
+      }
+      totalBilled = pass.totals.totalBilled;
+    }
+
+    if (!totalBilled) return null;
+
+    const estimatedPercent = JsonlParser.estimateUtilization({
       inputTokens: 0,
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
-      totalBilled: 0,
-    };
-
-    for (const file of files) {
-      const counts = JsonlParser.parseFile(file, windowStart, windowEnd);
-      totalCounts.inputTokens += counts.inputTokens;
-      totalCounts.outputTokens += counts.outputTokens;
-      totalCounts.cacheCreationTokens += counts.cacheCreationTokens;
-      totalCounts.cacheReadTokens += counts.cacheReadTokens;
-      totalCounts.totalBilled += counts.totalBilled;
-    }
-
-    if (totalCounts.totalBilled === 0) return null;
-
-    const estimatedPercent = JsonlParser.estimateUtilization(totalCounts);
+      totalBilled,
+    });
 
     return {
       usagePercent: estimatedPercent,
@@ -1106,4 +1195,27 @@ export class QuotaCollector extends EventEmitter {
     await Promise.all(tasks);
     return snapshots;
   }
+}
+
+/**
+ * Point a QuotaCollector's estimated-usage reading (used while OAuth is
+ * unavailable) at the TokenLedger's 7-day totals.
+ * Returns true when wired. Both sides are optional: a missing collector (non-
+ * Claude framework) or ledger (init failed) leaves the collector on its
+ * built-in incremental index.
+ */
+export function wireQuotaCollectorToTokenLedger(
+  collector: QuotaCollector | null,
+  ledger: { summary(opts: { sinceMs?: number }): { totalTokens: number } } | null,
+): boolean {
+  if (!collector || !ledger) return false;
+  collector.setUsageTotalsSource((sinceMs) => {
+    try {
+      return ledger.summary({ sinceMs }).totalTokens;
+    } catch {
+      // @silent-fallback-ok — a closed/failed ledger yields null; collect() records "usage ledger unavailable" in errors
+      return null;
+    }
+  });
+  return true;
 }

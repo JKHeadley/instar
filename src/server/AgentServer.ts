@@ -159,6 +159,7 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { wireQuotaCollectorToTokenLedger } from '../monitoring/QuotaCollector.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
@@ -1378,6 +1379,11 @@ export class AgentServer {
           // The poller drives pruneToRetention on a sub-cadence; a no-op while disabled.
           retention: options.config.storage?.retention?.tokenLedger,
         });
+        // The quota collector's fallback estimate (used while the OAuth usage
+        // endpoint is failing/rate-limited) reads 7-day totals from this ledger
+        // with one indexed query instead of re-reading every transcript itself —
+        // the synchronous rescan that froze the server on 2026-09-22.
+        wireQuotaCollectorToTokenLedger(options.quotaManager?.collector ?? null, this.tokenLedger);
       }
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);

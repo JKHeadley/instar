@@ -360,7 +360,14 @@ describe('QuotaManager E2E Lifecycle', () => {
       return { ok: false, status: 401, headers: new Map(), json: async () => ({}) } as unknown as Response;
     });
 
-    const collector = new QuotaCollector(provider, tracker, { fetchFn: mockFetch });
+    // Hermetic fallback source: never scan the real ~/.claude/projects from a
+    // test (the incremental index also yields via setImmediate, which fake
+    // timers would freeze). The high 7-day total (~93% estimated) means it is
+    // the estimated-confidence gate, not a low reading, that prevents migration.
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: mockFetch,
+      usageTotalsSource: () => 7_000_000_000,
+    });
     const migrator = new SessionMigrator({ stateDir: tmpDir });
     const notifier = new QuotaNotifier(tmpDir);
     notifier.configure(vi.fn(async () => {}), null);
@@ -373,6 +380,7 @@ describe('QuotaManager E2E Lifecycle', () => {
     );
 
     await manager.refresh();
+    expect(tracker.getState()?.source).toBe('claude-jsonl');
 
     // Migration should NOT be called since data source is estimated/JSONL
     expect(migrateSpy).not.toHaveBeenCalled();

@@ -22,6 +22,8 @@ import {
   JsonlParser,
   QuotaCollector,
   classifyToken,
+  parseRetryAfterSeconds,
+  wireQuotaCollectorToTokenLedger,
 } from '../../src/monitoring/QuotaCollector.js';
 import { ClaudeConfigCredentialProvider } from '../../src/monitoring/CredentialProvider.js';
 import { QuotaTracker } from '../../src/monitoring/QuotaTracker.js';
@@ -117,6 +119,31 @@ describe('RetryHelper', () => {
       RetryHelper.withRetry(fn, { ...DEFAULT_RETRY_CONFIG(), maxRetries: 3, baseDelayMs: 1 }),
     ).rejects.toThrow('401');
     expect(fn).toHaveBeenCalledTimes(1); // No retry
+  });
+
+  it('throws immediately (no sleep, no retry) when retry-after exceeds maxDelayMs', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('OAuth usage returned 429 retry-after: 1809'));
+    const started = Date.now();
+    await expect(
+      RetryHelper.withRetry(fn, { ...DEFAULT_RETRY_CONFIG(), maxRetries: 3, baseDelayMs: 1, maxDelayMs: 30_000 }),
+    ).rejects.toThrow('429');
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('still retries when retry-after fits within maxDelayMs', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error('OAuth usage returned 429 retry-after: 0'))
+      .mockResolvedValue('ok');
+    const result = await RetryHelper.withRetry(fn, { ...DEFAULT_RETRY_CONFIG(), maxRetries: 3, baseDelayMs: 1 });
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('parseRetryAfterSeconds reads the hint and returns null when absent', () => {
+    expect(parseRetryAfterSeconds('OAuth usage returned 429 retry-after: 753')).toBe(753);
+    expect(parseRetryAfterSeconds('Retry-After 12')).toBe(12);
+    expect(parseRetryAfterSeconds('OAuth usage returned 500')).toBeNull();
   });
 
   it('calculates exponential backoff delay', () => {
@@ -818,5 +845,174 @@ describe('QuotaCollector', () => {
       expect(collector.getBudgetStatus().oauthCircuitBreaker.consecutive429s).toBe(0);
       expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(false);
     });
+  });
+});
+
+// ── Non-blocking fallback + retry-after (incident 2026-09-22) ─────────
+
+describe('QuotaCollector — retry-after honoring and non-blocking fallback', () => {
+  let tmpDir: string;
+  let provider: ClaudeConfigCredentialProvider;
+  let tracker: QuotaTracker;
+
+  const assistantLine = (tokens: number) => JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(Date.now() - 60_000).toISOString(),
+    message: { role: 'assistant', usage: { input_tokens: tokens, output_tokens: 0 } },
+  });
+
+  const fetch429 = (retryAfter: string) => vi.fn(async () => ({
+    ok: false,
+    status: 429,
+    headers: new Map([['retry-after', retryAfter]]),
+    json: async () => ({}),
+  } as unknown as Response));
+
+  beforeEach(async () => {
+    tmpDir = createTmpDir();
+    const credDir = path.join(tmpDir, 'claude-config');
+    fs.mkdirSync(credDir, { recursive: true });
+    provider = new ClaudeConfigCredentialProvider(credDir);
+    await provider.writeCredentials({ accessToken: 'test-token', expiresAt: Date.now() + 3600000 });
+    tracker = new QuotaTracker({
+      quotaFile: path.join(tmpDir, 'quota-state.json'),
+      thresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
+    });
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-collector.test.ts:retry-after' });
+  });
+
+  it('opens the OAuth backoff for the full retry-after window on the FIRST 429', async () => {
+    const fetchSpy = fetch429('1800');
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetchSpy,
+      jsonlFallback: { enabled: false },
+      retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 30_000, jitterFactor: 0 },
+    });
+
+    const before = Date.now();
+    const result = await collector.collect();
+    // The long retry-after short-circuits RetryHelper: one request, not four.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const status = collector.getBudgetStatus().oauthCircuitBreaker;
+    expect(status.open).toBe(true);
+    const until = Date.parse(status.backoffUntil!);
+    expect(until).toBeGreaterThanOrEqual(before + 1800_000);
+    expect(until).toBeLessThanOrEqual(Date.now() + 1800_000);
+    expect(result.errors.some(e => e.includes('retry-after 1800s'))).toBe(true);
+
+    // Inside the window: no further OAuth requests.
+    await collector.collect();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps an absurd retry-after at 6 hours', async () => {
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('999999'),
+      jsonlFallback: { enabled: false },
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    await collector.collect();
+    const until = Date.parse(collector.getBudgetStatus().oauthCircuitBreaker.backoffUntil!);
+    expect(until).toBeLessThanOrEqual(Date.now() + 6 * 60 * 60 * 1000);
+    expect(until).toBeGreaterThan(Date.now() + 5.9 * 60 * 60 * 1000);
+  });
+
+  it('retry-after: 0 does not open the backoff on its own', async () => {
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('0'),
+      jsonlFallback: { enabled: false },
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    await collector.collect();
+    expect(collector.getBudgetStatus().oauthCircuitBreaker.open).toBe(false);
+  });
+
+  it('uses the wired usage-totals source and reads no transcript files', async () => {
+    // A transcript that would yield a DIFFERENT estimate if it were read.
+    const projectsDir = path.join(tmpDir, 'projects');
+    const projectDir = path.join(projectsDir, '-Users-test');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'c.jsonl'), assistantLine(7_000_000_000) + '\n');
+
+    const source = vi.fn((_sinceMs: number) => 3_750_000_000);
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('600'),
+      jsonlFallback: { enabled: true, claudeProjectsDir: projectsDir },
+      usageTotalsSource: source,
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    expect(collector.hasUsageTotalsSource()).toBe(true);
+
+    const result = await collector.collect();
+    expect(result.dataSource).toBe('jsonl-fallback');
+    expect(result.dataConfidence).toBe('estimated');
+    expect(result.state?.usagePercent).toBe(50); // 3.75B / 7.5B budget
+    expect(source).toHaveBeenCalledTimes(1);
+    const since = source.mock.calls[0][0];
+    expect(Math.abs(Date.now() - 7 * 24 * 60 * 60 * 1000 - since)).toBeLessThan(5_000);
+  });
+
+  it('yields no estimate (and records why) when the wired source is unavailable', async () => {
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('600'),
+      usageTotalsSource: () => null,
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    const result = await collector.collect();
+    expect(result.success).toBe(false);
+    expect(result.errors.some(e => e.includes('usage ledger unavailable'))).toBe(true);
+  });
+
+  it('yields no estimate while the built-in index is still catching up (never an undercount)', async () => {
+    const projectsDir = path.join(tmpDir, 'projects');
+    const projectDir = path.join(projectsDir, '-Users-test');
+    fs.mkdirSync(projectDir, { recursive: true });
+    for (let i = 0; i < 3; i++) {
+      fs.writeFileSync(path.join(projectDir, `f${i}.jsonl`), assistantLine(3_000_000_000) + '\n');
+    }
+    const oneFile = fs.statSync(path.join(projectDir, 'f0.jsonl')).size;
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('600'),
+      jsonlFallback: { enabled: true, claudeProjectsDir: projectsDir, maxBytesPerPass: oneFile },
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+
+    const first = await collector.collect();
+    expect(first.success).toBe(false);
+    expect(first.errors.some(e => e.includes('catching up'))).toBe(true);
+
+    let last = first;
+    for (let i = 0; i < 5 && !last.success; i++) last = await collector.collect();
+    expect(last.success).toBe(true);
+    expect(last.state?.usagePercent).toBe(120); // 9B / 7.5B, all three files counted
+  });
+
+  it('wireQuotaCollectorToTokenLedger wires the ledger summary and tolerates missing sides', async () => {
+    const collector = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('600'),
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    expect(wireQuotaCollectorToTokenLedger(null, { summary: () => ({ totalTokens: 1 }) })).toBe(false);
+    expect(wireQuotaCollectorToTokenLedger(collector, null)).toBe(false);
+    expect(collector.hasUsageTotalsSource()).toBe(false);
+
+    const summary = vi.fn((_o: { sinceMs?: number }) => ({ totalTokens: 1_500_000_000 }));
+    expect(wireQuotaCollectorToTokenLedger(collector, { summary })).toBe(true);
+    const result = await collector.collect();
+    expect(result.state?.usagePercent).toBe(20);
+    expect(summary).toHaveBeenCalledWith({ sinceMs: expect.any(Number) });
+
+    // A ledger that throws (e.g. closed at shutdown) degrades to "unavailable", never a crash.
+    const broken = new QuotaCollector(provider, tracker, {
+      fetchFn: fetch429('600'),
+      retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
+    });
+    wireQuotaCollectorToTokenLedger(broken, { summary: () => { throw new Error('db closed'); } });
+    const r2 = await broken.collect();
+    expect(r2.success).toBe(false);
+    expect(r2.errors.some(e => e.includes('usage ledger unavailable'))).toBe(true);
   });
 });
