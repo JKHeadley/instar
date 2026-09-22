@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
-      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
-      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
-      "areaSha256": "235a1ba9f0cbcc5d3411483a889e8530e579cf63705e77b71ef62106c5dd3d54",
+      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
+      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
+      "areaSha256": "aa64109d710bd60befbaac218122656ca91b27aa90c931c89f79ef5dc9b69657",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -22,10 +22,10 @@
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
-      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
-      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
-      "areaSha256": "e1f8094ca9e11b29e2497a7e6263eaafae0904b91fa235437bd96712005a995f",
+      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
+      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
+      "areaSha256": "4691ffb2f80681d3d29078cde9752576aa58a6a7034c80e9e2435a0b5b81149c",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-09-15T00:25:12.000Z",
-      "auditRef": "docs/audits/subscription-relogin-deadline-family-review-2026-09-15.json",
-      "auditSha256": "27c11947ff4846fc60aedd3e82f4d60681ddceec9bfec42b85ad439b7333aead",
-      "areaSha256": "a7328fb1521c028944cb44336716647fb3b350d6edea3a865dc506e6ab07038a",
+      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
+      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
+      "areaSha256": "8c7aedd2f041dfbf0ca55cc196b55df9c21306a05a1c42b4bcda2194269d178b",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

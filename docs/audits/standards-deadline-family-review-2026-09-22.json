@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-22T15:45:22.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/standards-deadline-family-review-2026-09-22.md",
+  "convergenceSha256": "8589a5ee601efc1c4a141325cc2da92fe55da99597202772a721a298ae1ed2bf",
+  "areas": {
+    "Building": {
+      "areaSha256": "aa64109d710bd60befbaac218122656ca91b27aa90c931c89f79ef5dc9b69657",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "4691ffb2f80681d3d29078cde9752576aa58a6a7034c80e9e2435a0b5b81149c",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "8c7aedd2f041dfbf0ca55cc196b55df9c21306a05a1c42b4bcda2194269d178b",
+      "verdict": "accepted"
+    }
+  }
+}
