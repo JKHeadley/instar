@@ -524,6 +524,15 @@ export interface JobDefinition {
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
   supervision?: SupervisionTier;
+  /** Jev job-completion audit eligibility (spec: jev-job-supervision.md).
+   *  Deliberately SEPARATE from `supervision` — audit eligibility must not
+   *  overload the constitutional execution-tier field.
+   *  'excluded' = never audited · absent/'eligible' = auditable ·
+   *  'priority' = audited first from the reserved cap slice. */
+  completionAudit?: 'excluded' | 'eligible' | 'priority';
+  /** Repo-relative paths (jailed to the job's working directory) the job is
+   *  expected to produce — the audit's deterministic corroboration signal. */
+  declaredEffects?: string[];
   /** MCP access for the spawned job session (claude-code spawns only).
    *  - 'none': spawn with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
    *    so the headless session starts with ZERO project MCP servers. Right for
@@ -3854,6 +3863,27 @@ export interface InstarConfig {
       timeoutMs?: number;
       /** The mechanical soak bound: inert at or after this instant, and when null. */
       soakEndsAt?: string | null;
+    };
+    /**
+     * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
+     * default. Observe-only: captures an evidence pack when a scheduled job
+     * completes, and a batch job asks Jev whether the evidence shows the
+     * promised work happened. Records only; acts on nothing. Inert unless
+     * enabled AND soakEndsAt is a future ISO instant AND the vault holds
+     * `typesafe_api_key`. Read live per candidate (no restart).
+     */
+    jevJobCompletionAudit?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 2500). */
+      timeoutMs?: number;
+      /** The mechanical soak bound: inert at or after this instant, and when null. */
+      soakEndsAt?: string | null;
+      /** Daily budget over ATTEMPTED calls (default 1500). */
+      dailyCallCap?: number;
+      /** Batch cadence for the built-in job (default 6). */
+      batchIntervalHours?: number;
     };
     circuitBreaker?: {
       /** Master switch for the rate-limit circuit breaker (default: true). */

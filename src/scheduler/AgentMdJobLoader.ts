@@ -96,6 +96,10 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'supervision',
   'mcpAccess',
   'perMachineIndependent',
+  // Jev job-completion audit (spec: jev-job-supervision.md) — both wired
+  // through PerSlugManifest + manifestToJobDefinition, never dead vocabulary:
+  'completionAudit',
+  'declaredEffects',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -154,6 +158,10 @@ export interface PerSlugManifest {
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
+  /** Jev job-completion audit eligibility (spec: jev-job-supervision.md). */
+  completionAudit?: 'excluded' | 'eligible' | 'priority';
+  /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */
+  declaredEffects?: string[];
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────
@@ -655,6 +663,30 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional mcpAccess
   if (j.mcpAccess !== undefined && j.mcpAccess !== 'project' && j.mcpAccess !== 'none') {
     throw new Error(`${prefix}: "mcpAccess" must be "project" or "none" if provided, got "${j.mcpAccess}"`);
+  }
+
+  // Optional Jev job-completion audit fields (spec: jev-job-supervision.md).
+  if (
+    j.completionAudit !== undefined &&
+    j.completionAudit !== 'excluded' &&
+    j.completionAudit !== 'eligible' &&
+    j.completionAudit !== 'priority'
+  ) {
+    throw new Error(`${prefix}: "completionAudit" must be "excluded", "eligible" or "priority" if provided, got "${j.completionAudit}"`);
+  }
+  if (j.declaredEffects !== undefined) {
+    if (!Array.isArray(j.declaredEffects) || j.declaredEffects.some((e) => typeof e !== 'string')) {
+      throw new Error(`${prefix}: "declaredEffects" must be an array of strings if provided`);
+    }
+    if (j.declaredEffects.length > 8) {
+      throw new Error(`${prefix}: "declaredEffects" allows at most 8 entries`);
+    }
+    // Load-time jail: repo-relative only — no absolute paths, no traversal.
+    for (const e of j.declaredEffects as string[]) {
+      if (e.startsWith('/') || e.startsWith('\\') || /^[A-Za-z]:/.test(e) || e.split('/').includes('..')) {
+        throw new Error(`${prefix}: "declaredEffects" entry "${e}" is refused — repo-relative paths only (no absolute, no "..")`);
+      }
+    }
   }
 
   return j as unknown as PerSlugManifest;
@@ -1219,6 +1251,8 @@ function manifestToJobDefinition(
     manifestVersion: manifest.manifestVersion,
     mcpAccess: manifest.mcpAccess,
     perMachineIndependent: manifest.perMachineIndependent,
+    completionAudit: manifest.completionAudit,
+    declaredEffects: manifest.declaredEffects,
   };
 
   if (manifest.execute.type === 'agentmd') {

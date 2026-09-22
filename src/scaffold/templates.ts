@@ -511,6 +511,11 @@ If one of my machines loses its local signing/encryption files, it can prove con
 - Tune (rarely needed) in \`.instar/config.json\`: \`{"monitoring": {"sleepWake": {"maxLoadRatio": 1.5, "longSleepFloorSeconds": 300, "minWakeIntervalMs": 60000}}}\`. Defaults live in code, so the guard is active with no config.
 - Proactive: user reports "you keep restarting" / "your agent is overloaded" / "is it a memory problem?" → GET /monitoring/sleep-wake, then check \`uptime\` load average against core count; explain CPU oversubscription (load ≫ cores) vs. memory.
 
+### Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)
+
+A dark research instrument (spec: jev-job-supervision.md): when enabled for a bounded soak, an evidence snapshot is captured whenever a scheduled job completes, and a 6-hourly batch asks Jev (TypeSafe) whether the evidence shows the job's promised work actually happened — recording verdicts that decide NOTHING (no blocking, no alerts, no retries). Machine-local artifacts only: verdict rows in \`logs/jev-job-completion-audit.jsonl\`, evidence packs under \`.instar/state/jev-supervision-evidence/\` (14-day retention, never exported, never HTTP-served). Ships OFF (\`intelligence.jevJobCompletionAudit.enabled: false\`); even enabled it is inert without a future \`soakEndsAt\` and a vault \`typesafe_api_key\`, and enabling it is the operator's explicit call because scrubbed job output leaves the machine to TypeSafe during the soak. Jobs opt out with \`completionAudit: excluded\`, or declare expected outputs via \`declaredEffects\` for stronger verification. If the user asks "is anything checking whether my jobs really work?" — this records the evidence when on, and be honest that it is dark when off.
+
+
 **Token-Burn Alerts** — The "an unknown component is using more than a quarter of the agent's token budget" heads-up. The BurnDetector watches per-component 24h token share and the 1h spend rate, and alerts when one component is *actively* burning. Two things to know when a user asks about the noise:
 - An alert only fires for a component spending **right now** (last-1h tokens above \`absoluteShareActivityFloorTokens\`, default 0 = any positive current spend). A finished heavy session — high 24h share but zero current rate — is NOT a burn and is silenced; this is the activity gate that closed the "consumed 67% of 24h spend … Projected 0 tokens" re-alarm-for-a-full-day bug. Most context-cache usage spread across many warm sessions never trips it.
 - Silence or tune it in \`.instar/config.json\` → \`monitoring.burnDetection\`: \`{"enabled": false}\` is the master off-switch; \`absoluteShareThreshold\` (default 0.25), \`absoluteShareActivityFloorTokens\`, \`alertTopicId\` (where alerts post), \`autoThrottle\` / \`autoThrottleOnUnknown\` tune behaviour without code changes. Absence preserves the shipped defaults.
@@ -2350,4 +2355,11 @@ I have a **canonical cryptographic identity** at \`.instar/identity.json\` (Ed25
 `;
 
   return content;
+}
+
+/** Jev job-completion audit awareness card (spec: jev-job-supervision.md) —
+ * appended by generateClaudeMd above and by PostUpdateMigrator.migrateClaudeMd
+ * for existing agents (Agent Awareness + Migration Parity). */
+export function jevJobCompletionAuditAwareness(): string {
+  return '\n\n' + "### Jev Job-Completion Audit (dark, observe-only \u2014 an audit record, not supervision)\n\nA dark research instrument (spec: jev-job-supervision.md): when enabled for a bounded soak, an evidence snapshot is captured whenever a scheduled job completes, and a 6-hourly batch asks Jev (TypeSafe) whether the evidence shows the job's promised work actually happened \u2014 recording verdicts that decide NOTHING (no blocking, no alerts, no retries). Machine-local artifacts only: verdict rows in `logs/jev-job-completion-audit.jsonl`, evidence packs under `.instar/state/jev-supervision-evidence/` (14-day retention, never exported, never HTTP-served). Ships OFF (`intelligence.jevJobCompletionAudit.enabled: false`); even enabled it is inert without a future `soakEndsAt` and a vault `typesafe_api_key`, and enabling it is the operator's explicit call because scrubbed job output leaves the machine to TypeSafe during the soak. Jobs opt out with `completionAudit: excluded`, or declare expected outputs via `declaredEffects` for stronger verification. If the user asks \"is anything checking whether my jobs really work?\" \u2014 this records the evidence when on, and be honest that it is dark when off.\n";
 }

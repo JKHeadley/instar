@@ -7523,6 +7523,27 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence) {
         scheduler.setIntelligence(sharedIntelligence);
       }
+      // Jev job-completion audit (dark by default; spec
+      // docs/specs/jev-job-supervision.md). Always constructed so the live
+      // config can switch it on without a restart; capture is inert unless
+      // enabled + a future soakEndsAt + a vault key. Observe-only: records
+      // only, decides nothing.
+      try {
+        const { buildJevJobCompletionAudit } = await import('../scheduler/JevJobCompletionAudit.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        const { SecretStore } = await import('../core/SecretStore.js');
+        const jevAudit = buildJevJobCompletionAudit({
+          readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+          bootBlock: config.intelligence?.jevJobCompletionAudit,
+          readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+          stateDir: config.stateDir,
+          metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+        });
+        scheduler.setJevAudit(jevAudit);
+        void jevAudit.sweepRetention().catch(() => { /* @silent-fallback-ok — boot sweep retries daily via the batch route. */ });
+      } catch (err) {
+        console.log(pc.yellow(`  Jev job-completion audit: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+      }
 
       // Wire IntegrationGate — enforces learning consolidation after job completion
       const integrationGate = new IntegrationGate({
