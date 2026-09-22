@@ -33,6 +33,7 @@ import {
 } from './moneyLayerEnable.js';
 import { runCapGateProbe, type ProbeAdmitLike, type ProbeSettleLike, type ProbeVerdict } from './moneyLayerProbe.js';
 import type { CapsStoreFile } from './RoutingSpendCapsStore.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 /** Shipped defaults for the rate limits (§2), so tests and abuse analysis are not fuzzy. */
 export const MONEY_LAYER_LIMIT_DEFAULTS = {
@@ -131,7 +132,7 @@ export class MoneyLayerEnableSurface {
   constructor(deps: MoneyLayerEnableSurfaceDeps) {
     this.d = deps;
     this.now = deps.now ?? (() => Date.now());
-    this.limits = { ...MONEY_LAYER_LIMIT_DEFAULTS, ...(deps.limits ?? {}) };
+    this.limits = mergeDefaults<MoneyLayerLimits>(MONEY_LAYER_LIMIT_DEFAULTS, deps.limits);
     this.plans = new RenderedPlanStore({ now: this.now, ttlMs: this.limits.planTtlSeconds * 1000 });
   }
 

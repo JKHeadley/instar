@@ -31,6 +31,7 @@
 
 import type { Session } from '../core/types.js';
 import type { AttentionPoster } from './sentinelWiring.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type Liveness = 'alive' | 'dead' | 'indeterminate';
 
@@ -140,7 +141,7 @@ export class StaleSessionBackstop {
 
   constructor(deps: StaleBackstopDeps, opts?: Partial<StaleBackstopOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_STALE_BACKSTOP_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_STALE_BACKSTOP_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

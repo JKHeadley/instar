@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from './DegradationReporter.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -212,7 +213,7 @@ export class SessionMigrator extends EventEmitter {
   constructor(config: SessionMigratorConfig) {
     super();
     this.stateDir = config.stateDir;
-    this.thresholds = { ...DEFAULT_THRESHOLDS, ...config.thresholds };
+    this.thresholds = mergeDefaults(DEFAULT_THRESHOLDS, config.thresholds);
     this.lockPath = path.join(this.stateDir, 'migration.lock');
     this.statePath = path.join(this.stateDir, 'migration-state.json');
     this.historyPath = path.join(this.stateDir, 'migration-history.json');

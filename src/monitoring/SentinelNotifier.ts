@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * SentinelNotifier — the single delivery policy for the silently-stopped
  * sentinels (ActiveWorkSilenceSentinel + SocketDisconnectSentinel).
@@ -98,7 +99,7 @@ export class SentinelNotifier {
     private readonly deps: SentinelNotifierDeps,
     cfg: SentinelNotifierConfig = {},
   ) {
-    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_CONFIG, cfg);
   }
 
   /** True if Telegram escalation is wired AND enabled. */

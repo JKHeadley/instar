@@ -53,6 +53,7 @@ import type { AuditEntry } from './audit/AuditWriter.js';
 import type { RemediationKeyVault } from './RemediationKeyVault.js';
 import type { TrustElevationSource } from './TrustElevationSource.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -226,10 +227,7 @@ export class NovelFailureReviewer {
     if (!opts.machineId) throw new Error('NovelFailureReviewer: machineId required');
     if (!opts.agentId) throw new Error('NovelFailureReviewer: agentId required');
     this.opts = opts;
-    this.cfg = {
-      ...DEFAULT_NOVEL_FAILURE_REVIEWER_CONFIG,
-      ...(opts.config ?? {}),
-    };
+    this.cfg = mergeDefaults(DEFAULT_NOVEL_FAILURE_REVIEWER_CONFIG, (opts.config ?? {}));
     // §A26 — model allowlist at construction.
     if (!LLM_MODEL_ALLOWLIST.has(this.cfg.llmModel)) {
       throw new Error(

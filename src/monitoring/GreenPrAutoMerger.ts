@@ -38,6 +38,7 @@ import {
   validateTimeoutInvariant,
 } from './greenPrLogic.js';
 import type { GuardLatchStore } from './GuardLatchStore.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** The arguments a merge attempt is launched with. */
 export interface MergeAttempt {
@@ -288,8 +289,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   ) {
     super();
     this.cfg = {
-      ...DEFAULTS,
-      ...cfg,
+      ...mergeDefaults(DEFAULTS, cfg as Partial<typeof DEFAULTS>),
       agentNamespace: cfg.agentNamespace,
       repo: cfg.repo,
       expectedGhLogin: cfg.expectedGhLogin ?? '',

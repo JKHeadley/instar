@@ -40,6 +40,7 @@
  */
 
 import type { OwnershipAction, SessionOwnershipRecord } from './SessionOwnership.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export interface DrainRequest {
   /** The topic key being transferred. */
@@ -135,7 +136,7 @@ export class SessionDrainRunner {
 
   constructor(deps: SessionDrainRunnerDeps, cfg: Partial<SessionDrainRunnerConfig> = {}) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_DRAIN_RUNNER_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_DRAIN_RUNNER_CONFIG, cfg);
   }
 
   async run(req: DrainRequest): Promise<DrainOutcome> {

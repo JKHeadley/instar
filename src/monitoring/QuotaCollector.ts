@@ -45,6 +45,7 @@ import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
 } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -573,7 +574,7 @@ export class QuotaCollector extends EventEmitter {
       requestBudgetPer5Min: config.requestBudgetPer5Min ?? 60,
       ...config,
     };
-    this.retryConfig = { ...DEFAULT_RETRY, ...config.retry };
+    this.retryConfig = mergeDefaults(DEFAULT_RETRY, config.retry);
     this.budget = new RequestBudget(this.config.requestBudgetPer5Min);
     this.limiter = new ConcurrencyLimiter(this.config.concurrencyLimit);
     this.poller = new AdaptivePoller();

@@ -278,6 +278,7 @@ import { loadTestIdentityKey } from '../users/testIdentityMarkers.js';
 import { formatUserContextForSession, hasUserContext } from '../users/UserContextBuilder.js';
 import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -6926,9 +6927,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!live) return computedDefault;
             // Layer the live in-memory override OVER the computed default.
             return {
-              ...computedDefault,
-              ...live,
-              categories: { ...computedDefault.categories, ...live.categories },
+              ...mergeDefaults(computedDefault, live),
+              categories: mergeDefaults(computedDefault.categories ?? {}, live.categories),
               ...(live.overrides ? { overrides: live.overrides } : {}),
               ...(live.failureSwap !== undefined ? { failureSwap: live.failureSwap } : {}),
             };
@@ -9702,7 +9702,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { PromptBuildRecall, DEFAULT_PROMPT_BUILD_RECALL_CONFIG } = await import('../core/PromptBuildRecall.js');
       const recall = new PromptBuildRecall(
         { semanticMemory },
-        { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, ...promptRecallCfg },
+        mergeDefaults(DEFAULT_PROMPT_BUILD_RECALL_CONFIG, promptRecallCfg),
       );
       (globalThis as Record<string, unknown>).__instarPromptBuildRecall = recall;
       console.log(pc.green('  Pre-prompt memory recall enabled'));
@@ -13614,7 +13614,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           intelligence: sharedIntelligence ?? null,
           projectDir: config.projectDir,
         },
-        { ...DEFAULT_PRE_COMPACTION_FLUSH_CONFIG, ...preCompactFlushCfg },
+        mergeDefaults(DEFAULT_PRE_COMPACTION_FLUSH_CONFIG, preCompactFlushCfg),
       );
       hookEventReceiver.on('PreCompact', (payload) => {
         flush.handle(payload as Parameters<typeof flush.handle>[0]).catch(() => {
@@ -14438,10 +14438,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
     const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv, enrollmentIsolationEnv,
       enrollmentCredentialPath, DEFAULT_ENROLL_LOGIN_COMMANDS } = await import('../core/FrameworkLoginDriver.js');
-    const enrollLoginCommands = {
-      ...DEFAULT_ENROLL_LOGIN_COMMANDS,
-      ...(config.subscriptionPool?.enrollment?.loginCommands ?? {}),
-    };
+    const enrollLoginCommands = mergeDefaults(DEFAULT_ENROLL_LOGIN_COMMANDS, config.subscriptionPool?.enrollment?.loginCommands);
     const pendingLoginStore = new PendingLoginStore({ stateDir: config.stateDir });
     const enrollmentWizard = new EnrollmentWizard({
       store: pendingLoginStore,
@@ -18689,7 +18686,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               : undefined,
             knownAgentsPath: path.join(config.stateDir, 'threadline', 'known-agents.json'),
           },
-          { ...DEFAULT_REDRIVE_CONFIG, ...redriveCfg, enabled: true },
+          { ...mergeDefaults(DEFAULT_REDRIVE_CONFIG, redriveCfg), enabled: true },
         );
         collaborationRedrive.start();
         (globalThis as Record<string, unknown>).__instarCollaborationRedrive = collaborationRedrive;
@@ -18744,7 +18741,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               : undefined,
           },
-          { ...DEFAULT_A2A_REDELIVERY_CONFIG, ...a2aDelivCfg, enabled: true },
+          { ...mergeDefaults(DEFAULT_A2A_REDELIVERY_CONFIG, a2aDelivCfg), enabled: true },
         );
         a2aRedeliverySentinel.start();
         (globalThis as Record<string, unknown>).__instarA2ARedeliverySentinel = a2aRedeliverySentinel;
@@ -24545,8 +24542,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // half-configured queue (spec §Config).
           try {
             const iqcMod = await import('../core/inboundQueueConfig.js');
-            const qcfg = { ...iqcMod.DEFAULT_INBOUND_QUEUE_CONFIG, ...(config.multiMachine?.sessionPool?.inboundQueue ?? {}) };
-            const hcfg = { ...iqcMod.DEFAULT_HOLD_FOR_STABILITY_CONFIG, ...(config.multiMachine?.sessionPool?.holdForStability ?? {}) };
+            const qcfg = mergeDefaults(iqcMod.DEFAULT_INBOUND_QUEUE_CONFIG, config.multiMachine?.sessionPool?.inboundQueue);
+            const hcfg = mergeDefaults(iqcMod.DEFAULT_HOLD_FOR_STABILITY_CONFIG, config.multiMachine?.sessionPool?.holdForStability);
             // Dry-run constructs the engine too (second-pass concern 2): the
             // §2.4 dry-run branch never takes custody, but its durable
             // wouldEnqueue/wouldHold/wouldRefuse counters ARE the promotion

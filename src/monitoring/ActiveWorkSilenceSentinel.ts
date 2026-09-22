@@ -24,6 +24,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type SilenceStatus =
   | 'detected'
@@ -161,7 +162,7 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
 
   constructor(private readonly deps: ActiveWorkSilenceSentinelDeps, cfg: ActiveWorkSilenceSentinelConfig = {}) {
     super();
-    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_CONFIG, cfg);
   }
 
   start(): void {

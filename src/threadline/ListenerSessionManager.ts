@@ -15,6 +15,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -98,7 +99,7 @@ export class ListenerSessionManager {
 
   constructor(stateDir: string, authToken: string, config?: Partial<ListenerConfig>) {
     this.stateDir = stateDir;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
 
     // Derive inbox-specific signing key via HKDF from authToken
     this.signingKey = Buffer.from(crypto.hkdfSync(

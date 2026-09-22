@@ -24,6 +24,7 @@ import { ReapGuard } from '../core/ReapGuard.js';
 import { CONFIRMED_MOVE_ASSERTION_TTL_MS, validateConfirmedMoveAssertion } from '../core/SessionManager.js';
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type PressureTier = 'normal' | 'moderate' | 'critical';
 export type Verdict = 'keep' | 'reap-eligible';
@@ -569,7 +570,7 @@ export class SessionReaper extends EventEmitter {
   constructor(deps: SessionReaperDeps, cfg?: Partial<SessionReaperConfig>) {
     super();
     this.#deps = Object.freeze({ ...deps });
-    this.cfg = { ...DEFAULT_SESSION_REAPER_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_SESSION_REAPER_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     this.guard = new ReapGuard(deps, {
       minAgeMs: this.cfg.minAgeMinutes * 60_000,

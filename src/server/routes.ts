@@ -13967,7 +13967,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (withPin) {
         const pl = (processMoney.limits ?? {}) as Record<string, unknown>;
         const dl = (onDiskMoney.limits ?? {}) as Record<string, unknown>;
-        for (const k of Object.keys({ ...MONEY_LAYER_LIMIT_DEFAULTS, ...pl, ...dl })) {
+        for (const k of new Set([...Object.keys(MONEY_LAYER_LIMIT_DEFAULTS), ...Object.keys(pl), ...Object.keys(dl)])) {
           fields.push({ path: `routingSpend.money.limits.${k}`, current: pl[k] ?? (MONEY_LAYER_LIMIT_DEFAULTS as Record<string, number>)[k], onDisk: dl[k] ?? (MONEY_LAYER_LIMIT_DEFAULTS as Record<string, number>)[k] });
         }
       }

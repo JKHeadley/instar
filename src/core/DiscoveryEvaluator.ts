@@ -25,6 +25,7 @@ import type {
   ConsentTier,
   DiscoveryState,
 } from './FeatureRegistry.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export class DiscoveryEvaluator {
   ) {
     this.registry = registry;
     this.intelligence = intelligence;
-    this.limits = { ...DEFAULT_LIMITS, ...limits };
+    this.limits = mergeDefaults(DEFAULT_LIMITS, limits);
   }
 
   /**

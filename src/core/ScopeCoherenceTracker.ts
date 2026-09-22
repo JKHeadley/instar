@@ -15,6 +15,7 @@
  */
 
 import type { StateManager } from './StateManager.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -108,7 +109,7 @@ export class ScopeCoherenceTracker {
 
   constructor(state: StateManager, config?: ScopeCoherenceConfig) {
     this.state = state;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**
@@ -241,10 +242,7 @@ export class ScopeCoherenceTracker {
 
     // Merge with defaults for any missing keys
     const defaults = this.defaultState();
-    return {
-      ...defaults,
-      ...stored,
-    };
+    return mergeDefaults(defaults, stored);
   }
 
   /**

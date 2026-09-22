@@ -19,6 +19,7 @@
  */
 
 import type { ParityResult } from '../processor/parity.js';
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 /** One recorded comparison pass over a dual-forward traffic slice. */
 export interface MonitorPass {
@@ -72,7 +73,7 @@ export class ParityMonitor {
   private readonly _passes: MonitorPass[] = [];
 
   constructor(policy: Partial<CutoverGatePolicy> = {}) {
-    this.policy = { ...DEFAULT_GATE_POLICY, ...policy };
+    this.policy = mergeDefaults(DEFAULT_GATE_POLICY, policy);
   }
 
   /** Feed a raw pass record. */

@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ export class ReflectionMetrics {
           trackingSince: parsed.trackingSince ?? new Date().toISOString(),
           lastReflectionTimestamp: parsed.lastReflectionTimestamp ?? null,
           lastReflectionType: parsed.lastReflectionType ?? null,
-          thresholds: { ...DEFAULT_THRESHOLDS, ...parsed.thresholds },
+          thresholds: mergeDefaults(DEFAULT_THRESHOLDS, parsed.thresholds),
           history: parsed.history ?? [],
         };
       } catch {
