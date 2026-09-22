@@ -4396,7 +4396,9 @@ export interface InstarConfig {
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
-       *  `claude auth login`, codex-cli → `codex login`). */
+       *  `claude auth login`, codex-cli → `codex login --device-auth`). See
+       *  DEFAULT_ENROLL_LOGIN_COMMANDS in FrameworkLoginDriver.ts for the full map
+       *  and why device-code frameworks must pass `--device-auth`. */
       loginCommands?: Record<string, string>;
       /** Auto-reissue sweep cadence in ms (default 300000 = 5 min). */
       reissueSweepMs?: number;

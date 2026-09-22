@@ -14416,17 +14416,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
     const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv, enrollmentIsolationEnv,
-      enrollmentCredentialPath } = await import('../core/FrameworkLoginDriver.js');
-    const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
-      'claude-code': 'claude auth login',
-      'codex-cli': 'codex login',
-      'gemini-cli': 'gemini',
-      'pi-cli': 'pi login',
-      // grok-build: the binary is `grok` (NEVER the colliding `agent` name),
-      // and device-code auth is the phone-approvable flow the enrollment
-      // wizard scrapes (public code/URL only, never a token).
-      'grok-build': 'grok login --device-auth',
-    };
+      enrollmentCredentialPath, DEFAULT_ENROLL_LOGIN_COMMANDS } = await import('../core/FrameworkLoginDriver.js');
     const enrollLoginCommands = {
       ...DEFAULT_ENROLL_LOGIN_COMMANDS,
       ...(config.subscriptionPool?.enrollment?.loginCommands ?? {}),
