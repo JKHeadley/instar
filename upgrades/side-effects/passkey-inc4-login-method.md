@@ -215,3 +215,7 @@ self-triggered controller is added.
 - `capabilities-discoverability` refused the new `/passkeys` route prefix as unclassified. Classified it in
   `INTERNAL_PREFIXES` (same class as `playwright-profiles`): a dashboard-PIN-gated operator lever, dev-gated,
   surfaced through the CLAUDE.md bullet rather than `/capabilities`. `dev:preflight` passes locally with it.
+- `write-domain-conformance-ratchet` required a write-domain declaration for the new mutating route.
+  Registered `POST /passkeys/revert-method` as `machine-local` / `git-sync-excluded` in
+  `WriteDomainRegistry` (same story as `/playwright-profiles/provision`: it rewrites this machine's
+  profile registry; a passkey cell is per machine, so peers never replay it).

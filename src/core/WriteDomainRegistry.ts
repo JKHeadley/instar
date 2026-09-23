@@ -444,6 +444,24 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // Agent-held Google passkeys (spec agent-held-google-passkey §3.4): the revert
+  // lever rewrites ONE account row in this machine's Playwright profile registry
+  // (loginMethod back to priorLoginMethod, passkey binding dropped). A passkey cell
+  // is (account × machine), so the write is machine-local by design (§12, FD2) and
+  // a peer reverts its own cell through its own route or a passkey-cell mandate.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revert-method',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the PIN-gated revert rewrites this machine\'s profile registry (state/playwright-profiles.json, excluded from project git sync); a passkey cell is per machine, so peers never replay the write — they revert their own cell',
+    },
+  });
+
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can
   // never fork rung or lifecycle history. Read-only POST previews currently
