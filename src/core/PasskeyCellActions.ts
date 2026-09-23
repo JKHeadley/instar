@@ -12,9 +12,10 @@
  * A duplicate of a `received` revoke re-applies the STORED cutoff (never recomputed); a duplicate of
  * an `applied` op answers applied without acting.
  *
- * Ops this build applies: grant, revoke (local cell), issuer-add, issuer-remove, revert-method.
- * The remaining ops verify but answer `op-not-available-on-this-build` — they land with the
- * enrollment / health / suspension increments of the same run.
+ * Ops this build applies: grant, revoke (local cell), issuer-add, issuer-remove, revert-method,
+ * exclude-peer, include-peer (when the pool-check exclusion store is wired). The remaining ops verify
+ * but answer `op-not-available-on-this-build` — they land with the enrollment / health / suspension
+ * increments of the same run.
  */
 import type { PasskeyGrantStore, PasskeyGrant } from './PasskeyGrantStore.js';
 import type { PasskeyIssuerSet } from './PasskeyIssuerSet.js';
@@ -34,6 +35,8 @@ export interface PasskeyCellActionDeps {
   onRevoked?: (canonicalEmail: string, covered: PasskeyGrant[]) => { changed: string[] } | Promise<{ changed: string[] }>;
   /** True when at least one OTHER machine is registered and active (issuer bootstrap applies). */
   hasActivePeers: () => boolean;
+  /** §4 pool-check peer exclusions (`exclude-peer` / `include-peer`); absent ⇒ those ops answer not-available. */
+  peerExclusions?: { exclude: (machineId: string, by: string) => { changed: boolean }; include: (machineId: string) => { changed: boolean } } | null;
   log?: (line: string) => void;
 }
 
@@ -149,6 +152,25 @@ async function apply(deps: PasskeyCellActionDeps, body: PasskeyCellMandateBody, 
       const reverted = deps.revertMethod(body.canonicalEmail);
       deps.nonces.markApplied(body.nonce);
       return { applied: true, op: body.op, result: { reverted } };
+    }
+    case 'exclude-peer':
+    case 'include-peer': {
+      // §4: exclude a long-unobserved peer from THIS machine's pool checks (treated like
+      // peer-offline: last-known rows still count) / re-include it. Machine-local state; the
+      // dashboard sends the op to every observed machine. Never excludes this machine itself.
+      const machineId = typeof body.args.machineId === 'string' ? body.args.machineId.trim() : '';
+      if (!machineId) return { applied: false, op: body.op, reason: 'machine-id-required' };
+      if (machineId === deps.selfMachineId) return { applied: false, op: body.op, reason: 'cannot-exclude-self' };
+      if (!deps.peerExclusions) {
+        const rec = record();
+        if (!rec.recorded) return replay(deps, rec.existing!.nonce);
+        return { applied: false, op: body.op, reason: 'op-not-available-on-this-build' };
+      }
+      const rec = record();
+      if (!rec.recorded) return replay(deps, rec.existing!.nonce);
+      const r = body.op === 'exclude-peer' ? deps.peerExclusions.exclude(machineId, `${origin}:${issuerMachineId}`) : deps.peerExclusions.include(machineId);
+      deps.nonces.markApplied(body.nonce);
+      return { applied: true, op: body.op, result: { machineId, changed: r.changed } };
     }
     default: {
       // Verified but not applicable on this build: record the nonce so a later replay is honest, and

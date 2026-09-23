@@ -150,6 +150,11 @@ import { PASSKEY_CELL_OPS, mintPasskeyCellBody, signPasskeyCellMandate, type Pas
 import { applyLocalPasskeyCellAction, receivePasskeyCellMandate, sweepReceivedPasskeyRevokes, type PasskeyCellActionDeps } from '../core/PasskeyCellActions.js';
 import { PasskeyCredentialStore, PASSKEY_DIR } from '../core/PasskeyCredentialStore.js';
 import { PasskeyRevokeOutbox, type DeliveryOutcome as PasskeyDeliveryOutcome } from '../core/PasskeyRevokeOutbox.js';
+import {
+  PasskeyAttemptLedger, PasskeyPeerExclusions, PasskeyPoolReader, buildLocalPasskeyMachineState, poolAdmission, poolRows,
+  enrollmentRateLimit, sameAccountGap, activePauseFor, DEFAULT_PASSKEY_RATE_LIMIT, PASSKEY_POOL_STATE_MAX_BYTES,
+  type PasskeyMachineState, type PasskeyPoolAction, type PeerStateFetch, type PasskeyPoolPeer,
+} from '../core/PasskeyPoolState.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
@@ -1360,6 +1365,11 @@ export interface RouteContext {
   passkeyRevokeOutbox?: (() => import('../core/PasskeyRevokeOutbox.js').PasskeyRevokeOutbox) | null;
   /** Peer online observation for the outbox's forward-pull + post-breaker attempt (registry/heartbeat). */
   passkeyPeerOnline?: ((machineId: string) => boolean) | null;
+  /** The server-owned pool reader (5-min tick, memo + durable last-known); absent ⇒ routes build one per request. */
+  passkeyPoolReader?: (() => import('../core/PasskeyPoolState.js').PasskeyPoolReader) | null;
+  /** Peer `GET /passkeys/pool-state` fetch seam (tests inject; production fetches the peer URL with the Bearer). */
+  fetchPasskeyPeerState?: ((peer: import('../core/PasskeyPoolState.js').PasskeyPoolPeer, timeoutMs: number) =>
+    Promise<import('../core/PasskeyPoolState.js').PeerStateFetch>) | null;
   deliverMandateToMachine?: ((args: {
     targetMachineId: string;
     portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
@@ -26288,6 +26298,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const deps: PasskeyCellActionDeps = {
       selfMachineId, grants, issuers, nonces,
       hasActivePeers: passkeyHasActivePeers,
+      peerExclusions: new PasskeyPeerExclusions({ stateDir }),
       revertMethod: (email) => registry.listPasskeyAccounts()
         .filter((a) => a.identity.trim().toLowerCase() === email)
         .map((a) => { const r = registry.revertLoginMethod(a.profileId, a.service, a.identity); return r.reverted ? { reverted: true, to: r.to, bindingMissing: r.bindingMissing } : { reverted: false, reason: r.reason }; }),
@@ -26512,6 +26523,193 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(500).json({ error: err instanceof Error ? err.message : 'outbox tick failed' });
     }
   });
+  // ── Pool read path (spec §5.1 / §3.7 / §4) ─────────────────────────────────────────────
+  const passkeyRateLimitConfig = () => {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(ctx.config.projectDir, '.instar', 'config.json'), 'utf8')) as { passkeys?: { enrollment?: { maxPerAccountPerDay?: number; minIntervalMinutes?: number }; healthWatcher?: { sameAccountGapHours?: number } } };
+      const e = raw.passkeys?.enrollment ?? {};
+      return {
+        rateLimit: {
+          maxPerAccountPerDay: Number.isSafeInteger(e.maxPerAccountPerDay) && e.maxPerAccountPerDay! > 0 ? e.maxPerAccountPerDay! : DEFAULT_PASSKEY_RATE_LIMIT.maxPerAccountPerDay,
+          minIntervalMinutes: Number.isFinite(e.minIntervalMinutes) && e.minIntervalMinutes! > 0 ? e.minIntervalMinutes! : DEFAULT_PASSKEY_RATE_LIMIT.minIntervalMinutes,
+        },
+        sameAccountGapHours: Number.isFinite(raw.passkeys?.healthWatcher?.sameAccountGapHours) && raw.passkeys!.healthWatcher!.sameAccountGapHours! > 0 ? raw.passkeys!.healthWatcher!.sameAccountGapHours! : 6,
+      };
+    } catch {
+      // @silent-fallback-ok — unreadable config ⇒ the spec defaults (the STRICTER direction is the default itself)
+      return { rateLimit: { ...DEFAULT_PASSKEY_RATE_LIMIT }, sameAccountGapHours: 6 };
+    }
+  };
+  /** This machine's publishable state — grants, custody (names only), attempts, pauses, echoes, outbox rows. */
+  const buildPasskeyLocalState = (auth: ReturnType<typeof buildPasskeyAuthority>): PasskeyMachineState => {
+    const stateDir = ctx.config.stateDir;
+    const grants = auth.grants.list();
+    let custody: Array<{ canonicalEmail: string; state: 'present' | 'quarantined' | 'legacy-adopted' }> | null = null;
+    let pendingEmails: string[] = [];
+    if (fs.existsSync(path.join(stateDir, PASSKEY_DIR, 'store.enc'))) {
+      try {
+        const store = new PasskeyCredentialStore({ stateDir, machineId: auth.selfMachineId, forceFileKey: ctx.config.secrets?.forceFileKey });
+        custody = [];
+        const index = store.listIndex();
+        for (const email of new Set(grants.map((g) => g.canonicalEmail))) {
+          // The names-only index is keyed on this machine's HMAC entry key; the email never leaves.
+          const entry = index.find((e) => e.emailKey === store.emailKey(email));
+          if (entry) custody.push({ canonicalEmail: email, state: entry.custodyState });
+          if (store.readPending(email)) pendingEmails.push(email);
+        }
+      } catch (err) {
+        // @silent-fallback-ok — NOT swallowed: custody reads `absent` for every cell AND the failure is logged;
+        // a peer reading this state can only be MORE restrictive, never less.
+        console.warn(`[passkeys] custody read failed while building pool state: ${err instanceof Error ? err.message : String(err)}`);
+        custody = null; pendingEmails = [];
+      }
+    }
+    const ledger = new PasskeyAttemptLedger({ stateDir, machineId: auth.selfMachineId });
+    const outbox = buildPasskeyRevokeOutbox(auth).list();
+    return buildLocalPasskeyMachineState({
+      machineId: auth.selfMachineId, grants, issuedPeerGrants: auth.grants.listIssuedPeerGrants(), revokeHighWater: auth.grants.revokeHighWater(),
+      custody, pendingEmails, outbox, ledger,
+      pushEnabled: (ctx.config.multiMachine as { secretSync?: { pushEnabled?: boolean } } | undefined)?.secretSync?.pushEnabled === true,
+    });
+  };
+  const passkeyPeers = (): PasskeyPoolPeer[] => {
+    const self = passkeySelfMachineId();
+    return (ctx.listPoolMachines?.() ?? []).filter((m) => m.machineId !== self).map((m) => ({
+      machineId: m.machineId, nickname: m.nickname ?? ctx.machinePoolRegistry?.getCapacity(m.machineId)?.nickname ?? null,
+      url: m.lastKnownUrl ?? null, online: ctx.machinePoolRegistry?.getCapacity(m.machineId)?.online ?? null,
+    }));
+  };
+  const fetchPasskeyPeerState = async (peer: PasskeyPoolPeer, timeoutMs: number): Promise<PeerStateFetch> => {
+    if (ctx.fetchPasskeyPeerState) return ctx.fetchPasskeyPeerState(peer, timeoutMs);
+    if (!peer.url) return { ok: false, reason: 'no-known-url' };
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+    try {
+      const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'X-Instar-Machine-Id': passkeySelfMachineId() },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (r.status === 404 || r.status === 503) return { ok: false, reason: 'route-missing' };
+      if (r.status === 401 || r.status === 403) return { ok: false, reason: 'unauthorized' };
+      if (!r.ok) return { ok: false, reason: r.status >= 500 ? 'error' : 'refused' };
+      // Bound the body BEFORE parsing (the row caps apply after): a hostile host at an allowlisted
+      // URL must not make an unattended tick allocate an arbitrary body.
+      const text = await r.text();
+      if (text.length > PASSKEY_POOL_STATE_MAX_BYTES) return { ok: false, reason: 'malformed' };
+      return { ok: true, body: JSON.parse(text) };
+    } catch (err) {
+      // @silent-fallback-ok — NOT swallowed: the failure is CLASSIFIED (timeout / malformed / unreachable)
+      // into the peer's pool row, which the reader marks partitioned (the restrictive direction) and
+      // surfaces in `degradedReasons`; the raw error never carries a peer URL.
+      const name = err instanceof Error ? err.name : '';
+      return { ok: false, reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : name === 'SyntaxError' ? 'malformed' : 'unreachable' };
+    }
+  };
+  /** The routes' own reader when the server did not construct one: ONE per router (shared memo +
+   *  single-flight across requests, so N concurrent pool reads are one fan-out), no timer. */
+  let passkeyPoolReaderFallback: PasskeyPoolReader | null = null;
+  const buildPasskeyPoolReader = (auth: ReturnType<typeof buildPasskeyAuthority>): PasskeyPoolReader => {
+    if (ctx.passkeyPoolReader) return ctx.passkeyPoolReader();
+    if (passkeyPoolReaderFallback) return passkeyPoolReaderFallback;
+    passkeyPoolReaderFallback = new PasskeyPoolReader({
+      stateDir: ctx.config.stateDir, selfMachineId: auth.selfMachineId,
+      localState: () => buildPasskeyLocalState(buildPasskeyAuthority()), listPeers: passkeyPeers, fetchPeerState: fetchPasskeyPeerState,
+      ropeCondition: (id) => ctx.ropeHealthMonitor?.status().peers.find((p) => p.machineId === id)?.condition ?? null,
+      ropeAvailable: () => !!ctx.ropeHealthMonitor,
+      exclusions: new PasskeyPeerExclusions({ stateDir: ctx.config.stateDir }),
+      log: (line) => console.log(line),
+    });
+    return passkeyPoolReaderFallback;
+  };
+  // GET /passkeys/pool-state — what a PEER reads (Bearer transport). A caller naming itself with
+  // `X-Instar-Machine-Id` must be an ACTIVE paired machine in THIS machine's registry (de-paired,
+  // revoked, pending and unknown machines are refused); no secret, entry key or bundle is in the body.
+  router.get('/passkeys/pool-state', (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    const caller = typeof req.headers['x-instar-machine-id'] === 'string' ? String(req.headers['x-instar-machine-id']).trim() : '';
+    if (caller) {
+      const status = caller === passkeySelfMachineId() ? 'active' : passkeyMachineStatus(caller);
+      if (status !== 'active') { res.status(403).json({ error: 'peer-not-active', status }); return; }
+      // §5.1: a machine whose identity claim is recovery-QUARANTINED here is refused too (its registry
+      // entry stays active while the claim is pending) — when the recovery service is wired.
+      let quarantined = false;
+      try { quarantined = (ctx.identityReannounce?.status().pending ?? []).some((q) => q.machineId === caller); }
+      catch { quarantined = true; } // @silent-fallback-ok — an unreadable quarantine ledger refuses (fail closed), never serves
+      if (quarantined) { res.status(403).json({ error: 'peer-not-active', status: 'recovery-quarantined' }); return; }
+    }
+    try { res.json(buildPasskeyLocalState(buildPasskeyAuthority())); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'pool state unreadable' }); }
+  });
+  // GET /passkeys — per-cell view of THIS machine; `?scope=pool` merges every peer through the reader's
+  // memo (marked with its age): each peer's condition (observed / peer-offline / excluded / partitioned),
+  // its current-or-last-known rows, and whether enrollment/proofs are degraded here.
+  router.get('/passkeys', async (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try {
+      const auth = buildPasskeyAuthority();
+      const self = buildPasskeyLocalState(auth);
+      if (req.query.scope !== 'pool') { res.json({ scope: 'local', ...self, exclusions: new PasskeyPeerExclusions({ stateDir: ctx.config.stateDir }).list() }); return; }
+      const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
+      res.json({ scope: 'pool', ageMs, ...snapshot, exclusions: new PasskeyPeerExclusions({ stateDir: ctx.config.stateDir }).list() });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'passkey state unreadable' });
+    }
+  });
+  // POST /passkeys/pool-state/tick — run one peer query pass now (Bearer; the server timer does this every 5 min).
+  router.post('/passkeys/pool-state/tick', async (_req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try { res.json(await buildPasskeyPoolReader(buildPasskeyAuthority()).tick()); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'pool tick failed' }); }
+  });
+  // GET /passkeys/admission?action=enroll|prove|canary|repair|revoke&email=… — the §5.1 table + the §3.7
+  // rate limit + the §4 same-account gap + active pauses, evaluated over the pool memo for THIS machine.
+  // READ-ONLY and honest about its inputs: the suspension record and the lease-holder state are not
+  // published on this build, so those rows evaluate as "none"/"self" and say so.
+  router.get('/passkeys/admission', async (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    const action = String(req.query.action ?? '');
+    if (!(['enroll', 'prove', 'canary', 'repair', 'revoke'] as const).includes(action as PasskeyPoolAction)) { res.status(400).json({ error: 'action must be one of enroll, prove, canary, repair, revoke' }); return; }
+    const email = canonicalPasskeyEmail(typeof req.query.email === 'string' ? req.query.email : '');
+    try {
+      const auth = buildPasskeyAuthority();
+      const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
+      const cfg = passkeyRateLimitConfig();
+      const nowMs = Date.now();
+      const rows = poolRows(snapshot);
+      const conditions = {
+        peers: snapshot.peers.map((p) => p.condition),
+        suspension: { state: 'none' as const, killSwitch: false },
+        leaseHolder: { isSelf: true, reachable: true, lastKnownAgeMs: null },
+      };
+      const pool = poolAdmission(action as PasskeyPoolAction, conditions);
+      const rateLimit = email && action === 'enroll' ? enrollmentRateLimit({ rows: rows.attempts, canonicalEmail: email, machineId: auth.selfMachineId, nowMs, config: cfg.rateLimit }) : null;
+      const gap = email && (action === 'prove' || action === 'canary' || action === 'enroll') ? sameAccountGap({ rows: rows.attempts, canonicalEmail: email, machineId: auth.selfMachineId, nowMs, gapHours: cfg.sameAccountGapHours }) : null;
+      const pause = email ? activePauseFor({ pauses: rows.pauses, canonicalEmail: email, machineId: auth.selfMachineId, nowMs }) : null;
+      const allowed = pool.allowed && (rateLimit?.allowed ?? true) && (gap?.allowed ?? true) && (action === 'revoke' || action === 'repair' || !pause);
+      res.json({
+        action, email: email || null, allowed, memoAgeMs: ageMs, pool, rateLimit, sameAccountGap: gap, pause,
+        inputs: { suspension: 'not-published-on-this-build', leaseHolder: 'not-published-on-this-build', peers: snapshot.peers.map((p) => ({ machineId: p.machineId, condition: p.condition })) },
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'admission unreadable' });
+    }
+  });
+  // POST /passkeys/exclude-peer | include-peer — PIN. Body { pin, machineId, targetMachineId? }. Excludes a
+  // long-unobserved peer from THIS machine's pool checks (treated like peer-offline) / re-includes it.
+  const runPeerExclusionOp = async (req: import('express').Request, res: ExpressResponse, op: 'exclude-peer' | 'include-peer') => {
+    const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId.trim() : '';
+    if (!machineId) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'machineId is required' }); return; }
+    if (passkeyMachineStatus(machineId) === 'missing') {
+      if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+      if (!checkPasskeyPin(req, res)) return;
+      res.status(409).json({ error: `machine ${machineId} is not in this machine's registry` });
+      return;
+    }
+    await runPasskeyPinOp(req, res, op, '', { machineId });
+  };
+  router.post('/passkeys/exclude-peer', (req, res) => runPeerExclusionOp(req, res, 'exclude-peer'));
+  router.post('/passkeys/include-peer', (req, res) => runPeerExclusionOp(req, res, 'include-peer'));
+
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
   // the expected-issuer set and the nonce ledger are the authority. Refuses account-follow-me bundles.
   router.post('/passkeys/cell-action', async (req, res) => {

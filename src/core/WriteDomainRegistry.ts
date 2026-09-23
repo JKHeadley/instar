@@ -534,6 +534,42 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the mandate receiver applies a VERIFIED op to this machine\'s own grant/issuer/nonce files; the signature binds the op to THIS targetMachineId, so no other machine can replay it',
     },
   });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/pool-state/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one pool read pass: this machine queries its peers and rewrites its own state/passkey-pool-lastknown.json memo cache; peer rows are read, never written back',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/exclude-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a peer to THIS machine\'s own state/passkey-peer-exclusions.json (its pool checks treat that peer like peer-offline); per-machine authority, the dashboard sends the op to each machine',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/include-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a peer from THIS machine\'s own state/passkey-peer-exclusions.json; per-machine authority',
+    },
+  });
 
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can
