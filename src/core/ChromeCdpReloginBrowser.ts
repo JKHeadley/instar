@@ -663,8 +663,17 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       })});
       // Rendered controls only, like every other structural fact (a hidden "Not now" must not count).
       const hasNotNow = primaryLabels.includes('not now') || linkLabels.includes('not now');
+      // A bot-check interstitial (Cloudflare "Just a moment…" / Turnstile) that clears on its
+      // own once the browser has been observed for a while — an automated hold, not a CAPTCHA
+      // the operator must solve. Facts: the interstitial title, its fixed wording, or the
+      // challenge iframe. Checked before the prose chain so its text can never read as a form.
+      const title = (document.title || '').toLowerCase();
+      const isInterstitial = /^just a moment/.test(title)
+        || has(/verifying you are human|verify you are human|checking your browser|performing security verification|checking if the site connection is secure/)
+        || input('iframe[src*="challenges.cloudflare.com" i]');
       let pageClass = structuralClass || 'unknown';
       if (structuralClass) { /* structural match wins; the prose chain is skipped */ }
+      else if (isInterstitial) pageClass = 'interstitial';
       else if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
       else if (has(/check your phone|phone verification|text message|send a code to your phone/)) pageClass = 'phone-confirmation';
       else if (hasGoogleSignIn) pageClass = 'provider-choice';

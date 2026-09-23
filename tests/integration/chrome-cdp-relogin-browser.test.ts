@@ -43,6 +43,20 @@ describe('ChromeCdpReloginBrowser real process', () => {
     expect(isClosedOpenAiDeviceApproval({ ...base, pathname: '/oauth/authorize' })).toBe(false);
     expect(isClosedOpenAiDeviceApproval({ ...base, origin: 'https://auth.openai.com.evil.example' })).toBe(false);
   });
+  it.skipIf(resolveChromeExecutable() === null)('classifies a Cloudflare "Just a moment" bot-check hold as interstitial, not captcha or unknown', async () => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      const html = `<!doctype html><html><head><title>Just a moment...</title></head><body>
+        <h1>claude.ai</h1><p>Verifying you are human. This may take a few seconds.</p>
+        <p>Performing security verification</p></body></html>`;
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      expect(await browser.snapshot('operator@example.com')).toMatchObject({ pageClass: 'interstitial' });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('launches isolated Chrome, classifies, fills and submits the form, and closes', async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
     dirs.push(profile);

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   AnthropicReloginBrowserDriver,
+  INTERSTITIAL_POLL_MS,
   allowedActions,
   generateTotp,
   safeAllowedUrl,
@@ -164,5 +165,34 @@ describe('AnthropicReloginBrowserDriver', () => {
     expect(safeAllowedUrl('http://claude.ai/oauth')).toBe(false);
     expect(safeAllowedUrl('https://user:pass@claude.ai/oauth')).toBe(false);
     expect(allowedActions(state('password'), { artifact, loginMethod: 'session-cookie', secretRefs: {} })).toEqual([]);
+  });
+});
+
+describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
+  const claude = { origin: 'https://claude.ai' };
+  it('waits out a "Just a moment" interstitial on its own budget, without supervision, then continues the drive', async () => {
+    // 2026-09-23 justin-gmail: three attempts died on the interstitial in 15 s each (20 × 750 ms).
+    const holds = Array.from({ length: 12 }, () => state('interstitial', claude)); // 12 × 3 s = 36 s > the old 15 s
+    const f = fixture([...holds, state('authorize', { ...claude, hasAuthorize: true, requestedScopes: ['user:profile'] }), state('paste-code', claude)]);
+    const result = await f.driver.drive({ ...f.request, loginMethod: 'session-cookie', secretRefs: {} });
+    expect(result).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(f.browser.wait).toHaveBeenCalledTimes(12);
+    expect(f.browser.wait).toHaveBeenCalledWith(INTERSTITIAL_POLL_MS);
+    // Interstitial polls never reach the supervisor and never consume a drive step (maxSteps is 10 here).
+    expect(f.supervise).toHaveBeenCalledTimes(1);
+    expect(f.supervise.mock.calls[0][0].snapshot.pageClass).toBe('authorize');
+  });
+  it('gives up as transient once the interstitial budget is spent, never as a CAPTCHA', async () => {
+    const f = fixture([state('interstitial', claude)]);
+    const driver = new AnthropicReloginBrowserDriver({ browser: f.browser, resolveSecret: f.resolveSecret,
+      supervise: f.supervise, seatLease: f.seatLease, now: () => NOW, maxSteps: 10, interstitialMaxMs: 9_000 });
+    expect(await driver.drive(f.request)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.browser.wait).toHaveBeenCalledTimes(3); // 3 × 3 s = the 9 s budget
+    expect(f.supervise).not.toHaveBeenCalled();
+    expect(f.browser.close).toHaveBeenCalled();
+  });
+  it('offers only a wait on an interstitial', () => {
+    expect(allowedActions(state('interstitial', claude), { artifact, loginMethod: 'password', secretRefs: { password: 'p' } }))
+      .toEqual(['wait']);
   });
 });
