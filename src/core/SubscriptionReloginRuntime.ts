@@ -108,6 +108,14 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     startOrRecoverLogin: async (episode) => {
       const acct = mustAccount(account(episode));
       let login = pending(acct.id);
+      // Each attempt owns a fresh login. A live login seen at cli-starting was made before this
+      // attempt (a dashboard link the auto-reissuer has been refreshing, or a prior attempt's), and
+      // its cumulative reissueCount would be read as this episode's reissue budget — failing the
+      // repair before the browser is ever driven. Nothing has been driven yet, so replacing it is safe.
+      if (login && episode.state === 'cli-starting' && login.status !== 'completed' && login.status !== 'abandoned') {
+        deps.enrollment.abandon(login.id);
+        login = null;
+      }
       if (!login || login.status === 'completed' || login.status === 'abandoned') {
         login = await deps.enrollment.start({ id: acct.id, label: acct.nickname, provider: acct.provider,
           framework: acct.framework, configHome: acct.configHome, expectedEmail: acct.email,
