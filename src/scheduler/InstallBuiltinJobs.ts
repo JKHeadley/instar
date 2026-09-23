@@ -200,6 +200,18 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       // Spec §2.8/D11 — carry the per-machine-independent flag from frontmatter
       // (FAILSAFE_SCHEMA parses it as the string "true"/"false"; coerceBool handles both).
       perMachineIndependent: coerceBool(frontmatter.perMachineIndependent),
+      // Jev job-completion audit vocabulary (jev-job-supervision spec). The
+      // manifest is the loader's authority, so an un-carried value is inert —
+      // which would silently let the audit's own batch job audit itself.
+      completionAudit:
+        frontmatter.completionAudit === 'excluded'
+        || frontmatter.completionAudit === 'eligible'
+        || frontmatter.completionAudit === 'priority'
+          ? frontmatter.completionAudit
+          : undefined,
+      declaredEffects: Array.isArray(frontmatter.declaredEffects)
+        ? (frontmatter.declaredEffects as unknown[]).filter((e): e is string => typeof e === 'string')
+        : undefined,
       disabledAtBodyHash: existingDisabledAtBodyHash,
     });
 
