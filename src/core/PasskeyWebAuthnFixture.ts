@@ -95,6 +95,49 @@ function handler(selfOrigin: () => string, otherOrigin: () => string): http.Requ
         const safe = email.replace(/[<>&"]/g, '');
         return send(200, page(`<h1>account</h1><div data-email="${safe}">${safe}</div>`));
       }
+      // ── Redacted page-class fixtures (spec §3.6 / §8 "page-class ordering fixtures").
+      // Each page carries the STRUCTURE of one closed Google page AND prose the parent
+      // text-regex chain would classify differently, so a match here proves the
+      // structural layer runs first. No identities, no real copy beyond the markers.
+      case '/parent-chain':
+        // No structural class here: the parent prose/selector chain must answer (`email`).
+        return send(200, page(`<input type="email" autocomplete="username"><button>Next</button>`));
+      case '/v3/signin/identifier':
+        return send(200, page(`<p>enter a verification code</p><input type="text" id="identifierId" name="identifier"><button>Next</button>`));
+      case '/v3/signin/challenge/pk/presend': {
+        const v = url.searchParams.get('v') ?? '';
+        const rejected = v === 'alert' || v === 'throttled';
+        // The rejection states show the alert and LOSE the prompt's own Continue control.
+        const alert = rejected ? '<div role="alert">something went wrong</div>' : '';
+        const again = v === 'throttled' ? '<button>Try again later</button>' : '';
+        const cont = rejected ? '' : '<button id="continue" onclick="document.getElementById(\'picked\').textContent=\'continue\'">Continue</button>';
+        // A HIDDEN dialog + a hidden "Not now": present in the DOM, never rendered — must not count.
+        return send(200, page(`<p>use your passkey, or enter your password or a verification code</p>${alert}
+          <div role="dialog" style="display:none"><button>Not now</button></div>
+          ${cont}${again}
+          <a href="#" onclick="document.getElementById('picked').textContent='another'">Try another way</a><span id="picked">none</span>`));
+      }
+      case '/v3/signin/challenge/totp':
+        return send(200, page(`<p>choose an account</p><input type="tel" id="totpPin" name="totpPin"><button>Next</button>`));
+      case '/v3/signin/challenge/bc':
+        return send(200, page(`<p>choose an account</p><input type="tel" id="backupCodePin" name="backupCodePin"><button>Next</button>`));
+      case '/v3/signin/challenge/recaptcha':
+        return send(200, page(`<div class="g-recaptcha" data-sitekey="fixture"></div><input type="password"><button>Next</button>`));
+      case '/speedbump/passkeyenrollment': {
+        const confirm = url.searchParams.get('v') === 'confirm';
+        return send(200, page(`<p>enter your password</p>${confirm ? '<div role="dialog"><button>Continue</button></div>' : ''}
+          <button onclick="document.getElementById('picked').textContent='create'">Create a passkey</button>
+          <button onclick="document.getElementById('picked').textContent='not-now'">Not now</button><span id="picked">none</span>`));
+      }
+      case '/signinoptions/passkeys': {
+        const v = url.searchParams.get('v') ?? 'list';
+        const body = v === 'create' ? '<button>Create a passkey</button>'
+          : v === 'confirm' ? '<div role="dialog"><button>Continue</button></div><button>Create a passkey</button>'
+          : v === 'done' ? '<div role="dialog"><button>Done</button></div>'
+          : v === 'blocked' ? '<div role="alert">passkeys are not enabled here</div><a href="https://support.google.com/a/answer/0">Learn more</a>'
+          : '<ul><li>a passkey</li></ul>';
+        return send(200, page(`<p>enter your password</p>${body}`));
+      }
       default:
         return send(404, page('<h1>not found</h1>'));
     }
@@ -116,7 +159,7 @@ export async function startPasskeyFixture(): Promise<PasskeyFixture> {
   return {
     holderOrigin,
     otherOrigin,
-    policy: { holderOrigin, apexHost: RP_ID, allowInsecure: true },
+    policy: { holderOrigin, apexHost: RP_ID, allowInsecure: true, accountOrigin: otherOrigin },
     close: async () => {
       await Promise.all([
         new Promise<void>((r) => holder.close(() => r())),

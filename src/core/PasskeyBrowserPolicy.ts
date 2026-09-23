@@ -29,13 +29,23 @@ export interface OriginPolicy {
   apexHost: string;
   /** Fixture-only: accept http:// for the apex family (WebAuthn treats localhost as secure). */
   allowInsecure?: boolean;
+  /**
+   * The account-settings origin whose passkey pages the closed page classes
+   * recognise (spec §3.6): myaccount.google.com in production, the fixture's
+   * OTHER origin in tests. It is in the relying-party family, so the stored
+   * credential is REMOVED before any document there loads — classification
+   * there never coexists with the key. Absent ⇒ no account-origin class matches.
+   */
+  accountOrigin?: string;
 }
 
 export const ACCOUNTS_GOOGLE_ORIGIN = 'https://accounts.google.com';
+export const MYACCOUNT_GOOGLE_ORIGIN = 'https://myaccount.google.com';
 
 export const GOOGLE_ORIGIN_POLICY: OriginPolicy = Object.freeze({
   holderOrigin: ACCOUNTS_GOOGLE_ORIGIN,
   apexHost: 'google.com',
+  accountOrigin: MYACCOUNT_GOOGLE_ORIGIN,
 });
 
 /** Origin of a URL, or null when it cannot be parsed. */
