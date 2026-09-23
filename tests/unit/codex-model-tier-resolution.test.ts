@@ -28,6 +28,7 @@ import {
   CODEX_CHATGPT_FALLBACK_MODEL,
 } from '../../src/providers/adapters/openai-codex/models.js';
 import { resolveModelForFramework } from '../../src/core/frameworkSessionLaunch.js';
+import { classifyCodexErrorMessage } from '../../src/providers/adapters/openai-codex/observability/eventNormalizer.js';
 import { KNOWN_CODEX_MODEL_IDS } from '../../src/core/ModelTierEscalation.js';
 
 /** Every codex id observed REJECTED on the ChatGPT-account surface, with the date. */
@@ -38,7 +39,8 @@ const RETIRED_ON_CHATGPT_ACCOUNT = [
   'gpt-5.5',        // 2026-09-09 (404, not 400)
 ];
 
-const LIGHT = 'gpt-5.6-sol';
+const LIGHT = 'gpt-6-luna';
+const MEDIUM = 'gpt-6-sol';
 const HEAVY = 'gpt-6-astra';
 /** The canonical tiers BOTH resolvers understand. */
 const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
@@ -56,14 +58,14 @@ describe('codex model-tier resolution (post 2026-09-09 gpt-5.4/5.5 retirement)',
     it('fast tier resolves to the cheapest still-accepted model', () => {
       expect(resolveCliModelFlag('fast')).toBe(LIGHT);
     });
-    it('balanced tier resolves to the same light model (no non-reasoning option exists)', () => {
-      expect(resolveCliModelFlag('balanced')).toBe(LIGHT);
+    it('balanced tier resolves to the medium model', () => {
+      expect(resolveCliModelFlag('balanced')).toBe(MEDIUM);
     });
     it('capable tier resolves to the live frontier model', () => {
       expect(resolveCliModelFlag('capable')).toBe(HEAVY);
     });
     it('undefined falls back to the balanced default', () => {
-      expect(resolveCliModelFlag(undefined)).toBe(LIGHT);
+      expect(resolveCliModelFlag(undefined)).toBe(MEDIUM);
     });
     it('a raw model id passes through verbatim', () => {
       expect(resolveCliModelFlag('gpt-6-astra')).toBe('gpt-6-astra');
@@ -77,8 +79,8 @@ describe('codex model-tier resolution (post 2026-09-09 gpt-5.4/5.5 retirement)',
     it('legacy haiku alias resolves to the light model (not a retired id)', () => {
       expect(resolveModelForFramework('codex-cli', 'haiku')).toBe(LIGHT);
     });
-    it('balanced maps light and capable maps heavy', () => {
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe(LIGHT);
+    it('balanced maps medium and capable maps heavy', () => {
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe(MEDIUM);
       expect(resolveModelForFramework('codex-cli', 'capable')).toBe(HEAVY);
     });
     it('legacy opus alias resolves to the live frontier model', () => {
@@ -122,6 +124,23 @@ describe('codex model-tier resolution (post 2026-09-09 gpt-5.4/5.5 retirement)',
           resolveModelForFramework('codex-cli', tier),
         );
       }
+    });
+  });
+
+  describe('older Codex CLIs (2026-09-23 GPT-6 move)', () => {
+    // codex CLI 0.153.4 refuses gpt-6-luna / gpt-6-sol with this exact wording
+    // (live-probed 2026-09-23). It must classify as the retirement signature so
+    // the one-shot self-heal retries on the floor instead of failing.
+    it('the old-CLI refusal of a GPT-6 tier id triggers the self-heal classification', () => {
+      for (const id of [resolveCliModelFlag('fast'), resolveCliModelFlag('balanced')]) {
+        const msg = `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The '${id}' model is not supported when using Codex with a ChatGPT account."}}`;
+        expect(classifyCodexErrorMessage(msg)).toBe('unsupported');
+      }
+    });
+    it('the retirement floor stays on a model older CLIs still accept', () => {
+      expect(CODEX_CHATGPT_FALLBACK_MODEL).toBe('gpt-5.6-sol');
+      expect(KNOWN_CODEX_MODEL_IDS as readonly string[]).toContain(CODEX_CHATGPT_FALLBACK_MODEL);
+      expect(resolveCliModelFlag('fast')).not.toBe(CODEX_CHATGPT_FALLBACK_MODEL);
     });
   });
 });

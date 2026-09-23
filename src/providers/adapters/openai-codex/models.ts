@@ -60,6 +60,11 @@ import type { ModelTier } from '../../types.js';
  *        gpt-5.4-mini, gpt-5.4, gpt-5.6, gpt-6, gpt-5.6-mini, gpt-6-mini
  *   ❌ rejected 404 "does not exist or you do not have access to it": gpt-5.5
  *   ✅ still working 2026-09-09: gpt-5.6-sol, gpt-6-astra   (both replied to a trivial probe)
+ *
+ * RE-PROBED 2026-09-23 on codex CLI 0.156.1: gpt-6-luna, gpt-6-sol and gpt-6-astra
+ * all answer on the ChatGPT account; on CLI 0.153.4 gpt-6-luna and gpt-6-sol are
+ * refused ("not supported when using Codex with a ChatGPT account"). The tier map
+ * moved to the GPT-6 family (fast=luna, balanced=sol, capable=astra).
  * This was the THIRD retirement in this class (2026-04-14 `-codex` suffix, 2026-06-03
  * gpt-5.2) and the first where the SAFETY FLOOR itself was dead — so the self-heal in
  * CodexCliIntelligenceProvider retried onto another rejected model and the fleet stayed
@@ -114,14 +119,16 @@ import type { ModelTier } from '../../types.js';
  * target is validated against KNOWN_CODEX_MODEL_IDS at the retry authority.
  */
 const TIER_TO_MODEL: Record<ModelTier, string> = {
-  // fast — cheapest model still ACCEPTED on the ChatGPT account. gpt-5.2 was
-  // retired 2026-06-03 and its replacement gpt-5.4-mini was retired in turn
-  // (2026-09-09, see header), so this is now gpt-5.6-sol. Still a reasoning
-  // model, so `fast` continues to equal `balanced` — there is no non-reasoning
-  // option on this surface, and a working model beats a rejected one.
-  fast: 'gpt-5.6-sol',
-  // medium — cheapest live reasoning model; everyday light work / worker subagents.
-  balanced: 'gpt-5.6-sol',
+  // fast — the light tier. Moved 2026-09-23 from gpt-5.6-sol to gpt-6-luna,
+  // the small model of the GPT-6 family (operator directive: light background
+  // work runs on luna). Live-probed on codex CLI 0.156.1; CLI 0.153.4 refuses it
+  // with the ChatGPT-account "not supported" 400, which the retirement self-heal
+  // in CodexCliIntelligenceProvider catches and retries on the floor below — so
+  // an agent on an older CLI keeps working at the previous model instead of failing.
+  fast: 'gpt-6-luna',
+  // medium — everyday light work / worker subagents. gpt-6-sol since 2026-09-23
+  // (same live probe, same old-CLI self-heal as `fast`).
+  balanced: 'gpt-6-sol',
   // heavy — frontier reasoning model; hard problems + the user's main chat.
   // gpt-5.5 was retired 2026-09-09 (404s); gpt-6-astra is the live frontier id.
   capable: 'gpt-6-astra',
@@ -136,6 +143,9 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
 // Live-probed 2026-09-09. The previous floor (gpt-5.4-mini) was retired in the
 // same sweep that killed the tier map, which is exactly how the self-heal came
 // to retry one dead model with another. A floor is only a floor while it answers.
+// Deliberately NOT moved to the GPT-6 family on 2026-09-23: this floor exists for
+// agents whose Codex CLI is too old for the GPT-6 tier ids (0.153.4 refuses
+// gpt-6-luna and gpt-6-sol), so it must stay a model those CLIs accept.
 export const CODEX_CHATGPT_FALLBACK_MODEL = 'gpt-5.6-sol';
 
 /**
