@@ -149,6 +149,7 @@ import { PasskeyNonceLedger } from '../core/PasskeyNonceLedger.js';
 import { PASSKEY_CELL_OPS, mintPasskeyCellBody, signPasskeyCellMandate, type PasskeyCellOp } from '../core/PasskeyCellMandate.js';
 import { applyLocalPasskeyCellAction, receivePasskeyCellMandate, sweepReceivedPasskeyRevokes, type PasskeyCellActionDeps } from '../core/PasskeyCellActions.js';
 import { PasskeyCredentialStore, PASSKEY_DIR } from '../core/PasskeyCredentialStore.js';
+import { PasskeyRevokeOutbox, type DeliveryOutcome as PasskeyDeliveryOutcome } from '../core/PasskeyRevokeOutbox.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
@@ -1355,6 +1356,10 @@ export interface RouteContext {
   /** passkey-cell mandate delivery seam (tests inject; production posts to the peer's /passkeys/cell-action). */
   deliverPasskeyCellMandate?: ((args: { targetMachineId: string; portable: unknown }) =>
     Promise<{ ok: boolean; status: number; reason?: string; result?: unknown }>) | null;
+  /** The server-owned revoke outbox (timer-driven); absent ⇒ routes build a file-backed one per request (no timer). */
+  passkeyRevokeOutbox?: (() => import('../core/PasskeyRevokeOutbox.js').PasskeyRevokeOutbox) | null;
+  /** Peer online observation for the outbox's forward-pull + post-breaker attempt (registry/heartbeat). */
+  passkeyPeerOnline?: ((machineId: string) => boolean) | null;
   deliverMandateToMachine?: ((args: {
     targetMachineId: string;
     portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
@@ -26335,19 +26340,53 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const out = await ctx.deliverPasskeyCellMandate({ targetMachineId: input.targetMachineId, portable });
       return { ...out, portable };
     }
-    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === input.targetMachineId);
-    if (!peer) return { ok: false as const, status: 0, reason: 'no-peer-url', portable };
+    const out = await postPasskeyCellMandateToPeer(input.targetMachineId, portable);
+    return { ...out, portable };
+  };
+  /** Production transport: POST the bundle to the peer's /passkeys/cell-action with this agent's Bearer token. */
+  const postPasskeyCellMandateToPeer = async (targetMachineId: string, portable: unknown): Promise<{ ok: boolean; status: number; reason?: string; result?: unknown }> => {
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === targetMachineId);
+    if (!peer) return { ok: false, status: 0, reason: 'no-peer-url' };
     try {
       const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/cell-action`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.config.authToken ?? ''}` },
         body: JSON.stringify({ portable }), signal: AbortSignal.timeout(15_000),
       });
       const json = await r.json().catch(() => ({})) as Record<string, unknown>;
-      return { ok: r.ok && json.applied === true, status: r.status, reason: typeof json.reason === 'string' ? json.reason : undefined, result: json, portable };
+      return { ok: r.ok && json.applied === true, status: r.status, reason: typeof json.reason === 'string' ? json.reason : undefined, result: json };
     } catch (err) {
-      return { ok: false as const, status: 0, reason: err instanceof Error ? err.message : String(err), portable };
+      return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
     }
   };
+  /** Map a delivery result onto the outbox's outcome classes (applied / dismissed / refused / unreachable). */
+  const classifyPasskeyDelivery = (out: { ok: boolean; status: number; reason?: string; result?: unknown }): PasskeyDeliveryOutcome => {
+    if (out.ok) return { kind: 'applied', detail: out.result };
+    const reason = out.reason ?? `status-${out.status}`;
+    if (reason === 'dismissed-by-operator') return { kind: 'dismissed', reason };
+    if (out.status === 0 || out.status >= 500 || reason === 'no-peer-url' || /timeout|ECONN|fetch failed|aborted/i.test(reason)) return { kind: 'unreachable', reason };
+    return { kind: 'refused', reason };
+  };
+  /** The revoke outbox: the server's timer-driven instance when wired, else a file-backed one for this request. */
+  const buildPasskeyRevokeOutbox = (auth: ReturnType<typeof buildPasskeyAuthority>): PasskeyRevokeOutbox => {
+    if (ctx.passkeyRevokeOutbox) return ctx.passkeyRevokeOutbox();
+    return new PasskeyRevokeOutbox({
+      stateDir: ctx.config.stateDir,
+      deliver: async (targetMachineId, portable) => {
+        const out = ctx.deliverPasskeyCellMandate
+          ? await ctx.deliverPasskeyCellMandate({ targetMachineId, portable })
+          : await postPasskeyCellMandateToPeer(targetMachineId, portable);
+        return classifyPasskeyDelivery(out);
+      },
+      peerOnline: (id) => ctx.passkeyPeerOnline?.(id) ?? false,
+      raiseIncompleteRevoke: (item) => ctx.telegram?.upsertAttentionItem({
+        id: item.id, title: `Passkey revoke not acknowledged by ${item.machineId} for 30 days`,
+        summary: item.body.slice(0, 160), description: item.body, category: 'passkeys', priority: 'HIGH', sourceContext: 'passkey-revoke-outbox',
+      }),
+      onApplied: (entry) => { auth.grants.forgetIssuedPeerGrant(entry.canonicalEmail, entry.targetMachineId); },
+      log: (line) => console.log(line),
+    });
+  };
+
   /** Shared body of every PIN op: local target → apply here; peer target → sign + deliver. */
   const runPasskeyPinOp = async (req: import('express').Request, res: ExpressResponse, op: PasskeyCellOp, email: string, argsIn: Record<string, unknown>) => {
     let args = argsIn;
@@ -26367,13 +26406,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const known = auth.grants.listIssuedPeerGrants().find((g) => g.canonicalEmail === canonical && g.targetMachineId === targetMachineId)?.targetLocalSeq;
         if (Number.isSafeInteger(known)) args = { ...args, revokesGrantSeq: known };
       }
+      if (op === 'revoke') {
+        // A peer REVOKE is durable: sign once, enqueue (latest-wins per cell), try now, and let the
+        // outbox re-deliver the SAME bundle on backoff until the peer applies it (FD15).
+        const idm = ctx.coordinator?.managers?.identityManager;
+        if (!idm) { res.status(503).json({ op, target: targetMachineId, delivered: false, reason: 'no-mesh-identity' }); return; }
+        let portable;
+        try {
+          portable = signPasskeyCellMandate(mintPasskeyCellBody({ principal, canonicalEmail: canonical, targetMachineId, op, args }), auth.selfMachineId, idm.loadSigningKey());
+        } catch (err) {
+          res.status(503).json({ op, target: targetMachineId, delivered: false, reason: `sign-failed:${err instanceof Error ? err.message : String(err)}` }); return;
+        }
+        const outbox = buildPasskeyRevokeOutbox(auth);
+        const entry = outbox.enqueue({ canonicalEmail: canonical, targetMachineId, principal, portable,
+          cutoffSeq: Number.isSafeInteger(args.revokesGrantSeq) ? (args.revokesGrantSeq as number) : null });
+        const after = await outbox.attemptNow(entry.key);
+        appendPlaywrightAudit('passkey-revoke', 'passkeys', { target: targetMachineId, email: canonical ? 'set' : 'none', delivered: after?.state === 'applied', outbox: after?.state ?? 'pending', reason: after?.lastResult ?? null, dryRun: false });
+        res.status(after?.state === 'applied' ? 200 : 202).json({ op, target: targetMachineId, delivered: after?.state === 'applied', outbox: after ? { key: after.key, state: after.state, attempts: after.attempts, nextAttemptAt: after.nextAttemptAt, lastResult: after.lastResult ?? null } : null,
+          note: after?.state === 'applied' ? undefined : 'queued in the durable revoke outbox; re-delivered unchanged on backoff (1h, 6h, then daily) until the peer applies it' });
+        return;
+      }
       const out = await issuePasskeyCellMandateToPeer({ op, canonicalEmail: canonical, targetMachineId, args, principal });
       if (op === 'grant' && out.ok) {
         const peerSeq = ((out as { result?: { result?: { localSeq?: unknown } } }).result?.result?.localSeq);
         auth.grants.recordIssuedPeerGrant({ canonicalEmail: canonical, targetMachineId, issuedAt: new Date().toISOString(), nonce: out.portable?.body.nonce ?? '',
           ...(Number.isSafeInteger(peerSeq) ? { targetLocalSeq: peerSeq as number } : {}) });
       }
-      if (op === 'revoke' && out.ok) auth.grants.forgetIssuedPeerGrant(canonical, targetMachineId);
       appendPlaywrightAudit(`passkey-${op}`, 'passkeys', { target: targetMachineId, email: canonical ? 'set' : 'none', delivered: out.ok, reason: out.reason ?? null, dryRun: false });
       res.status(out.ok ? 200 : 502).json({ op, target: targetMachineId, delivered: out.ok, status: out.status, reason: out.reason ?? null, result: (out as { result?: unknown }).result ?? null });
       return;
@@ -26433,6 +26491,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   };
   router.post('/passkeys/issuer-add', (req, res) => runIssuerOp(req, res, 'issuer-add'));
   router.post('/passkeys/issuer-remove', (req, res) => runIssuerOp(req, res, 'issuer-remove'));
+  // GET /passkeys/outbox — this machine's pending / escalated / applied peer revokes (no bundle bodies).
+  router.get('/passkeys/outbox', (_req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try {
+      const auth = buildPasskeyAuthority();
+      const entries = buildPasskeyRevokeOutbox(auth).list().map(({ portable: _p, ...rest }) => rest);
+      res.json({ machineId: auth.selfMachineId, entries, pending: entries.filter((e) => e.state === 'pending').length, escalated: entries.filter((e) => e.state === 'escalated').length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'outbox unreadable' });
+    }
+  });
+  // POST /passkeys/outbox/tick — run one re-delivery pass now (Bearer; idempotent; the timer does this every 10 min).
+  router.post('/passkeys/outbox/tick', async (_req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try {
+      const auth = buildPasskeyAuthority();
+      res.json(await buildPasskeyRevokeOutbox(auth).tick());
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'outbox tick failed' });
+    }
+  });
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
   // the expected-issuer set and the nonce ledger are the authority. Refuses account-follow-me bundles.
   router.post('/passkeys/cell-action', async (req, res) => {

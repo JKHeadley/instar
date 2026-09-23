@@ -513,6 +513,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/passkeys/outbox/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one re-delivery pass over this machine\'s own state/passkey-revoke-outbox.json (attempt counters, next-attempt times); each issuing machine owns its outbox, peers never replay it',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/passkeys/cell-action',
     domain: 'machine-local',
     story: {

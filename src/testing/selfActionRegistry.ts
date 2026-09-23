@@ -1431,7 +1431,64 @@ function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { 
   } };
 }
 
+/**
+ * passkey-revoke-outbox — durable re-delivery of a signed passkey-cell revoke to a peer
+ * (agent-held-google-passkey §3.2 / FD15). Under the pinned fixture the peer ALWAYS rejects
+ * (unreachable). Convergence argument: attempts follow a fixed backoff (1h, 6h, then daily)
+ * clocked from the durable next-attempt time; at 30 days after issue the entry ESCALATES
+ * (one aggregated attention item per machine) and automatic re-delivery STOPS, apart from ONE
+ * post-breaker attempt when the peer is next observed online (recorded durably, so a flapping
+ * peer cannot re-trigger it). So the total emit count over ANY horizon is bounded by
+ * 3 + 29 + 1 = 33 per entry — horizon-independent, restart-independent (attempts/next-attempt
+ * live in the file). The peer-online forward pull is EDGE-triggered (one pull per offline→online
+ * transition, never below a 15-minute floor) — a peer that stays online-but-refusing gets the plain
+ * backoff, which is what the fixture below models: the peer is online on every tick and never
+ * transitions, so no pull ever fires and the count is the schedule's.
+ */
+const passkeyRevokeOutbox: SelfActionController = {
+  id: 'passkey-revoke-outbox',
+  actionVerb: 'retry-deliver-revoke',
+  models: 'src/core/PasskeyRevokeOutbox.ts (1h/6h/daily backoff, 30-day breaker + one post-breaker attempt when the peer is next online)',
+  modelsPath: 'src/core/PasskeyRevokeOutbox.ts',
+  boundK: 33,
+  perTargetBoundK: 33,
+  ticks: 45,
+  tickMs: 24 * 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return passkeyRevokeOutbox.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const BACKOFF = [60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000];
+    const BREAKER_MS = 30 * 24 * 60 * 60_000;
+    const issuedAt = Number(f.durableState.get('pk-outbox-issued') ?? f.clock.nowMs());
+    f.durableState.set('pk-outbox-issued', issuedAt);
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const state = String(f.durableState.get('pk-outbox-state') ?? 'pending');
+      if (state === 'escalated') {
+        // The single post-breaker attempt — the fixture's peer is "online" every tick, and it still rejects.
+        if (f.durableState.get('pk-outbox-post-breaker') === true) return;
+        f.durableState.set('pk-outbox-post-breaker', true);
+        sink.emit({ verb: 'retry-deliver-revoke', target: 'peer-machine' });
+        sink.emitTimesMs.push(now);
+        return;
+      }
+      if (now - issuedAt >= BREAKER_MS) { f.durableState.set('pk-outbox-state', 'escalated'); return; }
+      const nextAt = Number(f.durableState.get('pk-outbox-next') ?? now);
+      if (now < nextAt) return;
+      const attempts = Number(f.durableState.get('pk-outbox-attempts') ?? 0) + 1;
+      f.durableState.set('pk-outbox-attempts', attempts);
+      sink.emit({ verb: 'retry-deliver-revoke', target: 'peer-machine' });
+      sink.emitTimesMs.push(now);
+      if (f.targetAlwaysRejects()) f.durableState.set('pk-outbox-next', now + BACKOFF[Math.min(attempts - 1, BACKOFF.length - 1)]);
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   telegramOriginOwnedDetectorCanary,
   telegramOriginNativeModelCanary,

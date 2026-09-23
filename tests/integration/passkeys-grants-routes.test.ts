@@ -139,12 +139,18 @@ describe('passkey grants / issuers / cell-action routes (integration)', () => {
     // A confirms B as an issuer on its own dashboard → A's own grant is now allowed.
     await request(a.app).post('/passkeys/issuer-add').set(auth()).send({ pin: PIN, machineId: 'mB' });
     expect((await request(a.app).post('/passkeys/grant').set(auth()).send({ pin: PIN, email: 'a@example.com' })).status).toBe(200);
-    // A peer revoke from A removes B's grant.
+    // A peer revoke from A goes through the durable OUTBOX: signed once, tried now, applied on B.
     const rv = await request(a.app).post('/passkeys/revoke').set(auth()).send({ pin: PIN, email: 'a@example.com', targetMachineId: 'mB' });
     expect(rv.status).toBe(200);
-    expect(rv.body.result.result.appliedCutoffSeq).toBe(1); // the known peer sequence travelled in the mandate
-    expect((await request(b.app).get('/passkeys/grants').set(auth())).body.grants[0].status).toBe('revoked');
+    expect(rv.body).toMatchObject({ delivered: true, outbox: { state: 'applied', attempts: 1 } });
+    const onBAfter = await request(b.app).get('/passkeys/grants').set(auth());
+    expect(onBAfter.body.grants[0].status).toBe('revoked');
+    expect(onBAfter.body.grants[0].localSeq).toBe(1); // the known peer sequence travelled in the mandate
     expect((await request(a.app).get('/passkeys/grants').set(auth())).body.issuedPeerGrants).toEqual([]);
+    const outbox = await request(a.app).get('/passkeys/outbox').set(auth());
+    expect(outbox.status).toBe(200);
+    expect(outbox.body.entries).toEqual([expect.objectContaining({ key: 'a@example.com@mB', state: 'applied' })]);
+    expect(JSON.stringify(outbox.body)).not.toContain('"sig"'); // bundles are not served
   });
 
   it('cell-action receiver: refuses a follow-me bundle, a replayed nonce, an expired mandate, and a non-issuer signer — and never writes on refusal', async () => {
@@ -174,5 +180,40 @@ describe('passkey grants / issuers / cell-action routes (integration)', () => {
     const forged = signPasskeyCellMandate(mintPasskeyCellBody({ principal: 'uid:1', canonicalEmail: 'y@example.com', targetMachineId: 'mB', op: 'grant' }), 'mA', rogue.keys.privateKey);
     expect((await request(b.app).post('/passkeys/cell-action').set(auth()).send({ portable: forged })).body.reason).toBe('bad-signature');
     expect((await request(b.app).get('/passkeys/grants').set(auth())).body.grants.map((g: { canonicalEmail: string }) => g.canonicalEmail)).toEqual(['z@example.com']);
+  });
+
+  it('a peer revoke the peer cannot yet accept is QUEUED (202) in the durable outbox and re-delivered UNCHANGED by a later tick once the peer trusts the issuer', async () => {
+    const a = machine('mA', world); const b = machine('mB', world);
+    await request(a.app).post('/passkeys/issuer-add').set(auth()).send({ pin: PIN, machineId: 'mB' });
+    // B holds a locally-granted cell; B has NOT confirmed A as an issuer.
+    await request(b.app).post('/passkeys/issuer-add').set(auth()).send({ pin: PIN, machineId: 'mA' });
+    await request(b.app).post('/passkeys/grant').set(auth()).send({ pin: PIN, email: 'z@example.com' });
+    await request(b.app).post('/passkeys/issuer-remove').set(auth()).send({ pin: PIN, machineId: 'mA' });
+    const rv = await request(a.app).post('/passkeys/revoke').set(auth()).send({ pin: PIN, email: 'z@example.com', targetMachineId: 'mB' });
+    expect(rv.status).toBe(202);
+    expect(rv.body).toMatchObject({ delivered: false, outbox: { state: 'pending', attempts: 1, lastResult: 'refused:issuer-not-trusted' } });
+    expect((await request(b.app).get('/passkeys/grants').set(auth())).body.grants[0].status).toBe('active');
+    // Not due yet (1h backoff) → a tick attempts nothing.
+    expect((await request(a.app).post('/passkeys/outbox/tick').set(auth())).body.attempted).toEqual([]);
+    // Operator confirms A on B's own dashboard. B is then observed OFFLINE and back ONLINE (an edge) →
+    // the forward pull applies the queued revoke once the 15-minute floor has passed.
+    await request(b.app).post('/passkeys/issuer-add').set(auth()).send({ pin: PIN, machineId: 'mA' });
+    const actx = a.ctx as unknown as { passkeyPeerOnline: (id: string) => boolean };
+    actx.passkeyPeerOnline = () => false;
+    expect((await request(a.app).post('/passkeys/outbox/tick').set(auth())).body.attempted).toEqual([]); // offline observed
+    actx.passkeyPeerOnline = () => true;
+    // The 15-minute floor after the last attempt still holds: nothing yet.
+    expect((await request(a.app).post('/passkeys/outbox/tick').set(auth())).body.attempted).toEqual([]);
+    // Age the last attempt past the floor by editing the durable entry's timestamp (what a clock would do).
+    const file = path.join(a.dir, '.instar', 'state', 'passkey-revoke-outbox.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    data.entries['z@example.com@mB'].lastAttemptAt = new Date(Date.now() - 16 * 60_000).toISOString();
+    fs.writeFileSync(file, JSON.stringify(data));
+    const tick = await request(a.app).post('/passkeys/outbox/tick').set(auth());
+    expect(tick.body).toMatchObject({ attempted: ['z@example.com@mB'], applied: ['z@example.com@mB'] });
+    expect((await request(b.app).get('/passkeys/grants').set(auth())).body.grants[0].status).toBe('revoked');
+    // The peer saw the SAME nonce both times (a replay of an unapplied refusal is not a new instruction).
+    const entry = (await request(a.app).get('/passkeys/outbox').set(auth())).body.entries[0];
+    expect(entry).toMatchObject({ state: 'applied', attempts: 2 });
   });
 });
