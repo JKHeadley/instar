@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
-      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
-      "areaSha256": "aa64109d710bd60befbaac218122656ca91b27aa90c931c89f79ef5dc9b69657",
+      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
+      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
+      "areaSha256": "56e9e4709cb807c51fb6c7d23c8b9bfffe7dac15e56e6fbb1f11166b6434107e",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
-      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
-      "areaSha256": "8c7aedd2f041dfbf0ca55cc196b55df9c21306a05a1c42b4bcda2194269d178b",
+      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
+      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
+      "areaSha256": "9b36c471fe967bcd2b07c03c875343b91cfeaba836abcaffb63b5f0a9e7a7e9b",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26
