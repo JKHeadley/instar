@@ -444,6 +444,169 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // Agent-held Google passkeys (spec agent-held-google-passkey §3.4): the revert
+  // lever rewrites ONE account row in this machine's Playwright profile registry
+  // (loginMethod back to priorLoginMethod, passkey binding dropped). A passkey cell
+  // is (account × machine), so the write is machine-local by design (§12, FD2) and
+  // a peer reverts its own cell through its own route or a passkey-cell mandate.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revert-method',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the PIN-gated revert rewrites this machine\'s profile registry (state/playwright-profiles.json, excluded from project git sync); a passkey cell is per machine, so peers never replay the write — they revert their own cell',
+    },
+  });
+
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/grant',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes a grant row into this machine\'s state/passkey-grants.json (or signs a mandate for a PEER, which writes on the peer); a passkey cell is per machine, so peers never replay the write',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revoke',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'flips this machine\'s grant rows to revoked, raises the local revoke high-water mark under secrets/passkeys/, and drops the local binding/credential; per-machine authority, never replayed by peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-add',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a machine id to this machine\'s state/passkey-issuers.json (the receiver\'s own expected-issuer set); each machine confirms its own issuers with a locally entered PIN',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-remove',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a machine id from this machine\'s state/passkey-issuers.json; per-machine authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/outbox/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one re-delivery pass over this machine\'s own state/passkey-revoke-outbox.json (attempt counters, next-attempt times); each issuing machine owns its outbox, peers never replay it',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/cell-action',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the mandate receiver applies a VERIFIED op to this machine\'s own grant/issuer/nonce files; the signature binds the op to THIS targetMachineId, so no other machine can replay it',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/pool-state/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one pool read pass: this machine queries its peers and rewrites its own state/passkey-pool-lastknown.json memo cache; peer rows are read, never written back',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/exclude-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a peer to THIS machine\'s own state/passkey-peer-exclusions.json (its pool checks treat that peer like peer-offline); per-machine authority, the dashboard sends the op to each machine',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/include-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a peer from THIS machine\'s own state/passkey-peer-exclusions.json; per-machine authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/outcome',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'records one proof outcome into THIS machine\'s own state/passkey-health.json (a LOCAL cell only) and appends the transition to logs/passkey-health.jsonl; health is per machine, peers only READ it through the pool state',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/digest/refresh',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one digest pass: advances this machine\'s own health clocks and writes its own state/passkey-health-digest.json ledger; the attention item is keyed pool-wide and coalesced by key, and only the lease holder narrates peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/attest-google-removed',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'sets the Google-side state of THIS machine\'s own cell record to operator-attested (state/passkey-health.json); the signed mandate form is bound to the target machine like every passkey-cell op',
+    },
+  });
+
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can
   // never fork rung or lifecycle history. Read-only POST previews currently

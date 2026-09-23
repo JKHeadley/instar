@@ -4193,6 +4193,30 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Create an attention item, or REFRESH + REOPEN the same durable id when it already exists
+   * (updated body/title, status back to OPEN, re-posted to the Attention hub). `createAttentionItem`
+   * deliberately dedupes on id and returns the existing row unchanged — right for retries inside one
+   * episode, wrong for an aggregating item whose body must grow (a second cell escalates on the same
+   * machine) or for a later episode after the operator resolved the first. Hub-routed only: a
+   * per-item topic is never re-spawned by an upsert.
+   */
+  async upsertAttentionItem(
+    item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>,
+  ): Promise<AttentionItem> {
+    const existing = this.attentionItems.get(item.id);
+    if (!existing) return this.createAttentionItem(item, { hubOnly: true });
+    const unchanged = existing.status === 'OPEN' && existing.title === item.title && existing.description === item.description;
+    Object.assign(existing, item, { status: 'OPEN' as const, updatedAt: new Date().toISOString() });
+    this.saveAttentionItems();
+    if (!unchanged) {
+      const hubTopicId = await this.routeToAttentionHub(existing);
+      existing.coalesced = true;
+      if (hubTopicId !== null) existing.topicId = hubTopicId;
+    }
+    return existing;
+  }
+
+  /**
    * Create the first Agent-Health item for an entity, or refresh and visibly
    * reopen the same durable item when the condition returns after recovery.
    *

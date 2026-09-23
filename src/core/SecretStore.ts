@@ -70,6 +70,14 @@ export interface SecretStoreConfig {
   forceFileKey?: boolean;
   /** Test seam — see KeychainOps. Absent in production (real keychain used). */
   keychainOps?: KeychainOps;
+  /**
+   * Encrypted file path relative to `stateDir`. Defaults to the shared vault
+   * (`secrets/config.secrets.enc`). A different value gives a SEPARATE store
+   * with the same envelope and master key — used by the agent-held passkey
+   * store so passkeys never enter the shared vault (and so older builds, which
+   * only read the default path, never see them).
+   */
+  storeFile?: string;
 }
 
 /** The decrypted secrets object (flat key-value or nested) */
@@ -328,7 +336,7 @@ export class SecretStore {
   constructor(config: SecretStoreConfig) {
     this.stateDir = config.stateDir;
     this.keyManager = new MasterKeyManager(config.stateDir, config.forceFileKey, config.keychainOps);
-    this.encryptedPath = path.join(config.stateDir, 'secrets', 'config.secrets.enc');
+    this.encryptedPath = path.join(config.stateDir, config.storeFile ?? path.join('secrets', 'config.secrets.enc'));
   }
 
   /**
@@ -411,8 +419,8 @@ export class SecretStore {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    // Atomic write via temp file
-    const tmpPath = this.encryptedPath + '.tmp';
+    // Atomic write via a unique temp file (two writers must never share one temp path)
+    const tmpPath = `${this.encryptedPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
     fs.renameSync(tmpPath, this.encryptedPath);
   }

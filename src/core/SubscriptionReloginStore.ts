@@ -20,6 +20,7 @@ export type SubscriptionReloginFailureClass =
   | 'provider-rejected' | 'verification-failed' | 'attempt-budget-exhausted'
   | 'repair-time-budget-exhausted'
   | 'uncertain-external-outcome'
+  | 'passkey-refused'
   | 'cancelled-by-operator' | 'other';
 
 export interface SubscriptionReloginEpisode {
@@ -30,6 +31,8 @@ export interface SubscriptionReloginEpisode {
   startedAt: string | null; finishedAt: string | null; nextAttemptAt: string | null;
   failureClass: SubscriptionReloginFailureClass | null; version: number;
   createdAt: string; updatedAt: string;
+  /** The login method the repair was admitted under; null on rows created before the column existed. */
+  loginMethod: string | null;
 }
 export interface SubscriptionReloginEvent {
   id: number; episodeId: string; at: string; fromState: SubscriptionReloginState | null;
@@ -72,6 +75,7 @@ const FAILURES: readonly string[] = [
   'repair-time-budget-exhausted',
   'uncertain-external-outcome',
   'cancelled-by-operator', 'other',
+  'passkey-refused',
 ];
 const ID_RE = /^[a-zA-Z0-9._:-]{1,160}$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
@@ -106,6 +110,21 @@ CREATE TABLE IF NOT EXISTS repair_notifications (
 CREATE INDEX IF NOT EXISTS idx_relogin_notifications_due ON repair_notifications(state,nextAttemptAt);
 `;
 
+/**
+ * Additive columns on `repair_episodes` (spec agent-held-google-passkey §3.4). `CREATE TABLE IF
+ * NOT EXISTS` never adds a column to an existing database, so each addition is guarded by a
+ * `PRAGMA table_info` check (the InboundDeliveryStore pattern) and applied right after the schema.
+ */
+function ensureRepairEpisodeColumns(db: BetterSqliteDatabase): void {
+  const columns = new Set((db.prepare('PRAGMA table_info(repair_episodes)').all() as Array<{ name: string }>).map((r) => r.name));
+  const additions: Array<[string, string]> = [
+    ['loginMethod', 'TEXT'],
+  ];
+  for (const [name, declaration] of additions) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE repair_episodes ADD COLUMN ${name} ${declaration}`);
+  }
+}
+
 export class SubscriptionReloginConflictError extends Error {
   constructor(message: string) { super(message); this.name = 'SubscriptionReloginConflictError'; }
 }
@@ -136,6 +155,7 @@ export class SubscriptionReloginStore {
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    ensureRepairEpisodeColumns(this.db);
     for (const suffix of ['', '-wal', '-shm']) {
       const file = `${this.dbPath}${suffix}`; if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
     }
@@ -146,8 +166,12 @@ export class SubscriptionReloginStore {
   suggest(input: {
     sourceEpisodeId: number; accountId: string; machineId: string; mode: SubscriptionReloginMode;
     inputDigest: string; profileId: string; framework: string; provider: string; at?: string;
+    /** The admitted login method; recorded so graduation evidence can be scoped per method. */
+    loginMethod?: string | null;
   }): SubscriptionReloginEpisode {
     const at = input.at ?? this.isoNow();
+    const loginMethod = typeof input.loginMethod === 'string' && input.loginMethod.length > 0
+      ? input.loginMethod.slice(0, 64) : null;
     const source = Math.floor(input.sourceEpisodeId);
     if (!Number.isSafeInteger(source) || source <= 0) throw new Error('invalid-source-episode-id');
     const account = normalizeId(input.accountId, 'account');
@@ -167,9 +191,9 @@ export class SubscriptionReloginStore {
       const id = normalizeId(this.idFactory(), 'episode');
       this.db.prepare(`INSERT INTO repair_episodes(
         id,sourceEpisodeId,accountId,machineId,mode,state,inputDigest,profileId,framework,provider,
-        attemptCount,reissueCount,version,createdAt,updatedAt)
-        VALUES(?,?,?,?,?,'suggested',?,?,?,?,0,0,1,?,?)`)
-        .run(id, source, account, machine, input.mode, input.inputDigest, profile, framework, provider, at, at);
+        attemptCount,reissueCount,version,createdAt,updatedAt,loginMethod)
+        VALUES(?,?,?,?,?,'suggested',?,?,?,?,0,0,1,?,?,?)`)
+        .run(id, source, account, machine, input.mode, input.inputDigest, profile, framework, provider, at, at, loginMethod);
       this.event(id, at, null, 'suggested', 'candidate-admitted', 0);
       if (input.mode === 'approval') this.enqueueNotification(id, 'suggested', at);
       this.enforceCaps();
@@ -274,16 +298,27 @@ export class SubscriptionReloginStore {
     return this.db.prepare('SELECT * FROM repair_events WHERE episodeId=? ORDER BY id DESC LIMIT ?')
       .all(normalizeId(episodeId, 'episode'), Math.max(1, Math.min(500, Math.floor(limit)))) as SubscriptionReloginEvent[];
   }
-  /** Authoritative aggregate over every retained episode; never use the bounded display list for policy. */
+  /**
+   * Authoritative aggregate over every retained episode; never use the bounded display list for policy.
+   * With `loginMethod`, ONLY the success count and `oldestSuccessAt` are scoped to that method (a
+   * method change resets graduation evidence); `identityMismatches` and `unexpectedOrigins` stay
+   * counted across ALL methods, so switching method never erases an account's bad history. Rows
+   * from before the column existed carry no method: they count for a legacy method (they can only
+   * have been produced by one) and never for `google-passkey`.
+   */
   getUnattendedEvidence(accountId: string, machineId: string, provider: string,
-    framework: string): SubscriptionReloginEvidence {
+    framework: string, loginMethod?: string | null): SubscriptionReloginEvidence {
+    const method = typeof loginMethod === 'string' && loginMethod.length > 0 ? loginMethod : null;
+    const legacyRowsCount = method !== null && method !== 'google-passkey' ? 1 : 0;
+    const successScope = method === null ? '1' : '(loginMethod=? OR (loginMethod IS NULL AND ?=1))';
+    const scopeParams = method === null ? [] : [method, legacyRowsCount];
     const row = this.db.prepare(`SELECT
-      SUM(CASE WHEN state='succeeded' THEN 1 ELSE 0 END) successfulRepairs,
-      MIN(CASE WHEN state='succeeded' THEN finishedAt ELSE NULL END) oldestSuccessAt,
+      SUM(CASE WHEN state='succeeded' AND ${successScope} THEN 1 ELSE 0 END) successfulRepairs,
+      MIN(CASE WHEN state='succeeded' AND ${successScope} THEN finishedAt ELSE NULL END) oldestSuccessAt,
       SUM(CASE WHEN failureClass='wrong-identity' THEN 1 ELSE 0 END) identityMismatches,
       SUM(CASE WHEN failureClass IN ('unexpected-origin','permission-expansion') THEN 1 ELSE 0 END) unexpectedOrigins
       FROM repair_episodes WHERE accountId=? AND machineId=? AND provider=? AND framework=?`)
-      .get(normalizeId(accountId, 'account'), normalizeId(machineId, 'machine'),
+      .get(...scopeParams, ...scopeParams, normalizeId(accountId, 'account'), normalizeId(machineId, 'machine'),
         normalizeId(provider, 'provider'), normalizeId(framework, 'framework')) as Record<string, unknown>;
     return {
       successfulRepairs: Number(row.successfulRepairs ?? 0),

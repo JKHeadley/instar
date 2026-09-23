@@ -26617,7 +26617,173 @@ export async function startServer(options: StartOptions): Promise<void> {
       })),
     });
 
-    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    // ── Agent-held Google passkeys: the durable revoke outbox (spec §3.2 / FD15) ─────────────
+    // Dev-gated behind `passkeys.enabled` (dark on the fleet). Re-delivers this machine's SIGNED
+    // peer revokes unchanged on 1h/6h/daily backoff, escalates at 30 days, one post-breaker attempt
+    // when the peer is next online. Registered self-action controller `passkey-revoke-outbox`.
+    let _passkeyRevokeOutbox: import('../core/PasskeyRevokeOutbox.js').PasskeyRevokeOutbox | null = null;
+    let _passkeyOutboxTimer: ReturnType<typeof setInterval> | null = null;
+    const _passkeyPeerOnline = (machineId: string): boolean =>
+      (machinePoolRegistry?.getCapacities() ?? []).some((c) => c.machineId === machineId && c.online === true);
+    try {
+      const pkCfg = (config as { passkeys?: { enabled?: boolean } }).passkeys;
+      if (resolveDevAgentGate(pkCfg?.enabled, config)) {
+        const { PasskeyRevokeOutbox } = await import('../core/PasskeyRevokeOutbox.js');
+        const { PasskeyGrantStore } = await import('../core/PasskeyGrantStore.js');
+        const pkSelfId = _meshSelfId ?? coordinator?.identity?.machineId ?? machineHeartbeat.config.machineId;
+        _passkeyRevokeOutbox = new PasskeyRevokeOutbox({
+          stateDir: config.stateDir,
+          deliver: async (targetMachineId, portable) => {
+            const peer = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === targetMachineId);
+            if (!peer) return { kind: 'unreachable', reason: 'no-peer-url' };
+            try {
+              const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/cell-action`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.authToken ?? ''}` },
+                body: JSON.stringify({ portable }), signal: AbortSignal.timeout(15_000),
+              });
+              const json = await r.json().catch(() => ({})) as { applied?: boolean; reason?: string };
+              if (r.ok && json.applied === true) return { kind: 'applied', detail: json };
+              const reason = typeof json.reason === 'string' ? json.reason : `status-${r.status}`;
+              if (reason === 'dismissed-by-operator') return { kind: 'dismissed', reason };
+              if (r.status >= 500) return { kind: 'unreachable', reason };
+              return { kind: 'refused', reason };
+            } catch (err) {
+              return { kind: 'unreachable', reason: err instanceof Error ? err.message : String(err) };
+            }
+          },
+          peerOnline: _passkeyPeerOnline,
+          raiseIncompleteRevoke: (item) => telegram?.upsertAttentionItem({
+            id: item.id, title: `Passkey revoke not acknowledged by ${item.machineId} for 30 days`,
+            summary: item.body.slice(0, 160), description: item.body, category: 'passkeys', priority: 'HIGH', sourceContext: 'passkey-revoke-outbox',
+          }),
+          onApplied: (entry) => {
+            try { new PasskeyGrantStore({ stateDir: config.stateDir, machineId: pkSelfId }).forgetIssuedPeerGrant(entry.canonicalEmail, entry.targetMachineId); }
+            catch (err) { console.warn(`[passkeys] could not forget the issued peer-grant copy after an applied revoke: ${err instanceof Error ? err.message : String(err)}`); }
+          },
+          log: (line) => console.log(pc.dim(`  ${line}`)),
+        });
+        const outbox = _passkeyRevokeOutbox;
+        _passkeyOutboxTimer = setInterval(() => {
+          void outbox.tick().catch((err) => console.warn(`[passkeys] revoke outbox tick failed: ${err instanceof Error ? err.message : String(err)}`));
+        }, 10 * 60_000);
+        _passkeyOutboxTimer.unref?.();
+      }
+    } catch (err) {
+      // @silent-fallback-ok — an outbox init failure leaves it null: the routes fall back to a per-request
+      // file-backed outbox (no timer), and the failure is logged here; boot is never blocked.
+      console.warn(`[passkeys] revoke outbox not started: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // ── Agent-held Google passkeys: the pool read path (spec §5.1) ───────────────────────────
+    // Same dev gate. One reader per server: every 5 minutes it queries each peer's
+    // GET /passkeys/pool-state once (5 s per peer, 5 s overall), classifies peers with rope health,
+    // keeps last-known rows durably, and serves ONE memo to every pool-wide check and to
+    // GET /passkeys?scope=pool. Read-only observation; it restricts, never grants.
+    let _passkeyPoolReader: import('../core/PasskeyPoolState.js').PasskeyPoolReader | null = null;
+    let _passkeyPoolTimer: ReturnType<typeof setInterval> | null = null;
+    try {
+      const pkCfg = (config as { passkeys?: { enabled?: boolean } }).passkeys;
+      if (resolveDevAgentGate(pkCfg?.enabled, config)) {
+        const { PasskeyPoolReader, PasskeyPeerExclusions, PasskeyAttemptLedger, buildLocalPasskeyMachineState, PASSKEY_POOL_STATE_MAX_BYTES } = await import('../core/PasskeyPoolState.js');
+        const { PasskeyGrantStore } = await import('../core/PasskeyGrantStore.js');
+        const { PasskeyCredentialStore, PASSKEY_DIR } = await import('../core/PasskeyCredentialStore.js');
+        const { isPeerUrlAllowedForCredentials } = await import('../server/peerUrlGuard.js');
+        const pkSelfId = _meshSelfId ?? coordinator?.identity?.machineId ?? machineHeartbeat.config.machineId;
+        const outboxRef = _passkeyRevokeOutbox;
+        _passkeyPoolReader = new PasskeyPoolReader({
+          stateDir: config.stateDir, selfMachineId: pkSelfId,
+          localState: () => {
+            const grants = new PasskeyGrantStore({ stateDir: config.stateDir, machineId: pkSelfId });
+            const list = grants.list();
+            let custody: Array<{ canonicalEmail: string; state: 'present' | 'quarantined' | 'legacy-adopted' }> | null = null;
+            const pendingEmails: string[] = [];
+            if (fs.existsSync(path.join(config.stateDir, PASSKEY_DIR, 'store.enc'))) {
+              try {
+                const store = new PasskeyCredentialStore({ stateDir: config.stateDir, machineId: pkSelfId, forceFileKey: config.secrets?.forceFileKey });
+                const index = store.listIndex();
+                custody = [];
+                for (const email of new Set(list.map((g) => g.canonicalEmail))) {
+                  const entry = index.find((e) => e.emailKey === store.emailKey(email));
+                  if (entry) custody.push({ canonicalEmail: email, state: entry.custodyState });
+                  if (store.readPending(email)) pendingEmails.push(email);
+                }
+              } catch (err) {
+                // @silent-fallback-ok — NOT swallowed: custody reads `absent` (the restrictive direction) and the failure is logged.
+                console.warn(`[passkeys] custody read failed while publishing pool state: ${err instanceof Error ? err.message : String(err)}`);
+                custody = null;
+              }
+            }
+            return buildLocalPasskeyMachineState({
+              machineId: pkSelfId, grants: list, issuedPeerGrants: grants.listIssuedPeerGrants(), revokeHighWater: grants.revokeHighWater(),
+              custody, pendingEmails, outbox: outboxRef?.list() ?? [], ledger: new PasskeyAttemptLedger({ stateDir: config.stateDir, machineId: pkSelfId }),
+              pushEnabled: config.multiMachine?.secretSync?.pushEnabled === true,
+            });
+          },
+          listPeers: () => (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== pkSelfId).map((m) => ({
+            machineId: m.machineId, nickname: m.nickname ?? null, url: m.lastKnownUrl ?? null,
+            online: machinePoolRegistry?.getCapacity(m.machineId)?.online ?? null,
+          })),
+          fetchPeerState: async (peer, timeoutMs) => {
+            if (!peer.url) return { ok: false, reason: 'no-known-url' };
+            if (!isPeerUrlAllowedForCredentials(peer.url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+            try {
+              const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
+                headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-Machine-Id': pkSelfId }, signal: AbortSignal.timeout(timeoutMs),
+              });
+              if (r.status === 404 || r.status === 503) return { ok: false, reason: 'route-missing' };
+              if (r.status === 401 || r.status === 403) return { ok: false, reason: 'unauthorized' };
+              if (!r.ok) return { ok: false, reason: r.status >= 500 ? 'error' : 'refused' };
+              // Bound the body BEFORE parsing — this fetch runs unattended every 5 minutes.
+              const text = await r.text();
+              if (text.length > PASSKEY_POOL_STATE_MAX_BYTES) return { ok: false, reason: 'malformed' };
+              return { ok: true, body: JSON.parse(text) };
+            } catch (err) {
+              // @silent-fallback-ok — NOT swallowed: classified into the peer's pool row (timeout / malformed /
+              // unreachable ⇒ partitioned, the restrictive direction) and surfaced in `degradedReasons`.
+              const name = err instanceof Error ? err.name : '';
+              return { ok: false, reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : name === 'SyntaxError' ? 'malformed' : 'unreachable' };
+            }
+          },
+          ropeCondition: (id) => ropeHealthMonitor?.status().peers.find((p) => p.machineId === id)?.condition ?? null,
+          ropeAvailable: () => !!ropeHealthMonitor,
+          exclusions: new PasskeyPeerExclusions({ stateDir: config.stateDir }),
+          // `?scope=pool` and every check are served from the memo for a whole tick interval (§5.1
+          // "always served from the tick memo"): a dashboard polling every few seconds never re-fans.
+          memoTtlMs: 5 * 60_000,
+          log: (line) => console.log(pc.dim(`  ${line}`)),
+        });
+        const reader = _passkeyPoolReader;
+        _passkeyPoolTimer = setInterval(() => {
+          void reader.tick().catch((err) => console.warn(`[passkeys] pool read tick failed: ${err instanceof Error ? err.message : String(err)}`));
+        }, 5 * 60_000);
+        _passkeyPoolTimer.unref?.();
+      }
+    } catch (err) {
+      // @silent-fallback-ok — a reader init failure leaves it null: the routes fall back to a per-request
+      // reader (no timer; last-known rows still on disk), and the failure is logged; boot is never blocked.
+      console.warn(`[passkeys] pool reader not started: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // ── Agent-held Google passkeys: the health digest tick (spec §4 / §5.2 / §13) ───────────
+    // Same dev gate. Every 5 minutes: advance the per-cell clocks (paused while the pool read path is
+    // degraded) and upsert the ONE digest key (`passkey-health:digest`) when its ledger says so —
+    // buzz at most once per 24h, security/suspension once per tick, peer-list changes silently. The
+    // pass itself is late-bound by createRoutes (`ctx.passkeyHealthDigestTick`); the timer only calls it.
+    let _passkeyHealthTimer: ReturnType<typeof setInterval> | null = null;
+    try {
+      const pkCfg = (config as { passkeys?: { enabled?: boolean } }).passkeys;
+      if (resolveDevAgentGate(pkCfg?.enabled, config)) {
+        _passkeyHealthTimer = setInterval(() => {
+          // @silent-fallback-ok — a failed pass is LOGGED and the next tick retries; the on-demand route
+          // (`POST /passkeys/health/digest/refresh`) surfaces the same error as a 500 to the operator.
+          void server.runPasskeyHealthDigestTick().catch((err) => console.warn(`[passkeys] health digest tick failed: ${err instanceof Error ? err.message : String(err)}`));
+        }, 5 * 60_000);
+        _passkeyHealthTimer.unref?.();
+      }
+    } catch (err) {
+      // @silent-fallback-ok — a timer setup failure leaves the digest to the on-demand route; logged, never boot-blocking.
+      console.warn(`[passkeys] health digest timer not started: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -28008,6 +28174,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.log(`[shutdown] Saved ${saved} resume UUID(s) for active sessions`);
           }
         } catch (err) {
+          // @silent-fallback-ok — shutdown path: the failure is logged loudly and the process is going
+          // down regardless; a lost resume hint costs one fresh-start conversation, never lost state.
           console.error('[shutdown] Failed to save resume UUIDs:', err);
         }
       }
@@ -28017,6 +28185,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       releaseOriginLeaseRenewal();
       coordinator.stop();
       ropeHealthMonitor?.stop();
+      if (_passkeyOutboxTimer) clearInterval(_passkeyOutboxTimer);
+      if (_passkeyPoolTimer) clearInterval(_passkeyPoolTimer);
+      if (_passkeyHealthTimer) clearInterval(_passkeyHealthTimer);
       coherenceMonitor.stop();
       commitmentTracker.stop();
       commitmentSentinel?.stop();

@@ -348,6 +348,7 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     windowLifecycleTick?: (() => void) | null;
+    passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
     identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService | null;
     identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
@@ -571,6 +572,17 @@ export class AgentServer {
     if (!this.routeContext) throw new Error('route context is not initialized');
     this.subscriptionLoginLedger = ledger;
     this.routeContext.subscriptionLoginLedger = ledger;
+  }
+
+  /**
+   * One passkey health-digest pass (spec agent-held-google-passkey §5.2), late-bound by createRoutes.
+   * The server timer calls this every 5 minutes; before the routes are built (or when the feature is
+   * dark) it is a no-op that says so.
+   */
+  async runPasskeyHealthDigestTick(): Promise<unknown> {
+    const tick = this.routeContext?.passkeyHealthDigestTick;
+    if (!tick) return { skipped: 'routes-not-bound' };
+    return tick();
   }
 
   /** Bind the fully composed repair runtime before listen() exposes its routes. */
@@ -868,6 +880,10 @@ export class AgentServer {
     listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
     /** Canonical browser/profile registry factory used by route-level send guards. */
     playwrightRegistry?: () => import('../core/PlaywrightProfileRegistry.js').PlaywrightProfileRegistry;
+    /** Agent-held passkeys: the server-owned, timer-driven revoke outbox + the peer-online observation (spec agent-held-google-passkey §3.2). */
+    passkeyRevokeOutbox?: () => import('../core/PasskeyRevokeOutbox.js').PasskeyRevokeOutbox;
+    passkeyPeerOnline?: (machineId: string) => boolean;
+    passkeyPoolReader?: () => import('../core/PasskeyPoolState.js').PasskeyPoolReader;
     /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
     poolLink?: import('./routes.js').RouteContext['poolLink'];
     /** WS4.4(f) global pool-cache unification — the ONE shared per-peer poll cache pool-scope surfaces fan out through (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). */
@@ -4553,6 +4569,9 @@ export class AgentServer {
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
       playwrightRegistry: options.playwrightRegistry,
+      passkeyRevokeOutbox: options.passkeyRevokeOutbox ?? null,
+      passkeyPeerOnline: options.passkeyPeerOnline ?? null,
+      passkeyPoolReader: options.passkeyPoolReader ?? null,
       poolLink: options.poolLink ?? null,
       poolPollCache: options.poolPollCache ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,

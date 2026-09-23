@@ -12,7 +12,28 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'still-authfailed-after-refresh',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
-const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp']);
+const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
+
+/**
+ * The (account × machine) passkey cell's state as the admission input sees it (spec
+ * agent-held-google-passkey §3.4 / §4). Only `ready` admits; every other value maps to a
+ * NAMED refusal. `unknown` = the state has not been computed on this machine (no store, no
+ * proof yet) and is refused too — a passkey repair never runs on an unproven cell.
+ */
+export type PasskeyCellAdmissionState =
+  | 'ready' | 'security' | 'breaker-open' | 'unverified-stopped' | 'quarantined' | 'rejected'
+  | 'suspended' | 'chrome-unverified' | 'unknown';
+
+const PASSKEY_CELL_REFUSALS: Record<Exclude<PasskeyCellAdmissionState, 'ready'>, SubscriptionReloginRefusal> = {
+  'security': 'passkey-cell-security',
+  'breaker-open': 'passkey-cell-breaker-open',
+  'unverified-stopped': 'passkey-cell-unverified-stopped',
+  'quarantined': 'passkey-cell-quarantined',
+  'rejected': 'passkey-cell-rejected',
+  'suspended': 'passkey-suspended',
+  'chrome-unverified': 'passkey-chrome-unverified',
+  'unknown': 'passkey-cell-state-unknown',
+};
 
 export type SubscriptionReloginRefusal =
   | 'feature-off'
@@ -33,7 +54,16 @@ export type SubscriptionReloginRefusal =
   | 'vault-reference-missing'
   | 'login-method-not-autonomous'
   | 'framework-not-supported'
-  | 'breaker-open';
+  | 'breaker-open'
+  | 'passkey-binding-missing'
+  | 'passkey-cell-security'
+  | 'passkey-cell-breaker-open'
+  | 'passkey-cell-unverified-stopped'
+  | 'passkey-suspended'
+  | 'passkey-chrome-unverified'
+  | 'passkey-cell-quarantined'
+  | 'passkey-cell-rejected'
+  | 'passkey-cell-state-unknown';
 
 export interface SubscriptionReloginAdmissionInput {
   configuredMode: 'off' | SubscriptionReloginMode;
@@ -57,6 +87,10 @@ export interface SubscriptionReloginAdmissionInput {
     identityHash: string;
     loginMethod: string;
     danglingRefs: string[];
+    /** The passkey store entry key bound to this account (google-passkey only). */
+    passkeyEntryKey?: string | null;
+    /** The cell's passkey state; null/undefined = not computed (treated as `unknown`). */
+    passkeyCell?: PasskeyCellAdmissionState | null;
   };
   breakerOpen: boolean;
   unattended?: {
@@ -105,6 +139,12 @@ export function evaluateSubscriptionReloginAdmission(
   if (input.profile.identityHash !== input.account.identityHash) return refuse('profile-identity-mismatch');
   if (input.profile.danglingRefs.length > 0) return refuse('vault-reference-missing');
   if (!SUPPORTED_LOGIN_METHODS.has(input.profile.loginMethod)) return refuse('login-method-not-autonomous');
+  const passkeyEntryKey = input.profile.loginMethod === 'google-passkey' ? (input.profile.passkeyEntryKey ?? null) : null;
+  if (input.profile.loginMethod === 'google-passkey') {
+    if (!passkeyEntryKey) return refuse('passkey-binding-missing');
+    const cell = input.profile.passkeyCell ?? 'unknown';
+    if (cell !== 'ready') return refuse(PASSKEY_CELL_REFUSALS[cell]);
+  }
   if (input.breakerOpen) return refuse('breaker-open');
 
   let mode: SubscriptionReloginMode = input.configuredMode;
@@ -126,6 +166,11 @@ export function evaluateSubscriptionReloginAdmission(
       provider: input.account.provider,
       identityHash: input.account.identityHash,
       profileId: input.profile.id,
+      // The passkey method and its entry key are part of the approved input (spec §3.4): an
+      // approval for the password path can never authorize the passkey path, and vice versa.
+      // Added ONLY for the passkey method so every legacy digest stays byte-stable across the
+      // upgrade (an in-flight suggested episode is not invalidated by the release itself).
+      ...(passkeyEntryKey ? { loginMethod: input.profile.loginMethod, passkeyEntryKey } : {}),
       mode,
     }),
   };

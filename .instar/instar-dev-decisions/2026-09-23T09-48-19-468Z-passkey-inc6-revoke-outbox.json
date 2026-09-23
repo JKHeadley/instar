@@ -1,0 +1,41 @@
+{
+  "ts": "2026-09-23T09:48:19.468Z",
+  "slug": "passkey-inc6-revoke-outbox",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 585,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PasskeyRevokeOutbox.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 578,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "passkey-revoke-outbox is a registered self-action controller: a fixed 1h/6h/daily backoff over DURABLE next-attempt timestamps, an edge-triggered (not level) peer-online pull with a 15-minute floor, a 30-day breaker that stops automatic re-delivery, and one durably-recorded post-breaker attempt bound the emit count (<=33 per entry) independent of horizon and restarts; the ratchet drives the model under an always-rejecting, always-online peer."
+    }
+  },
+  "verdict": "pass"
+}
