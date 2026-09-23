@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RopeHealthCondition } from '../monitoring/RopeHealthMonitor.js';
+import { PASSKEY_HEALTH_STATES, type PasskeyHealthState, type GoogleSideState } from './PasskeyCellHealth.js';
 
 export const PASSKEY_ATTEMPTS_FILE = path.join('state', 'passkey-attempts.json');
 export const PASSKEY_PEER_EXCLUSIONS_FILE = path.join('state', 'passkey-peer-exclusions.json');
@@ -211,8 +212,10 @@ export interface PasskeyPoolCell {
   grantedAt: string | null;
   custody: PoolCustodyState;
   googleCreatedAt: string | null;
-  /** The §4 health state lands with the health-watcher increment; until then every cell reads `unknown`. */
-  health: 'unknown';
+  /** The §4 health state (PasskeyCellHealth); `unknown` when the cell has no health record yet. */
+  health: PasskeyHealthState | 'unknown';
+  /** The §3.2 Google-side removal state, when a health record carries one. */
+  googleSide?: 'none' | 'pending-operator' | 'operator-attested' | 'removed-verified';
 }
 
 export interface PasskeyPoolOutboxRow {
@@ -258,10 +261,15 @@ export function clampPasskeyMachineState(raw: unknown, expectedMachineId: string
     const email = canonicalPasskeyPoolEmail(o?.canonicalEmail);
     if (!email) return null;
     const custody = str(o.custody, 20);
+    const health = str(o.health, 24);
+    const googleSide = str(o.googleSide, 24);
     return {
       canonicalEmail: email, granted: o.granted === true, grantLocalSeq: int(o.grantLocalSeq), grantedAt: iso(o.grantedAt),
       custody: (['present', 'quarantined', 'legacy-adopted', 'pending', 'absent'] as const).includes(custody as PoolCustodyState) ? custody as PoolCustodyState : 'absent',
-      googleCreatedAt: iso(o.googleCreatedAt), health: 'unknown',
+      googleCreatedAt: iso(o.googleCreatedAt),
+      // A peer's health is one of the closed §4 states or `unknown` — never free text.
+      health: (PASSKEY_HEALTH_STATES as readonly string[]).includes(health ?? '') ? health as PasskeyHealthState : 'unknown',
+      ...((['none', 'pending-operator', 'operator-attested', 'removed-verified'] as const).includes(googleSide as GoogleSideState) ? { googleSide: googleSide as GoogleSideState } : {}),
     };
   }, 500);
   const attempts = bounded<PasskeyAttemptRow>(r.attempts, (a) => {
@@ -311,6 +319,8 @@ export interface LocalPasskeyStateSources {
   outbox: Array<{ canonicalEmail: string; targetMachineId: string; state: string; attempts: number; issuedAt: string; nextAttemptAt: string }>;
   ledger: PasskeyAttemptLedger;
   pushEnabled: boolean;
+  /** The cell's §4 health record (state + Google-side), or null when none exists yet. */
+  healthOf?: (canonicalEmail: string) => { state: PasskeyHealthState; googleSide: GoogleSideState } | null;
   now?: () => number;
 }
 
@@ -323,9 +333,11 @@ export function buildLocalPasskeyMachineState(src: LocalPasskeyStateSources): Pa
   const cells: PasskeyPoolCell[] = [...emails].sort().map((email) => {
     const grant = src.grants.filter((g) => g.canonicalEmail === email && g.status === 'active').sort((a, b) => b.localSeq - a.localSeq)[0] ?? null;
     const custody: PoolCustodyState = custodyByEmail.get(email) ?? (pending.has(email) ? 'pending' : 'absent');
+    const health = src.healthOf?.(email) ?? null;
     return {
       canonicalEmail: email, granted: grant !== null, grantLocalSeq: grant?.localSeq ?? null, grantedAt: grant?.grantedAt ?? null,
-      custody, googleCreatedAt: grant?.googleCreatedAt ?? null, health: 'unknown',
+      custody, googleCreatedAt: grant?.googleCreatedAt ?? null, health: health?.state ?? 'unknown',
+      ...(health ? { googleSide: health.googleSide } : {}),
     };
   });
   return {

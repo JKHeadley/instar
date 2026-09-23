@@ -155,6 +155,10 @@ import {
   enrollmentRateLimit, sameAccountGap, activePauseFor, DEFAULT_PASSKEY_RATE_LIMIT, PASSKEY_POOL_STATE_MAX_BYTES,
   type PasskeyMachineState, type PasskeyPoolAction, type PeerStateFetch, type PasskeyPoolPeer,
 } from '../core/PasskeyPoolState.js';
+import {
+  PasskeyHealthStore, PasskeyDigestLedger, buildPasskeyHealthDigest, PASSKEY_HEALTH_DIGEST_KEY,
+  type PasskeyDigestCellLine, type PasskeyProofOutcome, type PasskeyProofOrigin,
+} from '../core/PasskeyCellHealth.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
@@ -1367,6 +1371,8 @@ export interface RouteContext {
   passkeyPeerOnline?: ((machineId: string) => boolean) | null;
   /** The server-owned pool reader (5-min tick, memo + durable last-known); absent ⇒ routes build one per request. */
   passkeyPoolReader?: (() => import('../core/PasskeyPoolState.js').PasskeyPoolReader) | null;
+  /** Late-bound by createRoutes: one health-digest pass (§5.2); the server timer drives it every 5 min. */
+  passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
   /** Peer `GET /passkeys/pool-state` fetch seam (tests inject; production fetches the peer URL with the Bearer). */
   fetchPasskeyPeerState?: ((peer: import('../core/PasskeyPoolState.js').PasskeyPoolPeer, timeoutMs: number) =>
     Promise<import('../core/PasskeyPoolState.js').PeerStateFetch>) | null;
@@ -26299,12 +26305,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       selfMachineId, grants, issuers, nonces,
       hasActivePeers: passkeyHasActivePeers,
       peerExclusions: new PasskeyPeerExclusions({ stateDir }),
+      health: new PasskeyHealthStore({ stateDir, machineId: selfMachineId }),
       revertMethod: (email) => registry.listPasskeyAccounts()
         .filter((a) => a.identity.trim().toLowerCase() === email)
         .map((a) => { const r = registry.revertLoginMethod(a.profileId, a.service, a.identity); return r.reverted ? { reverted: true, to: r.to, bindingMissing: r.bindingMissing } : { reverted: false, reason: r.reason }; }),
       onRevoked: async (email) => {
         // Drop the credential only if a store already exists on disk — never create one to delete from it.
         const changed: string[] = [];
+        // The cell's health record goes with the grant (§3.2 "what revoke does"): a revoked cell must not
+        // keep ageing toward `unverified` and nagging the digest.
+        try { if (new PasskeyHealthStore({ stateDir, machineId: selfMachineId }).remove(email)) changed.push('health-record-removed'); }
+        catch (err) { changed.push(`health-record-removal-failed:${err instanceof Error ? err.message : String(err)}`); } // @silent-fallback-ok — NOT swallowed: returned in the revoke result + audited
         if (fs.existsSync(path.join(stateDir, PASSKEY_DIR, 'store.enc'))) {
           try {
             const store = new PasskeyCredentialStore({ stateDir, machineId: selfMachineId, forceFileKey: ctx.config.secrets?.forceFileKey });
@@ -26566,9 +26577,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const ledger = new PasskeyAttemptLedger({ stateDir, machineId: auth.selfMachineId });
     const outbox = buildPasskeyRevokeOutbox(auth).list();
+    const health = new PasskeyHealthStore({ stateDir, machineId: auth.selfMachineId });
     return buildLocalPasskeyMachineState({
       machineId: auth.selfMachineId, grants, issuedPeerGrants: auth.grants.listIssuedPeerGrants(), revokeHighWater: auth.grants.revokeHighWater(),
       custody, pendingEmails, outbox, ledger,
+      healthOf: (email) => { const c = health.get(email); return c ? { state: c.state, googleSide: c.googleSide } : null; },
       pushEnabled: (ctx.config.multiMachine as { secretSync?: { pushEnabled?: boolean } } | undefined)?.secretSync?.pushEnabled === true,
     });
   };
@@ -26709,6 +26722,133 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   };
   router.post('/passkeys/exclude-peer', (req, res) => runPeerExclusionOp(req, res, 'exclude-peer'));
   router.post('/passkeys/include-peer', (req, res) => runPeerExclusionOp(req, res, 'include-peer'));
+
+  // ── Cell health + the one digest (spec §4 / §5.2 / §13) ────────────────────────────────
+  const buildPasskeyHealth = (auth: ReturnType<typeof buildPasskeyAuthority>) => new PasskeyHealthStore({ stateDir: ctx.config.stateDir, machineId: auth.selfMachineId });
+  const passkeyHoldsLease = (): boolean => { try { return ctx.coordinator ? ctx.coordinator.holdsLease() : true; } catch { return false; } }; // @silent-fallback-ok — an unreadable lease reads as NOT held: the digest waits for a holder rather than two machines racing on one key
+  /**
+   * One digest pass (§5.2): advance the clocks (pool-degraded pauses them), build the digest from
+   * THIS machine's cells + the pool memo, and upsert the ONE key when the ledger says buzz / silent /
+   * resolve. Only the serving-lease holder narrates the pool; a lone machine narrates for itself.
+   */
+  const runPasskeyHealthDigestTick = async (auth: ReturnType<typeof buildPasskeyAuthority>, opts: { force?: boolean } = {}) => {
+    const health = buildPasskeyHealth(auth);
+    const reader = buildPasskeyPoolReader(auth);
+    const memo = reader.memoView().snapshot ?? (await reader.read()).snapshot;
+    // The pool-degraded clock pause is PER ACCOUNT (§4): only accounts a partitioned peer is known to
+    // hold pause; a partitioned peer with no last-known rows pauses nothing (pausing is the permissive
+    // direction, so unknown ⇒ no pause).
+    const degradedAccounts = new Set<string>();
+    for (const p of memo.peers) if (p.condition === 'partitioned') for (const c of p.state?.cells ?? []) degradedAccounts.add(c.canonicalEmail);
+    // Only cells this machine still HOLDS (granted, or a credential/pending record present) carry a
+    // live health record; a stale record (revoked outside the funnel) is dropped, never aged or listed.
+    const held = new Set(memo.self.cells.map((c) => c.canonicalEmail));
+    for (const stale of health.list().filter((c) => !held.has(c.canonicalEmail))) health.remove(stale.canonicalEmail);
+    const clockTransitions = health.advanceClocks((email) => degradedAccounts.has(email));
+    const holder = passkeyHoldsLease();
+    const cells: PasskeyDigestCellLine[] = health.list().map((c) => ({
+      canonicalEmail: c.canonicalEmail, machineId: c.machineId, state: c.state, googleSide: c.googleSide,
+      detail: c.lastProofOutcome ? `last proof ${c.lastProofOutcome}${c.lastProofAt ? ` at ${c.lastProofAt}` : ''}` : 'no proof yet',
+      ...(c.flapping ? { flapping: true } : {}), ...(c.clocksPausedSince ? { poolDegraded: true } : {}),
+    }));
+    // Quarantined custody is listed UNCONDITIONALLY (§5.2), record or not — self and peers alike.
+    for (const c of memo.self.cells) if (c.custody === 'quarantined') cells.push({ canonicalEmail: c.canonicalEmail, machineId: auth.selfMachineId, state: 'quarantined', googleSide: health.get(c.canonicalEmail)?.googleSide ?? 'none', detail: '' });
+    // Peers' cells (their published health) join the lease holder's digest. Peer rows carry no
+    // flapping / pool-paused flags (not in the pool schema), so those are under-reported for peers.
+    for (const p of memo.peers) {
+      for (const pc of p.state?.cells ?? []) {
+        if (pc.health !== 'unknown') cells.push({ canonicalEmail: pc.canonicalEmail, machineId: p.machineId, state: pc.health, googleSide: pc.googleSide ?? 'none', detail: p.condition === 'observed' ? '' : `last known (${p.condition})` });
+        if (pc.custody === 'quarantined') cells.push({ canonicalEmail: pc.canonicalEmail, machineId: p.machineId, state: 'quarantined', googleSide: pc.googleSide ?? 'none', detail: '' });
+      }
+    }
+    const pendingOf = (rows: Array<{ canonicalEmail: string; targetMachineId: string; state: string; attempts: number }>) =>
+      rows.filter((e) => e.state === 'pending' || e.state === 'escalated').map((e) => ({ canonicalEmail: e.canonicalEmail, targetMachineId: e.targetMachineId, state: e.state, attempts: e.attempts }));
+    const ownPending = pendingOf(memo.self.outbox);
+    const peerPending = pendingOf(memo.peers.flatMap((p) => p.state?.outbox ?? []));
+    // A non-holder narrates ONLY its own machine (its cells, its outbox); the lease holder's copy is the complete pool list.
+    const digest = buildPasskeyHealthDigest({
+      cells: holder ? cells : cells.filter((c) => c.machineId === auth.selfMachineId),
+      pendingRevokes: holder ? [...ownPending, ...peerPending] : ownPending,
+      chromeGateFailures: [], suspension: null,
+      unobservedPeers: holder ? memo.peers.filter((p) => p.condition !== 'observed').map((p) => `${p.nickname ?? p.machineId} (${p.condition})`) : [],
+      poolDegraded: memo.degraded, nowIso: new Date().toISOString(),
+    });
+    const ledger = new PasskeyDigestLedger({ stateDir: ctx.config.stateDir });
+    let action = ledger.decide(digest);
+    if (opts.force && !digest.empty && action === 'none') action = 'silent';
+    let delivered: 'upserted' | 'resolved' | 'skipped' | 'no-sink' | 'failed' = 'skipped';
+    if (action === 'buzz' || action === 'silent') {
+      if (!ctx.telegram?.upsertAttentionItem) delivered = 'no-sink';
+      else {
+        try {
+          // `silent` is carried to the SINK (disable_notification on the hub post): a silent update
+          // refreshes the item without a buzz — the ledger's verdict is what the user receives.
+          await ctx.telegram.upsertAttentionItem({ id: PASSKEY_HEALTH_DIGEST_KEY, title: digest.title, summary: digest.body.slice(0, 160), description: digest.body, category: 'passkeys', priority: digest.urgent ? 'HIGH' : 'NORMAL', sourceContext: 'passkey-health', silent: action === 'silent' });
+          ledger.record(digest, action); delivered = 'upserted';
+        } catch (err) { delivered = 'failed'; console.warn(`[passkeys] health digest upsert failed: ${err instanceof Error ? err.message : String(err)}`); }
+      }
+    } else if (action === 'resolve') {
+      // Nothing left to report: close the item on the sink (silently) and the episode in the ledger.
+      try { await ctx.telegram?.updateAttentionStatus?.(PASSKEY_HEALTH_DIGEST_KEY, 'DONE', { silent: true }); }
+      catch (err) { console.warn(`[passkeys] health digest resolve failed: ${err instanceof Error ? err.message : String(err)}`); } // @silent-fallback-ok — logged; the ledger still resolves so the next real condition is a NEW episode (buzz), never a swallowed one
+      ledger.record(digest, 'resolve'); delivered = 'resolved';
+    }
+    return { holdsLease: holder, action, delivered, digest: { title: digest.title, body: digest.body, empty: digest.empty, urgent: digest.urgent, counts: digest.counts }, clockTransitions, poolDegraded: memo.degraded, memoAgeMs: reader.memoView().ageMs };
+  };
+  // Late-bind the tick onto the shared context so the server timer can drive it (no self-HTTP call).
+  ctx.passkeyHealthDigestTick = async () => (passkeysFeatureEnabled() ? runPasskeyHealthDigestTick(buildPasskeyAuthority()) : { skipped: 'passkeys-disabled' });
+  // GET /passkeys/health — this machine's per-cell health records + what the digest would say now (no side effects).
+  router.get('/passkeys/health', async (_req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try {
+      const auth = buildPasskeyAuthority();
+      const health = buildPasskeyHealth(auth);
+      const ledger = new PasskeyDigestLedger({ stateDir: ctx.config.stateDir }).read();
+      res.json({ machineId: auth.selfMachineId, holdsLease: passkeyHoldsLease(), cells: health.list(), digest: { key: PASSKEY_HEALTH_DIGEST_KEY, lastBuzzAt: ledger.lastBuzzAt, lastUpsertAt: ledger.lastUpsertAt, resolvedAt: ledger.resolvedAt } });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'health unreadable' });
+    }
+  });
+  // POST /passkeys/health/digest/refresh — run one digest pass now (Bearer; the server timer does this every 5 min).
+  router.post('/passkeys/health/digest/refresh', async (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try { res.json(await runPasskeyHealthDigestTick(buildPasskeyAuthority(), { force: req.body?.force === true })); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'digest tick failed' }); }
+  });
+  // POST /passkeys/health/outcome — record a proof outcome for a LOCAL cell (Bearer; the proof/repair
+  // workers call this funnel; tests drive it). Never accepts a peer's cell: health is per machine.
+  router.post('/passkeys/health/outcome', (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    const email = canonicalPasskeyEmail(typeof req.body?.email === 'string' ? req.body.email : '');
+    const outcome = String(req.body?.outcome ?? '');
+    const origin = String(req.body?.origin ?? 'watcher');
+    if (!email) { res.status(400).json({ error: 'email is required' }); return; }
+    if (!(['ready', 'failed', 'unknown', 'credential-rejected', 'removed-on-google', 'security'] as const).includes(outcome as PasskeyProofOutcome)) { res.status(400).json({ error: 'outcome must be one of ready, failed, unknown, credential-rejected, removed-on-google, security' }); return; }
+    if (!(['watcher', 'operator', 'canary', 'repair', 'enrollment'] as const).includes(origin as PasskeyProofOrigin)) { res.status(400).json({ error: 'origin must be one of watcher, operator, canary, repair, enrollment' }); return; }
+    // The two PERMISSIVE provenances — an operator-triggered proof (the only automatic exit from the
+    // breaker / stopped states) and a re-enrollment (the only exit from `security`) — are operator
+    // facts, so over HTTP they need the dashboard PIN like every other permissive passkey lever; a
+    // Bearer body alone cannot assert them (Know Your Principal).
+    const reenrolled = req.body?.reenrolled === true;
+    if ((origin === 'operator' || reenrolled) && !checkPasskeyPin(req, res)) return;
+    try {
+      const auth = buildPasskeyAuthority();
+      // Outcomes are recorded only for a cell this machine currently HOLDS (an active grant): a revoked
+      // cell's record is removed with the revoke and must not be resurrected by a late outcome.
+      if (!auth.grants.has(email)) { res.status(404).json({ error: 'no active grant for that account on this machine' }); return; }
+      const r = buildPasskeyHealth(auth).recordOutcome({ canonicalEmail: email, outcome: outcome as PasskeyProofOutcome, origin: origin as PasskeyProofOrigin, reenrolled });
+      appendPlaywrightAudit('passkey-health-outcome', 'passkeys', { outcome, origin, transition: r.transition ? `${r.transition.from}->${r.transition.to}` : null, dryRun: false });
+      res.json({ cell: r.cell, transition: r.transition, scheduleConfirmAt: r.scheduleConfirmAt });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'outcome not recorded' });
+    }
+  });
+  // POST /passkeys/attest-google-removed — PIN. Body { pin, email, targetMachineId? }. §3.2 (b).
+  router.post('/passkeys/attest-google-removed', async (req, res) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email : '';
+    if (!canonicalPasskeyEmail(email)) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'email is required' }); return; }
+    await runPasskeyPinOp(req, res, 'attest-google-removed', email, {});
+  });
 
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
   // the expected-issuer set and the nonce ledger are the authority. Refuses account-follow-me bundles.

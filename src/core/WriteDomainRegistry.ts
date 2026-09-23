@@ -570,6 +570,42 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'removes a peer from THIS machine\'s own state/passkey-peer-exclusions.json; per-machine authority',
     },
   });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/outcome',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'records one proof outcome into THIS machine\'s own state/passkey-health.json (a LOCAL cell only) and appends the transition to logs/passkey-health.jsonl; health is per machine, peers only READ it through the pool state',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/digest/refresh',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one digest pass: advances this machine\'s own health clocks and writes its own state/passkey-health-digest.json ledger; the attention item is keyed pool-wide and coalesced by key, and only the lease holder narrates peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/attest-google-removed',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'sets the Google-side state of THIS machine\'s own cell record to operator-attested (state/passkey-health.json); the signed mandate form is bound to the target machine like every passkey-cell op',
+    },
+  });
 
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can

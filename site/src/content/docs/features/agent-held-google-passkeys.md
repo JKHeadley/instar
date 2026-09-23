@@ -38,6 +38,39 @@ that machine by the operator.
 5. **Grants, issuers and the signed `passkey-cell` instruction** — this page's routes.
 6. **The durable revoke outbox** — re-delivery with backoff, the 30-day breaker and escalation.
 7. **The pool read path** — every pool-wide check reads its peers through one memo; see below.
+8. **Per-cell health and the one digest** — the state each cell is in, decided from proof outcomes,
+   and a single attention item that lists what needs a human; see below.
+
+## Cell health (what a proof outcome does to a cell)
+
+Every granted account on a machine — a *cell* — carries a health state decided only by the outcomes
+of its sign-in proofs, recorded through `POST /passkeys/health/outcome` and read back with
+`GET /passkeys/health`. A cell starts `healthy` and due for a proof. A `failed` proof does not
+degrade it by itself: one confirming proof runs an hour later, and only a confirmed failure makes
+the cell `degraded`; three confirmed weekly failures open the breaker (`breaker-open`, automatic
+proofs stop). Three `unknown` outcomes in a row make it `unverified`, retried on a 7 → 14 → 28-day
+backoff; three more unknowns at the cap make it `unverified-stopped`. A `credential-rejected` outcome
+makes it `rejected` (no immediate retry). A `security` outcome — the passkey signed in as a different
+account — is terminal until the cell is re-enrolled. A `ready` proof heals `degraded`, `unverified`
+and `rejected`; `breaker-open` and `unverified-stopped` heal only on an operator-triggered proof or a
+re-enrollment. No `ready` for 21 days makes a cell `unverified` — but that clock pauses while the
+pool read path is degraded for the account, so a dark peer never pushes cells toward unverified.
+Three healthy↔degraded flips in 30 days set a `flapping` flag. Every transition is audited to a
+states-only log; the email never appears in it.
+
+`POST /passkeys/attest-google-removed` records the operator's word that a passkey was removed on
+Google when the read-only list check cannot run; the cell shows it as *attested*, never as removed.
+
+## The one digest (`passkey-health:digest`)
+
+Everything that needs a human lands in ONE attention item under a fixed key, refreshed by
+`POST /passkeys/health/digest/refresh` and by a five-minute server timer: cells that are degraded,
+breaker-open, unverified, stopped, rejected, in a security state, quarantined, or awaiting Google-side
+removal; revokes still awaiting a peer; unobserved peers. The serving-lease holder narrates the whole
+pool (peers' published health rides in through the pool read path); a machine that does not hold the
+lease narrates only itself. It buzzes at most once per 24 hours; a security event or a suspension
+buzzes once per tick regardless; a change to the unobserved-peer list alone updates the item silently;
+and when nothing is left to report the episode resolves. A pass that changes nothing sends nothing.
 
 ## The pool read path (what my machines know about each other)
 
