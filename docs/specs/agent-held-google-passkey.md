@@ -227,9 +227,11 @@ agent's machines.
   was removed or rotated) is re-signed by any current issuer, carrying the original principal and
   the ORIGINAL cutoff (never re-derived at re-sign time),
   or escalates straight to `google-side-pending-operator`. If the issuing machine is gone, the lease
-  holder runs the 30-day escalation from the replicated copy. Re-delivery is limited to one attempt
-  per (peer, revoke) per hour, by the issuer or, if the issuer is unreachable, the lease holder, and
-  ends on the applied ack or once Google-side removal is verified or attested. De-pairing a lost or stolen machine is the lost-machine path: its
+  holder runs the 30-day escalation from the replicated copy. Re-delivery is done by the issuer or, if the issuer is unreachable, the lease holder, with
+  increasing backoff per (peer, revoke) — 1h, 6h, then daily — and a breaker: after 30 days without an
+  applied ack the entry escalates (above) and automatic re-delivery stops, apart from one attempt when
+  the peer is next observed online. It also ends on the applied ack or once Google-side removal is
+  verified or attested. De-pairing a lost or stolen machine is the lost-machine path: its
   cells escalate immediately, and while any revoke is pending the digest shows the Google-side removal
   link from day 0, because whoever holds that machine can use the key until it is removed on Google.
   Cells in `google-side-pending-operator` because of a lost, stolen or unreachable machine are a
