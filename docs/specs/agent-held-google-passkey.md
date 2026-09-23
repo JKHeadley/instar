@@ -609,7 +609,7 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 - **Rung 1 — test agent:** a throwaway agent, the local WebAuthn fixture, and one disposable Google
   account registered in the owned-identities registry: enroll, cold proof, revoke, restart-mid-mint
   resume, legacy adoption, Google-side removal check. Exit: all pass.
-- **Rung 2 — development agent** (pending operator ratification, FD16): Echo's fleet with `repairUsesPasskey: true` and the four passkey
+- **Rung 2 — development agent** (operator-ratified, FD16): Echo's fleet with `repairUsesPasskey: true` and the four passkey
   store kinds enabled. Running without the broker is accepted here because the status quo on this
   fleet is worse: the same keys already sit in the generic SecretStore, readable by every session and
   synced to every machine; Rung 2 strictly narrows that exposure. `google-passkey` is a
@@ -800,9 +800,10 @@ machine-local-justification: physical-credential-locality permanence=permanent i
     peer is unobserved; Rung 2 requires the stores enabled. (Author.)
 15. **Revokes never silently expire:** signed revokes are re-delivered unchanged; past 30 days the
     cell escalates to Google-side removal. (Author.)
-16. **Rung 2 before the broker, Rung 3 after it.** (Author recommendation, justified in §7; put to the
-    operator 2026-09-22 — the answer gates FD9's post-run Rung 2 step, not the build run. If the
-    operator declines, Rung 2 repairs run in approval mode until the broker ships; nothing built changes.)
+16. **Rung 2 before the broker, Rung 3 after it.** (Operator-ratified: Justin, topic 33890,
+    2026-09-22 PDT, chose option A — the built-in feature signs in hands-off on our own machines before
+    the broker ships, because the keys today are stored less safely than this design; other agents do
+    not get it until the broker exists. Justified in §7.)
 17. **Canary authority:** deterministic per-machine eligibility from the published suspension record,
     run under the local grant; never a mandate. (Author.)
 18. **Issuer set:** self-add on first local PIN; peers confirmed from each receiver's own dashboard;
