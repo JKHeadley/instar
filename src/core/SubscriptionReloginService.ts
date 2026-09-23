@@ -8,6 +8,8 @@ export interface SubscriptionReloginCandidate {
   sourceEpisodeId: number; accountId: string; machineId: string;
   mode: 'observe' | 'approval' | 'unattended'; inputDigest: string;
   profileId: string; framework: string; provider: string;
+  /** The login method the candidate was admitted under (recorded on the episode). */
+  loginMethod?: string | null;
 }
 export interface SubscriptionReloginServiceDeps {
   store: SubscriptionReloginStore;

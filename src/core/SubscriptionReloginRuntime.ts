@@ -6,7 +6,7 @@ import type { QuotaPoller } from './QuotaPoller.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import type { PlaywrightProfileRegistry, PlaywrightAccount, PlaywrightProfileDetail } from './PlaywrightProfileRegistry.js';
 import type { PendingLogin } from './PendingLoginStore.js';
-import { evaluateSubscriptionReloginAdmission } from './SubscriptionReloginPolicy.js';
+import { evaluateSubscriptionReloginAdmission, type PasskeyCellAdmissionState } from './SubscriptionReloginPolicy.js';
 import { SubscriptionReloginStore, type SubscriptionReloginEpisode } from './SubscriptionReloginStore.js';
 import { SubscriptionReloginOrchestrator } from './SubscriptionReloginOrchestrator.js';
 import { SubscriptionReloginService } from './SubscriptionReloginService.js';
@@ -33,6 +33,13 @@ export interface SubscriptionReloginRuntimeDeps {
     minimumSuccessfulRepairs?: number;
     minimumEvidenceDays?: number;
   };
+  /**
+   * The (account × machine) passkey cell's state for a `google-passkey` account (spec
+   * agent-held-google-passkey §3.4). NOT wired on this build: absent ⇒ every cell reads
+   * `unknown` ⇒ the policy refuses `passkey-cell-state-unknown`, so no passkey repair is ever
+   * admitted until the store + health layer that computes it lands.
+   */
+  passkeyCellState?: (input: { accountId: string; machineId: string; entryKey: string }) => PasskeyCellAdmissionState;
   now?: () => number;
 }
 
@@ -117,6 +124,11 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       const login = pending(acct.id); if (!login) throw new Error('login-artifact-unavailable');
       const { detail, browserAccount } = profileContext(acct);
       if (!detail?.userDataDir || !browserAccount) return { outcome: 'refused', failureClass: 'wrong-identity' };
+      // A `google-passkey` account is NEVER driven through the password/session flow. The
+      // passkey executor (credential load into the browser + the passkey page classes, spec
+      // §3.5–§3.8) is not on this build, so the drive boundary refuses by name; admission
+      // already refuses unless the cell is `ready`, which nothing can produce here.
+      if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, supervise: deps.supervise, seatLease, now });
       if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
@@ -173,9 +185,17 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     now, maxAttempts: deps.maxAttempts, retryBaseMs: deps.retryBaseMs,
   });
 
+  const passkeyCellFor = (acct: SubscriptionAccount, browserAccount: PlaywrightAccount | null): PasskeyCellAdmissionState | null => {
+    if (browserAccount?.loginMethod !== 'google-passkey') return null;
+    const entryKey = browserAccount.vaultBindings?.passkey;
+    if (!entryKey) return 'unknown';
+    return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey }) ?? 'unknown';
+  };
   const admissionFor = (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode, currentEpisodeId?: string) => {
     const { resolved, detail, browserAccount } = profileContext(acct);
-    const evidence = store.getUnattendedEvidence(acct.id, deps.machineId, acct.provider, acct.framework);
+    // Graduation evidence is scoped to the account's CURRENT method (a method change resets it).
+    const evidence = store.getUnattendedEvidence(acct.id, deps.machineId, acct.provider, acct.framework,
+      browserAccount?.loginMethod ?? null);
     const oldestSuccessAt = evidence.oldestSuccessAt === null ? null : Date.parse(evidence.oldestSuccessAt);
     const optedInIdentities = deps.unattendedPolicy?.identities ?? [];
     return evaluateSubscriptionReloginAdmission({ configuredMode: deps.mode,
@@ -186,7 +206,9 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       hasLivePendingLogin: pending(acct.id)?.status === 'pending',
       profile: detail && browserAccount ? { id: detail.id, ambiguous: resolved.ambiguous === true,
         dirExists: detail.dirExists, dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
-        loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs } : null,
+        loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs,
+        passkeyEntryKey: browserAccount.vaultBindings?.passkey ?? null,
+        passkeyCell: passkeyCellFor(acct, browserAccount) } : null,
       breakerOpen: store.isBreakerOpen(acct.id, acct.provider),
       unattended: {
         explicitlyEnabled: optedInIdentities.some((identity) => normalize(identity) === normalize(acct.email)),
@@ -208,7 +230,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       const verdict = admissionFor(acct, sourceEpisode); if (!verdict.admitted) continue;
       candidates.push({ sourceEpisodeId: sourceEpisode.id, accountId: acct.id, machineId: deps.machineId,
         mode: verdict.mode, inputDigest: verdict.inputDigest, profileId: verdict.profileId,
-        framework: acct.framework, provider: acct.provider });
+        framework: acct.framework, provider: acct.provider,
+        loginMethod: profileContext(acct).browserAccount?.loginMethod ?? null });
     }
     return candidates;
   };
@@ -230,8 +253,9 @@ function identityHash(value: string): string { return `sha256:${createHash('sha2
 function mustAccount(value: SubscriptionAccount | null): SubscriptionAccount {
   if (!value) throw new Error('subscription-account-unavailable'); return value;
 }
-function autonomousLoginMethod(account: PlaywrightAccount): 'session-cookie' | 'password' | 'password+totp' {
-  if (account.loginMethod === 'session-cookie' || account.loginMethod === 'password' || account.loginMethod === 'password+totp')
+function autonomousLoginMethod(account: PlaywrightAccount): 'session-cookie' | 'password' | 'password+totp' | 'google-passkey' {
+  if (account.loginMethod === 'session-cookie' || account.loginMethod === 'password' || account.loginMethod === 'password+totp'
+    || account.loginMethod === 'google-passkey')
     return account.loginMethod;
   throw new Error('login-method-not-autonomous');
 }

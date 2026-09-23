@@ -26161,6 +26161,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /passkeys/revert-method — restore the method a `google-passkey` assignment REPLACED
+  // (spec agent-held-google-passkey §3.4 rollback lever). Dashboard-PIN gated: a Bearer token
+  // alone cannot change how an account signs in. Default set = every google-passkey account;
+  // an account without a recorded prior is left UNCHANGED and listed as no-prior-method.
+  router.post('/passkeys/revert-method', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0
+      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const requested = req.body?.accounts as unknown;
+    const validTarget = (a: unknown): a is { profileId: string; service: string; identity: string } =>
+      !!a && typeof a === 'object' && typeof (a as { profileId?: unknown }).profileId === 'string'
+      && typeof (a as { service?: unknown }).service === 'string' && typeof (a as { identity?: unknown }).identity === 'string';
+    if (requested !== undefined && (!Array.isArray(requested) || !requested.every(validTarget))) {
+      res.status(400).json({ error: 'accounts must be an array of {profileId, service, identity}' });
+      return;
+    }
+    try {
+      const registry = buildPlaywrightRegistry();
+      const targets = (requested as Array<{ profileId: string; service: string; identity: string }> | undefined)
+        ?? registry.listPasskeyAccounts();
+      // All-or-nothing on unknown targets: validate every explicit target BEFORE the first write.
+      const unknownTarget = targets.find((t) => !registry.hasAccount(t.profileId, t.service, t.identity));
+      if (unknownTarget) {
+        res.status(404).json({ error: `account (${unknownTarget.service}, ${unknownTarget.identity}) not found in profile '${unknownTarget.profileId}'`, reverted: [] });
+        return;
+      }
+      const reverted: unknown[] = []; const noPriorMethod: unknown[] = []; const notPasskey: unknown[] = [];
+      for (const target of targets) {
+        const result = registry.revertLoginMethod(target.profileId, target.service, target.identity);
+        if (result.reverted) reverted.push(result);
+        else if (result.reason === 'no-prior-method') noPriorMethod.push(result);
+        else notPasskey.push(result);
+        appendPlaywrightAudit('revert-method', target.profileId, {
+          service: target.service, identity: target.identity, reverted: result.reverted,
+          ...(result.reverted ? { to: result.to, bindingMissing: result.bindingMissing } : { reason: result.reason }), dryRun: false,
+        });
+      }
+      res.json({ reverted, noPriorMethod, notPasskey });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to revert login method' });
+    }
+  });
+
   // PATCH /playwright-profiles/:id/accounts — update lastAsserted/lastVerifiedAt/note.
   router.patch('/playwright-profiles/:id/accounts', (req, res) => {
     if (!playwrightFeatureEnabled()) {
