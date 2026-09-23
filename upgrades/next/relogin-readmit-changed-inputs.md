@@ -1,0 +1,26 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+An assisted re-login incident could only ever have one repair episode (`repair_episodes` is unique on source incident, account and machine). Approve and retry both re-check the episode's stored `inputDigest` against a fresh admission. So once anything in the admitted inputs changed — a Google profile added, the account put on the unattended list, the mode switched — a `suggested` episode could never be approved (`approval-input-digest-mismatch`), a `failed` one could never be retried, and a `cancelled` one was final. The incident stayed unrepaired until it closed some other way, usually a manual sign-in.
+
+`SubscriptionReloginStore.suggest` now **re-admits** the incident's existing row when a fresh admission produces a different `inputDigest` and the row is `suggested`, `cancelled` or `failed`. The row goes back to `suggested` under the new inputs and mode, with attempt and reissue budgets, timestamps and failure class cleared. A `candidate-readmitted-inputs-changed` event is recorded, and its notification rows are reset so the new suggestion and outcome are delivered. In unattended mode the service tick then approves it as usual.
+
+Unchanged inputs keep today's behavior: a deliberate cancel stays cancelled, and a failure waits for an operator retry. `refused` (a safety verdict) and `succeeded` rows are never re-admitted. Re-admission never takes the cell from another live repair. Admission, including the per-account breaker, still has to pass for a candidate to reach `suggest` at all.
+
+No config, route or on-disk schema changes.
+
+## What to Tell Your User
+
+Automatic sign-in repair used to give up on an expired account for good after one cancelled or failed attempt, even after you fixed whatever was in the way, like adding a browser profile or turning on hands-off repair. Now, when the setup for that account changes, it tries again on its own. If you cancel a repair and nothing has changed, it still stays cancelled.
+
+## Summary of New Capabilities
+
+- Assisted re-login makes a fresh attempt when an account's repair setup changes, instead of leaving the account broken after one cancelled or failed attempt.
+
+## Evidence
+
+- Live, 2026-09-23 on the Studio: `justin-gmail`'s suggestion `2148d0a4` became unapprovable (`approval-input-digest-mismatch`) once the account joined the unattended list. After it was cancelled, no new episode appeared for the still-open incident for 4+ minutes of ticks. On 2026-09-21, `sagemind-adriana`'s failed episode likewise could not be retried under changed inputs.
+- Tests: `tests/unit/subscription-relogin-store.test.ts` (+3: re-admission of suggested, failed and cancelled rows only when inputs change; refused/succeeded never re-admitted and no stealing of a live cell; the suggestion notification is re-queued). All 3 fail against the pre-fix code. All 17 relogin test files are green, and `tsc` is clean.

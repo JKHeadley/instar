@@ -223,4 +223,69 @@ describe('SubscriptionReloginStore', () => {
     expect(store.listEvents(failed.id).map((event) => event.eventClass)).toContain('operator-retry-approved');
     store.close();
   });
+  it('re-admits a suggested, cancelled or failed row for the same incident when its admitted inputs changed', () => {
+    const { store, suggest } = fixture();
+    const changed = { inputDigest: `sha256:${'b'.repeat(64)}`, mode: 'unattended' as const };
+    // Stale suggestion (the live 2026-09-23 case: account joined the unattended list after suggest).
+    const stale = suggest();
+    const readmitted = suggest(changed);
+    expect(readmitted).toMatchObject({ id: stale.id, state: 'suggested', mode: 'unattended',
+      inputDigest: changed.inputDigest, attemptCount: 0, reissueCount: 0 });
+    expect(store.approve(readmitted.id, { inputDigest: changed.inputDigest }).state).toBe('approved');
+    // A failed attempt (the 2026-09-21 Adriana case) re-admits once inputs change again…
+    const approved = store.get(readmitted.id)!;
+    const starting = store.transition(approved.id, { expectedVersion: approved.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    const failed = store.transition(starting.id, { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'artifact-reissue-budget-exhausted', failureClass: 'attempt-budget-exhausted', incrementReissue: true });
+    expect(suggest(changed)).toMatchObject({ state: 'failed' }); // unchanged inputs: still waits for an operator retry
+    const third = { ...changed, inputDigest: `sha256:${'c'.repeat(64)}` };
+    expect(suggest(third)).toMatchObject({ id: failed.id, state: 'suggested', failureClass: null,
+      startedAt: null, approvedAt: null, attemptCount: 0, reissueCount: 0 });
+    expect(store.listEvents(failed.id).map((event) => event.eventClass)).toContain('candidate-readmitted-inputs-changed');
+    // …and a cancelled one too, but only on changed inputs.
+    const cancelled = store.cancel(failed.id);
+    expect(cancelled.state).toBe('cancelled');
+    expect(suggest(third).state).toBe('cancelled');
+    expect(suggest({ ...third, inputDigest: `sha256:${'d'.repeat(64)}` }).state).toBe('suggested');
+    store.close();
+  });
+
+  it('never re-admits a refused or succeeded row, and never steals the cell from another live repair', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    const refused = store.transition(first.id, { expectedVersion: first.version, to: 'refused',
+      eventClass: 'wrong-identity', failureClass: 'wrong-identity' });
+    expect(suggest({ inputDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ id: refused.id, state: 'refused' });
+    const other = suggest({ sourceEpisodeId: 42 });
+    expect(other.state).toBe('suggested');
+    const cancelled = store.cancel(other.id);
+    const live = suggest({ sourceEpisodeId: 43 });
+    expect(live.state).toBe('suggested');
+    expect(() => suggest({ sourceEpisodeId: 42, inputDigest: `sha256:${'e'.repeat(64)}` }))
+      .toThrowError(SubscriptionReloginConflictError);
+    expect(store.get(cancelled.id)?.state).toBe('cancelled');
+    store.close();
+  });
+
+  it('keeps a security-class failure terminal so re-admission cannot erase breaker evidence', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    const approved = store.approve(first.id, { inputDigest: first.inputDigest });
+    const starting = store.transition(approved.id, { expectedVersion: approved.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    store.transition(starting.id, { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'captcha', failureClass: 'captcha' });
+    expect(suggest({ inputDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ id: first.id, state: 'failed', failureClass: 'captcha' });
+    store.close();
+  });
+
+  it('re-queues the suggestion notification on an approval-mode re-admission', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    store.cancel(first.id);
+    suggest({ inputDigest: `sha256:${'b'.repeat(64)}` });
+    expect(store.claimNotifications(10).map((notification) => notification.kind)).toEqual(['suggested']);
+    store.close();
+  });
 });
