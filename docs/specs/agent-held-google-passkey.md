@@ -10,6 +10,7 @@ depends-on:
   - assisted-subscription-relogin
   - playwright-profile-registry
   - subscription-account-email-invariant
+  - cross-machine-secret-sync-spec
 approved: false
 ---
 
@@ -18,209 +19,393 @@ approved: false
 ## 1. Outcome and boundary
 
 After ONE human action per (Google account × machine), an Instar agent can sign itself into that
-Google account from an empty browser profile — no password, no code, no human — and therefore repair
-every subscription that signs in through Google (today: Claude Code and Codex) without operator work.
+Google account from an empty browser profile and therefore repair every subscription that signs in
+through Google (today: Claude Code and Codex) without operator work.
 
-This productizes a mechanism proven live on 2026-09-21/22 across 7 accounts × 3 machines with
-standalone scripts. It is an extension of `assisted-subscription-relogin`, not a parallel system:
-the passkey is a new **login method** the existing repair worker can use, plus the enrollment,
-storage, grant and proof machinery that method needs.
+This productizes a mechanism proven live on 2026-09-21/22 with standalone scripts. It EXTENDS
+`assisted-subscription-relogin` (the parent): the passkey is a new **login method** the existing
+repair worker can use, plus the enrollment, custody, grant, proof and migration machinery that
+method needs. Every parent guarantee (trigger admission, unattended identity allowlist, Tier-1
+supervised browser worker, identity-oracle veto, authenticated-use proof, breakers) is unchanged.
 
-The credential is the agent's OWN WebAuthn credential registered on the account (additive — the
-human's password, passkeys and second factor are never touched). It is never the human's secret.
+Prior art: Dawn's *Agent Account Sharing Standard* (SageMindAI/the-portal
+`docs/standards/agent-account-sharing.md`) and the account-free public write-up
+(https://telegra.ph/Hands-Off-Sign-In-for-AI-Agents-09-22-2, reviewed: contains no account
+identifiers). Differences from Dawn's standard are listed in §15.
 
-Public, account-free write-up of the method: https://telegra.ph/Hands-Off-Sign-In-for-AI-Agents-09-22-2
+### 1.1 What this credential is — stated honestly
 
-## 2. Mechanism (all load-bearing facts measured live)
+The agent's credential is a WebAuthn key pair registered on the Google account as an additional
+passkey. It is stored as **exportable software key material** (a private key the agent can inject
+into a virtual authenticator). Consequences, stated rather than implied away:
 
-1. **Virtual authenticator before navigation.** Every repair/enrollment browser page — including
-   popups — gets `WebAuthn.enable {enableUI:false}` + `WebAuthn.addVirtualAuthenticator
-   {protocol:ctap2, transport:internal, hasResidentKey, hasUserVerification, isUserVerified,
-   automaticPresenceSimulation}` BEFORE its first navigation. Without it Chrome raises the OS
+- It is **origin-bound** (it only signs for `google.com`), so it cannot be phished by a look-alike
+  site. It is **not hardware-bound**: anyone who reads the stored key can use it from anywhere.
+- It is a **complete Google sign-in**: whoever holds it has the whole Google account (mail, drive,
+  settings, every "Sign in with Google" service), not just Claude and Codex.
+- Its advantages over the password + 2FA route are real but narrower: the human's own password,
+  passkeys and 2FA are never read or changed; it is one key per account per machine; and it can be
+  removed on Google's security page without disturbing anything else.
+- A leak of this key is treated exactly as a leak of the account's password. Custody (§3.1) is
+  designed to that standard.
+- Enrollment still uses whatever the agent already has (a live session, a stored password). This
+  feature does not remove those; §14 FD7 records that keeping them is an explicit operator choice.
+
+## 2. Mechanism (measured live)
+
+1. **Virtual authenticator before navigation.** A page that may reach Google gets
+   `WebAuthn.enable {enableUI:false}` + `WebAuthn.addVirtualAuthenticator {protocol:ctap2,
+   transport:internal, hasResidentKey, hasUserVerification, isUserVerified,
+   automaticPresenceSimulation}` before its first navigation. Without it Chrome raises the OS
    platform-authenticator sheet and the page stops processing input.
-2. **Mint.** From a session the human signed in once, the worker opens Google's passkey-creation
-   page; the credential lands in the virtual authenticator; `WebAuthn.getCredentials` exports it.
-3. **Use.** In any fresh profile, `WebAuthn.addCredential` with the stored credential, then navigate;
-   Google authenticates with the resident credential (often with no identifier typed).
-4. **Reach-through.** Claude's login accepts a live Google session (`claude.ai/login` → `/new`);
-   Codex's device flow offers "Continue with Google". One credential repairs both.
+2. **Mint.** From a session signed in to account E, the worker opens Google's passkey-creation page;
+   the credential lands in the virtual authenticator; `WebAuthn.getCredentials` exports it.
+3. **Use.** In a fresh profile, `WebAuthn.addCredential`, then navigate to Google sign-in; Google
+   authenticates with the resident credential.
+4. **Reach-through.** Claude's login accepts a live Google session; Codex's device flow offers
+   "Continue with Google". One credential repairs both.
 
-Known constraints (measured): Google does not enforce the signature counter, but other relying
-parties do — so credentials are minted per (account × machine) for revocation granularity and never
-depended on as a shared copy. An authenticated profile cannot mint a second passkey ("You're all
-set!"), so the agent cannot self-propagate to another machine. Workspace domains block passkey
-sign-in until the admin enables "skip password at sign-in".
+Measured constraints: Google does not enforce the signature counter (other relying parties do); an
+authenticated profile cannot mint a second passkey ("You're all set!"), so the agent cannot
+self-propagate to another machine; Workspace domains block passkey sign-in until the admin enables
+"skip password at sign-in". `signCount` is not written back after use; that is correct for Google
+only and is one reason this release is Google-only (§9).
 
 ## 3. Components
 
-### 3.1 `PasskeyCredentialStore` (new)
+### 3.1 Custody — `PasskeyCredentialStore` (new)
 
-- Stores each credential in the existing encrypted `SecretStore` under a reserved, machine-scoped
-  key `passkey:google:<canonical-email>:<machineId>`. Payload: `{credentialId, rpId, privateKey,
-  userHandle, signCount, mintedOnMachineId, mintedAt, schemaVersion}`.
-- **Machine-scope guard:** `load()` refuses a credential whose `mintedOnMachineId` ≠ the local
-  machine id, BEFORE anything reaches `WebAuthn.addCredential`. (A shared import is an explicit,
-  audited operator action — §3.5 — never implicit.)
-- **Excluded from cross-machine secret sync.** The reserved prefix is on the sync deny-list; a
-  passkey never travels between machines through `/secrets/sync-now`.
-- Values never leave the store except into the CDP call inside the browser worker process; never
-  into prompts, logs, ledgers, screenshots, API responses or the supervisor input.
+- **Key path:** `googlePasskeys.<emailKey>.<machineId>` where `emailKey` = lowercase hex SHA-256 of
+  the canonical email (dot-free — `SecretStore` splits paths on `.`). Payload:
+  `{credentialId, rpId, privateKey, userHandle, signCount, canonicalEmail, mintedOnMachineId,
+  mintedAt, googleCreatedAt?, provenance: 'minted' | 'legacy-adopted', schemaVersion}`.
+- **Never syncs.** `googlePasskeys` is added to `LOCAL_ONLY_SECRET_PREFIXES` (`src/core/SecretSync.ts`),
+  which both the push filter and the receive refusal enforce. The prototype names
+  (`google_passkey_*`, a single top-level segment) are added as a local-only **name pattern**
+  (a new exact-prefix-of-first-segment rule alongside the existing segment rule). Unit tests push a
+  real dotted email and a prototype name through `filterSecretsForSync` and the receive path.
+  `AccountCredentialShare` (WS5.2) refuses both, with a test.
+- **Not readable by generic paths.** The `googlePasskeys` prefix and the prototype pattern are
+  refused by `secret-get.mjs`, `SecretManager`'s generic get, backup-from-config, and every generic
+  `SecretStore` read API; only `PasskeyCredentialStore`, constructed once by the server and handed
+  to the passkey worker, can decrypt them. Their names are omitted from the session boot
+  self-knowledge block. Tests prove each generic path refuses.
+- **Machine-scope guard (invariant):** `load()` returns a credential only when
+  `mintedOnMachineId === localMachineId`, or an operator-confirmed adoption record for this machine
+  exists (§6). The check runs before anything reaches CDP. A local machine-id change (reinstall /
+  identity recovery) yields the named state `machine-id-changed`, never a silent load.
+- **Writes are serialized.** All store writes take a cross-process lock (`proper-lockfile`, the
+  pattern `AgentRegistry` uses) around read-modify-write of the encrypted store, then re-read after
+  release to verify. This also protects against the existing secret-sync receiver writing
+  concurrently.
+- **Crash-safe mint without plaintext on disk.** Between export and the verified store write, the
+  credential is held in a pending record at `.instar/secrets/passkey-pending/<emailKey>.enc`,
+  encrypted with the SecretStore master key (same AES-GCM envelope). `.instar/secrets/` is already
+  excluded from BackupManager, git-sync, the file viewer and publishing; tests assert the pending
+  directory is covered. The pending record is deleted after verified read-back; a leftover is
+  resumed on restart (never re-minted), expires after 24h (deleted, one aggregated notice), and is
+  deleted on revoke.
+- **In-memory lifetime.** The credential is decrypted once per worker episode. It is added to the
+  virtual authenticator only while the top-level page origin is exactly `accounts.google.com`, and
+  removed (`WebAuthn.removeCredential`) as soon as a Google session is established or the page
+  leaves that origin.
+- **Debug channel.** A browser that holds a passkey is launched with `--remote-debugging-pipe`, not
+  a TCP debugging port, so another same-user local process cannot attach and call
+  `WebAuthn.getCredentials`. Threat model: a process running as the same OS user with arbitrary
+  file access can still read the encrypted store's key material through the master key; this
+  feature does not claim protection against a fully compromised user account.
 
-### 3.2 Grants (deny-by-default)
+### 3.2 Grants (deny-by-default, machine-local authority)
 
-- New per-agent grant record `passkeyGrants[]`: `{email, grantedBy (verified principal), grantedAt,
-  machines: 'all' | machineId[]}`. Without a grant for `(email, this machine)` the store refuses to
-  mint or load, and the repair worker cannot select the passkey method.
-- Grant and revoke are dashboard-PIN (or verified-topic-operator signed action) only; a Bearer token
-  is insufficient.
-- **Revoke deletes the credential** from the store (and records a tombstone), not just the
-  permission. The UI tells the operator that removing the passkey from the Google account page is the
-  authoritative revocation and links to it; the agent attempts that removal itself when it still has
-  a live session, and reports honestly when it could not.
+- A grant `{canonicalEmail, machineId, grantedBy (verified principal), grantedAt}` authorizes mint
+  and load of that one (account × machine) cell. No `'all'` wildcard.
+- **Authority is machine-local.** Each machine enforces only grants recorded in its own
+  `state/passkey-grants.json`, written by: the dashboard-PIN route on that machine, or a
+  signed cross-machine action (`passkey-grant` / `passkey-revoke`) through the existing signed
+  repair relay (`/subscription-relogin/repair-cell` action set, extended), which verifies the
+  operator mandate on the receiving machine. The PIN never crosses the mesh. Other machines' grant
+  rows are visible only through the proxied read (§12); they carry no authority.
+- **Revoke always wins.** A revoke is applied even if a grant for the same cell arrives later with an
+  older timestamp.
+- **Revoke deletes locally, and says what it didn't do.** Revoke deletes the store entry, the
+  pending record, and the profile tuple's passkey binding, writes a tombstone, and verifies by
+  read-back. Removing the passkey from the Google account is the **operator's** action in this
+  release: the revoke result shows the credential's `googleCreatedAt` and a link to Google's
+  passkey page, and reports `local-deleted, google-side-pending-operator`. An offline target
+  machine reports `pending-remote-delete` until the signed action lands. The agent never deletes
+  anything on Google's pages in this release (§9).
+- Every grant, mint, adoption and revoke notice names what changed and which agents or sessions
+  depend on that account (from the pool and profile registry).
 
-### 3.3 Login method `google-passkey`
+### 3.3 Login method `google-passkey` and the code it touches
 
-- `PlaywrightLoginMethod` and the relogin driver request gain `'google-passkey'`. A profile tuple with
-  this method carries `vaultBindingNames: [<store key>]` (a name, never a value).
-- The repair worker, when the resolved tuple's method is `google-passkey`: attaches the virtual
-  authenticator to every page, loads the credential via §3.1, and otherwise runs the UNCHANGED
-  contract of `assisted-subscription-relogin` §6.2 — origin allowlist, exact-identity checks,
-  chooser/consent/challenge refusals, Tier-1 supervisor over closed state, CLI completion, identity
-  oracle veto, authenticated-use proof.
-- Allowed-origin additions for this method: `accounts.google.com` (sign-in only). Google account
-  settings pages are NOT in the repair allowlist; they are only reachable by the enrollment worker.
-- Precedence when several methods are registered for one tuple: live session → `google-passkey` →
-  password-based. A passkey failure never falls through to a method the grant does not cover.
+- `PlaywrightLoginMethod` gains `'google-passkey'`; `vaultBindings` gains a `passkey` role holding
+  the store key name (never a value). The account row keeps ONE `loginMethod`. Enrollment records
+  the replaced method in a new `priorLoginMethod` field.
+- Changes required (named so the build cannot miss one): `SUPPORTED_LOGIN_METHODS` in
+  `SubscriptionReloginPolicy.ts`; `autonomousLoginMethod()` in `SubscriptionReloginRuntime.ts`;
+  the driver request's `loginMethod` union in `AnthropicReloginBrowserDriver.ts`. A test drives a
+  `google-passkey` tuple through the runtime (not just the type).
+- **No fall-through.** A passkey failure never falls back to another method. It ends in a named
+  refusal. The live Google session in the dedicated profile is used first, as today, because it is
+  the same account and the same method's normal path.
+- **Rollback.** An older build reading `google-passkey` refuses repair for that account
+  (`login-method-not-autonomous`) — safe, not silent. `POST /passkeys/revert-method` (PIN) restores
+  `priorLoginMethod` for all accounts on a machine before a deliberate downgrade; the release note
+  says so.
+- **Origin allowlist additions** for the repair worker: `accounts.google.com` only. Google account
+  settings pages are reachable only by the enrollment worker, and only the passkey-creation page.
 
-### 3.4 Guided enrollment (the one human action)
+### 3.4 Browser foundation changes (`ChromeCdpReloginBrowser`)
 
-`POST /passkeys/enroll` (dashboard-PIN) starts an episode for `(email, this machine)`:
+The current browser creates tabs with `/json/new?<url>`, which navigates immediately, on one socket
+with no popup handling. That cannot satisfy §2.1. Required changes:
 
-1. **Get in once.** The worker drives Google sign-in in the account's dedicated profile using
-   whatever is already available (live session, stored password) and stops at the first human-only
-   gate. The dashboard shows exactly one ask ("approve the prompt on your phone" / "enter the code").
-   Timing handshake: the operator taps *Ready* first; only then does the worker trigger the prompt.
-2. **Mint** (§2 step 2). If Google shows a confirm dialog, the dialog's own primary button is used.
-3. **Durable before store:** the exported credential is written to a 0600 file inside the agent
-   state dir before the SecretStore write, and that file is deleted only after a verified store
-   read-back. A crash between mint and store leaves a recoverable credential, never an orphan.
-4. **Cold proof** (§3.6). Only a passing proof marks the tuple `google-passkey` and ready.
+- create every target at `about:blank`, attach the virtual authenticator, then navigate;
+- `Target.setAutoAttach {autoAttach:true, waitForDebuggerOnStart:true, flatten:true}` so popups are
+  paused until the authenticator is attached, then resumed;
+- a test fails if any navigation to a Google origin happens before the attach completes;
+- **real input clicks** (`Input.dispatchMouseEvent` at the element's box) for Google choice-list
+  items — measured 2026-09-21: script-level `element.click()` does not advance Google's list screens;
+- password fields filled and read back to verify length before submit (existing driver rule, kept);
+- `--remote-debugging-pipe` for passkey-method sessions (§3.1).
 
-Workspace pre-check: if Google refuses creation with the admin-policy message, the episode ends in a
-named state `workspace-policy-blocked` with the exact admin-console path — never a generic failure.
+### 3.5 Closed page classes (new, with fixtures)
 
-### 3.5 Explicit shared import (operator-only escape hatch)
+The parent's closed page-class set gains: `google-passkey-challenge`, `google-passkey-create`,
+`google-passkey-create-confirm` (the dialog whose button repeats "Create a passkey"),
+`google-already-enrolled` ("You're all set"), `google-passkey-throttled` ("too many attempts"),
+`google-workspace-policy-blocked`, `google-account-identity` (the page from which the signed-in
+email is read). Each class is matched on structural predicates (origin, path, element roles and
+stable identifiers) with text only as a secondary signal, has a redacted fixture in the canary
+corpus, and an unmatched page is `unknown` — never success. Class drift (a fixture no longer
+matching a live page) is reported by the parent's supervisor-disagreement metric.
 
-When a per-machine mint is temporarily impossible (e.g. Google throttling on a passkey-first
-account), the operator may import an existing credential for this machine only. It is stored with
-`importedFrom` provenance, shown as *shared* in the UI, and flagged for re-mint when possible.
+### 3.6 Guided enrollment (the one human action)
 
-### 3.6 Cold proof (no warm-profile passes)
+`POST /passkeys/enroll {email}` (dashboard PIN; or the signed `passkey-enroll` relay action for
+another machine). Preconditions: a grant for the cell, a registered dedicated profile for E, a
+display-capable machine (the parent's browser-availability predicate), no enrollment or repair
+episode already owning the cell.
 
-A throwaway profile directory is created, only the passkey is injected, Google sign-in runs, then
-`claude.ai/login` must redirect to an authenticated page (and for Codex-linked accounts, the Google
-session must be accepted on the OpenAI sign-in origin without a password prompt). The throwaway
-profile is deleted afterwards. Enrollment and a periodic health check (§4) both use this proof; a
-warm-profile success never counts.
+- **One episode per cell, idempotent.** A second call returns the existing episode. A leftover
+  pending record resumes at "store" rather than re-minting.
+- **Rate limit.** At most one enrollment attempt per cell per 30 minutes and 3 per day, counted in a
+  durable per-account attempt counter shared with the proof watcher.
+- **Closed action set:** navigate to the allowlisted page, fill the account's email, fill the
+  stored password (only if the tuple already binds one — the grant covers methods already bound to
+  the tuple), choose "Try another way"/"Enter your password" on a passkey-first account, click
+  "Create a passkey", click the create-confirm dialog's own button, click "Not now" on a
+  platform-passkey speedbump. Anything else refuses. Never "Continue" on an empty authenticator.
+- **Self-unblock first.** Before asking the human, the worker tries, in order: the dedicated
+  profile's live session; the stored password plus any stored TOTP or backup codes; a fresh
+  throwaway profile (one retry). Only a genuine second-factor prompt the agent holds no answer for
+  (`waiting-human-factor`) or a CAPTCHA/risk page produces the human ask.
+- **The human ask.** The dashboard shows exactly one ask ("approve the prompt on your phone" /
+  "enter the code"). The operator taps *Ready*; only then does the worker trigger the prompt.
+- **Mint, then verify identity before storing.** After mint, the worker opens the
+  `google-account-identity` page and reads the signed-in email; it must equal E exactly (the same
+  canonical form as `subscription-account-email-invariant`). Mismatch ⇒ discard the credential,
+  state `identity-mismatch`, one notice; nothing stored. `userHandle` is bound into the record.
+- **Store, then cold proof (§3.7).** Only a passing proof sets the tuple to `google-passkey`.
+- **Workspace:** `google-workspace-policy-blocked` ends the episode with the exact admin-console
+  path in plain words.
 
-## 4. Health and surfaces
+### 3.7 Cold proof (identity-verified, no warm passes)
 
-- `GET /passkeys` — per (email × machine): granted?, credential present?, minted/imported, last cold
-  proof result + time, workspace-blocked. Names and states only; never credential material.
-- Dashboard Subscriptions grid: a passkey badge per account×machine cell; enrollment and revoke
-  controls behind the PIN; mobile-complete.
-- A weekly cold-proof job (off by default for the fleet, on for the dev agent) re-proves each
-  credential and raises ONE attention item per failing account, never per run.
-- `GET /capabilities` and the CLAUDE.md template (Agent Awareness Standard) describe the feature and
-  the one-sign-in-per-machine cost.
+- A throwaway profile under `.instar/state/passkey-proof/` (0700, capped at 2 concurrent, swept at
+  boot and every tick through SafeFsExecutor) gets only the passkey. The worker signs in to Google,
+  then reads the signed-in email on `google-account-identity`; it must equal E. That is the proof.
+- Optional per-framework reach-through (Claude, Codex) is a separate, informational check; an
+  outage, challenge or timeout there is `unknown`, not a failure, and never creates provider
+  accounts (it is only run for providers the pool already maps to E).
+- Proofs never run a provider CLI and never touch a live config home.
+- Result vocabulary: `ready` (identity-verified), `failed` (credential rejected / identity
+  mismatch), `unknown` (transport, outage, unmatched page, throttled). Only `ready` counts as ready.
 
-## 5. Privacy and security
+## 4. Health watcher (deterministic in-server tick)
 
-- The agent holds one revocable, phishing-resistant key per account per machine — strictly smaller
-  than the password+TOTP it replaces. The human's own factors are untouched (additive only;
-  "Change authenticator app"-style destructive options are never taken).
-- No page text is logged from Google or provider pages; only closed page classes.
-- Credential export happens only inside the worker; the parent receives `{stored: true, keyName}`.
-- Grants bind to verified principals (Know Your Principal); the passkey never widens which accounts
-  a repair may target — the unattended identity allowlist still gates repair per account.
-- Headless machines refuse browser methods rather than attempting to open a browser.
+- Not a scheduler job and not an LLM session: a deterministic tick inside the server
+  (`passkeyHealth`, tier0 — it only calls the Tier-1-supervised proof worker, whose supervision is
+  the parent's).
+- Cadence: each cell proven once per 7 days at a per-machine jittered time; cells run one at a time,
+  ≥ 10 minutes apart; each proof acquires the host `PlaywrightSeatLease` for that cell only, yields
+  to any pending repair, and never holds the seat across a wait.
+- **Throttle safety:** a `google-passkey-throttled` page pauses all proofs for that account for 24h
+  and all proofs on that machine for 1h. A proof never presses "Continue" on an empty authenticator.
 
-## 6. Migration parity
+State per cell: `healthy → degraded → breaker-open`.
 
-- `migrateConfig()` adds the `passkeys` block (disabled, dry-run) for existing agents.
-- An idempotent migration offers to adopt credentials already stored by the prototype scripts
-  (`google_passkey_<name>_<machine>` vault keys) into §3.1, re-validating the machine stamp and
-  requiring an operator grant; nothing is adopted silently.
-- CLAUDE.md template section via `migrateClaudeMd()` with a content-sniffing guard.
+| Transition | Rule |
+|---|---|
+| healthy → degraded | a `failed` proof after self-heal is exhausted |
+| degraded → healthy | a later `ready` proof |
+| degraded → breaker-open | 3 consecutive weekly `failed` proofs; proofs stop for that cell |
+| breaker-open → healthy | a successful re-enrollment or an operator-triggered `ready` proof |
+| any → security | `google-passkey-challenge` rejecting a credential on 2 consecutive attempts with a closed "passkey removed/unknown" class; no retry, immediate notice |
+
+`unknown` results never advance any transition.
+
+## 5. Surfaces and notices
+
+- `GET /passkeys` — per cell: granted, custody state (present/pending/machine-id-changed/
+  legacy-adopted), health state, last proof result and time, Workspace blocked. Names and states
+  only. `?scope=pool` merges peers through the shared per-peer poll cache (WS4.4(f)), dark-peer
+  tolerant.
+- Dashboard Subscriptions grid: a passkey badge per cell; grant / enroll / revoke / adopt controls
+  behind the PIN; mobile-complete.
+- **Bounded notices:** the serving-lease holder raises at most ONE aggregated attention item per
+  sweep, listing all degraded cells (count + list); security-class cells raise one aggregated item
+  on the same tick. Per-cell detail lives only on `GET /passkeys`.
+- `GET /capabilities` and the CLAUDE.md template (Agent Awareness Standard) describe the feature,
+  the one-sign-in-per-machine cost, and the §1.1 security statement.
+
+## 6. Migration parity (including today's prototype keys)
+
+Live state at spec time: seven prototype keys — `google_passkey_{echo,dawn,adriana,justin,
+gearfinity}_studio` (minted on the Studio), `google_passkey_headley_shared` (a copy of Dawn's
+credential) and `google_passkey_amrch` (minted on the Studio, unsuffixed). All were pushed to the
+Mini and Laptop through secret sync, and the fleet's current hands-off repairs depend on those copies.
+
+- **Stop the spread first:** the local-only name pattern (§3.1) ships in the first increment, so no
+  further copies move.
+- **Never delete silently, never break working repairs:** on each machine, the migration lists the
+  prototype keys present and shows them on the dashboard. The operator chooses per key:
+  *adopt as legacy-shared* (copied into `googlePasskeys.*` with `provenance: 'legacy-adopted'` and an
+  operator-confirmed adoption record for this machine; keeps working; flagged for re-mint) or
+  *delete*. Nothing is adopted or deleted without that choice. Prototype keys are removed from the
+  generic store once adopted or deleted.
+- **Re-mint cost, stated:** ending shared custody means one human sign-in per (account × machine)
+  for the peers: up to 14 on today's fleet. The dashboard shows this count; re-minting is optional
+  and can happen gradually.
+- `migrateConfig()` adds the `passkeys` block (below); `migrateClaudeMd()` adds the section with a
+  content-sniffing guard; the registry migration adds `priorLoginMethod` and the `passkey` binding
+  role.
+
+Config (`.instar/config.json`): `passkeys: { enabled: <dev-agent gate>, repairUsesPasskey: false,
+healthWatcher: { enabled: <dev-agent gate>, intervalDays: 7, minGapMinutes: 10 },
+enrollment: { maxPerCellPerDay: 3, minIntervalMinutes: 30 } }`.
 
 ## 7. Rollout
 
-Dark on the fleet, live + dry-run on the development agent (dev-agent gate). Dry-run performs
-enrollment and cold proofs in throwaway profiles but does not change which login method repair uses.
-Graduation: the dev fleet's 7 accounts × 3 machines complete an unattended repair via the built-in
-path, then the prototype scripts are deleted.
+- **What "dry-run" means here:** enrollment is always a real, grant-gated, operator-initiated write
+  to a Google account — it has no dry mode. `repairUsesPasskey: false` means the repair worker never
+  selects `google-passkey` even for enrolled accounts; the health watcher still proves cells.
+- **Rung 1 — test agent:** a throwaway agent, the local WebAuthn relying-party fixture, and one
+  disposable Google account: enroll, cold proof, revoke, restart-mid-mint resume. Exit: all pass.
+- **Rung 2 — development agent:** Echo's fleet, `repairUsesPasskey: true` per account.
+  `google-passkey` is a NEW provider path under the parent's graduation rule — its own dark window
+  (30 days) and its own 10 identity-correct repairs per provider; evidence from password-path
+  repairs does not carry over.
+- **Rung 3 — fleet:** flags flip to on-by-default only after Rung 2 graduates. The prototype scripts
+  are deleted at Rung 2 exit.
 
 ## 8. Testing
 
-- Unit: store machine-scope guard (refusal happens before injection), grant deny-by-default, revoke
-  deletes, sync deny-list, method precedence, supervisor input excludes credential material.
-- Integration: `/passkeys` routes with PIN gating; enrollment state machine including crash between
-  mint and store; `workspace-policy-blocked` classification.
-- E2E: feature-alive test through the production init path; a cold-proof against a local WebAuthn
-  relying party fixture (no live Google in CI).
-- Live proof (Live-User-Channel standard): dev agent enrolls one account on one machine through the
-  dashboard from a phone, then completes a real Claude and Codex repair unattended.
+- Unit: key path with real dotted emails; local-only enforcement on push AND receive for both the
+  new prefix and the prototype pattern; generic read paths refuse; boot block omits names; machine-
+  scope guard runs before CDP; grants deny by default, revoke wins, no wildcard; locked writes with
+  concurrent writers; pending record encrypted, resumed, expired; method refusal without
+  fall-through; supervisor input excludes credential material.
+- Integration: `/passkeys` routes with PIN gating; relay actions verify the mandate; enrollment state
+  machine including crash between mint and store, identity-mismatch discard, rate limit,
+  Workspace class; watcher aggregation (N failing cells ⇒ 1 item).
+- E2E: feature-alive through the production init path; about:blank-then-attach ordering and popup
+  auto-attach against a local WebAuthn fixture; cold proof against the fixture.
+- Live (Live-User-Channel standard): on the dev agent, enroll one cell from a phone through the
+  dashboard, prove it, then complete a real Claude and a real Codex repair unattended, including one
+  on a peer machine started through the relay.
 
 ## 9. Non-goals
 
-- Relying parties other than Google in this release (the mechanism generalizes; the proof does not).
-- Automatic minting on a new machine without the human's one action (impossible — §2).
+- Relying parties other than Google.
+- The agent deleting anything on Google's account pages (operator action in this release).
+- A general "import a credential from elsewhere" route (only the one-time legacy adoption in §6).
+- Minting on a new machine without the human's one action (impossible — §2).
 - Storing or using the human's own passkeys.
 
 ## 10. Decision points touched
 
 | Decision point | Class | Justification / floor + arbiter |
 |---|---|---|
-| Passkey store `load()` machine-scope guard (refuse if `mintedOnMachineId` ≠ local id) | invariant | A credential-provenance fact, not competing signals. Deterministic by design; the only override is the audited operator import (§3.5). |
-| Grant check before mint/load/method-selection | invariant | Authorization is a recorded operator fact; no inference. Missing/unreadable grant record ⇒ deny. |
-| Repair method precedence (live session → passkey → password) | invariant | Fixed ordering over methods the grant already covers; no signal competition. A failed method never falls through to an ungranted one. |
-| Enrollment page-state classification (which Google screen is showing, which action to take) | judgment-candidate | Floor: the existing `assisted-subscription-relogin` §6.2 contract — closed page-class set, closed allowed-action set, exact-origin allowlist, confidence ≥ 0.95 else refuse. Arbiter: the Tier-1 supervisor over redacted closed state. Fallback ladder ends at the deterministic rung `waiting-operator-only` (stop and ask for the one human action). |
-| `workspace-policy-blocked` classification | invariant | Matched on Google's closed policy-refusal page class, not prose interpretation; an unmatched refusal falls to the generic `waiting-operator-only` state, never to success. |
-| Cold-proof verdict (ready / not ready) | invariant | Pass requires the authenticated-destination origin+path (§11). Anything else, including timeouts, is not-ready. |
+| Machine-scope guard in `load()` | invariant | Provenance fact (minted here, or operator-confirmed adoption record). No inference. |
+| Grant check before mint/load/method-selection | invariant | Recorded operator fact on this machine; unreadable ⇒ deny. Revoke wins. |
+| Generic secret-read refusal for passkey paths | invariant | Namespace rule; no exceptions. |
+| Repair method selection | invariant | The tuple has one method; no precedence, no fall-through. |
+| Enrollment/proof page-state → action | judgment-candidate | Floor: closed page-class set (§3.5), closed action set (§3.6), exact-origin allowlist, confidence ≥ 0.95. Arbiter: parent's Tier-1 supervisor over redacted closed state. Ladder: self-unblock steps (§3.6) → `waiting-human-factor` → deterministic stop. |
+| Identity match after mint and in every proof | invariant | Exact canonical-email equality read from Google's own identity page; unreadable ⇒ `unknown`, never ready. |
+| Proof verdict (`ready`/`failed`/`unknown`) | invariant | `ready` only on identity match; transport/outage/unmatched ⇒ `unknown`. |
+| Security-class escalation | invariant | Closed rejection class on 2 consecutive attempts; anything else stays recoverable. |
+| Legacy key adoption or deletion | invariant | Operator choice per key; no default action. |
 
 ## 11. Symbols, states and corroboration (P20)
 
-| Symbol read | State it claims | Independent corroboration | When unmeasurable |
+| Symbol | Claimed state | Independent corroboration | Unmeasurable ⇒ |
 |---|---|---|---|
-| Store key present | "this machine can sign in as E" | Cold proof (§3.6) from an empty profile; the key alone never marks a tuple ready | `unknown` — tuple stays at its previous method; repair does not select `google-passkey` |
-| `WebAuthn.getCredentials` returned a credential after mint | "Google registered the agent's passkey" | Cold proof signs in with ONLY that credential | Enrollment ends `mint-unverified`; the backup file is kept for operator inspection |
-| Cold proof reached `claude.ai` authenticated path | "Google session from the passkey is accepted by Claude" | The repair's own identity oracle + authenticated-use proof (unchanged from the parent spec) on the next real repair | `unknown`; the weekly health check reports it, it is never reported as healthy |
-| Grant record | "the operator authorized this account on this machine" | Grant written only by the PIN/verified-operator route, with principal recorded | Unreadable grant store ⇒ deny |
-| Revoke deleted store entry | "the agent can no longer sign in as E here" | Read-back shows the key absent AND a tombstone present; the Google-side passkey removal is reported separately as `removed` / `not-removed` | Report `local-deleted, google-side-unknown` — never "revoked" alone |
+| Store entry present | this machine can sign in as E | Identity-verified cold proof (§3.7) | `unknown`; not ready |
+| `getCredentials` returned a credential | Google registered the agent's passkey for E | Signed-in email read on Google's identity page equals E; then a cold proof using only that credential | `mint-unverified`; pending record kept (encrypted, 24h) |
+| Cold proof `ready` | the passkey signs in as E | The parent's identity oracle + authenticated-use proof on the next real repair (recorded, not required for `ready`) | `unknown` |
+| Grant record | operator authorized this cell | Written only by the PIN route or a mandate-verified relay action, with principal | deny |
+| Revoke read-back | agent can no longer sign in as E here | Store entry, pending record and binding absent; tombstone present | report exactly which location could not be verified |
+| Google-side passkey state | whether Google still accepts it | Not observed by the agent in this release | reported as `google-side-pending-operator` |
 
 ## 12. Multi-machine posture
 
-- Passkey credentials: machine-local. `machine-local-justification: physical-credential-locality` — each credential is a per-machine WebAuthn key minted for revocation granularity; replicating it would recreate the cloned-authenticator shape this design exists to avoid.
-- Grants: unified — replicated through the existing replicated-store foundation (operator decisions follow the agent); each machine still enforces its own `machines:` scope.
-- `GET /passkeys`: proxied-on-read via `?scope=pool` (merged per-machine rows, dark-peer tolerant, same pattern as `/subscription-pool?scope=pool`).
-- Enrollment episodes: machine-local. `machine-local-justification: physical-credential-locality` — the episode drives the browser profile that physically lives on that machine. The dashboard starts it on the target machine through the existing signed cross-machine action relay, as the Subscriptions grid already does for repairs.
-- Cold-proof health notices: one voice — raised by the machine that owns the credential, deduped per (account × machine) episode.
+- Passkey credentials and pending records: machine-local. `machine-local-justification: physical-credential-locality` — each is a per-machine key whose value is copying-sensitive by design.
+- Grant records: machine-local authority. `machine-local-justification: physical-credential-locality` — a grant authorizes loading a machine-local credential; cross-machine management goes through signed relay actions, and a read-only merged view is proxied (below).
+- Enrollment episodes and proof profiles: machine-local. `machine-local-justification: physical-credential-locality` — they drive the browser profile that physically lives on that machine.
+- Health state and `logs/passkey-health.jsonl` (states only, 30-day rotation): machine-local. `machine-local-justification: physical-credential-locality` — describes one machine's credential.
+- `GET /passkeys`: proxied-on-read (`?scope=pool`).
+- Notices: one voice — the serving-lease holder aggregates.
+- Config block: per-machine by design, like the rest of `.instar/config.json`.
 
-## 13. Self-heal before notify (weekly cold-proof watcher)
+## 13. Self-heal before notify (health watcher)
 
-- Degradation class: `recoverable` (a stale session or transient Google error). Self-heal: re-run the cold proof once after a backoff; if the credential itself is rejected, re-attempt with a fresh throwaway profile. Remediation actions are read-only with respect to the account (sign-in attempts only); nothing is minted or deleted by self-heal.
-- Brakes: `max-attempts: 2`, `max-wall-clock: 30m`, `backoff: 10m`, `dedupe-key: passkey-proof:<email>:<machineId>`, `breaker: 3 failed weeks for the same key ⇒ critical, stop retrying`, `max-notification-latency: 24h` (≤ the registry ceiling), `audit-location: logs/passkey-health.jsonl` (states only).
-- A credential Google reports as removed/revoked is `security` class: notify on the same tick, no heal gate.
-- Throttle safety: a proof never presses "Continue" on an empty authenticator and stops on Google's "too many attempts" page class (counted as a failed week, not retried).
+- Class `recoverable` for a `failed` proof. Self-heal: one retry after 10 minutes with a fresh
+  throwaway profile, only for transport-level failures. A credential rejection is not retried
+  (retries add failed attempts on Google's side).
+- Brakes: `max-attempts: 2`, `max-wall-clock: 30m`, `backoff: 10m`,
+  `dedupe-key: passkey-health:<emailKey>:<machineId>`, `breaker: 3 consecutive failed weeks ⇒
+  breaker-open` plus flapping (3 degraded↔healthy flips in 30 days ⇒ critical),
+  `max-notification-latency: 24h` (the first confirmed failure after self-heal notifies within 24h),
+  `audit-location: logs/passkey-health.jsonl`.
+- Remediation actions are read-only toward the account (sign-in attempts only); idempotent.
+- `security` class notifies on the same tick (aggregated), no heal gate.
 
 ## 14. Frontloaded Decisions
 
-1. **Default access:** none. Per-account, per-machine operator grant; revoke deletes the credential. (Operator, topic 33890, 2026-09-22.)
-2. **Cost accepted:** one human sign-in per (account × machine). (Operator, topic 33890, 2026-09-20.)
-3. **Weekly cold proof:** ships enabled only on development agents; fleet default off until graduation (§7). Each proof is a real Google sign-in, so fleet-wide cadence is decided at graduation on measured throttle data, not now.
-4. **Prototype-credential adoption:** offered on the dashboard only, never in a post-update notice (a notice would invite adoption without the grant flow).
-5. **Relying party scope:** Google only this release.
-6. **Where credentials live:** the existing encrypted SecretStore under a reserved prefix, excluded from secret sync. No new crypto.
+1. **Default access:** none; per-(account × machine) operator grant; revoke deletes locally.
+   (Operator, topic 33890, 2026-09-22.)
+2. **Human cost accepted:** one sign-in per (account × machine). (Operator, topic 33890, 2026-09-20.)
+3. **Google-side removal:** operator action via link in this release; the agent does not delete on
+   Google's pages. (Author, conservative; revisit only with a new spec.)
+4. **Grants:** machine-local authority + signed relay actions; no replicated-authority grants.
+   (Author, per the replicated-store foundation's advisory-only rule.)
+5. **Legacy adoption:** dashboard only, operator chooses per key; never in a post-update notice.
+   (Author.)
+6. **Import route:** not in this release. (Author.)
+7. **Keeping stored passwords after a passkey exists:** unchanged by this feature; removing them is a
+   separate operator decision. The grant screen states that both are kept. (Author; no behavior
+   change.)
+8. **Health-watcher fleet cadence:** decided at Rung 3 on measured throttle data; until then the
+   watcher runs only where the dev-agent gate enables it. (Author; fleet side-effect-free until
+   decided.)
+9. **Run boundary for the autonomous build:** the build run ends at dark code plus unit,
+   integration and fixture E2E green. The live proof, adding emails to the unattended allowlist,
+   legacy adoption choices and graduation are operator-involved steps after the run, tracked by a
+   commitment. (Author.)
+10. **Relying party scope:** Google only. **Where credentials live:** the existing SecretStore
+    envelope, no new crypto. (Author.)
+
+## 15. Differences from Dawn's standard
+
+- `defaultBackupEligibility/State` flags are optional here (both variants measured working on Google).
+- Credential ranking is the same (agent's own passkey preferred); this spec adds custody rules the
+  standard leaves to the implementer (§3.1).
+- Dawn's vault naming (`Google Passkey - <email> @ <machine>`) is replaced by the hashed key path;
+  the email is inside the encrypted payload.
+- Handoff over stdin only (Dawn) is satisfied more strictly: the credential never leaves the server
+  process except into CDP over a pipe.
 
 ## Open questions
 
