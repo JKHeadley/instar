@@ -37,6 +37,34 @@ that machine by the operator.
    method.
 5. **Grants, issuers and the signed `passkey-cell` instruction** — this page's routes.
 6. **The durable revoke outbox** — re-delivery with backoff, the 30-day breaker and escalation.
+7. **The pool read path** — every pool-wide check reads its peers through one memo; see below.
+
+## The pool read path (what my machines know about each other)
+
+Enrollment, proofs and pauses are bounded POOL-WIDE — one enrollment attempt per account per machine
+per 30 minutes, three per account per day across every machine, proofs of the same account from
+different machines at least six hours apart — so each machine has to know what its peers have done.
+Every machine publishes its own non-secret passkey state at `GET /passkeys/pool-state` (canonical
+emails, grant sequence numbers, custody state by name, attempt rows, pauses, grant echoes, outbox
+rows, whether it is the secret-sync push authority; never a credential, an entry key or a signed
+bundle), and a reader on each machine queries every peer once per tick — five seconds per peer, five
+seconds overall, in parallel — and serves ONE memo to every check and to `GET /passkeys?scope=pool`
+(marked with its age). `POST /passkeys/pool-state/tick` runs a pass on demand.
+
+Peers are classified with the rope-health signal: `observed` (answered), `peer-offline` (silent and
+its heartbeat has stopped — a closed laptop; its last-known rows still count, which only ever makes
+the pool stricter), `excluded` (the operator excluded a long-unobserved peer with
+`POST /passkeys/exclude-peer`; `include-peer` or the peer answering again clears it), or
+`partitioned` (silent but not provably offline, or rope health absent) — and a partitioned peer
+means enrollment and proofs refuse on that machine with `passkey-pool-state-unavailable` while repair
+and revoke continue. A single machine has no peers and is never degraded. Last-known rows survive a
+restart on disk. Peer rows can only restrict; they never grant anything and never load a key.
+
+`GET /passkeys/admission?action=enroll&email=…` is the read-only answer to "would this run right
+now, and if not, why?": the pool table (partitioned peer, suspension, kill switch, lease holder), the
+rate limit with its retry time, the same-account gap and any active throttle or risk pause. It is
+honest about what this build does not publish yet — the suspension record and the lease-holder state
+land with the health-watcher increment and are reported as such rather than assumed healthy.
 
 ## Grants (per account × machine)
 
