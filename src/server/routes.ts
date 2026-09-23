@@ -26420,19 +26420,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
   // POST /passkeys/issuer-add | issuer-remove — PIN. Body { pin, machineId, targetMachineId?, principal? }.
   // The peer is named by machine id and shown from THIS machine's own registry — never peer-supplied text.
-  for (const op of ['issuer-add', 'issuer-remove'] as const) {
-    router.post(`/passkeys/${op}`, async (req, res) => {
-      const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId.trim() : '';
-      if (!machineId) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'machineId is required' }); return; }
-      if (op === 'issuer-add' && passkeyMachineStatus(machineId) !== 'active') {
-        if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
-        if (!checkPasskeyPin(req, res)) return;
-        res.status(409).json({ error: `machine ${machineId} is not an ACTIVE paired machine in this machine's registry (${passkeyMachineStatus(machineId)})` });
-        return;
-      }
-      await runPasskeyPinOp(req, res, op, '', { machineId });
-    });
-  }
+  const runIssuerOp = async (req: import('express').Request, res: ExpressResponse, op: 'issuer-add' | 'issuer-remove') => {
+    const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId.trim() : '';
+    if (!machineId) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'machineId is required' }); return; }
+    if (op === 'issuer-add' && passkeyMachineStatus(machineId) !== 'active') {
+      if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+      if (!checkPasskeyPin(req, res)) return;
+      res.status(409).json({ error: `machine ${machineId} is not an ACTIVE paired machine in this machine's registry (${passkeyMachineStatus(machineId)})` });
+      return;
+    }
+    await runPasskeyPinOp(req, res, op, '', { machineId });
+  };
+  router.post('/passkeys/issuer-add', (req, res) => runIssuerOp(req, res, 'issuer-add'));
+  router.post('/passkeys/issuer-remove', (req, res) => runIssuerOp(req, res, 'issuer-remove'));
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
   // the expected-issuer set and the nonce ledger are the authority. Refuses account-follow-me bundles.
   router.post('/passkeys/cell-action', async (req, res) => {

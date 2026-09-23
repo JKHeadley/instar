@@ -246,3 +246,11 @@ CLAUDE.md migration, and the 32 named tests green.
   lever or a verified mandate applies once and stops); no timer, retry loop or re-delivery exists on this
   build — the revoke outbox is a later increment and will register its controller then.
 - No agent-authored-artifact defect — not applicable. New capability from an approved spec.
+
+## Post-review follow-up (CI)
+
+- `Docs Coverage` dropped route coverage below its floor with the six new routes. Added the
+  features page `site/src/content/docs/features/agent-held-google-passkeys.md` and one row per
+  `/passkeys/*` route in `site/src/content/docs/reference/api.md`; the two issuer routes are now
+  registered explicitly (not through a template-literal loop) so the enumerator sees their real paths.
+  `node scripts/docs-coverage.mjs --check` passes locally (route 55%).

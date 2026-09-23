@@ -1,0 +1,87 @@
+---
+title: Agent-Held Google Passkeys
+description: One human sign-in per account per machine, then hands-off Claude/Codex sign-in repair through a passkey the agent holds itself — grants, revokes and signed cross-machine instructions, shipping dark increment by increment.
+---
+
+⚗️ **Experimental — dark on the fleet.** Every route below answers `503` unless `passkeys.enabled`
+resolves on (a development agent), and even then nothing is minted or loaded until the enrollment
+increment lands. Spec: `docs/specs/agent-held-google-passkey.md` (converged, operator-approved
+2026-09-22).
+
+## The problem it solves
+
+Instar repairs an expired Claude or Codex sign-in by driving a real browser through Google. Today
+that needs a password (or a session cookie that eventually dies) — which means a human is on the
+hook every time a login lapses, on every machine. A **passkey the agent holds itself** replaces that:
+the human signs in **once** per account per machine to let the agent create its own passkey, and
+from then on the agent signs in hands-off — no password typed, no code relayed.
+
+The passkey is a full Google credential, so the design is built around **grants**: nothing is ever
+minted or used on a machine that does not hold an explicit, per-(account × machine) grant written on
+that machine by the operator.
+
+## What is built so far (the dark increments)
+
+1. **Legacy keys stop spreading.** The prototype `google_passkey_*` vault entries no longer sync
+   between machines; a peer that still receives one drops it and audits the drop; every read is logged
+   (names only).
+2. **A locked, per-machine store.** `PasskeyCredentialStore` keeps a passkey in its own encrypted
+   file under `secrets/passkeys/`, which backups, working-set transfers and git all refuse.
+3. **A browser that can hold a passkey safely.** The repair browser gains a passkey mode: Chrome over
+   a private pipe, extensions and prerendering off, every tab and popup given a virtual authenticator
+   *before* it navigates, and the credential pulled back the instant a page leaves
+   `accounts.google.com` or loads another Google page in a frame.
+4. **`google-passkey` as a login method.** Repair is admitted only when the account's passkey cell is
+   verified `ready` (every other state refuses by name); unattended graduation is earned per method;
+   the driver never falls back to a password; `POST /passkeys/revert-method` restores the previous
+   method.
+5. **Grants, issuers and the signed `passkey-cell` instruction** — this page's routes.
+
+## Grants (per account × machine)
+
+`GET /passkeys/grants` shows this machine's grants, the copies of grants it issued to peers, its
+confirmed issuers and the revoke high-water mark.
+
+- `POST /passkeys/grant` — with the dashboard PIN, grant one account on this machine (or, with
+  `targetMachineId`, on a peer). Exactly one active grant per cell; each instance carries a monotonic
+  sequence.
+- `POST /passkeys/revoke` — revoke by sequence: a re-grant made after a revoke was signed survives
+  it. The high-water mark lives outside the backup manifest, so **a restore can never bring a revoked
+  grant back**. A revoke stops *this agent's* passkey path only — the browser profile's live session
+  and any stored password remain, and the result says so.
+
+Authority is **local**: a grant exists on a machine only because it was written there — by the PIN
+route, by a verified instruction from a trusted machine, or by a restore under the high-water rule.
+
+## Trusted issuers — no trust on first use
+
+A machine accepts a signed passkey instruction only from a machine on its own **issuer set**:
+
+- its own first local PIN check adds itself;
+- a **peer** becomes an issuer only when the operator confirms it on *this* machine's own dashboard
+  with a locally entered PIN (`POST /passkeys/issuer-add`, which requires a paired, active machine);
+- after that, existing issuers can add or remove others with signed instructions
+  (`POST /passkeys/issuer-remove` to drop one).
+
+Membership is re-checked at every verification: a machine whose identity was **revoked** is refused
+and dropped; one that is pending, missing or unreadable is refused but kept. On a multi-machine agent
+the very first grant is refused (`issuer-bootstrap-required`) until at least one peer issuer is
+confirmed — a deliberate one-time step per machine.
+
+## The signed instruction (`passkey-cell`)
+
+A cross-machine op is an Ed25519-signed body — principal, canonical email, target machine, op,
+arguments, issue time, nonce, expiry — signed by the issuing machine's identity key under a domain tag
+distinct from the account-follow-me mandate, so the two can never be confused. The receiver
+(`POST /passkeys/cell-action`) verifies, in order: shape → issuer trusted → signature → addressed to
+this machine → fresh (15 minutes ± 2 minutes of skew; a **revoke** is exempt so it can always be
+delivered late) → never seen (a durable nonce ledger). The nonce is written *before* anything acts,
+together with the exact revoke cutoff it will apply, so a redelivery or a crash-finish re-applies the
+same thing and can never catch a grant made afterwards.
+
+## What is not here yet
+
+Enrollment (the one human action), the cold proof, the health watcher and pool-wide suspension, the
+durable revoke outbox with re-delivery and escalation, replicated grant rows, the dashboard grid and
+the migration of the existing prototype keys are later increments of the same run. Until enrollment
+lands, grants are inert.
