@@ -121,8 +121,9 @@ automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries,
 within 7 days of an exit without a fresh qualifying sample. The 50% denominator is cells with at least
 one proof in the 7-day window; unobserved peers' cells are excluded from both sides. Peer-reported
 outcomes are trusted as mesh-peer data (a lying peer could delay or end a suspension; accepted under
-§1.1). If every cell refuses the canary, the step and count are kept, it retries on the next due
-tick, and the digest shows "no eligible canary cell". Each canary is stamped with the suspension
+§1.1). If every cell refuses the canary, the step and count are kept and it retries on the next due
+tick, with its own brake: after 7 consecutive days in which no canary could run, the state becomes
+`suspended-stopped` and the digest shows "no eligible canary cell". Each canary is stamped with the suspension
 record's version; a result from a stale version is ignored. "Pool" means this
 agent's machines.
 
@@ -199,8 +200,10 @@ agent's machines.
   the peer has not acknowledged within 30 days or leaves the registry, the entry does not silently
   expire: the cell moves to `google-side-pending-operator` with the reason "an unreachable machine
   still holds this key", naming the passkey by `googleCreatedAt`, because only removal on Google can
-  now revoke it. Outbox rows are proxied on read into every machine's `GET /passkeys?scope=pool`,
-  and the operator can re-issue a revoke from any machine. A revoke that no longer verifies (its issuer
+  now revoke it. The signed revoke itself is also replicated through
+  `passkeyTombstones`, so any surviving machine holds a copy and re-delivers it when the target returns
+  — losing the issuing machine does not lose an outstanding revoke (a signed revoke is safe to carry:
+  it can only remove authority). The operator can also re-issue a revoke from any machine. A revoke that no longer verifies (its issuer
   was removed or rotated) is re-signed by any current issuer, or escalates straight to
   `google-side-pending-operator`. De-pairing a lost or stolen machine is the lost-machine path: its
   cells escalate immediately, and while any revoke is pending the digest shows the Google-side removal
@@ -674,7 +677,8 @@ machine-local-justification: physical-credential-locality permanence=permanent i
 - Grant rows, tombstones, health, pauses, attempt counts: unified through the four replicated store
   kinds (§3.2), with the pool read path (§5.1) as the fallback while they are dark; acted on only
   restrictively, except the signed revoke.
-- Outbox: proxied-on-read (§3.2); the operator can re-issue a revoke from any machine.
+- Outbox: the signed revokes are unified through `passkeyTombstones` (§3.2), so any surviving machine
+  can re-deliver them; delivery status is proxied-on-read.
 - Suspension state: computed by the lease holder, read by peers through the pool read path.
 - Backup-code consumed state: the synced SecretStore on the single push-authority machine (§3.7).
 - `logs/passkey-health.jsonl`, `logs/passkey-legacy-reads.jsonl`, `logs/passkey-enrollment.jsonl`
