@@ -23,14 +23,18 @@ When a website asks for a passkey, Chrome normally pops up the computer's finger
 - **Nothing by default.** A new agent can't use any account until the person grants it, one account and one machine at a time. Revoking deletes the agent's key rather than just flipping a switch.
 - **One key per machine.** Keys are never copied between machines, so one machine can be cut off without touching the others, and a stolen key only works for one account.
 - **The person's own login is never touched.** The agent adds its own key. It never changes their password, their passkeys or their two-step settings.
-- **Honest about what the key is.** The agent's key is stored software, not a hardware chip, so anyone who stole it could sign in as that Google account, and not just to Claude and Codex. It is treated exactly as seriously as a password: kept encrypted, never copied between machines, and unreadable by the agent's ordinary tools. Only the part that signs in can use it.
+- **Honest about what the key is.** The agent's key is stored software, not a hardware chip, so anyone who stole it could sign in as that Google account, and not just to Claude and Codex. It is treated exactly as seriously as a password: kept in its own encrypted file, never copied between machines, and invisible to the agent's ordinary tools, backups and logs. That protects against accidents; it cannot protect against a program deliberately written to dig the key out while running as the agent's own user, and the spec says so plainly.
 - **Every sign-in still has to pass the existing "is this the right account?" check**, which can always say no.
 - **No "it worked" on a leftover session.** An account is only marked ready after the agent proves it can sign in from a completely empty browser.
 - Company (Google Workspace) accounts need an admin setting switched on first. The feature says so in plain words instead of failing mysteriously.
 
+## Things a person may notice
+
+Once a week the agent quietly checks that each key still works by signing in. The account owner may occasionally see a "new sign-in" notice from Google; the agent reuses the same pretend device each time to keep that rare.
+
 ## Cleaning up today's setup
 
-When we proved this, the keys made on the main machine were copied to the other two. The new version stops any further copying straight away, then asks the person, key by key, whether to keep each existing copy (it keeps working) or delete it. Nothing is removed without that choice. Giving every machine its own key later costs one sign-in per account per machine.
+When we proved this, the keys made on the main machine were copied to the other two. The new version first stops any further copying — without breaking what works today — then asks the person, key by key, whether to keep each existing copy (it keeps working) or delete it. Nothing is removed without that choice. Giving every machine its own key later costs one sign-in per account per machine.
 
 ## What ships, and how carefully
 
