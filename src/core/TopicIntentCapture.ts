@@ -26,7 +26,7 @@
  */
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
-import type { TopicIntentStore, EstablishedRef } from './TopicIntent.js';
+import type { TopicIntentStore, EstablishedRef, ProjectionResult } from './TopicIntent.js';
 import type { TopicIntentExtractor, ExtractorInput } from './TopicIntentExtractor.js';
 
 // ── Pre-filter (deterministic state-detector, fail-open) ──────────────────
@@ -222,6 +222,41 @@ function toEstablishedRef(r: EstablishedRef): EstablishedRef {
 }
 
 /**
+ * Upper bound on how many existing refs are rendered into one extraction
+ * prompt. The store keeps every ref a topic has ever established, so without
+ * a cap the prompt grows with the topic's lifetime: a long-running topic with
+ * 858 refs made every captured turn a ~40k-token call. The extractor only
+ * needs the refs it might reinforce or contradict, which are the confident
+ * and recently-reinforced ones. Refs outside the window stay in the store
+ * untouched; they are simply not offered as anchors for this turn.
+ */
+export const MAX_PROMPT_REFS = 40;
+
+const TIER_RANK: Record<ProjectionResult['tier'], number> = { observation: 0, tentative: 1, authoritative: 2 };
+
+/**
+ * Pick the refs offered to the extractor: highest projected tier first, then
+ * most recently reinforced, bounded by `max`. Pure and deterministic (ties
+ * break on refId) so the same store state always yields the same prompt.
+ */
+export function selectPromptRefs<T extends EstablishedRef & { projection: ProjectionResult }>(
+  refs: T[],
+  max: number = MAX_PROMPT_REFS,
+): T[] {
+  if (refs.length <= max) return refs;
+  const at = (iso: string): number => {
+    const t = Date.parse(iso);
+    return Number.isFinite(t) ? t : 0;
+  };
+  return [...refs]
+    .sort((a, b) =>
+      TIER_RANK[b.projection.tier] - TIER_RANK[a.projection.tier]
+      || at(b.lastReinforcedAt) - at(a.lastReinforcedAt)
+      || (a.refId < b.refId ? -1 : a.refId > b.refId ? 1 : 0))
+    .slice(0, Math.max(0, max));
+}
+
+/**
  * Capture one conversation turn. Pre-filter → (shed/rate gates) → build broader
  * context → extractor.ingest. Never throws; on any unexpected failure it ticks
  * `degraded_cap_or_error` and returns { status: 'degraded' }.
@@ -276,8 +311,7 @@ export async function captureTurn(
     // Build broader context: the topic's established refs + rolling summary.
     const at = toIso(entry.timestamp, now);
     const topicFile = deps.store.read(topicId);
-    const existingRefs = deps.store
-      .getRefsAtOrAbove(topicId, 'observation')
+    const existingRefs = selectPromptRefs(deps.store.getRefsAtOrAbove(topicId, 'observation'))
       .map(toEstablishedRef);
     let rollingSummary: string | undefined;
     try {

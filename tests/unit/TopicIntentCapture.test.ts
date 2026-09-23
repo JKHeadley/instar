@@ -35,6 +35,8 @@ import {
   captureTurn,
   createCaptureLoop,
   TOPIC_INTENT_CAPTURE_COST_CENTS,
+  MAX_PROMPT_REFS,
+  selectPromptRefs,
   type CaptureLoopDeps,
 } from '../../src/core/TopicIntentCapture.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
@@ -287,5 +289,61 @@ describe('spec acceptance §7/§9 (confidence boundaries)', () => {
     const after = projectConfidence(events, new Date(T0 + 2000).toISOString(), T0 + 3000);
     expect(after.tier).not.toBe('authoritative');
     expect(after.confidence).toBeLessThan(0.3);
+  });
+});
+
+describe('bounded refs in the extraction prompt', () => {
+  const TOPIC = 5151;
+
+  function seedRefs(count: number): void {
+    for (let i = 0; i < count; i++) {
+      const refId = `ref-seed-${String(i).padStart(4, '0')}`;
+      const at = new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString();
+      store.appendEvidence(TOPIC, refId, buildEvent(refId, 'extract-agent', `m-${i}`, { at }), {
+        text: `proposition ${i}`, kind: 'fact', arcId: 'arc-1', sourceTurn: i,
+      });
+    }
+  }
+
+  it('offers at most MAX_PROMPT_REFS refs to the extractor on a large topic', async () => {
+    seedRefs(MAX_PROMPT_REFS + 60);
+    expect(store.getRefsAtOrAbove(TOPIC, 'observation').length).toBe(MAX_PROMPT_REFS + 60);
+    let seen = -1;
+    const extractor = new TopicIntentExtractor(store, async input => { seen = input.existingRefs.length; return []; });
+    const out = await captureTurn(baseDeps(extractor), {
+      messageId: 'srv-bound', topicId: TOPIC, text: 'we decided to keep the cap small', fromUser: true,
+    });
+    expect(out.status).toBe('captured');
+    expect(seen).toBe(MAX_PROMPT_REFS);
+    // Nothing is dropped from the store — only the prompt is bounded.
+    expect(store.getRefsAtOrAbove(TOPIC, 'observation').length).toBe(MAX_PROMPT_REFS + 60);
+  });
+
+  it('passes every ref through unchanged when under the cap', async () => {
+    seedRefs(5);
+    let seen = -1;
+    const extractor = new TopicIntentExtractor(store, async input => { seen = input.existingRefs.length; return []; });
+    await captureTurn(baseDeps(extractor), {
+      messageId: 'srv-small', topicId: TOPIC, text: 'we decided to keep the cap small', fromUser: true,
+    });
+    expect(seen).toBe(5);
+  });
+
+  it('selectPromptRefs ranks by tier, then most recent reinforcement, deterministically', () => {
+    const mk = (refId: string, tier: 'observation' | 'tentative' | 'authoritative', at: string) => ({
+      refId, arcId: 'a', topicId: 1, kind: 'fact' as const, text: refId, confidence: 0,
+      evidence: [], lastReinforcedAt: at, status: 'active' as never, createdAt: at, updatedAt: at,
+      projection: { confidence: 0, tier, authorityClampApplied: false, decayApplied: 0, evidenceCount: 1, userAuthoredEpisodes: 0 },
+    });
+    const refs = [
+      mk('old-obs', 'observation', '2026-01-01T00:00:00Z'),
+      mk('new-obs', 'observation', '2026-03-01T00:00:00Z'),
+      mk('auth', 'authoritative', '2025-01-01T00:00:00Z'),
+      mk('tent-b', 'tentative', '2026-02-01T00:00:00Z'),
+      mk('tent-a', 'tentative', '2026-02-01T00:00:00Z'),
+    ];
+    expect(selectPromptRefs(refs, 4).map(r => r.refId)).toEqual(['auth', 'tent-a', 'tent-b', 'new-obs']);
+    expect(selectPromptRefs(refs, 10)).toBe(refs);
+    expect(selectPromptRefs(refs, 0)).toEqual([]);
   });
 });
