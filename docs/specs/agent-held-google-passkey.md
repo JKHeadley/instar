@@ -119,9 +119,15 @@ canaried granted cell (preferring `rejected` cells, falling back to any granted 
 its own local grant; that is the only exemption from the suspension refusal. Only proofs that
 actually ran count; a canary refused before sign-in rotates to the next cell at the same step.
 Backoff 1→2→4→7 days; after 5 non-`ready` canaries the state is `suspended-stopped` (no more
-automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). **Operator kill switch:** `POST /passkeys/suspend-now` (PIN, or the `suspend-now` op) suspends
-passkey enrollment and use pool-wide immediately, independent of any sample threshold; only an
-operator resume ends it.
+automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). **Pool kill switch (`suspend-now`):** stopping is cheap, resuming is not. `POST /passkeys/suspend-now`
+accepts the ordinary Bearer token (audited) — so the agent itself can halt its own sign-ins — as well as
+the PIN or the `suspend-now` op; `resume-suspension` requires the PIN. Each machine keeps a LOCAL kill
+flag, combined with the lease holder's record (either one stops passkey use, canaries included). The
+op is applied immediately on the sending machine, published in the lease holder's record with
+`cause: operator` (which canaries can never end), and delivered to peers through the mandate outbox
+with the same restrictive-only expiry exemption as revokes, so an offline peer receives it when it
+returns. A resume that reaches only some machines leaves the rest suspended (the safe direction).
+(`repairUsesPasskey` is a different, per-machine setting, not the kill switch.)
 
 **Degraded operating mode:** while
 suspended, stopped, suspension-unknown, or under a risk pause, a `google-passkey` account is repaired through an explicit,
@@ -191,10 +197,16 @@ agent's machines.
   acknowledged; an interception error or timeout fails the request closed); it is also removed as soon as a Google session exists. Fixture tests:
   navigation to a different google.com subdomain, and an `accounts.google.com` 302 redirect to one;
   both assert no assertion is possible. The rule covers every frame, not only the top-level document:
-  the credential is added only while no frame of the target is on another origin, and is removed at
-  request time for a navigation in ANY frame (iframes, fenced frames, popups); passkey sessions launch
-  with prerendering/speculative loading disabled and service workers bypassed. Fixtures cover an
-  embedded google.com iframe and a popup opened mid-flow. CDP messages that carry
+  the credential is added only while no frame of the target is on a `*.google.com` origin other than
+  `accounts.google.com` (frames on unrelated sites, such as a CAPTCHA provider, cannot claim a
+  google.com passkey and are allowed), and is removed at request time when any frame navigates to such
+  an origin (iframes, fenced frames, popups). Every auto-attached target, including cross-origin
+  iframe targets, gets `Fetch.enable` and `Network.setBypassServiceWorker` before it is resumed; passkey sessions launch
+  with `--disable-features=Prerender2` and the profile's preload setting off, and service workers are
+  bypassed per target. Fixtures cover an embedded google.com iframe, a popup opened mid-flow, a
+  recorded frame tree of a real Google sign-in page (so the rule does not block the real flow), and a
+  check that no prerender target appears. A Chrome major upgrade re-runs these containment fixtures
+  as a security requalification, not only a compatibility check. CDP messages that carry
   credentials are never logged or traced (tested).
 
 ### 3.2 Grants and revokes
@@ -222,7 +234,9 @@ agent's machines.
   principal, `issuedAt` and nonce) when the peer returns. **Revoke-only acceptance rule:** a `revoke`
   is exempt from the 15-minute expiry (it only removes authority), still checked against the
   signature, `targetMachineId == self`, the nonce ledger and `localSeq ≤ revokesGrantSeq`; no other op
-  gets this exemption. The nonce ledger records two states, `received` and `applied`. A duplicate
+  gets this exemption. The nonce ledger records two states, `received` and `applied`; the applied cutoff is written in the
+  same atomic write as `received`, and the boot sweep runs before any grant-writing route accepts
+  requests. A duplicate
   of a `received`-but-unapplied revoke re-runs the idempotent delete; a boot sweep finishes any revoke
   left `received`. Only an `applied` nonce (set after the read-back succeeded) answers "applied", so a
   duplicate from the outbox and the replicated copy never looks like a failure. On first acceptance the
@@ -246,8 +260,9 @@ agent's machines.
   holder runs the 30-day escalation from the replicated copy. Re-delivery is done by the issuer or, if the issuer is unreachable, the lease holder, with
   increasing backoff per (peer, revoke) — 1h, 6h, then daily, derived from the replicated tombstone so a
   new owner continues it — and a breaker clocked from the revoke's `issuedAt`: after 30 days without an
-  applied ack the entry escalates (above) and automatic re-delivery stops, apart from one attempt when
-  the peer is next observed online. It also ends on the applied ack or once Google-side removal is
+  applied ack the entry escalates (above) and automatic re-delivery stops, apart from ONE attempt in total when
+  the peer is next observed online, recorded on the tombstone (`postBreakerAttemptAt`) so a flapping
+  peer cannot re-trigger it. It also ends on the applied ack or once Google-side removal is
   verified or attested. De-pairing a lost or stolen machine is the lost-machine path: its
   cells escalate immediately, and while any revoke is pending the digest shows the Google-side removal
   link from day 0, because whoever holds that machine can use the key until it is removed on Google.
@@ -304,7 +319,9 @@ agent's machines.
   itself; other changes travel as `issuer-add` / `issuer-remove` ops signed by an existing issuer.
   **Bootstrap:** there is no trust-on-first-use. On a multi-machine agent, a machine refuses its first
   grant until its peer issuers are confirmed, and a revoke refused because its issuer is not trusted appears
-  on that machine's own dashboard as "unconfirmed revoke request: apply here with your PIN, or dismiss";
+  on that machine's own dashboard as "unconfirmed revoke request: apply here with your PIN, or dismiss"
+  (dismiss is also PIN-gated and audited; dismissals are stored in the nonce ledger so re-delivery
+  never re-raises them; requests are deduplicated per (cell, revoke nonce) and aggregated per peer);
   it escalates to `google-side-pending-operator` only if the operator applies it and it cannot complete.
   "Peer issuers" means the registered peers that are online, with dark peers handled through
   `exclude-peer`; a machine that has grants but no confirmed peer issuer gets a digest line. A receiver adds a peer as an issuer only when the
@@ -343,7 +360,10 @@ agent's machines.
   - **graduation evidence** — `store.getUnattendedEvidence(accountId, machineId, provider, framework)`
     gains `loginMethod` (an `ALTER TABLE repair_episodes ADD COLUMN loginMethod` migration guarded by a
     `PRAGMA table_info` check in a module-level `ensure…Columns(db)` helper run right after the schema
-    (the pattern `InboundDeliveryStore` uses), with `getUnattendedEvidence` adding `AND loginMethod = ?`, since `CREATE TABLE IF NOT
+    (the pattern `InboundDeliveryStore` uses), where `getUnattendedEvidence` scopes ONLY the success count and `oldestSuccessAt` by
+    `loginMethod` — `identityMismatches` and `unexpectedOrigins` stay counted across all methods, so
+    switching method never erases an account's bad history (tested both ways); the episode insert
+    writes `loginMethod` when an episode is created; since `CREATE TABLE IF NOT
     EXISTS` never adds columns; tested on an existing database); existing
     rows (no method) do not count toward `google-passkey`; evidence resets when the method changes;
   - the admission `inputDigest` includes `loginMethod` and the passkey entry key, so an approval for
@@ -552,7 +572,12 @@ a 5 s overall limit per tick; `?scope=pool` is always served from the tick memo,
 | Peer partitioned / unknown / rope health absent | no | no | yes | yes, queued | same |
 | Lease holder unreachable ≤ 24h | per last-known state | per last-known state | per last-known state | yes | operator only |
 | Lease holder unreachable > 24h | no | no | degraded override only | yes | operator only |
-| Suspended / stopped / kill switch | no | canary only (not under kill switch) | degraded override only | yes | operator |
+| Suspended (threshold) | no | canary only | degraded override only | yes | operator |
+| `suspended-stopped` or kill switch | no | no | degraded override only | yes | operator resume only |
+
+When several rows apply, the most restrictive cell wins. Residual: repair while a peer is partitioned
+means the pool-wide risk-page count cannot see that peer — at most one risk page per machine per
+account per 7 days, because each machine applies its own risk pause.
 
 ### 5.2 Routes and notices
 
@@ -628,7 +653,7 @@ The backup manifest includes `state/passkey-grants.json`; on restore, any grant 
 below the local revoke high-water mark is dropped (tested) — the mark lives in
 `.instar/secrets/passkeys/revoke-hwm.json`, outside the backup manifest, so a restore cannot roll it
 back — and cells without a credential file show
-`granted, credential absent`.
+`granted, credential absent`; after a restore, `localSeq` restarts at the revoke high-water mark + 1.
 
 Config (cheap-to-change defaults: dev-gated and inert without grants, so they cause no Google-side
 effect during the build run): `passkeys: { enabled: <absent → dev-agent gate>, repairUsesPasskey: false,
@@ -823,12 +848,13 @@ machine-local-justification: physical-credential-locality permanence=permanent i
 7. **Other stored credentials for the account remain;** the grant screen inventories them. (Author.)
 8. **Watcher fleet cadence:** decided at Rung 3 on measured throttle and notice data. (Author; no fleet
    side-effect before then.)
-9. **Run boundary:** the autonomous build ends at code that is live-but-inert on the dev agent (no
+9. **Run boundary** (the run ends at a merged, green PR; release is the normal auto-release —
+   Increment 1 is frontloaded in FD5 and deletes nothing): the autonomous build ends at code that is live-but-inert on the dev agent (no
    grants ⇒ nothing happens) with unit, integration and fixture E2E green. After the run, as
    operator-involved steps tracked by a commitment: creating and registering the disposable Google
    account and running Rung 1; enrolling cells; per-key legacy choices; setting
-   `repairUsesPasskey: true`, enabling the four passkey stores and flipping `passkeyTombstones` to
-   `dryRun: false`, and adding emails
+   `repairUsesPasskey: true` and flipping `passkeyTombstones` to `dryRun: false` (the four stores
+   themselves come on through the dev-agent gate when the build deploys, inert without grants), and adding emails
    to the unattended allowlist for Rung 2; the live proof;
    graduation; and the separate-OS-user broker increment (§17), which gates Rung 3. (Author.)
 10. **Relying party:** Google only. **Crypto:** the existing SecretStore envelope in a separate file.
