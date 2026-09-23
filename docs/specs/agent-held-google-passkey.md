@@ -120,7 +120,12 @@ canaried granted cell (preferring `rejected` cells, falling back to any granted 
 its own local grant; that is the only exemption from the suspension refusal. Only proofs that
 actually ran count; a canary refused before sign-in rotates to the next cell at the same step.
 Backoff 1→2→4→7 days; after 5 non-`ready` canaries the state is `suspended-stopped` (no more
-automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). No re-suspension
+automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). **Degraded operating mode:** while
+suspended (or stopped), accounts are repaired through the parent's existing methods — the dedicated
+profile's live session, and the account's `priorLoginMethod` in approval mode — exactly as before this
+feature; nothing about those paths depends on passkeys. The digest lists the Google-side passkeys that
+now exist but are unusable, so the operator can remove them if the suspension proves permanent. No
+re-suspension
 within 7 days of an exit without a fresh qualifying sample (outcomes timestamped after the exit only;
 canary results do not count toward it). The 50% denominator is cells with at least
 one proof in the 7-day window; unobserved peers' cells are excluded from both sides. Peer-reported
@@ -220,6 +225,9 @@ agent's machines.
   per (peer, revoke) per hour, by the issuer or, if the issuer is unreachable, the lease holder. De-pairing a lost or stolen machine is the lost-machine path: its
   cells escalate immediately, and while any revoke is pending the digest shows the Google-side removal
   link from day 0, because whoever holds that machine can use the key until it is removed on Google.
+  A cell in `google-side-pending-operator` because of a lost, stolen or unreachable machine is a
+  HIGH-severity incomplete revoke: it gets its own attention item (not only a digest line) that stays
+  open until the removal is verified or attested.
 - **Replicated rows are display and acceleration only.** Grant rows, revoke tombstones, health rows
   and throttle pauses replicate through the replicated-store foundation as store kinds
   `passkeyGrants`, `passkeyTombstones`, `passkeyHealth`, `passkeyPauses`, each behind
@@ -349,7 +357,11 @@ is recorded as `removed-on-google` and never counts toward suspension.
 button and credential or code submission appear in the supervisor's
 `allowedActions` ONLY on an exact structural class match — the same shape as the parent driver, where
 structure computes the allowed list and the Tier-1 supervisor chooses from it. The supervisor must
-still choose the action and may decline it; it can never add one. (Keeping the floor structural is a
+still choose the action and may decline it; it can never add one. Why keep the supervisor at all:
+Google reorders interstitials and varies labels without a stable versioned DOM, so a pure selector
+state machine would refuse too often; the supervisor only maps redacted closed state onto the
+structurally computed allowed list, and its only extra power over a deterministic machine is to
+decline — which is the safe direction. (Keeping the floor structural is a
 security requirement: the supervisor must not be able to cause a credential action on its own.)
 
 ### 3.7 Guided enrollment (the one human action)
