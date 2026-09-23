@@ -207,3 +207,10 @@ each with a test that fails when its fix is removed. Concur.
   retries or respawns itself.
 - No agent-authored-artifact defect — not applicable. New capability from an approved spec; no
   self-triggered controller is added.
+
+## Post-review follow-up (CI ratchet)
+
+- `no-silent-fallbacks` counted the two pure-parse catches in `PasskeyBrowserPolicy` (`originOf` → null,
+  `isRpFamilyOrigin` → false). Neither hides a decision: null/false are the STRICT branches (removal on an
+  unparseable URL; "not in the family" on an unparseable origin). Annotated `@silent-fallback-ok` with that
+  reason rather than raising the baseline. No behaviour change.

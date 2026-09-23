@@ -43,6 +43,8 @@ export function originOf(url: string): string | null {
   try {
     return new URL(url).origin;
   } catch {
+    // @silent-fallback-ok — a pure parse: null means "not a URL", and every caller
+    // treats null as the STRICT case (mustRemoveCredentialBefore removes on it).
     return null;
   }
 }
@@ -56,6 +58,8 @@ export function isRpFamilyOrigin(origin: string, policy: OriginPolicy = GOOGLE_O
     const apex = policy.apexHost.toLowerCase();
     return host === apex || host.endsWith(`.${apex}`);
   } catch {
+    // @silent-fallback-ok — a pure parse: an unparseable origin is not in the
+    // relying-party family; callers never grant anything on this branch.
     return false;
   }
 }
