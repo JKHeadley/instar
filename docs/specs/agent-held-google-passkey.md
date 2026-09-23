@@ -15,6 +15,15 @@ depends-on:
   - ws52-account-follow-me-security
 lessons-engaged: [P17, P19, P20, P21, L11, L12, backup-codes-beat-google-2sv, claude-config-dir-probe-resets-config, name-credential-changes-in-reports, producer-evidence-is-not-consumer-effect]
 approved: false
+review-convergence: "2026-09-23T02:26:09.678Z"
+review-iterations: 10
+review-completed-at: "2026-09-23T02:26:09.678Z"
+review-report: "docs/specs/reports/agent-held-google-passkey-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 21
+cheap-to-change-tags: 1
+contested-then-cleared: 5
 ---
 
 # Agent-Held Google Passkeys
@@ -916,6 +925,26 @@ machine-local-justification: physical-credential-locality permanence=permanent i
   episode orchestration consolidate.
 - **Non-exportable hardware credential (Secure Enclave / TPM):** Chrome's virtual authenticator needs
   an exportable key, so it cannot be used with this mechanism. Out of scope.
+
+## Maturation plan
+
+- **test-agent-live:** Rung 1 — a throwaway agent, the local WebAuthn fixture and one disposable
+  Google account registered in the owned-identities registry: enroll, identity- and assertion-verified
+  cold proof, revoke (local and via mandate), restart mid-mint resume, legacy adoption, suspension and
+  kill switch, all containment fixtures; no real operator account is touched.
+- **dev-agent-live:** Rung 2 — Echo's three machines, with operator-granted cells, `repairUsesPasskey:
+  true` and the four passkey stores enabled; unattended passkey repair (operator-ratified, FD16) under
+  the parent's graduation rule, with evidence keyed by login method.
+- **fleet:** Rung 3 — flags stay dark for every other agent until the graduation criterion passes AND
+  the separate-OS-user signing broker (§17) ships AND rope health is live on the fleet; fleet
+  enablement is an explicit later release decision.
+- **graduation criterion:** at least 10 identity-correct passkey repairs per provider (Claude, Codex)
+  over 30 days on the development agent, zero wrong-identity, unexpected-origin or credential-exposure
+  events, no Google risk-page rate above the manual baseline, successful revoke and restart recovery,
+  and zero repository test failures.
+- **dark-window:** minimum 30 days development-agent-only for the `google-passkey` path; any security
+  event (identity mismatch, credential exposure, Google-side rejection of the mechanism) resets the
+  window and suspends the path pending verified-operator review.
 
 ## Open questions
 
