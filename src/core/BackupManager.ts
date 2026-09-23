@@ -32,6 +32,13 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 const BLOCKED_PATH_PREFIXES = new Set([
   ...ORIGIN_LOCAL_BACKUP_PREFIXES,
   '.instar/secrets/',
+  // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
+  // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
+  // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or
+  // ['secrets/config.secrets.enc'] was copied into snapshots. The whole secrets tree —
+  // shared vault, agent-held passkey store, pending mint records, passkey browser
+  // profiles — is machine-local and never backed up (agent-held-google-passkey §3.1).
+  'secrets/',
   // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
   // quarantined copies are in-flight per-machine state — restoring them to a
   // new machine would claim custody the new machine never took. Unconditional
@@ -132,8 +139,11 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
 function isDeniedForBackup(relPath: string): boolean {
   const normalized = path.normalize(relPath);
   if (BLOCKED_FILES.has(path.basename(normalized)) || BLOCKED_FILES.has(relPath)) return true;
+  // Case-folded: on a case-insensitive filesystem (macOS default) `Secrets/…` reaches
+  // the same files as `secrets/…`.
+  const folded = normalized.toLowerCase();
   for (const prefix of BLOCKED_PATH_PREFIXES) {
-    if (normalized.startsWith(prefix)) return true;
+    if (folded.startsWith(prefix.toLowerCase())) return true;
   }
   return normalized.split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg));
 }
@@ -351,7 +361,7 @@ export class BackupManager {
       const normalized = path.normalize(entry);
       let prefixBlocked = false;
       for (const prefix of BLOCKED_PATH_PREFIXES) {
-        if (normalized.startsWith(prefix)) {
+        if (normalized.toLowerCase().startsWith(prefix.toLowerCase())) {
           prefixBlocked = true;
           break;
         }
