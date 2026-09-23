@@ -121,6 +121,69 @@ describe('production-shaped subscription re-login runtime', () => {
     runtime.close();
   });
 
+  it('replaces a long-lived dashboard login at attempt start instead of reading its reissue history as the repair budget', async () => {
+    // Regression: episode 4ad1e073 (2026-09-21) adopted a dashboard login the auto-reissuer had
+    // refreshed 17 times, read reissueCount 17 > maxReissues 2 as its own budget, and failed ~1s
+    // after cli-starting without ever opening the browser.
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-stale-pending-runtime-')); dirs.push(stateDir);
+    const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
+    let account: SubscriptionAccount = { id: 'acct-stale', nickname: 'Stale link account', email: 'person@example.com',
+      provider: 'anthropic', framework: 'claude-code', configHome: path.join(stateDir, 'slot'),
+      status: 'needs-reauth', enrolledAt: '2026-01-01T00:00:00Z', version: 1 };
+    let source: SubscriptionLoginEpisode = { id: 75, accountId: account.id, machineId: 'machine-1',
+      openedAt: '2026-08-28T00:00:00Z', closedAt: null, causeClass: 'exchange-failed',
+      corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
+    const pool = { getAvailability: () => ({ state: 'ready' }), get: () => ({ ...account }), list: () => [{ ...account }],
+      update: vi.fn((_id: string, patch: Partial<SubscriptionAccount>) => { account = { ...account, ...patch, version: account.version + 1 }; return account; }) } as unknown as SubscriptionPool;
+    const ledger = { listEpisodes: () => [{ ...source }], recordStatus: vi.fn(() => {
+      source = { ...source, closedAt: '2026-08-28T01:00:00Z', outcome: 'resolved' }; return { changed: true, episodeId: source.id };
+    }) } as unknown as SubscriptionLoginLedger;
+    const loginShape = { id: account.id, label: account.nickname, provider: 'anthropic', framework: 'claude-code',
+      kind: 'url-code-paste', configHome: account.configHome, ttlExpiresAt: '2099-01-01T00:00:00Z', status: 'pending',
+      createdAt: '2026-08-20T00:00:00Z', updatedAt: '2026-08-28T00:00:00Z' };
+    // An expired dashboard link (a live `pending` one refuses admission) — adopting it would refresh
+    // it to reissueCount 18.
+    let pending: any = { ...loginShape, verificationUrl: 'https://claude.ai/oauth/authorize?stale=1',
+      ttlExpiresAt: '2026-08-21T00:00:00Z', status: 'expired', reissueCount: 17, version: 18 };
+    const enrollment = { getById: () => pending,
+      abandon: vi.fn(() => { pending = { ...pending, status: 'abandoned' }; return pending; }),
+      start: vi.fn(async () => (pending = { ...loginShape, verificationUrl: 'https://claude.ai/oauth/authorize?fresh=1',
+        reissueCount: 0, version: 1 })),
+      refresh: vi.fn(async () => (pending = { ...pending, status: 'pending', ttlExpiresAt: '2099-01-01T00:00:00Z',
+        reissueCount: pending.reissueCount + 1 })) } as unknown as EnrollmentWizard;
+    const browser: ReloginBrowserPort = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
+      origin: 'https://claude.ai', pageClass: 'success', expectedAccountVisible: true,
+      hasGoogleSignIn: false, hasNext: false, hasAuthorize: false, requestedScopes: [],
+    })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
+    readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
+    const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
+        minimumEvidenceDays: 0 }, pool, ledger, enrollment,
+      profiles: { resolve: () => ({ profile: { id: 'profile-stale' }, dirExists: true }), listProfiles: () => [{
+        id: 'profile-stale', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
+        accounts: [{ service: 'google', identity: account.email, owner: 'operator', vaultRefs: [],
+          loginMethod: 'session-cookie', lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }],
+      }] } as unknown as PlaywrightProfileRegistry,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
+      identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
+      pasteBack: { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController,
+      createBrowser: () => browser, resolveSecret: async () => null,
+      supervise: async ({ allowedActions }) => allowedActions[0],
+    });
+    await runtime.service.tick();
+    const episode = runtime.store.list()[0];
+    await vi.waitFor(() => expect(runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    const events = runtime.store.listEvents(episode.id).map((event) => event.eventClass);
+    expect(events).not.toContain('artifact-reissue-budget-exhausted');
+    expect(enrollment.abandon).toHaveBeenCalledTimes(1);
+    expect(enrollment.start).toHaveBeenCalledTimes(1);
+    expect(enrollment.refresh).not.toHaveBeenCalled();
+    expect(browser.open).toHaveBeenCalledWith('https://claude.ai/oauth/authorize?fresh=1');
+    expect(runtime.store.get(episode.id)?.reissueCount).toBe(0);
+    expect(account.status).toBe('active');
+    runtime.close();
+  });
+
   it('downgrades unattended mode to approval when the exact runtime identity is not allowlisted', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-unallowlisted-runtime-')); dirs.push(stateDir);
     const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
