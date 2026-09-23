@@ -606,6 +606,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'sets the Google-side state of THIS machine\'s own cell record to operator-attested (state/passkey-health.json); the signed mandate form is bound to the target machine like every passkey-cell op',
     },
   });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/prove',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'runs the cold proof of THIS machine\'s own cell in its own proof-only browser profile (secrets/passkeys/profiles/<key>-proof) and writes only local files: the attempt row + any risk/throttle pause (state/passkey-attempts.json) and the outcome (state/passkey-health.json); peers read those through the pool state. A peer target answers 501 on this build (it travels as a signed passkey-cell op later)',
+    },
+  });
 
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can

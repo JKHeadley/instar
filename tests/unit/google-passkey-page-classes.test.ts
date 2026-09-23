@@ -133,6 +133,11 @@ describe('mapPasskeySignInOutcome (§3.6 outcome mapping, §3.8 ready conditions
 
   it('a different signed-in identity is security, before anything else', () => {
     expect(mapPasskeySignInOutcome(obs({ signedInIdentity: 'mismatch' }))).toBe('security');
+    // A CAPTCHA that wears no Google route (the parent driver's `captcha` class) is a risk page too:
+    // unknown even with a match + assertion (a match read on ANY risk page can never become ready).
+    expect(mapPasskeySignInOutcome(obs({ finalPageClass: 'captcha' }))).toBe('unknown');
+    expect(mapPasskeySignInOutcome(obs({ finalPageClass: 'google-risk-challenge' }))).toBe('unknown');
+    expect(mapPasskeySignInOutcome(obs({ finalPageClass: 'google-passkey-throttled' }))).toBe('unknown');
     expect(mapPasskeySignInOutcome(obs({ signedInIdentity: 'mismatch', transportError: true }))).toBe('security');
     expect(mapPasskeySignInOutcome(obs({ signedInIdentity: 'mismatch', finalPageClass: 'google-credential-not-recognized' }))).toBe('security');
   });

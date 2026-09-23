@@ -884,6 +884,7 @@ export class AgentServer {
     passkeyRevokeOutbox?: () => import('../core/PasskeyRevokeOutbox.js').PasskeyRevokeOutbox;
     passkeyPeerOnline?: (machineId: string) => boolean;
     passkeyPoolReader?: () => import('../core/PasskeyPoolState.js').PasskeyPoolReader;
+    passkeyProofBrowser?: (profileDir: string) => import('../core/PasskeyColdProof.js').ProofBrowser | Promise<import('../core/PasskeyColdProof.js').ProofBrowser>;
     /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
     poolLink?: import('./routes.js').RouteContext['poolLink'];
     /** WS4.4(f) global pool-cache unification — the ONE shared per-peer poll cache pool-scope surfaces fan out through (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). */
@@ -4572,6 +4573,7 @@ export class AgentServer {
       passkeyRevokeOutbox: options.passkeyRevokeOutbox ?? null,
       passkeyPeerOnline: options.passkeyPeerOnline ?? null,
       passkeyPoolReader: options.passkeyPoolReader ?? null,
+      passkeyProofBrowser: options.passkeyProofBrowser ?? null,
       poolLink: options.poolLink ?? null,
       poolPollCache: options.poolPollCache ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
