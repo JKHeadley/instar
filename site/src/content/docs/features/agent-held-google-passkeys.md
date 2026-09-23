@@ -36,6 +36,7 @@ that machine by the operator.
    the driver never falls back to a password; `POST /passkeys/revert-method` restores the previous
    method.
 5. **Grants, issuers and the signed `passkey-cell` instruction** — this page's routes.
+6. **The durable revoke outbox** — re-delivery with backoff, the 30-day breaker and escalation.
 
 ## Grants (per account × machine)
 
@@ -79,9 +80,21 @@ delivered late) → never seen (a durable nonce ledger). The nonce is written *b
 together with the exact revoke cutoff it will apply, so a redelivery or a crash-finish re-applies the
 same thing and can never catch a grant made afterwards.
 
+## Revokes never silently expire (the outbox)
+
+A revoke for a cell on a **peer** is signed once and placed in a durable outbox
+(`GET /passkeys/outbox`). The same bundle is re-delivered unchanged — first immediately, then after
+1 hour, 6 hours, and daily — until the peer applies it; a peer observed coming online pulls the next
+attempt forward (never below a 15-minute floor). Thirty days after issue without an acknowledgement
+the entry escalates: one aggregated attention item per machine lists every affected account, automatic
+re-delivery stops, and exactly one more attempt runs when that machine is next online. The peer's
+applied acknowledgement, an operator dismissal on the peer, or a permanent refusal (a bundle the peer
+can never accept — re-issue instead) closes the entry. `POST /passkeys/outbox/tick` runs a pass on
+demand; the server does so every ten minutes.
+
 ## What is not here yet
 
-Enrollment (the one human action), the cold proof, the health watcher and pool-wide suspension, the
-durable revoke outbox with re-delivery and escalation, replicated grant rows, the dashboard grid and
-the migration of the existing prototype keys are later increments of the same run. Until enrollment
-lands, grants are inert.
+Enrollment (the one human action), the cold proof, the health watcher and pool-wide suspension
+(including the Google-side removal link the escalation points at), replicated grant rows and
+lease-holder takeover of a lost issuer's outbox, the dashboard grid and the migration of the existing
+prototype keys are later increments of the same run. Until enrollment lands, grants are inert.
