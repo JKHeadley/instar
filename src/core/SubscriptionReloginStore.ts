@@ -125,6 +125,11 @@ function ensureRepairEpisodeColumns(db: BetterSqliteDatabase): void {
   }
 }
 
+/** Failure classes `isBreakerOpen` treats as security events; such a row is never re-admitted. */
+const READMIT_BLOCKING_FAILURES: ReadonlySet<string> = new Set([
+  'wrong-identity', 'unexpected-origin', 'permission-expansion', 'captcha', 'phone-confirmation',
+]);
+
 export class SubscriptionReloginConflictError extends Error {
   constructor(message: string) { super(message); this.name = 'SubscriptionReloginConflictError'; }
 }
@@ -184,7 +189,35 @@ export class SubscriptionReloginStore {
     return this.db.transaction(() => {
       const prior = this.db.prepare('SELECT * FROM repair_episodes WHERE sourceEpisodeId=? AND accountId=? AND machineId=?')
         .get(source, account, machine) as SubscriptionReloginEpisode | undefined;
-      if (prior) return coerceEpisode(prior);
+      if (prior) {
+        // One row per source incident. When the admitted inputs have CHANGED since that row was
+        // written (a profile was added, the account joined the unattended list, …), a suggestion
+        // can never be approved and a failure can never be retried — both check the stored digest
+        // — so the incident would stay unrepaired until it closed. Re-admit the row under the new
+        // inputs instead. Unchanged inputs keep today's answer: a deliberate cancel stays cancelled
+        // and a failure waits for an operator retry. `refused` (a safety verdict) and `succeeded`
+        // are never re-admitted.
+        // A failure carrying a security class is breaker evidence (`isBreakerOpen` reads these rows);
+        // re-admitting it would erase that evidence, so it stays terminal like `refused`.
+        const securityFailure = prior.failureClass !== null && READMIT_BLOCKING_FAILURES.has(prior.failureClass);
+        const readmittable = (prior.state === 'suggested' || prior.state === 'cancelled' || prior.state === 'failed')
+          && !securityFailure;
+        if (!readmittable || prior.inputDigest === input.inputDigest) return coerceEpisode(prior);
+        const otherLive = this.db.prepare(`SELECT id FROM repair_episodes WHERE accountId=? AND machineId=? AND id<>?
+          AND state NOT IN ('succeeded','refused','cancelled','failed')`).get(account, machine, prior.id);
+        if (otherLive) throw new SubscriptionReloginConflictError('live-repair-already-owns-cell');
+        this.db.prepare(`UPDATE repair_episodes SET mode=?,state='suggested',inputDigest=?,profileId=?,framework=?,
+          provider=?,loginMethod=?,attemptCount=0,reissueCount=0,approvedAt=NULL,approvalExpiresAt=NULL,startedAt=NULL,
+          finishedAt=NULL,nextAttemptAt=NULL,failureClass=NULL,version=version+1,updatedAt=? WHERE id=?`)
+          .run(input.mode, input.inputDigest, profile, framework, provider, loginMethod, at, prior.id);
+        this.event(prior.id, at, prior.state, 'suggested', 'candidate-readmitted-inputs-changed', 0);
+        // Notifications are keyed (episode, kind); clear the prior outcome's rows so this
+        // admission's suggestion and outcome are delivered rather than silently deduplicated. A row
+        // mid-delivery is left alone so its in-flight completion still finds its claim.
+        this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND state<>'delivering'`).run(prior.id);
+        if (input.mode === 'approval') this.enqueueNotification(prior.id, 'suggested', at);
+        return this.mustGet(prior.id);
+      }
       const live = this.db.prepare(`SELECT id FROM repair_episodes WHERE accountId=? AND machineId=?
         AND state NOT IN ('succeeded','refused','cancelled','failed')`).get(account, machine);
       if (live) throw new SubscriptionReloginConflictError('live-repair-already-owns-cell');
