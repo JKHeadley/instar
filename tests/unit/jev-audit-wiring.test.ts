@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { validateManifest } from '../../src/scheduler/AgentMdJobLoader.js';
+import { installBuiltinJobs } from '../../src/scheduler/InstallBuiltinJobs.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -64,6 +65,36 @@ describe('the built-in batch job excludes itself (no self-audit recursion)', () 
     expect(tpl).toContain('completionAudit: excluded');
     expect(tpl).toContain('enabled: false');
     expect(tpl).toContain('/jev-audit/batch');
+  });
+});
+
+describe('the INSTALLED manifest carries the audit vocabulary (the loader reads the manifest, not the frontmatter)', () => {
+  it('buildPerSlugManifest carries completionAudit and declaredEffects', async () => {
+    const { buildPerSlugManifest } = await import('../../src/scheduler/buildPerSlugManifest.js');
+    const m = buildPerSlugManifest({
+      slug: 'x', origin: 'instar', schedule: '0 * * * *', priority: 'low',
+      expectedDurationMinutes: 5, enabled: true, execute: { type: 'agentmd' },
+      completionAudit: 'excluded', declaredEffects: ['out/a.md'],
+    } as never);
+    // Without these the batch job's own self-exclusion is silently inert.
+    expect(m.completionAudit).toBe('excluded');
+    expect(m.declaredEffects).toEqual(['out/a.md']);
+  });
+
+  it('installBuiltinJobs writes the batch job manifest with completionAudit: excluded', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-audit-install-'));
+    dirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    const report = installBuiltinJobs({
+      agentStateDir: path.join(dir, '.instar'),
+      packageRoot: path.resolve(__dirname, '../..'),
+      port: 4042,
+    });
+    expect(report.errors).toEqual([]);
+    const manifestPath = path.join(dir, '.instar', 'jobs', 'schedule', 'jev-completion-audit.json');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(manifest.completionAudit).toBe('excluded'); // the auditor never audits itself
   });
 });
 
