@@ -42,12 +42,28 @@ function isLocalOnlySecretPath(keyPath: string): boolean {
   ));
 }
 
+/**
+ * Prototype agent-held Google passkeys (spec agent-held-google-passkey §6, Increment 1).
+ * These were minted on one machine and must never be copied to another, but they are a
+ * single top-level vault key (e.g. `google_passkey_echo_studio`), not a dotted namespace,
+ * so the dot-segment rule above cannot match them. A separate first-segment prefix
+ * matcher handles them.
+ */
+export const LEGACY_PASSKEY_KEY_PREFIX = 'google_passkey_';
+
+/** True when the key path's FIRST segment is a prototype passkey key. */
+export function isLegacyPasskeyPath(keyPath: string): boolean {
+  const first = keyPath.split('.')[0] ?? '';
+  return first.startsWith(LEGACY_PASSKEY_KEY_PREFIX);
+}
+
 /** Return a deep, non-mutating copy with every machine-local namespace removed. */
 export function filterSecretsForSync(secrets: Secrets, prefix = ''): Secrets {
   const filtered: Secrets = {};
   for (const [key, value] of Object.entries(secrets)) {
     const keyPath = prefix ? `${prefix}.${key}` : key;
     if (isLocalOnlySecretPath(keyPath)) continue;
+    if (isLegacyPasskeyPath(keyPath)) continue;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const child = filterSecretsForSync(value as Secrets, keyPath);
       if (Object.keys(child).length > 0) filtered[key] = child;
@@ -175,8 +191,11 @@ export class SecretShareHandler {
     },
   ) {}
 
-  /** Decrypt + store. Returns the keyPaths stored. Throws only on a malformed/foreign payload. */
-  handle(command: SecretShareCommand, sender: string): { stored: string[] } {
+  /**
+   * Decrypt + store. Returns the keyPaths stored and any prototype passkey keys dropped.
+   * Throws only on a malformed/foreign payload or a machine-local recovery namespace.
+   */
+  handle(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
     // The legacy permissive path must be structurally unreachable for credential-class data
     // (WS5.2 R3a / §6.5): a credential rides the distinct `account-credential-share` verb +
     // `decryptAccountCredential`, never this one. Reject anything that is not a secret-share.
@@ -190,11 +209,23 @@ export class SecretShareHandler {
       throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
     }
     const stored: string[] = [];
+    // Prototype passkey keys from an older-build sender are dropped and audited, never
+    // stored — and the rest of the batch is still stored (spec §6 Increment 1: a
+    // mixed-version fleet must not halt ALL secret sync). A copy this machine already
+    // holds is left untouched: a receive refusal never deletes anything.
+    const dropped: string[] = [];
     for (const [keyPath, value] of Object.entries(secrets)) {
+      if (isLegacyPasskeyPath(keyPath)) {
+        dropped.push(keyPath);
+        continue;
+      }
       this.deps.store.set(keyPath, value);
       stored.push(keyPath);
     }
+    if (dropped.length > 0) {
+      this.deps.log?.(`[secret-sync] dropped ${dropped.length} prototype passkey key(s) from ${sender} (machine-local; names: ${dropped.join(', ')})`);
+    }
     this.deps.log?.(`[secret-sync] stored ${stored.length} secret(s) from ${sender}`);
-    return { stored };
+    return { stored, dropped };
   }
 }
