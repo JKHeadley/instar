@@ -29,6 +29,8 @@ export interface ReloginBrowserSnapshot {
     | 'password' | 'totp' | 'authorize'
     | 'paste-code' | 'success' | 'captcha' | 'phone-confirmation'
     | 'permission-expansion' | 'unknown'
+    /** A bot-check hold page (Cloudflare "Just a moment…") that clears by itself; waited out, never solved. */
+    | 'interstitial'
     | GooglePasskeyPageClass;
   expectedAccountVisible: boolean;
   /** Exact actionable chooser leaves matching the canonical expected identity. */
@@ -95,7 +97,12 @@ export interface AnthropicReloginBrowserDriverDeps {
   };
   now?: () => number;
   maxSteps?: number;
+  /** Total time to wait out a bot-check interstitial per drive (default 90 s, capped at 5 min). */
+  interstitialMaxMs?: number;
 }
+
+/** Poll cadence while a bot-check interstitial is showing. */
+export const INTERSTITIAL_POLL_MS = 3_000;
 
 const ANTHROPIC_ORIGINS = [
   'https://claude.ai',
@@ -116,10 +123,12 @@ const OPENAI_ORIGINS = [
 export class AnthropicReloginBrowserDriver {
   private readonly now: () => number;
   private readonly maxSteps: number;
+  private readonly interstitialMaxMs: number;
 
   constructor(private readonly deps: AnthropicReloginBrowserDriverDeps) {
     this.now = deps.now ?? Date.now;
     this.maxSteps = Math.max(1, Math.min(40, Math.floor(deps.maxSteps ?? 20)));
+    this.interstitialMaxMs = Math.max(0, Math.min(300_000, Math.floor(deps.interstitialMaxMs ?? 90_000)));
   }
 
   async drive(request: AnthropicReloginBrowserRequest, signal: AbortSignal = new AbortController().signal): Promise<BrowserRepairResult> {
@@ -133,11 +142,24 @@ export class AnthropicReloginBrowserDriver {
     try {
       signal.throwIfAborted();
       await this.deps.browser.open(request.verificationUrl);
+      let interstitialWaitedMs = 0;
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
         const snapshot = await this.deps.browser.snapshot(request.expectedIdentity);
         if (!allowedOrigins(request.provider, request.intent).includes(snapshot.origin))
           return { outcome: 'refused', failureClass: 'unexpected-origin' };
+        // A bot-check interstitial ("Just a moment…") clears on its own in roughly 30–90 s.
+        // Waiting it out is the only admissible action, so it needs no supervision, and it
+        // has its own bounded budget instead of burning the step budget 750 ms at a time
+        // (20 × 750 ms = 15 s, which the 2026-09-23 justin-gmail repair ran out three times).
+        if (snapshot.pageClass === 'interstitial') {
+          if (interstitialWaitedMs >= this.interstitialMaxMs)
+            return { outcome: 'transient', failureClass: 'provider-transient' };
+          await this.deps.browser.wait(INTERSTITIAL_POLL_MS);
+          interstitialWaitedMs += INTERSTITIAL_POLL_MS;
+          step -= 1; // an interstitial poll is not a drive step
+          continue;
+        }
         if (!scopesAllowed(snapshot.requestedScopes, request.allowedScopes))
           return { outcome: 'operator-only', failureClass: 'permission-expansion' };
         if (snapshot.pageClass === 'captcha' || snapshot.pageClass === 'google-risk-challenge')
@@ -264,6 +286,7 @@ export function allowedActions(
       ? ['click-authorize'] : [];
     case 'authorize': return snapshot.hasAuthorize ? ['click-authorize'] : [];
     case 'unknown': return ['wait'];
+    case 'interstitial': return ['wait'];
     // ── Closed Google passkey pages (spec agent-held-google-passkey §3.6). The list
     // is computed from STRUCTURE + the admitted method + the drive's intent; the
     // supervisor may only choose from it or decline. A credential-affecting control
