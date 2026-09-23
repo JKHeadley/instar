@@ -515,7 +515,12 @@ describe('Pre-push gate integration — release-note fragments', () => {
 
     const { status, stdout } = runGate();
     expect(status).not.toBe(0);
-    expect(stdout).toContain('side-effects review artifact was written in the last 24h');
+    // The refusal now names the PAIRING failure, not a wall-clock window: this
+    // change replaced "…written in the last 24h" with "…as recent as it", so a
+    // reviewed backlog stops aging into a false refusal. The case still asserts
+    // the same behaviour — an unreviewed in-flight fragment is refused — via the
+    // wording the gate actually emits.
+    expect(stdout).toContain('no side-effects review artifact is as recent as it');
     // And the remedy it names must be the slug form, never a version-named file.
     expect(stdout).toContain('upgrades/side-effects/<slug>.md');
   });
