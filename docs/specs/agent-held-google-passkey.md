@@ -14,7 +14,8 @@ depends-on:
   - multi-machine-replicated-store-foundation
   - ws52-account-follow-me-security
 lessons-engaged: [P17, P19, P20, P21, L11, L12, backup-codes-beat-google-2sv, claude-config-dir-probe-resets-config, name-credential-changes-in-reports, producer-evidence-is-not-consumer-effect]
-approved: false
+approved: true
+approved-by: "Justin (verified operator uid:7812716706), Telegram topic 33890, 2026-09-22 19:27 PDT"
 review-convergence: "2026-09-23T02:26:09.678Z"
 review-iterations: 10
 review-completed-at: "2026-09-23T02:26:09.678Z"
