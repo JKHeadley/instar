@@ -119,7 +119,11 @@ canaried granted cell (preferring `rejected` cells, falling back to any granted 
 its own local grant; that is the only exemption from the suspension refusal. Only proofs that
 actually ran count; a canary refused before sign-in rotates to the next cell at the same step.
 Backoff 1→2→4→7 days; after 5 non-`ready` canaries the state is `suspended-stopped` (no more
-automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). **Degraded operating mode:** while
+automatic sign-ins; operator resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension` op). **Operator kill switch:** `POST /passkeys/suspend-now` (PIN, or the `suspend-now` op) suspends
+passkey enrollment and use pool-wide immediately, independent of any sample threshold; only an
+operator resume ends it.
+
+**Degraded operating mode:** while
 suspended, stopped, suspension-unknown, or under a risk pause, a `google-passkey` account is repaired through an explicit,
 state-driven **method override** (not a fall-through): the dedicated profile's live session first,
 then the account's `priorLoginMethod` admitted under that method's own `inputDigest` and graduation
@@ -186,7 +190,11 @@ agent's machines.
   `accounts.google.com` origin (`Fetch.continueRequest` is called only after `removeCredential` is
   acknowledged; an interception error or timeout fails the request closed); it is also removed as soon as a Google session exists. Fixture tests:
   navigation to a different google.com subdomain, and an `accounts.google.com` 302 redirect to one;
-  both assert no assertion is possible. CDP messages that carry
+  both assert no assertion is possible. The rule covers every frame, not only the top-level document:
+  the credential is added only while no frame of the target is on another origin, and is removed at
+  request time for a navigation in ANY frame (iframes, fenced frames, popups); passkey sessions launch
+  with prerendering/speculative loading disabled and service workers bypassed. Fixtures cover an
+  embedded google.com iframe and a popup opened mid-flow. CDP messages that carry
   credentials are never logged or traced (tested).
 
 ### 3.2 Grants and revokes
@@ -286,7 +294,7 @@ agent's machines.
 
 - A new mandate type, separate from `account-follow-me`. Ops (identical to the PIN route names):
   `grant | revoke | enroll | prove | adopt | delete-legacy | revert-method | attest-google-removed |
-  resume-suspension | issuer-add | issuer-remove | exclude-peer | include-peer | recheck-chrome`.
+  suspend-now | resume-suspension | issuer-add | issuer-remove | exclude-peer | include-peer | recheck-chrome`.
 - **Signing** uses the WS5.2 Ed25519 issuance key of the machine where the dashboard PIN was
   verified; the signed body carries the verified principal, canonical email, `targetMachineId`, op,
   op arguments, `issuedAt`, nonce and expiry (15 minutes, ±2 minutes skew; revokes per §3.2).
@@ -535,6 +543,17 @@ recovery-quarantined machines, rows carry canonical emails (each machine derives
 failures use the pool fan-out classification (never a peer URL). Peers are queried in parallel with
 a 5 s overall limit per tick; `?scope=pool` is always served from the tick memo, marked with its age.
 
+**What each machine may do, by pool condition:**
+
+| Condition | Enroll | Prove / canary | Repair | Revoke | Suspend / resume |
+|---|---|---|---|---|---|
+| All peers observed | yes | yes | yes | yes | lease holder computes; operator any |
+| Peer `peer-offline` or excluded | yes (its last-known rows count) | yes | yes | yes, queued for it | same |
+| Peer partitioned / unknown / rope health absent | no | no | yes | yes, queued | same |
+| Lease holder unreachable ≤ 24h | per last-known state | per last-known state | per last-known state | yes | operator only |
+| Lease holder unreachable > 24h | no | no | degraded override only | yes | operator only |
+| Suspended / stopped / kill switch | no | canary only (not under kill switch) | degraded override only | yes | operator |
+
 ### 5.2 Routes and notices
 
 - `GET /passkeys` — per cell: granted, custody state (present / pending / quarantined /
@@ -555,7 +574,7 @@ a 5 s overall limit per tick; `?scope=pool` is always served from the tick memo,
   cells change; changes to the unobserved-peer list update it
   silently.
 - PIN routes: `POST /passkeys/{grant,revoke,enroll,prove,adopt,delete-legacy,revert-method,
-  attest-google-removed,resume-suspension,issuer-add,issuer-remove,exclude-peer,include-peer,
+  attest-google-removed,suspend-now,resume-suspension,issuer-add,issuer-remove,exclude-peer,include-peer,
   recheck-chrome}`, each also a `passkey-cell` mandate op for another machine; received mandates
   arrive at `POST /passkeys/cell-action`.
 - Dashboard Subscriptions grid: passkey badge per cell; the same controls behind the PIN;
