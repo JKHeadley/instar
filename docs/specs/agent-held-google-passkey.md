@@ -49,16 +49,19 @@ Differences from Dawn's standard: §16.
 
 - A WebAuthn key pair registered on the Google account as one more passkey, stored as **exportable
   software key material**.
-- **Origin-bound** (signs only for `google.com`), so a look-alike site cannot phish it. **Not
-  hardware-bound**: anyone who obtains the decrypted key can use it from anywhere.
+- **RP-bound, not origin-bound.** Its relying-party id is `google.com`, so a look-alike domain
+  cannot obtain an assertion; but ANY `*.google.com` origin could technically request one from the
+  virtual authenticator. This spec therefore holds the credential in the authenticator only while
+  the top-level origin is exactly `accounts.google.com` (§3.1). **Not hardware-bound**: anyone who
+  obtains the decrypted key can use it from anywhere.
 - A **complete Google sign-in**: whoever holds it has the whole account — mail, drive, settings,
   every "Sign in with Google" service. A leak is treated exactly like a leak of the password.
 - **Accepted major risk — same-user code.** Any code running as the agent's OS user, including an
   agent session with a shell, can in principle decrypt the store, because the key-wrapping secret is
   reachable by that user. The custody rules (§3.1) stop accidental exposure through tools, sync,
   backups, logs and prompts; they are not a boundary against deliberate same-user code. A broker
-  running as a separate OS user with a narrow signing API is the real fix; it is a tracked follow-up
-  (§17), and the grant screen names this risk explicitly.
+  running as a separate OS user with a narrow signing API is the real fix; it is required before the
+  fleet rung (§7, §17), and the grant screen names this risk explicitly.
 - It adds to, and does not replace, what the agent already holds for enrollment (a live session, a
   stored password, stored 2FA answers). The grant screen inventories those; they remain (FD7).
 - Proofs are real Google sign-ins; the owner may see sign-in notices. §3.8 keeps the device stable
@@ -86,14 +89,25 @@ passkey sign-in until the admin enables "skip password at sign-in".
 **Chrome version gate.** On each machine, when the installed Chrome major version differs from the
 last verified one, the server runs the local WebAuthn fixture self-test (the §8 E2E fixture, shipped
 with the package) before any passkey use; the result is recorded per machine. Failure ⇒ passkey use
-on that machine refuses with `passkey-chrome-unverified` and the digest (§5) says so.
+on that machine refuses with `passkey-chrome-unverified` and the digest (§5.2) says so; the result is
+recorded per (machine, Chrome major) and re-run only on a version change or an operator request. The
+local fixture proves only that Chrome's virtual authenticator works, not that Google accepts it, so
+the first passkey use on a newly verified major is a single proof on one cell; if it is not `ready`,
+the machine returns to `passkey-chrome-unverified`.
 
-**Pool-wide suspension.** Computed only by the serving-lease holder from replicated health rows
-(restrictive direction only). Triggers when, within 24h, cells returning a credential-rejection class
-(§3.6 `google-credential-not-recognized`) number ≥ 3 across ≥ 2 accounts AND make up ≥ 50% of proved
-cells. Effect: every machine of this agent refuses passkey use with `passkey-suspended`. While
-suspended, one canary proof per 24h still runs on one cell. Exit: 2 consecutive `ready` canaries, or
-an operator resume (PIN or `resume-suspension` mandate op). "Pool" means this agent's machines.
+**Pool-wide suspension.** Computed only by the serving-lease holder from peer cell state read
+through the pool read path (§5.1), restrictive direction only. Triggers when, within 7 days, cells
+with outcome `credential-rejected` (§3.6) — excluding cells whose Google-side removal is pending or
+attested — number ≥ 3 across ≥ 2 accounts AND make up ≥ 50% of proved cells. Effect: every machine of
+this agent refuses passkey use with `passkey-suspended` (each machine reads the lease holder's
+suspension state before passkey use; if the lease holder is unreachable it uses the last-known state
+up to 24h old, then refuses enrollment and proofs but not repairs). **Canary:** the lease holder picks
+the earliest-proved `rejected` cell, rotating, and sends its owning machine a `prove` mandate with
+`canary: true` — the only exemption from the suspension refusal. Canary backoff 1→2→4→7 days; after
+5 non-`ready` canaries the state becomes `suspended-stopped` (no more automatic sign-ins; operator
+resume only). Exit: 2 consecutive `ready` canaries, or an operator resume (PIN or `resume-suspension`
+op). No re-suspension within 7 days of an exit without a fresh qualifying sample. "Pool" means this
+agent's machines.
 
 ## 3. Components
 
@@ -136,55 +150,77 @@ an operator resume (PIN or `resume-suspension` mandate op). "Pool" means this ag
   gitignore patch with a content-sniff guard.
 - **In the browser:** the credential is added to the virtual authenticator only while a target's
   top-level origin is exactly `accounts.google.com`, per target (including auto-attached popups), and
-  removed at **navigation-request time** (`Page.frameRequestedNavigation` / Fetch interception) before
-  any other document commits, and as soon as a Google session exists. A fixture test navigates to a
-  different google.com subdomain and asserts no assertion is possible. CDP messages that carry
+  removed at **request time**: Fetch interception at the Request stage for every Document request,
+  including each redirect hop, removes the credential before any request leaves for a non-
+  `accounts.google.com` origin; it is also removed as soon as a Google session exists. Fixture tests:
+  navigation to a different google.com subdomain, and an `accounts.google.com` 302 redirect to one;
+  both assert no assertion is possible. CDP messages that carry
   credentials are never logged or traced (tested).
 
 ### 3.2 Grants and revokes
 
-- A grant `{canonicalEmail, machineId, grantedBy (verified principal), grantedAt, localSeq}`
+- A grant `{canonicalEmail, machineId, grantedBy (verified principal), grantedAt, localSeq,
+  googleCreatedAt?}`
   authorizes mint and load for one (account × machine) cell. No wildcard. Granting shows §1.1 and the
   provider-policy assumption, inventories the account's other stored credentials, and requires the
   operator to confirm "full Google account access, including mail and drive".
-- **Authority is local.** A machine acts only on grants written on that machine by the PIN route or
-  by a verified `passkey-cell` mandate (§3.3).
+- **Authority is local.** A machine acts only on grants written on that machine by the PIN route, by
+  a verified `passkey-cell` mandate (§3.3), or by a backup restore (subject to the §6 high-water
+  rule). The issuing machine also keeps a local, non-secret copy of each peer grant it issued,
+  including `googleCreatedAt` once the peer reports it, so a revoke can always name the Google-side
+  passkey.
 - **Revoke is carried by the mandate outbox.** Revoking a peer's cell issues a `revoke` mandate naming
-  the target's grant instance (`revokesGrantSeq`, read from that machine's advisory grant row). The
-  sender keeps it in a durable outbox, deduplicated per (cell, op) with latest-wins, re-issued with a
-  fresh nonce when the peer returns, expired after 30 days or when the peer leaves the registry
-  (shown in the digest while pending). The receiver applies it only if its local grant's
-  `localSeq ≤ revokesGrantSeq`; otherwise it records and ignores it (a newer re-grant wins).
+  the target's grant instance (`revokesGrantSeq`, read through the pool read path, §5.1; if
+  unavailable, the revoke is queued and shown in the digest). The sender keeps it in a durable
+  outbox, deduplicated per (cell, op), latest-wins, and re-delivers the SAME signed revoke (same
+  principal, `issuedAt` and nonce) when the peer returns. **Revoke-only acceptance rule:** a `revoke`
+  is exempt from the 15-minute expiry (it only removes authority), still checked against the
+  signature, the nonce ledger and `localSeq ≤ revokesGrantSeq`; no other op gets this exemption. If
+  the peer has not acknowledged within 30 days or leaves the registry, the entry does not silently
+  expire: the cell moves to `google-side-pending-operator` with the reason "an unreachable machine
+  still holds this key", naming the passkey by `googleCreatedAt`, because only removal on Google can
+  now revoke it. Outbox rows are proxied on read into every machine's `GET /passkeys?scope=pool`,
+  and the operator can re-issue a revoke from any machine.
 - **Replicated rows are display and acceleration only.** Grant rows, revoke tombstones, health rows
   and throttle pauses replicate through the replicated-store foundation as store kinds
   `passkeyGrants`, `passkeyTombstones`, `passkeyHealth`, `passkeyPauses`, each behind
-  `multiMachine.stateSync.<kind>` (shipping `{enabled:false, dryRun:true}` like every foundation
-  store). A replicated tombstone deletes a local credential on receipt only if it carries the same
-  signed mandate envelope a direct revoke would (verified principal, origin-machine signature,
-  one cell, `revokesGrantSeq`) — an explicit, declared exception to the foundation's
-  never-clobber-local rule, following the replicated TopicPin clear precedent; anything else is
-  audited and ignored. While these stores are dark, the outbox alone carries revokes.
-- **What revoke does.** Deletes the store entry, pending record, the proof profile and the profile
-  tuple's passkey binding; writes a tombstone; verifies each by read-back. It stops **this agent's
+  `multiMachine.stateSync.<kind>`, registered with the dev-agent gate in
+  `devGatedFeatures`/`resolveStateSyncStores` like other stores (not hard-coded `enabled:false`), and
+  added to both `JOURNAL_KINDS` in `CoherenceJournal.ts` and `ReplicatedKindRegistry`, covered by
+  the existing wiring ratchet. A replicated tombstone deletes a local credential on receipt only if it
+  carries the signed revoke under the revoke-only acceptance rule above — a NEW, explicitly declared
+  exception to the foundation's never-clobber-local rule (no precedent; justified because it only
+  ever removes a credential). Anything else is audited and ignored. While these stores are dark, the
+  outbox alone carries revokes and the pool read path (§5.1) supplies state.
+- **What revoke does.** Deletes the store entry, pending record, the proof profile, any enrollment or
+  retry profile from an in-flight episode (the episode is cancelled first), and the profile tuple's
+  passkey binding; writes a tombstone; verifies each by read-back. It stops **this agent's
   passkey path** only: the dedicated profile's live session and stored password remain (FD7), and the
   revoke result lists them.
 - **Google-side removal** is the operator's action this release. The cell stays
   `google-side-pending-operator` until either (a) a read-only check of Google's passkey list
   (`google-passkey-list` class, from the dedicated profile's live session, no actions) no longer
   shows a passkey with the stored `googleCreatedAt` ⇒ `google-side-removed-verified`, or (b) the
-  operator taps "I removed it on Google" and the check cannot run ⇒ `google-side-operator-attested`,
-  never displayed as "removed". If other cells share the same `credentialId` (legacy-shared keys),
+  operator taps "I removed it on Google" and the check cannot run — including when
+  `googleCreatedAt` is absent (legacy keys) or ambiguous (two passkeys with the same timestamp) ⇒
+  `google-side-operator-attested`, never displayed as "removed". While a revoke is pending, the
+  peer's grant row displays `revoke-pending`. If other cells share the same `credentialId` (legacy-shared keys),
   the revoke notice lists every machine and agent that stops working when it is removed on Google.
 
 ### 3.3 The `passkey-cell` mandate
 
 - A new mandate type, separate from `account-follow-me`. Ops: `grant | revoke | enroll | prove |
   adopt | delete-legacy | revert-method | attest-google-removed | resume-suspension`.
-- **Signing and acceptance** reuse the WS5.2 issuance scheme: signed with the Ed25519 issuance key of
-  the operator machine where the dashboard PIN was verified; the signed body carries the verified
-  principal, canonical email, `targetMachineId`, op, op arguments, nonce and expiry (15 minutes,
-  ±2 minutes skew). The receiver accepts only a signature from a paired machine whose fingerprint is
-  in its expected-issuer set, and records the nonce in a durable per-receiver ledger before acting.
+- **Signing** uses the WS5.2 Ed25519 issuance key of the machine where the dashboard PIN was
+  verified; the signed body carries the verified principal, canonical email, `targetMachineId`, op,
+  op arguments, `issuedAt`, nonce and expiry (15 minutes, ±2 minutes skew; revokes per §3.2).
+- **Acceptance is new code** beyond WS5.2 (which trusts any registered peer and keeps no nonce
+  ledger): the receiver keeps an **expected-issuer set** in `state/passkey-issuers.json`, listing
+  machines on which the operator has verified the dashboard PIN. Membership changes only by a PIN
+  action on a machine already in the set (or, for the first issuer, locally on that machine). A newly
+  paired machine is not an issuer until added. The receiver records the nonce in a durable ledger
+  before acting and prunes entries older than expiry plus skew (revoke nonces are kept 60 days).
+- Transport: the existing mesh-authenticated peer channel; the signature is the authority.
 - Received at its own route, `POST /passkeys/cell-action`. The follow-me consumer ignores
   `passkey-cell` mandates and this route refuses `account-follow-me` mandates. Tests: both
   directions, a mandate signed by a non-operator peer, a replayed nonce, an expired mandate.
@@ -204,11 +240,13 @@ an operator resume (PIN or `resume-suspension` mandate op). "Pool" means this ag
     resets when the method changes;
   - the admission `inputDigest` includes `loginMethod` and the passkey entry key, so an approval for
     the password path cannot authorize the passkey path;
-  - **admission refusals** before `load()`: `passkey-cell-security`, `passkey-cell-breaker-open`,
+  - **admission refusals**, evaluated in the pure policy (the cell's passkey state is added to the
+    policy input, so `revalidate` at approve and retry sees them) and again before `load()`: `passkey-cell-security`, `passkey-cell-breaker-open`,
     `passkey-cell-unverified-stopped`, `passkey-suspended`, `passkey-chrome-unverified`,
-    `passkey-cell-quarantined`.
+    `passkey-cell-quarantined`, `passkey-cell-rejected`, `passkey-pool-state-unavailable`.
 - In the repair path, `readSignedInIdentityMatches(E)` runs right after Google sign-in, before any
-  provider page; a mismatch sets the cell to `security` and refuses.
+  provider page; a mismatch sets the cell to `security` and refuses. If the parent's identity oracle
+  later disagrees with a cell's last `ready`, the cell moves to `security` and that `ready` is void.
 - **No fall-through** to another method on failure; a named refusal instead. The dedicated profile's
   live session is tried first, as today.
 - **Rollback:** an older build refuses repair for a `google-passkey` account
@@ -240,9 +278,11 @@ New: `google-passkey-challenge`, `google-passkey-create`, `google-passkey-create
 path, element roles/stable ids), is evaluated BEFORE the parent's text-regex chain, and has a redacted
 fixture proving that ordering. Unmatched ⇒ `unknown`.
 
-Outcome mapping: `failed` = the proof reached Google's sign-in but did not sign in and no
-security-class page appeared; `security` = `google-credential-not-recognized`, or signed in as a
-different account; `unknown` = transport error, outage, unmatched page, throttled.
+Outcome mapping: `credential-rejected` = `google-credential-not-recognized` (the identity was never
+reached); `failed` = reached Google's sign-in, did not sign in, no rejection page; `security` =
+signed in as a DIFFERENT account (custody is corrupt); `unknown` = transport error, outage, unmatched
+page, throttled. For a cell whose Google-side removal is pending or attested, `credential-rejected`
+is recorded as `removed-on-google` and never counts toward suspension.
 
 **Credential-affecting actions are deterministic only:** "Create a passkey", the create-confirm
 button, and credential or code submission fire only on an exact structural class match. The
@@ -256,16 +296,21 @@ browser-availability predicate); a passing Chrome version gate; no enrollment or
 the cell.
 
 - **One episode per cell, idempotent**; a leftover pending record resumes at "store" (quarantined).
-- **Rate limit:** one attempt per cell per 30 minutes and 3 per account per day **pool-wide** — the
-  attempt counter is kept per machine and replicated as advisory rows that every machine sums before
-  acting (restrictive direction only). Real repair sign-ins are counted but never refused by it. Rows
-  older than 24h are pruned.
+- **Rate limit:** one attempt per cell per 30 minutes and 3 per account per day **pool-wide**. Before
+  acting, a machine reads every peer's attempt rows through the pool read path (§5.1); if any peer is
+  unobserved on a multi-machine agent, enrollment and proofs refuse (`passkey-pool-state-unavailable`).
+  Residual, stated honestly: two machines checking at the same instant can both proceed, so the worst
+  case is 3 × machine-count per day; enrollment is operator-initiated, which bounds it further. A
+  fresh-profile retry or an already-enrolled retry is part of the same attempt. Real repair sign-ins
+  are counted but never refused. Rows older than 24h are pruned.
 - **Account pinning:** Google's account index (`authuser`) is pinned for creation and identity reading.
 - **Closed action set:** navigate to allowlisted pages; fill email; fill the bound password (the grant
   covers methods already bound to the tuple); submit a stored TOTP code; submit one stored backup code
-  (only on the machine holding secret-sync push authority, whose store is the one that propagates;
-  the code is marked consumed there BEFORE submit, so a crash never re-tries it; peers skip this
-  rung); choose "Try another way"/"Enter your password" on passkey-first accounts; "Create a passkey";
+  (only when exactly one machine has secret-sync `pushEnabled`, and only on that machine — its store
+  is the one that propagates; with secret sync off on a single-machine agent, that machine; in any
+  other configuration the rung is skipped with `backup-code-authority-ambiguous`. The code is marked
+  consumed BEFORE submit, so a crash never re-tries it; residual: the pre-existing SecretStore
+  lost-update race can resurrect a spent code, which Google rejects and which lands as `failed`); choose "Try another way"/"Enter your password" on passkey-first accounts; "Create a passkey";
   the create-confirm button; "Not now" on a platform-passkey speedbump. Never "Continue" on an empty
   authenticator. Anything else refuses.
 - **Self-unblock before asking:** the dedicated profile's live session → stored password plus stored
@@ -276,7 +321,8 @@ the cell.
 - **The human ask:** the dashboard shows one ask; the operator taps *Ready*; only then does the worker
   trigger the prompt.
 - **After mint:** `readSignedInIdentityMatches(E)` must be true, else discard, `identity-mismatch`,
-  orphan details in the digest. Bind `userHandle`; capture `googleCreatedAt` from the passkey list.
+  orphan details in the digest. An enrollment log entry that reached `google-passkey-create-confirm`
+  with no pending record is reported as a probable orphan on Google. Bind `userHandle`; capture `googleCreatedAt` from the passkey list.
 - **Store, then cold proof (§3.8):** `ready` ⇒ tuple becomes `google-passkey`; `failed` ⇒ delete +
   tombstone; `unknown` ⇒ stays quarantined until a later `ready`; `security` ⇒ delete, cell
   `security`.
@@ -298,7 +344,9 @@ the cell.
 - Optional reach-through checks for Claude and Codex are web-origin only (no CLI, no live config home,
   no account creation, only providers the pool already maps to E); their failures are informational.
 - Operator-triggered proof: `POST /passkeys/prove` (PIN or `prove` mandate op), subject to the same
-  rate limit.
+  rate limit and pool read path.
+- Proofs, canaries and enrollments are registered with `SelfActionGovernor` as the observe-only class
+  `passkey-signin`.
 
 ## 4. Health watcher (deterministic in-server tick)
 
@@ -308,7 +356,7 @@ the cell.
   `passkeys.healthWatcher.enabled`, rationale: "inert without grants; enrollment is operator-initiated".
 - Cadence: each cell proven once per 7 days at a per-machine jittered time; one proof at a time,
   ≥ 10 minutes apart; proofs of the same account from different machines ≥ 6 hours apart (checked
-  against replicated health rows). Skip if a real repair signed in to that account in the last 24h or
+  through the pool read path, §5.1; an unobserved peer ⇒ skip this tick). Skip if a real repair signed in to that account in the last 24h or
   the account is paused.
 - The host-wide `PlaywrightSeatLease` is taken per proof, released between proofs, not taken while a
   repair episode is pending, and renewed or aborted past its 10-minute TTL. A second proof-profile
@@ -328,13 +376,27 @@ State per cell (terminal states take precedence over every other row):
 | unverified → healthy | a `ready` proof |
 | unverified → unverified-stopped | 3 further `unknown` at the 28-day cap; automatic proofs stop |
 | unverified-stopped → healthy | an operator-triggered proof returning `ready`, or re-enrollment |
-| any → security | a `security` outcome (§3.6) in a proof or repair; no retry |
+| healthy/degraded/unverified → rejected | a `credential-rejected` outcome; no immediate retry |
+| rejected → healthy | a `ready` proof (canary or operator-triggered) |
+| any → security | a `security` outcome (§3.6) in a proof or repair, or the parent oracle disagreeing; no retry |
 | security → healthy | re-enrollment only |
 
 Flapping (3 healthy↔degraded flips in 30 days) sets a `flapping` flag and escalates the cell's digest
 line; it is a flag, not a state.
 
 ## 5. Surfaces and notices
+
+### 5.1 Pool read path
+
+All pool-wide restrictive checks (rate limit, same-account gap, throttle pauses, suspension inputs,
+`revokesGrantSeq`, outbox rows) read peer state through the replicated rows when those stores are
+enabled, and otherwise by direct per-peer queries (the same fallback `GET /passkeys?scope=pool`
+uses). A peer that answers neither way is `unobserved`: enrollment and proofs refuse on a
+multi-machine agent; repair is unaffected; the digest shows "pool checks degraded". A single-machine
+agent has no peers and is never degraded. Rung 2 requires the four store kinds enabled on the dev
+agent (§7). A peer's rows are audited per origin machine and can only ever restrict.
+
+### 5.2 Routes and notices
 
 - `GET /passkeys` — per cell: granted, custody state (present / pending / quarantined /
   machine-id-changed / legacy-adopted / legacy-unadopted), health state, Google-side state, enrollment
@@ -347,12 +409,16 @@ line; it is a flag, not a state.
   google-side-operator-attested, legacy-overdue or orphan-on-Google state, plus pending outbox
   revokes, Chrome-gate failures, suspension, and unobserved peers. A new lease holder takes over the
   same key and resolves any copy left by the previous holder. A lone machine raises it for itself.
-  **Notification:** the item is updated on the same tick a cell's self-heal is exhausted or a
-  security/suspension event occurs (within the 300 s ceiling). It re-notifies (buzzes) at most once
+  **Notification:** the machine that observes a cell's self-heal exhaustion or a security event
+  updates its own copy of the same key on that tick (within the 300 s ceiling); the pool attention
+  view coalesces copies by key, and the lease holder's copy is the complete list. It re-notifies (buzzes) at most once
   per 24h, except for security and suspension changes; changes to the unobserved-peer list update it
   silently.
-- Dashboard Subscriptions grid: passkey badge per cell; grant / enroll / prove / revoke / adopt /
-  delete / attest / resume controls behind the PIN; mobile-complete.
+- PIN routes: `POST /passkeys/{grant,revoke,enroll,prove,adopt,delete-legacy,attest-removed,resume,
+  revert-method}`, each also a `passkey-cell` mandate op for another machine; received mandates
+  arrive at `POST /passkeys/cell-action`.
+- Dashboard Subscriptions grid: passkey badge per cell; the same controls behind the PIN;
+  mobile-complete.
 - Every grant, mint, adoption, deletion and revoke result names what changed and which agents and
   sessions depend on that account.
 - `GET /capabilities` and the CLAUDE.md template describe the feature, its per-machine cost, the §1.1
@@ -393,7 +459,9 @@ scripts; production repair cannot use them (`autonomousLoginMethod()` refuses th
 dev-agent gate decides); `migrateClaudeMd()` adds the section behind a content-sniffing guard; the
 registry migration adds `priorLoginMethod` and the `passkey` binding role; the gitignore patch (§3.1).
 The backup manifest includes `state/passkey-grants.json`; on restore, any grant with `localSeq` at or
-below the local revoke high-water mark is dropped (tested), and cells without a credential file show
+below the local revoke high-water mark is dropped (tested) — the mark lives in
+`.instar/secrets/passkeys/revoke-hwm.json`, outside the backup manifest, so a restore cannot roll it
+back — and cells without a credential file show
 `granted, credential absent`.
 
 Config: `passkeys: { enabled: <absent → dev-agent gate>, repairUsesPasskey: false,
@@ -409,10 +477,14 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 - **Rung 1 — test agent:** a throwaway agent, the local WebAuthn fixture, and one disposable Google
   account registered in the owned-identities registry: enroll, cold proof, revoke, restart-mid-mint
   resume, legacy adoption, Google-side removal check. Exit: all pass.
-- **Rung 2 — development agent:** Echo's fleet with `repairUsesPasskey: true`. `google-passkey` is a
+- **Rung 2 — development agent:** Echo's fleet with `repairUsesPasskey: true` and the four passkey
+  store kinds enabled. Running without the broker is accepted here because the status quo on this
+  fleet is worse: the same keys already sit in the generic SecretStore, readable by every session and
+  synced to every machine; Rung 2 strictly narrows that exposure. `google-passkey` is a
   new provider path under the parent's graduation rule — its own 30-day dark window and 10
   identity-correct repairs per provider, enforced by the method-keyed evidence (§3.4).
-- **Rung 3 — fleet:** on-by-default only after Rung 2 graduates; watcher fleet cadence decided then.
+- **Rung 3 — fleet:** on-by-default only after Rung 2 graduates AND the separate-OS-user signing
+  broker (§17) ships; watcher fleet cadence decided then.
 
 ## 8. Testing
 
@@ -431,7 +503,11 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 - Named behavioral tests: **P19 sustained-failure** — a watcher against a target that always returns
   `unknown` reaches `unverified-stopped` and stops; **P17 burst** — N failing cells across machines
   produce exactly one digest item and at most one buzz per 24h; **suspension** — triggers only at the
-  minimum sample and exits on canaries or operator resume; **stale session** — a proof whose profile is
+  minimum sample, excludes removed-on-google cells, canaries back off and stop at
+  `suspended-stopped`, exits on canaries or operator resume; **dark stores** — with the four stores
+  off, the pool read path enforces the pool-wide limits and an unobserved peer refuses enrollment;
+  **revoke durability** — an offline peer returning after 20 days applies the original signed
+  revoke, and one gone past 30 days moves the cell to `google-side-pending-operator`; **stale session** — a proof whose profile is
   not signed out returns `unknown`, and a sign-in without an observed assertion is never `ready`.
 - E2E: feature-alive through the production init path; pipe transport, about:blank-then-attach, popup
   auto-attach and navigation-time credential removal against a local WebAuthn fixture; cold proof
@@ -467,6 +543,9 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 | Pool-wide suspension and exit | invariant | Minimum sample, 50% threshold, canary or operator exit. |
 | Chrome version gate | invariant | Fixture self-test result per machine. |
 | Legacy key adopt/delete | invariant | Operator choice per key; adoption commits only on a verified `ready`. |
+| Backup-code consumption | invariant | Exactly one push-authority machine; consumed before submit. |
+| Pool-wide rate limit and gaps | invariant | Pool read path; unobserved peer ⇒ refuse. |
+| Canary selection and backoff | invariant | Lease holder; earliest-proved rejected cell; 1→2→4→7 days; stop after 5. |
 
 ## 11. Symbols, states and corroboration (P20)
 
@@ -479,27 +558,38 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 | Adoption record | this legacy key belongs to E and works here | Verified `ready` proof on this machine | uncommitted |
 | Revoke read-back | the passkey path can no longer sign in as E here | Entry, pending record, proof profile and binding absent; tombstone present | report exactly which location could not be verified |
 | Google-side removal | Google no longer accepts the key | Read-only passkey-list check | `google-side-operator-attested` (never "removed") |
-| Workspace blocked | admin setting is off | Exact structural class match | `unknown` |
-| Chrome gate passed | this Chrome supports the mechanism | Fixture self-test on this machine | `passkey-chrome-unverified` |
+| Workspace blocked | admin setting is off | Single-source (structural class match only); stated as such in the result | `unknown` |
+| Chrome gate passed | this Chrome's virtual authenticator works (not that Google accepts it) | Fixture self-test, then a first real proof on the new major | `passkey-chrome-unverified` |
 | Peer health/pause/attempt rows | that peer's state | Used only restrictively (pause, gap, suspension, rate limit); never to grant or load | treated as unobserved |
-| Suspension | Google stopped accepting the mechanism | Minimum sample across accounts; canary proofs | stays suspended until canary or operator |
+| Suspension | Google stopped accepting the mechanism | Minimum sample across accounts, excluding removed-on-google; canary proofs | stays suspended; `suspended-stopped` after 5 canaries |
+| Outbox revoke pending | the peer will stop using the key | Peer acknowledgement | after 30 days: `google-side-pending-operator` |
 
 ## 12. Multi-machine posture
 
-- Passkey credentials, pending records, and proof/enrollment profiles: machine-local.
-  `machine-local-justification: operator-ratified-exception` — ref: decision-journal entry
-  `sessionId=agent-held-google-passkey-spec`, `timestamp=2026-09-23T01:41:56.680Z` (GET
-  /intent/journal), recording the operator's 2026-09-20 ratification quoted in the-portal
-  `docs/standards/agent-account-sharing.md` §2. The key is exportable, so relocation is possible; the
-  per-machine design is chosen for revocation granularity. Each machine works on its own.
-- Grants: local authority; `passkeyGrants` replicated as advisory rows.
-- Revokes: mandate outbox (authoritative) + `passkeyTombstones` replicated (signed, accelerator).
-- Health, pauses, attempt counts: `passkeyHealth` / `passkeyPauses` replicated advisory rows, acted on
-  only restrictively.
-- `logs/passkey-health.jsonl` and `logs/passkey-legacy-reads.jsonl` (states only, 30-day rotation):
-  proxied-on-read through `GET /passkeys?scope=pool`.
-- `GET /passkeys`: proxied-on-read.
-- Notices: one voice (serving-lease holder's digest).
+Per-machine custody is an operator ratification (FD2), conditional on "truly one-time" setup. The
+re-enrollments this spec can require — after `breaker-open` or `security`, a machine-id change, a
+Google-side removal, or the optional legacy re-mint — are failure-recovery cases outside that
+one-time cost, and are presented to the operator as such.
+
+- Passkey credentials (`.instar/secrets/passkeys/store.enc`):
+machine-local-justification: operator-ratified-exception ref https://github.com/JKHeadley/instar/blob/a44e64c82/docs/specs/agent-held-google-passkey.md FD2, decision-journal agent-held-google-passkey-spec 2026-09-23T01:41:56.680Z
+- Pending mint records (`.instar/secrets/passkeys/pending/`):
+machine-local-justification: operator-ratified-exception ref https://github.com/JKHeadley/instar/blob/a44e64c82/docs/specs/agent-held-google-passkey.md FD2
+- Proof and enrollment profiles (`.instar/secrets/passkeys/profiles/`):
+machine-local-justification: physical-credential-locality permanence=permanent impossible-because=a live Google browser session's cookies are bound to one Chrome profile on one disk
+- Nonce ledger, expected-issuer set, index, revoke high-water mark, Chrome-gate result, episode state
+  and the authoritative `state/passkey-grants.json`: proxied-on-read through
+  `GET /passkeys?scope=pool` (each describes or authorizes one machine's credential; the merged view
+  is the pool surface).
+- Grant rows, tombstones, health, pauses, attempt counts: unified through the four replicated store
+  kinds (§3.2), with the pool read path (§5.1) as the fallback while they are dark; acted on only
+  restrictively, except the signed revoke.
+- Outbox: proxied-on-read (§3.2); the operator can re-issue a revoke from any machine.
+- Suspension state: computed by the lease holder, read by peers through the pool read path.
+- Backup-code consumed state: the synced SecretStore on the single push-authority machine (§3.7).
+- `logs/passkey-health.jsonl`, `logs/passkey-legacy-reads.jsonl` (states only, 30-day rotation):
+  proxied-on-read.
+- Notices: one digest key, coalesced across machines (§5.2).
 - Config: per-machine, by the existing `.instar/config.json` convention.
 
 ## 13. Self-heal before notify (health watcher)
@@ -509,7 +599,8 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
   the §4 backoff and its terminal `unverified-stopped`.
 - Brakes: `max-attempts: 2`, `max-wall-clock: 90m`, `backoff: 1h, then 7/14/28 days`,
   `dedupe-key: passkey-health:digest` (one item, per-cell lines),
-  `breaker: 3 weekly confirmed failures ⇒ breaker-open; 3 unknowns at cap ⇒ unverified-stopped`,
+  `breaker: 3 weekly confirmed failures ⇒ breaker-open; 3 unknowns at cap ⇒ unverified-stopped;
+  5 non-ready canaries ⇒ suspended-stopped`,
   flapping flag, `max-notification-latency: 300s` measured from self-heal exhaustion (the digest is
   updated on that tick), `audit-location: logs/passkey-health.jsonl`.
 - Remediation is read-only toward the account (sign-in attempts only) and idempotent.
@@ -543,8 +634,14 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
     marked consumed before submit; the enrollment result reports the remainder. (Author.)
 12. **Mandate signing:** the WS5.2 Ed25519 issuance scheme with an expected-issuer set, nonce ledger,
     15-minute expiry and ±2-minute skew. (Author.)
-13. **Suspension:** minimum 3 cells across 2 accounts and 50%; exit by 2 canaries or operator resume.
-    (Author.)
+13. **Suspension:** minimum 3 cells across 2 accounts and 50% within 7 days, excluding
+    removed-on-google; canary backoff with a terminal `suspended-stopped`; exit by 2 canaries or
+    operator resume. (Author.)
+14. **Pool state while stores are dark:** the pool read path, refusing enrollment and proofs when a
+    peer is unobserved; Rung 2 requires the stores enabled. (Author.)
+15. **Revokes never silently expire:** signed revokes are re-delivered unchanged; past 30 days the
+    cell escalates to Google-side removal. (Author.)
+16. **Rung 2 before the broker, Rung 3 after it.** (Author; justified in §7.)
 
 ## 15. Rollback and downgrade
 
@@ -568,8 +665,8 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
   a per-credential item adds no protection against same-user code. Rejected.
 - **Separate-OS-user signing broker:** the real boundary against same-user code — a small process
   under its own OS user holding the keys and exposing only "sign in to Google as E in this browser
-  target", with origin enforcement and rate limits inside it. Tracked follow-up before Rung 3; this
-  release records the risk as accepted (§1.1).
+  target", with origin enforcement and rate limits inside it. Required before Rung 3 (§7); this
+  release records the risk as accepted for Rungs 1–2 (§1.1, §7).
 - **Non-exportable hardware credential (Secure Enclave / TPM):** Chrome's virtual authenticator needs
   an exportable key, so it cannot be used with this mechanism. Out of scope.
 
