@@ -161,14 +161,14 @@ describe('StallTriageNurse', () => {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'balanced' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.6-sol');
+        .toBe('gpt-6-sol');
     });
     it('codex-cli: legacy Claude tier name maps to Codex equivalent', () => {
       const nurse = new StallTriageNurse(deps, {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'haiku' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.6-sol'); // haiku → light tier; gpt-5.4-mini retired from ChatGPT-account Codex 2026-09-09
+        .toBe('gpt-6-luna'); // haiku → light tier (gpt-6-luna since 2026-09-23)
     });
     it('codex-cli: raw Codex model id passes through verbatim', () => {
       const nurse = new StallTriageNurse(deps, {

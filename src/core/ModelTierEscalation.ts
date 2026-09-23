@@ -234,6 +234,9 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // each is live-verified, never guessed. This is the SINGLE codex list:
   // adding an id here reaches the spawn route and the pin validator both.
   'gpt-6-astra',
+  // Live-verified 2026-09-23 on codex CLI 0.156.1 (0.153.4 refuses both).
+  'gpt-6-sol',
+  'gpt-6-luna',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

@@ -67,12 +67,14 @@ export function resolveModelForFramework(
     // Light/medium/heavy mapping. NOTE (2026-09-09): OpenAI retired the whole
     // gpt-5.4/5.5 generation from the ChatGPT-account Codex surface — including
     // gpt-5.4-mini, which the 2026-06-03 gpt-5.2 retirement had moved `fast`
-    // onto. Live-probed replacements: gpt-5.6-sol (light+medium) and
-    // gpt-6-astra (heavy). Keep this in lockstep with
+    // onto. 2026-09-23: moved to the GPT-6 family — gpt-6-luna (light),
+    // gpt-6-sol (medium), gpt-6-astra (heavy). Keep this in lockstep with
     // src/providers/adapters/openai-codex/models.ts (the single source of the
     // full rationale + the live-probe record).
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.6-sol';    // light tier — gpt-5.4-mini retired 2026-09-09
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.6-sol'; // medium — cheapest live reasoning
+    // 2026-09-23: light → gpt-6-luna, medium → gpt-6-sol (live-probed on codex
+    // CLI 0.156.1; older CLIs refuse both — see models.ts header).
+    if (key === 'fast' || key === 'haiku') return 'gpt-6-luna';      // light tier
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-6-sol';  // medium
     if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
     return modelOrTier;
   }
@@ -134,7 +136,9 @@ export function resolveInteractiveLaunchModel(
 ): string | undefined {
   if (framework === 'codex-cli') {
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
-    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.6-sol';
+    // No configured model → the `balanced` tier, looked up rather than
+    // hardcoded so the default can never drift from the tier map.
+    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -1016,7 +1020,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.6-sol');
+    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',
