@@ -364,6 +364,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the persisted intent is bound to the AUTHENTICATED operator and the owner REVALIDATES at apply time (a stale resolve against a since-escalated item is rejected — current state wins); when dark the routes 503 and the precedence guard is inert; strict single-machine no-op (no peers). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'passkeys',
+    configPath: 'passkeys.enabled',
+    description: 'Agent-held Google passkeys (spec agent-held-google-passkey): grants, issuer set, passkey-cell mandate receiver, and the later enrollment/health surfaces.',
+    justification: 'Inert without grants; a grant is written only by the dashboard-PIN route or a verified passkey-cell mandate from a confirmed issuer, and enrollment is operator-initiated. No external egress or spend from the flag itself. Dev-live is the Rung 2 dogfooding decision (FD16, operator-ratified 2026-09-22).',
+  },
+  {
     name: 'accountFollowMe',
     configPath: 'multiMachine.accountFollowMe.enabled',
     description: 'WS5.2 Account Follow-Me — seamless cross-machine account/quota sharing (re-mint per machine, ToS-safe; no OAuth token copied). Gates the non-credential metadata projection + the security primitives.',

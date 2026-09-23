@@ -462,6 +462,67 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/grant',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes a grant row into this machine\'s state/passkey-grants.json (or signs a mandate for a PEER, which writes on the peer); a passkey cell is per machine, so peers never replay the write',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revoke',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'flips this machine\'s grant rows to revoked, raises the local revoke high-water mark under secrets/passkeys/, and drops the local binding/credential; per-machine authority, never replayed by peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-add',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a machine id to this machine\'s state/passkey-issuers.json (the receiver\'s own expected-issuer set); each machine confirms its own issuers with a locally entered PIN',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-remove',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a machine id from this machine\'s state/passkey-issuers.json; per-machine authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/cell-action',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the mandate receiver applies a VERIFIED op to this machine\'s own grant/issuer/nonce files; the signature binds the op to THIS targetMachineId, so no other machine can replay it',
+    },
+  });
+
   // Apprenticeship instance transitions mutate durable program state. Keep
   // those writes on the cluster-shared/single-writer side so two machines can
   // never fork rung or lifecycle history. Read-only POST previews currently

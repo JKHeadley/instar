@@ -391,7 +391,7 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 }
 
 /** The one `google-passkey` bullet inside the Playwright Profile Registry section (also patched into existing CLAUDE.md files). */
-export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store is wired on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n`;
+export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store exists on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n- **Passkey grants + issuers (per account × machine, ⚗️ dark)**: a passkey may be minted/loaded on a machine only under a GRANT written on that machine. Read them: \`GET /passkeys/grants\` (grants, issued peer-grant copies, confirmed issuers, revoke high-water, \`issuerBootstrapRequired\`). PIN levers: \`POST /passkeys/grant\` \`{"pin":"…","email":"…"}\`, \`POST /passkeys/revoke\` \`{"pin":"…","email":"…"}\` (stops THIS agent's passkey path only — live sessions and stored passwords remain), \`POST /passkeys/issuer-add\` / \`issuer-remove\` \`{"pin":"…","machineId":"…"}\`. Add \`targetMachineId\` to act on a PEER: the op is signed with this machine's identity key as a \`passkey-cell\` mandate and delivered to the peer's \`POST /passkeys/cell-action\`, which accepts it only from a machine the operator confirmed as an issuer on THAT machine's own dashboard (no trust-on-first-use), once per nonce, within 15 minutes (revokes never expire). On a multi-machine agent the first grant is refused with \`issuer-bootstrap-required\` until a peer issuer is confirmed. NEVER ask the user to paste the PIN into chat — point them at the dashboard.\n`;
 
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
@@ -6579,6 +6579,18 @@ setTimeout(() => process.exit(0), 2000);
     // Standard + Migration Parity item 3: existing agents learn the `google-passkey`
     // method, the `priorLoginMethod` record and the PIN-gated revert lever. Same bullet as
     // generateClaudeMd; content-sniff on the route path keeps it idempotent.
+    if (content.includes('Playwright Profile Registry') && content.includes('/passkeys/revert-method') && !content.includes('/passkeys/grants')) {
+      // The passkey bullet grew (grants + issuers + the passkey-cell mandate, spec §3.2/§3.3): replace
+      // the old single bullet in place so existing agents learn the new levers. Idempotent on the
+      // '/passkeys/grants' marker.
+      const start = content.indexOf('- **Passkey login method (');
+      const end = start >= 0 ? content.indexOf('\n- **', start + 1) : -1;
+      if (start >= 0 && end > start) {
+        content = content.slice(0, start) + PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET + content.slice(end + 1);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: extended the passkey bullet with grants/issuers/mandate awareness');
+      }
+    }
     if (content.includes('Playwright Profile Registry') && !content.includes('/passkeys/revert-method')) {
       const marker = '- **Pick the right profile for a task**:';
       const addition = PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET;
