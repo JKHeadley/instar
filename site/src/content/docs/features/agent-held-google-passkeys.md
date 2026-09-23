@@ -40,6 +40,10 @@ that machine by the operator.
 7. **The pool read path** — every pool-wide check reads its peers through one memo; see below.
 8. **Per-cell health and the one digest** — the state each cell is in, decided from proof outcomes,
    and a single attention item that lists what needs a human; see below.
+9. **Closed Google page classes.** The repair browser recognises the twelve Google pages the passkey
+   work can meet by *structure* — exact origin, sign-in route, stable element ids, roles and exact
+   control labels — before its older prose-based chain runs, so help text can never make a passkey
+   prompt look like a code entry. See below.
 
 ## Cell health (what a proof outcome does to a cell)
 
@@ -98,6 +102,27 @@ now, and if not, why?": the pool table (partitioned peer, suspension, kill switc
 rate limit with its retry time, the same-account gap and any active throttle or risk pause. It is
 honest about what this build does not publish yet — the suspension record and the lease-holder state
 land with the health-watcher increment and are reported as such rather than assumed healthy.
+
+## Closed page classes (what the browser is allowed to recognise)
+
+The sign-in pages on `accounts.google.com`: the account identifier, the passkey prompt (and its
+"not recognised" and "throttled" states), the authenticator-code and backup-code entries, the
+enrollment speedbump and its confirm dialog, and any CAPTCHA / risk-review page. The passkey
+settings page on `myaccount.google.com`: the read-only list, the create control and its confirm,
+the "already enrolled" dialog, and the Workspace policy refusal. Anything else is `unknown`, and an
+unknown page is never acted on.
+
+Two rules follow from the class: the **outcome** a proof or repair records (`credential-rejected`
+only from the not-recognised page; `security` only when a different account is signed in; `ready`
+only with an observed assertion, a single-credential authenticator and an identity match; everything
+uncertain is `unknown`) and the **actions the supervisor may choose from**. A credential-creating
+control — "Create a passkey", its confirm, a backup-code submission — enters that list only on its
+exact page *and* only in an enrollment drive; a sign-in drive can decline the speedbump but never
+mint. The supervisor can decline any action; it can never add one.
+
+Each page predicate is tagged with where it came from (measured live in the prototype notes, or
+documented Google routes not yet visited); the Rung-1 live step re-checks every documented row before
+any unattended use. Until then a mismatch can only make a page `unknown`.
 
 ## Grants (per account × machine)
 
@@ -158,4 +183,5 @@ demand; the server does so every ten minutes.
 Enrollment (the one human action), the cold proof, the health watcher and pool-wide suspension
 (including the Google-side removal link the escalation points at), replicated grant rows and
 lease-holder takeover of a lost issuer's outbox, the dashboard grid and the migration of the existing
-prototype keys are later increments of the same run. Until enrollment lands, grants are inert.
+prototype keys are later increments of the same run. Until enrollment lands, grants are inert and the
+page classes are only ever exercised against the local fixture.

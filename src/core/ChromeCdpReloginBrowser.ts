@@ -5,9 +5,11 @@ import type { Readable, Writable } from 'node:stream';
 import { WebSocket } from 'ws';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import type {
+  ReloginBrowserClick,
   ReloginBrowserPort,
   ReloginBrowserSnapshot,
 } from './AnthropicReloginBrowserDriver.js';
+import { classifyGooglePasskeyPage } from './GooglePasskeyPageClasses.js';
 import {
   GOOGLE_ORIGIN_POLICY,
   PASSKEY_SESSION_CHROME_ARGS,
@@ -564,8 +566,36 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       const isClosedDeviceApproval = (${isClosedOpenAiDeviceApproval.toString()})({
         origin: location.origin, pathname: location.pathname, hasAuthorize, body,
       });
-      let pageClass = 'unknown';
-      if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
+      // ── Closed Google passkey pages FIRST (spec agent-held-google-passkey §3.6):
+      // structural facts only (origin, route, ids, exact control labels, roles), the
+      // SAME pure classifier the unit tests run, evaluated before the prose chain
+      // below so help text can never shadow a passkey page.
+      // Only RENDERED elements count (Google keeps hidden dialogs/menus in the DOM):
+      // the same visibility test the real click applies. Buttons are listed before
+      // links so a footer-heavy page can never truncate the prompt's own control away.
+      const visible = (n) => n.getClientRects().length > 0;
+      const labelOf = (n) => ((n.textContent || n.getAttribute('value') || '')).trim().toLowerCase();
+      const primaryLabels = Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]')).filter(visible).map(labelOf);
+      const linkLabels = Array.from(document.querySelectorAll('a,[role="link"]')).filter(visible).map(labelOf);
+      const idList = Array.from(document.querySelectorAll('[id]')).slice(0, 400).map((n) => n.id.toLowerCase());
+      const alertNodes = Array.from(document.querySelectorAll('[role="alert"],[aria-live="assertive"]')).filter(visible);
+      const facts = {
+        origin: location.origin, pathname: location.pathname, ids: idList,
+        controlLabels: primaryLabels.concat(linkLabels).slice(0, 300),
+        hasPasswordInput: input('input[type="password"]'),
+        hasDialog: Array.from(document.querySelectorAll('[role="dialog"],dialog[open]')).some(visible),
+        hasAlert: alertNodes.some((n) => (n.textContent || '').trim().length > 0),
+        hasCaptchaWidget: input('iframe[src*="recaptcha" i],#captchaimg,.g-recaptcha,[data-sitekey]'),
+        hasAdminHelpLink: input('a[href*="support.google.com/a/" i],a[href*="admin.google.com" i]'),
+      };
+      const structuralClass = (${classifyGooglePasskeyPage.toString()})(facts, ${JSON.stringify({
+        holderOrigin: this.policy.holderOrigin, accountOrigin: this.policy.accountOrigin ?? '',
+      })});
+      // Rendered controls only, like every other structural fact (a hidden "Not now" must not count).
+      const hasNotNow = primaryLabels.includes('not now') || linkLabels.includes('not now');
+      let pageClass = structuralClass || 'unknown';
+      if (structuralClass) { /* structural match wins; the prose chain is skipped */ }
+      else if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
       else if (has(/check your phone|phone verification|text message|send a code to your phone/)) pageClass = 'phone-confirmation';
       else if (hasGoogleSignIn) pageClass = 'provider-choice';
       else if (location.origin === 'https://auth.openai.com'
@@ -583,6 +613,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
         expectedAccountMatchCount: expectedMatchCount, hasGoogleSignIn,
         hasNext: buttonText.some((text) => /^(next|continue)$/.test(text)),
         hasAuthorize,
+        hasNotNow,
         requestedScopes };
     })()`);
   }
@@ -606,26 +637,41 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async fillPublic(field: 'email' | 'device-code', value: string): Promise<void> {
+    // Google's identifier field is `input[type="text"]#identifierId`, not type=email (measured 2026-09-20).
     const selector = field === 'email'
-      ? 'input[type="email"],input[autocomplete="username"]'
+      ? 'input[type="email"],input[autocomplete="username"],input#identifierId,input[name="identifier"]'
       : 'input[name*="code" i],input[id*="code" i],input[autocomplete="one-time-code"]';
     await this.fillAndSubmit(selector, value);
   }
 
-  async fillSecret(field: 'password' | 'totp', value: string): Promise<void> {
+  async fillSecret(field: 'password' | 'totp' | 'backup-code', value: string): Promise<void> {
     const selector = field === 'password'
       ? 'input[type="password"]'
-      : 'input[autocomplete="one-time-code"],input[name*="totp" i],input[id*="totp" i],input[type="tel"]';
+      : field === 'backup-code'
+        ? 'input#backupCodePin,input[name="backupCodePin"]'
+        : 'input[autocomplete="one-time-code"],input[name*="totp" i],input[id*="totp" i],input[type="tel"]';
     await this.fillAndSubmit(selector, value);
   }
 
-  async click(action: 'next' | 'authorize' | 'google'): Promise<void> {
+  async click(action: ReloginBrowserClick): Promise<void> {
+    // Exact control labels (spec §3.6: closed page classes, closed action set). The
+    // create-confirm click is scoped to an open dialog so a page-level "Continue"
+    // can never stand in for the confirmation.
     const pattern = action === 'next' ? '^(next|continue)$'
       : action === 'google' ? '(continue|sign in|log in) with google'
+      : action === 'passkey-continue' ? '^continue$'
+      : action === 'try-another-way' ? '^try another way$'
+      : action === 'create-passkey' ? '^create a passkey$'
+      : action === 'create-passkey-confirm' ? '^(continue|create)$'
+      : action === 'not-now' ? '^not now$'
       : '^(allow|authorize|approve|continue)$';
+    const controls = ['button', '[role="button"]', 'a', '[role="link"]', 'input[type="submit"]'];
+    const selector = action === 'create-passkey-confirm'
+      ? controls.flatMap((s) => [`[role="dialog"] ${s}`, `dialog[open] ${s}`]).join(',')
+      : controls.join(',');
     await this.clickReal(`(() => {
       const re = new RegExp(${JSON.stringify(pattern)}, 'i');
-      const nodes = Array.from(document.querySelectorAll('button,[role="button"],a,[role="link"],input[type="submit"]'));
+      const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)}));
       const node = nodes.find((entry) => re.test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
       return node instanceof HTMLElement ? node : null;
     })()`);
