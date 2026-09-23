@@ -177,9 +177,51 @@ path, then the prototype scripts are deleted.
 - Automatic minting on a new machine without the human's one action (impossible — §2).
 - Storing or using the human's own passkeys.
 
+## 10. Decision points touched
+
+| Decision point | Class | Justification / floor + arbiter |
+|---|---|---|
+| Passkey store `load()` machine-scope guard (refuse if `mintedOnMachineId` ≠ local id) | invariant | A credential-provenance fact, not competing signals. Deterministic by design; the only override is the audited operator import (§3.5). |
+| Grant check before mint/load/method-selection | invariant | Authorization is a recorded operator fact; no inference. Missing/unreadable grant record ⇒ deny. |
+| Repair method precedence (live session → passkey → password) | invariant | Fixed ordering over methods the grant already covers; no signal competition. A failed method never falls through to an ungranted one. |
+| Enrollment page-state classification (which Google screen is showing, which action to take) | judgment-candidate | Floor: the existing `assisted-subscription-relogin` §6.2 contract — closed page-class set, closed allowed-action set, exact-origin allowlist, confidence ≥ 0.95 else refuse. Arbiter: the Tier-1 supervisor over redacted closed state. Fallback ladder ends at the deterministic rung `waiting-operator-only` (stop and ask for the one human action). |
+| `workspace-policy-blocked` classification | invariant | Matched on Google's closed policy-refusal page class, not prose interpretation; an unmatched refusal falls to the generic `waiting-operator-only` state, never to success. |
+| Cold-proof verdict (ready / not ready) | invariant | Pass requires the authenticated-destination origin+path (§11). Anything else, including timeouts, is not-ready. |
+
+## 11. Symbols, states and corroboration (P20)
+
+| Symbol read | State it claims | Independent corroboration | When unmeasurable |
+|---|---|---|---|
+| Store key present | "this machine can sign in as E" | Cold proof (§3.6) from an empty profile; the key alone never marks a tuple ready | `unknown` — tuple stays at its previous method; repair does not select `google-passkey` |
+| `WebAuthn.getCredentials` returned a credential after mint | "Google registered the agent's passkey" | Cold proof signs in with ONLY that credential | Enrollment ends `mint-unverified`; the backup file is kept for operator inspection |
+| Cold proof reached `claude.ai` authenticated path | "Google session from the passkey is accepted by Claude" | The repair's own identity oracle + authenticated-use proof (unchanged from the parent spec) on the next real repair | `unknown`; the weekly health check reports it, it is never reported as healthy |
+| Grant record | "the operator authorized this account on this machine" | Grant written only by the PIN/verified-operator route, with principal recorded | Unreadable grant store ⇒ deny |
+| Revoke deleted store entry | "the agent can no longer sign in as E here" | Read-back shows the key absent AND a tombstone present; the Google-side passkey removal is reported separately as `removed` / `not-removed` | Report `local-deleted, google-side-unknown` — never "revoked" alone |
+
+## 12. Multi-machine posture
+
+- Passkey credentials: machine-local. `machine-local-justification: physical-credential-locality` — each credential is a per-machine WebAuthn key minted for revocation granularity; replicating it would recreate the cloned-authenticator shape this design exists to avoid.
+- Grants: unified — replicated through the existing replicated-store foundation (operator decisions follow the agent); each machine still enforces its own `machines:` scope.
+- `GET /passkeys`: proxied-on-read via `?scope=pool` (merged per-machine rows, dark-peer tolerant, same pattern as `/subscription-pool?scope=pool`).
+- Enrollment episodes: machine-local. `machine-local-justification: physical-credential-locality` — the episode drives the browser profile that physically lives on that machine. The dashboard starts it on the target machine through the existing signed cross-machine action relay, as the Subscriptions grid already does for repairs.
+- Cold-proof health notices: one voice — raised by the machine that owns the credential, deduped per (account × machine) episode.
+
+## 13. Self-heal before notify (weekly cold-proof watcher)
+
+- Degradation class: `recoverable` (a stale session or transient Google error). Self-heal: re-run the cold proof once after a backoff; if the credential itself is rejected, re-attempt with a fresh throwaway profile. Remediation actions are read-only with respect to the account (sign-in attempts only); nothing is minted or deleted by self-heal.
+- Brakes: `max-attempts: 2`, `max-wall-clock: 30m`, `backoff: 10m`, `dedupe-key: passkey-proof:<email>:<machineId>`, `breaker: 3 failed weeks for the same key ⇒ critical, stop retrying`, `max-notification-latency: 24h` (≤ the registry ceiling), `audit-location: logs/passkey-health.jsonl` (states only).
+- A credential Google reports as removed/revoked is `security` class: notify on the same tick, no heal gate.
+- Throttle safety: a proof never presses "Continue" on an empty authenticator and stops on Google's "too many attempts" page class (counted as a failed week, not retried).
+
+## 14. Frontloaded Decisions
+
+1. **Default access:** none. Per-account, per-machine operator grant; revoke deletes the credential. (Operator, topic 33890, 2026-09-22.)
+2. **Cost accepted:** one human sign-in per (account × machine). (Operator, topic 33890, 2026-09-20.)
+3. **Weekly cold proof:** ships enabled only on development agents; fleet default off until graduation (§7). Each proof is a real Google sign-in, so fleet-wide cadence is decided at graduation on measured throttle data, not now.
+4. **Prototype-credential adoption:** offered on the dashboard only, never in a post-update notice (a notice would invite adoption without the grant flow).
+5. **Relying party scope:** Google only this release.
+6. **Where credentials live:** the existing encrypted SecretStore under a reserved prefix, excluded from secret sync. No new crypto.
+
 ## Open questions
 
-1. Should the weekly cold proof ship enabled for the fleet once graduated, given each run is a real
-   Google sign-in?
-2. Should prototype-credential adoption (§6) be offered in the post-update notice, or only on the
-   dashboard?
+*(none)*
