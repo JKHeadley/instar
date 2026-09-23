@@ -59,6 +59,7 @@ logs/
 
 # Secrets -- NEVER tracked
 config.json
+secrets/
 
 # Derived data -- reconstructable
 memory.db

@@ -12461,6 +12461,14 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // secrets from the project directory.
     this.addGitignoreEntry(projectGitignore, '.instar/secrets/pr-gate/', result, 'project .gitignore');
 
+    // Agent-held Google passkeys (spec agent-held-google-passkey §3.1): the whole
+    // secrets tree — the shared vault, the separate passkey store, pending mint
+    // records and passkey browser profiles — must never be committed. FileClassifier
+    // already excludes it from git-sync; these entries are the second layer for a
+    // plain `git add`, on both the internal state repo and the project repo.
+    this.addGitignoreEntry(instarGitignore, 'secrets/', result, '.instar/.gitignore');
+    this.addGitignoreEntry(projectGitignore, '.instar/secrets/', result, 'project .gitignore');
+
     // fix instar#1069: the cartographer index (67MB on a real tree) + the per-host
     // snapshot are per-machine runtime state, never committable. The header in
     // cartographer-freshness.mjs historically (wrongly) claimed this was gitignored;
