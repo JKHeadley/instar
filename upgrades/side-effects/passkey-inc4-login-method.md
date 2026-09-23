@@ -209,3 +209,9 @@ Minor notes and what changed:
 
 No agent-authored-artifact defect — not applicable. New capability from an approved spec; no
 self-triggered controller is added.
+
+## Post-review follow-up (CI)
+
+- `capabilities-discoverability` refused the new `/passkeys` route prefix as unclassified. Classified it in
+  `INTERNAL_PREFIXES` (same class as `playwright-profiles`): a dashboard-PIN-gated operator lever, dev-gated,
+  surfaced through the CLAUDE.md bullet rather than `/capabilities`. `dev:preflight` passes locally with it.
