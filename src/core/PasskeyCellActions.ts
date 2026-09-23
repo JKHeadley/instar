@@ -37,6 +37,8 @@ export interface PasskeyCellActionDeps {
   hasActivePeers: () => boolean;
   /** §4 pool-check peer exclusions (`exclude-peer` / `include-peer`); absent ⇒ those ops answer not-available. */
   peerExclusions?: { exclude: (machineId: string, by: string) => { changed: boolean }; include: (machineId: string) => { changed: boolean } } | null;
+  /** §3.2 / §4 cell health (`attest-google-removed`); absent ⇒ that op answers not-available. */
+  health?: { setGoogleSide: (canonicalEmail: string, state: 'operator-attested') => unknown; get: (canonicalEmail: string) => { googleSide: string } | null } | null;
   log?: (line: string) => void;
 }
 
@@ -171,6 +173,29 @@ async function apply(deps: PasskeyCellActionDeps, body: PasskeyCellMandateBody, 
       const r = body.op === 'exclude-peer' ? deps.peerExclusions.exclude(machineId, `${origin}:${issuerMachineId}`) : deps.peerExclusions.include(machineId);
       deps.nonces.markApplied(body.nonce);
       return { applied: true, op: body.op, result: { machineId, changed: r.changed } };
+    }
+    case 'attest-google-removed': {
+      // §3.2 (b): the operator says "I removed it on Google" and the read-only list check cannot run
+      // (no googleCreatedAt / ambiguous / no session). Recorded as ATTESTED — never displayed as
+      // removed; a verified removal only ever comes from the list check.
+      if (!body.canonicalEmail) return { applied: false, op: body.op, reason: 'email-required' };
+      if (!deps.health) {
+        const rec = record();
+        if (!rec.recorded) return replay(deps, rec.existing!.nonce);
+        return { applied: false, op: body.op, reason: 'op-not-available-on-this-build' };
+      }
+      const rec = record();
+      if (!rec.recorded) return replay(deps, rec.existing!.nonce);
+      const existing = deps.health.get(body.canonicalEmail);
+      // Only a cell this machine actually held can be attested here — an attestation never MINTS a
+      // health record for a cell that was never granted or proven on this machine.
+      if (!existing) { deps.nonces.markApplied(body.nonce); return { applied: false, op: body.op, reason: 'no-cell-record' }; }
+      if (existing.googleSide === 'removed-verified') { deps.nonces.markApplied(body.nonce); return { applied: true, op: body.op, result: { googleSide: existing.googleSide, unchanged: true } }; }
+      deps.health.setGoogleSide(body.canonicalEmail, 'operator-attested');
+      const after = deps.health.get(body.canonicalEmail)?.googleSide;
+      if (after !== 'operator-attested') return { applied: false, op: body.op, reason: 'read-back-failed' };
+      deps.nonces.markApplied(body.nonce);
+      return { applied: true, op: body.op, result: { googleSide: after, attestedBy: `${origin}:${issuerMachineId}` } };
     }
     default: {
       // Verified but not applicable on this build: record the nonce so a later replay is honest, and

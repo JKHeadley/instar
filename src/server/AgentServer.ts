@@ -348,6 +348,7 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     windowLifecycleTick?: (() => void) | null;
+    passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
     identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService | null;
     identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
@@ -571,6 +572,17 @@ export class AgentServer {
     if (!this.routeContext) throw new Error('route context is not initialized');
     this.subscriptionLoginLedger = ledger;
     this.routeContext.subscriptionLoginLedger = ledger;
+  }
+
+  /**
+   * One passkey health-digest pass (spec agent-held-google-passkey §5.2), late-bound by createRoutes.
+   * The server timer calls this every 5 minutes; before the routes are built (or when the feature is
+   * dark) it is a no-op that says so.
+   */
+  async runPasskeyHealthDigestTick(): Promise<unknown> {
+    const tick = this.routeContext?.passkeyHealthDigestTick;
+    if (!tick) return { skipped: 'routes-not-bound' };
+    return tick();
   }
 
   /** Bind the fully composed repair runtime before listen() exposes its routes. */

@@ -100,12 +100,20 @@ describe('clampPasskeyMachineState — a peer body is mesh-peer data, never trus
         { canonicalEmail: 'a@example.com', kind: 'proof', at: 'yesterday' },
       ],
       pauses: [{ id: 'p1', canonicalEmail: 'a@example.com', scope: 'account', reason: 'risk', from: iso(T0), until: iso(T0 + H), machineId: 'forged' }, { id: 'p2', scope: 'account', canonicalEmail: null, reason: 'risk', from: iso(T0), until: iso(T0 + H) }],
-      cells: [{ canonicalEmail: 'a@example.com', granted: true, grantLocalSeq: 3, custody: 'present', health: 'healthy' }, { canonicalEmail: 'x' }],
+      cells: [
+        { canonicalEmail: 'a@example.com', granted: true, grantLocalSeq: 3, custody: 'present', health: 'healthy', googleSide: 'pending-operator' },
+        { canonicalEmail: 'b@example.com', granted: true, grantLocalSeq: 1, custody: 'present', health: 'totally-fine', googleSide: 'gone' },
+        { canonicalEmail: 'x' },
+      ],
     };
     const s = clampPasskeyMachineState(body, 'm2')!;
     expect(s.attempts).toEqual([{ canonicalEmail: 'a@example.com', kind: 'proof', at: iso(T0), machineId: 'm2' }]);
     expect(s.pauses.map((p) => [p.id, p.machineId])).toEqual([['p1', 'm2']]);
-    expect(s.cells).toEqual([{ canonicalEmail: 'a@example.com', granted: true, grantLocalSeq: 3, grantedAt: null, custody: 'present', googleCreatedAt: null, health: 'unknown' }]);
+    // A closed §4 health state and Google-side state pass through; free text reads `unknown` / is dropped.
+    expect(s.cells).toEqual([
+      { canonicalEmail: 'a@example.com', granted: true, grantLocalSeq: 3, grantedAt: null, custody: 'present', googleCreatedAt: null, health: 'healthy', googleSide: 'pending-operator' },
+      { canonicalEmail: 'b@example.com', granted: true, grantLocalSeq: 1, grantedAt: null, custody: 'present', googleCreatedAt: null, health: 'unknown' },
+    ]);
   });
   it('rejects a body for the wrong machine, the wrong schema, or no object', () => {
     expect(clampPasskeyMachineState(stateOf('m3'), 'm2')).toBeNull();
