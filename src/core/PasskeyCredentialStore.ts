@@ -177,6 +177,9 @@ export class PasskeyCredentialStore {
       const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { entries?: PasskeyIndexEntry[] };
       return Array.isArray(parsed.entries) ? parsed.entries : [];
     } catch {
+      // @silent-fallback-ok — the names-only index is a derived convenience file, never
+      // authority: an unreadable one reads as empty and is rewritten from the encrypted
+      // store on the next mutation. Nothing is decided from this listing.
       return [];
     }
   }

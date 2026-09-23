@@ -165,3 +165,10 @@ what covers every machine id).
   (project-relative vs stateDir-relative). It isn't an agent-authored-artifact defect (prompt, hook,
   config, skill or standards text), so: not applicable. The guard that prevents recurrence is the
   new exclusion test, which exercises every relative spelling through the real `createSnapshot`.
+
+## Post-review follow-up (CI ratchet)
+
+- `no-silent-fallbacks` counted `PasskeyCredentialStore.listIndex()`'s read catch as a hidden fallback.
+  It is not one: the names-only index is a derived convenience file rebuilt from the encrypted store on
+  the next mutation; an unreadable one reads as empty and nothing is decided from it. Annotated
+  `@silent-fallback-ok` with that reason rather than raising the baseline. No behaviour change.
