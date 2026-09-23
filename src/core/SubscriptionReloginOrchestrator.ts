@@ -16,7 +16,7 @@ export type BrowserRepairResult =
   | { outcome: 'approved'; pasteCode?: string }
   | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' }
   | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient' }
-  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' };
+  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' };
 
 export interface SubscriptionReloginOrchestratorDeps {
   store: SubscriptionReloginStore;
@@ -140,7 +140,9 @@ export class SubscriptionReloginOrchestrator {
       }
       if (result.outcome === 'transient') return this.retry(ep, result.failureClass);
       if (result.outcome === 'refused') {
-        const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin' ? 'refused' : 'failed';
+        // A named policy refusal (identity, origin, passkey) is a REFUSAL, not a failed attempt.
+        const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin'
+          || result.failureClass === 'passkey-refused' ? 'refused' : 'failed';
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to,
           eventClass: 'browser-drive-refused', failureClass: result.failureClass, at: this.isoNow() });
         return { outcome: 'terminal', episode: ep };

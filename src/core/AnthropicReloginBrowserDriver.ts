@@ -49,7 +49,12 @@ export interface AnthropicReloginBrowserRequest {
   verificationUrl: string;
   provider: 'anthropic' | 'openai';
   expectedIdentity: string;
-  loginMethod: 'session-cookie' | 'password' | 'password+totp';
+  /**
+   * The ONE method this repair was admitted under. `google-passkey` (spec
+   * agent-held-google-passkey §3.4) never falls through to a password fill even when a
+   * password binding is also present — a named refusal instead.
+   */
+  loginMethod: 'session-cookie' | 'password' | 'password+totp' | 'google-passkey';
   secretRefs: { password?: string; totp?: string };
   allowedScopes: string[];
 }
@@ -160,7 +165,7 @@ export class AnthropicReloginBrowserDriver {
         await this.deps.browser.fillPublic('device-code', req.artifact.userCode); return true;
       }
       case 'fill-password': {
-        if (req.loginMethod === 'session-cookie' || !req.secretRefs.password) return false;
+        if (!usesPassword(req.loginMethod) || !req.secretRefs.password) return false;
         let secret = await this.deps.resolveSecret(req.secretRefs.password);
         if (!secret) return false;
         try { await this.deps.browser.fillSecret('password', secret); }
@@ -183,6 +188,11 @@ export class AnthropicReloginBrowserDriver {
   }
 }
 
+/** Only the password-family methods may ever fill a password (no fall-through from other methods). */
+function usesPassword(loginMethod: AnthropicReloginBrowserRequest['loginMethod']): boolean {
+  return loginMethod === 'password' || loginMethod === 'password+totp';
+}
+
 export function allowedActions(
   snapshot: ReloginBrowserSnapshot,
   request: Pick<AnthropicReloginBrowserRequest, 'artifact' | 'loginMethod' | 'secretRefs'>,
@@ -194,7 +204,7 @@ export function allowedActions(
     case 'email': return ['fill-email'];
     case 'device-code': return request.artifact?.kind === 'device-code' && request.artifact.userCode
       ? ['fill-device-code'] : [];
-    case 'password': return request.loginMethod !== 'session-cookie' && request.secretRefs.password
+    case 'password': return usesPassword(request.loginMethod) && request.secretRefs.password
       ? ['fill-password'] : [];
     case 'totp': return request.loginMethod === 'password+totp' && request.secretRefs.totp
       ? ['fill-totp'] : [];

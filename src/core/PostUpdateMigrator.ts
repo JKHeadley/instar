@@ -390,6 +390,9 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 - The enforcement flip (\`observeOnly: false\`) is the operator's action alone, gated on a measured clean soak day — never propose it as automatic. Spec: \`docs/specs/context-aware-outbound-review.md\`.\n`;
 }
 
+/** The one `google-passkey` bullet inside the Playwright Profile Registry section (also patched into existing CLAUDE.md files). */
+export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store is wired on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n`;
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -399,7 +402,7 @@ A durable per-agent registry mapping each Playwright browser **profile** (a phys
 - **Create a custom profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles -H 'Content-Type: application/json' -d '{"id":"justin-google","description":"..."}'\` (userDataDir auto-allocated under the agent home, or supply an absolute path jailed to it).
 - **Remote/phone-complete provisioning**: the Subscriptions dashboard creates and materializes a dedicated Google profile after a recent PIN unlock. Programmatic equivalent: \`POST /playwright-profiles/provision\` with \`X-Instar-Operator-Session\` + \`{profileId,identity,loginMethod}\`. Handle everything else yourself; if a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.
 - **Assign an account to a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/default/accounts -H 'Content-Type: application/json' -d '{"service":"github","identity":"EchoOfDawn","owner":"agent","vaultRefs":["github_token"],"loginMethod":"oauth-token"}'\` (\`owner\` REQUIRED — \`agent\`|\`operator\`; refs validated against the live vault, fails CLOSED).
-- **Pick the right profile for a task**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/playwright-profiles/resolve?service=github&identity=EchoOfDawn"\` → the owning profile + \`dirExists\`; an ambiguous service-only match returns \`{ambiguous:true, candidates}\` (disambiguate by identity — never silently pick a privileged account).
+${PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET}- **Pick the right profile for a task**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/playwright-profiles/resolve?service=github&identity=EchoOfDawn"\` → the owning profile + \`dirExists\`; an ambiguous service-only match returns \`{ambiguous:true, candidates}\` (disambiguate by identity — never silently pick a privileged account).
 - **Switch the browser onto a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/<id>/activate\` (rewrites the MCP config + restarts the session; ships \`dryRun:true\` — it LOGS the intended rewrite/refresh until a deliberate \`dryRun:false\`; reversible by activating \`default\`).
 - **Registry First**: which browser profile holds account X? → \`GET /playwright-profiles\` / \`…/resolve\` — read it, never guess.
 - **When to use** (PROACTIVE — this is the trigger): when you need to act in a browser as a specific account, RESOLVE + ACTIVATE the owning profile instead of asking the operator — and verify the login is live in-browser first (login state is LAST-ASSERTED, advisory, never a guarantee). For an OPERATOR-owned account, act-as ONLY when explicitly authorized (Know Your Principal). Activation switches the browser identity; it is NOT authorization to act as that identity (the external-operation/coherence gates still apply).
@@ -6570,6 +6573,20 @@ setTimeout(() => process.exit(0), 2000);
       else content += `\n${addition}`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added phone-complete Playwright profile provisioning awareness');
+    }
+
+    // Passkey login method (spec agent-held-google-passkey §3.4 / §6) — Agent Awareness
+    // Standard + Migration Parity item 3: existing agents learn the `google-passkey`
+    // method, the `priorLoginMethod` record and the PIN-gated revert lever. Same bullet as
+    // generateClaudeMd; content-sniff on the route path keeps it idempotent.
+    if (content.includes('Playwright Profile Registry') && !content.includes('/passkeys/revert-method')) {
+      const marker = '- **Pick the right profile for a task**:';
+      const addition = PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET;
+      const at = content.indexOf(marker);
+      if (at >= 0) content = content.slice(0, at) + addition + content.slice(at);
+      else content += `\n${addition}`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added passkey login method + revert-method awareness');
     }
 
     // Session Listing Hygiene (CMT-1936) — Agent Awareness Standard + Migration
