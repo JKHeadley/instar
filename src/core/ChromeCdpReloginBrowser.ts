@@ -489,6 +489,76 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   /**
+   * Which identity the page shows as signed in, relative to the expected one (spec §3.6 outcome
+   * mapping: `security` = a DIFFERENT account signed in). Structural, in-page; only the verdict
+   * leaves the browser — never the other identity.
+   */
+  /**
+   * Who does the page say is signed in? `match` when the expected identity is DECLARED on an element
+   * (`data-email` / `data-identifier` / `aria-label` — how Google's account chip carries it) or is the
+   * exact text of a leaf element; `other` ONLY when a DIFFERENT identity is DECLARED on an element and
+   * the expected one is nowhere — incidental email text (an admin address on a refusal page, a footer
+   * contact) is never enough for `other`, because `other` is what the cold proof turns into `security`
+   * (second-pass finding). `none` otherwise. The CALLER decides WHEN this is a signed-in read (the cold
+   * proof runs it only on an unclassified page after an observed assertion).
+   */
+  async readSignedInIdentity(expected: string): Promise<'match' | 'other' | 'none'> {
+    return this.evaluate<'match' | 'other' | 'none'>(`(() => {
+      const expected = ${JSON.stringify(expected)}.trim().toLowerCase();
+      const emailRe = /^[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+      const declared = new Set();
+      for (const n of Array.from(document.querySelectorAll('[data-email],[data-identifier],[aria-label]'))) {
+        for (const a of ['data-email','data-identifier','aria-label']) {
+          const v = (n.getAttribute(a) || '').trim().toLowerCase();
+          if (v && emailRe.test(v)) declared.add(v);
+        }
+      }
+      const textual = new Set();
+      for (const n of Array.from(document.querySelectorAll('div,span,p,li,td,a,button'))) {
+        if (n.children.length !== 0) continue;
+        const t = (n.textContent || '').trim().toLowerCase();
+        if (t && emailRe.test(t)) textual.add(t);
+      }
+      if (expected && (declared.has(expected) || textual.has(expected))) return 'match';
+      return declared.size > 0 ? 'other' : 'none';
+    })()`);
+  }
+
+  /**
+   * Navigate the MAIN page to another URL after `open()` (a cold proof moves through the sign-in
+   * flow and finally to the sign-out URL). Request-time credential removal still applies.
+   */
+  async navigateTo(url: string): Promise<void> {
+    if (!this.transport) throw new Error('relogin-browser-not-open');
+    await this.send('Page.navigate', { url }, this.mainSessionId ?? undefined);
+    const deadline = Date.now() + this.operationTimeoutMs;
+    for (;;) {
+      try {
+        const ready = await this.evaluate<boolean>(`document.readyState === 'complete' || document.readyState === 'interactive'`);
+        if (ready) return;
+      } catch {
+        // @silent-fallback-ok — mid-navigation the execution context is being replaced; poll until the deadline, then throw below
+      }
+      if (Date.now() > deadline) throw new Error('browser-navigation-timeout');
+      await this.wait(100);
+    }
+  }
+
+  /**
+   * Clear cookies, cache and every origin's storage in this profile (spec §3.8: a proof-only profile
+   * is cleared BEFORE each proof and must then be confirmed signed out). Device-stable: the profile
+   * directory itself is kept.
+   */
+  async clearBrowsingData(): Promise<void> {
+    if (!this.transport) throw new Error('relogin-browser-not-open');
+    const sid = this.mainSessionId ?? undefined;
+    await this.send('Network.clearBrowserCookies', {}, sid);
+    await this.send('Network.clearBrowserCache', {}, sid);
+    try { await this.send('Storage.clearDataForOrigin', { origin: '*', storageTypes: 'all' }, sid); }
+    catch { /* @silent-fallback-ok — older Chrome rejects the wildcard origin; cookies + cache are cleared above and the sign-out check that follows is the authority */ }
+  }
+
+  /**
    * Whether any target was seen navigating before its authenticator was attached. A
    * DIAGNOSTIC only: it observes from `Page.enable` onward, so it can confirm a breach
    * it saw but not prove absence. The guarantee itself is Chrome's

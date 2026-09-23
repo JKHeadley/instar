@@ -102,10 +102,36 @@ function handler(selfOrigin: () => string, otherOrigin: () => string): http.Requ
       case '/parent-chain':
         // No structural class here: the parent prose/selector chain must answer (`email`).
         return send(200, page(`<input type="email" autocomplete="username"><button>Next</button>`));
-      case '/v3/signin/identifier':
-        return send(200, page(`<p>enter a verification code</p><input type="text" id="identifierId" name="identifier"><button>Next</button>`));
+      case '/v3/signin/identifier': {
+        // `?flow=proof` turns the page into the head of a REAL sign-in flow the cold proof drives:
+        // Next → the passkey prompt; there, Continue asks the virtual authenticator for an assertion.
+        const flow = url.searchParams.get('flow') === 'proof';
+        const target = url.searchParams.get('target') ?? 'self';
+        const next = flow ? `onclick="location.assign('/v3/signin/challenge/pk/presend?flow=proof&target=${target}&who=' + encodeURIComponent(document.getElementById('identifierId').value))"` : '';
+        return send(200, page(`<p>enter a verification code</p><input type="text" id="identifierId" name="identifier"><button ${next}>Next</button>`));
+      }
+      case '/proof/signed-in': {
+        // The signed-in landing page: shows the account the way Google's account chip does.
+        const who = (url.searchParams.get('who') ?? '').replace(/[<>&"]/g, '');
+        return send(200, page(`<h1>signed in</h1><div data-email="${who}">${who}</div>`));
+      }
+      case '/Logout':
+        return send(200, page(`<h1>signed out</h1><input type="text" id="identifierId" name="identifier"><button>Next</button>`));
       case '/v3/signin/challenge/pk/presend': {
         const v = url.searchParams.get('v') ?? '';
+        if (url.searchParams.get('flow') === 'proof') {
+          const who = (url.searchParams.get('who') ?? '').replace(/[<>&"]/g, '');
+          const target = url.searchParams.get('target') ?? 'self';
+          // Continue performs a WebAuthn assertion with whatever the authenticator holds; success lands
+          // on the signed-in page (`target=other` simulates Google signing in a DIFFERENT account), a
+          // rejected or absent credential lands on the not-recognised state.
+          const landing = target === 'other' ? 'someone-else@example.com' : who;
+          // Like the real prompt, the typed identifier is shown as an account chip (`data-email`): a
+          // proof that read identity here would stop before Continue (second-pass finding).
+          return send(200, page(`<p>use your passkey</p><div data-email="${who}">${who}</div>
+            <button onclick="window.__get().then(() => location.assign('/proof/signed-in?who=${encodeURIComponent(landing)}')).catch(() => location.assign('/v3/signin/challenge/pk/presend?v=alert'))">Continue</button>
+            <a href="#">Try another way</a>`));
+        }
         const rejected = v === 'alert' || v === 'throttled';
         // The rejection states show the alert and LOSE the prompt's own Continue control.
         const alert = rejected ? '<div role="alert">something went wrong</div>' : '';

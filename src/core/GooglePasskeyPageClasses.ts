@@ -188,10 +188,14 @@ export function mapPasskeySignInOutcome(obs: PasskeySignInObservation): PasskeyS
   if (obs.transportError) return 'unknown';
   if (obs.finalPageClass === 'google-credential-not-recognized')
     return obs.googleSideRemoval === 'none' ? 'credential-rejected' : 'removed-on-google';
-  if (obs.finalPageClass === 'google-risk-challenge' || obs.finalPageClass === 'google-passkey-throttled'
-    || obs.finalPageClass === 'unknown') return 'unknown';
+  // Risk pages: the closed class AND the parent driver's `captcha` class (a CAPTCHA that wears no
+  // Google route still proves nothing about the key — second-pass finding). Both before the identity read.
+  if (obs.finalPageClass === 'google-risk-challenge' || obs.finalPageClass === 'captcha' || obs.finalPageClass === 'google-passkey-throttled') return 'unknown';
+  // A signed-in landing page carries no closed class (it is not a sign-in page), so the identity read
+  // is consulted BEFORE the unmatched-page rule: match + assertion + single credential ⇒ ready.
   if (obs.signedInIdentity === 'match') {
     return obs.observedAssertion && obs.singleCredential ? 'ready' : 'unknown';
   }
+  if (obs.finalPageClass === 'unknown') return 'unknown';
   return 'failed';
 }

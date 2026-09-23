@@ -44,6 +44,34 @@ that machine by the operator.
    work can meet by *structure* — exact origin, sign-in route, stable element ids, roles and exact
    control labels — before its older prose-based chain runs, so help text can never make a passkey
    prompt look like a code entry. See below.
+10. **The cold proof** — the operator-triggered sign-in proof of one cell, from a cleared, confirmed
+    signed-out browser profile; see below.
+
+## The cold proof (`POST /passkeys/prove`)
+
+A proof answers one question with evidence: can *this* machine sign in to Google as the account with
+the passkey it holds, right now, from a signed-out state? The operator triggers it from the dashboard
+(PIN). Before a browser opens, the same admission every pool-wide action pays runs — the pool table
+(a peer whose state cannot be read refuses the proof), the six-hour same-account gap across machines,
+and any active risk or throttle pause; this machine's own attempt and pause rows are always read live,
+never from the five-minute pool memo. Then the machine's single browser seat is taken (an interactive
+re-login already holding it answers `seat-busy`), the attempt row is written *before* the proof runs
+(a crash mid-proof still counts against the pool), and the proof drives the cell's own proof-only
+Chrome profile under `secrets/passkeys/profiles/`: cleared, confirmed signed out (a warm session
+proves nothing about the key and yields `unknown`), the stored credential added to the virtual
+authenticator, the identifier filled, the passkey prompt's Continue pressed, the signed-in identity
+read, and — whatever happened — the credential removed and the profile signed out before the browser
+closes.
+
+`ready` needs all three: Google actually asked for and received an assertion from the stored
+credential id, the authenticator held exactly that one credential, and the expected identity is the
+one signed in. The same key signing in as a different account is `security`; the not-recognised page
+is `credential-rejected` (recorded as `removed-on-google` while the cell's removal is pending or
+attested); a transport failure, a risk page or a throttled prompt is `unknown`. The outcome goes into
+the cell's health with operator provenance (so it can reopen a breaker); a risk page pauses the account
+for seven days and a throttled prompt pauses the account for a day and the machine for an hour. Every
+step is logged as page classes and action names — never the email, never a credential. Proving a cell
+on another machine is a later increment (the route answers 501 for a peer target on this build).
 
 ## Cell health (what a proof outcome does to a cell)
 
@@ -180,8 +208,9 @@ demand; the server does so every ten minutes.
 
 ## What is not here yet
 
-Enrollment (the one human action), the cold proof, the health watcher and pool-wide suspension
-(including the Google-side removal link the escalation points at), replicated grant rows and
-lease-holder takeover of a lost issuer's outbox, the dashboard grid and the migration of the existing
-prototype keys are later increments of the same run. Until enrollment lands, grants are inert and the
-page classes are only ever exercised against the local fixture.
+Enrollment (the one human action), proving a cell on another machine, the health watcher (the
+automatic weekly proof + canaries) and pool-wide suspension (including the Google-side removal link
+the escalation points at), replicated grant rows and lease-holder takeover of a lost issuer's outbox,
+the dashboard grid and the migration of the existing prototype keys are later increments of the same
+run. Until enrollment lands, grants are inert, no cell holds a credential, and the proof and the page
+classes are only ever exercised against the local fixture.

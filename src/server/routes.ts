@@ -154,11 +154,13 @@ import {
   PasskeyAttemptLedger, PasskeyPeerExclusions, PasskeyPoolReader, buildLocalPasskeyMachineState, poolAdmission, poolRows,
   enrollmentRateLimit, sameAccountGap, activePauseFor, DEFAULT_PASSKEY_RATE_LIMIT, PASSKEY_POOL_STATE_MAX_BYTES,
   type PasskeyMachineState, type PasskeyPoolAction, type PeerStateFetch, type PasskeyPoolPeer,
+  type PasskeyPoolSnapshot, type PasskeyAttemptRow, type PasskeyPauseRow,
 } from '../core/PasskeyPoolState.js';
 import {
   PasskeyHealthStore, PasskeyDigestLedger, buildPasskeyHealthDigest, PASSKEY_HEALTH_DIGEST_KEY,
   type PasskeyDigestCellLine, type PasskeyProofOutcome, type PasskeyProofOrigin,
 } from '../core/PasskeyCellHealth.js';
+import { runPasskeyColdProof } from '../core/PasskeyColdProof.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
@@ -1373,6 +1375,10 @@ export interface RouteContext {
   passkeyPoolReader?: (() => import('../core/PasskeyPoolState.js').PasskeyPoolReader) | null;
   /** Late-bound by createRoutes: one health-digest pass (§5.2); the server timer drives it every 5 min. */
   passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
+  /** Proof-browser factory (§3.8): production opens a passkey-mode Chrome on the given proof-only profile; tests inject a fake. Absent ⇒ proofs answer 503. */
+  passkeyProofBrowser?: ((profileDir: string) => import('../core/PasskeyColdProof.js').ProofBrowser | Promise<import('../core/PasskeyColdProof.js').ProofBrowser>) | null;
+  /** The sign-in / sign-out URLs a proof drives (production: accounts.google.com; the fixture in tests). */
+  passkeyProofUrls?: { signIn: string; signOut: string } | null;
   /** Peer `GET /passkeys/pool-state` fetch seam (tests inject; production fetches the peer URL with the Bearer). */
   fetchPasskeyPeerState?: ((peer: import('../core/PasskeyPoolState.js').PasskeyPoolPeer, timeoutMs: number) =>
     Promise<import('../core/PasskeyPoolState.js').PeerStateFetch>) | null;
@@ -26688,7 +26694,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
       const cfg = passkeyRateLimitConfig();
       const nowMs = Date.now();
-      const rows = poolRows(snapshot);
+      const rows = passkeyLiveRows(auth, snapshot);
       const conditions = {
         peers: snapshot.peers.map((p) => p.condition),
         suspension: { state: 'none' as const, killSwitch: false },
@@ -26725,6 +26731,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Cell health + the one digest (spec §4 / §5.2 / §13) ────────────────────────────────
   const buildPasskeyHealth = (auth: ReturnType<typeof buildPasskeyAuthority>) => new PasskeyHealthStore({ stateDir: ctx.config.stateDir, machineId: auth.selfMachineId });
+  /**
+   * The rate-limit / gap / pause rows for an admission decision: the PEERS' rows from the pool memo
+   * (memoised up to 5 minutes — a peer's staleness is bounded by its own tick), but THIS machine's rows
+   * read LIVE from its ledger. The memo can never see an attempt or a pause this machine wrote after
+   * the memo was built, so a second local proof inside the memo window would otherwise slip past the
+   * 6-hour same-account gap and a fresh risk/throttle pause (increment 10 second-pass finding).
+   */
+  const passkeyLiveRows = (auth: ReturnType<typeof buildPasskeyAuthority>, snapshot: PasskeyPoolSnapshot): { attempts: PasskeyAttemptRow[]; pauses: PasskeyPauseRow[] } => {
+    const pooled = poolRows(snapshot);
+    const ledger = new PasskeyAttemptLedger({ stateDir: ctx.config.stateDir, machineId: auth.selfMachineId });
+    return {
+      attempts: [...pooled.attempts.filter((r) => r.machineId !== auth.selfMachineId), ...ledger.attempts()],
+      pauses: [...pooled.pauses.filter((r) => r.machineId !== auth.selfMachineId), ...ledger.activePauses()],
+    };
+  };
   const passkeyHoldsLease = (): boolean => { try { return ctx.coordinator ? ctx.coordinator.holdsLease() : true; } catch { return false; } }; // @silent-fallback-ok — an unreadable lease reads as NOT held: the digest waits for a holder rather than two machines racing on one key
   /**
    * One digest pass (§5.2): advance the clocks (pool-degraded pauses them), build the digest from
@@ -26848,6 +26869,82 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const email = typeof req.body?.email === 'string' ? req.body.email : '';
     if (!canonicalPasskeyEmail(email)) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'email is required' }); return; }
     await runPasskeyPinOp(req, res, 'attest-google-removed', email, {});
+  });
+
+  // ── Cold proof (spec §3.8) ──────────────────────────────────────────────────────────────
+  // POST /passkeys/prove — PIN. Body { pin, email }. An OPERATOR-triggered cold proof of THIS machine's
+  // cell: admission (the §5.1 table + the same-account gap + pauses) → attempt row → the proof in the
+  // cell's proof-only profile under the host-wide browser seat → the outcome recorded into the cell's
+  // health (origin `operator`) → risk / throttle pauses written. Peer targets travel as the `prove`
+  // mandate op in a later increment (this build answers 501 for them).
+  const PASSKEY_PROOF_DEFAULT_URLS = { signIn: 'https://accounts.google.com/signin/v2/identifier', signOut: 'https://accounts.google.com/Logout' };
+  router.post('/passkeys/prove', async (req, res) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email : '';
+    if (!canonicalPasskeyEmail(email)) { if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; } if (!checkPasskeyPin(req, res)) return; res.status(400).json({ error: 'email is required' }); return; }
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    if (!checkPasskeyPin(req, res)) return;
+    const targetMachineId = typeof req.body?.targetMachineId === 'string' && req.body.targetMachineId.trim() ? String(req.body.targetMachineId).trim() : null;
+    const canonical = canonicalPasskeyEmail(email);
+    try {
+      const auth = buildPasskeyAuthority();
+      if (targetMachineId && targetMachineId !== auth.selfMachineId) { res.status(501).json({ error: 'peer-prove-not-available-on-this-build', target: targetMachineId }); return; }
+      if (!ctx.passkeyProofBrowser) { res.status(503).json({ error: 'proof-browser-unavailable' }); return; }
+      if (!auth.grants.has(canonical)) { res.status(404).json({ error: 'no active grant for that account on this machine' }); return; }
+      const stateDir = ctx.config.stateDir;
+      if (!fs.existsSync(path.join(stateDir, PASSKEY_DIR, 'store.enc'))) { res.status(409).json({ error: 'no-credential', reason: 'no passkey store on this machine' }); return; }
+      const store = new PasskeyCredentialStore({ stateDir, machineId: auth.selfMachineId, forceFileKey: ctx.config.secrets?.forceFileKey });
+      const loaded = store.load(canonical);
+      if (!loaded.ok) { res.status(409).json({ error: 'no-credential', reason: `credential-${loaded.reason}` }); return; }
+      // Admission over the pool memo: the §5.1 table, the same-account gap, active pauses.
+      const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
+      const nowMs = Date.now();
+      const rows = passkeyLiveRows(auth, snapshot);
+      const cfg = passkeyRateLimitConfig();
+      const pool = poolAdmission('prove', { peers: snapshot.peers.map((p) => p.condition), suspension: { state: 'none', killSwitch: false }, leaseHolder: { isSelf: true, reachable: true, lastKnownAgeMs: null } });
+      const gap = sameAccountGap({ rows: rows.attempts, canonicalEmail: canonical, machineId: auth.selfMachineId, nowMs, gapHours: cfg.sameAccountGapHours });
+      const pause = activePauseFor({ pauses: rows.pauses, canonicalEmail: canonical, machineId: auth.selfMachineId, nowMs });
+      if (!pool.allowed || !gap.allowed || pause) {
+        res.status(409).json({ error: 'proof-refused', reason: !pool.allowed ? pool.reason : !gap.allowed ? 'same-account-gap' : `paused:${pause!.reason}`, pool, sameAccountGap: gap, pause, memoAgeMs: ageMs });
+        return;
+      }
+      // The host-wide browser seat: one real browser at a time on this machine (§4).
+      const holderId = `passkey-proof:${auth.selfMachineId}`;
+      const seat = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).acquire(holderId, 'passkey cold proof');
+      if (!seat.acquired) { res.status(409).json({ error: 'seat-busy', holderLabel: seat.holderLabel, retryAfterMs: seat.retryAfterMs }); return; }
+      const ledger = new PasskeyAttemptLedger({ stateDir, machineId: auth.selfMachineId });
+      const health = buildPasskeyHealth(auth);
+      let result;
+      try {
+        // The attempt row is written BEFORE the proof runs, so a crash mid-proof still counts against the pool.
+        ledger.recordAttempt({ canonicalEmail: canonical, kind: 'proof' });
+        const profileDir = path.join(stateDir, PASSKEY_DIR, 'profiles', `${store.emailKey(canonical)}-proof`);
+        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+        const urls = ctx.passkeyProofUrls ?? PASSKEY_PROOF_DEFAULT_URLS;
+        const googleSide = health.get(canonical)?.googleSide ?? 'none';
+        result = await runPasskeyColdProof(
+          { openBrowser: () => ctx.passkeyProofBrowser!(profileDir), log: (line) => console.log(line) },
+          { canonicalEmail: canonical, record: loaded.record, signInUrl: urls.signIn, signOutUrl: urls.signOut,
+            googleSideRemoval: googleSide === 'pending-operator' ? 'pending' : googleSide === 'operator-attested' ? 'attested' : googleSide === 'removed-verified' ? 'verified' : 'none' },
+        );
+      } finally {
+        (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).release(holderId);
+      }
+      // §2 risk budget / §4 throttle safety: pauses are written on the LOCAL ledger; every machine reads them through the pool.
+      const pauses: string[] = [];
+      if (result.riskPage) { ledger.pause({ canonicalEmail: canonical, scope: 'account', reason: 'risk', durationMs: 7 * 24 * 60 * 60_000 }); pauses.push('account-risk-7d'); }
+      if (result.throttled) {
+        ledger.pause({ canonicalEmail: canonical, scope: 'account', reason: 'throttled', durationMs: 24 * 60 * 60_000 });
+        ledger.pause({ canonicalEmail: null, scope: 'machine', reason: 'throttled', durationMs: 60 * 60_000 });
+        pauses.push('account-throttled-24h', 'machine-throttled-1h');
+      }
+      const recorded = health.recordOutcome({ canonicalEmail: canonical, outcome: result.outcome, origin: 'operator' });
+      appendPlaywrightAudit('passkey-prove', 'passkeys', { outcome: result.outcome, reason: result.reason, page: result.finalPageClass, steps: result.steps.length, pauses: pauses.join(',') || null, transition: recorded.transition ? `${recorded.transition.from}->${recorded.transition.to}` : null, dryRun: false });
+      res.json({ outcome: result.outcome, reason: result.reason, finalPageClass: result.finalPageClass, observedAssertion: result.observedAssertion, singleCredential: result.singleCredential, signedInIdentity: result.signedInIdentity, riskPage: result.riskPage, throttled: result.throttled, steps: result.steps, teardown: result.teardown, pauses, cell: recorded.cell, transition: recorded.transition,
+        // Honest about the admission inputs this build does not publish yet (same wording as GET /passkeys/admission).
+        admissionInputs: { suspension: 'not-published-on-this-build', leaseHolder: 'not-published-on-this-build', memoAgeMs: ageMs } });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'proof failed' });
+    }
   });
 
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
