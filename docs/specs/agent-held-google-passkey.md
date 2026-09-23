@@ -276,8 +276,9 @@ agent's machines.
   - `autonomousLoginMethod()` (`SubscriptionReloginRuntime.ts`);
   - the driver request's `loginMethod` union (`AnthropicReloginBrowserDriver.ts`);
   - **graduation evidence** — `store.getUnattendedEvidence(accountId, machineId, provider, framework)`
-    gains `loginMethod`; existing rows (no method) do not count toward `google-passkey`; evidence
-    resets when the method changes;
+    gains `loginMethod` (an idempotent `ALTER TABLE repair_episodes ADD COLUMN loginMethod` migration,
+    since `CREATE TABLE IF NOT EXISTS` never adds columns; tested on an existing database); existing
+    rows (no method) do not count toward `google-passkey`; evidence resets when the method changes;
   - the admission `inputDigest` includes `loginMethod` and the passkey entry key, so an approval for
     the password path cannot authorize the passkey path;
   - **admission refusals**, evaluated in the pure policy (the cell's passkey state is added to the
@@ -619,6 +620,7 @@ minIntervalMinutes: 30 }, legacyRemintDays: 90 }`.
 | Identity and assertion checks | invariant | In-port equality; observed assertion for the stored credential id. |
 | Proof verdict and outcome mapping | invariant | §3.6 mapping; only `ready` counts. |
 | Cell state transitions | invariant | §4 table, terminal precedence. |
+| Suspension failure direction | invariant | A false positive sends repairs to named refusals and the parent's approval path, reversible by resume; a false negative means repeated rejected sign-ins across accounts, raising Google risk on the human's accounts. Restriction is the less harmful direction, so it is chosen. |
 | Pool-wide suspension and exit | invariant | A restrictive-only circuit breaker on this agent's own automated sign-ins — it can only withhold, never act, and judges no content; inputs are structurally classified outcomes and risk pages; minimum sample, 50% threshold, frozen window, canary or operator exit. |
 | Chrome version gate | invariant | Fixture self-test result per machine. |
 | Legacy key adopt/delete | invariant | Operator choice per key; adoption commits only on a verified `ready`. |
@@ -692,7 +694,9 @@ machine-local-justification: physical-credential-locality permanence=permanent i
   5 non-ready canaries ⇒ suspended-stopped`,
   flapping flag, `max-notification-latency: 300s` measured from self-heal exhaustion (the digest is
   updated on that tick), `audit-location: logs/passkey-health.jsonl`.
-- Remediation is read-only toward the account (sign-in attempts only) and idempotent.
+- Remediation is read-only toward the account (sign-in attempts only) and idempotent. The heal is
+  implemented inside the watcher, not through `SelfHealGate`, because `SelfHealGate` v1 refuses
+  pool-shared controllers and this class is pool-shared.
 - `security` and suspension update the digest on the same tick, no heal gate.
 
 ## 14. Frontloaded Decisions
@@ -721,7 +725,7 @@ machine-local-justification: physical-credential-locality permanence=permanent i
    `repairUsesPasskey: true`, enabling the four passkey stores and flipping `passkeyTombstones` to
    `dryRun: false`, and adding emails
    to the unattended allowlist for Rung 2; the live proof;
-   graduation. (Author.)
+   graduation; and the separate-OS-user broker increment (§17), which gates Rung 3. (Author.)
 10. **Relying party:** Google only. **Crypto:** the existing SecretStore envelope in a separate file.
     (Author.)
 11. **Backup codes:** consumed only on the secret-sync push-authoritative machine, one per attempt,
