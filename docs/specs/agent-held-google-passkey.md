@@ -265,16 +265,12 @@ agent's machines.
   ledger): the receiver keeps an **expected-issuer set** in `state/passkey-issuers.json`, listing
   machines on which the operator has verified the dashboard PIN. A machine's first local PIN check adds
   itself; other changes travel as `issuer-add` / `issuer-remove` ops signed by an existing issuer.
-  **Bootstrap:** the set's real trust comes from pairing, which already exchanged machine keys under an
-  operator pairing code. Trust-on-first-use applies only while the receiver's set contains nothing but
-  itself, once per receiver, and never for a machine that was previously removed: the receiver then
-  accepts an `issuer-add` for the sending paired machine (whose claim that the operator verified the
-  PIN there is the sender's word, recorded as such in an audit row and the digest). A TOFU issuer may
-  only send restrict-only ops (`revoke`, `prove`, `recheck-chrome`, `attest-google-removed`,
-  `exclude-peer`, `include-peer`) until the operator confirms it once from the receiver's own dashboard
-  (PIN, reachable from a phone through that machine's tunnel); authorizing ops (`grant`, `enroll`,
-  `adopt`, `resume-suspension`, `issuer-add`) need that confirmation. After bootstrap, only existing
-  issuers change the set. The asserted principal inside any
+  **Bootstrap:** there is no trust-on-first-use. A receiver adds a peer as an issuer only when the
+  operator confirms it from the receiver's OWN dashboard with its PIN (reachable from a phone through
+  that machine's tunnel), which the receiver verifies itself. This is a one-time step per machine,
+  done together with that machine's first enrollment, and is shown to the operator as part of the
+  per-machine setup cost (§12). After bootstrap, existing issuers can add or remove others with signed
+  ops. The asserted principal inside any
   mandate is vouched for by the issuing machine (inherited from WS5.2); a compromised issuer falls
   under the accepted same-user risk (§1.1). These conditions are checked when each mandate is verified (not by
   listening for events, which the existing components do not emit): an issuer whose machine identity is
@@ -686,7 +682,8 @@ operator's own words are in Dawn's standard (the-portal `docs/standards/agent-ac
 spec's operator approval is the binding ratification. The
 re-enrollments this spec can require — after `breaker-open` or `security`, a machine-id change, a
 Google-side removal, or the optional legacy re-mint — are failure-recovery cases outside that
-one-time cost, and are presented to the operator as such.
+one-time cost, and are presented to the operator as such. The one-time per-machine setup also includes
+confirming that machine's trusted issuers from its own dashboard (§3.3).
 
 - Passkey credentials (`.instar/secrets/passkeys/store.enc`):
 machine-local-justification: operator-ratified-exception ref https://github.com/JKHeadley/instar/blob/a44e64c82/docs/specs/agent-held-google-passkey.md FD2, decision-journal agent-held-google-passkey-spec 2026-09-23T01:41:56.680Z
@@ -776,8 +773,8 @@ machine-local-justification: physical-credential-locality permanence=permanent i
     partitioned peers block; 72h operator exclude option. (Author.)
 20. **Stale suspension state refuses repairs too** (falls back to the parent's approval path); **Google
     risk pages** pause and can trigger suspension. (Author.)
-21. **Issuer bootstrap:** TOFU only while the receiver's set is just itself, once, never for a removed
-    machine, restrict-only until confirmed from the receiver's own dashboard. (Author.)
+21. **Issuer bootstrap:** no trust-on-first-use; each machine's first peer issuers are confirmed with
+    the PIN on that machine's own dashboard, once. (Author, per Know Your Principal.)
 
 ## 15. Rollback and downgrade
 
