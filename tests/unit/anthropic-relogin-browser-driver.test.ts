@@ -195,4 +195,39 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     expect(allowedActions(state('interstitial', claude), { artifact, loginMethod: 'password', secretRefs: { password: 'p' } }))
       .toEqual(['wait']);
   });
+
+  it('a password account uses ONE backup code on Google\'s backup-code page, taken out of the vault first', async () => {
+    const f = fixture([
+      state('google-backup-code-entry' as never),
+      state('authorize', { origin: 'https://claude.ai', hasAuthorize: true, requestedScopes: ['user:profile'] }),
+      state('paste-code', { origin: 'https://claude.ai' }),
+    ]);
+    const takeBackupCode = vi.fn(async () => '12345678');
+    const driver = new AnthropicReloginBrowserDriver({ browser: f.browser, resolveSecret: f.resolveSecret, takeBackupCode,
+      supervise: f.supervise, seatLease: f.seatLease, now: () => NOW, maxSteps: 10 });
+    const result = await driver.drive({ ...f.request, loginMethod: 'password', secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });
+    expect(result).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(takeBackupCode).toHaveBeenCalledTimes(1);
+    expect(takeBackupCode).toHaveBeenCalledWith('codes-ref');
+    expect(f.browser.fillSecret).toHaveBeenCalledWith('backup-code', '12345678');
+    // The supervisor only ever saw the action token, never the code.
+    expect(JSON.stringify(f.supervise.mock.calls)).not.toContain('12345678');
+  });
+
+  it('without a backup-code taker, or without a codes entry, a repair never offers the backup-code fill', async () => {
+    const f = fixture([state('google-backup-code-entry' as never)]);
+    const result = await f.driver.drive({ ...f.request, loginMethod: 'password', secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });
+    expect(f.browser.fillSecret).not.toHaveBeenCalledWith('backup-code', expect.anything());
+    expect(result.outcome).not.toBe('approved');
+  });
+
+  it('takes at most ONE backup code per drive: a rejected code ends the attempt instead of draining the list', async () => {
+    const f = fixture([state('google-backup-code-entry' as never), state('google-backup-code-entry' as never), state('google-backup-code-entry' as never)]);
+    const takeBackupCode = vi.fn(async () => '12345678');
+    const driver = new AnthropicReloginBrowserDriver({ browser: f.browser, resolveSecret: f.resolveSecret, takeBackupCode,
+      supervise: f.supervise, seatLease: f.seatLease, now: () => NOW, maxSteps: 10 });
+    const result = await driver.drive({ ...f.request, loginMethod: 'password', secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });
+    expect(takeBackupCode).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ outcome: 'transient' });
+  });
 });

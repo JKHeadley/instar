@@ -1,0 +1,30 @@
+{
+  "ts": "2026-09-24T22:48:24.569Z",
+  "slug": "relogin-backup-codes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/PlaywrightProfileRegistry.ts",
+      "src/core/SubscriptionReloginRuntime.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; one more floor-gated fill inside the bounded repair"
+  },
+  "verdict": "pass"
+}

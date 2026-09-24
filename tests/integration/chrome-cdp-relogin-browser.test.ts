@@ -92,6 +92,7 @@ describe('ChromeCdpReloginBrowser real process', () => {
         <button id="hidden" style="display:none">Hidden</button>
         <button disabled>Disabled</button>
         <div data-email="other@example.com"><span>Other Person</span></div>
+        <input type="tel" id="backupCodePin" name="backupCodePin">
         <a href="#terms">Read the terms</a>
         <button id="agree" onclick="document.title='agreed'">I agree and continue</button>
         </body></html>`;
@@ -103,7 +104,7 @@ describe('ChromeCdpReloginBrowser real process', () => {
       expect(texts).not.toContain('Hidden');
       expect(texts).not.toContain('Disabled');
       expect(observed.controls.find((c) => c.text === 'Other Person')?.identities).toEqual(['other@example.com']);
-      expect(observed.inputKinds).toEqual(expect.arrayContaining(['password', 'text']));
+      expect(observed.inputKinds).toEqual(expect.arrayContaining(['password', 'text', 'backup-code']));
       expect(JSON.stringify(observed)).not.toContain('hunter-2-secret');
       expect(JSON.stringify(observed)).not.toContain('typed-value');
       const agree = observed.controls.find((c) => c.text === 'I agree and continue')!;

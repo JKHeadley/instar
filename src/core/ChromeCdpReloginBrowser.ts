@@ -869,6 +869,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
         const ac = (input.getAttribute('autocomplete') || '').toLowerCase();
         const name = ((input.getAttribute('name') || '') + ' ' + (input.id || '')).toLowerCase();
         if (t === 'password') kinds.add('password');
+        else if (name.includes('backupcodepin')) kinds.add('backup-code');
         else if (t === 'email' || ac === 'username' || name.includes('identifier')) kinds.add('email');
         else if (ac === 'one-time-code' || /totp|code|pin/.test(name) || t === 'tel') kinds.add('code');
         else if (t !== 'hidden' && t !== 'submit' && t !== 'button' && t !== 'checkbox' && t !== 'radio') kinds.add('text');
