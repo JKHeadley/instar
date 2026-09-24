@@ -239,4 +239,12 @@ describe('consent click that never goes through (live 2026-09-24: invisible hCap
     expect(await driver.drive(baseRequest)).toEqual({ outcome: 'operator-only', failureClass: 'captcha' });
     expect(browser.clickControl).toHaveBeenCalledOnce();
   });
+
+  it('offers the backup-code fill ONLY on Google\'s own backup-code field, never on a generic code box', () => {
+    const req = { ...baseRequest, loginMethod: 'password' as const, secretRefs: { password: 'pw', backupCode: 'codes' } };
+    expect(buildAgentOffer(snap('unknown'), obs([], ['backup-code']), req, []).offered).toContain('fill-backup-code');
+    expect(buildAgentOffer(snap('unknown'), obs([], ['code']), req, []).offered).not.toContain('fill-backup-code');
+    const noCodes = { ...req, secretRefs: { password: 'pw' } };
+    expect(buildAgentOffer(snap('unknown'), obs([], ['backup-code']), noCodes, []).offered).not.toContain('fill-backup-code');
+  });
 });

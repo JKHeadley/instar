@@ -103,6 +103,12 @@ export interface AnthropicReloginBrowserRequest {
 export interface AnthropicReloginBrowserDriverDeps {
   browser: ReloginBrowserPort;
   resolveSecret: (name: string) => Promise<string | null>;
+  /**
+   * Take ONE unused Google backup code from the named vault entry and remove it there before it
+   * is typed (codes are single-use; a spent code must never be tried again). Absent ⇒ repairs
+   * never use backup codes.
+   */
+  takeBackupCode?: (name: string) => Promise<string | null>;
   /** Required Tier-1 supervisor; it sees closed state and a bounded action list only. */
   supervise: (input: {
     snapshot: ReloginBrowserSnapshot;
@@ -186,6 +192,8 @@ export class AnthropicReloginBrowserDriver {
   }
 
   private readonly driveDeadlineMs: number;
+  /** Set once this drive has taken a backup code (one per drive — see fill-backup-code). */
+  private backupCodeSpent = false;
 
   /** Agent navigation applies to sign-in drives with a chooser and a browser that can observe controls. */
   private agentMode(request: AnthropicReloginBrowserRequest): boolean {
@@ -194,6 +202,7 @@ export class AnthropicReloginBrowserDriver {
   }
 
   async drive(request: AnthropicReloginBrowserRequest, signal: AbortSignal = new AbortController().signal): Promise<BrowserRepairResult> {
+    this.backupCodeSpent = false;
     if (!safeAllowedUrl(request.verificationUrl, request.provider)) return { outcome: 'refused', failureClass: 'unexpected-origin' };
     if (Date.parse(request.artifact.expiresAt) <= this.now()) return { outcome: 'transient', failureClass: 'artifact-expired' };
     const holderId = `subscription-relogin:${request.artifact.attemptId}`;
@@ -394,11 +403,21 @@ export class AnthropicReloginBrowserDriver {
         return true;
       }
       case 'fill-backup-code': {
-        // The enrollment worker (spec §3.7) marks the code consumed BEFORE handing its
-        // ref here; this floor only refuses the fill outside an enroll drive.
-        if (req.intent !== 'enroll' || !req.secretRefs.backupCode) return false;
-        let code = await this.deps.resolveSecret(req.secretRefs.backupCode);
+        // Enroll: the worker (spec §3.7) marks the code consumed BEFORE handing its ref here.
+        // Repair: a password account's second step; the code is taken OUT of the vault first.
+        if (!req.secretRefs.backupCode) return false;
+        if (req.intent !== 'enroll' && (!usesPassword(req.loginMethod) || !this.deps.takeBackupCode)) return false;
+        // At most ONE code per drive: a rejected code leaves the page on the backup-code field, and
+        // re-offering the fill would drain the whole list. A second request ends the attempt instead.
+        if (req.intent !== 'enroll') {
+          if (this.backupCodeSpent) throw new Error('relogin-backup-code-rejected');
+          this.backupCodeSpent = true;
+        }
+        let code = req.intent === 'enroll'
+          ? await this.deps.resolveSecret(req.secretRefs.backupCode)
+          : await this.deps.takeBackupCode!(req.secretRefs.backupCode);
         if (!code) return false;
+        seen?.add(code);
         try { await this.deps.browser.fillSecret('backup-code', code); }
         finally { code = ''; }
         return true;
@@ -461,8 +480,8 @@ export function allowedActions(
       return usesPassword(request.loginMethod) ? ['click-try-another-way'] : [];
     case 'google-totp-entry': return request.loginMethod === 'password+totp' && request.secretRefs.totp
       ? ['fill-totp'] : [];
-    case 'google-backup-code-entry': return request.intent === 'enroll' && request.secretRefs.backupCode
-      ? ['fill-backup-code'] : [];
+    case 'google-backup-code-entry': return request.secretRefs.backupCode
+      && (request.intent === 'enroll' || usesPassword(request.loginMethod)) ? ['fill-backup-code'] : [];
     case 'google-passkey-create': {
       const out: ReloginBrowserAction[] = [];
       if (request.intent === 'enroll') out.push('click-create-passkey');
@@ -542,6 +561,8 @@ export function buildAgentOffer(
   if (kinds.has('email')) offered.push('fill-email');
   if (kinds.has('password') && usesPassword(request.loginMethod) && request.secretRefs.password) offered.push('fill-password');
   if (kinds.has('code') && request.loginMethod === 'password+totp' && request.secretRefs.totp) offered.push('fill-totp');
+  // Only Google's own backup-code field (never an SMS or authenticator box: a wrong field wastes a single-use code).
+  if (kinds.has('backup-code') && usesPassword(request.loginMethod) && request.secretRefs.backupCode) offered.push('fill-backup-code');
   if (kinds.has('code') && request.artifact?.kind === 'device-code' && request.artifact.userCode) offered.push('fill-device-code');
   const expected = request.expectedIdentity.trim().toLowerCase();
   const consentMeasured = snapshot.requestedScopes.length > 0 && scopesAllowed(snapshot.requestedScopes, request.allowedScopes);

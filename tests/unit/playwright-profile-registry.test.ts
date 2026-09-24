@@ -214,6 +214,16 @@ describe('PlaywrightProfileRegistry — assignAccount', () => {
     expect(reg.listProfiles()[0].accounts[0].vaultBindings).toEqual({ password: 'google_password_justin' });
   });
 
+  it('accepts a backup-code binding alongside the password (a password account single-use second step)', () => {
+    const reg = makeRegistry(h);
+    const acct = reg.assignAccount('default', {
+      service: 'google', identity: 'person@example.test', owner: 'operator',
+      vaultRefs: ['google_password_justin'],
+      vaultBindings: { password: 'google_password_justin', backupCode: 'google_password_justin' }, loginMethod: 'password',
+    });
+    expect(acct.vaultBindings).toEqual({ password: 'google_password_justin', backupCode: 'google_password_justin' });
+  });
+
   it('rejects unlisted, malformed, or unknown secret-role bindings', () => {
     const reg = makeRegistry(h);
     expect(() => reg.assignAccount('default', { service: 'google', identity: 'a', owner: 'operator',

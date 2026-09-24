@@ -51,7 +51,9 @@ export type PlaywrightLoginMethod =
  * agent-held-google-passkey §3.4) — never a vault name, never material; it is validated
  * against the store through the injected `passkeyEntryExists`.
  */
-export interface PlaywrightVaultBindings { password?: string; totp?: string; passkey?: string }
+export interface PlaywrightVaultBindings { password?: string; totp?: string; passkey?: string;
+  /** Vault entry holding this account's unused Google backup codes (single-use; the repair removes each one it spends). */
+  backupCode?: string }
 
 /** Who owns the account — Know Your Principal (D12). Advisory self-assertion, audited. */
 export type PlaywrightAccountOwner = 'agent' | 'operator';
@@ -544,9 +546,9 @@ export class PlaywrightProfileRegistry {
         throw new PlaywrightRegistryError('vaultBindings must be an object', 400);
       }
       const entries = Object.entries(input.vaultBindings);
-      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp' && role !== 'passkey')
+      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp' && role !== 'passkey' && role !== 'backupCode')
         || typeof ref !== 'string' || ref.length === 0)) {
-        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp vault names or a passkey entry key', 400);
+        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp/backupCode vault names or a passkey entry key', 400);
       }
       vaultBindings = Object.fromEntries(entries);
     }

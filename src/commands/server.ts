@@ -14800,7 +14800,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation }, { PlaywrightProfileRegistry }, { SecretStore },
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode }, { PlaywrightProfileRegistry }, { SecretStore },
           { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
@@ -14851,6 +14851,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // repair opens the account's Chrome the ordinary way, with no debugging connection.
           createBrowser: (userDataDir) => createReloginBrowser(userDataDir),
           resolveSecret: async (name) => { const value = vault.get(name); return typeof value === 'string' ? value : null; },
+          // Single-use Google backup codes: remove the code from the vault BEFORE it is typed, so a
+          // spent code is never tried again (one repair runs at a time — the seat lease serialises this).
+          takeBackupCode: async (name) => takeFirstBackupCode(vault, name),
           supervise: async ({ snapshot, allowedActions }) => {
             const prompt = [
               'You are a Tier-1 validator for a bounded subscription sign-in browser worker.',
@@ -28467,3 +28470,4 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
   await new Promise(r => setTimeout(r, 500));
   await startServer({ dir: options.dir });
 }
+

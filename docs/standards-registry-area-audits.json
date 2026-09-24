@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
-      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
-      "areaSha256": "56e9e4709cb807c51fb6c7d23c8b9bfffe7dac15e56e6fbb1f11166b6434107e",
+      "lastAuditedAt": "2026-09-24T18:36:10.000Z",
+      "auditRef": "docs/audits/standards-building-occam-addition-2026-09-24.json",
+      "auditSha256": "902b9ad628bfe90baf749b5aa614e76c7052ab90fae202cf4335fa54755d359a",
+      "areaSha256": "3031d13ba311e50e26889bfd59512bd05c3cb45710220ade2ce6f1b428b41409",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
