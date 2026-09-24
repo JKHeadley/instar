@@ -251,3 +251,75 @@ describe('token-audit visibility', () => {
     expect(metrics[0]).toMatchObject({ feature: JEV_SHADOW_FEATURE, kind: 'llm', tokensIn: 321, tokensOut: 0, model: 'jev-1.13.0' });
   });
 });
+
+// ── Disagreement excerpts (spec: docs/specs/jev-shadow-disagreement-excerpts.md)
+// A disagreement that cannot be adjudicated is not evidence. Retention is OFF by
+// default, anchored to detector spans, scrubbed, and never on an agreeing row.
+import { EXCERPT_MAX_CHARS, EXCERPT_DAILY_CAP } from '../../src/core/JevSignalShadow.js';
+
+describe('disagreement excerpts — off by default, span-anchored, scrubbed', () => {
+  const RETAIN = { retainDisagreementExcerpts: true };
+  const API_KEY = 'sk-proj-' + 'A1b2C3d4'.repeat(6); // secret-SHAPED, so the scrub must catch it
+
+  it('retains NOTHING when the flag is absent — byte-identical to today', async () => {
+    const s = make({ fetchImpl: (async () => okResponse(allLow())) as never });
+    s.observe(PATHY); await s.lastDispatch;
+    const [r] = rows();
+    expect(r.disagree).toEqual(['raw_path']);        // a real disagreement
+    expect(r.excerpt).toBeUndefined();               // and still no text
+    expect(r.excerptUnavailable).toBeUndefined();
+    expect(JSON.stringify(r)).not.toContain('SessionManager');
+  });
+
+  it('retains a scrubbed, span-anchored excerpt on a disagreeing row when enabled', async () => {
+    const s = make({ cfg: RETAIN, fetchImpl: (async () => okResponse(allLow())) as never });
+    s.observe(PATHY); await s.lastDispatch;
+    const [r] = rows();
+    expect(r.disagree).toEqual(['raw_path']);
+    expect(typeof r.excerpt).toBe('string');
+    expect(r.excerpt).toContain('SessionManager');   // the disputed artifact IS the point
+    expect(r.excerpt.length).toBeLessThanOrEqual(EXCERPT_MAX_CHARS + 32); // clamp (+ redaction markers)
+  });
+
+  it('never retains text on an AGREEING row, even with retention on', async () => {
+    const s = make({ cfg: RETAIN, fetchImpl: (async () => okResponse({ ...allLow(), raw_path: 0.97 })) as never });
+    s.observe(PATHY); await s.lastDispatch;
+    const [r] = rows();
+    expect(r.disagree).toEqual([]);
+    expect(r.excerpt).toBeUndefined();
+    expect(JSON.stringify(r)).not.toContain('SessionManager');
+  });
+
+  it('records no-detector-span when the MODEL fired and the detector did not — never widens to the message', async () => {
+    const benign = 'Everything went fine today, nothing to report at all.';
+    const s = make({ cfg: RETAIN, fetchImpl: (async () => okResponse({ ...allLow(), raw_path: 0.97 })) as never });
+    s.observe(benign); await s.lastDispatch;
+    const [r] = rows();
+    expect(r.disagree).toEqual(['raw_path']);        // model says yes, detector silent
+    expect(r.excerpt).toBeUndefined();               // nothing to anchor to
+    expect(r.excerptUnavailable).toBe('no-detector-span');
+    expect(JSON.stringify(r)).not.toContain('nothing to report');
+  });
+
+  it('scrubs a secret inside the excerpt and counts the redaction without recording its value', async () => {
+    const withSecret = `see /Users/x/app/src/core/Thing.ts and use ${API_KEY} to authenticate`;
+    const s = make({ cfg: RETAIN, fetchImpl: (async () => okResponse(allLow())) as never });
+    s.observe(withSecret); await s.lastDispatch;
+    const [r] = rows();
+    expect(r.excerpt).toBeDefined();
+    expect(JSON.stringify(r)).not.toContain(API_KEY);
+    expect(r.excerptRedactions).toBeGreaterThan(0);
+  });
+
+  it('stops retaining past the daily cap, and says so rather than going quiet', async () => {
+    const s = make({ cfg: { ...RETAIN, maxExcerptsPerDay: 2 }, fetchImpl: (async () => okResponse(allLow())) as never });
+    for (let i = 0; i < 4; i++) { s.observe(`${PATHY} #${i}`); await s.lastDispatch; }
+    const rs = rows();
+    expect(rs.filter((r) => typeof r.excerpt === 'string')).toHaveLength(2);
+    expect(rs.filter((r) => r.excerptUnavailable === 'daily-cap')).toHaveLength(2);
+  });
+
+  it('exposes a default cap so an unset config is still bounded', () => {
+    expect(EXCERPT_DAILY_CAP).toBeGreaterThan(0);
+  });
+});
