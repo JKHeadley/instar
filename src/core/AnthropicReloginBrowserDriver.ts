@@ -200,6 +200,7 @@ export class AnthropicReloginBrowserDriver {
     const resolvedSecrets = new Set<string>();
     if (request.artifact.userCode) resolvedSecrets.add(request.artifact.userCode);
     const recentSteps: string[] = [];
+    let outcomeNote = 'unfinished';
     try {
       signal.throwIfAborted();
       await bounded(this.deps.browser.open(request.verificationUrl));
@@ -262,11 +263,13 @@ export class AnthropicReloginBrowserDriver {
       return { outcome: 'transient', failureClass: 'provider-transient' };
     } catch (error) {
       // @silent-fallback-ok — the closed transient result is the controller-visible failure signal; no exception is hidden.
+      outcomeNote = `error ${error instanceof Error ? error.message.slice(0, 60) : 'unknown'}`;
       if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
       return { outcome: 'transient', failureClass: 'provider-transient' };
     } finally {
       signal.removeEventListener('abort', abort);
       resolvedSecrets.clear();
+      if (agent) console.log(`[subscription-relogin] agent drive ${request.artifact.attemptId}: ${outcomeNote}; steps: ${recentSteps.join(' > ') || '(none)'}`);
       await this.deps.browser.close().catch(() => { /* @silent-fallback-ok — lease release below is authoritative cleanup; browser close is idempotent best-effort */ });
       this.deps.seatLease.release(holderId);
     }
@@ -295,8 +298,10 @@ export class AnthropicReloginBrowserDriver {
       offered: offer.offered, recentSteps: recentSteps.slice(-6),
     }))).trim();
     // The model's answer is only ever a token from the offer; anything else ends the drive.
-    if (!offer.offered.includes(token) || token === 'give-up')
+    if (!offer.offered.includes(token) || token === 'give-up') {
+      recentSteps.push(token === 'give-up' ? 'give-up' : `invalid-token(${token.slice(0, 20)})`);
       return { outcome: 'transient', failureClass: 'provider-transient' };
+    }
     if (token === 'wait') {
       await bounded(this.deps.browser.wait(2_000));
       recentSteps.push('wait');
@@ -435,6 +440,9 @@ export const AGENT_BLOCKED_PHRASES: readonly string[] = [
   'create api key', 'buy', 'upgrade', 'invite', 'cancel plan', 'create a passkey', 'create passkey',
   'add passkey', 'set up', 'turn on', 'add phone', 'add recovery', 'save password',
   'create account', 'create an account', 'sign up', 'create your account',
+  // Never a step forward in a sign-in, and 'switch account' changes identity (live 2026-09-24:
+  // the model picked Decline on Claude's authorize page, which names no account).
+  'decline', 'deny', 'switch account', 'not you',
 ];
 
 const CONSENT_LABEL = /^(allow|authorize|authorise|approve|accept|grant)\b/i;

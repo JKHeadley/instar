@@ -198,6 +198,10 @@ export const KNOWN_CLAUDE_MODEL_IDS = [
   // dropped at the resolution clamp and a topic pin to Fable 5.1 was refused
   // `off-enum` — a stale allowlist reads exactly like a deliberate refusal.
   'claude-fable-5-1',
+  // Opus 5.5 — live-verified against `claude --model claude-opus-5-5 -p` on
+  // CLI 2.1.281, 2026-09-24. Added so a topic can be pinned to it by exact id
+  // (the operator moved every Fable 5.1 pin to Opus 5.5 that day).
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-fable-5',

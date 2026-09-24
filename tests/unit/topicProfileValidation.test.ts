@@ -45,6 +45,7 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
     // generation — not as a policy exclusion.
     expect(validateModelId('claude-fable-5-1', 'claude-code')).toBeNull();
     expect(validateModelId('claude-opus-5', 'claude-code')).toBeNull();
+    expect(validateModelId('claude-opus-5-5', 'claude-code')).toBeNull();
     expect(validateModelId('claude-sonnet-5', 'claude-code')).toBeNull();
   });
 
@@ -68,7 +69,7 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
     // §10.2 — membership in the enum proves an id is RECOGNIZED, not that it
     // rides the subscription envelope. These launch via the subscription-authed
     // CLI, so the claude-code deny-set stays empty and must not refuse them.
-    for (const id of ['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5']) {
+    for (const id of ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5']) {
       expect(billingLaneError(id, 'claude-code'), `billing lane ${id}`).toBeNull();
     }
   });
