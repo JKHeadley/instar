@@ -7340,6 +7340,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // Normal-browser sign-in repair awareness (operator rule 2026-09-24) for existing agents.
+    if (
+      content.includes('Agent-navigated sign-in (dev-gated)') &&
+      !content.includes('Sign-in repair uses a normal browser (macOS)')
+    ) {
+      const navEnd = 'An agent-navigated repair shows `agent-drive-started` in `GET /subscription-relogin/EPISODE/events`.';
+      const normalBrowserBullet = "- **Sign-in repair uses a normal browser (macOS)** \u2014 the repair opens the account's own Chrome the ordinary way, with no remote-debugging connection, and reads/acts on it through Chrome's own scripting (\"Allow JavaScript from Apple Events\" is turned on in that profile). Automated browsers were stopped by provider human checks (Claude's Authorize, Cloudflare holds); a normal Chrome went straight through. Rule: auth-sensitive sign-ins never run in an automated browser. Boot log shows `browser: normal`. Other platforms keep the automated browser until a normal-browser path exists there.";
+      if (content.includes(navEnd)) {
+        content = content.replace(navEnd, navEnd + '\n' + normalBrowserBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added normal-browser sign-in repair awareness');
+      }
+    }
+
     // Fleet one-click assisted re-login awareness for existing agents that
     // already received the original local-controller bullet.
     if (
