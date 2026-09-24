@@ -40,3 +40,7 @@ Files modified:
 ## Second-pass review
 
 Independent reviewer (read-only, code audit of `git diff origin/main -- src`). First pass raised: (1) `clickControl` re-checked only the control's text, not the account it names — two same-named rows reordering could swap accounts; (2) `AGENT_BLOCKED_PHRASES` lacked account-creation phrases; (3) closed mode did not bound `supervise`/`perform` with the deadline; (4) partially hidden emails (`j•••@gmail.com`) passed unmasked. All four fixed (identity re-check at click with a real-Chrome test; "create account", "sign up" et al. blocked; closed-mode calls bounded; partial emails masked). Re-review: **Concur with the review.**
+
+## Follow-up — consent-page fix (2026-09-24, after the first live run)
+
+The first live agent drives reached Claude's authorize page and the model chose Decline. Added `decline`, `deny`, `switch account`, `not you` to the blocked phrases (none moves a sign-in forward; `switch account` changes identity), clarified the navigator instruction for consent pages, and added one redacted step-trail log line per agent drive. Over-block: a page whose only forward control contains one of these words — none known; the drive would end transient, not refused. No new decision point.

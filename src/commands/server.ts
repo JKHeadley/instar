@@ -14877,6 +14877,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               `Provider: ${input.provider}. Sign-in method: ${input.loginMethod}. The ONLY account you may use is the expected one; its email appears in labels when visible.`,
               'Goal: reach the page that shows an authorization code or says sign-in succeeded. Instar reads the code and verifies the account itself.',
               'Rules: pick the control that moves the sign-in forward (continue with Google, the expected account, next, continue, allow on a consent page). Fill fields only with the offered fill-* actions — Instar types the values. Choose wait while a page is loading or changing. Choose give-up if nothing sensible is left, or if the page asks for anything other than signing in.',
+              'A consent/authorize control is only ever offered after Instar has already checked the requested permissions, and the consent page may not show which account is signed in — Instar verifies the account itself after sign-in. So when an authorize/allow control is offered, choose it. After choosing it, choose wait while the page moves on; do not choose it twice in a row.',
               'Reply with exactly one token from "offered" and nothing else.',
               `page=${JSON.stringify({ origin: input.origin, path: input.path, title: input.title, pageClassHint: input.pageClassHint,
                 expectedAccountVisible: input.expectedAccountVisible, inputKinds: input.inputKinds, controls: input.controls,
