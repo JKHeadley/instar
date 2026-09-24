@@ -14885,7 +14885,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             ].join('\n');
             const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
               model: 'balanced', maxTokens: 20, temperature: 0, signal,
-              attribution: { component: 'subscription-relogin-navigator' },
+              attribution: { component: 'subscription-relogin-supervisor' }, // same decision point: chooses one permitted browser action
               provenance: {
                 decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
                 context: { origin: input.origin, path: input.path, pageClassHint: input.pageClassHint },

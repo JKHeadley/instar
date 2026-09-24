@@ -15,7 +15,7 @@ Files modified:
 - `src/core/ChromeCdpReloginBrowser.ts` — shared in-page `ENUMERATE_CONTROLS`, `observeControls`, `clickControl` (refuses when the numbered control's text changed).
 - `src/core/SubscriptionReloginOrchestrator.ts` — optional `driveEventClass` dep (default unchanged).
 - `src/core/SubscriptionReloginRuntime.ts` — `navigation` / `navigate` deps, `resolveReloginNavigation`, `agent-drive-started` event class in agent mode.
-- `src/commands/server.ts` — navigator prompt over `sharedLlmQueue` + `sharedIntelligence` (`balanced`, 20 tokens, provenance on the existing `subscription-relogin-action` decision point), navigation resolution, boot log shows the mode.
+- `src/commands/server.ts` — navigator prompt over `sharedLlmQueue` + `sharedIntelligence` (`balanced`, 20 tokens, provenance on the existing `subscription-relogin-action` decision point and the existing `subscription-relogin-supervisor` attribution label — same role, one permitted action per step), navigation resolution, boot log shows the mode.
 - `src/core/types.ts` — `assistedRelogin.navigation`.
 - `src/scaffold/templates.ts`, `src/core/PostUpdateMigrator.ts` — awareness bullet + idempotent migration.
 - Tests: unit, integration (real Chrome + runtime), e2e (production AgentServer).
