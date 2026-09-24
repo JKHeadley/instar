@@ -97,3 +97,7 @@ Independent reviewer subagent, 2026-09-24: **Concur with the review.** It raised
 2. The release call sat before `checkAndMigrate`'s own migration-in-progress guard. It has been moved after that guard.
 
 The reviewer also noted that the scheduler's `paused` flag is one shared boolean, and the migrator is currently its only caller. The doc comment now says so, and states that a future operator pause needs its own flag.
+
+## Follow-up (CI: silent-fallback ratchet)
+
+The catch around `resumeScheduler()` in the release originally only logged the failure. It now reports through `DegradationReporter`, because a failed release leaves the scheduler frozen, which is exactly the condition that must not stay silent. The flag stays set, so the next quota collection retries the release.

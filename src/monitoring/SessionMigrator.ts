@@ -330,7 +330,14 @@ export class SessionMigrator extends EventEmitter {
     try {
       this.deps.resumeScheduler();
     } catch (err) {
-      console.error('[SessionMigrator] Failed to resume scheduler after quota recovery:', err);
+      // The flag stays set, so the next quota collection retries the release.
+      DegradationReporter.getInstance().report({
+        feature: 'SessionMigrator.releaseEnforcementPause',
+        primary: 'Resume the scheduler once quota has recovered from an enforcement pause',
+        fallback: 'Scheduler stays paused; the release is retried on the next quota collection',
+        reason: `resumeScheduler threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Scheduled jobs remain paused until a later release succeeds',
+      });
       return false;
     }
     this.enforcementPaused = false;

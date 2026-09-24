@@ -26,3 +26,5 @@ On every usage reading, if this brake is the thing holding the tasks, and usage 
 ## What you need to decide
 
 Nothing. This is a defect fix. The brake was always meant to protect usage, never to switch the scheduled work off for good.
+
+If a release attempt ever fails, it is reported as a degradation, not just written to a log, and the next usage reading tries again. A brake that stays on must never stay on silently.
