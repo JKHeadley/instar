@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-24T19:31:54.434Z",
+  "slug": "agent-driven-relogin",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/ChromeCdpReloginBrowser.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds no self-triggered action: it ENDS a drive early (operator-only park) instead of retrying; the warm-up in this branch is bounded once per drive inside an admitted episode"
+  },
+  "verdict": "pass"
+}

@@ -52,3 +52,7 @@ When the hold budget runs out, the driver closes the automated browser, runs the
 ## Class-Closure Declaration
 
 - **unbounded-self-action:** `n/a` — the plain warm-up is not a self-triggered loop: it runs at most once per drive (a per-drive flag), a drive runs only inside an admitted episode bounded by `maxAttempts` (3), the drive deadline and the existing per-account breaker, and the seat lease prevents concurrent runs on a profile. Worst case per episode: 3 warm-ups of 45 s.
+
+## Follow-up — provider verification at the Authorize step (2026-09-24)
+
+After a consent click, if the page is still on the authorize step 15 s later the drive ends `operator-only / captcha` (parks; the existing one-strike challenge breaker applies, per the parent's rule never to retry through provider risk controls). Visible hCaptcha frames classify as `captcha`; hidden frames are ignored. Over-block: a genuinely slow authorize response (> 15 s) is handed to the operator rather than waited out — accepted, since Claude's redirect is normally sub-second and the cost is one operator tap. Under-block: none new. Never solves or interacts with a challenge.

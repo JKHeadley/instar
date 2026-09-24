@@ -766,7 +766,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       let pageClass = structuralClass || 'unknown';
       if (structuralClass) { /* structural match wins; the prose chain is skipped */ }
       else if (isInterstitial) pageClass = 'interstitial';
-      else if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
+      else if (Array.from(document.querySelectorAll('iframe[src*="hcaptcha" i]')).some((f) => { const r = f.getBoundingClientRect(); return r.width > 50 && r.height > 50; }) || has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
       else if (has(/check your phone|phone verification|text message|send a code to your phone/)) pageClass = 'phone-confirmation';
       else if (hasGoogleSignIn) pageClass = 'provider-choice';
       else if (location.origin === 'https://auth.openai.com'

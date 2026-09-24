@@ -219,3 +219,24 @@ describe('Cloudflare hold that never clears under automation (live 2026-09-24)',
     expect(f.browser.open).toHaveBeenCalledOnce();
   });
 });
+
+describe('consent click that never goes through (live 2026-09-24: invisible hCaptcha behind Authorize)', () => {
+  it('hands the sign-in to the operator instead of retrying once the page stays on authorize past the window', async () => {
+    let t = 1_000;
+    const pages = [snap('authorize', { requestedScopes: ['user:profile'] })];
+    const browser: ReloginBrowserPort = {
+      open: vi.fn(async () => {}), snapshot: vi.fn(async () => pages[0]),
+      chooseExpectedAccount: vi.fn(async () => {}), fillPublic: vi.fn(async () => {}), fillSecret: vi.fn(async () => {}),
+      click: vi.fn(async () => {}), readPasteCode: vi.fn(async () => null),
+      wait: vi.fn(async (ms: number) => { t += ms; }), close: vi.fn(async () => {}),
+      observeControls: vi.fn(async () => obs([{ n: 1, text: 'Authorize' }])),
+      clickControl: vi.fn(async () => {}),
+    };
+    const navigate = vi.fn(async (input: AgentNavigationInput) => input.offered.includes('click:1') && !(browser.clickControl as ReturnType<typeof vi.fn>).mock.calls.length ? 'click:1' : 'wait');
+    const driver = new AnthropicReloginBrowserDriver({ browser, navigate, navigation: 'agent', now: () => t,
+      seatLease: { acquire: () => ({ acquired: true }), release: vi.fn() }, resolveSecret: async () => null,
+      supervise: async () => { throw new Error('unused'); }, maxSteps: 40 });
+    expect(await driver.drive(baseRequest)).toEqual({ outcome: 'operator-only', failureClass: 'captcha' });
+    expect(browser.clickControl).toHaveBeenCalledOnce();
+  });
+});

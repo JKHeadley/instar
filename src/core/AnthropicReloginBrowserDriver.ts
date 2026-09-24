@@ -149,6 +149,14 @@ export const INTERSTITIAL_POLL_MS = 3_000;
 /** How long the plain, unautomated warm-up browser runs when a hold will not clear under automation. */
 export const PLAIN_WARM_UP_MS = 45_000;
 
+/**
+ * After a consent/authorize click, how long the page may stay on the authorize step before the
+ * drive treats it as a provider human-verification check (live 2026-09-24: Claude's Authorize
+ * button spun forever behind an invisible hCaptcha under automation). The drive then stops and
+ * hands the sign-in to the operator instead of retrying through a risk control.
+ */
+export const CONSENT_STUCK_MS = 15_000;
+
 const ANTHROPIC_ORIGINS = [
   'https://claude.ai',
   'https://claude.com',
@@ -211,6 +219,7 @@ export class AnthropicReloginBrowserDriver {
     const recentSteps: string[] = [];
     let outcomeNote = 'unfinished';
     let warmedUp = false;
+    const consent = { clickedAt: 0 };
     try {
       signal.throwIfAborted();
       await bounded(this.deps.browser.open(request.verificationUrl));
@@ -248,6 +257,10 @@ export class AnthropicReloginBrowserDriver {
         }
         if (!scopesAllowed(snapshot.requestedScopes, request.allowedScopes))
           return { outcome: 'operator-only', failureClass: 'permission-expansion' };
+        if (consent.clickedAt > 0 && snapshot.pageClass === 'authorize' && this.now() - consent.clickedAt >= CONSENT_STUCK_MS) {
+          outcomeNote = 'consent click did not go through — provider verification; handed to the operator';
+          return { outcome: 'operator-only', failureClass: 'captcha' };
+        }
         if (snapshot.pageClass === 'captcha' || snapshot.pageClass === 'google-risk-challenge')
           return { outcome: 'operator-only', failureClass: 'captcha' };
         // A terminal passkey page (Workspace refusal, already enrolled, throttled, not
@@ -273,7 +286,7 @@ export class AnthropicReloginBrowserDriver {
           return code ? { outcome: 'approved', pasteCode: code } : { outcome: 'transient', failureClass: 'provider-transient' };
         }
         if (agent) {
-          const ended = await this.agentStep(snapshot, request, resolvedSecrets, recentSteps, bounded);
+          const ended = await this.agentStep(snapshot, request, resolvedSecrets, recentSteps, bounded, consent);
           if (ended) return ended;
           continue;
         }
@@ -282,6 +295,7 @@ export class AnthropicReloginBrowserDriver {
         const action = await bounded(this.deps.supervise({ snapshot, allowedActions: allowed }));
         if (!allowed.includes(action)) return { outcome: 'refused', failureClass: 'provider-rejected' };
         const acted = await bounded(this.perform(action, request, resolvedSecrets));
+        if (action === 'click-authorize' && consent.clickedAt === 0) consent.clickedAt = this.now();
         if (!acted) return { outcome: 'refused', failureClass: 'vault-reference-missing' };
       }
       return { outcome: 'transient', failureClass: 'provider-transient' };
@@ -310,6 +324,7 @@ export class AnthropicReloginBrowserDriver {
     resolvedSecrets: Set<string>,
     recentSteps: string[],
     bounded: <T>(work: Promise<T>) => Promise<T>,
+    consent: { clickedAt: number },
   ): Promise<BrowserRepairResult | null> {
     const observation = await bounded(this.deps.browser.observeControls!());
     const offer = buildAgentOffer(snapshot, observation, request, [...resolvedSecrets]);
@@ -335,6 +350,7 @@ export class AnthropicReloginBrowserDriver {
     if (control) {
       // Re-checked at click time: the browser refuses unless control n still has the same text.
       await bounded(this.deps.browser.clickControl!(control.n, control.text, control.identities));
+      if (snapshot.pageClass === 'authorize' && consent.clickedAt === 0) consent.clickedAt = this.now();
       recentSteps.push(`${token} "${control.label}"`);
       return null;
     }
