@@ -17,6 +17,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { parseInstrumentAssessment } from '../core/InstrumentAssessment.js';
 import type { JevJobCompletionAudit } from './JevJobCompletionAudit.js';
+import { findClaudeJobTranscript, readJobTranscriptEvidence } from './jobTranscriptEvidence.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -1840,13 +1841,23 @@ export class JobScheduler {
       // detached; strictly BEFORE the IntegrationGate await below (tested
       // ordering invariant; spec jev-job-supervision.md §A).
       try {
+        // The pane is usually gone by now, so `output` is empty for most model-
+        // session jobs. The transcript holds what the job actually did — hand
+        // the audit that, falling back to the pane capture when unavailable.
+        let auditOutput = output;
+        if (this.jevAudit && (session.framework ?? 'claude-code') === 'claude-code' && session.claudeSessionId) {
+          const evidence = readJobTranscriptEvidence(
+            findClaudeJobTranscript(session.claudeSessionId, session.cwd ?? path.dirname(this.stateDir)),
+          );
+          if (evidence) auditOutput = output.trim() ? `${evidence}\n[pane tail]\n${output}` : evidence;
+        }
         this.jevAudit?.capture({
           runId,
           slug: job.slug,
           goal: job.description ?? job.slug,
           result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
           trigger: session.triggeredBy,
-          output,
+          output: auditOutput,
           declaredEffects: job.declaredEffects, conditionalEffects: job.conditionalEffects,
           completionAudit: job.completionAudit,
           workDir: path.dirname(this.stateDir),
