@@ -152,3 +152,44 @@ describe('structural absence: the wake-reaper path never reaches the audit', () 
     expect(src.match(/this\.jevAudit\?\.capture\(/g)?.length).toBe(3); // model-session + script then/catch
   });
 });
+
+describe('conditionalEffects reaches the INSTALLED manifest (the loader reads the manifest, not the frontmatter)', () => {
+  it('buildPerSlugManifest carries conditionalEffects', async () => {
+    const { buildPerSlugManifest } = await import('../../src/scheduler/buildPerSlugManifest.js');
+    const m = buildPerSlugManifest({
+      slug: 'x', origin: 'instar', schedule: '0 * * * *', priority: 'low',
+      expectedDurationMinutes: 5, enabled: true, execute: { type: 'agentmd' },
+      conditionalEffects: ['.instar/MEMORY.md'],
+    } as never);
+    expect(m.conditionalEffects).toEqual(['.instar/MEMORY.md']);
+  });
+
+  it('installBuiltinJobs writes the two declaring jobs with their conditional effects — read from the installed artifact', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-cond-install-'));
+    dirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    const report = installBuiltinJobs({
+      agentStateDir: path.join(dir, '.instar'),
+      packageRoot: path.resolve(__dirname, '../..'),
+      port: 4042,
+    });
+    expect(report.errors).toEqual([]);
+    const read = (slug: string) => JSON.parse(fs.readFileSync(path.join(dir, '.instar', 'jobs', 'schedule', `${slug}.json`), 'utf8'));
+    expect(read('reflection-trigger').conditionalEffects).toEqual(['.instar/MEMORY.md']);
+    expect(read('commitment-detection').conditionalEffects).toEqual(['.instar/state/commitment-detection-bookmark.json']);
+    // The templates instruct the run to print the claim marker for exactly those paths.
+    const tpl = (slug: string) => fs.readFileSync(path.resolve(__dirname, `../../src/scaffold/templates/jobs/instar/${slug}.md`), 'utf8');
+    expect(tpl('reflection-trigger')).toContain('EFFECT: .instar/MEMORY.md');
+    expect(tpl('commitment-detection')).toContain('EFFECT: .instar/state/commitment-detection-bookmark.json');
+  });
+});
+
+describe('conditionalEffects shares the declaredEffects jail at load', () => {
+  it('accepts a repo-relative entry and refuses traversal/absolute by name', () => {
+    const m = validateManifest(baseManifest({ conditionalEffects: ['.instar/MEMORY.md'] }));
+    expect(m.conditionalEffects).toEqual(['.instar/MEMORY.md']);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: ['../escape.md'] }))).toThrow(/conditionalEffects.*repo-relative/);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: ['/etc/passwd'] }))).toThrow(/conditionalEffects.*repo-relative/);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: Array.from({ length: 9 }, (_, i) => `f${i}`) }))).toThrow(/at most 8/);
+  });
+});

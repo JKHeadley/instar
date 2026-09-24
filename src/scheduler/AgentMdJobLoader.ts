@@ -100,6 +100,7 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   // through PerSlugManifest + manifestToJobDefinition, never dead vocabulary:
   'completionAudit',
   'declaredEffects',
+  'conditionalEffects',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -162,6 +163,8 @@ export interface PerSlugManifest {
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */
   declaredEffects?: string[];
+  /** Same jail; verified only when the run claims the path (`EFFECT: <path>`). */
+  conditionalEffects?: string[];
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────
@@ -674,17 +677,21 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   ) {
     throw new Error(`${prefix}: "completionAudit" must be "excluded", "eligible" or "priority" if provided, got "${j.completionAudit}"`);
   }
-  if (j.declaredEffects !== undefined) {
-    if (!Array.isArray(j.declaredEffects) || j.declaredEffects.some((e) => typeof e !== 'string')) {
-      throw new Error(`${prefix}: "declaredEffects" must be an array of strings if provided`);
+  // Both effect lists share one jail and one shape; the only difference is
+  // WHEN the audit verifies them (always vs. only-when-claimed).
+  for (const key of ['declaredEffects', 'conditionalEffects'] as const) {
+    const list = j[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.some((e) => typeof e !== 'string')) {
+      throw new Error(`${prefix}: "${key}" must be an array of strings if provided`);
     }
-    if (j.declaredEffects.length > 8) {
-      throw new Error(`${prefix}: "declaredEffects" allows at most 8 entries`);
+    if (list.length > 8) {
+      throw new Error(`${prefix}: "${key}" allows at most 8 entries`);
     }
     // Load-time jail: repo-relative only — no absolute paths, no traversal.
-    for (const e of j.declaredEffects as string[]) {
+    for (const e of list as string[]) {
       if (e.startsWith('/') || e.startsWith('\\') || /^[A-Za-z]:/.test(e) || e.split('/').includes('..')) {
-        throw new Error(`${prefix}: "declaredEffects" entry "${e}" is refused — repo-relative paths only (no absolute, no "..")`);
+        throw new Error(`${prefix}: "${key}" entry "${e}" is refused — repo-relative paths only (no absolute, no "..")`);
       }
     }
   }
@@ -1253,6 +1260,7 @@ function manifestToJobDefinition(
     perMachineIndependent: manifest.perMachineIndependent,
     completionAudit: manifest.completionAudit,
     declaredEffects: manifest.declaredEffects,
+    conditionalEffects: manifest.conditionalEffects,
   };
 
   if (manifest.execute.type === 'agentmd') {

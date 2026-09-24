@@ -49,6 +49,8 @@ export interface BuildPerSlugManifestInput {
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** Repo-relative expected outputs the audit verifies (max 8, jailed). */
   declaredEffects?: string[];
+  /** Same jail; verified only when the run claims the path on stdout. */
+  conditionalEffects?: string[];
 }
 
 export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugManifest {
@@ -74,6 +76,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.disabledAtBodyHash !== undefined) m.disabledAtBodyHash = input.disabledAtBodyHash;
   if (input.completionAudit !== undefined) m.completionAudit = input.completionAudit;
   if (input.declaredEffects !== undefined) m.declaredEffects = input.declaredEffects;
+  if (input.conditionalEffects !== undefined) m.conditionalEffects = input.conditionalEffects;
   return m;
 }
 

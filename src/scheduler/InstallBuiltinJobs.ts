@@ -212,6 +212,9 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       declaredEffects: Array.isArray(frontmatter.declaredEffects)
         ? (frontmatter.declaredEffects as unknown[]).filter((e): e is string => typeof e === 'string')
         : undefined,
+      conditionalEffects: Array.isArray(frontmatter.conditionalEffects)
+        ? (frontmatter.conditionalEffects as unknown[]).filter((e): e is string => typeof e === 'string')
+        : undefined,
       disabledAtBodyHash: existingDisabledAtBodyHash,
     });
 
