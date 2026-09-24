@@ -29,6 +29,12 @@ export interface SubscriptionReloginOrchestratorDeps {
   /** Must be idempotent for episode.id and re-observe an existing pending attempt. */
   startOrRecoverLogin: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<ReloginArtifact>;
   driveBrowser: (episode: SubscriptionReloginEpisode, artifact: ReloginArtifact, signal: AbortSignal) => Promise<BrowserRepairResult>;
+  /**
+   * The event class recorded when a drive starts. Lets the audit trail show WHICH driver ran
+   * (spec agent-driven-relogin: `agent-drive-started` when the agent navigates). Default
+   * `browser-drive-started`.
+   */
+  driveEventClass?: (episode: SubscriptionReloginEpisode) => string;
   /** Readiness-checks the pane and never blind-types. The code is memory-only. */
   finishCli: (episode: SubscriptionReloginEpisode, pasteCode: string | undefined, signal: AbortSignal) => Promise<'complete' | 'pending'>;
   verifyIdentity: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<'match' | 'mismatch' | 'unavailable'>;
@@ -127,7 +133,7 @@ export class SubscriptionReloginOrchestrator {
       if (ep.reissueCount > this.maxReissues)
         return this.fail(ep, 'attempt-budget-exhausted', 'artifact-reissue-budget-exhausted');
       ep = this.deps.store.transition(ep.id, {
-        expectedVersion: ep.version, to: 'browser-driving', eventClass: 'browser-drive-started', at: this.isoNow(),
+        expectedVersion: ep.version, to: 'browser-driving', eventClass: this.deps.driveEventClass?.(ep) ?? 'browser-drive-started', at: this.isoNow(),
       });
       let result: BrowserRepairResult;
       try { result = await this.deps.driveBrowser(ep, artifact, signal); }

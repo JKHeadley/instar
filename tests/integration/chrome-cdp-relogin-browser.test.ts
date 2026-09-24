@@ -43,6 +43,43 @@ describe('ChromeCdpReloginBrowser real process', () => {
     expect(isClosedOpenAiDeviceApproval({ ...base, pathname: '/oauth/authorize' })).toBe(false);
     expect(isClosedOpenAiDeviceApproval({ ...base, origin: 'https://auth.openai.com.evil.example' })).toBe(false);
   });
+  it.skipIf(resolveChromeExecutable() === null)('agent navigation: lists visible controls without input values and clicks the numbered control only while its text is unchanged', async () => {
+    // Spec agent-driven-relogin: a page no classifier knows is still actionable — the driver sees
+    // the numbered visible controls (never an input value) and the click re-checks the text.
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      const html = `<!doctype html><html><head><title>Review our updated terms</title></head><body>
+        <input type="password" value="hunter-2-secret"><input type="text" value="typed-value">
+        <button id="hidden" style="display:none">Hidden</button>
+        <button disabled>Disabled</button>
+        <div data-email="other@example.com"><span>Other Person</span></div>
+        <a href="#terms">Read the terms</a>
+        <button id="agree" onclick="document.title='agreed'">I agree and continue</button>
+        </body></html>`;
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      const observed = await browser.observeControls();
+      const texts = observed.controls.map((c) => c.text);
+      expect(texts).toContain('Read the terms');
+      expect(texts).toContain('I agree and continue');
+      expect(texts).not.toContain('Hidden');
+      expect(texts).not.toContain('Disabled');
+      expect(observed.controls.find((c) => c.text === 'Other Person')?.identities).toEqual(['other@example.com']);
+      expect(observed.inputKinds).toEqual(expect.arrayContaining(['password', 'text']));
+      expect(JSON.stringify(observed)).not.toContain('hunter-2-secret');
+      expect(JSON.stringify(observed)).not.toContain('typed-value');
+      const agree = observed.controls.find((c) => c.text === 'I agree and continue')!;
+      await expect(browser.clickControl(agree.n, 'Something else', [])).rejects.toThrow('browser-element-not-found');
+      const other = observed.controls.find((c) => c.text === 'Other Person')!;
+      // Same text, different account: refused.
+      await expect(browser.clickControl(other.n, other.text, ['operator@example.com'])).rejects.toThrow('browser-element-not-found');
+      await browser.clickControl(agree.n, agree.text, agree.identities);
+      expect((await browser.observeControls()).title).toBe('agreed');
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('classifies a Cloudflare "Just a moment" bot-check hold as interstitial, not captcha or unknown', async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
     dirs.push(profile);

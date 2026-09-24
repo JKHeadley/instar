@@ -121,6 +121,69 @@ describe('production-shaped subscription re-login runtime', () => {
     runtime.close();
   });
 
+  it('agent navigation: the model gets through a page no classifier knows, the audit trail names the agent driver, and verification still decides success', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-codex-runtime-')); dirs.push(stateDir);
+    const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
+    let account: SubscriptionAccount = { id: 'codex-1', nickname: 'Codex account', email: 'person@example.com',
+      provider: 'openai', framework: 'codex-cli', configHome: path.join(stateDir, 'slot'),
+      status: 'needs-reauth', enrolledAt: '2026-01-01T00:00:00Z', version: 1 };
+    let source: SubscriptionLoginEpisode = { id: 72, accountId: account.id, machineId: 'machine-1',
+      openedAt: '2026-08-28T00:00:00Z', closedAt: null, causeClass: 'exchange-failed',
+      corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
+    const pool = { getAvailability: () => ({ state: 'ready' }), get: () => ({ ...account }),
+      update: vi.fn((_id: string, patch: Partial<SubscriptionAccount>) => { account = { ...account, ...patch, version: account.version + 1 }; return account; }) } as unknown as SubscriptionPool;
+    const ledger = { listEpisodes: () => [{ ...source }], recordStatus: vi.fn(() => {
+      source = { ...source, closedAt: '2026-08-28T01:00:00Z', outcome: 'resolved' }; return { changed: true, episodeId: source.id };
+    }) } as unknown as SubscriptionLoginLedger;
+    let pending: any = null;
+    const enrollment = { getById: () => pending, start: vi.fn(async () => (pending = {
+      id: account.id, label: account.nickname, provider: 'openai', framework: 'codex-cli', kind: 'device-code',
+      configHome: account.configHome, verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234',
+      ttlExpiresAt: '2099-01-01T00:00:00Z', status: 'pending', reissueCount: 0,
+      createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:00Z', version: 1,
+    })), refresh: vi.fn() } as unknown as EnrollmentWizard;
+    const profiles = { resolve: () => ({ profile: { id: 'google-1' }, dirExists: true }), listProfiles: () => [{
+      id: 'google-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
+      accounts: [{ service: 'google', identity: account.email, owner: 'operator', vaultRefs: [],
+        loginMethod: 'session-cookie', lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }],
+    }] } as unknown as PlaywrightProfileRegistry;
+    // Page 1 is one no classifier knows ("unknown"); the agent clicks its way past it; page 2 is success.
+    let clicked = false;
+    const browser: ReloginBrowserPort = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
+      origin: 'https://auth.openai.com', pageClass: clicked ? 'success' : 'unknown', expectedAccountVisible: false,
+      hasGoogleSignIn: false, hasNext: false, hasAuthorize: false, requestedScopes: [],
+    })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
+    readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}),
+    observeControls: vi.fn(async () => ({ title: 'A brand-new interstitial', path: '/codex/device/notice',
+      inputKinds: [], controls: [{ n: 1, text: 'Sign out', identities: [] }, { n: 2, text: 'Got it, continue', identities: [] }] })),
+    clickControl: vi.fn(async () => { clicked = true; }) };
+    const navigate = vi.fn(async (input: { offered: string[] }) => input.offered.includes('click:2') ? 'click:2' : 'give-up');
+    const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
+    const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
+        minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-rollout', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
+      identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
+      pasteBack, createBrowser: () => browser, resolveSecret: async () => null,
+      supervise: async () => { throw new Error('closed supervisor must not run in agent mode'); },
+      navigation: 'agent', navigate,
+    });
+    await runtime.service.tick();
+    const suggested = runtime.store.list()[0];
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    const eventClasses = runtime.store.listEvents(suggested.id).map((event) => event.eventClass);
+    expect(eventClasses).toContain('agent-drive-started');
+    expect(eventClasses).not.toContain('browser-drive-started');
+    expect(browser.clickControl).toHaveBeenCalledWith(2, 'Got it, continue', []);
+    // The floor removed "Sign out" before the model ever saw the list.
+    expect(JSON.stringify(navigate.mock.calls)).not.toContain('Sign out');
+    expect(enrollment.start).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', framework: 'codex-cli', openBrowser: false }));
+    expect(browser.open).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
+    expect(pasteBack.finish).not.toHaveBeenCalled();
+    expect(account.status).toBe('active');
+    runtime.close();
+  });
+
   it('replaces a long-lived dashboard login at attempt start instead of reading its reissue history as the repair budget', async () => {
     // Regression: episode 4ad1e073 (2026-09-21) adopted a dashboard login the auto-reissuer had
     // refreshed 17 times, read reissueCount 17 > maxReissues 2 as its own budget, and failed ~1s

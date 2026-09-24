@@ -35,6 +35,9 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('One-click repair across all machines');
     expect(once).toContain('POST /subscription-relogin/repair-cell');
     expect(once).toContain('Never ask for or paste credentials into chat');
+    expect(first.upgraded).toContain('CLAUDE.md: added agent-navigated sign-in awareness');
+    expect(once).toContain('Agent-navigated sign-in (dev-gated)');
+    expect(once.match(/Agent-navigated sign-in \(dev-gated\)/g)).toHaveLength(1);
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });

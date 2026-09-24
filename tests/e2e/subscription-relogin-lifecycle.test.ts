@@ -297,6 +297,80 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
     expect(browser.open).toHaveBeenCalledWith('https://claude.ai/oauth/authorize');
   });
 
+  it('agent navigation is alive end to end: a page no classifier knows is crossed by the agent and the events route names the agent driver', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-complete-e2e-')); roots.push(root);
+    const cfg = config(root);
+    const userDataDir = path.join(root, 'browser-profile'); fs.mkdirSync(userDataDir, { recursive: true });
+    let account: any = { id: 'acct-1', nickname: 'Disposable Claude', email: 'disposable@example.test',
+      provider: 'anthropic', framework: 'claude-code', configHome: path.join(root, 'slot'),
+      status: 'needs-reauth', enrolledAt: '2026-01-01T00:00:00Z', version: 1 };
+    let source: any = { id: 71, accountId: account.id, machineId: 'machine-1',
+      openedAt: '2026-08-28T00:00:00Z', closedAt: null, causeClass: 'exchange-failed',
+      corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
+    const pool: any = { getAvailability: () => ({ state: 'ready' }),
+      get: (id: string) => id === account.id ? { ...account } : null,
+      update: vi.fn((_id: string, patch: Record<string, unknown>) => {
+        account = { ...account, ...patch, version: account.version + 1 }; return account;
+      }) };
+    const ledger: any = { listEpisodes: () => [{ ...source }], recordStatus: vi.fn(() => {
+      source = { ...source, closedAt: '2026-08-28T01:00:00Z', outcome: 'resolved' };
+      return { changed: true, episodeId: source.id };
+    }) };
+    let pending: any = null;
+    const enrollment: any = { getById: () => pending, start: vi.fn(async () => (pending = {
+      id: account.id, label: account.nickname, provider: 'anthropic', framework: 'claude-code',
+      kind: 'url-code-paste', configHome: account.configHome,
+      verificationUrl: 'https://claude.ai/oauth/authorize', ttlExpiresAt: '2099-01-01T00:00:00Z',
+      status: 'pending', reissueCount: 0, createdAt: '2026-08-28T00:00:00Z',
+      updatedAt: '2026-08-28T00:00:00Z', version: 1 })), refresh: vi.fn() };
+    const profiles: any = { resolve: () => ({ profile: { id: 'profile-1' }, dirExists: true }),
+      listProfiles: () => [{ id: 'profile-1', userDataDir, description: '', isDefault: false,
+        createdAt: '', dirExists: true, accounts: [{ service: 'anthropic', identity: account.email,
+          owner: 'operator', vaultRefs: [], loginMethod: 'session-cookie', lastAsserted: true,
+          lastVerifiedAt: null, note: '', danglingRefs: [] }] }] };
+    let crossed = false;
+    const browser: any = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
+      origin: 'https://claude.ai', pageClass: crossed ? 'success' : 'unknown', expectedAccountVisible: false,
+      hasNext: false, hasAuthorize: false, requestedScopes: [] })), chooseExpectedAccount: vi.fn(),
+      fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(), readPasteCode: vi.fn(),
+      wait: vi.fn(), close: vi.fn(async () => {}),
+      observeControls: vi.fn(async () => ({ title: 'Something new', path: '/login/new-step', inputKinds: [],
+        controls: [{ n: 1, text: 'Continue', identities: [] }] })),
+      clickControl: vi.fn(async () => { crossed = true; }) };
+    const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root,
+      machineId: 'machine-1', mode: 'approval', pool, ledger, enrollment, profiles,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as any,
+      identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as any,
+      pasteBack: { finish: vi.fn(async () => 'complete') } as any,
+      createBrowser: () => browser, resolveSecret: async () => null,
+      supervise: async () => { throw new Error('closed supervisor must not run in agent mode'); },
+      navigation: 'agent', navigate: async (input) => input.offered[0]!,
+    });
+    await runtime.service.tick();
+    const suggested = runtime.store.list()[0];
+    expect(suggested).toMatchObject({ state: 'suggested', accountId: 'acct-1' });
+    const server = makeServer(cfg, { store: runtime.store,
+      approve: (id: string) => runtime.service.approve(id),
+      cancel: (id: string) => runtime.service.cancel(id),
+      retry: (id: string) => runtime.service.retry(id), close: () => runtime.close() });
+    await server.start();
+    const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
+    const approved = await request(server.getApp()).post(`/subscription-relogin/${suggested.id}/approve`)
+      .set('Authorization', 'Bearer relogin-api-token')
+      .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
+    expect(approved.status).toBe(202);
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)
+      .set('Authorization', 'Bearer relogin-api-token');
+    expect(events.status).toBe(200);
+    expect(events.body.episode).toMatchObject({ state: 'succeeded', sourceEpisodeId: 71 });
+    expect(account.status).toBe('active');
+    expect(source.closedAt).not.toBeNull();
+    expect(browser.open).toHaveBeenCalledWith('https://claude.ai/oauth/authorize');
+    expect(browser.clickControl).toHaveBeenCalledWith(1, 'Continue', []);
+    expect(JSON.stringify(events.body)).toContain('agent-drive-started');
+  });
+
   it('keeps clean installs and upgraded agents on the same fleet-dark approval-shaped defaults', async () => {
     const init = getInitDefaults('managed-project') as any;
     expect(init.subscriptionPool.assistedRelogin).toMatchObject({
