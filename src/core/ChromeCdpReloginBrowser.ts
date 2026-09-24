@@ -238,6 +238,33 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     return this.openTcp(url);
   }
 
+  /**
+   * Run this profile's Chrome with NO debugging port or pipe on `url` for `ms`, then quit it
+   * (SIGTERM, then SIGKILL). Used when a Cloudflare hold never clears under automation: the
+   * plain browser passes it and the clearance cookie stays in the profile. Never called while
+   * the automated browser is open (one Chrome per profile).
+   */
+  async warmUpPlain(url: string, ms: number): Promise<void> {
+    if (this.child) throw new Error('relogin-browser-still-open');
+    const target = new URL(url);
+    if (target.protocol !== 'https:') throw new Error('relogin-warm-up-url-refused');
+    const args = [`--user-data-dir=${this.userDataDir}`, '--no-first-run', '--no-default-browser-check',
+      '--disable-sync', '--disable-component-update', target.toString()];
+    if (this.headless) args.unshift('--headless=new');
+    const child = spawn(this.chromePath, args, { stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(5_000, Math.min(120_000, ms))));
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+        if (!await this.waitForChildExit(child, 5_000)) {
+          child.kill('SIGKILL');
+          await this.waitForChildExit(child, 2_000);
+        }
+      }
+    }
+  }
+
   /** Legacy transport: TCP debugging port + a page-level WebSocket (non-passkey sessions). */
   private async openTcp(url: string): Promise<void> {
     const portFile = path.join(this.userDataDir, 'DevToolsActivePort');
@@ -739,7 +766,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       let pageClass = structuralClass || 'unknown';
       if (structuralClass) { /* structural match wins; the prose chain is skipped */ }
       else if (isInterstitial) pageClass = 'interstitial';
-      else if (has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
+      else if (Array.from(document.querySelectorAll('iframe[src*="hcaptcha" i]')).some((f) => { const r = f.getBoundingClientRect(); return r.width > 50 && r.height > 50; }) || has(/captcha|recaptcha|prove you(?:'|’)re not a robot|unusual traffic/)) pageClass = 'captcha';
       else if (has(/check your phone|phone verification|text message|send a code to your phone/)) pageClass = 'phone-confirmation';
       else if (hasGoogleSignIn) pageClass = 'provider-choice';
       else if (location.origin === 'https://auth.openai.com'

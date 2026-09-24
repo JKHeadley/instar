@@ -182,3 +182,61 @@ describe('resolveReloginNavigation', () => {
     expect(resolveReloginNavigation('agent', {})).toBe('agent');
   });
 });
+
+describe('Cloudflare hold that never clears under automation (live 2026-09-24)', () => {
+  function driverWith(snapshots: ReloginBrowserSnapshot[], warmUp: boolean) {
+    let index = 0;
+    const browser: ReloginBrowserPort = {
+      open: vi.fn(async () => {}),
+      snapshot: vi.fn(async () => snapshots[Math.min(index++, snapshots.length - 1)]),
+      chooseExpectedAccount: vi.fn(async () => {}), fillPublic: vi.fn(async () => {}), fillSecret: vi.fn(async () => {}),
+      click: vi.fn(async () => {}), readPasteCode: vi.fn(async () => 'returned-code'),
+      wait: vi.fn(async () => {}), close: vi.fn(async () => {}),
+      ...(warmUp ? { warmUpPlain: vi.fn(async () => {}) } : {}),
+    };
+    const driver = new AnthropicReloginBrowserDriver({ browser, seatLease: { acquire: () => ({ acquired: true }), release: vi.fn() },
+      resolveSecret: async () => null, supervise: async ({ allowedActions }) => allowedActions[0]!, interstitialMaxMs: 3_000 });
+    return { browser, driver };
+  }
+
+  it('runs one plain warm-up, reopens the sign-in link, and continues once the hold is gone', async () => {
+    const f = driverWith([snap('interstitial'), snap('interstitial'), snap('paste-code')], true);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(f.browser.warmUpPlain).toHaveBeenCalledOnce();
+    expect(f.browser.warmUpPlain).toHaveBeenCalledWith(baseRequest.verificationUrl, 45_000);
+    expect(f.browser.open).toHaveBeenCalledTimes(2);
+  });
+
+  it('warms up at most once per drive, then ends the drive as transient', async () => {
+    const f = driverWith([snap('interstitial')], true);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.browser.warmUpPlain).toHaveBeenCalledOnce();
+  });
+
+  it('without a warm-up capability keeps the old bounded behaviour', async () => {
+    const f = driverWith([snap('interstitial')], false);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.browser.open).toHaveBeenCalledOnce();
+  });
+});
+
+describe('consent click that never goes through (live 2026-09-24: invisible hCaptcha behind Authorize)', () => {
+  it('hands the sign-in to the operator instead of retrying once the page stays on authorize past the window', async () => {
+    let t = 1_000;
+    const pages = [snap('authorize', { requestedScopes: ['user:profile'] })];
+    const browser: ReloginBrowserPort = {
+      open: vi.fn(async () => {}), snapshot: vi.fn(async () => pages[0]),
+      chooseExpectedAccount: vi.fn(async () => {}), fillPublic: vi.fn(async () => {}), fillSecret: vi.fn(async () => {}),
+      click: vi.fn(async () => {}), readPasteCode: vi.fn(async () => null),
+      wait: vi.fn(async (ms: number) => { t += ms; }), close: vi.fn(async () => {}),
+      observeControls: vi.fn(async () => obs([{ n: 1, text: 'Authorize' }])),
+      clickControl: vi.fn(async () => {}),
+    };
+    const navigate = vi.fn(async (input: AgentNavigationInput) => input.offered.includes('click:1') && !(browser.clickControl as ReturnType<typeof vi.fn>).mock.calls.length ? 'click:1' : 'wait');
+    const driver = new AnthropicReloginBrowserDriver({ browser, navigate, navigation: 'agent', now: () => t,
+      seatLease: { acquire: () => ({ acquired: true }), release: vi.fn() }, resolveSecret: async () => null,
+      supervise: async () => { throw new Error('unused'); }, maxSteps: 40 });
+    expect(await driver.drive(baseRequest)).toEqual({ outcome: 'operator-only', failureClass: 'captcha' });
+    expect(browser.clickControl).toHaveBeenCalledOnce();
+  });
+});

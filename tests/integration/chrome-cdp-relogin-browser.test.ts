@@ -43,6 +43,43 @@ describe('ChromeCdpReloginBrowser real process', () => {
     expect(isClosedOpenAiDeviceApproval({ ...base, pathname: '/oauth/authorize' })).toBe(false);
     expect(isClosedOpenAiDeviceApproval({ ...base, origin: 'https://auth.openai.com.evil.example' })).toBe(false);
   });
+  it.skipIf(resolveChromeExecutable() === null)('a visible hCaptcha frame reads as captcha; a hidden one does not', async () => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      const page = (visible: boolean) => `<!doctype html><html><head><title>Sign in</title></head><body><button>Continue</button>
+        <iframe src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html" width="${visible ? 400 : 0}" height="${visible ? 500 : 0}" style="${visible ? '' : 'display:none'}"></iframe></body></html>`;
+      await browser.open(`data:text/html,${encodeURIComponent(page(true))}`);
+      expect((await browser.snapshot('operator@example.com')).pageClass).toBe('captcha');
+    } finally {
+      await browser.close();
+    }
+    const browser2 = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      const hidden = `<!doctype html><html><head><title>Sign in</title></head><body><button>Continue</button>
+        <iframe src="https://newassets.hcaptcha.com/captcha/v1/x/static/hcaptcha.html" style="display:none"></iframe></body></html>`;
+      await browser2.open(`data:text/html,${encodeURIComponent(hidden)}`);
+      expect((await browser2.snapshot('operator@example.com')).pageClass).not.toBe('captcha');
+    } finally {
+      await browser2.close();
+    }
+  }, 90_000);
+  it.skipIf(resolveChromeExecutable() === null)('plain warm-up runs Chrome with no debugging connection, quits it, and refuses while the automated browser is open', async () => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    await browser.open('data:text/html,<title>x</title>');
+    await expect(browser.warmUpPlain('https://example.com/', 5_000)).rejects.toThrow('relogin-browser-still-open');
+    await browser.close();
+    await expect(browser.warmUpPlain('http://example.com/', 5_000)).rejects.toThrow('relogin-warm-up-url-refused');
+    SafeFsExecutor.safeRmSync(path.join(profile, 'DevToolsActivePort'), { force: true, operation: 'chrome-cdp-relogin-browser.test warm-up port cleanup' }); // left by the automated open above
+    const started = Date.now();
+    await browser.warmUpPlain('https://example.com/', 5_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
+    // No debugging port was ever opened by the plain run.
+    expect(fs.existsSync(path.join(profile, 'DevToolsActivePort'))).toBe(false);
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('agent navigation: lists visible controls without input values and clicks the numbered control only while its text is unchanged', async () => {
     // Spec agent-driven-relogin: a page no classifier knows is still actionable — the driver sees
     // the numbered visible controls (never an input value) and the click re-checks the text.
