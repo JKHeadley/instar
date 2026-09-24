@@ -165,12 +165,19 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   private readonly policy: OriginPolicy;
   private child: ChildProcess | null = null;
   private transport: CdpTransport | null = null;
+  /** TCP mode: the debugging port, the main page target, the targets present at open, and the target the socket is on now. */
+  private tcpPort: number | null = null;
+  private tcpMainTarget: { id: string; wsUrl: string } | null = null;
+  private tcpTargetsAtOpen = new Set<string>();
+  private tcpActiveTargetId: string | null = null;
   private requestId = 0;
   private pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private readonly eventHandlers = new Map<string, EventHandler[]>();
   /** Pipe mode: every attached target by sessionId. */
   private readonly sessions = new Map<string, AttachedSession>();
   private mainSessionId: string | null = null;
+  /** Page targets in attach order; the newest live one is the page the drive reads and acts on. */
+  private readonly pageOrder: string[] = [];
   private mainSessionReady: { resolve: () => void; promise: Promise<void> } | null = null;
   /** The credential currently loaded into the authenticators, or null. */
   private credential: WebAuthnCredential | null = null;
@@ -228,13 +235,20 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     if (this.headless) args.unshift('--headless=new');
     this.child = spawn(this.chromePath, args, { stdio: 'ignore' });
     const port = await this.waitForPort(portFile);
+    this.tcpPort = port;
+    // Remember the targets Chrome opened on its own (the initial about:blank tab) so a page
+    // that appears LATER is recognised as a popup even while its URL is still about:blank.
+    for (const t of await this.listTcpTargets()) this.tcpTargetsAtOpen.add(t.id);
     const target = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, {
       method: 'PUT', signal: AbortSignal.timeout(this.operationTimeoutMs),
     }).then(async (response) => {
       if (!response.ok) throw new Error(`chrome-target-create-${response.status}`);
-      return response.json() as Promise<{ webSocketDebuggerUrl?: string }>;
+      return response.json() as Promise<{ id?: string; webSocketDebuggerUrl?: string }>;
     });
     if (!target.webSocketDebuggerUrl) throw new Error('chrome-target-missing-websocket');
+    this.tcpMainTarget = { id: String(target.id ?? ''), wsUrl: target.webSocketDebuggerUrl };
+    this.tcpTargetsAtOpen.add(this.tcpMainTarget.id);
+    this.tcpActiveTargetId = this.tcpMainTarget.id;
     await this.connectWs(target.webSocketDebuggerUrl);
     await this.send('Page.enable');
     await this.send('Runtime.enable');
@@ -269,7 +283,12 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     this.mainSessionReady = { resolve: resolveReady, promise };
 
     this.on('Target.attachedToTarget', (params) => this.onAttached(params));
-    this.on('Target.detachedFromTarget', (params) => { this.sessions.delete(String(params.sessionId)); });
+    this.on('Target.detachedFromTarget', (params) => {
+      const sid = String(params.sessionId);
+      this.sessions.delete(sid);
+      const at = this.pageOrder.indexOf(sid);
+      if (at >= 0) this.pageOrder.splice(at, 1);
+    });
     this.on('Fetch.requestPaused', (params, sessionId) => this.onRequestPaused(params, sessionId));
     this.on('WebAuthn.credentialAsserted', (params) => {
       const cred = params.credential as { credentialId?: string } | undefined;
@@ -305,10 +324,29 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     if (waiting) {
       try { await this.send('Runtime.runIfWaitingForDebugger', {}, sessionId); } catch { /* @silent-fallback-ok — target may have gone away */ }
     }
-    if (type === 'page' && !this.mainSessionId) {
-      this.mainSessionId = sessionId;
-      this.mainSessionReady?.resolve();
+    if (type === 'page') {
+      this.pageOrder.push(sessionId);
+      if (!this.mainSessionId) {
+        this.mainSessionId = sessionId;
+        this.mainSessionReady?.resolve();
+      }
     }
+  }
+
+  /**
+   * The page the drive currently reads and acts on: the newest live page target (a provider
+   * popup such as Google's "Continue with Google" window), falling back to the main page once
+   * every popup has closed. Before this, every snapshot/fill/click addressed the MAIN page, so a
+   * drive that opened a popup kept re-reading the page behind it (2026-09-23: three attempts
+   * saw `provider-choice`, clicked Google again, and timed out while Google's window sat open).
+   * Navigation, browsing-data clearing and the passkey origin policy stay on the main page.
+   */
+  private activeSessionId(): string | null {
+    for (let i = this.pageOrder.length - 1; i >= 0; i--) {
+      const sid = this.pageOrder[i];
+      if (this.sessions.has(sid)) return sid;
+    }
+    return this.mainSessionId;
   }
 
   /** Everything a target needs BEFORE it is allowed to navigate. */
@@ -530,11 +568,13 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
    */
   async navigateTo(url: string): Promise<void> {
     if (!this.transport) throw new Error('relogin-browser-not-open');
+    await this.followMainPage();
     await this.send('Page.navigate', { url }, this.mainSessionId ?? undefined);
     const deadline = Date.now() + this.operationTimeoutMs;
     for (;;) {
       try {
-        const ready = await this.evaluate<boolean>(`document.readyState === 'complete' || document.readyState === 'interactive'`);
+        // Poll the MAIN page (the one being navigated), not a live popup.
+        const ready = await this.evaluate<boolean>(`document.readyState === 'complete' || document.readyState === 'interactive'`, false, this.mainSessionId);
         if (ready) return;
       } catch {
         // @silent-fallback-ok — mid-navigation the execution context is being replaced; poll until the deadline, then throw below
@@ -551,6 +591,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
    */
   async clearBrowsingData(): Promise<void> {
     if (!this.transport) throw new Error('relogin-browser-not-open');
+    await this.followMainPage();
     const sid = this.mainSessionId ?? undefined;
     await this.send('Network.clearBrowserCookies', {}, sid);
     await this.send('Network.clearBrowserCache', {}, sid);
@@ -611,6 +652,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   // ── ReloginBrowserPort ───────────────────────────────────────────────
 
   async snapshot(expectedIdentity: string): Promise<ReloginBrowserSnapshot> {
+    await this.followNewestPage();
     return this.evaluate<ReloginBrowserSnapshot>(`(() => {
       const expected = ${JSON.stringify(expectedIdentity)}.trim().toLowerCase();
       const body = (document.body?.innerText || '').toLowerCase();
@@ -698,6 +740,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async chooseExpectedAccount(expectedIdentity: string): Promise<void> {
+    await this.followNewestPage();
     // A REAL input click (spec §3.5): Google's choice-list items do not respond
     // to a script-level element.click().
     await this.clickReal(`(() => {
@@ -716,6 +759,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async fillPublic(field: 'email' | 'device-code', value: string): Promise<void> {
+    await this.followNewestPage();
     // Google's identifier field is `input[type="text"]#identifierId`, not type=email (measured 2026-09-20).
     const selector = field === 'email'
       ? 'input[type="email"],input[autocomplete="username"],input#identifierId,input[name="identifier"]'
@@ -724,6 +768,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async fillSecret(field: 'password' | 'totp' | 'backup-code', value: string): Promise<void> {
+    await this.followNewestPage();
     const selector = field === 'password'
       ? 'input[type="password"]'
       : field === 'backup-code'
@@ -733,6 +778,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async click(action: ReloginBrowserClick): Promise<void> {
+    await this.followNewestPage();
     // Exact control labels (spec §3.6: closed page classes, closed action set). The
     // create-confirm click is scoped to an open dialog so a page-level "Continue"
     // can never stand in for the confirmation.
@@ -764,6 +810,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async readPasteCode(): Promise<string | null> {
+    await this.followNewestPage();
     return this.evaluate<string | null>(`(() => {
       const candidates = Array.from(document.querySelectorAll('code,pre,[data-testid*="code" i]'))
         .map((node) => (node.textContent || '').trim()).filter((value) => /^\S{8,512}$/.test(value));
@@ -788,7 +835,12 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     }
     this.pending.clear();
     this.sessions.clear();
+    this.pageOrder.length = 0;
     this.mainSessionId = null;
+    this.tcpPort = null;
+    this.tcpMainTarget = null;
+    this.tcpTargetsAtOpen.clear();
+    this.tcpActiveTargetId = null;
     if (child && child.exitCode === null && child.signalCode === null) {
       child.kill('SIGTERM');
       if (!await this.waitForChildExit(child, 5_000)) {
@@ -836,7 +888,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     })()`);
     if (!point) throw new Error('browser-element-not-found');
-    const sid = this.mainSessionId ?? undefined;
+    const sid = this.activeSessionId() ?? undefined;
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y }, sid);
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sid);
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 }, sid);
@@ -873,8 +925,8 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     await this.wait(500);
   }
 
-  private async evaluate<T>(expression: string, requireTruthy = false): Promise<T> {
-    const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, this.mainSessionId ?? undefined);
+  private async evaluate<T>(expression: string, requireTruthy = false, sessionId: string | null = this.activeSessionId()): Promise<T> {
+    const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId ?? undefined);
     const remote = result.result as { value?: T; exceptionDetails?: unknown } | undefined;
     if (!remote || result.exceptionDetails) throw new Error('browser-evaluation-failed');
     if (requireTruthy && !remote.value) throw new Error('browser-element-not-found');
@@ -894,6 +946,56 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     throw new Error('chrome-launch-timeout');
   }
 
+  /** TCP mode: the page targets Chrome currently reports (newest first). */
+  private async listTcpTargets(): Promise<Array<{ id: string; type: string; url: string; webSocketDebuggerUrl?: string }>> {
+    if (this.tcpPort === null) return [];
+    const response = await fetch(`http://127.0.0.1:${this.tcpPort}/json/list`, { signal: AbortSignal.timeout(this.operationTimeoutMs) });
+    if (!response.ok) throw new Error(`chrome-target-list-${response.status}`);
+    const raw = await response.json() as Array<{ id?: string; type?: string; url?: string; webSocketDebuggerUrl?: string }>;
+    return raw.map((t) => ({ id: String(t.id ?? ''), type: String(t.type ?? ''), url: String(t.url ?? ''), webSocketDebuggerUrl: t.webSocketDebuggerUrl }))
+      .filter((t) => t.type === 'page' && t.id.length > 0);
+  }
+
+  /**
+   * TCP mode: put the page-level socket on the page the drive should read and act on — the
+   * newest page that appeared AFTER open() (a provider popup such as Google's "Continue with
+   * Google" window), or the main page once every popup has closed. The TCP transport is one
+   * socket to ONE target, so before this every snapshot/fill/click addressed the main page and
+   * a drive that opened a popup kept re-reading the page behind it (2026-09-23: three attempts
+   * saw `provider-choice`, clicked Google again, and timed out while Google's window sat open).
+   * Pipe mode gets the same behaviour from `activeSessionId()`.
+   */
+  private async followNewestPage(): Promise<void> {
+    if (this.tcpPort === null || !this.tcpMainTarget) return;
+    let targets: Awaited<ReturnType<typeof this.listTcpTargets>>;
+    try { targets = await this.listTcpTargets(); }
+    catch { return; /* @silent-fallback-ok — an unreadable target list keeps the current page; the next call re-checks */ }
+    const popup = targets.find((t) => !this.tcpTargetsAtOpen.has(t.id) && !/^(chrome|devtools):/.test(t.url));
+    const desired = popup ?? targets.find((t) => t.id === this.tcpMainTarget!.id) ?? null;
+    if (!desired) return;
+    await this.switchTcpTarget(desired.id, desired.webSocketDebuggerUrl ?? (desired.id === this.tcpMainTarget.id ? this.tcpMainTarget.wsUrl : undefined));
+  }
+
+  /** TCP mode: return the socket to the main page (navigation and browsing-data operations act there). */
+  private async followMainPage(): Promise<void> {
+    if (this.tcpPort === null || !this.tcpMainTarget) return;
+    await this.switchTcpTarget(this.tcpMainTarget.id, this.tcpMainTarget.wsUrl);
+  }
+
+  private async switchTcpTarget(targetId: string, wsUrl: string | undefined): Promise<void> {
+    if (targetId === this.tcpActiveTargetId && this.transport?.open) return;
+    if (!wsUrl) return;
+    const previous = this.transport;
+    this.transport = null;
+    for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('cdp-target-switched')); }
+    this.pending.clear();
+    try { previous?.close(); } catch { /* @silent-fallback-ok — the old socket may already be closed by the popup going away */ }
+    await this.connectWs(wsUrl);
+    await this.send('Page.enable');
+    await this.send('Runtime.enable');
+    this.tcpActiveTargetId = targetId;
+  }
+
   private async connectWs(url: string): Promise<void> {
     const socket = new WebSocket(url, { origin: 'http://127.0.0.1' });
     await new Promise<void>((resolve, reject) => {
@@ -907,6 +1009,9 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   private attachTransport(transport: CdpTransport): void {
     this.transport = transport;
     transport.onMessage((raw) => {
+      // A socket that has been replaced (a TCP target switch) must not touch the shared
+      // pending map: its late messages and its asynchronous close belong to the old target.
+      if (this.transport !== transport) return;
       let message: CdpMessage;
       try { message = JSON.parse(raw) as CdpMessage; } catch { return; }
       if (message.id !== undefined) {
@@ -926,6 +1031,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       }
     });
     transport.onClose(() => {
+      if (this.transport !== transport) return;
       for (const [id, entry] of this.pending) {
         this.pending.delete(id); clearTimeout(entry.timer); entry.reject(new Error('cdp-closed'));
       }

@@ -57,6 +57,46 @@ describe('ChromeCdpReloginBrowser real process', () => {
       await browser.close();
     }
   }, 60_000);
+  it.skipIf(resolveChromeExecutable() === null)('follows a provider popup: snapshot, fill and click address the newest live page, then fall back to the main page when it closes', async () => {
+    // 2026-09-23 justin-gmail: "Continue with Google" opened Google's window, but every snapshot kept
+    // reading the main claude.ai page (provider-choice) — the drive clicked Google again and again
+    // and timed out three times while the popup sat open.
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      // No <script> tag in the popup document: it is written from inside the main page's script,
+      // where a literal </script> would end that script early.
+      const popupHtml = `<!doctype html><html><body>
+        <input type="email" autocomplete="username"><button id="next" onclick="window.close()">Next</button>
+      </body></html>`;
+      const mainHtml = `<!doctype html><html><body>
+        <a id="google" href="javascript:void(0)">Continue with Google</a>
+        <script>document.getElementById('google').addEventListener('click', () => {
+          document.getElementById('google').remove();
+          // Chrome refuses data: URLs in window.open; write the popup document into a blank window instead.
+          const w = window.open('', 'provider', 'width=500,height=600');
+          if (!w) { document.body.insertAdjacentHTML('beforeend', '<p>popup blocked</p>'); return; }
+          w.document.write(${JSON.stringify(popupHtml)}); w.document.close();
+          document.body.insertAdjacentHTML('beforeend', '<p>Authorization complete. You can close this window.</p>');
+        });</script>
+      </body></html>`;
+      await browser.open(`data:text/html,${encodeURIComponent(mainHtml)}`);
+      expect(await browser.snapshot('operator@example.com')).toMatchObject({ pageClass: 'provider-choice', hasGoogleSignIn: true });
+      await browser.click('google');
+      // The popup is now the page the drive sees.
+      let popup: Awaited<ReturnType<typeof browser.snapshot>> | null = null;
+      for (let i = 0; i < 20 && popup?.pageClass !== 'email'; i++) { await browser.wait(250); popup = await browser.snapshot('operator@example.com'); }
+      expect(popup).toMatchObject({ pageClass: 'email', hasNext: true });
+      // Filling submits inside the popup, which closes itself; the main page is read again.
+      await browser.fillPublic('email', 'operator@example.com');
+      let main: Awaited<ReturnType<typeof browser.snapshot>> | null = null;
+      for (let i = 0; i < 20 && main?.pageClass !== 'success'; i++) { await browser.wait(250); main = await browser.snapshot('operator@example.com'); }
+      expect(main).toMatchObject({ pageClass: 'success' });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('launches isolated Chrome, classifies, fills and submits the form, and closes', async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
     dirs.push(profile);

@@ -1,0 +1,25 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The assisted re-login browser could not follow a provider popup. In its TCP transport (the mode every non-passkey repair uses) `ChromeCdpReloginBrowser` holds one page-level WebSocket to the target created by `/json/new`, so every `snapshot`/`fill`/`click` addressed the main page. When Claude's sign-in page opened Google's "Continue with Google" window, the drive kept reading the page behind it, saw `provider-choice` again, clicked Google again, and ran out its step budget as `provider-transient` — three times per episode in the live 2026-09-23 `justin-gmail` repair.
+
+- **TCP mode:** before each port operation (`snapshot`, `chooseExpectedAccount`, `fillPublic`, `fillSecret`, `click`, `readPasteCode`) the browser now lists page targets (`/json/list`) and moves its socket to the newest page that appeared **after** `open()` (a popup), or back to the main page once every popup has gone. The targets present at open (Chrome's initial `about:blank` tab and the main page) are remembered by id, so a popup is recognised even while its URL is still `about:blank`. `navigateTo` and `clearBrowsingData` switch back to the main page first. Switching rejects any in-flight CDP call with `cdp-target-switched` and re-enables `Page`/`Runtime` on the new socket.
+- **Pipe (passkey) mode:** popups were already auto-attached but never read; page sessions are now tracked in attach order and `activeSessionId()` (the newest live page session, else main) drives `evaluate` and real clicks. The passkey origin policy, navigation and browsing-data clearing stay on the main page.
+
+No config, route or on-disk format changes.
+
+## What to Tell Your User
+
+When the automatic sign-in repair chose "Continue with Google", Google opened its sign-in in a separate window. The repair kept looking at the original window, didn't see anything change, and clicked the button again until it gave up. It now follows the newest open window, signs in there, and comes back to the original window when that one closes — the way a person would.
+
+## Summary of New Capabilities
+
+- Assisted re-login drives provider sign-in popups (Google's "Continue with Google" window) instead of stalling on the page behind them.
+
+## Evidence
+
+- Live, 2026-09-23 17:05–17:10 PDT on the Studio (v1.3.1270): three attempts each reached `Sign in - Claude`, opened `Sign in - Google Accounts`, and returned `provider-transient` after ~100 s; a direct run of the engine's browser class on the same link logged `class=provider-choice … google=true` while the target list showed the Google window open.
+- Tests: `tests/integration/chrome-cdp-relogin-browser.test.ts` (+1, real headless Chrome): a main page whose "Continue with Google" opens a popup; the snapshot after the click classifies the popup (`email`), `fillPublic` submits in the popup which closes itself, and the next snapshot reads the main page (`success`). Fails against the pre-fix code (`provider-choice` forever). All relogin test files green, `tsc` clean.
