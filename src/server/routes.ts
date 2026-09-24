@@ -11047,6 +11047,18 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── EVO-025: target refusals run PRE-202 ──
+    // A name the resolver cannot bind (e.g. the display name "Jev" instead of
+    // the tmux name "echo-jev"), a missing session, an in-flight refresh or an
+    // exhausted rate budget used to be answered 202 "Refresh scheduled" and
+    // then refused only in server.log. Answer them synchronously instead.
+    // refreshSession() still re-checks everything authoritatively post-202.
+    const refusal = ctx.sessionRefresh.precheckRefusal(sessionName);
+    if (refusal) {
+      res.status(refusal.code === 'rate_limited' ? 429 : 409).json({ code: refusal.code, error: refusal.message });
+      return;
+    }
+
     // ── swap-continuity-antithrash §4.5: the work gate runs PRE-202 ──
     // Busy → synchronous 409 `session-busy` with the live work summary
     // (counts and ages only — no titles, no transcript paths, no message
