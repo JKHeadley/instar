@@ -1,0 +1,20 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Assisted subscription re-login can now answer Google's second step for a password account with a single-use Google backup code. A Google account entry in the browser-profile registry may bind `vaultBindings.backupCode` to a vault entry holding the account's unused codes. When a repair reaches Google's backup-code field, the drive calls the new `takeBackupCode` dependency, which takes ONE code out of that vault entry and writes the remainder back BEFORE the code is typed, so a spent code is never tried twice (`takeFirstBackupCode` in `SubscriptionReloginRuntime`). The fill is offered only on Google's own backup-code field (`input#backupCodePin`, now reported as input kind `backup-code`), never on an SMS or authenticator box, and only when both a codes binding and the taker exist. Enrollment's existing backup-code path is unchanged.
+
+## What to Tell Your User
+
+For Google accounts whose authenticator lives on your phone, the automatic sign-in repair can now use one of that account's saved backup codes when Google asks for a second step, instead of stopping to ask you. Each code is used once and then removed from the saved list.
+
+## Summary of New Capabilities
+
+- Sign-in repair uses a saved single-use Google backup code as the second step for password accounts.
+
+## Evidence
+
+- Operator request 2026-09-24 ("whatever we can do to make this process more intelligent and more robust"): justin@, dawn@ and headley.justin@ keep their authenticator on a phone, so their existing backup codes were stored in the vault the same day; this is what lets the repair use them.
+- Tests: `tests/unit/relogin-backup-code-take.test.ts` (take-and-remove; empty/missing/non-string entries yield nothing), `tests/unit/anthropic-relogin-browser-driver.test.ts` (+2: one code taken and filled on the backup-code page, never shown to the supervisor; no taker ⇒ never filled), `tests/unit/agent-relogin-navigation.test.ts` (+1: offered only on the backup-code field, not a generic code box, and only with a codes binding), `tests/unit/playwright-profile-registry.test.ts` (+1: `backupCode` binding accepted), `tests/integration/chrome-cdp-relogin-browser.test.ts` (real Chrome: `backupCodePin` reports `backup-code`). Relogin suites: unit 177, integration 79, e2e 8 — all pass.
