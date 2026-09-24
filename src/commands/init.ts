@@ -39,7 +39,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -1677,6 +1677,11 @@ export function installBuiltinSkills(skillsDir: string, port: number): void {
       name: 'iterative-converging-audit',
       description: 'Run any "find all instances of X" sweep as an iterative loop that does NOT stop at one pass — audit, fix, RE-audit, until a clean pass finds nothing new. For audits, reviews, research, compliance checks.',
       content: ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT,
+    },
+    'subscription-signin': {
+      name: 'subscription-signin',
+      description: 'The standard, proven procedure for keeping Claude Code and Codex subscriptions signed in: Google-account profiles, normal-browser sign-in, repair, verification, hand-off.',
+      content: SUBSCRIPTION_SIGNIN_SKILL_CONTENT,
     },
     'agent-readiness': {
       name: 'agent-readiness',
