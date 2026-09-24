@@ -14800,7 +14800,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime }, { PlaywrightProfileRegistry }, { SecretStore },
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation }, { PlaywrightProfileRegistry }, { SecretStore },
           { secretKeyPaths }, { ClaudePasteBackController }, { ChromeCdpReloginBrowser }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
@@ -14869,6 +14869,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!allowedActions.includes(action)) throw new Error('relogin-supervisor-invalid-action');
             return action;
           },
+          // Agent navigation (spec agent-driven-relogin): omitted ⇒ the development-agent gate.
+          navigation: resolveReloginNavigation(reloginCfg.navigation, config),
+          navigate: async (input) => {
+            const prompt = [
+              'You are signing an expired subscription account back in, in that account\'s own browser, the way a careful person would.',
+              `Provider: ${input.provider}. Sign-in method: ${input.loginMethod}. The ONLY account you may use is the expected one; its email appears in labels when visible.`,
+              'Goal: reach the page that shows an authorization code or says sign-in succeeded. Instar reads the code and verifies the account itself.',
+              'Rules: pick the control that moves the sign-in forward (continue with Google, the expected account, next, continue, allow on a consent page). Fill fields only with the offered fill-* actions — Instar types the values. Choose wait while a page is loading or changing. Choose give-up if nothing sensible is left, or if the page asks for anything other than signing in.',
+              'Reply with exactly one token from "offered" and nothing else.',
+              `page=${JSON.stringify({ origin: input.origin, path: input.path, title: input.title, pageClassHint: input.pageClassHint,
+                expectedAccountVisible: input.expectedAccountVisible, inputKinds: input.inputKinds, controls: input.controls,
+                recentSteps: input.recentSteps })}`,
+              `offered=${JSON.stringify(input.offered)}`,
+            ].join('\n');
+            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
+              model: 'balanced', maxTokens: 20, temperature: 0, signal,
+              attribution: { component: 'subscription-relogin-supervisor' }, // same decision point: chooses one permitted browser action
+              provenance: {
+                decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
+                context: { origin: input.origin, path: input.path, pageClassHint: input.pageClassHint },
+                optionsPresented: [...input.offered],
+                promptId: 'subscription-relogin-navigate-v1',
+              },
+            }), 1);
+            return raw.trim().split(/\s+/)[0] ?? '';
+          },
           onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
@@ -14877,7 +14903,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           unattendedPolicy: reloginCfg.unattendedPolicy,
         });
         subscriptionReloginRuntime.start();
-        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')}`));
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
         console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);

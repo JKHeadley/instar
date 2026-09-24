@@ -8,6 +8,7 @@ import type {
   ReloginBrowserClick,
   ReloginBrowserPort,
   ReloginBrowserSnapshot,
+  ReloginControlObservation,
 } from './AnthropicReloginBrowserDriver.js';
 import { classifyGooglePasskeyPage } from './GooglePasskeyPageClasses.js';
 import {
@@ -19,6 +20,28 @@ import {
   mustRemoveCredentialBefore,
   type OriginPolicy,
 } from './PasskeyBrowserPolicy.js';
+
+/**
+ * In-page enumeration of the visible, enabled controls (buttons, links, submit inputs) in
+ * DOM order — ONE definition shared by observeControls and clickControl so a numbered
+ * handle always means the same node. Nested controls collapse to the innermost one.
+ * `identities` = declared data-email/data-identifier, else emails in the control's text.
+ */
+const ENUMERATE_CONTROLS = `() => {
+  const sel = 'button,[role="button"],a[href],[role="link"],input[type="submit"],input[type="button"],[role="option"],[data-email],[data-identifier]';
+  const all = Array.from(document.querySelectorAll(sel)).filter((node) => node instanceof HTMLElement
+    && node.getClientRects().length > 0 && !node.disabled && node.getAttribute('aria-disabled') !== 'true');
+  const inner = all.filter((node) => !all.some((other) => other !== node && node.contains(other)));
+  const emailRe = /[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/gi;
+  return inner.slice(0, 80).map((node, index) => {
+    const raw = node instanceof HTMLInputElement ? (node.value || '') : (node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+    const text = raw.replace(/\\s+/g, ' ').trim().slice(0, 300);
+    const holder = node.closest('[data-email],[data-identifier]');
+    const declared = holder ? (holder.getAttribute('data-email') || holder.getAttribute('data-identifier') || '').trim().toLowerCase() : '';
+    const identities = declared ? [declared] : ((text.toLowerCase().match(emailRe)) || []);
+    return { n: index + 1, text, identities, node };
+  });
+}`;
 
 export interface ChromeCdpReloginBrowserOptions {
   userDataDir: string;
@@ -799,6 +822,54 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)}));
       const node = nodes.find((entry) => re.test(((entry.textContent || entry.getAttribute('value') || '')).trim()));
       return node instanceof HTMLElement ? node : null;
+    })()`);
+    await this.wait(500);
+  }
+
+  /**
+   * The visible, enabled controls of the active page, numbered in DOM order (spec
+   * agent-driven-relogin). Raw facts only — the DRIVER applies the floors and the
+   * redaction before anything reaches a model. Never returns any input's value.
+   */
+  async observeControls(): Promise<ReloginControlObservation> {
+    await this.followNewestPage();
+    return this.evaluate<ReloginControlObservation>(`(() => {
+      const controls = (${ENUMERATE_CONTROLS})();
+      const kinds = new Set();
+      for (const input of Array.from(document.querySelectorAll('input,textarea'))) {
+        if (!(input instanceof HTMLElement) || input.getClientRects().length === 0 || input.disabled) continue;
+        const t = (input.getAttribute('type') || 'text').toLowerCase();
+        const ac = (input.getAttribute('autocomplete') || '').toLowerCase();
+        const name = ((input.getAttribute('name') || '') + ' ' + (input.id || '')).toLowerCase();
+        if (t === 'password') kinds.add('password');
+        else if (t === 'email' || ac === 'username' || name.includes('identifier')) kinds.add('email');
+        else if (ac === 'one-time-code' || /totp|code|pin/.test(name) || t === 'tel') kinds.add('code');
+        else if (t !== 'hidden' && t !== 'submit' && t !== 'button' && t !== 'checkbox' && t !== 'radio') kinds.add('text');
+      }
+      return {
+        title: (document.title || '').slice(0, 200),
+        path: location.pathname.slice(0, 200),
+        controls: controls.map((c) => ({ n: c.n, text: c.text, identities: c.identities })),
+        inputKinds: Array.from(kinds),
+      };
+    })()`);
+  }
+
+  /**
+   * Real pointer click on control `n` from {@link observeControls}, refused unless the
+   * control at that position still has exactly `expectedText` and names exactly
+   * `expectedIdentities` (the page may have changed since the observation).
+   */
+  async clickControl(n: number, expectedText: string, expectedIdentities: string[] = []): Promise<void> {
+    await this.followNewestPage();
+    await this.clickReal(`(() => {
+      const controls = (${ENUMERATE_CONTROLS})();
+      const hit = controls.find((c) => c.n === ${JSON.stringify(n)});
+      if (!hit || hit.text !== ${JSON.stringify(expectedText)}) return null;
+      // The account a control names is re-checked too: two rows with the same display name
+      // that reorder between observation and click must never swap accounts.
+      if (JSON.stringify(hit.identities) !== ${JSON.stringify(JSON.stringify(expectedIdentities))}) return null;
+      return hit.node instanceof HTMLElement ? hit.node : null;
     })()`);
     await this.wait(500);
   }

@@ -4311,6 +4311,12 @@ export interface InstarConfig {
       };
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
+      /**
+       * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
+       * page's floor-filtered controls; `closed` = the fixed page-class table. Omitted ⇒ the
+       * development-agent gate (agent on a development agent, closed on the fleet).
+       */
+      navigation?: 'agent' | 'closed';
     };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */

@@ -7326,6 +7326,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // Agent-navigated sign-in awareness (spec agent-driven-relogin) for existing agents.
+    if (
+      content.includes('Automatic subscription sign-in repair (Claude Code + Codex)') &&
+      !content.includes('Agent-navigated sign-in (dev-gated)')
+    ) {
+      const repairEnd = 'inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
+      const agentNavigationBullet = "- **Agent-navigated sign-in (dev-gated)** — `subscriptionPool.assistedRelogin.navigation`: `agent` lets a model read each sign-in page and choose the next step from the page's visible controls, instead of the fixed page-type table, so a page nobody predicted no longer ends the repair. Instar still enforces the floors (sign-in sites only, never another account, never a password or code shown to the model, consent only within allowed scopes, no sign-out/delete/manage/create-passkey controls, one repair at a time, a hard 8-minute limit) and still verifies the signed-in account itself. Omitted ⇒ agent on a development agent, `closed` on the fleet. An agent-navigated repair shows `agent-drive-started` in `GET /subscription-relogin/EPISODE/events`.";
+      if (content.includes(repairEnd)) {
+        content = content.replace(repairEnd, repairEnd + '\n' + agentNavigationBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added agent-navigated sign-in awareness');
+      }
+    }
+
     // Fleet one-click assisted re-login awareness for existing agents that
     // already received the original local-controller bullet.
     if (

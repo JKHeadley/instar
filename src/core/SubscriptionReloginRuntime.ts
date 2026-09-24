@@ -10,9 +10,10 @@ import { evaluateSubscriptionReloginAdmission, type PasskeyCellAdmissionState } 
 import { SubscriptionReloginStore, type SubscriptionReloginEpisode } from './SubscriptionReloginStore.js';
 import { SubscriptionReloginOrchestrator } from './SubscriptionReloginOrchestrator.js';
 import { SubscriptionReloginService } from './SubscriptionReloginService.js';
-import { AnthropicReloginBrowserDriver, type ReloginBrowserAction,
+import { AnthropicReloginBrowserDriver, type ReloginBrowserAction, type AgentNavigationInput,
   type ReloginBrowserPort, type ReloginBrowserSnapshot } from './AnthropicReloginBrowserDriver.js';
 import { PlaywrightSeatLease } from './PlaywrightSeatLease.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 import type { ClaudePasteBackController } from './ClaudePasteBackController.js';
 
 export interface SubscriptionReloginRuntimeDeps {
@@ -24,6 +25,13 @@ export interface SubscriptionReloginRuntimeDeps {
   createBrowser: (userDataDir: string) => ReloginBrowserPort;
   resolveSecret: (name: string) => Promise<string | null>;
   supervise: (input: { snapshot: ReloginBrowserSnapshot; allowedActions: ReloginBrowserAction[] }) => Promise<ReloginBrowserAction>;
+  /**
+   * Agent navigation (spec agent-driven-relogin): `agent` lets a model choose each sign-in step
+   * from the page's floor-filtered controls. Resolved by the caller (dev-agent gate); default `closed`.
+   */
+  navigation?: 'closed' | 'agent';
+  /** The agent's chooser; required for `navigation: 'agent'` to take effect. */
+  navigate?: (input: AgentNavigationInput) => Promise<string>;
   onSuggested?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
@@ -41,6 +49,18 @@ export interface SubscriptionReloginRuntimeDeps {
    */
   passkeyCellState?: (input: { accountId: string; machineId: string; entryKey: string }) => PasskeyCellAdmissionState;
   now?: () => number;
+}
+
+/**
+ * Who chooses each sign-in step (spec agent-driven-relogin). An explicit
+ * `assistedRelogin.navigation` wins; omitted ⇒ the development-agent gate
+ * (agent on a development agent, closed on the fleet).
+ */
+export function resolveReloginNavigation(
+  navigation: 'agent' | 'closed' | undefined,
+  config: { developmentAgent?: boolean } | undefined,
+): 'agent' | 'closed' {
+  return resolveDevAgentGate(navigation === undefined ? undefined : navigation === 'agent', config) ? 'agent' : 'closed';
 }
 
 export interface SubscriptionReloginRuntime {
@@ -94,8 +114,10 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     return !('unavailable' in result) && typeof result.email === 'string' && result.email.length > 0;
   };
 
+  const agentNavigation = deps.navigation === 'agent' && typeof deps.navigate === 'function';
   const orchestrator = new SubscriptionReloginOrchestrator({
     store,
+    driveEventClass: () => agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
     authorityReady: () => deps.pool.getAvailability().state === 'ready',
     sourceIncidentOpen: (episode) => source(episode)?.closedAt === null,
     accountActive: (episode) => account(episode)?.status === 'active',
@@ -138,7 +160,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // already refuses unless the cell is `ready`, which nothing can produce here.
       if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
-        resolveSecret: deps.resolveSecret, supervise: deps.supervise, seatLease, now });
+        resolveSecret: deps.resolveSecret, supervise: deps.supervise, seatLease, now,
+        navigation: agentNavigation ? 'agent' : 'closed', navigate: deps.navigate });
       if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
         return { outcome: 'refused', failureClass: 'provider-rejected' };
       return driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,

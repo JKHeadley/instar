@@ -43,6 +43,14 @@ export interface ReloginBrowserSnapshot {
   requestedScopes: string[];
 }
 
+/** Raw facts about the page's visible controls (spec agent-driven-relogin). The driver filters + redacts. */
+export interface ReloginControlObservation {
+  title: string;
+  path: string;
+  controls: { n: number; text: string; identities: string[] }[];
+  inputKinds: string[];
+}
+
 export type ReloginBrowserClick =
   | 'next' | 'authorize' | 'google'
   | 'passkey-continue' | 'try-another-way' | 'create-passkey' | 'create-passkey-confirm' | 'not-now';
@@ -57,6 +65,9 @@ export interface ReloginBrowserPort {
   fillSecret(field: 'password' | 'totp' | 'backup-code', value: string): Promise<void>;
   click(action: ReloginBrowserClick): Promise<void>;
   readPasteCode(): Promise<string | null>;
+  /** Agent navigation (optional): the page's visible controls, and a real click on one of them. */
+  observeControls?(): Promise<ReloginControlObservation>;
+  clickControl?(n: number, expectedText: string, expectedIdentities: string[]): Promise<void>;
   wait(ms: number): Promise<void>;
   close(): Promise<void>;
 }
@@ -99,6 +110,31 @@ export interface AnthropicReloginBrowserDriverDeps {
   maxSteps?: number;
   /** Total time to wait out a bot-check interstitial per drive (default 90 s, capped at 5 min). */
   interstitialMaxMs?: number;
+  /**
+   * `agent` (spec agent-driven-relogin): on every non-terminal page a model chooses the next
+   * step from an OPEN, floor-filtered list of the page's visible controls plus the typed fills,
+   * instead of the page-class table. Sign-in drives only; enrollment stays `closed`.
+   */
+  navigation?: 'closed' | 'agent';
+  /** The agent's chooser. Returns exactly one token from `offered`. Required when navigation is `agent`. */
+  navigate?: (input: AgentNavigationInput) => Promise<string>;
+  /** Hard drive deadline (default 8 min, clamped 1–10 min), raced against every model and browser call. */
+  driveDeadlineMs?: number;
+}
+
+/** Everything the agent's chooser ever sees — a fixed schema with no values, no query strings, no foreign identities. */
+export interface AgentNavigationInput {
+  provider: 'anthropic' | 'openai';
+  loginMethod: AnthropicReloginBrowserRequest['loginMethod'];
+  origin: string;
+  path: string;
+  title: string;
+  pageClassHint: ReloginBrowserSnapshot['pageClass'];
+  expectedAccountVisible: boolean;
+  inputKinds: string[];
+  controls: { token: string; label: string }[];
+  offered: string[];
+  recentSteps: string[];
 }
 
 /** Poll cadence while a bot-check interstitial is showing. */
@@ -129,6 +165,15 @@ export class AnthropicReloginBrowserDriver {
     this.now = deps.now ?? Date.now;
     this.maxSteps = Math.max(1, Math.min(40, Math.floor(deps.maxSteps ?? 20)));
     this.interstitialMaxMs = Math.max(0, Math.min(300_000, Math.floor(deps.interstitialMaxMs ?? 90_000)));
+    this.driveDeadlineMs = Math.max(60_000, Math.min(600_000, Math.floor(deps.driveDeadlineMs ?? 480_000)));
+  }
+
+  private readonly driveDeadlineMs: number;
+
+  /** Agent navigation applies to sign-in drives with a chooser and a browser that can observe controls. */
+  private agentMode(request: AnthropicReloginBrowserRequest): boolean {
+    return this.deps.navigation === 'agent' && request.intent !== 'enroll' && !!this.deps.navigate
+      && typeof this.deps.browser.observeControls === 'function' && typeof this.deps.browser.clickControl === 'function';
   }
 
   async drive(request: AnthropicReloginBrowserRequest, signal: AbortSignal = new AbortController().signal): Promise<BrowserRepairResult> {
@@ -139,13 +184,29 @@ export class AnthropicReloginBrowserDriver {
     if (!lease.acquired) return { outcome: 'transient', failureClass: 'seat-busy' };
     const abort = () => { void this.deps.browser.close().catch(() => {}); };
     signal.addEventListener('abort', abort, { once: true });
+    const agent = this.agentMode(request);
+    const deadline = this.now() + this.driveDeadlineMs;
+    // A hard deadline raced against every browser and model call: a stalled await can never
+    // outlive the drive (spec agent-driven-relogin, "hard time limit").
+    const bounded = <T>(work: Promise<T>): Promise<T> => {
+      const remaining = deadline - this.now();
+      if (remaining <= 0) return Promise.reject(new Error('relogin-drive-deadline'));
+      let timer: NodeJS.Timeout | undefined;
+      const expiry = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('relogin-drive-deadline')), remaining);
+      });
+      return Promise.race([work, expiry]).finally(() => clearTimeout(timer));
+    };
+    const resolvedSecrets = new Set<string>();
+    if (request.artifact.userCode) resolvedSecrets.add(request.artifact.userCode);
+    const recentSteps: string[] = [];
     try {
       signal.throwIfAborted();
-      await this.deps.browser.open(request.verificationUrl);
+      await bounded(this.deps.browser.open(request.verificationUrl));
       let interstitialWaitedMs = 0;
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
-        const snapshot = await this.deps.browser.snapshot(request.expectedIdentity);
+        const snapshot = await bounded(this.deps.browser.snapshot(request.expectedIdentity));
         if (!allowedOrigins(request.provider, request.intent).includes(snapshot.origin))
           return { outcome: 'refused', failureClass: 'unexpected-origin' };
         // A bot-check interstitial ("Just a moment…") clears on its own in roughly 30–90 s.
@@ -155,7 +216,7 @@ export class AnthropicReloginBrowserDriver {
         if (snapshot.pageClass === 'interstitial') {
           if (interstitialWaitedMs >= this.interstitialMaxMs)
             return { outcome: 'transient', failureClass: 'provider-transient' };
-          await this.deps.browser.wait(INTERSTITIAL_POLL_MS);
+          await bounded(this.deps.browser.wait(INTERSTITIAL_POLL_MS));
           interstitialWaitedMs += INTERSTITIAL_POLL_MS;
           step -= 1; // an interstitial poll is not a drive step
           continue;
@@ -183,14 +244,19 @@ export class AnthropicReloginBrowserDriver {
           return { outcome: 'refused', failureClass: 'provider-rejected' };
         if (snapshot.pageClass === 'success') return { outcome: 'approved' };
         if (snapshot.pageClass === 'paste-code') {
-          const code = await this.deps.browser.readPasteCode();
+          const code = await bounded(this.deps.browser.readPasteCode());
           return code ? { outcome: 'approved', pasteCode: code } : { outcome: 'transient', failureClass: 'provider-transient' };
+        }
+        if (agent) {
+          const ended = await this.agentStep(snapshot, request, resolvedSecrets, recentSteps, bounded);
+          if (ended) return ended;
+          continue;
         }
         const allowed = allowedActions(snapshot, request);
         if (allowed.length === 0) return { outcome: 'transient', failureClass: 'provider-transient' };
-        const action = await this.deps.supervise({ snapshot, allowedActions: allowed });
+        const action = await bounded(this.deps.supervise({ snapshot, allowedActions: allowed }));
         if (!allowed.includes(action)) return { outcome: 'refused', failureClass: 'provider-rejected' };
-        const acted = await this.perform(action, request);
+        const acted = await bounded(this.perform(action, request, resolvedSecrets));
         if (!acted) return { outcome: 'refused', failureClass: 'vault-reference-missing' };
       }
       return { outcome: 'transient', failureClass: 'provider-transient' };
@@ -200,12 +266,56 @@ export class AnthropicReloginBrowserDriver {
       return { outcome: 'transient', failureClass: 'provider-transient' };
     } finally {
       signal.removeEventListener('abort', abort);
+      resolvedSecrets.clear();
       await this.deps.browser.close().catch(() => { /* @silent-fallback-ok — lease release below is authoritative cleanup; browser close is idempotent best-effort */ });
       this.deps.seatLease.release(holderId);
     }
   }
 
-  private async perform(action: ReloginBrowserAction, req: AnthropicReloginBrowserRequest): Promise<boolean> {
+  /**
+   * One agent-navigation step (spec agent-driven-relogin): observe the page's controls, build
+   * the floor-filtered offer, ask the chooser for exactly one token, perform it. Returns a
+   * result only when the drive ends; `null` means "keep going".
+   */
+  private async agentStep(
+    snapshot: ReloginBrowserSnapshot,
+    request: AnthropicReloginBrowserRequest,
+    resolvedSecrets: Set<string>,
+    recentSteps: string[],
+    bounded: <T>(work: Promise<T>) => Promise<T>,
+  ): Promise<BrowserRepairResult | null> {
+    const observation = await bounded(this.deps.browser.observeControls!());
+    const offer = buildAgentOffer(snapshot, observation, request, [...resolvedSecrets]);
+    const token = String(await bounded(this.deps.navigate!({
+      provider: request.provider, loginMethod: request.loginMethod,
+      origin: snapshot.origin, path: redactLabel(observation.path, request.expectedIdentity, [...resolvedSecrets], 120),
+      title: redactLabel(observation.title, request.expectedIdentity, [...resolvedSecrets], 120),
+      pageClassHint: snapshot.pageClass, expectedAccountVisible: snapshot.expectedAccountVisible,
+      inputKinds: observation.inputKinds, controls: offer.controls.map(({ token: t, label }) => ({ token: t, label })),
+      offered: offer.offered, recentSteps: recentSteps.slice(-6),
+    }))).trim();
+    // The model's answer is only ever a token from the offer; anything else ends the drive.
+    if (!offer.offered.includes(token) || token === 'give-up')
+      return { outcome: 'transient', failureClass: 'provider-transient' };
+    if (token === 'wait') {
+      await bounded(this.deps.browser.wait(2_000));
+      recentSteps.push('wait');
+      return null;
+    }
+    const control = offer.controls.find((entry) => entry.token === token);
+    if (control) {
+      // Re-checked at click time: the browser refuses unless control n still has the same text.
+      await bounded(this.deps.browser.clickControl!(control.n, control.text, control.identities));
+      recentSteps.push(`${token} "${control.label}"`);
+      return null;
+    }
+    const acted = await bounded(this.perform(token as ReloginBrowserAction, request, resolvedSecrets));
+    if (!acted) return { outcome: 'refused', failureClass: 'vault-reference-missing' };
+    recentSteps.push(token);
+    return null;
+  }
+
+  private async perform(action: ReloginBrowserAction, req: AnthropicReloginBrowserRequest, seen?: Set<string>): Promise<boolean> {
     switch (action) {
       case 'choose-expected-account': await this.deps.browser.chooseExpectedAccount(req.expectedIdentity); return true;
       case 'click-google-signin': await this.deps.browser.click('google'); return true;
@@ -218,6 +328,7 @@ export class AnthropicReloginBrowserDriver {
         if (!usesPassword(req.loginMethod) || !req.secretRefs.password) return false;
         let secret = await this.deps.resolveSecret(req.secretRefs.password);
         if (!secret) return false;
+        seen?.add(secret);
         try { await this.deps.browser.fillSecret('password', secret); }
         finally { secret = ''; }
         return true;
@@ -226,7 +337,9 @@ export class AnthropicReloginBrowserDriver {
         if (req.loginMethod !== 'password+totp' || !req.secretRefs.totp) return false;
         let seed = await this.deps.resolveSecret(req.secretRefs.totp);
         if (!seed) return false;
-        try { await this.deps.browser.fillSecret('totp', generateTotp(seed, this.now())); }
+        const totpCode = generateTotp(seed, this.now());
+        seen?.add(seed); seen?.add(totpCode);
+        try { await this.deps.browser.fillSecret('totp', totpCode); }
         finally { seed = ''; }
         return true;
       }
@@ -309,6 +422,90 @@ export function allowedActions(
     case 'google-passkey-create-confirm': return request.intent === 'enroll' ? ['click-create-passkey-confirm'] : [];
     default: return [];
   }
+}
+
+/**
+ * Controls the agent may NEVER be offered, whatever the page (spec agent-driven-relogin):
+ * account-changing, destructive, and credential-creating actions. A deterministic block on
+ * irreversible actions — the Signal-vs-Authority exemption for safety guards.
+ */
+export const AGENT_BLOCKED_PHRASES: readonly string[] = [
+  'sign out', 'log out', 'logout', 'delete', 'remove', 'forgot password', 'change password',
+  'reset password', 'security', 'manage', 'add account', 'add another account', 'use another account',
+  'create api key', 'buy', 'upgrade', 'invite', 'cancel plan', 'create a passkey', 'create passkey',
+  'add passkey', 'set up', 'turn on', 'add phone', 'add recovery', 'save password',
+  'create account', 'create an account', 'sign up', 'create your account',
+];
+
+const CONSENT_LABEL = /^(allow|authorize|authorise|approve|accept|grant)\b/i;
+
+function normalizePhrase(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function isBlockedControl(text: string): boolean {
+  const normalized = normalizePhrase(text);
+  return AGENT_BLOCKED_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
+/**
+ * What a label may carry to the model: every secret resolved in this drive stripped verbatim,
+ * foreign emails masked, long token-like runs and 6+ digit runs masked, and a hard length cap
+ * that DISCLOSES a cut (never a silently shortened label).
+ */
+export function redactLabel(text: string, expectedIdentity: string, secrets: string[], max = 60): string {
+  let out = String(text ?? '');
+  for (const secret of secrets) if (secret && secret.length >= 3) out = out.split(secret).join('‹secret›');
+  const expected = expectedIdentity.trim().toLowerCase();
+  out = out.replace(/[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/gi,
+    (email) => email.toLowerCase() === expected ? email : '‹other-email›');
+  // Partially hidden emails (Google renders j•••@gmail.com) cannot be compared, so they are masked too.
+  out = out.replace(/[^\s@]*[•*…][^\s@]*@\S+/g, '‹masked-email›');
+  out = out.replace(/[A-Za-z0-9_-]{20,}/g, '‹masked›').replace(/\d{6,}/g, '‹masked›');
+  out = out.replace(/\s+/g, ' ').trim();
+  return out.length > max ? `${out.slice(0, max)}…(truncated)` : out;
+}
+
+export interface AgentOffer {
+  offered: string[];
+  controls: { token: string; n: number; text: string; identities: string[]; label: string }[];
+}
+
+/**
+ * The floor-filtered action list for one agent step. Pure — every floor is testable here.
+ * Typed fills are offered by INPUT PRESENCE (not page class); visible controls are offered
+ * unless they name another identity, carry a blocked phrase, or would grant consent without
+ * measured, allowed, non-empty scopes.
+ */
+export function buildAgentOffer(
+  snapshot: ReloginBrowserSnapshot,
+  observation: ReloginControlObservation,
+  request: Pick<AnthropicReloginBrowserRequest, 'artifact' | 'loginMethod' | 'secretRefs' | 'expectedIdentity' | 'allowedScopes'>,
+  secrets: string[],
+): AgentOffer {
+  const offered: string[] = [];
+  const kinds = new Set(observation.inputKinds);
+  if ((snapshot.expectedAccountMatchCount ?? (snapshot.expectedAccountVisible ? 1 : 0)) === 1) offered.push('choose-expected-account');
+  if (kinds.has('email')) offered.push('fill-email');
+  if (kinds.has('password') && usesPassword(request.loginMethod) && request.secretRefs.password) offered.push('fill-password');
+  if (kinds.has('code') && request.loginMethod === 'password+totp' && request.secretRefs.totp) offered.push('fill-totp');
+  if (kinds.has('code') && request.artifact?.kind === 'device-code' && request.artifact.userCode) offered.push('fill-device-code');
+  const expected = request.expectedIdentity.trim().toLowerCase();
+  const consentMeasured = snapshot.requestedScopes.length > 0 && scopesAllowed(snapshot.requestedScopes, request.allowedScopes);
+  const controls: AgentOffer['controls'] = [];
+  for (const control of observation.controls) {
+    if (control.identities.some((identity) => identity.trim().toLowerCase() !== expected)) continue;
+    if (isBlockedControl(control.text)) continue;
+    const consent = CONSENT_LABEL.test(control.text.trim()) || snapshot.pageClass === 'authorize';
+    if (consent && !consentMeasured) continue;
+    const label = redactLabel(control.text, request.expectedIdentity, secrets);
+    if (!label) continue;
+    const token = `click:${control.n}`;
+    controls.push({ token, n: control.n, text: control.text, identities: control.identities, label });
+    offered.push(token);
+  }
+  offered.push('wait', 'give-up');
+  return { offered, controls };
 }
 
 export function safeAllowedUrl(
