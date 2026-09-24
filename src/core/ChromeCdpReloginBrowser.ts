@@ -179,11 +179,11 @@ function mayAddSecondaryTarget(frames: { origin: string; topLevel: boolean }[], 
  * input values, and secrets never leave this process boundary.
  */
 export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
-  private readonly chromePath: string;
-  private readonly userDataDir: string;
+  protected readonly chromePath: string;
+  protected readonly userDataDir: string;
   private readonly headless: boolean;
   private readonly launchTimeoutMs: number;
-  private readonly operationTimeoutMs: number;
+  protected readonly operationTimeoutMs: number;
   private readonly passkeyMode: boolean;
   private readonly policy: OriginPolicy;
   private child: ChildProcess | null = null;
@@ -951,7 +951,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
 
   // ── Internals ────────────────────────────────────────────────────────
 
-  private async waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  protected async waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
     if (child.exitCode !== null || child.signalCode !== null) return true;
     return new Promise<boolean>((resolve) => {
       let settled = false;
@@ -976,7 +976,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
    * evaluate to an HTMLElement or null), scroll it into view, read its centre,
    * and dispatch mouse pressed/released through the Input domain.
    */
-  private async clickReal(finderExpression: string): Promise<void> {
+  protected async clickReal(finderExpression: string): Promise<void> {
     const point = await this.evaluate<{ x: number; y: number } | null>(`(() => {
       const el = (${finderExpression});
       if (!(el instanceof HTMLElement)) return null;
@@ -1023,7 +1023,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     await this.wait(500);
   }
 
-  private async evaluate<T>(expression: string, requireTruthy = false, sessionId: string | null = this.activeSessionId()): Promise<T> {
+  protected async evaluate<T>(expression: string, requireTruthy = false, sessionId: string | null = this.activeSessionId()): Promise<T> {
     const result = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId ?? undefined);
     const remote = result.result as { value?: T; exceptionDetails?: unknown } | undefined;
     if (!remote || result.exceptionDetails) throw new Error('browser-evaluation-failed');
@@ -1063,7 +1063,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
    * saw `provider-choice`, clicked Google again, and timed out while Google's window sat open).
    * Pipe mode gets the same behaviour from `activeSessionId()`.
    */
-  private async followNewestPage(): Promise<void> {
+  protected async followNewestPage(): Promise<void> {
     if (this.tcpPort === null || !this.tcpMainTarget) return;
     let targets: Awaited<ReturnType<typeof this.listTcpTargets>>;
     try { targets = await this.listTcpTargets(); }
@@ -1075,7 +1075,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   /** TCP mode: return the socket to the main page (navigation and browsing-data operations act there). */
-  private async followMainPage(): Promise<void> {
+  protected async followMainPage(): Promise<void> {
     if (this.tcpPort === null || !this.tcpMainTarget) return;
     await this.switchTcpTarget(this.tcpMainTarget.id, this.tcpMainTarget.wsUrl);
   }
