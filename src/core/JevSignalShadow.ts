@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { detectGateSignals } from './GateSignalDetectors.js';
+import { scrubForStore } from './durableSecretScrub.js';
 
 export const JEV_SHADOW_FEATURE = 'jev-signal-shadow';
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
@@ -35,6 +36,12 @@ export interface JevSignalShadowConfig {
   timeoutMs?: number;
   /** ISO instant; the shadow is inert at or after it, and when absent. */
   soakEndsAt?: string | null;
+  /** Retain a scrubbed, span-anchored excerpt on DISAGREEING rows only, so a
+   *  disagreement can be adjudicated instead of merely counted. Default OFF:
+   *  absent or false keeps the byte-identical no-text behaviour. */
+  retainDisagreementExcerpts?: boolean;
+  /** Volume bound on retained excerpts per UTC day (default EXCERPT_DAILY_CAP). */
+  maxExcerptsPerDay?: number;
 }
 
 /** The closed set of reasons a candidate was not compared. */
@@ -59,6 +66,13 @@ export type ShadowRow =
       ms: number;
       modelServed: string;
       disagree: string[];
+      /** Scrubbed, span-anchored excerpt — present ONLY on disagreeing rows,
+       *  and only when retention is enabled. */
+      excerpt?: string;
+      /** Count of secrets redacted inside the excerpt (never their values). */
+      excerptRedactions?: number;
+      /** Why no excerpt was retained on a disagreeing row. */
+      excerptUnavailable?: 'no-detector-span' | 'daily-cap' | 'scrub-error';
     }
   | { kind: 'not-compared'; ts: string; sha256: string; bytes: number; reason: NotComparedReason };
 
@@ -78,6 +92,12 @@ export const SHADOW_QUESTIONS: ReadonlyArray<{ rule: string; signalKind: string;
   { rule: 'cron_or_slug', signalKind: 'cron-or-slug', instructions: 'The message shows the reader a raw cron expression or an internal machine identifier/slug instead of plain words.' },
 ];
 export const POSITIVE_THRESHOLD = 0.5;
+/** Characters of context kept either side of a detector span. */
+export const EXCERPT_CONTEXT_CHARS = 60;
+/** Hard clamp on a retained excerpt, before scrubbing. */
+export const EXCERPT_MAX_CHARS = 400;
+/** Default volume bound per UTC day. */
+export const EXCERPT_DAILY_CAP = 50;
 /** Minimum spacing between key re-reads after a miss or a 401/403 (bounds any blocking lookup). */
 export const KEY_REREAD_MS = 10 * 60_000;
 
@@ -167,9 +187,13 @@ export class JevSignalShadow {
     if (bytes > maxBytes) { notCompared('oversize'); return; }
     if (this.inFlight) { notCompared('skipped-concurrent'); return; }
 
-    const detectorSignals = detectGateSignals(text).map((s) => s.kind);
+    // Keep the FULL signals (not just kinds): their spans are what anchors a
+    // retained excerpt to the artifact in dispute, so retention can never widen
+    // beyond what the detector actually pointed at.
+    const signals = detectGateSignals(text);
+    const detectorSignals = signals.map((s) => s.kind);
     this.inFlight = true;
-    this.lastDispatch = this.dispatch(text, cfg, { ts, sha256, bytes, detectorSignals })
+    this.lastDispatch = this.dispatch(text, cfg, { ts, sha256, bytes, detectorSignals, signals })
       .catch(() => { /* @silent-fallback-ok — dispatch records its own reason rows; a throw here only means the row write failed */ })
       .finally(() => { this.inFlight = false; });
   }
@@ -177,7 +201,7 @@ export class JevSignalShadow {
   private async dispatch(
     text: string,
     cfg: JevSignalShadowConfig,
-    base: { ts: string; sha256: string; bytes: number; detectorSignals: string[] },
+    base: { ts: string; sha256: string; bytes: number; detectorSignals: string[]; signals: ReturnType<typeof detectGateSignals> },
   ): Promise<void> {
     const model = cfg.model || 'jev-1.13.0';
     const timeoutMs = typeof cfg.timeoutMs === 'number' && cfg.timeoutMs > 0 ? cfg.timeoutMs : 1500;
@@ -216,7 +240,11 @@ export class JevSignalShadow {
         if (jevSays !== detectorSays) disagree.push(q.rule);
       }
       outcome = disagree.length ? 'fired' : 'noop';
-      this.write({ kind: 'compared', ...base, jev, ms: (this.deps.now ?? Date.now)() - t0, modelServed, disagree });
+      const { signals, ...rowBase } = base;
+      const retained = disagree.length > 0 && cfg.retainDisagreementExcerpts === true
+        ? this.buildExcerpt(text, signals, disagree, cfg, base.ts)
+        : {};
+      this.write({ kind: 'compared', ...rowBase, jev, ms: (this.deps.now ?? Date.now)() - t0, modelServed, disagree, ...retained });
     } catch (err) {
       nc((err as Error)?.name === 'AbortError' ? 'timeout' : 'http-error');
     } finally {
@@ -233,6 +261,78 @@ export class JevSignalShadow {
           framework: 'typesafe-api',
         });
       } catch { /* @silent-fallback-ok — metering must never break the instrument */ }
+    }
+  }
+
+  /** Retained-excerpt volume counter, keyed by UTC day. In-memory: it resets on
+   *  restart, so it bounds VOLUME rather than acting as a secrecy guarantee —
+   *  secrecy is carried by span-anchoring (never the whole message) plus the
+   *  scrub, both of which hold per-excerpt regardless of this count. */
+  private excerptDay = '';
+  private excerptCount = 0;
+
+  /**
+   * Build a scrubbed excerpt anchored to the detector spans of the DISAGREEING
+   * rules only. Where the detector fired and the model did not, the spans point
+   * at the disputed artifact. Where the model fired and the detector did NOT,
+   * there is no span to anchor to — and rather than widen the window to the
+   * message, the row honestly records `no-detector-span`.
+   */
+  private buildExcerpt(
+    text: string,
+    signals: ReturnType<typeof detectGateSignals>,
+    disagree: string[],
+    cfg: JevSignalShadowConfig,
+    ts: string,
+  ): { excerpt?: string; excerptRedactions?: number; excerptUnavailable?: 'no-detector-span' | 'daily-cap' | 'scrub-error' } {
+    try {
+      const day = ts.slice(0, 10);
+      if (this.excerptDay !== day) { this.excerptDay = day; this.excerptCount = 0; }
+      const cap = typeof cfg.maxExcerptsPerDay === 'number' && cfg.maxExcerptsPerDay >= 0
+        ? cfg.maxExcerptsPerDay
+        : EXCERPT_DAILY_CAP;
+      if (this.excerptCount >= cap) return { excerptUnavailable: 'daily-cap' };
+
+      const kinds = new Set(
+        disagree
+          .map((rule) => SHADOW_QUESTIONS.find((q) => q.rule === rule)?.signalKind)
+          .filter((k): k is string => typeof k === 'string'),
+      );
+      const spans = signals
+        .filter((sig) => kinds.has(sig.kind))
+        .flatMap((sig) => sig.spans ?? [])
+        .map((sp) => ({
+          start: Math.max(0, sp.start - EXCERPT_CONTEXT_CHARS),
+          end: Math.min(text.length, sp.end + EXCERPT_CONTEXT_CHARS),
+        }))
+        .sort((a, b) => a.start - b.start);
+      if (spans.length === 0) return { excerptUnavailable: 'no-detector-span' };
+
+      // Merge overlaps so context is not duplicated, then clamp the total.
+      const merged: Array<{ start: number; end: number }> = [];
+      for (const sp of spans) {
+        const last = merged[merged.length - 1];
+        if (last && sp.start <= last.end) last.end = Math.max(last.end, sp.end);
+        else merged.push({ ...sp });
+      }
+      let out = '';
+      for (const sp of merged) {
+        if (out.length >= EXCERPT_MAX_CHARS) break;
+        const piece = text.slice(sp.start, sp.end);
+        out += (out ? ' … ' : '') + piece;
+      }
+      out = out.slice(0, EXCERPT_MAX_CHARS);
+
+      const scrubbed = scrubForStore(out);
+      if (scrubbed.error) return { excerptUnavailable: 'scrub-error' };
+      this.excerptCount++;
+      return {
+        excerpt: scrubbed.text,
+        ...(scrubbed.redactions.length > 0 ? { excerptRedactions: scrubbed.redactions.length } : {}),
+      };
+    } catch {
+      // @silent-fallback-ok — retention is observability; it must never cost a comparison row.
+      return { excerptUnavailable: 'scrub-error' };
     }
   }
 

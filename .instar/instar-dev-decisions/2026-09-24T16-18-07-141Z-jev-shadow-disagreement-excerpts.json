@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-24T16:18:07.141Z",
+  "slug": "jev-shadow-disagreement-excerpts",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 108,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/JevSignalShadow.ts"
+    ],
+    "addedLines": 104,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
