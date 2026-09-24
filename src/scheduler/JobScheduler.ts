@@ -1419,7 +1419,7 @@ export class JobScheduler {
       try {
         this.jevAudit?.capture({
           runId, slug: job.slug, goal: job.description ?? job.slug, result: 'success',
-          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects,
+          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects, conditionalEffects: job.conditionalEffects,
           completionAudit: job.completionAudit, workDir: path.dirname(this.stateDir),
           startedAtMs, instrumentAssessment: lastAssessment,
         });
@@ -1452,7 +1452,7 @@ export class JobScheduler {
       try {
         this.jevAudit?.capture({
           runId, slug: job.slug, goal: job.description ?? job.slug, result,
-          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects,
+          trigger: 'script', output: rawOutput, declaredEffects: job.declaredEffects, conditionalEffects: job.conditionalEffects,
           completionAudit: job.completionAudit, workDir: path.dirname(this.stateDir),
           startedAtMs: Date.parse(previous?.lastRun ?? '') || Date.now(),
           instrumentAssessment: lastAssessment,
@@ -1847,7 +1847,7 @@ export class JobScheduler {
           result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
           trigger: session.triggeredBy,
           output,
-          declaredEffects: job.declaredEffects,
+          declaredEffects: job.declaredEffects, conditionalEffects: job.conditionalEffects,
           completionAudit: job.completionAudit,
           workDir: path.dirname(this.stateDir),
           startedAtMs: Date.parse(existingState?.lastRun ?? '') || Date.now(),

@@ -403,3 +403,120 @@ describe('metering', () => {
     expect(call).toMatchObject({ feature: 'jev-job-completion-audit', framework: 'typesafe-api', tokensOut: 0 });
   });
 });
+
+// ── Claimed effects (spec: docs/specs/jev-audit-claimed-effects.md) ────────
+// The job CLAIMS a conditional effect on stdout; the audit verifies the claim.
+// A quiet run claims nothing and is NOT a failure. A run that claims work it
+// did not do is the strongest false-success signal the audit can record.
+import { parseClaimedEffects, MAX_CLAIMED_EFFECTS } from '../../src/scheduler/JevJobCompletionAudit.js';
+
+describe('claimed effects — the run claims, the audit verifies', () => {
+  const MEM = '.instar/MEMORY.md';
+  const writeMem = () => {
+    fs.mkdirSync(path.join(root, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(root, MEM), 'a learning\n');
+  };
+
+  it('a quiet run (conditional declared, nothing claimed) is conditional-unclaimed — never missing/stale', async () => {
+    writeMem(); // the file exists and is fresh, but the run did not claim it
+    const a = make({});
+    a.capture(input({ runId: 'quiet-1', conditionalEffects: [MEM], output: 'nothing significant today' }));
+    await a.flush();
+    const pack = readPack('quiet-1');
+    expect(pack.deterministic).toBe('conditional-unclaimed');
+    expect(pack.effects).toEqual([]);
+    expect(pack.corroboration).toBe('none');
+    expect(pack.claimedUndeclared).toBeUndefined();
+  });
+
+  it('a claimed conditional effect that landed is all-present-and-fresh, and the entry is marked claimed', async () => {
+    writeMem();
+    const a = make({});
+    a.capture(input({ runId: 'claimed-ok', conditionalEffects: [MEM], output: `appended the insight\nEFFECT: ${MEM}\ndone` }));
+    await a.flush();
+    const pack = readPack('claimed-ok');
+    expect(pack.deterministic).toBe('all-present-and-fresh');
+    expect(pack.effects).toHaveLength(1);
+    expect(pack.effects[0]).toMatchObject({ path: MEM, exists: true, mtimeAfterStart: true, claimed: true });
+    expect(pack.corroboration).toBe('effects');
+  });
+
+  it('a claimed effect whose file is absent is MISSING — the false-success signal this exists to catch', async () => {
+    const a = make({});
+    a.capture(input({ runId: 'claimed-missing', conditionalEffects: [MEM], output: `EFFECT: ${MEM}` }));
+    await a.flush();
+    const pack = readPack('claimed-missing');
+    expect(pack.deterministic).toBe('missing');
+    expect(pack.effects[0]).toMatchObject({ path: MEM, exists: false, claimed: true });
+  });
+
+  it('a claimed effect whose file was NOT touched during the run is STALE', async () => {
+    writeMem();
+    const a = make({});
+    // startedAtMs after the file's real mtime → the file predates the run
+    a.capture(input({ runId: 'claimed-stale', conditionalEffects: [MEM], output: `EFFECT: ${MEM}`, startedAtMs: Date.now() + 60_000 }));
+    await a.flush();
+    expect(readPack('claimed-stale').deterministic).toBe('stale');
+  });
+
+  it('a claim for a path the job never declared is ignored for verification and counted', async () => {
+    writeMem();
+    const a = make({});
+    a.capture(input({ runId: 'undeclared', conditionalEffects: [MEM], output: 'EFFECT: .instar/somewhere-else.md' }));
+    await a.flush();
+    const pack = readPack('undeclared');
+    expect(pack.deterministic).toBe('conditional-unclaimed'); // output cannot widen the verified set
+    expect(pack.effects).toEqual([]);
+    expect(pack.claimedUndeclared).toBe(1);
+  });
+
+  it('an unconditional declaredEffect is still verified when the conditional one is unclaimed', async () => {
+    fs.mkdirSync(path.join(root, 'out'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'out', 'report.md'), 'x');
+    const a = make({});
+    a.capture(input({ runId: 'mixed', declaredEffects: ['out/report.md'], conditionalEffects: [MEM], output: 'report written' }));
+    await a.flush();
+    const pack = readPack('mixed');
+    expect(pack.deterministic).toBe('all-present-and-fresh');
+    expect(pack.effects.map((e) => e.path)).toEqual(['out/report.md']);
+    expect(pack.effects[0].claimed).toBeUndefined();
+  });
+
+  it('absent conditionalEffects changes nothing: no declarations is still no-effects-declared', async () => {
+    const a = make({});
+    a.capture(input({ runId: 'legacy', output: 'EFFECT: .instar/MEMORY.md' })); // a stray claim with nothing declared
+    await a.flush();
+    const pack = readPack('legacy');
+    expect(pack.deterministic).toBe('no-effects-declared');
+    expect(pack.claimedUndeclared).toBe(1);
+  });
+
+  it('parseClaimedEffects is bounded, whitespace-tolerant, deduping, and ignores a bare marker', () => {
+    expect([...parseClaimedEffects('  EFFECT: a/b.md \nEFFECT:\nEFFECT: a/b.md\n\tEFFECT: c.json')]).toEqual(['a/b.md', 'c.json']);
+    expect(parseClaimedEffects('')).toEqual(new Set());
+    const many = Array.from({ length: MAX_CLAIMED_EFFECTS + 10 }, (_, i) => `EFFECT: f${i}`).join('\n');
+    expect(parseClaimedEffects(many).size).toBe(MAX_CLAIMED_EFFECTS);
+    // The marker must own the whole line — prose mentioning it does not claim.
+    expect(parseClaimedEffects('I will print EFFECT: x later').size).toBe(0);
+  });
+});
+
+describe('claimed effects — batch treatment', () => {
+  it('an unclaimed pack is gated on false_success alone and never enters the suspicious stratum', async () => {
+    const MEM = '.instar/MEMORY.md';
+    fs.mkdirSync(path.join(root, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(root, MEM), 'x');
+    // produced_declared_effect is deliberately UNCERTAIN (0.5 → conf 0.5) while
+    // false_success is confident (0.05 → conf 0.95). If the unclaimed pack were
+    // min'd across both it would read 0.5; gated on false_success alone it reads 0.95.
+    const a = make({ fetchImpl: (async () => okAnswers({ produced: 0.5, false_success: 0.05, failure_class: 'did-nothing' })) as never });
+    a.capture(input({ runId: 'b-unclaimed', conditionalEffects: [MEM], output: 'quiet' }));
+    a.capture(input({ runId: 'b-claimed', conditionalEffects: [MEM], output: `EFFECT: ${MEM}` }));
+    await a.flush();
+    await a.runBatch();
+    const byRun = Object.fromEntries(rows().filter((r) => r.kind === 'audited').map((r) => [r.runId, r]));
+    expect(byRun['b-unclaimed'].minConfidence).toBeCloseTo(0.95, 2);
+    expect(byRun['b-unclaimed'].stratum).not.toBe('suspicious');
+    expect(byRun['b-claimed'].minConfidence).toBeCloseTo(0.5, 2); // claimed+fresh: both questions in play
+  });
+});

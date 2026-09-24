@@ -533,6 +533,13 @@ export interface JobDefinition {
   /** Repo-relative paths (jailed to the job's working directory) the job is
    *  expected to produce — the audit's deterministic corroboration signal. */
   declaredEffects?: string[];
+  /** Repo-relative paths (same jail) the job produces ONLY when it did work.
+   *  Verified by the audit only if the run CLAIMS them on stdout with an
+   *  `EFFECT: <path>` line — so a legitimate quiet run is never a false
+   *  failure, and a run that claims work it did not do is the strongest
+   *  false-success signal the audit can record. Spec:
+   *  docs/specs/jev-audit-claimed-effects.md */
+  conditionalEffects?: string[];
   /** MCP access for the spawned job session (claude-code spawns only).
    *  - 'none': spawn with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
    *    so the headless session starts with ZERO project MCP servers. Right for

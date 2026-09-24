@@ -15,6 +15,8 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+conditionalEffects:
+  - .instar/state/commitment-detection-bookmark.json
 ---
 Scan recent messages for commitments and promises.
 
@@ -25,6 +27,6 @@ AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.i
 2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl
 3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.
 4. For each detected commitment, register it with EXACTLY ONE follow-through choice: resolve a stated deadline to ISO `dueBy`; if the message has no concrete deadline, omit `dueBy` and send `"followThroughOptOutReason":"Source message contained no concrete due time; retained for explicit review."`. Example: curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/evolution/actions -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H 'Content-Type: application/json' -d '{"title":"...","source":{"platform":"commitment-detection"},"description":"...","dueBy":"2026-03-01T00:00:00Z"}'
-5. Update bookmark with the last processed message ID.
+5. Update bookmark with the last processed message ID, then print this exact line on its own so the completion audit can verify the write landed: EFFECT: .instar/state/commitment-detection-bookmark.json
 
 Only process NEW messages since last bookmark. Exit silently if no new commitments found.

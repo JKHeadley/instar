@@ -38,6 +38,11 @@ export const GOAL_CLAMP_BYTES = 1024;
 export const PATH_CLAMP_BYTES = 512;
 export const PACK_CEILING_BYTES = 16 * 1024;
 export const MAX_DECLARED_EFFECTS = 8;
+/** A run claims a conditional effect with one stdout line: `EFFECT: <path>`.
+ *  Parsed deterministically, bounded, and intersected with the job's DECLARED
+ *  conditional set — output can never widen what gets verified. */
+export const EFFECT_MARKER_RE = /^[ \t]*EFFECT:[ \t]*(\S+)[ \t]*$/gm;
+export const MAX_CLAIMED_EFFECTS = 32;
 export const CAPTURE_INFLIGHT_CAP = 16;
 export const MAX_AUDIT_ATTEMPTS = 3;
 export const PRIORITY_RESERVE = 0.1;
@@ -109,6 +114,8 @@ export interface CaptureInput {
   /** The LIVE output the callsite already holds. */
   output: string;
   declaredEffects?: string[];
+  /** Verified only when claimed in `output` via `EFFECT: <path>`. */
+  conditionalEffects?: string[];
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** The job's working directory — the jail root for declaredEffects. */
   workDir: string;
@@ -137,9 +144,16 @@ export interface EvidencePack {
     bytes?: number;
     mtimeAfterStart?: boolean;
     refused?: string;
+    /** true when this entry entered verification because the run CLAIMED it. */
+    claimed?: boolean;
   }>;
-  /** Deterministic column — PRIMARY when conclusive. */
-  deterministic: 'all-present-and-fresh' | 'missing' | 'stale' | 'no-effects-declared';
+  /** Deterministic column — PRIMARY when conclusive. `conditional-unclaimed`
+   *  = conditional effects were declared but the run claimed none: a quiet run,
+   *  NOT suspicious, and structurally unanswerable for produced_declared_effect. */
+  deterministic: 'all-present-and-fresh' | 'missing' | 'stale' | 'no-effects-declared' | 'conditional-unclaimed';
+  /** EFFECT: lines naming a path the job never declared — ignored for
+   *  verification (output cannot widen the set), counted for review. */
+  claimedUndeclared?: number;
   /** Frozen trivial-heuristic column (error-keyword regex + empty-output). */
   trivialHeuristic: 'suspicious' | 'clean';
   corroboration: 'effects' | 'none';
@@ -278,12 +292,20 @@ export class JevJobCompletionAudit {
     const descC = clamp(scrubForStore(input.description ?? '').text, GOAL_CLAMP_BYTES);
 
     const effects: EvidencePack['effects'] = [];
-    const declared = (input.declaredEffects ?? []).slice(0, MAX_DECLARED_EFFECTS);
+    const unconditional = (input.declaredEffects ?? []).slice(0, MAX_DECLARED_EFFECTS);
+    const conditional = (input.conditionalEffects ?? []).slice(0, MAX_DECLARED_EFFECTS);
+    const claimed = parseClaimedEffects(input.output);
+    const claimedDeclared = conditional.filter((p) => claimed.has(p));
+    const claimedUndeclared = [...claimed].filter((p) => !conditional.includes(p) && !unconditional.includes(p)).length;
+    // What actually gets verified. A conditional path is verified ONLY when the
+    // run claimed it; an unclaimed one is simply not in play this run.
+    const declared = [...unconditional, ...claimedDeclared];
     // realpath the ROOT too: a symlinked workdir (macOS /var → /private/var)
     // must not make every contained path read as an escape.
     const jailRoot = await fsp.realpath(path.resolve(input.workDir)).catch(() => path.resolve(input.workDir));
     for (const p of declared) {
       const entry: EvidencePack['effects'][number] = { path: clamp(p, PATH_CLAMP_BYTES).text, exists: false };
+      if (claimedDeclared.includes(p)) entry.claimed = true;
       try {
         if (path.isAbsolute(p) || p.split(path.sep).includes('..')) {
           entry.refused = 'unjailed-path';
@@ -312,7 +334,7 @@ export class JevJobCompletionAudit {
     }
 
     let deterministic: EvidencePack['deterministic'];
-    if (declared.length === 0) deterministic = 'no-effects-declared';
+    if (declared.length === 0) deterministic = conditional.length > 0 ? 'conditional-unclaimed' : 'no-effects-declared';
     else if (effects.some((e) => !e.exists && !e.refused)) deterministic = 'missing';
     else if (effects.some((e) => e.exists && e.mtimeAfterStart === false)) deterministic = 'stale';
     else if (effects.every((e) => e.exists && e.mtimeAfterStart)) deterministic = 'all-present-and-fresh';
@@ -344,6 +366,7 @@ export class JevJobCompletionAudit {
       deterministic,
       trivialHeuristic,
       corroboration: declared.length > 0 && effects.some((e) => !e.refused) ? 'effects' : 'none',
+      ...(claimedUndeclared > 0 ? { claimedUndeclared } : {}),
       attempts: 0,
     };
 
@@ -513,10 +536,11 @@ export class JevJobCompletionAudit {
       const pFalse = json.answers?.false_success?.noul;
       const failureClass = json.answers?.failure_class?.choice;
       const conf = (p: number) => Math.max(p, 1 - p);
-      // No declaredEffects → produced_declared_effect is structurally
-      // unanswerable; gate on false_success confidence alone.
+      // No effect in play this run (none declared, or conditional but unclaimed)
+      // → produced_declared_effect is structurally unanswerable; gate on
+      // false_success confidence alone.
       const gating =
-        pack.deterministic === 'no-effects-declared'
+        pack.deterministic === 'no-effects-declared' || pack.deterministic === 'conditional-unclaimed'
           ? typeof pFalse === 'number'
             ? conf(pFalse)
             : 0
@@ -701,4 +725,17 @@ export function buildJevJobCompletionAudit(opts: {
     metrics: opts.metrics,
     fetchImpl: opts.fetchImpl,
   });
+}
+
+/** Bounded, deterministic parse of `EFFECT: <path>` claim lines from run output. */
+export function parseClaimedEffects(output: string): Set<string> {
+  const out = new Set<string>();
+  if (typeof output !== 'string' || output.length === 0) return out;
+  const re = new RegExp(EFFECT_MARKER_RE.source, EFFECT_MARKER_RE.flags);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(output)) !== null) {
+    if (out.size >= MAX_CLAIMED_EFFECTS) break;
+    out.add(m[1]);
+  }
+  return out;
 }
