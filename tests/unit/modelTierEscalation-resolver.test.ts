@@ -183,6 +183,7 @@ describe('closed enums + capability declarations', () => {
     // the resolution clamp with no operator-visible reason.
     expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-fable-5-1');
     expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-opus-5');
+    expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-opus-5-5');
     expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-sonnet-5');
   });
 
