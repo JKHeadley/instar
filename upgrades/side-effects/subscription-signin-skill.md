@@ -23,6 +23,8 @@ The skill tells the agent to sign a profile back in to Google with the vault pas
 
 A skill is guidance, not enforcement. The enforceable rules it states (normal browser on macOS, origin/identity floors, never driving a window it did not open) are enforced in code by the repair itself; the skill does not replace them.
 
+The failure table also names the backup-code path (#2072) and the macOS Automation permission case (#2071); the skill describes them, the code enforces them.
+
 ## 3. Level-of-abstraction fit
 
 Right layer per the operator's skills-over-scripts standard: procedure and judgment live in a skill; the mechanism stays the single built-in repair.
