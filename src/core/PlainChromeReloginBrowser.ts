@@ -59,6 +59,8 @@ export function wrapForAppleEvent(expression: string): string {
 export function decodeAppleEventResult<T>(raw: string): T {
   let parsed: { ok?: boolean; v?: T; __ae?: string };
   try { parsed = JSON.parse(raw.trim()); } catch { throw new Error('browser-evaluation-failed'); }
+  // -1743 (errAEEventNotPermitted): macOS Automation permission for Chrome is not granted to this process.
+  if (parsed.__ae === 'error--1743') throw new Error('plain-browser-automation-not-permitted');
   if (parsed.__ae) throw new Error(`plain-browser-apple-event-${parsed.__ae}`);
   if (parsed.ok !== true) throw new Error('browser-evaluation-failed');
   return parsed.v as T;
@@ -118,7 +120,11 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
       try {
         const state = await this.evaluate<string>('document.readyState');
         if (state === 'interactive' || state === 'complete') return;
-      } catch { /* @silent-fallback-ok — the window is still coming up; retried until the deadline below */ }
+      } catch (error) {
+        // A permission refusal will not clear by waiting: close and surface it now.
+        if (error instanceof Error && error.message === 'plain-browser-automation-not-permitted') { await this.close(); throw error; }
+        /* @silent-fallback-ok — otherwise the window is still coming up; retried until the deadline below */
+      }
       if (Date.now() > deadline) { await this.close(); throw new Error('chrome-launch-timeout'); }
       await this.wait(250);
     }

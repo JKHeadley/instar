@@ -195,4 +195,17 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     expect(allowedActions(state('interstitial', claude), { artifact, loginMethod: 'password', secretRefs: { password: 'p' } }))
       .toEqual(['wait']);
   });
+
+  it('names the failure reason, and hands a macOS automation-permission refusal to the operator instead of retrying', async () => {
+    const launch = fixture([state('password')]);
+    (launch.browser.open as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('chrome-launch-timeout'));
+    expect(await launch.driver.drive(launch.request))
+      .toEqual({ outcome: 'transient', failureClass: 'provider-transient', reason: 'chrome-launch-timeout' });
+
+    const denied = fixture([state('password')]);
+    (denied.browser.open as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('plain-browser-automation-not-permitted'));
+    expect(await denied.driver.drive(denied.request))
+      .toEqual({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'plain-browser-automation-not-permitted' });
+    expect(denied.browser.close).toHaveBeenCalled();
+  });
 });

@@ -303,7 +303,12 @@ export class AnthropicReloginBrowserDriver {
       // @silent-fallback-ok — the closed transient result is the controller-visible failure signal; no exception is hidden.
       outcomeNote = `error ${error instanceof Error ? error.message.slice(0, 60) : 'unknown'}`;
       if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
-      return { outcome: 'transient', failureClass: 'provider-transient' };
+      const reason = error instanceof Error ? error.message : 'unknown';
+      // macOS refused to let this agent control Chrome (Automation permission). Retrying cannot
+      // change that: stop now and ask the operator for the one-time "Allow".
+      if (reason.startsWith('plain-browser-automation-not-permitted'))
+        return { outcome: 'operator-only', failureClass: 'automation-permission', reason };
+      return { outcome: 'transient', failureClass: 'provider-transient', reason };
     } finally {
       signal.removeEventListener('abort', abort);
       resolvedSecrets.clear();

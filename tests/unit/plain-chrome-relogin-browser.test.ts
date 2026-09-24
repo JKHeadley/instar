@@ -98,3 +98,13 @@ describe('createReloginBrowser — the wiring the server uses', () => {
     expect(linux).not.toBeInstanceOf(PlainChromeReloginBrowser);
   });
 });
+
+describe('PlainChromeReloginBrowser — macOS automation permission', () => {
+  it('reports a refused Automation permission (-1743) at once instead of waiting out the launch timeout', async () => {
+    const started = Date.now();
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), operationTimeoutMs: 20_000,
+      runAppleEvent: async () => '{"__ae":"error--1743"}', launch: async () => 11 });
+    await expect(browser.open('https://claude.ai/')).rejects.toThrow('plain-browser-automation-not-permitted');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});

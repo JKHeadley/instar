@@ -160,7 +160,7 @@ describe('AnthropicReloginBrowserDriver in agent navigation mode', () => {
       (f.navigate as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
       const pending = f.driver.drive(baseRequest);
       await vi.advanceTimersByTimeAsync(61_000);
-      expect(await pending).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+      expect(await pending).toEqual({ outcome: 'transient', failureClass: 'provider-transient', reason: 'relogin-drive-deadline' });
       expect(f.browser.close).toHaveBeenCalled();
       expect(f.seatLease.release).toHaveBeenCalledOnce();
     } finally { vi.useRealTimers(); }
