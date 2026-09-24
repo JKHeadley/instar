@@ -43,6 +43,21 @@ describe('ChromeCdpReloginBrowser real process', () => {
     expect(isClosedOpenAiDeviceApproval({ ...base, pathname: '/oauth/authorize' })).toBe(false);
     expect(isClosedOpenAiDeviceApproval({ ...base, origin: 'https://auth.openai.com.evil.example' })).toBe(false);
   });
+  it.skipIf(resolveChromeExecutable() === null)('plain warm-up runs Chrome with no debugging connection, quits it, and refuses while the automated browser is open', async () => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    await browser.open('data:text/html,<title>x</title>');
+    await expect(browser.warmUpPlain('https://example.com/', 5_000)).rejects.toThrow('relogin-browser-still-open');
+    await browser.close();
+    await expect(browser.warmUpPlain('http://example.com/', 5_000)).rejects.toThrow('relogin-warm-up-url-refused');
+    SafeFsExecutor.safeRmSync(path.join(profile, 'DevToolsActivePort'), { force: true, operation: 'chrome-cdp-relogin-browser.test warm-up port cleanup' }); // left by the automated open above
+    const started = Date.now();
+    await browser.warmUpPlain('https://example.com/', 5_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
+    // No debugging port was ever opened by the plain run.
+    expect(fs.existsSync(path.join(profile, 'DevToolsActivePort'))).toBe(false);
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('agent navigation: lists visible controls without input values and clicks the numbered control only while its text is unchanged', async () => {
     // Spec agent-driven-relogin: a page no classifier knows is still actionable — the driver sees
     // the numbered visible controls (never an input value) and the click re-checks the text.

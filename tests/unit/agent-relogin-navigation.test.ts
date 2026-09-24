@@ -182,3 +182,40 @@ describe('resolveReloginNavigation', () => {
     expect(resolveReloginNavigation('agent', {})).toBe('agent');
   });
 });
+
+describe('Cloudflare hold that never clears under automation (live 2026-09-24)', () => {
+  function driverWith(snapshots: ReloginBrowserSnapshot[], warmUp: boolean) {
+    let index = 0;
+    const browser: ReloginBrowserPort = {
+      open: vi.fn(async () => {}),
+      snapshot: vi.fn(async () => snapshots[Math.min(index++, snapshots.length - 1)]),
+      chooseExpectedAccount: vi.fn(async () => {}), fillPublic: vi.fn(async () => {}), fillSecret: vi.fn(async () => {}),
+      click: vi.fn(async () => {}), readPasteCode: vi.fn(async () => 'returned-code'),
+      wait: vi.fn(async () => {}), close: vi.fn(async () => {}),
+      ...(warmUp ? { warmUpPlain: vi.fn(async () => {}) } : {}),
+    };
+    const driver = new AnthropicReloginBrowserDriver({ browser, seatLease: { acquire: () => ({ acquired: true }), release: vi.fn() },
+      resolveSecret: async () => null, supervise: async ({ allowedActions }) => allowedActions[0]!, interstitialMaxMs: 3_000 });
+    return { browser, driver };
+  }
+
+  it('runs one plain warm-up, reopens the sign-in link, and continues once the hold is gone', async () => {
+    const f = driverWith([snap('interstitial'), snap('interstitial'), snap('paste-code')], true);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(f.browser.warmUpPlain).toHaveBeenCalledOnce();
+    expect(f.browser.warmUpPlain).toHaveBeenCalledWith(baseRequest.verificationUrl, 45_000);
+    expect(f.browser.open).toHaveBeenCalledTimes(2);
+  });
+
+  it('warms up at most once per drive, then ends the drive as transient', async () => {
+    const f = driverWith([snap('interstitial')], true);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.browser.warmUpPlain).toHaveBeenCalledOnce();
+  });
+
+  it('without a warm-up capability keeps the old bounded behaviour', async () => {
+    const f = driverWith([snap('interstitial')], false);
+    expect(await f.driver.drive(baseRequest)).toEqual({ outcome: 'transient', failureClass: 'provider-transient' });
+    expect(f.browser.open).toHaveBeenCalledOnce();
+  });
+});

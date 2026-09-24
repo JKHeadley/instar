@@ -67,6 +67,12 @@ export interface ReloginBrowserPort {
   readPasteCode(): Promise<string | null>;
   /** Agent navigation (optional): the page's visible controls, and a real click on one of them. */
   observeControls?(): Promise<ReloginControlObservation>;
+  /**
+   * Run the profile's Chrome WITHOUT any debugging connection on `url` for `ms`, then quit it
+   * (live 2026-09-24: a profile stuck on Cloudflare's hold under automation passed it once run
+   * plainly, and the clearance carried over). The browser must be closed before calling.
+   */
+  warmUpPlain?(url: string, ms: number): Promise<void>;
   clickControl?(n: number, expectedText: string, expectedIdentities: string[]): Promise<void>;
   wait(ms: number): Promise<void>;
   close(): Promise<void>;
@@ -140,6 +146,9 @@ export interface AgentNavigationInput {
 /** Poll cadence while a bot-check interstitial is showing. */
 export const INTERSTITIAL_POLL_MS = 3_000;
 
+/** How long the plain, unautomated warm-up browser runs when a hold will not clear under automation. */
+export const PLAIN_WARM_UP_MS = 45_000;
+
 const ANTHROPIC_ORIGINS = [
   'https://claude.ai',
   'https://claude.com',
@@ -201,6 +210,7 @@ export class AnthropicReloginBrowserDriver {
     if (request.artifact.userCode) resolvedSecrets.add(request.artifact.userCode);
     const recentSteps: string[] = [];
     let outcomeNote = 'unfinished';
+    let warmedUp = false;
     try {
       signal.throwIfAborted();
       await bounded(this.deps.browser.open(request.verificationUrl));
@@ -215,8 +225,22 @@ export class AnthropicReloginBrowserDriver {
         // has its own bounded budget instead of burning the step budget 750 ms at a time
         // (20 × 750 ms = 15 s, which the 2026-09-23 justin-gmail repair ran out three times).
         if (snapshot.pageClass === 'interstitial') {
-          if (interstitialWaitedMs >= this.interstitialMaxMs)
-            return { outcome: 'transient', failureClass: 'provider-transient' };
+          if (interstitialWaitedMs >= this.interstitialMaxMs) {
+            // Once per drive: let the profile pass the hold as a plain, unautomated browser,
+            // then reopen and carry on (bounded by the same drive deadline).
+            if (warmedUp || typeof this.deps.browser.warmUpPlain !== 'function') {
+              outcomeNote = 'hold never cleared';
+              return { outcome: 'transient', failureClass: 'provider-transient' };
+            }
+            warmedUp = true;
+            recentSteps.push('plain-warm-up');
+            await bounded(this.deps.browser.close());
+            await bounded(this.deps.browser.warmUpPlain(request.verificationUrl, PLAIN_WARM_UP_MS));
+            await bounded(this.deps.browser.open(request.verificationUrl));
+            interstitialWaitedMs = 0;
+            step -= 1;
+            continue;
+          }
           await bounded(this.deps.browser.wait(INTERSTITIAL_POLL_MS));
           interstitialWaitedMs += INTERSTITIAL_POLL_MS;
           step -= 1; // an interstitial poll is not a drive step
