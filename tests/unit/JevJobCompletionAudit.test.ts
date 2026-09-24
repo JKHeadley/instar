@@ -23,8 +23,10 @@ import {
   type EvidencePack,
 } from '../../src/scheduler/JevJobCompletionAudit.js';
 
-const NOW = Date.parse('2026-09-22T12:00:00Z');
-const FUTURE = '2026-10-05T12:00:00Z';
+// Anchored to the REAL clock: the audit compares its clock against real file mtimes (effect
+// freshness, evidence-pack retention), so a fixed date made the suite depend on the runner's date.
+const NOW = Math.floor(Date.now() / 1000) * 1000;
+const FUTURE = new Date(NOW + 13 * 86_400_000).toISOString();
 const SECRET = 'sk-proj-' + 'A1b2C3d4'.repeat(6);
 
 let root: string;
@@ -99,7 +101,7 @@ describe('capture — bounded, durable, never throws', () => {
   it('is inert when disabled / soak-expired / audit-excluded', async () => {
     for (const [cfg, cap] of [
       [{ enabled: false }, undefined],
-      [{ soakEndsAt: '2026-09-01T00:00:00Z' }, undefined],
+      [{ soakEndsAt: new Date(NOW - 21 * 86_400_000).toISOString() }, undefined],
       [{}, 'excluded'],
     ] as const) {
       const a = make({ cfg: cfg as Partial<JevAuditConfig> });
