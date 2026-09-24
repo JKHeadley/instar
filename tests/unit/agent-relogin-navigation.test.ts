@@ -54,10 +54,10 @@ describe('agent navigation floors (buildAgentOffer)', () => {
   it('never offers destructive or credential-creating controls, in any wording', () => {
     for (const text of ['Sign out of all sessions', 'Log out everywhere', 'Manage your Google Account',
       'Create a passkey', 'Use another account', 'Forgot password?', 'Set up 2-Step Verification', 'Delete account',
-      'Create account', 'Sign up for free']) {
+      'Create account', 'Sign up for free', 'Decline', 'Switch account', 'Deny', 'Not you?']) {
       expect(isBlockedControl(text), text).toBe(true);
     }
-    for (const text of ['Continue', 'Next', 'Continue with Google', 'Sign in', 'Allow']) {
+    for (const text of ['Continue', 'Next', 'Continue with Google', 'Sign in', 'Allow', 'Authorize']) {
       expect(isBlockedControl(text), text).toBe(false);
     }
   });
@@ -72,6 +72,12 @@ describe('agent navigation floors (buildAgentOffer)', () => {
     // On an authorize-class page EVERY control is consent-capable.
     expect(buildAgentOffer(snap('authorize'), obs([{ n: 1, text: 'Continue' }]), baseRequest, []).offered)
       .not.toContain('click:1');
+  });
+
+  it("on Claude's real authorize page (live 2026-09-24) offers Authorize only — never Decline or Switch account", () => {
+    const page = obs([{ n: 1, text: 'Authorize' }, { n: 2, text: 'Decline' }, { n: 3, text: 'Switch account' }]);
+    const offer = buildAgentOffer(snap('authorize', { requestedScopes: ['user:profile'] }), page, baseRequest, []);
+    expect(offer.offered).toEqual(['click:1', 'wait', 'give-up']);
   });
 
   it('offers typed fills by input presence and login method, never as free text', () => {
