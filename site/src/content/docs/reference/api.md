@@ -1047,6 +1047,7 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-relogin/:episodeId/approve-with-mandate` | Target-local point-of-use route for a signed exact-bounds repair mandate. Intended for the fronting repair-cell orchestrator, not direct dashboard use. |
 | POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
 | POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
+| POST | `/subscription-relogin/:episodeId/code` | Loopback-only door for a skill-driven sign-in helper (macOS, `navigation: agent-session`). Authenticated by the per-episode `X-Relogin-Helper-Token` held in memory by `SubscriptionReloginHelper`, not the API bearer token. The body is exactly one of `{"code"}`, `{"notify":"phone-tap"}` or `{"notify":"macos-permission","permission"}`, capped at 1 KB, with no CORS. Answers 409 when no live helper holds the episode and 503 when the path is off. |
 
 ### Window lifecycle obligation ledger (Echo-local)
 
