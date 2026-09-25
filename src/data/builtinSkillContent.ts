@@ -69,9 +69,9 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 
 1. **Each Google account has its own Chrome profile on each machine**, kept signed in to Google. Claude and Codex both sign in "with Google", so a healthy Google session in that profile is what makes every later re-sign-in a few clicks.
    When Google itself asks to sign in again, the agent types the account's password and its 6-digit authenticator code, both taken from the vault by name, in that same normal browser. No passkey and no automated browser are needed, so the Google side needs no human either.
-2. **Sign-ins always run in a NORMAL browser** — the account's Chrome opened the ordinary way, never a remote-controlled/automated one (no DevTools/Playwright). Providers put human checks in front of automated browsers (Claude's Authorize never went through; Cloudflare "Just a moment" never cleared); the same profile opened normally passes. The built-in repair does this for you on macOS.
+2. **Sign-ins always run in a NORMAL browser** — the account's Chrome opened the ordinary way, never a remote-controlled/automated one (no DevTools/Playwright). Providers put human checks in front of automated browsers (Claude's Authorize never went through; Cloudflare "Just a moment" never cleared); the same profile opened normally passes. The built-in repair does this for you on macOS. (Another agent has driven Google's own sign-in and ChatGPT's "Continue with Google" through a debugging-protocol Chrome without trouble. The page that reliably refuses automation is Claude's Authorize page. A normal browser works for all of them, so use one everywhere.)
 3. **The CLI login is started by Instar**, the browser only approves it: Claude gives a code to paste back; Codex (device code) finishes on its own.
-4. **Success is measured, not assumed**: the account must read \`active\` with the expected email, and an authenticated call must work.
+4. **Success is measured, not assumed**: a real authenticated call must work and answer as the expected email. A status command alone is not proof: \`claude auth status\` reports \`loggedIn: true\` for a sign-in whose session has expired and can't be refreshed.
 
 ## Hard rules
 
@@ -80,6 +80,7 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 - Never put a password, code, or token in chat, a file, or a command line. Secrets come from the vault by name.
 - Never copy a Chrome profile or a login between machines — cookies are tied to that machine. Each machine gets its own profile and its own sign-in.
 - Never drive or close a Chrome window you did not open (a person may be using it).
+- Type a password only into Google's or Claude's own sign-in page, after checking that page's address.
 
 ## 1. Setting up an account on a machine (once)
 
@@ -91,14 +92,45 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 
 1. **Look first**: \`GET /subscription-pool\` (which account, which machine, \`needs-reauth\`), \`GET /subscription-relogin\` (any repair episode and its state), \`GET /subscription-pool/pending-logins\` (a live login waiting for approval).
 2. **Let the built-in repair run.** In unattended mode it starts on its own for the listed identities; in approval mode it needs one dashboard tap (**Repair sign-in** on that account × machine cell). You cannot approve for the operator — send them the dashboard link.
-3. **Read the outcome**: \`GET /subscription-relogin/<episode>/events\` (redacted). \`succeeded\` = done. Otherwise use the table below.
-4. **Verify**: \`GET /subscription-pool\` shows the account \`active\`, \`identityDrifted: false\`, right email.
+3. **Read the outcome**: \`GET /subscription-relogin/<episode>/events\` (redacted). \`succeeded\` = done. Otherwise use the table in section 4.
+4. **If the repair stopped on a page rule** rather than on a real human check (for example \`unexpected-origin\`, \`permission-expansion\`, a timeout, or a page it didn't recognize), sign in by hand (section 3). Don't wait for a retry. The by-hand path is what a person at the machine would do, and it has worked on every machine.
+5. **Verify**: \`GET /subscription-pool\` shows the account \`active\`, \`identityDrifted: false\`, right email.
 
-## 3. When a repair does not finish
+## 3. Signing in by hand (the agent at the machine)
+
+This is the way you would do it as a person: look at the screen and act on what it needs. It works where fixed page rules stop. Proven on the Mac Studio (2026-09-24) and the Laptop (2026-09-25, two accounts in about 10 minutes). The only human step was one phone tap.
+
+1. **Start the CLI login** for the pool account: \`POST /subscription-pool/enroll\` with the account's existing \`id\`, \`label\`, \`provider\`, \`framework\` and \`configHome\`. It returns the \`verificationUrl\`. Cancel a stale pending login first.
+2. **Open the account's own profile normally**: set \`browser.allow_javascript_apple_events: true\` in \`<profile>/Default/Preferences\`, then \`open -na "Google Chrome" --args --user-data-dir=<profile dir> "<verificationUrl>"\`. Its main process is the one whose arguments carry that \`--user-data-dir\` and no \`--type=\`.
+3. **See the screen**: \`screencapture -x a.png b.png c.png\` (one file per display; a full-screen app on one display hides the others), then view the images. Read the page itself with a pid-targeted Apple Event (\`CrSu/ExJa\`, parameter \`JvSc\`, sent to \`tab 1 of window 1\`, via \`osascript -l JavaScript\`). Reading the "active tab" property fails. The window index follows stacking order, so a Google popup becomes window 1 while it is open.
+4. **Act like a person**:
+   - A **"Sign in to Chrome"** window appears first on a fresh profile. While it is up, the browser reports no windows, so nothing else works. Click **Stay signed out**. After a Google sign-in, Chrome may also offer "Set up a work profile" or "Make Chrome your own". Choose **Use Chrome without an account** every time.
+   - A new window can open inside another app's full-screen Space, where it is invisible. Move it onto a free display (a pid-targeted Apple Event that sets window 1's bounds) before clicking.
+   - **Before every keystroke**, check that the frontmost process is this Chrome's pid AND that \`document.activeElement\` is the field you mean to type into. Keystrokes go to whatever app has focus, and once they landed in the operator's chat box. If that ever happens, delete exactly what you typed and never press Enter.
+   - Click with \`cliclick\` at screen coordinates you compute from the page: \`screenX + rect.left + width/2\` and \`screenY + (outerHeight - innerHeight) + rect.top + height/2\`. Negative coordinates need the \`=\` form (\`c:=-2192,=250\`). Move the window onto a free display first if needed.
+   - Type a password by piping it from the vault into a script that reads **stdin** and sends System Events keystrokes, after checking that this Chrome is frontmost. The secret must never appear on a command line.
+   - Claude's **Authorize** button enables only after the window has focus and sees pointer movement, and even then it can take several seconds. Raise the window, click a blank spot, and move the pointer onto the button in a few steps. Then wait up to about 15 seconds for it to enable, and click once. Never click it while it is still greyed out.
+   - If Google offers a **passkey** first (a Touch ID sheet or Chrome's passkey picker), cancel it, then choose **Try another way**, then **Enter your password**, then the authenticator-app code. Compute the code from the vault's TOTP secret over stdin, and never print it.
+   - Recompute an element's coordinates right before clicking it. A page that scrolled makes old coordinates land on the wrong thing.
+5. **The usual Claude path**: the authorize link opens \`claude.ai/login\`, then Continue with Google opens a **Google popup** (choose the expected email, then the password, then any second step). Next comes "You're signing back in to Claude" → Continue → the authorize page (check it says "Logged in as" the expected email) → Authorize → a page showing the code. Read the code from the page and pipe it straight into \`POST /subscription-pool/follow-me/enroll/<id>/submit-code\`, never printing it.
+6. **Verify** (\`POST /subscription-pool/poll\`, then \`GET /subscription-pool\`, plus one real call: \`CLAUDE_CONFIG_DIR=<configHome> claude -p "Reply with exactly: OK" --max-turns 1\`, run next to a known-good account so that a failure means something). Then close only the Chrome you opened.
+
+**Codex (device code)**, proven on the Laptop (2026-09-25; three accounts in about 15 minutes):
+- The login usually already exists (\`GET /subscription-pool/pending-logins\`, reissued every few minutes). Don't enroll it again, because that can respawn it with a new code.
+- **Read the code from the live login pane**, not only from pending-logins: \`tmux capture-pane -p -t '=instar-enroll-codex-cli-<tail of configHome>:'\`. If the two differ, trust the pane. OpenAI accepts an old code, but then the CLI never finishes.
+- Open \`https://auth.openai.com/codex/device\` in the account's profile, then **Continue with Google**, then any Google sign-in. The consent page shows the email: check it, then Continue. On the page that asks for the 9-character code, click the first box and type the code (the dash is skipped). Then Continue, and the page shows "Signed in to Codex". The CLI finishes on its own within about 10 seconds.
+- Then \`POST /subscription-pool/enroll/<id>/complete\`; a device-code login is not marked complete by itself. Then \`POST /subscription-pool/poll\`. If the code expired mid-flow, \`POST /subscription-pool/enroll/reissue-expired\` and type the new one.
+- Verify with \`CODEX_HOME=<configHome> codex login status\` ("Logged in using ChatGPT") and a fresh quota reading from Codex's own server (\`POST /subscription-pool/poll\`, source \`codex-app-server\`).
+
+If you are helping from another machine, spawn the helper session on the target machine **bound to the operator's topic**. An unbound session cannot message the operator. Tell the operator before anything that needs their hands, such as a phone tap or a macOS "Allow".
+
+## 4. When a repair does not finish
 
 | What the episode/page shows | What it means | Do this |
 |---|---|---|
 | \`captcha\` / \`phone-confirmation\` / operator-only | Provider wants a human | Tell the operator once, with the dashboard link; never retry through it |
+| \`unexpected-origin\` / \`permission-expansion\` right after Chrome opens | Usually a false stop: a "Sign in to Chrome" window, a Google popup, or the standard Claude Code permission list | Sign in by hand (section 3). Check the permissions on the Authorize page yourself: they must be the standard Claude Code set, and nothing more |
+| A "Sign in to Chrome" window in front | Chrome's first-run prompt for that profile | Click **Stay signed out**, then carry on |
 | \`relogin-profile-in-use\` | That profile's Chrome is already open | Wait until it is closed; never close it yourself |
 | \`pending-login-already-live\` on retry | An older login is still waiting | \`POST /subscription-pool/enroll/<id>/cancel\`, then retry |
 | Google asks for the password or 2-step again | The profile's Google session expired | The repair types the password and authenticator code from the vault; if either is missing, do step 1.2 |
@@ -108,11 +140,13 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 | Anything else | Read the reason | \`GET /subscription-relogin/EPISODE/events\`: every attempt records a short reason token (e.g. \`chrome-launch-timeout\`) |
 | Profile missing on this machine | Never set up here | Do section 1 on this machine |
 | Authorize button stays greyed out | Normal on Claude until the page sees pointer activity | The repair handles it; if it persists after a minute, hand off |
-| Repeated failures on one account | Something structural | Stop retrying after two attempts; report the episode id and last event |
+| Repeated failures on one account | Something structural | Stop the automatic retries after two; sign in by hand once (section 3); if that also fails, report the episode id and what you saw |
 
-## 4. Keeping it healthy (the 20% that prevents 80% of failures)
+## 5. Keeping it healthy (the 20% that prevents 80% of failures)
 
 - One profile per Google account per machine, registered, signed in to Google, with password and authenticator secret in the vault.
+- **Pool \`active\` does not mean signed in, and neither does a status command.** Prove it with one real authenticated call per account, run next to a known-good account, and check which email it answers as. On 2026-09-25, three Codex accounts read \`active\` for days while they were signed out. On another machine, \`claude auth status\` said signed in for three accounts whose sessions were dead.
+- **A check only counts once you've seen it fail.** Try it on a signed-out or bogus account at least once, so you know it can tell the difference.
 - Keep each profile's Google session in use: open it in a normal browser about weekly, so an expiry is caught before Claude or Codex needs it.
 - Don't hammer sign-in pages: each failed automated-looking attempt raises the provider's risk score. One clean attempt, then hand off.
 - When you learn something new about a sign-in page, update this skill's table — the procedure is the memory.`;
