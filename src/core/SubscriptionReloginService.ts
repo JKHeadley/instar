@@ -20,6 +20,14 @@ export interface SubscriptionReloginServiceDeps {
   onSuggested?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
+  /** The fixed "tap Yes on your phone" notice a sign-in helper asked for (spec skill-driven-signin-repair). */
+  onPhoneTap?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
+  /**
+   * True when the server itself has verified this episode's account×machine cell healthy (an
+   * authenticated read with a matching identity). An open repair on such a cell is closed as
+   * `resolved-elsewhere` — the account was signed in another way. Absent ⇒ never closes.
+   */
+  cellHealthy?: (episode: SubscriptionReloginEpisode) => boolean;
   tickMs?: number;
   now?: () => number;
 }
@@ -94,9 +102,12 @@ export class SubscriptionReloginService {
           catch { /* revalidation refusal leaves suggestion visible */ }
         }
       }
+      this.closeResolvedElsewhere();
       const runnable = this.deps.store.list({ limit: 500 }).filter((episode) =>
         !['suggested', 'waiting-operator-only', 'succeeded', 'refused', 'cancelled', 'failed'].includes(episode.state));
-      await Promise.all(runnable.map((episode) => this.runEpisode(episode.id)));
+      // Detached, like approve()/retry(): an agent-session drive can take up to 15 minutes and must
+      // never block scanning or notice delivery. `inFlight` prevents double starts.
+      for (const episode of runnable) void this.runEpisode(episode.id);
       await this.drainNotifications();
     } finally {
       this.ticking = false;
@@ -109,11 +120,38 @@ export class SubscriptionReloginService {
     const controller = new AbortController();
     this.controllers.set(id, controller);
     try {
-      const result = await this.deps.orchestrator.tick(id, controller.signal);
-      if (result.outcome === 'terminal') await this.drainNotifications();
+      await this.deps.orchestrator.tick(id, controller.signal);
+      // Terminal and operator-only outcomes each queue a notice; deliver it now rather than a tick
+      // later. Claims are atomic, so a concurrent drain never double-sends.
+      await this.drainNotifications();
+    } catch {
+      // @silent-fallback-ok — a tick error (e.g. a version conflict) leaves the durable row as-is;
+      // the next tick re-reads it. Detached runs must never surface as an unhandled rejection.
     } finally {
       if (this.controllers.get(id) === controller) this.controllers.delete(id);
       this.inFlight.delete(id);
+    }
+  }
+
+  /**
+   * An open repair must not outlive the problem it was opened for. A cell verified healthy by
+   * another path (the 2026-09-25 Laptop case: justin@ signed in by hand, yet the cell kept saying
+   * "Sign-in needs your help" for hours) closes its episode through the audited store transition.
+   * An episode this process is actively driving is left to its own arbiter.
+   */
+  private closeResolvedElsewhere(): void {
+    if (!this.deps.cellHealthy) return;
+    for (const episode of this.deps.store.list({ limit: 500 })) {
+      // Only PRE-DRIVE states. A mid-repair episode (cli-finishing / identity-verifying /
+      // auth-verifying) is this repair's own verification in progress — closing it would record a
+      // real success as cancelled, or skip the wrong-identity quarantine. Those finish through the arbiter.
+      if (!['suggested', 'approved', 'waiting-operator-only'].includes(episode.state)) continue;
+      if (this.inFlight.has(episode.id)) continue;
+      let healthy = false;
+      try { healthy = this.deps.cellHealthy(episode); } catch { healthy = false; } // @silent-fallback-ok — unmeasurable ⇒ leave it open
+      if (!healthy) continue;
+      try { this.deps.store.resolveElsewhere(episode.id); }
+      catch { /* @silent-fallback-ok — a concurrent transition won; the next tick re-reads */ }
     }
   }
 
@@ -122,6 +160,12 @@ export class SubscriptionReloginService {
     if (!episode) throw new Error('relogin-episode-not-found');
     return episode;
   }
+  /** Deliver due notices now (e.g. a time-bound phone-tap request). Safe to call concurrently. */
+  async flushNotifications(): Promise<void> {
+    try { await this.drainNotifications(); }
+    catch { /* @silent-fallback-ok — undelivered notices stay queued for the next tick */ }
+  }
+
   private async drainNotifications(): Promise<void> {
     for (const notification of this.deps.store.claimNotifications(20)) {
       const episode = this.deps.store.get(notification.episodeId);
@@ -129,6 +173,7 @@ export class SubscriptionReloginService {
         if (!episode) throw new Error('notification-episode-missing');
         if (notification.kind === 'suggested') await this.deps.onSuggested?.(episode, notification.deliveryKey);
         else if (notification.kind === 'operator-only') await this.deps.onOperatorOnly?.(episode, notification.deliveryKey);
+        else if (notification.kind === 'phone-tap') await this.deps.onPhoneTap?.(episode, notification.deliveryKey);
         else await this.deps.onTerminal?.(episode, notification.deliveryKey);
         this.deps.store.completeNotification(notification.id);
       } catch {

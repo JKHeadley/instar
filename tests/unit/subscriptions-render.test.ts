@@ -480,7 +480,13 @@ describe('renderAccountMatrix', () => {
         { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
       ]);
       const cell = t.querySelector('[data-cell-key="a1::m1"]');
-      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      if (state === 'waiting-operator-only') {
+        // A repair waiting on the operator also offers the one-tap phone Sign in
+        // (spec skill-driven-signin-repair, operator contact).
+        expect(cell!.querySelector('[data-matrix-setup]')!.textContent, state).toBe('Sign in');
+      } else {
+        expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      }
       const action = state === 'suggested' ? 'approve' : 'cancel';
       expect(cell!.querySelector(`[data-matrix-relogin][data-repair-action="${action}"]`), state).toBeTruthy();
       if (state !== 'suggested') expect(cell!.textContent, state).toMatch(/Repairing sign-in|needs your help/);

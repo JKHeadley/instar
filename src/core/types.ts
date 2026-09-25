@@ -4313,10 +4313,13 @@ export interface InstarConfig {
       approvalTopicId?: number;
       /**
        * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
-       * page's floor-filtered controls; `closed` = the fixed page-class table. Omitted ⇒ the
-       * development-agent gate (agent on a development agent, closed on the fleet).
+       * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
+       * short-lived agent session follows /subscription-signin section 3 like a person (spec
+       * skill-driven-signin-repair; macOS only, approval forced until graduation — off macOS it
+       * resolves to the existing driver). Omitted ⇒ `agent-session` on a macOS development agent,
+       * otherwise the development-agent gate (agent on a development agent, closed on the fleet).
        */
-      navigation?: 'agent' | 'closed';
+      navigation?: 'agent' | 'closed' | 'agent-session';
     };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */

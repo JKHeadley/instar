@@ -50,6 +50,7 @@ export interface ReadLiveCodexRateLimitsOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const UNAVAILABLE = { kind: 'unavailable' } as const;
 
 /** The subset of the app-server v2 `RateLimitSnapshot` this reader consumes. */
 interface LiveRateLimitSnapshot {
@@ -67,6 +68,25 @@ interface LiveRateWindow {
 }
 
 /**
+ * The live read with its failure KIND kept (spec skill-driven-signin-repair): `auth-failed`
+ * is the app-server's own "authentication required" refusal — the only failure that says
+ * anything about the login. Every other failure (binary missing, spawn error, timeout,
+ * protocol drift) is `unavailable`: a transport problem, never evidence of sign-out.
+ */
+export type CodexLiveRead =
+  | { kind: 'ok'; snapshot: CodexUsageSnapshot }
+  | { kind: 'auth-failed' }
+  | { kind: 'unavailable' };
+
+/** True when an app-server JSON-RPC error names missing/invalid authentication. Exported for tests. */
+export function isCodexAuthError(error: unknown): boolean {
+  const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+    ? (error as { message: string }).message : '';
+  return /authenticat|not logged in|log ?in required|login required|unauthori[sz]ed|invalid.*(token|auth)|auth.*(expired|invalid|required)/i
+    .test(message);
+}
+
+/**
  * Read the account's LIVE rate limits through `codex app-server` — zero quota
  * spend. Returns null on any failure so the caller can fall back to the
  * rollout-tail reader; never throws.
@@ -74,6 +94,14 @@ interface LiveRateWindow {
 export async function readLiveCodexRateLimits(
   opts: ReadLiveCodexRateLimitsOptions = {},
 ): Promise<CodexUsageSnapshot | null> {
+  const read = await readLiveCodexRateLimitsDetailed(opts);
+  return read.kind === 'ok' ? read.snapshot : null;
+}
+
+/** As {@link readLiveCodexRateLimits}, but keeps WHY a read failed. Never throws. */
+export async function readLiveCodexRateLimitsDetailed(
+  opts: ReadLiveCodexRateLimitsOptions = {},
+): Promise<CodexLiveRead> {
   const nowMs = opts.nowMs ?? Date.now();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnImpl = opts.spawnImpl ?? ((cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'pipe' }));
@@ -87,14 +115,14 @@ export async function readLiveCodexRateLimits(
       },
     });
   } catch {
-    return null;
+    return UNAVAILABLE;
   }
 
-  return new Promise<CodexUsageSnapshot | null>((resolve) => {
+  return new Promise<CodexLiveRead>((resolve) => {
     let settled = false;
     let stdoutBuf = '';
 
-    const finish = (value: CodexUsageSnapshot | null): void => {
+    const finish = (value: CodexLiveRead): void => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
@@ -106,7 +134,7 @@ export async function readLiveCodexRateLimits(
       resolve(value);
     };
 
-    const deadline = setTimeout(() => finish(null), timeoutMs);
+    const deadline = setTimeout(() => finish(UNAVAILABLE), timeoutMs);
     // The exchange must never outlive its caller because the timer forgot to
     // fire (e.g. a fake timer environment): unref so a leaked child cannot pin
     // the event loop either way.
@@ -116,12 +144,12 @@ export async function readLiveCodexRateLimits(
       try {
         child.stdin.write(`${JSON.stringify(payload)}\n`);
       } catch {
-        finish(null);
+        finish(UNAVAILABLE);
       }
     };
 
-    child.on('error', () => finish(null));
-    child.on('exit', () => finish(null));
+    child.on('error', () => finish(UNAVAILABLE));
+    child.on('exit', () => finish(UNAVAILABLE));
     child.stderr?.on('data', () => {
       // Drained so the child can never block on a full stderr pipe. Content is
       // deliberately ignored: any protocol failure surfaces as a null result.
@@ -142,17 +170,22 @@ export async function readLiveCodexRateLimits(
         }
         if (msg.id === 1) {
           if (msg.error) {
-            finish(null);
+            finish(UNAVAILABLE);
             return;
           }
           send({ jsonrpc: '2.0', method: 'initialized' });
           send({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} });
         } else if (msg.id === 2) {
-          if (msg.error || !msg.result) {
-            finish(null);
+          if (msg.error) {
+            finish(isCodexAuthError(msg.error) ? { kind: 'auth-failed' } : UNAVAILABLE);
             return;
           }
-          finish(mapLiveResponse(msg.result as Record<string, unknown>, nowMs));
+          if (!msg.result) {
+            finish(UNAVAILABLE);
+            return;
+          }
+          const snapshot = mapLiveResponse(msg.result as Record<string, unknown>, nowMs);
+          finish(snapshot ? { kind: 'ok', snapshot } : UNAVAILABLE);
           return;
         }
       }
@@ -183,6 +216,18 @@ export function buildCodexLiveUsageReader(
 ): ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexUsageSnapshot | null>) | null {
   if (subscriptionPool?.codexLiveQuota === false) return null;
   return (opts) => readLiveCodexRateLimits({ codexHome: opts?.codexHome, nowMs: opts?.nowMs });
+}
+
+/**
+ * The same composition-root factory for the DETAILED live read (spec skill-driven-signin-repair):
+ * the quota poller uses it so an app-server "authentication required" refusal is told apart
+ * from a transport failure. Honors the same `codexLiveQuota: false` rollback lever.
+ */
+export function buildCodexLiveUsageReaderDetailed(
+  subscriptionPool?: { codexLiveQuota?: boolean },
+): ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexLiveRead>) | null {
+  if (subscriptionPool?.codexLiveQuota === false) return null;
+  return (opts) => readLiveCodexRateLimitsDetailed({ codexHome: opts?.codexHome, nowMs: opts?.nowMs });
 }
 
 /**

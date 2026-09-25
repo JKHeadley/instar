@@ -10,6 +10,7 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'exchange-failed',
   'malformed-response',
   'still-authfailed-after-refresh',
+  'cli-signed-out-auth-refused',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
 const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
@@ -42,6 +43,7 @@ export type SubscriptionReloginRefusal =
   | 'source-episode-closed'
   | 'source-episode-wrong-cell'
   | 'source-not-exchange-corroborated'
+  | 'codex-live-read-disabled'
   | 'source-not-directly-observed'
   | 'cause-not-actionable'
   | 'repair-already-live'

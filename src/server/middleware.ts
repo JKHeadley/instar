@@ -48,7 +48,17 @@ export function duplicateResponseGuard(req: Request, res: Response, next: NextFu
   next();
 }
 
+/** The skill-driven sign-in helper's code route: token-authed, loopback-only, never CORS-enabled. */
+export const RELOGIN_HELPER_CODE_PATH = /^\/subscription-relogin\/[A-Za-z0-9._:-]{1,160}\/code$/;
+
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // The sign-in helper's code route sends NO CORS headers, so no browser page can reach it
+  // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
+  if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+    if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
   // Restrict CORS to localhost origins only — this is a local management API
   const origin = req.headers.origin;
   if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
@@ -216,6 +226,13 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
         return;
       }
       // Fall through to the standard bearer check below.
+    }
+
+    // Skill-driven sign-in helper code route: the per-episode token in X-Relogin-Helper-Token IS
+    // the auth, enforced (with loopback-only) in the route handler. POST only.
+    if (req.method === 'POST' && RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+      next();
+      return;
     }
 
     // Secret drop routes — the token in the URL IS the auth.

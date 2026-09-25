@@ -3072,6 +3072,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     /** Claude Code only: opt this spawned turn into xhigh effort + dynamic
      * workflow orchestration via Claude's supported prompt keyword. */
     ultracode?: boolean;
+    /**
+     * Explicit subscription-account pin (spec skill-driven-signin-repair): launch this headless
+     * session under THIS pool account's login, for Claude (`CLAUDE_CONFIG_DIR`) or Codex
+     * (`CODEX_HOME`). The home is resolved through the credential-location gate, so a re-pointed
+     * slot is followed. It always wins over the global headroom resolver, which pins Claude only
+     * and cannot exclude an account. Refused when `framework` is not claude-code or codex-cli, or
+     * when the resolved headless framework differs from the requested one (a pinned launch must
+     * never silently land on another framework's login).
+     */
+    accountPin?: { accountId: string; configHome: string };
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -3231,6 +3241,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       );
     }
 
+    if (options.accountPin) {
+      if (headlessFramework !== options.framework
+        || (headlessFramework !== 'claude-code' && headlessFramework !== 'codex-cli')) {
+        throw new Error(`account-pin-framework-unsupported: ${headlessFramework}`);
+      }
+      if (!path.isAbsolute(options.accountPin.configHome)) throw new Error('account-pin-config-home-invalid');
+    }
     const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
 
 
@@ -3343,14 +3360,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // claude-code session under a chosen pool account's config home and tag it,
     // so auto-swap can move it when that account walls. No-op unless the resolver
     // is wired (pinSessionsToPool enabled) and returns an account.
-    const pinnedAccount = headlessFramework === 'claude-code'
-      ? (this.spawnAccountResolver?.() ?? null)
-      : null;
+    const pinnedAccount = options.accountPin
+      ? options.accountPin
+      : headlessFramework === 'claude-code'
+        ? (this.spawnAccountResolver?.() ?? null)
+        : null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
-      headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
-      this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
+      if (headlessFramework === 'codex-cli') {
+        headlessSpec.envOverrides.CODEX_HOME = pinnedHome;
+      } else {
+        headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
+        this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
+      }
     }
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
@@ -3711,7 +3734,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Subscription-pool pinning (Subscription & Auth Standard): this lane is
     // always claude-code, so launch under the chosen pool account's config home
     // and tag the session. No-op unless the resolver is wired + returns an account.
-    const pinnedAccount = this.spawnAccountResolver?.() ?? null;
+    // An explicit account pin (spec skill-driven-signin-repair) always wins over the resolver.
+    const pinnedAccount = options.accountPin ?? this.spawnAccountResolver?.() ?? null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);

@@ -971,6 +971,16 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           button.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
           td.appendChild(button);
         }
+        // While a repair waits on the operator (a phone tap, a macOS Allow, no helper account), the
+        // operator can also finish the sign-in themselves from here — the same one-tap Sign in flow
+        // as a needs-reauth cell (spec skill-driven-signin-repair, operator contact).
+        if (repair.state === 'waiting-operator-only') {
+          const signIn = el(doc, 'button', 'sub-matrix-setup', 'Sign in');
+          signIn.setAttribute('data-matrix-setup', '1');
+          signIn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          signIn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          td.appendChild(signIn);
+        }
       } else if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
         // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →

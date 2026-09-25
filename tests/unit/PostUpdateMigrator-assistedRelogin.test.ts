@@ -42,6 +42,11 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once.match(/The standard sign-in procedure/g)).toHaveLength(1);
     expect(first.upgraded).toContain('CLAUDE.md: added normal-browser sign-in repair awareness');
     expect(once.match(/Sign-in repair uses a normal browser \(macOS\)/g)).toHaveLength(1);
+    // Skill-driven sign-in repair (spec skill-driven-signin-repair) — existing agents get it too.
+    expect(first.upgraded).toContain('CLAUDE.md: added skill-driven sign-in repair awareness');
+    expect(once.match(/Skill-driven sign-in repair \(macOS, dev-gated\)/g)).toHaveLength(1);
+    expect(once).toContain('POST /subscription-relogin/EPISODE/code');
+    expect(once).toContain('loginCheck');
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });
