@@ -1,0 +1,20 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+A normal-browser launch whose Chrome process is running but never answers a control request for the whole launch budget (`chrome-launch-timeout-apple-event-no-reply`) is now handed to the operator as `automation-permission` instead of being retried. In practice this is macOS's first-use "allow … to control Google Chrome?" prompt waiting for a click on the screen of the Mac user the agent runs as. The operator notice for `automation-permission` now also says to click Allow on that prompt if it is showing.
+
+## What to Tell Your User
+
+If a Mac is waiting for someone to click "Allow" before the agent may control Chrome, the sign-in repair now stops on the first try and says so, instead of retrying three times.
+
+## Summary of New Capabilities
+
+- Sign-in repair recognises a pending macOS "control Google Chrome" prompt and asks the operator immediately.
+
+## Evidence
+
+- Mac Mini, 2026-09-25 04:06–04:08 UTC: three attempts, each recorded reason `chrome-launch-timeout-apple-event-no-reply` (Chrome process found; no Apple Event reply in 30 s). The Laptop's Chrome answered normally in the same release.
+- Tests: `tests/unit/anthropic-relogin-browser-driver.test.ts` (+1: that reason → operator-only / automation-permission).

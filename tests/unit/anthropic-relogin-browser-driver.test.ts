@@ -256,4 +256,11 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     const stuck = fixture([state('unknown', { origin: 'null' })]);
     expect(await stuck.driver.drive(stuck.request)).toEqual({ outcome: 'refused', failureClass: 'unexpected-origin' });
   });
+
+  it('a Chrome that never answers control requests at launch is handed to the operator as a permission need', async () => {
+    const f = fixture([state('password')]);
+    (f.browser.open as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('chrome-launch-timeout-apple-event-no-reply'));
+    expect(await f.driver.drive(f.request))
+      .toEqual({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'chrome-launch-timeout-apple-event-no-reply' });
+  });
 });
