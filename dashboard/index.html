@@ -3720,6 +3720,20 @@
       .sub-provider-heading { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
         opacity:.6; margin:14px 0 8px; padding-bottom:6px; border-bottom:1px solid var(--border,#2a2a2a); }
       .sub-provider-heading:first-child { margin-top:0; }
+      /* Provider colors (operator request 2026-09-25): Claude and Codex are told apart
+         at a glance — a colored band on each group heading and a colored edge on every
+         account card and grid row. Claude = clay orange, Codex = blue. */
+      .sub-prov-claude { --prov:#e07a4f; --prov-tint:rgba(224,122,79,.12); }
+      .sub-prov-codex { --prov:#4f8ff0; --prov-tint:rgba(79,143,240,.12); }
+      .sub-prov-other { --prov:#9ca3af; --prov-tint:rgba(156,163,175,.10); }
+      .sub-provider-heading.sub-prov-claude, .sub-provider-heading.sub-prov-codex, .sub-provider-heading.sub-prov-other {
+        opacity:1; color:var(--prov); font-size:15px; background:var(--prov-tint); border-bottom:none;
+        border-left:6px solid var(--prov); border-radius:6px; padding:8px 12px; margin:20px 0 10px; }
+      .sub-account.sub-prov-claude, .sub-account.sub-prov-codex, .sub-account.sub-prov-other { border-left:6px solid var(--prov); }
+      .sub-matrix-group.sub-prov-claude, .sub-matrix-group.sub-prov-codex, .sub-matrix-group.sub-prov-other {
+        color:var(--prov); background:var(--prov-tint); font-size:14px; opacity:1; border-left:6px solid var(--prov); padding:10px 12px; }
+      .sub-matrix tr.sub-prov-claude > .sub-matrix-acct, .sub-matrix tr.sub-prov-codex > .sub-matrix-acct, .sub-matrix tr.sub-prov-other > .sub-matrix-acct {
+        border-left:6px solid var(--prov); background:var(--prov-tint); }
       .sub-account { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
       .sub-account-inuse { border-color:#16a34a; box-shadow:0 0 0 1px #16a34a44; }
       .sub-account-inuse-badge { font-size:11px; font-weight:600; color:#22c55e; margin-right:auto; }

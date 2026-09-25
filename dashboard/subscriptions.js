@@ -282,6 +282,15 @@ export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
  *   pinned by a test, because "we grouped everything" would quietly add a redundant
  *   heading to the common case.
  */
+/** CSS class that colors a provider's group at a glance (operator request 2026-09-25:
+ *  Claude and Codex must be distinguishable without reading). Closed mapping, so a
+ *  provider string never reaches a class name raw. */
+export function providerClass(provider) {
+  if (provider === 'anthropic') return 'sub-prov-claude';
+  if (provider === 'openai') return 'sub-prov-codex';
+  return 'sub-prov-other';
+}
+
 export function groupAccountsByProvider(accounts) {
   if (!Array.isArray(accounts)) return [];
   const groups = new Map(); // provider key (raw) → accounts, in first-appearance order
@@ -298,7 +307,7 @@ export function groupAccountsByProvider(accounts) {
       // else, so an unrecognised or hostile provider string cannot reach the DOM raw.
       // An absent provider has no honest name, so say so rather than invent one.
       const label = friendlyProvider(key) || 'Other';
-      out.push({ __providerHeading: label });
+      out.push({ __providerHeading: label, __providerKey: key });
     }
     for (const m of members) out.push(m);
   }
@@ -322,11 +331,11 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     // accounts mixed together with only a small per-card meta line to tell them
     // apart. The heading is what makes the split scannable.)
     if (a && a.__providerHeading) {
-      target.appendChild(el(doc, 'div', 'sub-provider-heading', a.__providerHeading));
+      target.appendChild(el(doc, 'div', `sub-provider-heading ${providerClass(a.__providerKey)}`, a.__providerHeading));
       continue;
     }
     const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
-    const card = el(doc, 'div', inUse ? 'sub-account sub-account-inuse' : 'sub-account');
+    const card = el(doc, 'div', `${inUse ? 'sub-account sub-account-inuse' : 'sub-account'} ${providerClass(a && a.provider)}`);
     const head = el(doc, 'div', 'sub-account-head');
     head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
@@ -924,7 +933,7 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
   for (const entry of groupMatrixRowsByProvider(model.rows)) {
     if (entry && entry.__providerHeading) {
       const gtr = doc.createElement('tr');
-      const gth = el(doc, 'th', 'sub-matrix-group', entry.__providerHeading);
+      const gth = el(doc, 'th', `sub-matrix-group ${providerClass(entry.__providerKey)}`, entry.__providerHeading);
       // Span the account column + every machine column so the heading reads as a band
       // across the grid rather than a stray cell.
       gth.setAttribute('colspan', String(model.machines.length + 1));
@@ -934,7 +943,7 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       continue;
     }
     const row = entry.__row;
-    const tr = doc.createElement('tr');
+    const tr = el(doc, 'tr', providerClass(row && row.account && row.account.provider));
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
       const repairCandidate = Array.isArray(reloginEpisodes)
