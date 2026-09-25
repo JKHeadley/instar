@@ -14361,14 +14361,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // pool is non-empty (started below); on-demand polling is always available
     // via POST /subscription-pool/poll.
     const { QuotaPoller } = await import('../core/QuotaPoller.js');
-    const { buildCodexLiveUsageReader } = await import(
+    const { buildCodexLiveUsageReader, buildCodexLiveUsageReaderDetailed } = await import(
       '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js'
     );
+    // The Codex CLI's own login check (spec skill-driven-signin-repair), proven able to fail by
+    // its canary before any "signed in" answer is trusted. Shared by the poller and the sign-in
+    // repair's helper-seat pick.
+    const { CodexLoginStatusChecker } = await import('../core/CliLoginStatus.js');
+    const codexLoginStatusChecker = new CodexLoginStatusChecker();
     const quotaPoller = new QuotaPoller({
       pool: subscriptionPool,
       // Zero-spend live codex quota (app-server account/rateLimits/read). ON by
       // default; `subscriptionPool.codexLiveQuota: false` forces rollout-only.
       codexLiveUsageReader: buildCodexLiveUsageReader(config.subscriptionPool),
+      // The same live read with its failure KIND kept: an app-server "authentication required"
+      // refusal is told apart from a transport failure, and only a live read proves login.
+      codexLiveUsageReaderDetailed: buildCodexLiveUsageReaderDetailed(config.subscriptionPool),
+      codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome),
       loginObservationSink: subscriptionLoginLedger
         ? (input) => subscriptionLoginLedger!.recordObservation(input)
         : undefined,
@@ -14802,7 +14811,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode }, { PlaywrightProfileRegistry }, { SecretStore },
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
           { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
@@ -14828,20 +14837,41 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         });
         const notify = telegram ? async (episode: import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode,
-          deliveryKey: string, kind: 'approval' | 'operator-only' | 'terminal') => {
+          deliveryKey: string, kind: 'approval' | 'operator-only' | 'terminal' | 'phone-tap') => {
           const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
+          // The dashboard's Subscriptions tab, where the operator can finish from a phone.
+          let subscriptionsLink = `http://localhost:${config.port}/dashboard?tab=subscriptions`;
+          try { if (tunnel?.url) subscriptionsLink = `${tunnel.url}/dashboard?tab=subscriptions`; }
+          catch { /* @silent-fallback-ok — tunnel URL is best-effort; the local link still names the tab */ }
+          // A helper-reported macOS permission rides the reason token `agent-permission-<name>`.
+          const permissionReason = episode.failureClass === 'automation-permission'
+            ? (subscriptionReloginRuntime?.store.listEvents(episode.id, 5)
+              .map((event) => event.reason ?? '').find((reason) => reason.startsWith('agent-permission-')) ?? null)
+            : null;
+          const permissionName = permissionReason === 'agent-permission-screen-recording' ? 'Screen Recording'
+            : permissionReason === 'agent-permission-accessibility' ? 'Accessibility'
+              : permissionReason === 'agent-permission-automation' ? 'Automation (control Google Chrome)' : null;
           const summary = kind === 'approval'
-            ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.`
-            : kind === 'operator-only'
-              ? (episode.failureClass === 'automation-permission'
-                ? `${doorway} sign-in repair needs a one-time permission on this machine: allow the agent to control Google Chrome. On that machine, signed in as the Mac user the agent runs as, click Allow on the "control Google Chrome" prompt if one is showing, or turn it on in System Settings, Privacy & Security, Automation. Then open Subscriptions and tap Try repair again.`
-                : 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.')
-              : episode.state === 'succeeded'
-                ? `${doorway} subscription sign-in was repaired and verified.`
-                : `${doorway} subscription repair ended in ${episode.state}. Open Subscriptions for the redacted audit.`;
+            ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once: ${subscriptionsLink}`
+            : kind === 'phone-tap'
+              ? `${doorway} sign-in repair is waiting on your phone: tap "Yes, it's me" on the Google prompt now. The helper continues on its own after that.`
+              : kind === 'operator-only'
+                ? (episode.failureClass === 'no-healthy-seat'
+                  ? `${doorway} sign-in repair has no other healthy account on this machine to run its helper. Finish the sign-in from your phone: open ${subscriptionsLink} and tap Sign in on that account.`
+                  : episode.failureClass === 'automation-permission' && permissionName
+                    ? `${doorway} sign-in repair needs a one-time macOS permission on this machine: ${permissionName}. On that machine, click Allow if the prompt is showing, or turn it on in System Settings, Privacy & Security. Then open ${subscriptionsLink} and tap Try repair again, or tap Sign in to finish it yourself.`
+                    : episode.failureClass === 'automation-permission'
+                      ? `${doorway} sign-in repair needs a one-time permission on this machine: allow the agent to control Google Chrome. On that machine, signed in as the Mac user the agent runs as, click Allow on the "control Google Chrome" prompt if one is showing, or turn it on in System Settings, Privacy & Security, Automation. Then open Subscriptions and tap Try repair again: ${subscriptionsLink}`
+                      : `Automated sign-in paused and needs you. Open ${subscriptionsLink} to continue, or tap Sign in to finish it from your phone.`)
+                : episode.failureClass === 'resolved-elsewhere'
+                  ? `${doorway} subscription is signed in again (verified), so its open sign-in repair was closed. Nothing to do.`
+                : episode.state === 'succeeded'
+                  ? `${doorway} subscription sign-in was repaired and verified.`
+                  : `${doorway} subscription repair ended in ${episode.state}. Open ${subscriptionsLink} for the redacted audit, or tap Sign in to finish it from your phone.`;
           await telegram!.createAttentionItem({ id: deliveryKey.replace(/:/g, '-'), title: `${doorway} sign-in repair`,
             summary, description: summary, category: 'subscription-relogin',
-            priority: kind === 'terminal' && episode.state === 'succeeded' ? 'NORMAL' : 'HIGH',
+            priority: kind === 'phone-tap' ? 'URGENT'
+              : kind === 'terminal' && (episode.state === 'succeeded' || episode.failureClass === 'resolved-elsewhere') ? 'NORMAL' : 'HIGH',
             sourceContext: 'assisted-subscription-relogin' });
         } : undefined;
         subscriptionReloginRuntime = createSubscriptionReloginRuntime({ stateDir: config.stateDir,
@@ -14879,7 +14909,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             return action;
           },
           // Agent navigation (spec agent-driven-relogin): omitted ⇒ the development-agent gate.
+          // `agent-session` (spec skill-driven-signin-repair) is macOS-only; omitted ⇒ agent-session
+          // on a macOS development agent.
           navigation: resolveReloginNavigation(reloginCfg.navigation, config),
+          // A Codex repair can only be proven by a LIVE app-server read (spec skill-driven-signin-repair).
+          codexLiveReadAvailable: config.subscriptionPool?.codexLiveQuota !== false,
+          helperSession: buildReloginHelperSessionPorts({ sessionManager, maxSessions: config.sessions.maxSessions,
+            serverPort: config.port, codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome) }),
           navigate: async (input) => {
             const prompt = [
               'You are signing an expired subscription account back in, in that account\'s own browser, the way a careful person would.',
@@ -14908,6 +14944,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
+          onPhoneTap: notify ? (episode, key) => notify(episode, key, 'phone-tap') : undefined,
           allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
@@ -27360,13 +27397,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     }
     server.setSubscriptionLoginLedger(subscriptionLoginLedger);
-    server.setSubscriptionRelogin(subscriptionReloginRuntime ? {
-      store: subscriptionReloginRuntime.store,
-      approve: (episodeId) => subscriptionReloginRuntime!.service.approve(episodeId),
-      cancel: (episodeId) => subscriptionReloginRuntime!.service.cancel(episodeId),
-      retry: (episodeId) => subscriptionReloginRuntime!.service.retry(episodeId),
-      close: () => subscriptionReloginRuntime!.close(),
-    } : null);
+    {
+      const { subscriptionReloginRouteContext } = await import('../core/SubscriptionReloginRuntime.js');
+      server.setSubscriptionRelogin(subscriptionReloginRuntime ? subscriptionReloginRouteContext(subscriptionReloginRuntime) : null);
+    }
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');

@@ -1006,6 +1006,8 @@ export interface RouteContext {
     approve: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     cancel: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
+    /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
+    helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -31721,6 +31723,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const localRows = ctx.subscriptionPool && localReadable ? ctx.subscriptionPool.list() : [];
       const selfAccounts = localRows.map((a) => ({
         ...a,
+        // The login signal behind the status (spec skill-driven-signin-repair): never silent.
+        loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
         remote: false,
@@ -31838,7 +31842,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json(subscriptionPoolFailureBody());
       return;
     }
-    const accounts = ctx.subscriptionPool.list();
+    const accounts = ctx.subscriptionPool.list().map((a) => ({
+      ...a,
+      // The login signal behind the status (spec skill-driven-signin-repair): never silent.
+      loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+    }));
     const emailGaps = subscriptionEmailGaps();
     res.json({
       enabled: true,
@@ -32206,6 +32214,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch {
       res.status(502).json({ error: 'could not reach the machine doing the repair', retryable: true });
     }
+  });
+
+  // The one door a skill-driven sign-in helper may use (spec skill-driven-signin-repair §5).
+  // Loopback only, per-episode token (not the API bearer token — the auth middleware exempts
+  // this exact path), strict tagged-union body capped at 1 KB, no permissive CORS headers, and
+  // NEVER logs the body. Success is still decided only by the server's arbiter.
+  router.post('/subscription-relogin/:episodeId/code', (req, res) => {
+    res.removeHeader('Access-Control-Allow-Origin');
+    const remote = req.socket.remoteAddress;
+    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      res.status(403).json({ error: 'loopback-only' });
+      return;
+    }
+    if (req.headers['x-forwarded-for']) {
+      res.status(403).json({ error: 'loopback-only' });
+      return;
+    }
+    const host = String(req.headers.host ?? '').toLowerCase();
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) {
+      res.status(403).json({ error: 'loopback-host-required' });
+      return;
+    }
+    if (!req.is('application/json')) {
+      res.status(415).json({ error: 'application-json-required' });
+      return;
+    }
+    const declared = Number(req.headers['content-length'] ?? '0');
+    let size = Number.isFinite(declared) ? declared : Infinity;
+    try { size = Math.max(size, Buffer.byteLength(JSON.stringify(req.body ?? null))); } catch { size = Infinity; }
+    if (size > 1024) {
+      res.status(413).json({ error: 'body-too-large' });
+      return;
+    }
+    const submit = ctx.subscriptionRelogin?.helperSubmit;
+    if (!submit) {
+      res.status(503).json({ enabled: false, error: 'agent-session sign-in repair is not active' });
+      return;
+    }
+    const token = req.get('X-Relogin-Helper-Token') ?? '';
+    let result: { status: number; body: Record<string, unknown> };
+    try { result = submit(req.params.episodeId, token, req.body); }
+    catch { result = { status: 400, body: { error: 'invalid-helper-request' } }; }
+    res.status(result.status).json(result.body);
   });
 
   router.post('/subscription-relogin/:episodeId/cancel', async (req, res) => {

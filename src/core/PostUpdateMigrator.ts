@@ -1511,6 +1511,7 @@ export class PostUpdateMigrator {
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
+    this.migrateSubscriptionSigninAgentRun(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -4380,6 +4381,36 @@ export class PostUpdateMigrator {
    * a copy the agent has edited keeps its edits and gets the new section inserted before its
    * repair table. Idempotent on the section heading.
    */
+  /**
+   * Add the "Agent-run repair" subsection to an installed /subscription-signin skill (spec
+   * skill-driven-signin-repair): what a helper session Instar starts must do — post only to the
+   * loopback code route, never touch the enroll/complete/reissue routes. Runs after the by-hand
+   * migration and needs its section 3; inserted before the repair table. Local edits are kept.
+   * Idempotent on the subsection heading.
+   */
+  private migrateSubscriptionSigninAgentRun(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const marker = '### Agent-run repair (when Instar starts you as the sign-in helper)';
+    const tableHeading = '## 4. When a repair does not finish';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (current.includes(marker)) return;
+      if (!current.includes('name: subscription-signin')) return;
+      const start = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(marker);
+      const end = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(tableHeading);
+      if (!current.includes('## 3. Signing in by hand') || !current.includes(tableHeading) || start < 0 || end <= start) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no agent-run repair subsection)');
+        return;
+      }
+      const section = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.slice(start, end);
+      fs.writeFileSync(skillFile, current.replace(tableHeading, section + tableHeading));
+      result.upgraded.push('skills/subscription-signin/SKILL.md (added the agent-run repair subsection; local edits kept)');
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md agent-run migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateSubscriptionSigninByHand(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
     const marker = '## 3. Signing in by hand';
@@ -7417,6 +7448,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(navEnd, navEnd + '\n' + normalBrowserBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added normal-browser sign-in repair awareness');
+      }
+    }
+
+    // Skill-driven sign-in repair awareness (spec skill-driven-signin-repair) for existing agents.
+    if (
+      content.includes('Sign-in repair uses a normal browser (macOS)') &&
+      !content.includes('Skill-driven sign-in repair (macOS, dev-gated)')
+    ) {
+      const normalBrowserEnd = 'Other platforms keep the automated browser until a normal-browser path exists there.';
+      const skillDrivenBullet = "- **Skill-driven sign-in repair (macOS, dev-gated)** — `subscriptionPool.assistedRelogin.navigation: agent-session`: the repair hands the browser step to ONE short-lived agent session (`relogin-<episode>`) that follows `/subscription-signin` section 3 like a person (screenshots, clicks, keystrokes in the account's own normal Chrome), running on another healthy account on the same machine, never the one being repaired. It posts the Claude code only to the loopback, per-episode-token route `POST /subscription-relogin/EPISODE/code`, can ask for a phone tap or a macOS Allow, and is capped at 15 minutes. Success is still decided only by Instar (completed login, verified email, a real authenticated call). Approval is forced on this path; no healthy helper account ⇒ the repair waits on the operator (`no-healthy-seat`) and the dashboard shows **Sign in** so it can be finished from a phone. Omitted ⇒ `agent-session` on a macOS development agent, the existing driver elsewhere; rollback = set `navigation` back to `agent` or `closed`. An agent-session repair shows `agent-session-drive-started` in `GET /subscription-relogin/EPISODE/events`. `GET /subscription-pool` now carries `loginCheck` (`ok` / `signed-out` / `unavailable`) next to each status: a Codex account counts as signed in only after a LIVE app-server read (the rollout file is usage history), and turns `needs-reauth` when `codex login status` and the live read both say signed out on two polls in a row. Claude's `claude auth status` is never used as proof — it reports signed in for expired sessions.";
+      if (content.includes(normalBrowserEnd)) {
+        content = content.replace(normalBrowserEnd, normalBrowserEnd + '\n' + skillDrivenBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added skill-driven sign-in repair awareness');
       }
     }
 

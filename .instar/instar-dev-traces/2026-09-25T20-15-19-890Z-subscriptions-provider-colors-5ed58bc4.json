@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "subscriptions-provider-colors",
+  "sessionId": "c0099817-18ba-4d8c-bb6e-edb9901228c9",
+  "timestamp": "2026-09-25T20:15:19.890Z",
+  "artifactPath": "upgrades/side-effects/subscriptions-provider-colors.md",
+  "artifactSha256": "18d32b051a12251e7886d7a55f23b38961e669854ce448f775b843e38dca3e64",
+  "coveredFiles": [
+    "dashboard/index.html",
+    "dashboard/subscriptions.js",
+    "tests/unit/subscriptions-render.test.ts",
+    "upgrades/next/subscriptions-provider-colors.md",
+    "upgrades/side-effects/subscriptions-provider-colors.md",
+    "upgrades/subscriptions-provider-colors.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "presentation-only dashboard styling",
+  "eli16Path": "upgrades/subscriptions-provider-colors.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/subscriptions-provider-colors.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

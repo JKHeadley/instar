@@ -107,7 +107,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'subscriptionRelogin',
     prefixes: ['/subscription-relogin'],
-    description: 'Bounded Claude Code and Codex sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair; approval mode uses one operator click, while unattended mode requires an exact identity allowlist plus configured evidence floors. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident.',
+    description: 'Bounded Claude Code and Codex sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair; approval mode uses one operator click, while unattended mode requires an exact identity allowlist plus configured evidence floors. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident. On macOS the browser step can be done by one short-lived agent session following /subscription-signin section 3 (navigation agent-session), which posts the Claude code to a loopback, per-episode-token code route; approval is forced on that path.',
     build: ({ ctx }) => ({
       configured: !!ctx.subscriptionRelogin,
       mode: ctx.config.subscriptionPool?.assistedRelogin?.enabled === true
@@ -124,7 +124,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-relogin/:episodeId/approve-with-mandate',
         'POST /subscription-relogin/:episodeId/cancel',
         'POST /subscription-relogin/:episodeId/retry',
+        'POST /subscription-relogin/:episodeId/code',
       ],
+      navigation: ctx.config.subscriptionPool?.assistedRelogin?.navigation ?? 'default',
     }),
   },
   {

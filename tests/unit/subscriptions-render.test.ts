@@ -30,6 +30,7 @@ import {
   groupMatrixRowsByProvider,
   buildMatrixModel,
   renderOutcomeCard,
+  providerClass,
 } from '../../dashboard/subscriptions.js';
 
 let doc: Document;
@@ -480,7 +481,13 @@ describe('renderAccountMatrix', () => {
         { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
       ]);
       const cell = t.querySelector('[data-cell-key="a1::m1"]');
-      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      if (state === 'waiting-operator-only') {
+        // A repair waiting on the operator also offers the one-tap phone Sign in
+        // (spec skill-driven-signin-repair, operator contact).
+        expect(cell!.querySelector('[data-matrix-setup]')!.textContent, state).toBe('Sign in');
+      } else {
+        expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      }
       const action = state === 'suggested' ? 'approve' : 'cancel';
       expect(cell!.querySelector(`[data-matrix-relogin][data-repair-action="${action}"]`), state).toBeTruthy();
       if (state !== 'suggested') expect(cell!.textContent, state).toMatch(/Repairing sign-in|needs your help/);
@@ -951,6 +958,24 @@ describe('renderAccounts — provider grouping', () => {
     expect(order(t)).toEqual(['Claude', 'a1', 'a2', 'Codex', 'c1']);
   });
 
+  it('colors each provider at a glance: heading and every card carry the provider class', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW);
+    const hs = Array.from(t.querySelectorAll('.sub-provider-heading'));
+    expect(hs.map((h) => h.classList.contains('sub-prov-claude'))).toEqual([true, false]);
+    expect(hs.map((h) => h.classList.contains('sub-prov-codex'))).toEqual([false, true]);
+    const cards = Array.from(t.querySelectorAll('.sub-account'));
+    expect(cards.map((c) => [c.classList.contains('sub-prov-claude'), c.classList.contains('sub-prov-codex')]))
+      .toEqual([[true, false], [false, true]]);
+  });
+
+  it('providerClass is a closed mapping; an unknown or hostile provider never becomes a raw class', () => {
+    expect(providerClass('anthropic')).toBe('sub-prov-claude');
+    expect(providerClass('openai')).toBe('sub-prov-codex');
+    expect(providerClass('x" onmouseover="alert(1)')).toBe('sub-prov-other');
+    expect(providerClass(undefined)).toBe('sub-prov-other');
+  });
+
   it('CONTROL: a single-provider list is UNCHANGED — no heading at all', () => {
     // Most installs have one provider. Without this, "we grouped everything" would
     // silently add a redundant heading to the common case.
@@ -1046,6 +1071,17 @@ describe('renderAccountMatrix — provider grouping', () => {
     const a2At = rowText.findIndex((x) => x.includes('a2@x.com'));
     expect(claudeAt).toBeLessThan(a2At);
     expect(a2At).toBeLessThan(codexAt);
+  });
+
+  it('colors the grid: each band and each account row carry their provider class', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, mixedPool, pending, {});
+    const bands = Array.from(t.querySelectorAll('.sub-matrix-group'));
+    expect(bands.map((b) => b.className)).toEqual(['sub-matrix-group sub-prov-claude', 'sub-matrix-group sub-prov-codex']);
+    const rows = Array.from(t.querySelectorAll('tbody tr')).filter((r) => r.querySelector('.sub-matrix-acct'));
+    const byEmail = Object.fromEntries(rows.map((r) => [r.querySelector('.sub-matrix-acct')!.textContent, r.className]));
+    expect(byEmail['a2@x.com']).toBe('sub-prov-claude');
+    expect(byEmail['c1@x.com']).toBe('sub-prov-codex');
   });
 
   it('the band spans the whole grid so it reads as a band, not a stray cell', () => {
