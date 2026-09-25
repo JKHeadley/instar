@@ -8,6 +8,6 @@ An agent that could look at the screen, click, and type like a person got both a
 
 This change writes that proven method into the skill: how to open the account's own Chrome normally, how to see the screen, how to click and type safely (passwords come straight from the vault and are never shown), what the usual Claude sign-in path looks like, and how to check that it worked. The safety lines stay: never another person's account, never solve a CAPTCHA, never get around a phone check, and type a password only on Google's or Claude's own page.
 
-Agents that already have the skill get the new version on their next update. If an agent had added its own notes to the skill, those notes are kept.
+Agents that already have the skill get the new version on their next update. If an agent had added its own notes to the skill, those notes are kept, and the new section is added in front of its table of problems.
 
 Nothing needs deciding.

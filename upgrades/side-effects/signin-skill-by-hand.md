@@ -37,6 +37,7 @@ The by-hand path is judgment within the fixed hard lines listed above. No new au
 
 - `installBuiltinSkills` stays install-if-missing. The migration is the update path, per the Migration Parity Standard.
 - The CLAUDE.md awareness bullet for `/subscription-signin` already exists and still describes the skill correctly.
+- The new import is a separate line, so `iterative-converging-audit-skill-single-source.test.ts`, which pins the iterative-audit import literally, stays green.
 - An agent that had edited the skill keeps its edits. The new section goes in before its table, and the old "## 3." heading becomes "## 4.".
 
 ## 6. External surfaces

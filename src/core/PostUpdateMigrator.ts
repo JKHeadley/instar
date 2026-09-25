@@ -79,7 +79,8 @@ import {
   loadTestIdentityKey,
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
