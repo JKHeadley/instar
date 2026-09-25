@@ -296,7 +296,7 @@ You have **two separate memory systems** that coexist:
 
 1. **\`.instar/MEMORY.md\`** — Your structured, managed memory. You write to this explicitly. It survives across sessions, syncs across machines, and is part of your state backup. **This is your primary memory.**
 
-2. **\`~/.claude/projects/<project-path>/memory/MEMORY.md\`** — Claude Code's auto-memory. Claude Code writes here automatically based on conversation patterns. It's per-machine, not synced by Instar, and you don't control what goes in it.
+2. **\`~/.claude/projects/<project-path>/memory/MEMORY.md\`** — Claude Code's auto-memory. Claude Code writes here automatically based on conversation patterns. Instar makes this folder (in every login's config home) a link to \`.instar/agent-memory/\`, so it belongs to you, not to whichever subscription login a session runs under — switching logins never loses it. Any memory a login held before is merged in; the old folder is kept as \`memory.pre-shared\`.
 
 **They don't conflict**, but be aware both exist. When you want to remember something important, write to \`.instar/MEMORY.md\` — that's the one Instar manages, backs up, and syncs. The auto-memory is a bonus, not a replacement.
 
@@ -2052,7 +2052,7 @@ You have **two separate memory systems** that coexist:
 
 1. **\`.instar/MEMORY.md\`** — Your structured, managed memory. You write to this explicitly. It survives across sessions, syncs across machines, and is part of your state backup. **This is your primary memory.**
 
-2. **\`~/.claude/projects/<project-path>/memory/MEMORY.md\`** — Claude Code's auto-memory. Claude Code writes here automatically based on conversation patterns. It's per-machine, not synced by Instar, and you don't control what goes in it.
+2. **\`~/.claude/projects/<project-path>/memory/MEMORY.md\`** — Claude Code's auto-memory. Claude Code writes here automatically based on conversation patterns. Instar makes this folder (in every login's config home) a link to \`.instar/agent-memory/\`, so it belongs to you, not to whichever subscription login a session runs under — switching logins never loses it. Any memory a login held before is merged in; the old folder is kept as \`memory.pre-shared\`.
 
 **They don't conflict**, but be aware both exist. When you want to remember something important, write to \`.instar/MEMORY.md\` — that's the one Instar manages, backs up, and syncs. The auto-memory is a bonus, not a replacement.
 

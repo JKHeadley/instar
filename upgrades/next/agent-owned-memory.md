@@ -1,0 +1,38 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+An agent's Claude Code auto-memory now belongs to the agent, never to a subscription login. Claude Code keeps auto-memory at `<config home>/projects/<key>/memory/`, and every login has its own config home (`~/.claude`, `~/.claude-followme-*`). Until now each login grew its own separate slice of the agent's memory. A session moved to another login (pool pinning, follow-me, auto-swap, resume) lost whatever the other logins had learned. On the Mac Studio, echo had 9 separate memory stores.
+
+New module `src/core/AgentOwnedMemory.ts`. `ensureAgentOwnedMemory` makes `<config home>/projects/<key>/memory` for the agent's own project a symlink to `.instar/agent-memory/`. Git worktrees and subfolders of the agent home count as its own project. It leaves two things alone: memory folders of other projects, which may belong to another agent on the host or to a person, and links someone else placed that point outside the agent's home. The key follows Claude Code's own rule. Take the canonical git root, where a worktree resolves to its main checkout, and replace every non-alphanumeric character with `-`. A key longer than 200 characters is hashed by Claude Code, and those keys are skipped rather than guessed.
+
+If a real memory folder is already there, it is merged first. The merge takes the union of files, and the newest copy wins. A differing older copy goes to `_superseded/`. The `MEMORY.md` indexes are merged by linked filename, and the previous index is kept in `_superseded/`. The old folder is then renamed to `memory.pre-shared`, or a timestamped name if that name is taken. Nothing is deleted, and a correct link is left alone.
+
+It runs at every place a Claude session gets its config home:
+- `SessionManager`: the headless, interactive, interactive-reroute and triage spawn lanes, just before `tmux new-session`. It fails open, so an error is logged and the spawn proceeds as before.
+- `EnrollmentWizard`: when a claude-code login completes.
+- `PostUpdateMigrator.migrateAgentOwnedMemory`: existing agents link every `~/.claude*` home on the host at update.
+
+Two guards apply. It acts only for a real agent (`.instar/config.json` present) and only in a config home that already exists. A temp-folder (throwaway) agent never links into a real login.
+
+The CLAUDE.md template and `migrateClaudeMd` replace the old "auto-memory is per-machine" line with the agent-owned description.
+
+Conversation transcripts (`projects/<key>/*.jsonl`) are still stored per login in this release. Making them agent-owned needs a merge of diverged copies of the same conversation and a migration that is safe while sessions are writing. That work is tracked as CMT-596.
+
+Codex homes hold no agent memory (every `memories_1.sqlite` table is empty on the Mac Studio), so they stay credentials-only.
+
+## What to Tell Your User
+
+Your agent's memory no longer depends on which subscription account it happens to be using. Whatever it learns under one account is there under every other account, including accounts you add later. Memory that was scattered across accounts has been gathered into one place, and nothing was thrown away. The old copies are kept alongside.
+
+## Summary of New Capabilities
+
+- Claude Code auto-memory is agent-owned: every login's memory folder links to `.instar/agent-memory/`, so moving a session to another login never loses its memory.
+
+## Evidence
+
+- Live shape (Mac Studio, 2026-09-25): echo's memory was split across 9 login config homes until a manual merge and symlink. That manual fix is the same end state this code produces, and the code treats it as already-linked.
+- Claude Code 2.1.282 binary: the memory path is `mo(configHome, "projects", fx(canonicalRoot), "memory")`, where `fx` replaces `/[^a-zA-Z0-9]/g` with `-` and hashes keys longer than 200 characters.
+- Tests: `tests/unit/agent-owned-memory.test.ts` has 18 cases. It covers no folder, an existing correct symlink, a foreign symlink left alone, a stale own symlink, a real folder merge (newest wins, `_superseded`, index merge, `memory.pre-shared`), an earlier `pre-shared` kept, idempotency, the guards (including never taking over another project), key and worktree resolution, the all-homes sweep, and the migrator and CLAUDE.md migration including a second run. `tests/integration/agent-owned-memory-spawn.test.ts` has 3 cases through the real `SessionManager` spawn: write under login A, swap to login B, and the same memory is there. Both files were checked to fail with the link or the newest-wins rule disabled.

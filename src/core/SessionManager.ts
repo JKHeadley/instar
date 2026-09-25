@@ -122,6 +122,7 @@ import { governor, consumeAdmissionToken } from '../monitoring/selfaction/govern
 import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
+import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
 
 /* @self-action-controller: age-kill-backoff */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): the age-limit
@@ -743,6 +744,27 @@ export class SessionManager extends EventEmitter {
       // @silent-fallback-ok — only tmux's explicit absent-session exit status
       // confirms termination. Other failures preserve the session credential.
       return (error as { status?: number }).status === 1;
+    }
+  }
+
+  /**
+   * Agent-owned memory (operator rule 2026-09-25: logins are for tokens and
+   * quota only, never data). Before a claude-code session starts under a config
+   * home, make that home's `projects/<key>/memory` a link to the agent's own
+   * folder, merging any login-local memory first. Fail-open: a failure is
+   * logged and the spawn proceeds exactly as before.
+   */
+  private linkAgentOwnedMemory(harness: string, env: Record<string, string>, cwd: string): void {
+    if (harness !== 'claude-code') return;
+    try {
+      const configHome = this.originConfigHome(harness, env) || defaultClaudeConfigHome();
+      const result = ensureAgentOwnedMemory({ agentHome: this.config.projectDir, configHome, cwd });
+      if (result.action === 'linked' || result.action === 'migrated') {
+        console.log(`[SessionManager] agent-owned memory: ${result.action} ${result.linkPath} -> ${result.ownedDir}${result.setAsidePath ? ` (old folder kept at ${result.setAsidePath})` : ''}`);
+      }
+    } catch (err) {
+      // @silent-fallback-ok — logged; the spawn proceeds under the login exactly as before this feature.
+      console.warn(`[SessionManager] agent-owned memory: could not link for ${cwd} — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -3373,6 +3395,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
         : undefined;
 
+    this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
     const originEnvFlags = await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
       configuredModel: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
@@ -3733,6 +3756,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const reroutedCredentialSource: 'store' | 'env' =
       (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
+    this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
     const originEnvFlags = await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
@@ -5887,6 +5911,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options?.effort ? { effort: options.effort } : {}),
     });
 
+    this.linkAgentOwnedMemory(framework, launchSpec.envOverrides, options?.cwd ?? this.config.projectDir);
+
     // Spawn the framework CLI in tmux — no bash -c shell intermediary.
     // Uses tmux -e flags to set/unset env vars directly, matching spawnSession pattern.
     // This avoids shell injection risks and handles binary paths with spaces.
@@ -6445,6 +6471,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Best-effort
       }
     }
+
+    this.linkAgentOwnedMemory('claude-code', {}, this.config.projectDir);
 
     try {
       const tmuxArgs = [

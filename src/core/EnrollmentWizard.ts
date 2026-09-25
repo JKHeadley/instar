@@ -32,6 +32,7 @@ import {
 } from './ensureInteractiveReady.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import { validateEnrolledAccountEmail } from './AccountFollowMeEmailGate.js';
+import { ensureAgentOwnedMemory } from './AgentOwnedMemory.js';
 
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
@@ -93,6 +94,12 @@ export interface EnrollmentWizardConfig {
    * Injectable for hermetic tests; production uses the real util.
    */
   ensureReady?: (configHome: string) => EnsureInteractiveReadyResult;
+  /**
+   * Agent-owned memory (operator rule 2026-09-25: logins hold tokens and quota,
+   * never data). The agent home whose memory a completed claude-code login is
+   * linked to. Absent ⇒ no linking at enrollment (spawns still link).
+   */
+  agentHome?: string;
   /**
    * WS5.2 §5.3/S7 — identity oracle used by `completeFollowMe` to read the freshly-minted
    * login's account email from its config-home slot, for validation against operator
@@ -165,6 +172,7 @@ export class EnrollmentWizard {
   private readonly driveLogin: LoginDriver;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly ensureReady: (configHome: string) => EnsureInteractiveReadyResult;
+  private readonly agentHome?: string;
   private readonly oracle?: IdentityOracle;
   private readonly emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
   private readonly credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
@@ -176,6 +184,7 @@ export class EnrollmentWizard {
     this.driveLogin = cfg.driveLogin;
     this.logger = cfg.logger ?? { log: () => {}, warn: () => {} };
     this.ensureReady = cfg.ensureReady ?? ensureInteractiveReady;
+    this.agentHome = cfg.agentHome;
     this.oracle = cfg.oracle;
     this.emitAttention = cfg.emitAttention;
     this.credentialWitness = cfg.credentialWitness;
@@ -413,6 +422,16 @@ export class EnrollmentWizard {
         this.logger.log(`[EnrollmentWizard] made ${login.configHome} interactive-ready (${ready.reason})`);
       } else if (ready.reason !== 'already interactive-ready') {
         this.logger.warn(`[EnrollmentWizard] could not verify ${login.configHome} interactive-ready — ${ready.reason}`);
+      }
+      if (this.agentHome) {
+        try {
+          const linked = ensureAgentOwnedMemory({ agentHome: this.agentHome, configHome: login.configHome });
+          if (linked.action === 'linked' || linked.action === 'migrated') {
+            this.logger.log(`[EnrollmentWizard] agent-owned memory: ${linked.action} ${linked.linkPath}`);
+          }
+        } catch (err) {
+          this.logger.warn(`[EnrollmentWizard] could not link agent-owned memory into ${login.configHome} — ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   }
