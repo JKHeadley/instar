@@ -14800,11 +14800,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation }, { PlaywrightProfileRegistry }, { SecretStore },
-          { secretKeyPaths }, { ClaudePasteBackController }, { ChromeCdpReloginBrowser }] = await Promise.all([
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode }, { PlaywrightProfileRegistry }, { SecretStore },
+          { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
-          import('../core/ClaudePasteBackController.js'), import('../core/ChromeCdpReloginBrowser.js'),
+          import('../core/ClaudePasteBackController.js'), import('../core/PlainChromeReloginBrowser.js'),
         ]);
         const vault = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
         const profiles = new PlaywrightProfileRegistry({ stateDir: config.stateDir, projectDir: config.projectDir,
@@ -14845,8 +14845,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           mode: reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval'),
           pool: subscriptionPool, ledger: subscriptionLoginLedger, enrollment: enrollmentWizard,
           profiles, quotaPoller, identityOracle: subscriptionIdentityOracle, pasteBack,
-          createBrowser: (userDataDir) => new ChromeCdpReloginBrowser({ userDataDir }),
+          // Auth-sensitive sign-ins run in a NORMAL browser (operator rule 2026-09-24): on macOS the
+          // repair opens the account's Chrome the ordinary way, with no debugging connection.
+          createBrowser: (userDataDir) => createReloginBrowser(userDataDir),
           resolveSecret: async (name) => { const value = vault.get(name); return typeof value === 'string' ? value : null; },
+          // Single-use Google backup codes: remove the code from the vault BEFORE it is typed, so a
+          // spent code is never tried again (one repair runs at a time — the seat lease serialises this).
+          takeBackupCode: async (name) => takeFirstBackupCode(vault, name),
           supervise: async ({ snapshot, allowedActions }) => {
             const prompt = [
               'You are a Tier-1 validator for a bounded subscription sign-in browser worker.',
@@ -14904,7 +14909,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           unattendedPolicy: reloginCfg.unattendedPolicy,
         });
         subscriptionReloginRuntime.start();
-        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)})`));
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
         console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);
@@ -28463,3 +28468,4 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
   await new Promise(r => setTimeout(r, 500));
   await startServer({ dir: options.dir });
 }
+

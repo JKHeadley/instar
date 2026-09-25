@@ -1243,7 +1243,13 @@ describe('standards-coverage ratchet script', () => {
     // 2026-09-06: Justin explicitly requested the Telegram message-origin
     // standard (topic 69507). It adds one Interaction article; the content-bound
     // family audit must still pass below, without lowering its floor.
-    expect(report.total).toBe(91);
+    // 2026-09-24: 91 -> 92. Justin approved the Occam's Razor / Simplest Robust
+    // Route standard (Instar 2.0 Rule 116, topic 52075) and its mirror here. It
+    // adds one judgment-bound Building article; the Building area audit was
+    // refreshed by a review that genuinely accepts
+    // (docs/specs/reports/standards-building-occam-addition-2026-09-24.md),
+    // with its 34/40 floor unchanged.
+    expect(report.total).toBe(92);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

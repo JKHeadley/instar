@@ -196,6 +196,8 @@ const DEFAULT_THRESHOLDS: MigrationThresholds = {
 };
 
 const LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes
+/** Points below the 5-hour migration threshold before an enforcement pause lifts. */
+export const RESUME_HYSTERESIS_POINTS = 5;
 const MAX_HISTORY = 50;
 const ACCOUNT_SETTLE_MS = 2000; // Brief pause after account switch
 
@@ -209,6 +211,14 @@ export class SessionMigrator extends EventEmitter {
   private statePath: string;
   private historyPath: string;
   private migrationState: MigrationState | null = null;
+  /**
+   * True while the scheduler is paused BY quota enforcement (enforced_pause /
+   * enforced_kill). Nothing else ever resumed it, so a brief usage spike froze
+   * every scheduled job until the next server restart (2026-09-23/24: ~12h of
+   * silence after quota had long recovered). In-memory on purpose: a restart
+   * already starts the scheduler unpaused, so there is nothing to carry over.
+   */
+  private enforcementPaused = false;
 
   constructor(config: SessionMigratorConfig) {
     super();
@@ -254,6 +264,8 @@ export class SessionMigrator extends EventEmitter {
       return false;
     }
 
+    this.releaseEnforcementPauseIfRecovered(quotaState);
+
     // Check cooldown — but bypass for escalation from enforced_pause to enforced_kill.
     // If the last event was a 90% warning and quota has risen to 95%+, the kill
     // must fire immediately regardless of cooldown.
@@ -283,6 +295,57 @@ export class SessionMigrator extends EventEmitter {
       reason,
       quotaState.fiveHourPercent ?? 0,
     );
+  }
+
+  /** Whether the scheduler is currently held by a quota-enforcement pause. */
+  isEnforcementPaused(): boolean {
+    return this.enforcementPaused;
+  }
+
+  /**
+   * Release a quota-enforcement scheduler pause once quota has recovered.
+   *
+   * Recovery = the 5-hour rate (when known) is at least RESUME_HYSTERESIS
+   * points below the migration threshold AND the weekly budget is below its
+   * threshold. The hysteresis stops pause/resume flapping at the boundary.
+   * Resuming is safe to do early: every job trigger still passes the per-job
+   * quota gate (QuotaManager.canSpawnSession), so a resumed scheduler under
+   * residual pressure sheds low-priority work job-by-job instead of running it.
+   * Only fires while this migrator's own enforcement pause is outstanding (the
+   * flag clears whenever any migrator path resumes). Note the scheduler's
+   * `paused` is one shared boolean: today the migrator is its only pauser; a
+   * future operator pause must get its own flag rather than share this one.
+   *
+   * Returns true when it resumed the scheduler.
+   */
+  releaseEnforcementPauseIfRecovered(quotaState: {
+    percentUsed: number;
+    fiveHourPercent?: number | null;
+  }): boolean {
+    if (!this.enforcementPaused || !this.deps) return false;
+    const fiveHour = quotaState.fiveHourPercent;
+    const fiveHourRecovered = fiveHour == null || fiveHour < this.thresholds.fiveHourPercent - RESUME_HYSTERESIS_POINTS;
+    const weeklyRecovered = quotaState.percentUsed < this.thresholds.weeklyPercent;
+    if (!fiveHourRecovered || !weeklyRecovered) return false;
+    try {
+      this.deps.resumeScheduler();
+    } catch (err) {
+      // The flag stays set, so the next quota collection retries the release.
+      DegradationReporter.getInstance().report({
+        feature: 'SessionMigrator.releaseEnforcementPause',
+        primary: 'Resume the scheduler once quota has recovered from an enforcement pause',
+        fallback: 'Scheduler stays paused; the release is retried on the next quota collection',
+        reason: `resumeScheduler threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Scheduled jobs remain paused until a later release succeeds',
+      });
+      return false;
+    }
+    this.enforcementPaused = false;
+    this.emit('enforced_resume', {
+      fiveHourPercent: fiveHour ?? null,
+      weeklyPercent: quotaState.percentUsed,
+    });
+    return true;
   }
 
   /**
@@ -347,6 +410,7 @@ export class SessionMigrator extends EventEmitter {
           event.durationMs = Date.now() - startTime;
 
           this.deps!.pauseScheduler();
+          this.enforcementPaused = true;
           const killed = await this.haltRunningSessions();
           event.sessionsHalted = killed.map(s => s.jobSlug || s.name);
 
@@ -374,6 +438,7 @@ export class SessionMigrator extends EventEmitter {
           }
 
           this.deps!.pauseScheduler();
+          this.enforcementPaused = true;
 
           this.emit('enforced_pause', {
             reason,
@@ -450,6 +515,8 @@ export class SessionMigrator extends EventEmitter {
 
         this.deps!.resumeScheduler();
 
+        this.enforcementPaused = false;
+
         event.result = 'rolled_back';
         event.error = switchResult.message;
         event.completedAt = new Date().toISOString();
@@ -487,6 +554,7 @@ export class SessionMigrator extends EventEmitter {
 
       // Step 8: Resume scheduler
       this.deps!.resumeScheduler();
+      this.enforcementPaused = false;
 
       // Step 9: Determine result
       if (restartedSlugs.length === haltedSessions.length) {
@@ -536,7 +604,7 @@ export class SessionMigrator extends EventEmitter {
       }
 
       // Ensure scheduler is resumed even on error
-      try { this.deps!.resumeScheduler(); } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
+      try { this.deps!.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
       }
 
       this.emit('migration_failed', event);
@@ -838,7 +906,7 @@ export class SessionMigrator extends EventEmitter {
     this.saveMigrationState();
 
     // Resume scheduler if it was left paused
-    try { this.deps.resumeScheduler(); } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
+    try { this.deps.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
     }
   }
 

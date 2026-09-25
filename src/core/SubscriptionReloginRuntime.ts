@@ -24,6 +24,8 @@ export interface SubscriptionReloginRuntimeDeps {
   pasteBack: ClaudePasteBackController;
   createBrowser: (userDataDir: string) => ReloginBrowserPort;
   resolveSecret: (name: string) => Promise<string | null>;
+  /** Take one single-use Google backup code out of a vault entry (see AnthropicReloginBrowserDriverDeps). */
+  takeBackupCode?: (name: string) => Promise<string | null>;
   supervise: (input: { snapshot: ReloginBrowserSnapshot; allowedActions: ReloginBrowserAction[] }) => Promise<ReloginBrowserAction>;
   /**
    * Agent navigation (spec agent-driven-relogin): `agent` lets a model choose each sign-in step
@@ -160,7 +162,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // already refuses unless the cell is `ready`, which nothing can produce here.
       if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
-        resolveSecret: deps.resolveSecret, supervise: deps.supervise, seatLease, now,
+        resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
         navigation: agentNavigation ? 'agent' : 'closed', navigate: deps.navigate });
       if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
         return { outcome: 'refused', failureClass: 'provider-rejected' };
@@ -289,4 +291,15 @@ function autonomousLoginMethod(account: PlaywrightAccount): 'session-cookie' | '
     || account.loginMethod === 'google-passkey')
     return account.loginMethod;
   throw new Error('login-method-not-autonomous');
+}
+
+/** Take the first 8-digit Google backup code out of a vault entry and write the rest back. Never logs a value. */
+export function takeFirstBackupCode(vault: { get(name: string): unknown; set(name: string, value: unknown): void }, name: string): string | null {
+  const value = vault.get(name);
+  if (typeof value !== 'string') return null;
+  const codes = (value.match(/\b\d{4}\s?\d{4}\b/g) ?? []).map((c) => c.replace(/\s/g, ''));
+  if (codes.length === 0) return null;
+  const [first, ...rest] = codes;
+  vault.set(name, rest.join(' '));
+  return first;
 }

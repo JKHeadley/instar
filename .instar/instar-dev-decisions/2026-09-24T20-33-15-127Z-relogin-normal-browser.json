@@ -1,0 +1,26 @@
+{
+  "ts": "2026-09-24T20:33:15.127Z",
+  "slug": "relogin-normal-browser",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PlainChromeReloginBrowser.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; transport swap inside the existing bounded, leased, deadline-limited repair"
+  },
+  "verdict": "blocked"
+}
