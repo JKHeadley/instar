@@ -196,6 +196,19 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
       .toEqual(['wait']);
   });
 
+  it('names the failure reason, and hands a macOS automation-permission refusal to the operator instead of retrying', async () => {
+    const launch = fixture([state('password')]);
+    (launch.browser.open as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('chrome-launch-timeout'));
+    expect(await launch.driver.drive(launch.request))
+      .toEqual({ outcome: 'transient', failureClass: 'provider-transient', reason: 'chrome-launch-timeout' });
+
+    const denied = fixture([state('password')]);
+    (denied.browser.open as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('plain-browser-automation-not-permitted'));
+    expect(await denied.driver.drive(denied.request))
+      .toEqual({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'plain-browser-automation-not-permitted' });
+    expect(denied.browser.close).toHaveBeenCalled();
+  });
+
   it('a password account uses ONE backup code on Google\'s backup-code page, taken out of the vault first', async () => {
     const f = fixture([
       state('google-backup-code-entry' as never),
@@ -229,5 +242,18 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     const result = await driver.drive({ ...f.request, loginMethod: 'password', secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });
     expect(takeBackupCode).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ outcome: 'transient' });
+  });
+
+  it('waits through a window that is still blank (origin "null") instead of refusing, but refuses one that stays blank', async () => {
+    const loading = fixture([
+      state('unknown', { origin: 'null' }), state('unknown', { origin: 'null' }),
+      state('authorize', { origin: 'https://claude.ai', hasAuthorize: true, requestedScopes: ['user:profile'] }),
+      state('paste-code', { origin: 'https://claude.ai' }),
+    ]);
+    expect(await loading.driver.drive(loading.request)).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(loading.browser.wait).toHaveBeenCalledWith(1_000);
+
+    const stuck = fixture([state('unknown', { origin: 'null' })]);
+    expect(await stuck.driver.drive(stuck.request)).toEqual({ outcome: 'refused', failureClass: 'unexpected-origin' });
   });
 });

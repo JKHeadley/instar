@@ -48,7 +48,7 @@ describe('PlainChromeReloginBrowser — normal-browser transport', () => {
   });
 
   it('opens through the launcher (never a debugging connection), waits for the document, and reads through Apple Events', async () => {
-    const page = fakePage({ document: { readyState: 'complete' } });
+    const page = fakePage({ document: { readyState: 'complete' }, location: { protocol: 'https:' } });
     const launched: string[] = [];
     const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), runAppleEvent: page.run,
       launch: async (_dir, url) => { launched.push(url); return 4242; } });
@@ -59,7 +59,7 @@ describe('PlainChromeReloginBrowser — normal-browser transport', () => {
   });
 
   it('refuses non-https URLs, a second open, and every passkey or data-clearing operation', async () => {
-    const page = fakePage({ document: { readyState: 'complete' } });
+    const page = fakePage({ document: { readyState: 'complete' }, location: { protocol: 'https:' } });
     const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), runAppleEvent: page.run, launch: async () => 1 });
     await expect(browser.open('http://claude.ai/')).rejects.toThrow('relogin-open-url-refused');
     await expect(browser.open('data:text/html,x')).rejects.toThrow('relogin-open-url-refused');
@@ -96,5 +96,32 @@ describe('createReloginBrowser — the wiring the server uses', () => {
     const linux = createReloginBrowser(tmp(), 'linux');
     expect(linux).toBeInstanceOf(ChromeCdpReloginBrowser);
     expect(linux).not.toBeInstanceOf(PlainChromeReloginBrowser);
+  });
+});
+
+describe('PlainChromeReloginBrowser — macOS automation permission', () => {
+  it('reports a refused Automation permission (-1743) at once instead of waiting out the launch timeout', async () => {
+    const started = Date.now();
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), operationTimeoutMs: 20_000,
+      runAppleEvent: async () => '{"__ae":"error--1743"}', launch: async () => 11 });
+    await expect(browser.open('https://claude.ai/')).rejects.toThrow('plain-browser-automation-not-permitted');
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe('PlainChromeReloginBrowser — a new window starts on about:blank', () => {
+  it('waits for the target page itself, not the blank start page that is already "complete"', async () => {
+    let onBlank = 3;
+    const seen: string[] = [];
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), operationTimeoutMs: 10_000, launch: async () => 21,
+      runAppleEvent: async (_pid, code) => {
+        seen.push(code);
+        // Simulate location.protocol being "about:" for the first reads, then the https page.
+        const v = onBlank-- > 0 ? 'starting' : 'complete';
+        return JSON.stringify({ ok: true, v });
+      } });
+    await browser.open('https://claude.ai/login');
+    expect(seen.length).toBe(4);
+    expect(seen[0]).toContain('location.protocol === "https:"');
   });
 });

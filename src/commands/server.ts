@@ -14831,7 +14831,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const summary = kind === 'approval'
             ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.`
             : kind === 'operator-only'
-              ? 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.'
+              ? (episode.failureClass === 'automation-permission'
+                ? `${doorway} sign-in repair needs a one-time permission on this machine: allow the agent to control Google Chrome (System Settings, Privacy & Security, Automation). Then open Subscriptions and tap Try repair again.`
+                : 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.')
               : episode.state === 'succeeded'
                 ? `${doorway} subscription sign-in was repaired and verified.`
                 : `${doorway} subscription repair ended in ${episode.state}. Open Subscriptions for the redacted audit.`;

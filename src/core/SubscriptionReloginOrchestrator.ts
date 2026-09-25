@@ -14,8 +14,8 @@ export interface ReloginArtifact {
 }
 export type BrowserRepairResult =
   | { outcome: 'approved'; pasteCode?: string }
-  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' }
-  | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient' }
+  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' | 'automation-permission'; reason?: string }
+  | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient'; reason?: string }
   | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' };
 
 export interface SubscriptionReloginOrchestratorDeps {
@@ -141,10 +141,10 @@ export class SubscriptionReloginOrchestrator {
       if (signal.aborted) return this.cancelledResult(ep);
       if (result.outcome === 'operator-only') {
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'waiting-operator-only',
-          eventClass: 'operator-only-challenge', failureClass: result.failureClass, at: this.isoNow() });
+          eventClass: 'operator-only-challenge', failureClass: result.failureClass, reason: result.reason, at: this.isoNow() });
         return { outcome: 'waiting', episode: ep, reason: result.failureClass };
       }
-      if (result.outcome === 'transient') return this.retry(ep, result.failureClass);
+      if (result.outcome === 'transient') return this.retry(ep, result.failureClass, result.reason);
       if (result.outcome === 'refused') {
         // A named policy refusal (identity, origin, passkey) is a REFUSAL, not a failed attempt.
         const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin'
@@ -233,20 +233,20 @@ export class SubscriptionReloginOrchestrator {
     return { outcome: 'advanced', episode: ep };
   }
 
-  private retry(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass): SubscriptionReloginTickResult {
+  private retry(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass, reason?: string): SubscriptionReloginTickResult {
     if (ep.attemptCount >= this.maxAttempts)
-      return this.fail(ep, 'attempt-budget-exhausted', 'attempt-budget-exhausted');
+      return this.fail(ep, 'attempt-budget-exhausted', 'attempt-budget-exhausted', 'failed', reason ?? failure);
     const delay = this.retryBaseMs * 2 ** Math.max(0, ep.attemptCount - 1);
     const next = new Date(this.now() + delay).toISOString();
     const updated = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'approved',
-      eventClass: 'transient-retry-scheduled', failureClass: failure, nextAttemptAt: next, at: this.isoNow() });
+      eventClass: 'transient-retry-scheduled', failureClass: failure, nextAttemptAt: next, reason: reason ?? failure, at: this.isoNow() });
     return { outcome: 'waiting', episode: updated, reason: failure };
   }
 
   private fail(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass,
-    eventClass: string, to: 'failed' | 'refused' = 'failed'): SubscriptionReloginTickResult {
+    eventClass: string, to: 'failed' | 'refused' = 'failed', reason?: string): SubscriptionReloginTickResult {
     const updated = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to,
-      eventClass, failureClass: failure, at: this.isoNow() });
+      eventClass, failureClass: failure, reason, at: this.isoNow() });
     return { outcome: 'terminal', episode: updated };
   }
   private mustGet(id: string): SubscriptionReloginEpisode {

@@ -153,6 +153,8 @@ export interface AgentNavigationInput {
 export const INTERSTITIAL_POLL_MS = 3_000;
 
 /** How long the plain, unautomated warm-up browser runs when a hold will not clear under automation. */
+/** How many one-second waits a still-blank (about:blank) window gets before its origin is judged. */
+const BLANK_PAGE_MAX_WAITS = 15;
 export const PLAIN_WARM_UP_MS = 45_000;
 
 /**
@@ -233,9 +235,18 @@ export class AnthropicReloginBrowserDriver {
       signal.throwIfAborted();
       await bounded(this.deps.browser.open(request.verificationUrl));
       let interstitialWaitedMs = 0;
+      let blankWaits = 0;
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
         const snapshot = await bounded(this.deps.browser.snapshot(request.expectedIdentity));
+        // A window that is still loading (a new window, or a provider popup) shows about:blank,
+        // whose origin is "null". Nothing on it can be acted on, so wait a bounded moment rather
+        // than refuse; a page that STAYS blank still ends as unexpected-origin below.
+        if (snapshot.origin === 'null' && blankWaits < BLANK_PAGE_MAX_WAITS) {
+          blankWaits++; step--;
+          await bounded(this.deps.browser.wait(1_000));
+          continue;
+        }
         if (!allowedOrigins(request.provider, request.intent).includes(snapshot.origin))
           return { outcome: 'refused', failureClass: 'unexpected-origin' };
         // A bot-check interstitial ("Just a moment…") clears on its own in roughly 30–90 s.
@@ -312,7 +323,12 @@ export class AnthropicReloginBrowserDriver {
       // @silent-fallback-ok — the closed transient result is the controller-visible failure signal; no exception is hidden.
       outcomeNote = `error ${error instanceof Error ? error.message.slice(0, 60) : 'unknown'}`;
       if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
-      return { outcome: 'transient', failureClass: 'provider-transient' };
+      const reason = error instanceof Error ? error.message : 'unknown';
+      // macOS refused to let this agent control Chrome (Automation permission). Retrying cannot
+      // change that: stop now and ask the operator for the one-time "Allow".
+      if (reason.startsWith('plain-browser-automation-not-permitted'))
+        return { outcome: 'operator-only', failureClass: 'automation-permission', reason };
+      return { outcome: 'transient', failureClass: 'provider-transient', reason };
     } finally {
       signal.removeEventListener('abort', abort);
       resolvedSecrets.clear();

@@ -235,4 +235,27 @@ describe('SubscriptionReloginOrchestrator', () => {
       .toContain('artifact-reissued');
     store.close();
   });
+
+  it('records WHY a browser attempt failed, and keeps that reason on the final budget-exhausted event', async () => {
+    const { store, approved, ports, advance } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'transient', failureClass: 'provider-transient', reason: 'chrome-launch-timeout' } as never);
+    const orchestrator = new SubscriptionReloginOrchestrator(ports);
+    let result = await orchestrator.tick(approved.id);
+    for (let i = 0; i < 5 && result.episode.state !== 'failed'; i++) { advance(60_000); result = await orchestrator.tick(approved.id); }
+    expect(result.episode).toMatchObject({ state: 'failed', failureClass: 'attempt-budget-exhausted' });
+    const events = store.listEvents(approved.id);
+    expect(events.filter((e) => e.eventClass === 'transient-retry-scheduled').every((e) => e.reason === 'chrome-launch-timeout')).toBe(true);
+    expect(events.find((e) => e.eventClass === 'attempt-budget-exhausted')?.reason).toBe('chrome-launch-timeout');
+    store.close();
+  });
+
+  it('a macOS automation-permission refusal pauses for the operator at once instead of burning retries', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'plain-browser-automation-not-permitted' } as never);
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result.episode).toMatchObject({ state: 'waiting-operator-only', failureClass: 'automation-permission', attemptCount: 1 });
+    expect(store.listEvents(approved.id).find((e) => e.eventClass === 'operator-only-challenge')?.reason)
+      .toBe('plain-browser-automation-not-permitted');
+    store.close();
+  });
 });

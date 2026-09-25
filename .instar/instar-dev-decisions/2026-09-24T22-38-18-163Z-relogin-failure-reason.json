@@ -1,0 +1,30 @@
+{
+  "ts": "2026-09-24T22:38:18.163Z",
+  "slug": "relogin-failure-reason",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/PlainChromeReloginBrowser.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginStore.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; one error now stops retries earlier"
+  },
+  "verdict": "pass"
+}

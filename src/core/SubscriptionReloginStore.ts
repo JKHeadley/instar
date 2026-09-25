@@ -18,7 +18,7 @@ export type SubscriptionReloginFailureClass =
   | 'wrong-identity' | 'unexpected-origin' | 'captcha' | 'phone-confirmation'
   | 'permission-expansion' | 'authority-degraded' | 'vault-reference-missing'
   | 'provider-rejected' | 'verification-failed' | 'attempt-budget-exhausted'
-  | 'repair-time-budget-exhausted'
+  | 'repair-time-budget-exhausted' | 'automation-permission'
   | 'uncertain-external-outcome'
   | 'passkey-refused'
   | 'cancelled-by-operator' | 'other';
@@ -37,6 +37,8 @@ export interface SubscriptionReloginEpisode {
 export interface SubscriptionReloginEvent {
   id: number; episodeId: string; at: string; fromState: SubscriptionReloginState | null;
   toState: SubscriptionReloginState; eventClass: string; attempt: number;
+  /** A short machine token saying WHY (e.g. `chrome-launch-timeout`), or null. Never free text. */
+  reason?: string | null;
 }
 export interface SubscriptionReloginNotification {
   id: number; episodeId: string; kind: 'suggested' | 'operator-only' | 'terminal';
@@ -72,7 +74,7 @@ const FAILURES: readonly string[] = [
   'wrong-identity', 'unexpected-origin', 'captcha', 'phone-confirmation',
   'permission-expansion', 'authority-degraded', 'vault-reference-missing',
   'provider-rejected', 'verification-failed', 'attempt-budget-exhausted',
-  'repair-time-budget-exhausted',
+  'repair-time-budget-exhausted', 'automation-permission',
   'uncertain-external-outcome',
   'cancelled-by-operator', 'other',
   'passkey-refused',
@@ -115,6 +117,11 @@ CREATE INDEX IF NOT EXISTS idx_relogin_notifications_due ON repair_notifications
  * NOT EXISTS` never adds a column to an existing database, so each addition is guarded by a
  * `PRAGMA table_info` check (the InboundDeliveryStore pattern) and applied right after the schema.
  */
+function ensureRepairEventColumns(db: BetterSqliteDatabase): void {
+  const columns = new Set((db.prepare('PRAGMA table_info(repair_events)').all() as Array<{ name: string }>).map((r) => r.name));
+  if (!columns.has('reason')) db.exec('ALTER TABLE repair_events ADD COLUMN reason TEXT');
+}
+
 function ensureRepairEpisodeColumns(db: BetterSqliteDatabase): void {
   const columns = new Set((db.prepare('PRAGMA table_info(repair_episodes)').all() as Array<{ name: string }>).map((r) => r.name));
   const additions: Array<[string, string]> = [
@@ -161,6 +168,7 @@ export class SubscriptionReloginStore {
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
     ensureRepairEpisodeColumns(this.db);
+    ensureRepairEventColumns(this.db);
     for (const suffix of ['', '-wal', '-shm']) {
       const file = `${this.dbPath}${suffix}`; if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
     }
@@ -265,6 +273,8 @@ export class SubscriptionReloginStore {
     failureClass?: SubscriptionReloginFailureClass; nextAttemptAt?: string | null;
     incrementAttempt?: boolean; incrementReissue?: boolean; approvedAt?: string;
     approvalExpiresAt?: string; clearFailure?: boolean; resetBudgets?: boolean;
+    /** Why this transition happened, as a short machine token (see {@link reloginReasonToken}). */
+    reason?: string | null;
   }): SubscriptionReloginEpisode {
     const at = input.at ?? this.isoNow(); normalizeEvent(input.eventClass);
     return this.db.transaction(() => {
@@ -284,7 +294,7 @@ export class SubscriptionReloginStore {
           input.resetBudgets ? 1 : 0, input.to, at, finished, input.nextAttemptAt ?? null,
           input.clearFailure ? null : (input.failureClass ?? ep.failureClass), at, ep.id, ep.version);
       if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
-      this.event(ep.id, at, ep.state, input.to, input.eventClass, attempt);
+      this.event(ep.id, at, ep.state, input.to, input.eventClass, attempt, reloginReasonToken(input.reason));
       if (input.to === 'waiting-operator-only') this.enqueueNotification(ep.id, 'operator-only', at);
       if (TERMINAL.has(input.to)) this.enqueueNotification(ep.id, 'terminal', at);
       this.enforceCaps();
@@ -409,9 +419,9 @@ export class SubscriptionReloginStore {
     const ep = this.get(id); if (!ep) throw new Error('relogin-episode-not-found'); return ep;
   }
   private event(id: string, at: string, from: SubscriptionReloginState | null,
-    to: SubscriptionReloginState, cls: string, attempt: number): void {
-    this.db.prepare('INSERT INTO repair_events(episodeId,at,fromState,toState,eventClass,attempt) VALUES(?,?,?,?,?,?)')
-      .run(id, at, from, to, normalizeEvent(cls), attempt);
+    to: SubscriptionReloginState, cls: string, attempt: number, reason: string | null = null): void {
+    this.db.prepare('INSERT INTO repair_events(episodeId,at,fromState,toState,eventClass,attempt,reason) VALUES(?,?,?,?,?,?,?)')
+      .run(id, at, from, to, normalizeEvent(cls), attempt, reason);
   }
   private enqueueNotification(id: string, kind: SubscriptionReloginNotification['kind'], at: string): void {
     this.db.prepare(`INSERT OR IGNORE INTO repair_notifications(
@@ -442,6 +452,18 @@ export class SubscriptionReloginStore {
 function normalizeId(value: string, field: string): string {
   const v = String(value ?? '').trim(); if (!ID_RE.test(v)) throw new Error(`invalid-${field}-id`); return v;
 }
+/**
+ * A repair reason is recorded only as a short machine token from the code's own error names
+ * (`chrome-launch-timeout`, `plain-browser-apple-event-error--1743`, `relogin-profile-in-use`, ...).
+ * Anything else — free text, a value that could carry page content — becomes `unclassified`, so the
+ * audit can explain a failure remotely without ever holding page text or a secret.
+ */
+export function reloginReasonToken(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  const v = String(value).trim().toLowerCase();
+  return /^(chrome|plain-browser|relogin|browser|cdp|agent|drive|hold|consent|navigat)[a-z0-9-]{0,70}$/.test(v) ? v : 'unclassified';
+}
+
 function normalizeEvent(value: string): string {
   const v = String(value ?? '').trim(); if (!/^[a-z0-9-]{1,80}$/.test(v)) throw new Error('invalid-event-class'); return v;
 }

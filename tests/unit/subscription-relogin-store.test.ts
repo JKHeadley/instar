@@ -6,7 +6,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   SubscriptionReloginConflictError,
   SubscriptionReloginStore,
+  reloginReasonToken,
 } from '../../src/core/SubscriptionReloginStore.js';
+import Database from 'better-sqlite3';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -287,5 +289,33 @@ describe('SubscriptionReloginStore', () => {
     suggest({ inputDigest: `sha256:${'b'.repeat(64)}` });
     expect(store.claimNotifications(10).map((notification) => notification.kind)).toEqual(['suggested']);
     store.close();
+  });
+
+  it('keeps only short machine reason tokens; free text or page content becomes "unclassified"', () => {
+    expect(reloginReasonToken('chrome-launch-timeout')).toBe('chrome-launch-timeout');
+    expect(reloginReasonToken('plain-browser-apple-event-error--1743')).toBe('plain-browser-apple-event-error--1743');
+    expect(reloginReasonToken('relogin-profile-in-use')).toBe('relogin-profile-in-use');
+    expect(reloginReasonToken('Wrong password for justin@example.com')).toBe('unclassified');
+    expect(reloginReasonToken('hunter2secret')).toBe('unclassified');
+    expect(reloginReasonToken(undefined)).toBeNull();
+  });
+
+  it('adds the reason column to an existing database and records reasons on events', () => {
+    const { store, suggest } = fixture();
+    const ep = suggest();
+    const approved = store.approve(ep.id, { inputDigest: ep.inputDigest });
+    const dbPath = (store as unknown as { dbPath: string }).dbPath;
+    const stateDir = path.dirname(path.dirname(path.dirname(dbPath)));
+    store.close();
+    // Simulate a database created before the column existed.
+    const raw = new Database(dbPath);
+    raw.exec('ALTER TABLE repair_events DROP COLUMN reason');
+    raw.close();
+    const reopened = new SubscriptionReloginStore({ stateDir, now: () => Date.parse('2026-08-28T07:00:00.000Z') });
+    const moved = reopened.transition(approved.id, { expectedVersion: approved.version, to: 'cli-starting',
+      eventClass: 'cli-starting', reason: 'chrome-launch-timeout' });
+    const events = reopened.listEvents(moved.id);
+    expect(events.find((e) => e.eventClass === 'cli-starting')?.reason).toBe('chrome-launch-timeout');
+    reopened.close();
   });
 });
