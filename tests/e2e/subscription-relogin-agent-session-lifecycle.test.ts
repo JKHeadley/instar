@@ -129,7 +129,9 @@ describe('skill-driven sign-in repair through the production AgentServer', () =>
       .set('Authorization', 'Bearer relogin-api-token').set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
     expect(approved.status).toBe(202);
     await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), { timeout: 5_000 });
-    expect(routeStatus).toBe(202);
+    // The route resolves the server-side wait before the helper's own fetch promise settles, so the
+    // episode can reach `succeeded` first; wait for the helper to see its 202.
+    await vi.waitFor(() => expect(routeStatus).toBe(202), { timeout: 5_000 });
     expect(spawn.mock.calls[0]![0]).toMatchObject({ seat: { accountId: 'acct-helper' } });
     expect(pasteBack.finish).toHaveBeenCalledWith(expect.anything(), CODE, expect.any(AbortSignal));
     expect(live.size).toBe(0); // the helper was killed on exit from browser-driving
