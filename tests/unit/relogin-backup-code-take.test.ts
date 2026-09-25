@@ -23,3 +23,24 @@ describe('takeFirstBackupCode — single-use Google backup codes', () => {
     expect(v.data.other).toBe(42);
   });
 });
+
+import { resolveAllowedScopes } from '../../src/core/SubscriptionReloginRuntime.js';
+
+describe('resolveAllowedScopes — what a repair may approve', () => {
+  const link = 'https://claude.com/cai/oauth/authorize?code=true&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference&state=x';
+  it('an operator-configured list wins', () => {
+    expect(resolveAllowedScopes(['user:profile'], link)).toEqual(['user:profile']);
+  });
+  it('without a list, allows exactly the scopes our own CLI put in its sign-in link', () => {
+    expect(resolveAllowedScopes(undefined, link)).toEqual(['org:create_api_key', 'user:profile', 'user:inference']);
+    expect(resolveAllowedScopes([], link)).toEqual(['org:create_api_key', 'user:profile', 'user:inference']);
+  });
+  it('keeps dotted scope names (Codex style) and drops wildcards or junk', () => {
+    expect(resolveAllowedScopes(undefined, 'https://auth.openai.com/oauth/authorize?scope=openid+api.connectors.read+*+%3Cx%3E'))
+      .toEqual(['openid', 'api.connectors.read']);
+  });
+  it('a link without scopes, or an unparseable link, allows nothing', () => {
+    expect(resolveAllowedScopes(undefined, 'https://auth.openai.com/codex/device')).toEqual([]);
+    expect(resolveAllowedScopes(undefined, 'not a url')).toEqual([]);
+  });
+});

@@ -169,7 +169,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       return driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
         expectedIdentity: acct.email,
         loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
-        allowedScopes: deps.allowedScopes ?? [] }, signal);
+        allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
     },
     finishCli: async (episode, code, signal) => {
       const login = pending(episode.accountId); if (!login) throw new Error('login-artifact-unavailable');
@@ -302,4 +302,22 @@ export function takeFirstBackupCode(vault: { get(name: string): unknown; set(nam
   const [first, ...rest] = codes;
   vault.set(name, rest.join(' '));
   return first;
+}
+
+/**
+ * The permissions a repair may approve. An operator-configured list wins. Without one, the
+ * allowance is exactly the scopes OUR OWN CLI requested in the sign-in link it printed — the
+ * link comes from the `login` process this runtime started, so approving those scopes is the
+ * sign-in the operator already runs by hand. A consent page asking for anything beyond them is
+ * still a permission expansion and still stops the repair. (Before this, an unconfigured list
+ * was empty, so every Claude repair outside a hand-configured machine refused at consent.)
+ */
+export function resolveAllowedScopes(configured: string[] | undefined, verificationUrl: string): string[] {
+  if (configured && configured.length > 0) return configured;
+  try {
+    const scope = new URL(verificationUrl).searchParams.get('scope') ?? '';
+    return scope.split(/[ ,+]+/).map((s) => s.trim()).filter((s) => /^[a-z][a-z0-9:._-]{0,79}$/i.test(s)).slice(0, 20);
+  } catch {
+    return []; // @silent-fallback-ok — an unparseable link allows nothing; consent then refuses.
+  }
 }

@@ -1,0 +1,25 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Two fixes found by live repairs on the Laptop and Mac Mini (2026-09-25):
+
+1. **Consent allowance default.** `subscriptionPool.assistedRelogin.allowedScopes` defaulted to an empty list, so on every machine where nobody had configured it by hand, a Claude repair reached the consent page and stopped as `permission-expansion`. New `resolveAllowedScopes()` in `SubscriptionReloginRuntime`: an operator-configured list still wins; without one, the allowance is exactly the scopes in the sign-in link that this runtime's own `login` process printed. A consent page asking for anything beyond those is still a permission expansion and still stops the repair.
+2. **Normal-browser launch.** The launch budget is now at least 30 s (a cold Chrome on a busy Mac can exceed the old 10 s), and a timeout names what was failing: `chrome-launch-no-process` (Chrome never appeared for this profile, e.g. no desktop session for the agent's Mac user), `chrome-launch-timeout-apple-event-error--NNNN`, or `chrome-launch-timeout-page-not-loaded`. These land in the repair's recorded reason.
+
+## What to Tell Your User
+
+Automatic sign-in repair now works on machines where its permission list was never set up by hand. Before, it stopped at Claude's "Authorize" page on every such machine. It also gives Chrome more time to start, and says more precisely why when Chrome doesn't come up.
+
+## Summary of New Capabilities
+
+- Sign-in repair approves exactly the permissions its own Claude login asked for, with no hand configuration.
+- Failed normal-browser launches say which step failed.
+
+## Evidence
+
+- Laptop, 2026-09-25 02:13 UTC: justin@ repair on a fresh profile opened Chrome fine, then ended `permission-expansion` 2 s in — the Laptop had no `allowedScopes` configured (the Studio had them set by hand).
+- Mac Mini, 2026-09-25 02:01–02:02 UTC: three attempts, each recorded reason `chrome-launch-timeout` (visible thanks to #2071), ~10 s each.
+- Tests: `tests/unit/relogin-backup-code-take.test.ts` (+3: configured list wins; derived from the CLI link; no scopes / bad link allow nothing), `tests/unit/plain-chrome-relogin-browser.test.ts` (+2: timeout names the Apple Event problem; names a page that never loaded). Relogin suites: unit 140, integration 7, e2e 8.

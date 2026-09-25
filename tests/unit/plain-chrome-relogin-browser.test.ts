@@ -72,7 +72,7 @@ describe('PlainChromeReloginBrowser — normal-browser transport', () => {
   });
 
   it('fails the launch loudly when the window never produces a document', async () => {
-    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), operationTimeoutMs: 1_000,
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), operationTimeoutMs: 1_000, launchTimeoutMs: 1_000,
       runAppleEvent: async () => '{"__ae":"no-reply"}', launch: async () => 7 });
     await expect(browser.open('https://claude.ai/')).rejects.toThrow('chrome-launch-timeout');
   });
@@ -123,5 +123,25 @@ describe('PlainChromeReloginBrowser — a new window starts on about:blank', () 
     await browser.open('https://claude.ai/login');
     expect(seen.length).toBe(4);
     expect(seen[0]).toContain('location.protocol === "https:"');
+  });
+});
+
+describe('PlainChromeReloginBrowser — a launch timeout names what was failing', () => {
+  it('reports the last Apple Event problem in the timeout reason', async () => {
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), launchTimeoutMs: 1_000,
+      runAppleEvent: async () => '{"__ae":"error--1712"}', launch: async () => 31 });
+    await expect(browser.open('https://claude.ai/')).rejects.toThrow('chrome-launch-timeout-apple-event-error--1712');
+  });
+  it('reports a page that never loaded when Chrome answers but the link never arrives', async () => {
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), launchTimeoutMs: 1_000,
+      runAppleEvent: async () => '{"ok":true,"v":"starting"}', launch: async () => 32 });
+    await expect(browser.open('https://claude.ai/')).rejects.toThrow('chrome-launch-timeout-page-not-loaded');
+  });
+});
+
+describe('PlainChromeReloginBrowser — page-controlled text never reaches a reason', () => {
+  it('an unexpected Apple Event token becomes "unrecognized"', () => {
+    expect(() => decodeAppleEventResult('{"__ae":"hunter2-leaked-page-text"}')).toThrow('plain-browser-apple-event-unrecognized');
+    expect(() => decodeAppleEventResult('{"__ae":"error--1712"}')).toThrow('plain-browser-apple-event-error--1712');
   });
 });
