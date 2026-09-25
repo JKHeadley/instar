@@ -35,7 +35,7 @@ Most importantly, the server alone decides whether the repair worked. The login 
 ## How the helper is chosen and bounded
 
 - **Its account.** The helper runs on any other healthy account on that Mac, Claude or Codex, never the one being repaired. If there is none, Justin gets a link to the dashboard, where he can finish the sign-in from his phone.
-- **Its time.** The helper runs for at most 15 minutes.
+- **Its time.** The helper runs for at most 15 minutes. Only one helper runs on a Mac at a time; if a second account also needs repair, it waits its turn without losing Justin's approval.
 - **Its contact with Justin.** It cannot chat with him. If it needs him to tap "Yes" on his phone, or to click Allow on the Mac, the server sends one fixed message saying so.
 
 ## Locking out, and "is it really signed in?"
