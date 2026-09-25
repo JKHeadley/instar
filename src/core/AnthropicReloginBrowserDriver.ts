@@ -326,7 +326,11 @@ export class AnthropicReloginBrowserDriver {
       const reason = error instanceof Error ? error.message : 'unknown';
       // macOS refused to let this agent control Chrome (Automation permission). Retrying cannot
       // change that: stop now and ask the operator for the one-time "Allow".
-      if (reason.startsWith('plain-browser-automation-not-permitted'))
+      // A running Chrome that never answers a control request for the whole launch budget is, in
+      // practice, macOS's first-use "allow control of Google Chrome?" prompt waiting for a click
+      // (live on the Mac Mini, 2026-09-25) — also not something a retry can clear.
+      if (reason.startsWith('plain-browser-automation-not-permitted')
+        || reason.startsWith('chrome-launch-timeout-apple-event-no-reply'))
         return { outcome: 'operator-only', failureClass: 'automation-permission', reason };
       return { outcome: 'transient', failureClass: 'provider-transient', reason };
     } finally {

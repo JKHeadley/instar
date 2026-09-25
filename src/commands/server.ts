@@ -14832,7 +14832,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.`
             : kind === 'operator-only'
               ? (episode.failureClass === 'automation-permission'
-                ? `${doorway} sign-in repair needs a one-time permission on this machine: allow the agent to control Google Chrome (System Settings, Privacy & Security, Automation). Then open Subscriptions and tap Try repair again.`
+                ? `${doorway} sign-in repair needs a one-time permission on this machine: allow the agent to control Google Chrome. On that machine, signed in as the Mac user the agent runs as, click Allow on the "control Google Chrome" prompt if one is showing, or turn it on in System Settings, Privacy & Security, Automation. Then open Subscriptions and tap Try repair again.`
                 : 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.')
               : episode.state === 'succeeded'
                 ? `${doorway} subscription sign-in was repaired and verified.`
