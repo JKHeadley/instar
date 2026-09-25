@@ -176,10 +176,15 @@ describe('AnthropicReloginBrowserDriver in agent navigation mode', () => {
 describe('resolveReloginNavigation', () => {
   it('follows the development-agent gate when omitted and lets an explicit value win both ways', async () => {
     const { resolveReloginNavigation } = await import('../../src/core/SubscriptionReloginRuntime.js');
-    expect(resolveReloginNavigation(undefined, { developmentAgent: true })).toBe('agent');
-    expect(resolveReloginNavigation(undefined, {})).toBe('closed');
-    expect(resolveReloginNavigation('closed', { developmentAgent: true })).toBe('closed');
-    expect(resolveReloginNavigation('agent', {})).toBe('agent');
+    // Off macOS (the agent-session path is macOS-only; spec skill-driven-signin-repair).
+    expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'linux')).toBe('agent');
+    expect(resolveReloginNavigation(undefined, {}, 'linux')).toBe('closed');
+    expect(resolveReloginNavigation('closed', { developmentAgent: true }, 'linux')).toBe('closed');
+    expect(resolveReloginNavigation('agent', {}, 'linux')).toBe('agent');
+    // On macOS an explicit legacy value still wins; omitted on a dev agent ⇒ agent-session.
+    expect(resolveReloginNavigation('closed', { developmentAgent: true }, 'darwin')).toBe('closed');
+    expect(resolveReloginNavigation('agent', {}, 'darwin')).toBe('agent');
+    expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'darwin')).toBe('agent-session');
   });
 });
 

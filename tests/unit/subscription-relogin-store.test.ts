@@ -131,7 +131,7 @@ describe('SubscriptionReloginStore', () => {
     const episode = suggest();
     const [suggested] = store.claimNotifications();
     expect(suggested).toMatchObject({ episodeId: episode.id, kind: 'suggested', state: 'delivering', attemptCount: 1 });
-    expect(suggested.deliveryKey).toBe(`subscription-relogin:${episode.id}:suggested`);
+    expect(suggested.deliveryKey).toBe(`subscription-relogin:${episode.id}:suggested:0`);
     store.completeNotification(suggested.id);
     const approved = store.approve(episode.id, { inputDigest: episode.inputDigest });
     store.cancel(approved.id);

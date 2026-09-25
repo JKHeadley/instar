@@ -21,6 +21,8 @@ export type SubscriptionReloginFailureClass =
   | 'repair-time-budget-exhausted' | 'automation-permission'
   | 'uncertain-external-outcome'
   | 'passkey-refused'
+  | 'agent-sign-in-unfinished' | 'no-healthy-seat'
+  | 'resolved-elsewhere'
   | 'cancelled-by-operator' | 'other';
 
 export interface SubscriptionReloginEpisode {
@@ -41,7 +43,7 @@ export interface SubscriptionReloginEvent {
   reason?: string | null;
 }
 export interface SubscriptionReloginNotification {
-  id: number; episodeId: string; kind: 'suggested' | 'operator-only' | 'terminal';
+  id: number; episodeId: string; kind: 'suggested' | 'operator-only' | 'terminal' | 'phone-tap';
   deliveryKey: string; state: 'pending' | 'delivering' | 'delivered'; attemptCount: number;
   nextAttemptAt: string; leaseExpiresAt: string | null; createdAt: string; deliveredAt: string | null;
 }
@@ -59,7 +61,9 @@ export interface SubscriptionReloginEvidence {
 const TERMINAL = new Set<SubscriptionReloginState>(['succeeded', 'refused', 'cancelled', 'failed']);
 const TRANSITIONS: Readonly<Record<SubscriptionReloginState, readonly SubscriptionReloginState[]>> = {
   suggested: ['approved', 'refused', 'cancelled'],
-  approved: ['cli-starting', 'refused', 'cancelled', 'failed'],
+  // approved → waiting-operator-only: the agent-session pre-attempt check found no healthy helper
+  // account on this machine (spec skill-driven-signin-repair, `no-healthy-seat`).
+  approved: ['cli-starting', 'waiting-operator-only', 'refused', 'cancelled', 'failed'],
   'cli-starting': ['approved', 'artifact-ready', 'waiting-operator-only', 'cancelled', 'failed'],
   'artifact-ready': ['approved', 'browser-driving', 'waiting-operator-only', 'cancelled', 'failed'],
   'browser-driving': ['approved', 'cli-finishing', 'identity-verifying', 'waiting-operator-only', 'refused', 'cancelled', 'failed'],
@@ -78,7 +82,11 @@ const FAILURES: readonly string[] = [
   'uncertain-external-outcome',
   'cancelled-by-operator', 'other',
   'passkey-refused',
+  'agent-sign-in-unfinished', 'no-healthy-seat',
+  'resolved-elsewhere',
 ];
+/** An approval never stays alive longer than this after the operator's tap, however long it queues. */
+const APPROVAL_EXTENSION_CAP_MS = 60 * 60_000;
 const ID_RE = /^[a-zA-Z0-9._:-]{1,160}$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 const MAX_EPISODES = 2_000;
@@ -268,6 +276,40 @@ export class SubscriptionReloginStore {
       approvalExpiresAt: new Date(Date.parse(at) + ttl).toISOString(), clearFailure: true, resetBudgets: true });
   }
 
+  /**
+   * Keep an approved-but-queued episode's approval alive while it waits its turn for the machine's
+   * one helper seat (spec skill-driven-signin-repair §2). Version-checked; never extends past 60
+   * minutes after the operator's approval, and only while the episode is still `approved` and no
+   * attempt has started. Returns the (possibly unchanged) episode.
+   */
+  extendApproval(id: string, expectedVersion: number, until: string, at = this.isoNow()): SubscriptionReloginEpisode {
+    return this.db.transaction(() => {
+      const ep = this.mustGet(id);
+      if (ep.version !== expectedVersion) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      if (ep.state !== 'approved' || ep.startedAt || !ep.approvedAt) return ep;
+      const cap = Date.parse(ep.approvedAt) + APPROVAL_EXTENSION_CAP_MS;
+      const wanted = Date.parse(until);
+      if (!Number.isFinite(wanted) || !Number.isFinite(cap)) throw new Error('invalid-approval-extension');
+      const target = Math.min(wanted, cap);
+      const current = ep.approvalExpiresAt ? Date.parse(ep.approvalExpiresAt) : 0;
+      if (target <= current) return ep;
+      const info = this.db.prepare(`UPDATE repair_episodes SET approvalExpiresAt=?,version=version+1,updatedAt=?
+        WHERE id=? AND version=?`).run(new Date(target).toISOString(), at, ep.id, ep.version);
+      if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      return this.mustGet(ep.id);
+    })();
+  }
+
+  /**
+   * Queue the fixed "tap Yes on your phone" notice for this episode (spec skill-driven-signin-repair,
+   * operator contact). Idempotent within an attempt: the notice row is unique per (episode, kind) and
+   * cleared at the start of the next attempt.
+   */
+  enqueuePhoneTap(id: string, at = this.isoNow()): void {
+    const ep = this.mustGet(id);
+    this.enqueueNotification(ep.id, 'phone-tap', at);
+  }
+
   transition(id: string, input: {
     expectedVersion: number; to: SubscriptionReloginState; eventClass: string; at?: string;
     failureClass?: SubscriptionReloginFailureClass; nextAttemptAt?: string | null;
@@ -295,6 +337,13 @@ export class SubscriptionReloginStore {
           input.clearFailure ? null : (input.failureClass ?? ep.failureClass), at, ep.id, ep.version);
       if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
       this.event(ep.id, at, ep.state, input.to, input.eventClass, attempt, reloginReasonToken(input.reason));
+      // A new attempt may need its own phone-tap / operator-only notice. Notice rows are unique per
+      // (episode, kind), so the prior attempt's rows are cleared here (a row mid-delivery is kept so
+      // its in-flight completion still finds its claim).
+      if (ep.state === 'approved' && input.to === 'cli-starting') {
+        this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND kind IN ('phone-tap','operator-only')
+          AND state<>'delivering'`).run(ep.id);
+      }
       if (input.to === 'waiting-operator-only') this.enqueueNotification(ep.id, 'operator-only', at);
       if (TERMINAL.has(input.to)) this.enqueueNotification(ep.id, 'terminal', at);
       this.enforceCaps();
@@ -306,6 +355,17 @@ export class SubscriptionReloginStore {
     const ep = this.mustGet(id); if (TERMINAL.has(ep.state)) return ep;
     return this.transition(id, { expectedVersion: ep.version, to: 'cancelled', at,
       eventClass: 'operator-cancelled', failureClass: 'cancelled-by-operator' });
+  }
+  /**
+   * Close an open repair whose account×machine cell the server has since verified healthy by
+   * another path (signed in by hand, from the phone, …). Goes through the store's own audited
+   * transition to the terminal `cancelled` state with failure class `resolved-elsewhere` — never a
+   * raw delete, never counted as a repair success (graduation evidence) or a failure (breaker).
+   */
+  resolveElsewhere(id: string, at = this.isoNow()): SubscriptionReloginEpisode {
+    const ep = this.mustGet(id); if (TERMINAL.has(ep.state)) return ep;
+    return this.transition(id, { expectedVersion: ep.version, to: 'cancelled', at,
+      eventClass: 'resolved-elsewhere', failureClass: 'resolved-elsewhere' });
   }
   recordReissue(id: string, expectedVersion: number, count: number, at = this.isoNow()): SubscriptionReloginEpisode {
     const bounded = Math.max(0, Math.min(100, Math.floor(count)));
@@ -424,9 +484,27 @@ export class SubscriptionReloginStore {
       .run(id, at, from, to, normalizeEvent(cls), attempt, reason);
   }
   private enqueueNotification(id: string, kind: SubscriptionReloginNotification['kind'], at: string): void {
+    // The delivery key (also the attention-item id) carries the attempt number, so a notice
+    // re-inserted for a later attempt is not de-duplicated away downstream.
+    const attempt = Number((this.db.prepare('SELECT attemptCount FROM repair_episodes WHERE id=?').get(id) as
+      { attemptCount: number } | undefined)?.attemptCount ?? 0);
+    let key = `subscription-relogin:${id}:${kind}:${attempt}`;
+    if (kind === 'operator-only') {
+      // A second operator-only reason within ONE attempt (e.g. no-healthy-seat, an operator resume,
+      // then no-healthy-seat again) is its own notice: replace an already-delivered row, and give
+      // the new one a distinct key so the attention layer does not de-duplicate it away.
+      const prior = this.db.prepare(`SELECT state, deliveryKey FROM repair_notifications WHERE episodeId=? AND kind='operator-only'`)
+        .get(id) as { state: string; deliveryKey: string } | undefined;
+      if (prior && prior.state === 'delivered') {
+        const entries = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=? AND toState='waiting-operator-only'
+          AND attempt=?`).get(id, attempt) as { n: number }).n);
+        this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND kind='operator-only' AND state='delivered'`).run(id);
+        key = `${key}.${entries}`;
+      }
+    }
     this.db.prepare(`INSERT OR IGNORE INTO repair_notifications(
       episodeId,kind,deliveryKey,state,attemptCount,nextAttemptAt,createdAt)
-      VALUES(?,?,?,'pending',0,?,?)`).run(id, kind, `subscription-relogin:${id}:${kind}`, at, at);
+      VALUES(?,?,?,'pending',0,?,?)`).run(id, kind, key, at, at);
   }
   private enforceCaps(): void {
     const episodes = Number((this.db.prepare('SELECT COUNT(*) n FROM repair_episodes').get() as { n: number }).n);

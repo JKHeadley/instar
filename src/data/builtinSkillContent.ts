@@ -124,6 +124,17 @@ This is the way you would do it as a person: look at the screen and act on what 
 
 If you are helping from another machine, spawn the helper session on the target machine **bound to the operator's topic**. An unbound session cannot message the operator. Tell the operator before anything that needs their hands, such as a phone tap or a macOS "Allow".
 
+### Agent-run repair (when Instar starts you as the sign-in helper)
+
+On macOS the built-in repair can hand this procedure to one short-lived helper session (\`relogin-<episode>\`, navigation \`agent-session\`). If that is you:
+- **The CLI login is already started.** Your prompt carries the verification URL (and the Codex device code), the expected email, the Chrome profile directory, the vault entry NAMES, and a per-episode token. Do steps 2–5 above. Do NOT enroll, cancel, reissue or complete any login, and do not call \`submit-code\` or \`enroll/<id>/complete\`: Instar does those itself.
+- **Claude:** read the code from the page into a shell variable (never print it) and post it as \`{"code":"…"}\` to \`http://127.0.0.1:<port>/subscription-relogin/<episode>/code\` with the header \`X-Relogin-Helper-Token: <token>\` and \`Content-Type: application/json\`, piping the JSON on stdin. A \`202\` means Instar has it. Then close only the Chrome you opened and exit.
+- **Codex:** type the device code on the page and continue to "Signed in to Codex". Post nothing; Instar sees the credential land.
+- **A phone "Is it you?" tap:** post \`{"notify":"phone-tap"}\` to the same route once, then wait a few minutes for the page to move on.
+- **A macOS Allow prompt** (Screen Recording, Accessibility, or Automation): post \`{"notify":"macos-permission","permission":"screen-recording"}\` (or \`accessibility\` / \`automation\`) and exit.
+- **At a hard line**, or when you cannot finish, write the reason in your final output and exit. You have at most 15 minutes. You cannot message anyone.
+- **Instar decides success, never you:** the login must complete, the email must match, and a real authenticated call must work.
+
 ## 4. When a repair does not finish
 
 | What the episode/page shows | What it means | Do this |

@@ -104,7 +104,7 @@ describe('production-shaped subscription re-login runtime', () => {
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
-      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-rollout', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-app-server', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
       pasteBack, createBrowser: () => browser, resolveSecret: async () => null,
       supervise: async ({ allowedActions }) => allowedActions[0],
@@ -118,6 +118,54 @@ describe('production-shaped subscription re-login runtime', () => {
     expect(browser.open).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
     expect(pasteBack.finish).not.toHaveBeenCalled();
     expect(account.status).toBe('active');
+    runtime.close();
+  });
+
+  it('never counts a Codex rollout-file read as authenticated use (spec skill-driven-signin-repair): the repair does not succeed', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-codex-runtime-')); dirs.push(stateDir);
+    const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
+    let account: SubscriptionAccount = { id: 'codex-1', nickname: 'Codex account', email: 'person@example.com',
+      provider: 'openai', framework: 'codex-cli', configHome: path.join(stateDir, 'slot'),
+      status: 'needs-reauth', enrolledAt: '2026-01-01T00:00:00Z', version: 1 };
+    let source: SubscriptionLoginEpisode = { id: 72, accountId: account.id, machineId: 'machine-1',
+      openedAt: '2026-08-28T00:00:00Z', closedAt: null, causeClass: 'exchange-failed',
+      corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
+    const pool = { getAvailability: () => ({ state: 'ready' }), get: () => ({ ...account }),
+      update: vi.fn((_id: string, patch: Partial<SubscriptionAccount>) => { account = { ...account, ...patch, version: account.version + 1 }; return account; }) } as unknown as SubscriptionPool;
+    const ledger = { listEpisodes: () => [{ ...source }], recordStatus: vi.fn(() => {
+      source = { ...source, closedAt: '2026-08-28T01:00:00Z', outcome: 'resolved' }; return { changed: true, episodeId: source.id };
+    }) } as unknown as SubscriptionLoginLedger;
+    let pending: any = null;
+    const enrollment = { getById: () => pending, start: vi.fn(async () => (pending = {
+      id: account.id, label: account.nickname, provider: 'openai', framework: 'codex-cli', kind: 'device-code',
+      configHome: account.configHome, verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234',
+      ttlExpiresAt: '2099-01-01T00:00:00Z', status: 'pending', reissueCount: 0,
+      createdAt: '2026-08-28T00:00:00Z', updatedAt: '2026-08-28T00:00:00Z', version: 1,
+    })), refresh: vi.fn() } as unknown as EnrollmentWizard;
+    const profiles = { resolve: () => ({ profile: { id: 'google-1' }, dirExists: true }), listProfiles: () => [{
+      id: 'google-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
+      accounts: [{ service: 'google', identity: account.email, owner: 'operator', vaultRefs: [],
+        loginMethod: 'session-cookie', lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }],
+    }] } as unknown as PlaywrightProfileRegistry;
+    const browser: ReloginBrowserPort = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
+      origin: 'https://auth.openai.com', pageClass: 'success', expectedAccountVisible: true,
+      hasGoogleSignIn: false, hasNext: false, hasAuthorize: false, requestedScopes: [],
+    })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
+    readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
+    const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
+    const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
+        minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-rollout', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
+      identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
+      pasteBack, createBrowser: () => browser, resolveSecret: async () => null,
+      supervise: async ({ allowedActions }) => allowedActions[0],
+    });
+    await runtime.service.tick();
+    const suggested = runtime.store.list()[0];
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.failureClass).toBe('verification-failed'));
+    expect(runtime.store.get(suggested.id)?.state).not.toBe('succeeded');
+    expect(account.status).toBe('needs-reauth');
     runtime.close();
   });
 
@@ -162,7 +210,7 @@ describe('production-shaped subscription re-login runtime', () => {
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
-      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-rollout', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-app-server', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
       pasteBack, createBrowser: () => browser, resolveSecret: async () => null,
       supervise: async () => { throw new Error('closed supervisor must not run in agent mode'); },

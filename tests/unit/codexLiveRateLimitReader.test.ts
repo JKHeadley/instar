@@ -3,8 +3,11 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
   readLiveCodexRateLimits,
+  readLiveCodexRateLimitsDetailed,
+  isCodexAuthError,
   mapLiveResponse,
   buildCodexLiveUsageReader,
+  buildCodexLiveUsageReaderDetailed,
 } from '../../src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 
 /**
@@ -127,6 +130,8 @@ function scriptedChild(opts: {
   initError?: boolean;
   readResult?: Record<string, unknown> | null;
   readError?: boolean;
+  /** The app-server's error message for the read (id 2), e.g. its signed-out refusal. */
+  readErrorMessage?: string;
   garbageFirst?: boolean;
   silent?: boolean;
 }): { child: FakeChild; spawnImpl: () => ChildProcessWithoutNullStreams } {
@@ -149,7 +154,8 @@ function scriptedChild(opts: {
     if (msg.id === 1) {
       reply(opts.initError ? { id: 1, error: { message: 'nope' } } : { id: 1, result: {} });
     } else if (msg.id === 2) {
-      if (opts.readError) reply({ id: 2, error: { message: 'nope' } });
+      if (opts.readErrorMessage) reply({ id: 2, error: { code: -32600, message: opts.readErrorMessage } });
+      else if (opts.readError) reply({ id: 2, error: { message: 'nope' } });
       else reply({ id: 2, result: opts.readResult ?? liveResult() });
     }
   });
@@ -217,5 +223,53 @@ describe('buildCodexLiveUsageReader (composition-root factory)', () => {
 
   it('codexLiveQuota: false is the rollback lever — returns null (rollout-only)', () => {
     expect(buildCodexLiveUsageReader({ codexLiveQuota: false })).toBeNull();
+  });
+});
+
+
+// ── The DETAILED read: auth refusal vs transport failure (spec skill-driven-signin-repair) ──
+
+describe('readLiveCodexRateLimitsDetailed', () => {
+  it('tells the app-server signed-out refusal apart as auth-failed (the real 2026-09-25 wording)', async () => {
+    const { child, spawnImpl } = scriptedChild({
+      readErrorMessage: 'codex account authentication required to read rate limits',
+    });
+    const read = await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl });
+    expect(read).toEqual({ kind: 'auth-failed' });
+    expect(child.killed).toBe(true);
+    // The null-returning wrapper still reads it as "no snapshot" for existing callers.
+    const again = scriptedChild({ readErrorMessage: 'codex account authentication required to read rate limits' });
+    expect(await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl: again.spawnImpl })).toBeNull();
+  });
+
+  it('keeps a non-auth protocol error, an init error and a timeout as unavailable (never evidence of sign-out)', async () => {
+    expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ readError: true }).spawnImpl }))
+      .toEqual({ kind: 'unavailable' });
+    expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ initError: true }).spawnImpl }))
+      .toEqual({ kind: 'unavailable' });
+    expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ silent: true }).spawnImpl, timeoutMs: 30 }))
+      .toEqual({ kind: 'unavailable' });
+    expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: () => { throw new Error('ENOENT'); } }))
+      .toEqual({ kind: 'unavailable' });
+  });
+
+  it('returns the snapshot as ok on a clean read', async () => {
+    const read = await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({}).spawnImpl });
+    expect(read.kind).toBe('ok');
+    if (read.kind === 'ok') expect(read.snapshot.source).toBe('codex-app-server');
+  });
+
+  it('classifies auth wording on both sides of the boundary', () => {
+    expect(isCodexAuthError({ message: 'codex account authentication required to read rate limits' })).toBe(true);
+    expect(isCodexAuthError({ message: 'Not logged in' })).toBe(true);
+    expect(isCodexAuthError({ message: 'Unauthorized' })).toBe(true);
+    expect(isCodexAuthError({ message: 'method not found' })).toBe(false);
+    expect(isCodexAuthError({ message: 'internal error: timed out' })).toBe(false);
+    expect(isCodexAuthError(null)).toBe(false);
+  });
+
+  it('the detailed factory honors the same codexLiveQuota:false rollback lever', () => {
+    expect(buildCodexLiveUsageReaderDetailed({ codexLiveQuota: false })).toBeNull();
+    expect(typeof buildCodexLiveUsageReaderDetailed({})).toBe('function');
   });
 });

@@ -14,7 +14,9 @@ import { AnthropicReloginBrowserDriver, type ReloginBrowserAction, type AgentNav
   type ReloginBrowserPort, type ReloginBrowserSnapshot } from './AnthropicReloginBrowserDriver.js';
 import { PlaywrightSeatLease } from './PlaywrightSeatLease.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
-import type { ClaudePasteBackController } from './ClaudePasteBackController.js';
+import { validClaudePasteBackCode, type ClaudePasteBackController } from './ClaudePasteBackController.js';
+import { SubscriptionReloginHelper, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
+import type { CliLoginVerdict } from './CliLoginStatus.js';
 
 export interface SubscriptionReloginRuntimeDeps {
   stateDir: string; projectDir: string; machineId: string;
@@ -31,12 +33,37 @@ export interface SubscriptionReloginRuntimeDeps {
    * Agent navigation (spec agent-driven-relogin): `agent` lets a model choose each sign-in step
    * from the page's floor-filtered controls. Resolved by the caller (dev-agent gate); default `closed`.
    */
-  navigation?: 'closed' | 'agent';
+  navigation?: 'closed' | 'agent' | 'agent-session';
+  /**
+   * The agent-session helper's ports (spec skill-driven-signin-repair). Required when
+   * `navigation` is `agent-session`; ignored otherwise.
+   */
+  helperSession?: {
+    spawn: (input: { name: string; prompt: string; seat: ReloginHelperSeat; maxDurationMinutes: number }) => Promise<string>;
+    isAlive: (tmuxSession: string) => boolean;
+    kill: (tmuxSession: string) => void;
+    listHelpers: () => Array<{ name: string; tmuxSession: string }>;
+    hasCapacity: () => boolean;
+    serverPort: number;
+    /** `codex login status` for a config home, proven able to fail (CliLoginStatus). */
+    codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
+    /** Test seams for the helper's timers. */
+    timing?: { pollMs?: number; leaseRenewMs?: number; capMs?: number; exitSettleMs?: number; startGraceMs?: number };
+  };
   /** The agent's chooser; required for `navigation: 'agent'` to take effect. */
   navigate?: (input: AgentNavigationInput) => Promise<string>;
   onSuggested?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
+  onPhoneTap?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
+  /**
+   * False when the live Codex app-server read is turned off (`subscriptionPool.codexLiveQuota:
+   * false`). Then no Codex repair can ever prove authenticated use (the rollout file is not proof),
+   * so Codex episodes are refused at admission with a named reason instead of burning attempts.
+   */
+  codexLiveReadAvailable?: boolean;
+  /** Host seat lease override (tests); defaults to the host-wide Playwright seat lease. */
+  seatLease?: PlaywrightSeatLease;
   allowedScopes?: string[]; tickMs?: number; maxAttempts?: number; retryBaseMs?: number;
   unattendedPolicy?: {
     identities?: string[];
@@ -59,14 +86,25 @@ export interface SubscriptionReloginRuntimeDeps {
  * (agent on a development agent, closed on the fleet).
  */
 export function resolveReloginNavigation(
-  navigation: 'agent' | 'closed' | undefined,
+  navigation: 'agent' | 'closed' | 'agent-session' | undefined,
   config: { developmentAgent?: boolean } | undefined,
-): 'agent' | 'closed' {
-  return resolveDevAgentGate(navigation === undefined ? undefined : navigation === 'agent', config) ? 'agent' : 'closed';
+  platform: NodeJS.Platform = process.platform,
+): 'agent' | 'closed' | 'agent-session' {
+  // Skill-driven sign-in repair (spec skill-driven-signin-repair): `agent-session` is honored on
+  // macOS only; omitted ⇒ `agent-session` on a macOS development agent. Everywhere else the value
+  // resolves to the existing driver exactly as before.
+  if (platform === 'darwin') {
+    if (navigation === 'agent-session') return 'agent-session';
+    if (navigation === undefined && resolveDevAgentGate(undefined, config)) return 'agent-session';
+  }
+  const legacy = navigation === 'agent-session' ? undefined : navigation;
+  return resolveDevAgentGate(legacy === undefined ? undefined : legacy === 'agent', config) ? 'agent' : 'closed';
 }
 
 export interface SubscriptionReloginRuntime {
   store: SubscriptionReloginStore; service: SubscriptionReloginService;
+  /** Present only on the agent-session path: the code route's handler. */
+  helper: SubscriptionReloginHelper | null;
   start(): void; stop(): void; close(): void;
 }
 
@@ -74,7 +112,13 @@ export interface SubscriptionReloginRuntime {
 export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntimeDeps): SubscriptionReloginRuntime {
   const now = deps.now ?? Date.now;
   const store = new SubscriptionReloginStore({ stateDir: deps.stateDir, now });
-  const seatLease = new PlaywrightSeatLease({ now });
+  const seatLease = deps.seatLease ?? new PlaywrightSeatLease({ now });
+  const agentSession = deps.navigation === 'agent-session';
+  if (agentSession && !deps.helperSession) throw new Error('relogin-agent-session-ports-missing');
+  // On the agent-session path approval is forced until graduation, whatever `mode` says: a
+  // trusted helper is never spawned unattended before the evidence exists.
+  const effectiveMode: SubscriptionReloginRuntimeDeps['mode'] = agentSession && deps.mode === 'unattended' ? 'approval' : deps.mode;
+  let serviceRef: SubscriptionReloginService | null = null;
   const authenticated = new Set<string>();
   const identityMismatches = new Map<string, string>();
 
@@ -116,14 +160,68 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     return !('unavailable' in result) && typeof result.email === 'string' && result.email.length > 0;
   };
 
+  const walled = (quota: SubscriptionAccount['lastQuota']): boolean =>
+    (quota?.fiveHour?.utilizationPct ?? 0) >= 100 || (quota?.sevenDay?.utilizationPct ?? 0) >= 100;
+  const helper = agentSession ? new SubscriptionReloginHelper({
+    lease: seatLease,
+    hasCapacity: deps.helperSession!.hasCapacity,
+    // Any healthy account on this machine, Claude or Codex, never the one under repair (spec §2).
+    // Healthy = active, not identity-drifted, not walled, and a JUST-IN-TIME authenticated read
+    // (for Codex: the CLI's own login check AND a live app-server read). Claude's CLI status is
+    // not used: it only proves a credential file exists.
+    pickSeat: async (excludeAccountId) => {
+      const candidates = deps.pool.list()
+        .filter((acct) => acct.id !== excludeAccountId && acct.status === 'active' && acct.identityDrifted !== true
+          && ((acct.provider === 'anthropic' && acct.framework === 'claude-code')
+            || (acct.provider === 'openai' && acct.framework === 'codex-cli'))
+          && !walled(acct.lastQuota))
+        .sort((a, b) => (a.framework === b.framework ? 0 : a.framework === 'claude-code' ? -1 : 1));
+      for (const acct of candidates) {
+        try {
+          if (acct.framework === 'codex-cli') {
+            const cli = await deps.helperSession!.codexLoginStatus?.(acct.configHome) ?? 'unavailable';
+            if (cli !== 'signed-in') continue;
+          }
+          const snapshot = await deps.quotaPoller.pollAccount(acct);
+          if (!snapshot || walled(snapshot)) continue;
+          if (acct.framework === 'codex-cli' && snapshot.source !== 'codex-app-server') continue;
+          return { accountId: acct.id, framework: acct.framework as 'claude-code' | 'codex-cli', configHome: acct.configHome };
+        } catch {
+          continue; // @silent-fallback-ok — an unmeasurable account is simply not eligible as a helper seat
+        }
+      }
+      return null;
+    },
+    spawn: deps.helperSession!.spawn,
+    isAlive: deps.helperSession!.isAlive,
+    kill: deps.helperSession!.kill,
+    listHelpers: deps.helperSession!.listHelpers,
+    credentialReady: async (episode) => {
+      const login = pending(episode.accountId);
+      return !!login && await credentialReady(login);
+    },
+    queuePhoneTap: (episodeId) => {
+      store.enqueuePhoneTap(episodeId);
+      void serviceRef?.flushNotifications();
+    },
+    validateCode: validClaudePasteBackCode,
+    serverPort: deps.helperSession!.serverPort,
+    now,
+    ...(deps.helperSession!.timing ?? {}),
+  }) : null;
+
   const agentNavigation = deps.navigation === 'agent' && typeof deps.navigate === 'function';
   const orchestrator = new SubscriptionReloginOrchestrator({
     store,
-    driveEventClass: () => agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
+    driveEventClass: () => helper ? 'agent-session-drive-started' : agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
+    preAttempt: helper ? (episode, signal) => helper.preAttempt(episode, signal) : undefined,
+    releaseAttempt: helper ? (episode) => helper.releaseAttempt(episode) : undefined,
     authorityReady: () => deps.pool.getAvailability().state === 'ready',
     sourceIncidentOpen: (episode) => source(episode)?.closedAt === null,
     accountActive: (episode) => account(episode)?.status === 'active',
     recoverUncertain: async (episode) => {
+      // After a restart the token and the wait are gone, so a surviving helper can never finish.
+      if (helper && episode.state === 'browser-driving') helper.killOrphan(episode.id);
       const login = pending(episode.accountId);
       if (login && await credentialReady(login)) return 'credential-ready';
       if (login?.status === 'pending') return 'cli-awaiting';
@@ -161,6 +259,14 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // §3.5–§3.8) is not on this build, so the drive boundary refuses by name; admission
       // already refuses unless the cell is `ready`, which nothing can produce here.
       if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
+      if (helper) {
+        if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
+          return { outcome: 'refused', failureClass: 'provider-rejected' };
+        return helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
+          provider: acct.provider, profileDir: detail.userDataDir,
+          vaultBindingNames: Object.values(browserAccount.vaultBindings ?? {}).filter((name): name is string => typeof name === 'string'),
+        }, signal);
+      }
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
         navigation: agentNavigation ? 'agent' : 'closed', navigate: deps.navigate });
@@ -205,6 +311,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       const acct = mustAccount(account(episode));
       const result = await deps.quotaPoller.pollAccount(acct);
       if (!result) return false;
+      // For Codex only a LIVE app-server read proves the login; the rollout file is usage history.
+      if (acct.framework === 'codex-cli' && result.source !== 'codex-app-server') return false;
       authenticated.add(episode.id); return true;
     },
     finalizeSuccess: async (episode) => {
@@ -225,13 +333,15 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey }) ?? 'unknown';
   };
   const admissionFor = (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode, currentEpisodeId?: string) => {
+    if (acct.framework === 'codex-cli' && deps.codexLiveReadAvailable === false)
+      return { admitted: false, reason: 'codex-live-read-disabled' } as const;
     const { resolved, detail, browserAccount } = profileContext(acct);
     // Graduation evidence is scoped to the account's CURRENT method (a method change resets it).
     const evidence = store.getUnattendedEvidence(acct.id, deps.machineId, acct.provider, acct.framework,
       browserAccount?.loginMethod ?? null);
     const oldestSuccessAt = evidence.oldestSuccessAt === null ? null : Date.parse(evidence.oldestSuccessAt);
     const optedInIdentities = deps.unattendedPolicy?.identities ?? [];
-    return evaluateSubscriptionReloginAdmission({ configuredMode: deps.mode,
+    return evaluateSubscriptionReloginAdmission({ configuredMode: effectiveMode,
       poolAuthority: deps.pool.getAvailability().state, account: { id: acct.id, machineId: deps.machineId,
         status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email) },
       sourceEpisode, hasLiveRepair: store.list({ accountId: acct.id, limit: 10 }).some((item) =>
@@ -276,9 +386,80 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       return verdict.admitted ? { admissible: true, inputDigest: verdict.inputDigest } as const
         : { admissible: false, reason: verdict.reason } as const;
     }, onSuggested: deps.onSuggested, onTerminal: deps.onTerminal,
-    onOperatorOnly: deps.onOperatorOnly, tickMs: deps.tickMs, now });
-  return { store, service, start: () => service.start(), stop: () => service.stop(),
+    onOperatorOnly: deps.onOperatorOnly, onPhoneTap: deps.onPhoneTap, tickMs: deps.tickMs, now,
+    // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
+    // credential's identity), and this process's latest poll was an authenticated read.
+    cellHealthy: (episode) => {
+      if (episode.machineId !== deps.machineId) return false;
+      const acct = account(episode);
+      return !!acct && acct.status === 'active' && acct.identityDrifted !== true
+        && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
+    } });
+  serviceRef = service;
+  return { store, service, helper,
+    start: () => {
+      // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
+      if (helper) {
+        try { helper.killOrphans(); } catch { /* @silent-fallback-ok — recovery kills per episode too */ }
+      }
+      service.start();
+    },
+    stop: () => service.stop(),
     close: () => { service.stop(); store.close(); } };
+}
+
+/**
+ * The production helper-session ports (spec skill-driven-signin-repair §4): one short-lived
+ * HEADLESS session per episode (`relogin-<episodeId>`), pinned to the chosen helper account's
+ * login for Claude or Codex, never topic-bound and never revived, with no project MCP servers
+ * (a headless spawn can hang on interactive-auth MCP). A Codex helper runs with full access
+ * (`codexAllowMcpTools`) so it can reach localhost and run GUI tools.
+ */
+export function buildReloginHelperSessionPorts(input: {
+  sessionManager: Pick<import('./SessionManager.js').SessionManager,
+    'spawnSession' | 'isSessionAlive' | 'killSessionByTmuxName' | 'listRunningSessions'>;
+  maxSessions: number;
+  serverPort: number;
+  codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
+}): NonNullable<SubscriptionReloginRuntimeDeps['helperSession']> {
+  const { sessionManager } = input;
+  return {
+    spawn: async ({ name, prompt, seat, maxDurationMinutes }) => {
+      const session = await sessionManager.spawnSession({
+        name, prompt, framework: seat.framework, maxDurationMinutes,
+        accountPin: { accountId: seat.accountId, configHome: seat.configHome },
+        disableProjectMcp: true, triggeredBy: 'subscription-relogin-helper',
+        ...(seat.framework === 'codex-cli' ? { codexAllowMcpTools: true } : {}),
+      });
+      return session.tmuxSession;
+    },
+    isAlive: (tmuxSession) => sessionManager.isSessionAlive(tmuxSession),
+    kill: (tmuxSession) => { sessionManager.killSessionByTmuxName(tmuxSession); },
+    listHelpers: () => sessionManager.listRunningSessions()
+      .filter((session) => session.name.startsWith('relogin-'))
+      .map((session) => ({ name: session.name, tmuxSession: session.tmuxSession })),
+    hasCapacity: () => sessionManager.listRunningSessions().length < input.maxSessions,
+    serverPort: input.serverPort,
+    ...(input.codexLoginStatus ? { codexLoginStatus: input.codexLoginStatus } : {}),
+  };
+}
+
+/**
+ * The route-context object the server hands to `/subscription-relogin/*` (the production
+ * composition, shared with tests so the wiring cannot drift). `helperSubmit` exists only on the
+ * agent-session path; without it the helper code route answers 503.
+ */
+export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRuntime) {
+  return {
+    store: runtime.store,
+    approve: (episodeId: string) => runtime.service.approve(episodeId),
+    cancel: (episodeId: string) => runtime.service.cancel(episodeId),
+    retry: (episodeId: string) => runtime.service.retry(episodeId),
+    ...(runtime.helper ? {
+      helperSubmit: (episodeId: string, token: string, body: unknown) => runtime.helper!.submit(episodeId, token, body),
+    } : {}),
+    close: () => runtime.close(),
+  };
 }
 
 function normalize(value: string): string { return value.trim().toLowerCase(); }

@@ -17,6 +17,9 @@ export const SUBSCRIPTION_LOGIN_CAUSE_CLASSES = [
   'malformed-response',
   'write-failed',
   'still-authfailed-after-refresh',
+  // The Codex CLI's own login check AND the live authenticated read both said signed out, on two
+  // consecutive polls (spec skill-driven-signin-repair).
+  'cli-signed-out-auth-refused',
   'unrecognized-reason',
 ] as const;
 
