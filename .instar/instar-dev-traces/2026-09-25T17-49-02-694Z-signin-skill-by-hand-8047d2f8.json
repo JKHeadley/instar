@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "signin-skill-by-hand",
+  "sessionId": "c0099817-18ba-4d8c-bb6e-edb9901228c9",
+  "timestamp": "2026-09-25T17:49:02.694Z",
+  "artifactPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "artifactSha256": "9d19119933e5a26528a42adf3aea3bce351066087e6c2ebce95eac428a2b94e9",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtinSkillContent.ts",
+    "tests/fixtures/skills/subscription-signin-v1.md",
+    "tests/unit/PostUpdateMigrator-subscriptionSigninByHand.test.ts",
+    "upgrades/next/signin-skill-by-hand.md",
+    "upgrades/side-effects/signin-skill-by-hand.md",
+    "upgrades/signin-skill-by-hand.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "skill content + idempotent skill-file migration; no repair runtime change",
+  "eli16Path": "upgrades/signin-skill-by-hand.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

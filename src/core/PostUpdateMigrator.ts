@@ -79,7 +79,7 @@ import {
   loadTestIdentityKey,
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1508,6 +1508,7 @@ export class PostUpdateMigrator {
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
     this.migrateBuildSkillMethodology(result);
+    this.migrateSubscriptionSigninByHand(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
     this.migrateIterativeConvergingAuditSkill(result);
@@ -4368,6 +4369,43 @@ export class PostUpdateMigrator {
    * Skill" + "Phase 5: COMPLETE"). A heavily-customized /build skill that no
    * longer matches the stock fingerprint is left untouched.
    */
+  /**
+   * Bring an installed /subscription-signin skill up to the version carrying the
+   * "Signing in by hand" section (operator directive 2026-09-25: the agent signs in like a
+   * person when the fixed repair stops). installBuiltinSkills never overwrites, so this is
+   * the only update path. A stock copy (hash of the first shipped version) is replaced whole;
+   * a copy the agent has edited keeps its edits and gets the new section inserted before its
+   * repair table. Idempotent on the section heading.
+   */
+  private migrateSubscriptionSigninByHand(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const marker = '## 3. Signing in by hand';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (current.includes(marker)) return;
+      if (!current.includes('name: subscription-signin')) return;
+      const firstShippedSha256 = 'e464cdf36956c9a9a2d13a0dd79255de6d38e4ef1edb58da937f8ccea0257667';
+      if (crypto.createHash('sha256').update(current).digest('hex') === firstShippedSha256) {
+        fs.writeFileSync(skillFile, SUBSCRIPTION_SIGNIN_SKILL_CONTENT);
+        result.upgraded.push('skills/subscription-signin/SKILL.md (sign in by hand when the repair stops)');
+        return;
+      }
+      const tableHeading = '## 3. When a repair does not finish';
+      const start = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(marker);
+      const end = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf('## 4. When a repair does not finish');
+      if (!current.includes(tableHeading) || start < 0 || end <= start) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no by-hand section)');
+        return;
+      }
+      const section = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.slice(start, end);
+      fs.writeFileSync(skillFile, current.replace(tableHeading, section + '## 4. When a repair does not finish'));
+      result.upgraded.push('skills/subscription-signin/SKILL.md (added the sign-in-by-hand section; local edits kept)');
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md by-hand migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateBuildSkillMethodology(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'build', 'SKILL.md');
