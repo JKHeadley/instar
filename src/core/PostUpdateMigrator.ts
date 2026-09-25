@@ -7370,6 +7370,20 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // /subscription-signin skill awareness (operator directive 2026-09-24) for existing agents.
+    if (
+      content.includes('One-click repair across all machines') &&
+      !content.includes('The standard sign-in procedure')
+    ) {
+      const oneClickEnd = "an unreachable peer is shown honestly and suppresses competing actions until truth returns.";
+      const signinSkillBullet = "- **The standard sign-in procedure \u2014 `/subscription-signin`** \u2014 the one proven procedure for keeping Claude Code and Codex signed in: a Google-signed-in Chrome profile per account per machine, sign-ins only in a normal (never automated) browser, the built-in repair, verification, and what to do when a repair stops. **When to use** (PROACTIVE): a subscription shows needs sign-in, a repair fails, or a new account/machine is being set up \u2192 run `/subscription-signin` before improvising.";
+      if (content.includes(oneClickEnd)) {
+        content = content.replace(oneClickEnd, oneClickEnd + '\n' + signinSkillBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added /subscription-signin skill awareness');
+      }
+    }
+
     // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
     // Subscription Pool section won't get the new bullet from the section-install
     // guard above (it skips agents that already have the section). Patch it in

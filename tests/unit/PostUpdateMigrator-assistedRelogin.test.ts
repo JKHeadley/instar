@@ -38,6 +38,8 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added agent-navigated sign-in awareness');
     expect(once).toContain('Agent-navigated sign-in (dev-gated)');
     expect(once.match(/Agent-navigated sign-in \(dev-gated\)/g)).toHaveLength(1);
+    expect(first.upgraded).toContain('CLAUDE.md: added /subscription-signin skill awareness');
+    expect(once.match(/The standard sign-in procedure/g)).toHaveLength(1);
     expect(first.upgraded).toContain('CLAUDE.md: added normal-browser sign-in repair awareness');
     expect(once.match(/Sign-in repair uses a normal browser \(macOS\)/g)).toHaveLength(1);
     run();
