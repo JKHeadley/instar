@@ -6,7 +6,7 @@
 
 ## Summary of the change
 
-Content change to `SUBSCRIPTION_SIGNIN_SKILL_CONTENT` (new section 3 "Signing in by hand", two table rows, one hard-rule line, revised repair steps and last table row), plus `PostUpdateMigrator.migrateSubscriptionSigninByHand` to deliver it to existing agents. No runtime code path in the repair itself changes.
+Content change to `SUBSCRIPTION_SIGNIN_SKILL_CONTENT` (new section 3 "Signing in by hand", two table rows, one hard-rule line, revised repair steps and last table row), a Codex device-code recipe, typing-safety rules (verify the frontmost pid and the focused field before every keystroke, after a stray keystroke landed in the operator's chat draft on the Laptop and was deleted unsent), and "pool `active` ≠ signed in"; plus `PostUpdateMigrator.migrateSubscriptionSigninByHand` to deliver it to existing agents. No runtime code path in the repair itself changes.
 
 ## Decision-point inventory
 
