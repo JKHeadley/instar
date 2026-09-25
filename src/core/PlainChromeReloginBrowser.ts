@@ -61,7 +61,9 @@ export function decodeAppleEventResult<T>(raw: string): T {
   try { parsed = JSON.parse(raw.trim()); } catch { throw new Error('browser-evaluation-failed'); }
   // -1743 (errAEEventNotPermitted): macOS Automation permission for Chrome is not granted to this process.
   if (parsed.__ae === 'error--1743') throw new Error('plain-browser-automation-not-permitted');
-  if (parsed.__ae) throw new Error(`plain-browser-apple-event-${parsed.__ae}`);
+  // Only the runner's own fixed tokens are echoed; the page runs JSON.stringify, so anything else
+  // could be page-controlled text and must not reach a recorded reason.
+  if (parsed.__ae) throw new Error(`plain-browser-apple-event-${/^(error--?\d{1,6}|no-reply|no-result)$/.test(parsed.__ae) ? parsed.__ae : 'unrecognized'}`);
   if (parsed.ok !== true) throw new Error('browser-evaluation-failed');
   return parsed.v as T;
 }
@@ -93,6 +95,8 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
   private pid: number | null = null;
   /** True when a test seam replaced the launcher: no real process to signal, any platform. */
   private readonly seamed: boolean;
+  /** How long a cold Chrome gets to start and load the page (≥30 s; a normal launch on a busy Mac can exceed 10 s). */
+  private readonly launchBudgetMs: number;
   private readonly allowFixtureUrls: boolean;
   private readonly runAppleEvent: (pid: number, code: string, timeoutSec: number) => Promise<string>;
   private readonly launchChrome: (userDataDir: string, url: string) => Promise<number>;
@@ -100,9 +104,10 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
   constructor(options: PlainChromeReloginBrowserOptions) {
     super({ ...options, passkeyMode: false, headless: false });
     this.seamed = options.launch !== undefined;
+    this.launchBudgetMs = Math.max(this.seamed ? 1_000 : 30_000, Math.min(120_000, options.launchTimeoutMs ?? 30_000));
     this.allowFixtureUrls = options.allowFixtureUrls === true;
     this.runAppleEvent = options.runAppleEvent ?? runOsascript;
-    this.launchChrome = options.launch ?? ((dir, url) => launchWithLaunchServices(dir, url, this.chromePath, this.operationTimeoutMs));
+    this.launchChrome = options.launch ?? ((dir, url) => launchWithLaunchServices(dir, url, this.chromePath, this.launchBudgetMs));
   }
 
   override async open(url: string): Promise<void> {
@@ -115,19 +120,24 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
     enableAppleEventJavaScript(this.userDataDir);
     this.pid = await this.launchChrome(this.userDataDir, target.toString());
     // Chrome answers once its window has a document; poll until it does (or the launch budget ends).
-    const deadline = Date.now() + this.operationTimeoutMs;
+    const deadline = Date.now() + this.launchBudgetMs;
+    let lastProblem = 'page-not-loaded';
     for (;;) {
       try {
         // A new window starts on about:blank, which is already "complete": wait for the target
         // page itself, or the first read sees a page with no origin and the drive refuses.
         const state = await this.evaluate<string>(`location.protocol === ${JSON.stringify(target.protocol)} ? document.readyState : 'starting'`);
         if (state === 'interactive' || state === 'complete') return;
+        lastProblem = 'page-not-loaded';
       } catch (error) {
         // A permission refusal will not clear by waiting: close and surface it now.
         if (error instanceof Error && error.message === 'plain-browser-automation-not-permitted') { await this.close(); throw error; }
+        // Remember WHY the window is not answering, so a timeout names it (the fix differs:
+        // an Apple Event timeout vs. a page that never loaded).
+        lastProblem = error instanceof Error ? error.message.replace(/^plain-browser-/, '') : 'unknown';
         /* @silent-fallback-ok — otherwise the window is still coming up; retried until the deadline below */
       }
-      if (Date.now() > deadline) { await this.close(); throw new Error('chrome-launch-timeout'); }
+      if (Date.now() > deadline) { await this.close(); throw new Error(`chrome-launch-timeout-${lastProblem}`.slice(0, 80)); }
       await this.wait(250);
     }
   }
@@ -282,7 +292,8 @@ async function launchWithLaunchServices(userDataDir: string, url: string, chrome
     if (pid !== null) return pid;
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error('chrome-launch-timeout');
+  // Chrome never appeared as a process for this profile (e.g. no desktop session for this Mac user).
+  throw new Error('chrome-launch-no-process');
 }
 
 /**
