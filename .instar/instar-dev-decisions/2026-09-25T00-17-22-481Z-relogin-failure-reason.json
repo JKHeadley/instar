@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-25T00:17:22.481Z",
+  "slug": "relogin-failure-reason",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/PlainChromeReloginBrowser.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; bounded wait only"
+  },
+  "verdict": "pass"
+}

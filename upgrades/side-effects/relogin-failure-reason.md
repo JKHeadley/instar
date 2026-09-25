@@ -12,11 +12,16 @@ Store: additive `repair_events.reason` column (PRAGMA-guarded ALTER on open), `t
 
 - Classify a thrown drive error as transient vs operator-only — `invariant`: exactly one error name (from our own transport, raised only on errAEEventNotPermitted) maps to operator-only; everything else keeps today's transient behavior.
 
+Additionally: the normal-browser launch waits for the target page's protocol (not about:blank), and the drive loop waits a bounded 15×1 s through an `origin: "null"` (about:blank) page before applying the origin floor. The floor itself is unchanged; a page that stays blank still refuses.
+
 ## 1. Over-block
 
 A -1743 caused by something other than a missing permission would pause for the operator instead of retrying — acceptable: -1743 is specifically "not permitted", and the operator path is one tap ("Try repair again").
 
 ## 2. Under-block
+
+The blank-page wait never acts on the page (wait only), so it cannot be abused to act on a foreign origin; it only delays the origin verdict by at most 15 s.
+
 
 A permission prompt that is PENDING (not yet answered) shows as a timeout (-1712), still classified transient; three retries then fail with that reason recorded, which is now visible. Not treated as operator-only because a timeout has other causes.
 

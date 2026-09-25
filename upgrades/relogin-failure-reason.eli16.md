@@ -7,3 +7,5 @@ This change makes every attempt write down a short reason code, like "Chrome did
 It also recognises one specific, likely cause. On a Mac, a program needs permission before it may control Chrome ("Automation" in System Settings). If that permission is missing, retrying can never fix it, so the repair now stops on the first try and tells the person exactly which switch to turn on, then to tap "Try repair again".
 
 Nothing needs deciding. If a Mac shows that notice, it needs one tap in System Settings, once.
+
+One more fix found on the Laptop: a brand-new Chrome window shows a blank page for a moment before the sign-in link loads. The repair used to treat that blank page as the page and stop itself immediately. It now waits for the real page.

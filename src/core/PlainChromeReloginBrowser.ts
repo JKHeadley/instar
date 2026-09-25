@@ -118,7 +118,9 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
     const deadline = Date.now() + this.operationTimeoutMs;
     for (;;) {
       try {
-        const state = await this.evaluate<string>('document.readyState');
+        // A new window starts on about:blank, which is already "complete": wait for the target
+        // page itself, or the first read sees a page with no origin and the drive refuses.
+        const state = await this.evaluate<string>(`location.protocol === ${JSON.stringify(target.protocol)} ? document.readyState : 'starting'`);
         if (state === 'interactive' || state === 'complete') return;
       } catch (error) {
         // A permission refusal will not clear by waiting: close and surface it now.

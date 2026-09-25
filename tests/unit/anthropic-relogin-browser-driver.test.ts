@@ -243,4 +243,17 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     expect(takeBackupCode).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ outcome: 'transient' });
   });
+
+  it('waits through a window that is still blank (origin "null") instead of refusing, but refuses one that stays blank', async () => {
+    const loading = fixture([
+      state('unknown', { origin: 'null' }), state('unknown', { origin: 'null' }),
+      state('authorize', { origin: 'https://claude.ai', hasAuthorize: true, requestedScopes: ['user:profile'] }),
+      state('paste-code', { origin: 'https://claude.ai' }),
+    ]);
+    expect(await loading.driver.drive(loading.request)).toEqual({ outcome: 'approved', pasteCode: 'returned-code' });
+    expect(loading.browser.wait).toHaveBeenCalledWith(1_000);
+
+    const stuck = fixture([state('unknown', { origin: 'null' })]);
+    expect(await stuck.driver.drive(stuck.request)).toEqual({ outcome: 'refused', failureClass: 'unexpected-origin' });
+  });
 });

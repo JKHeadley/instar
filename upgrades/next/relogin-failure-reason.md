@@ -8,9 +8,13 @@ Assisted subscription re-login now says WHY an attempt failed. `repair_events` g
 
 A macOS Automation refusal (Apple Event error -1743, the agent is not allowed to control Chrome) is now recognised: the normal-browser transport surfaces it at once instead of waiting out the launch timeout, and the drive ends `operator-only` with the new failure class `automation-permission` rather than burning retries. The operator notice for that case says exactly what to allow (System Settings, Privacy & Security, Automation) and to tap Try repair again.
 
+Two start-up fixes found live on the Laptop (2026-09-25 00:12 UTC, a brand-new profile for adriana@): a new Chrome window starts on `about:blank`, which is already "complete", so the normal-browser launch returned before the sign-in link loaded and the first read refused as `unexpected-origin` within 2 seconds. The launch now waits for the target page's own protocol, and the drive waits (up to 15 one-second waits) through any still-blank window — including a provider popup's first moment — instead of refusing; a window that stays blank still refuses.
+
 ## What to Tell Your User
 
 When an automatic sign-in repair doesn't work, it now records a short reason you (or I) can read from anywhere, instead of just "failed". And if a Mac hasn't given the agent permission to control Chrome yet, the repair stops right away and tells you the one setting to allow, instead of quietly failing three times.
+
+Also: a repair on a brand-new browser profile no longer stops itself in the first two seconds.
 
 ## Summary of New Capabilities
 
