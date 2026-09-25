@@ -11,6 +11,10 @@ This is **WS5.2 Account Follow-Me**. It ships dark on the fleet (live on a devel
 
 Only a **redacted, credential-free metadata projection** of each subscription account crosses machines — id, nickname, email, provider, framework, status, quota — so a peer machine knows an account's depth and quota *without holding its login*. The login location (`configHome`) and every credential field are stripped. This projection is the `subscription-account-meta` replicated journal kind, implemented in `SubscriptionAccountMetaReplicatedStore`. The `SubscriptionAccountMetaReplicatedStore` schema is a strict allow-list: any unknown or credential-shaped field is rejected on both the send and receive ends.
 
+## Memory stays with the agent
+
+Logins carry tokens and quota, never the agent's data. When a session moves to another login, its Claude Code auto-memory comes with it, because every login's memory folder is a link to the agent's own `.instar/agent-memory/` (`AgentOwnedMemory`; see [Agent-owned memory](/features/agent-owned-memory/)).
+
 ## The security primitives
 
 Account Follow-Me is built on a set of hardened primitives, each proven before any live credential path exists:
