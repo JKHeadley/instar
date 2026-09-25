@@ -69,9 +69,9 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 
 1. **Each Google account has its own Chrome profile on each machine**, kept signed in to Google. Claude and Codex both sign in "with Google", so a healthy Google session in that profile is what makes every later re-sign-in a few clicks.
    When Google itself asks to sign in again, the agent types the account's password and its 6-digit authenticator code, both taken from the vault by name, in that same normal browser. No passkey and no automated browser are needed, so the Google side needs no human either.
-2. **Sign-ins always run in a NORMAL browser** — the account's Chrome opened the ordinary way, never a remote-controlled/automated one (no DevTools/Playwright). Providers put human checks in front of automated browsers (Claude's Authorize never went through; Cloudflare "Just a moment" never cleared); the same profile opened normally passes. The built-in repair does this for you on macOS.
+2. **Sign-ins always run in a NORMAL browser** — the account's Chrome opened the ordinary way, never a remote-controlled/automated one (no DevTools/Playwright). Providers put human checks in front of automated browsers (Claude's Authorize never went through; Cloudflare "Just a moment" never cleared); the same profile opened normally passes. The built-in repair does this for you on macOS. (Another agent has driven Google's own sign-in and ChatGPT's "Continue with Google" through a debugging-protocol Chrome without trouble. The page that reliably refuses automation is Claude's Authorize page. A normal browser works for all of them, so use one everywhere.)
 3. **The CLI login is started by Instar**, the browser only approves it: Claude gives a code to paste back; Codex (device code) finishes on its own.
-4. **Success is measured, not assumed**: the account must read \`active\` with the expected email, and an authenticated call must work.
+4. **Success is measured, not assumed**: a real authenticated call must work and answer as the expected email. A status command alone is not proof: \`claude auth status\` reports \`loggedIn: true\` for a sign-in whose session has expired and can't be refreshed.
 
 ## Hard rules
 
@@ -113,14 +113,14 @@ This is the way you would do it as a person: look at the screen and act on what 
    - If Google offers a **passkey** first (a Touch ID sheet or Chrome's passkey picker), cancel it, then choose **Try another way**, then **Enter your password**, then the authenticator-app code. Compute the code from the vault's TOTP secret over stdin, and never print it.
    - Recompute an element's coordinates right before clicking it. A page that scrolled makes old coordinates land on the wrong thing.
 5. **The usual Claude path**: the authorize link opens \`claude.ai/login\`, then Continue with Google opens a **Google popup** (choose the expected email, then the password, then any second step). Next comes "You're signing back in to Claude" → Continue → the authorize page (check it says "Logged in as" the expected email) → Authorize → a page showing the code. Read the code from the page and pipe it straight into \`POST /subscription-pool/follow-me/enroll/<id>/submit-code\`, never printing it.
-6. **Verify** (\`POST /subscription-pool/poll\`, then \`GET /subscription-pool\`, plus \`claude auth status\` with \`CLAUDE_CONFIG_DIR=<configHome>\`), then close only the Chrome you opened.
+6. **Verify** (\`POST /subscription-pool/poll\`, then \`GET /subscription-pool\`, plus one real call: \`CLAUDE_CONFIG_DIR=<configHome> claude -p "Reply with exactly: OK" --max-turns 1\`, run next to a known-good account so that a failure means something). Then close only the Chrome you opened.
 
 **Codex (device code)**, proven on the Laptop (2026-09-25; three accounts in about 15 minutes):
 - The login usually already exists (\`GET /subscription-pool/pending-logins\`, reissued every few minutes). Don't enroll it again, because that can respawn it with a new code.
 - **Read the code from the live login pane**, not only from pending-logins: \`tmux capture-pane -p -t '=instar-enroll-codex-cli-<tail of configHome>:'\`. If the two differ, trust the pane. OpenAI accepts an old code, but then the CLI never finishes.
 - Open \`https://auth.openai.com/codex/device\` in the account's profile, then **Continue with Google**, then any Google sign-in. The consent page shows the email: check it, then Continue. On the page that asks for the 9-character code, click the first box and type the code (the dash is skipped). Then Continue, and the page shows "Signed in to Codex". The CLI finishes on its own within about 10 seconds.
 - Then \`POST /subscription-pool/enroll/<id>/complete\`; a device-code login is not marked complete by itself. Then \`POST /subscription-pool/poll\`. If the code expired mid-flow, \`POST /subscription-pool/enroll/reissue-expired\` and type the new one.
-- Verify with \`CODEX_HOME=<configHome> codex login status\` ("Logged in using ChatGPT").
+- Verify with \`CODEX_HOME=<configHome> codex login status\` ("Logged in using ChatGPT") and a fresh quota reading from Codex's own server (\`POST /subscription-pool/poll\`, source \`codex-app-server\`).
 
 If you are helping from another machine, spawn the helper session on the target machine **bound to the operator's topic**. An unbound session cannot message the operator. Tell the operator before anything that needs their hands, such as a phone tap or a macOS "Allow".
 
@@ -145,7 +145,8 @@ If you are helping from another machine, spawn the helper session on the target 
 ## 5. Keeping it healthy (the 20% that prevents 80% of failures)
 
 - One profile per Google account per machine, registered, signed in to Google, with password and authenticator secret in the vault.
-- **Pool \`active\` does not mean signed in.** Check the CLI itself (\`claude auth status\` / \`codex login status\` for that config home). On 2026-09-25, three Codex accounts read \`active\` for days while they were signed out.
+- **Pool \`active\` does not mean signed in, and neither does a status command.** Prove it with one real authenticated call per account, run next to a known-good account, and check which email it answers as. On 2026-09-25, three Codex accounts read \`active\` for days while they were signed out. On another machine, \`claude auth status\` said signed in for three accounts whose sessions were dead.
+- **A check only counts once you've seen it fail.** Try it on a signed-out or bogus account at least once, so you know it can tell the difference.
 - Keep each profile's Google session in use: open it in a normal browser about weekly, so an expiry is caught before Claude or Codex needs it.
 - Don't hammer sign-in pages: each failed automated-looking attempt raises the provider's risk score. One clean attempt, then hand off.
 - When you learn something new about a sign-in page, update this skill's table — the procedure is the memory.`;
