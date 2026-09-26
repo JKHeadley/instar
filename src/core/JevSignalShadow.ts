@@ -19,14 +19,24 @@
  *     recorded (it may echo input).
  *   - Every call is metered into the feature-metrics funnel so its spend and
  *     latency appear beside every other LLM feature.
+ *   - The optional referee cascade (JevCascade) is equally measure-only: it
+ *     puts Jev's unsure answers (and an audit share of confident ones) to a
+ *     referee model and logs the verdicts. Referee rows carry verdicts, never
+ *     text; the text sent to the referee is secret-scrubbed first.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { detectGateSignals } from './GateSignalDetectors.js';
 import { scrubForStore } from './durableSecretScrub.js';
+import { selectEscalations, askReferee, type CascadeBand, type EscalationReason } from './JevCascade.js';
+import type { IntelligenceProvider } from './types.js';
 
 export const JEV_SHADOW_FEATURE = 'jev-signal-shadow';
+/** Attribution label for the referee's LLM calls (feature metrics + routing). */
+export const JEV_REFEREE_COMPONENT = 'JevLunaReferee';
+/** Default volume bound on referee calls per UTC day. */
+export const REFEREE_DAILY_CAP = 300;
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 
 export interface JevSignalShadowConfig {
@@ -42,6 +52,21 @@ export interface JevSignalShadowConfig {
   retainDisagreementExcerpts?: boolean;
   /** Volume bound on retained excerpts per UTC day (default EXCERPT_DAILY_CAP). */
   maxExcerptsPerDay?: number;
+  /**
+   * The Jev→referee cascade, measured (JevCascade). When enabled, answers in
+   * the unsure band — plus an audit share of confident ones — are put to the
+   * referee model and its answers are logged beside Jev's, so each question's
+   * threshold can be calibrated against a smarter model. Measure-only, like
+   * the rest of the shadow. Absent or disabled ⇒ no referee call is ever made.
+   */
+  referee?: {
+    enabled?: boolean;
+    band?: CascadeBand;
+    bands?: Record<string, CascadeBand>;
+    auditRate?: number;
+    timeoutMs?: number;
+    maxPerDay?: number;
+  };
 }
 
 /** The closed set of reasons a candidate was not compared. */
@@ -74,7 +99,23 @@ export type ShadowRow =
       /** Why no excerpt was retained on a disagreeing row. */
       excerptUnavailable?: 'no-detector-span' | 'daily-cap' | 'scrub-error';
     }
-  | { kind: 'not-compared'; ts: string; sha256: string; bytes: number; reason: NotComparedReason };
+  | { kind: 'not-compared'; ts: string; sha256: string; bytes: number; reason: NotComparedReason }
+  | {
+      kind: 'referee';
+      ts: string;
+      sha256: string;
+      /** Why each rule went to the referee. */
+      escalated: Record<string, EscalationReason>;
+      /** Jev's probabilities for the escalated rules. */
+      jev: Record<string, number>;
+      /** The detector's verdict for the escalated rules. */
+      detector: Record<string, boolean>;
+      /** The referee's verdicts — present only when the call succeeded. */
+      referee?: Record<string, boolean>;
+      reason?: 'timeout' | 'error' | 'unparseable' | 'busy' | 'daily-cap' | 'scrub-error';
+      model?: string;
+      ms?: number;
+    };
 
 /**
  * The frozen comparison contract: one Noul question per rule, the detector
@@ -114,6 +155,8 @@ export interface JevSignalShadowDeps {
   logPath: string;
   /** Feature-metrics funnel (null-safe). */
   metrics?: { record(r: Record<string, unknown>): void } | null;
+  /** The referee model (Codex fast tier = GPT-6 Luna). Null/absent ⇒ no cascade. */
+  referee?: IntelligenceProvider | null;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -245,6 +288,7 @@ export class JevSignalShadow {
         ? this.buildExcerpt(text, signals, disagree, cfg, base.ts)
         : {};
       this.write({ kind: 'compared', ...rowBase, jev, ms: (this.deps.now ?? Date.now)() - t0, modelServed, disagree, ...retained });
+      this.maybeRefer(text, cfg, base.ts, base.sha256, jev, base.detectorSignals);
     } catch (err) {
       nc((err as Error)?.name === 'AbortError' ? 'timeout' : 'http-error');
     } finally {
@@ -336,6 +380,64 @@ export class JevSignalShadow {
     }
   }
 
+  private refereeInFlight = false;
+  private refereeDay = '';
+  private refereeCount = 0;
+  /** Test seam: resolves when the detached referee call (if any) settles. */
+  lastReferee: Promise<void> = Promise.resolve();
+
+  /**
+   * Detached, never awaited by dispatch: the referee is slower than Jev (a
+   * model call, seconds), and holding the Jev in-flight slot for it would turn
+   * referee latency into lost Jev comparisons. One referee call at a time; a
+   * candidate that arrives while one runs is recorded as `busy`, so coverage
+   * loss is visible rather than silent.
+   */
+  private maybeRefer(
+    text: string,
+    cfg: JevSignalShadowConfig,
+    ts: string,
+    sha256: string,
+    jev: Record<string, number>,
+    detectorSignals: string[],
+  ): void {
+    const rc = cfg.referee;
+    if (!rc || rc.enabled !== true || !this.deps.referee) return;
+    const escalated = selectEscalations(jev, { band: rc.band, bands: rc.bands, auditRate: rc.auditRate, random: this.deps.random });
+    const rules = Object.keys(escalated);
+    if (rules.length === 0) return;
+    const jevSub: Record<string, number> = {};
+    const detector: Record<string, boolean> = {};
+    for (const rule of rules) {
+      jevSub[rule] = jev[rule];
+      const kind = SHADOW_QUESTIONS.find((q) => q.rule === rule)?.signalKind;
+      detector[rule] = !!kind && detectorSignals.includes(kind);
+    }
+    const base = { kind: 'referee' as const, ts, sha256, escalated, jev: jevSub, detector };
+    const day = ts.slice(0, 10);
+    if (this.refereeDay !== day) { this.refereeDay = day; this.refereeCount = 0; }
+    const cap = typeof rc.maxPerDay === 'number' && rc.maxPerDay >= 0 ? rc.maxPerDay : REFEREE_DAILY_CAP;
+    if (this.refereeCount >= cap) { this.write({ ...base, reason: 'daily-cap' }); return; }
+    if (this.refereeInFlight) { this.write({ ...base, reason: 'busy' }); return; }
+    // Secrets are scrubbed before the text leaves the machine for the referee.
+    const scrubbed = scrubForStore(text);
+    if (scrubbed.error) { this.write({ ...base, reason: 'scrub-error' }); return; }
+    this.refereeCount++;
+    this.refereeInFlight = true;
+    const questions = SHADOW_QUESTIONS.filter((q) => rules.includes(q.rule)).map((q) => ({ rule: q.rule, instructions: q.instructions }));
+    this.lastReferee = askReferee(this.deps.referee, scrubbed.text, questions, {
+      timeoutMs: rc.timeoutMs,
+      component: JEV_REFEREE_COMPONENT,
+      now: this.deps.now,
+    })
+      .then((out) => {
+        if (out.ok) this.write({ ...base, referee: out.answers, model: out.model, ms: out.ms });
+        else this.write({ ...base, reason: out.reason, model: out.model, ms: out.ms });
+      })
+      .catch(() => { /* @silent-fallback-ok — askReferee never throws; a throw here only means the row write failed */ })
+      .finally(() => { this.refereeInFlight = false; });
+  }
+
   private write(row: ShadowRow): void {
     try {
       fs.mkdirSync(path.dirname(this.deps.logPath), { recursive: true });
@@ -358,6 +460,7 @@ export function buildJevSignalShadow(opts: {
   stateDir: string;
   metrics?: JevSignalShadowDeps['metrics'];
   fetchImpl?: typeof fetch;
+  referee?: IntelligenceProvider | null;
 }): JevSignalShadow {
   return new JevSignalShadow({
     getConfig: () => {
@@ -372,5 +475,6 @@ export function buildJevSignalShadow(opts: {
     logPath: path.join(opts.stateDir, '..', 'logs', 'jev-signal-shadow.jsonl'),
     metrics: opts.metrics,
     fetchImpl: opts.fetchImpl,
+    referee: opts.referee ?? null,
   });
 }

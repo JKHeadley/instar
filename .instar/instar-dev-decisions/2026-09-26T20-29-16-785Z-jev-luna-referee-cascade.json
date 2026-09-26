@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-26T20:29:16.785Z",
+  "slug": "jev-luna-referee-cascade",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 279,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/JevCascade.ts",
+      "src/core/JevSignalShadow.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 278,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
