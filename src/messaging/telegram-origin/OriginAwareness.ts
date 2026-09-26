@@ -30,6 +30,10 @@ export function telegramOriginCapacityAwareness(): string {
   return 'Telegram capacity checks: ordinary replies acquire the credential owner\'s short-lived capacity only after durable dispatch intent, immediately before network invocation. Storage preparation cannot use up that grant. A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain. The existing recovery pacing, deadline, ownership and shared rate limit remain in force. Never recreate a held message to obtain a new budget.\n';
 }
 
+export function telegramOriginWorkerAwareness(): string {
+  return 'Origin worker health: a slow or stuck recording worker never latches sends off for the life of the server. A request past its short deadline answers only that caller (held, outcome unknown) while the worker keeps serving; a request stuck past the stall deadline replaces the worker automatically with bounded backoff, and the recovery tick can hasten the next attempt. Sends hold (fail-closed) while it is down; a held write is never replayed blindly. Read the authenticated `GET /health` → `telegramOriginStorage.store` / `.spool` (`state`: ready, starting, restarting, exhausted or closed; `restarts`, `lastFailure`, `downSince`). One degradation report per outage. Only `exhausted` (restart cap reached) waits for the slower 15-minute recovery reopen; do not restart the server to clear `restarting`.\n';
+}
+
 export function telegramDashboardEditAwareness(): string {
   return 'Dashboard edit rejection: a held or uncertain pinned-link edit preserves its original operation and saved message ID; it never escalates into a fresh dashboard post. Only Telegram\'s concrete missing-message rejection for that same target permits replacement, after durable outcome recording for managed sends. An authoritative unchanged response is a no-op. `POST /telegram/dashboard-refresh` still reports failed refreshes; inspect the original origin record rather than deleting the saved ID or manually reposting to evade a hold. This guard limits dashboard send amplification; it does not repair false wake classification or guarantee that a held edit is delivered.\n';
 }
@@ -52,6 +56,7 @@ ${telegramOriginDetectorAwareness()}
 ${telegramOriginRecoveryAwareness()}
 ${telegramOriginTransportAwareness()}
 ${telegramOriginCapacityAwareness()}
+${telegramOriginWorkerAwareness()}
 Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
 Claude and Codex tool hooks direct raw Telegram writes to the recorded relay or typed browser broker. Managed Telegram profiles belong to the broker; generic browser tools cannot use them. This cooperative hook is not an operating-system sandbox. Other enabled harnesses must prove equivalent enrollment before activation; a hook being installed is not proof of complete sender coverage.

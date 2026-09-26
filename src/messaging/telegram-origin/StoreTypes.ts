@@ -47,7 +47,13 @@ export interface StoredPayloadInput { payloadId: string; digest: string; size: n
 export interface OriginStoreOptions {
   stateDir: string;
   agentId: string;
+  /** Caller deadline: rejects that one caller as outcome-unknown; the worker keeps serving. */
   requestTimeoutMs?: number;
+  /** An operation outstanding this long marks the worker stuck; the generation is replaced. */
+  stallTimeoutMs?: number;
+  /** Bounded worker restarts after a failed generation (exponential backoff, capped). The
+   * budget is restored only after a generation stays failure-free for healthyWindowMs. */
+  restart?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number; healthyWindowMs?: number };
   /** Conservative aggregate structured-clone budget before worker enqueue. */
   maxPendingBytes?: number;
   maxOperations?: number;

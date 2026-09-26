@@ -22,7 +22,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -6440,6 +6440,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram late capacity awareness');
     }
 
+    if (!content.includes('Origin worker health:')) {
+      content += '\n' + telegramOriginWorkerAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram origin worker self-recovery awareness');
+    }
+
     if (!content.includes('Dashboard edit rejection:')) {
       content += '\n' + telegramDashboardEditAwareness();
       patched = true;
@@ -11005,6 +11011,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Queued-message review pacing:', telegramOriginRecoveryAwareness],
         ['Telegram send deadlines:', telegramOriginTransportAwareness],
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
+        ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {

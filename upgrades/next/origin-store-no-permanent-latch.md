@@ -1,0 +1,52 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The Telegram origin store no longer latches itself dead for the life of the process after one slow request.
+
+Incident, 2026-09-26 on the Mac Studio: the server booted while the host was still catching up on disk work. One origin-store request passed the 2-second request timeout. `OriginStore.fail()` then set a permanent `unavailable` flag, rejected everything pending and terminated the worker, and nothing ever restarted it. Every outbound Telegram send from every topic, including respawn notices and dashboard topic setup, was held with `execution-admission-unavailable` until a manual `launchctl kickstart`. The only recovery path was the delivery sentinel's 5-minute tick with a 15-minute reopen brake, and the kickstart came first.
+
+`src/messaging/telegram-origin/OriginStore.ts` now runs worker generations:
+- **Caller deadline is no longer a kill.** `requestTimeoutMs` (default 2s, unchanged) rejects that one caller with `OriginStoreUnavailableError` (`mutationMayHaveCommitted` set for writes, as before). The worker keeps serving. It keeps the request, and later reads queue behind it, so a caller that re-reads sees what was committed.
+- **A stall deadline replaces a stuck worker.** `stallTimeoutMs` (default 30s) means a generation that answers nothing for 30 seconds while requests are outstanding is stuck. Each response restarts that clock, so queue wait behind progressing work never counts. Its callers are rejected as unknown, it is terminated, and a new generation starts after a backoff. That backoff starts at 1s, doubles up to 30s, and allows at most 6 consecutive failures (`restart.baseDelayMs`, `maxDelayMs`, `maxAttempts`). Startup failure, worker crash and worker exit take the same path, including the boot generation from `openForRuntime`.
+- The budget is restored only after a generation stays failure-free for 5 minutes (`restart.healthyWindowMs`), so one served response between recurring stalls restores nothing. Past the cap the state is `exhausted` and `needsReplacement()` is true.
+- Calls fail closed while no generation is ready. They are rejected immediately with `mutationMayHaveCommitted: false`. The store never replays a write itself.
+- One `DegradationReporter` report per outage episode (`telegram-origin.store-worker` / `telegram-origin.spool-worker`), plus a recovered log line.
+- `health()` returns `{ mode, state, generation, restarts, consecutiveFailures, maxRestartAttempts, downSince, lastFailure, lastRecoveredAt }`.
+
+`TelegramOriginRuntime.recoverHeld()`:
+- Replaces a store only when `needsReplacement()` is true (exhausted or closed), still behind the existing 15-minute brake. It uses `OriginStore.openReplacement()`, which inherits the spent failure count and open outage, so a lasting outage never earns a fresh burst of restarts or a second report.
+- For a store still inside its own restart policy, the tick calls `restartNow()` to try immediately rather than wait out the backoff. It counts against the same cap.
+
+Health surfaces: `runtime.storageHealth()`, `status().storage` on `GET /telegram/origins/status`, and `telegramOriginStorage` on the authenticated `GET /health`.
+
+The restart loop is registered in the self-action convergence ratchet as `origin-store-worker-restart` (settles at 6 under sustained pressure, horizon-independent, and carried across the recovery replacement).
+
+CLAUDE.md awareness: new "Origin worker health:" paragraph in the Telegram origin section, added for existing agents by `migrateClaudeMd` and mirrored into shadow installs.
+
+## What to Tell Your User
+
+If your computer is slow for a moment, for example right after a restart, your agent no longer goes silent on Telegram until someone restarts it. A slow moment only delays the one message involved. If the part that records outgoing messages gets stuck, it is replaced automatically within about a minute. Messages held meanwhile are delivered by the normal recovery. Nothing is ever sent without being recorded first.
+
+## Summary of New Capabilities
+
+- The Telegram origin worker recovers by itself: a slow request no longer latches all sends off; a stuck or crashed worker is replaced with bounded backoff (6 tries, then a 15-minute recovery reopen that inherits the spent budget).
+- Authenticated `GET /health` → `telegramOriginStorage` shows the worker state, restarts, last failure and outage start.
+
+## Evidence
+
+- Live logs (Echo, `logs/server.log`, 2026-09-26): server listening 07:00:06Z. At 07:00:14Z "Dashboard topic setup failed: Telegram message held: execution-admission-unavailable". Respawns failed at 07:00:25Z and 07:00:47Z. Then "shutdown cleanup incomplete OriginStoreUnavailableError: origin worker is closed/unavailable" at the 07:02:47Z kickstart. There was no recovery tick in between.
+- `tests/unit/telegram-origin/store-worker-recovery.test.ts` (9 cases, using a test-only fault-injection wrapper around the real compiled worker) covers:
+  - a slow request that times out one caller while the worker stays in generation 1 and its write is visible exactly once;
+  - a stuck worker that is replaced automatically, where later requests succeed and the unknown write is not replayed;
+  - within the cap, a failing boot generation that recovers by itself and is reported once;
+  - past the cap, where it stops spawning, stays fail-closed and asks for replacement;
+  - `restartNow`;
+  - replacement inheritance;
+  - close never restarts; a failed standalone open leaves nothing running;
+  - policy validation.
+- `tests/integration/telegram-origin-worker-recovery.test.ts`: `POST /telegram/reply/42` returns 409 held during a simulated worker stall with no network send. It delivers (200) again after automatic recovery, on the same store object, with no restart. The recovery tick replaces only a store that has given up.
+- `tests/e2e/telegram-origin-worker-recovery-boot.test.ts`: on the production `bootTelegramOrigin` path, worker generations that fail at boot recover under the default policy, and authenticated `/health` shows `telegramOriginStorage`.
+- All existing origin suites pass: unit 46 files, integration 11, e2e 13. The self-action convergence ratchet passes with the new controller.
