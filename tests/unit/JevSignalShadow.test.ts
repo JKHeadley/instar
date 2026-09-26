@@ -323,3 +323,107 @@ describe('disagreement excerpts — off by default, span-anchored, scrubbed', ()
     expect(EXCERPT_DAILY_CAP).toBeGreaterThan(0);
   });
 });
+
+// ── The Jev→referee cascade (JevCascade), measure-only ────────────────────
+import type { IntelligenceProvider } from '../../src/core/types.js';
+import { REFEREE_DAILY_CAP, JEV_REFEREE_COMPONENT } from '../../src/core/JevSignalShadow.js';
+
+describe('referee cascade', () => {
+  const API_KEY = 'sk-proj-' + 'Z9y8X7w6'.repeat(6); // secret-SHAPED, so the scrub must catch it
+  const REF = { referee: { enabled: true } };
+  const refereeStub = (reply: (prompt: string) => Promise<string>) => {
+    const prompts: string[] = [];
+    const comps: string[] = [];
+    const provider: IntelligenceProvider = {
+      evaluate: async (p, o) => { prompts.push(p); comps.push(o?.attribution?.component ?? ''); o?.onModel?.({ model: 'gpt-6-luna' }); return reply(p); },
+    };
+    return { provider, prompts, comps };
+  };
+  function makeWithReferee(cfg: Record<string, unknown>, answers: Record<string, number>, referee: IntelligenceProvider | null, random?: () => number) {
+    return new JevSignalShadow({
+      getConfig: () => ({ enabled: true, soakEndsAt: FUTURE, model: 'jev-1.13.0', timeoutMs: 200, ...cfg }) as never,
+      readKey: () => 'test-key',
+      logPath,
+      fetchImpl: (async () => okResponse(answers)) as never,
+      now: () => NOW,
+      random,
+      referee,
+    });
+  }
+
+  it('no referee config ⇒ no referee call, byte-identical Jev-only rows', async () => {
+    const r = refereeStub(async () => '{}');
+    const s = makeWithReferee({}, { ...allLow(), api_endpoint: 0.5 }, r.provider);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    expect(r.prompts).toHaveLength(0);
+    expect(rows().map((x) => x.kind)).toEqual(['compared']);
+  });
+
+  it('enabled but no confident-band escalation ⇒ no call', async () => {
+    const r = refereeStub(async () => '{}');
+    const s = makeWithReferee(REF, allLow(), r.provider, () => 0.99);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    expect(r.prompts).toHaveLength(0);
+  });
+
+  it('an unsure answer goes to the referee; its verdict is logged beside Jev and the detector, never the text', async () => {
+    const r = refereeStub(async () => '{"api_endpoint": true}');
+    const s = makeWithReferee(REF, { ...allLow(), api_endpoint: 0.55 }, r.provider, () => 0.99);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    expect(r.prompts).toHaveLength(1);
+    expect(r.comps).toEqual([JEV_REFEREE_COMPONENT]);
+    const ref = rows().find((x) => x.kind === 'referee');
+    expect(ref).toMatchObject({ escalated: { api_endpoint: 'unsure' }, jev: { api_endpoint: 0.55 }, detector: { api_endpoint: false }, referee: { api_endpoint: true }, model: 'gpt-6-luna' });
+    expect(JSON.stringify(ref)).not.toContain('SessionManager');
+  });
+
+  it('an audit draw escalates the confident answers too', async () => {
+    const r = refereeStub(async (p) => JSON.stringify(Object.fromEntries(SHADOW_QUESTIONS.filter((q) => p.includes(`"${q.rule}"`)).map((q) => [q.rule, false]))));
+    const s = makeWithReferee({ referee: { enabled: true, auditRate: 0.05 } }, allLow(), r.provider, () => 0.01);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    const ref = rows().find((x) => x.kind === 'referee');
+    expect(Object.values(ref.escalated).every((v) => v === 'audit')).toBe(true);
+    expect(Object.keys(ref.referee)).toHaveLength(SHADOW_QUESTIONS.length);
+  });
+
+  it('secrets are scrubbed before the text reaches the referee', async () => {
+    const r = refereeStub(async () => '{"api_endpoint": false}');
+    const s = makeWithReferee(REF, { ...allLow(), api_endpoint: 0.5 }, r.provider, () => 0.99);
+    s.observe(`use ${API_KEY} to call it`); await s.lastDispatch; await s.lastReferee;
+    expect(r.prompts[0]).not.toContain(API_KEY);
+  });
+
+  it('a slow referee never holds the Jev slot, and overlap is recorded as busy', async () => {
+    let release!: (v: string) => void;
+    const r = refereeStub(() => new Promise<string>((res) => { release = res; }));
+    const s = makeWithReferee(REF, { ...allLow(), api_endpoint: 0.5 }, r.provider, () => 0.99);
+    s.observe(`${PATHY} one`); await s.lastDispatch;
+    s.observe(`${PATHY} two`); await s.lastDispatch;           // Jev still compared
+    expect(rows().filter((x) => x.kind === 'compared')).toHaveLength(2);
+    expect(rows().find((x) => x.kind === 'referee' && x.reason === 'busy')).toBeDefined();
+    release('{"api_endpoint": false}'); await s.lastReferee;
+  });
+
+  it('a failing referee records its reason and never affects the Jev row', async () => {
+    const r = refereeStub(async () => { throw new Error('boom'); });
+    const s = makeWithReferee(REF, { ...allLow(), api_endpoint: 0.5 }, r.provider, () => 0.99);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    expect(rows().find((x) => x.kind === 'referee')).toMatchObject({ reason: 'error' });
+    expect(rows().find((x) => x.kind === 'compared')).toBeDefined();
+  });
+
+  it('respects the daily cap and says so', async () => {
+    const r = refereeStub(async () => '{"api_endpoint": false}');
+    const s = makeWithReferee({ referee: { enabled: true, maxPerDay: 1 } }, { ...allLow(), api_endpoint: 0.5 }, r.provider, () => 0.99);
+    for (let i = 0; i < 3; i++) { s.observe(`${PATHY} #${i}`); await s.lastDispatch; await s.lastReferee; }
+    expect(r.prompts).toHaveLength(1);
+    expect(rows().filter((x) => x.kind === 'referee' && x.reason === 'daily-cap')).toHaveLength(2);
+    expect(REFEREE_DAILY_CAP).toBeGreaterThan(0);
+  });
+
+  it('no referee provider (no Codex CLI) ⇒ enabled config is inert', async () => {
+    const s = makeWithReferee(REF, { ...allLow(), api_endpoint: 0.5 }, null, () => 0.99);
+    s.observe(PATHY); await s.lastDispatch; await s.lastReferee;
+    expect(rows().map((x) => x.kind)).toEqual(['compared']);
+  });
+});

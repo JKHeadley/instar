@@ -3870,6 +3870,23 @@ export interface InstarConfig {
       timeoutMs?: number;
       /** The mechanical soak bound: inert at or after this instant, and when null. */
       soakEndsAt?: string | null;
+      /** Retain scrubbed excerpts on disagreeing rows (default off). */
+      retainDisagreementExcerpts?: boolean;
+      /** Daily bound on retained excerpts. */
+      maxExcerptsPerDay?: number;
+      /**
+       * Jev→referee cascade (src/core/JevCascade.ts), measure-only. Unsure-band
+       * answers plus an audit share of confident ones go to the Codex `fast`
+       * tier (GPT-6 Luna) and its verdicts are logged beside Jev's.
+       */
+      referee?: {
+        enabled?: boolean;
+        band?: { lo: number; hi: number };
+        bands?: Record<string, { lo: number; hi: number }>;
+        auditRate?: number;
+        timeoutMs?: number;
+        maxPerDay?: number;
+      };
     };
     /**
      * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by

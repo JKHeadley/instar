@@ -18346,12 +18346,23 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { buildJevSignalShadow } = await import('../core/JevSignalShadow.js');
         const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
         const { SecretStore } = await import('../core/SecretStore.js');
+        // The cascade referee: its own Codex provider (own breaker, so a
+        // referee trip never pauses the shared provider). Built once; the
+        // live `referee.enabled` flag decides whether it is ever called.
+        let jevReferee: import('../core/types.js').IntelligenceProvider | null = null;
+        try {
+          const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+          const { buildIntelligenceProvider: buildRefereeProvider } = await import('../core/intelligenceProviderFactory.js');
+          jevReferee = buildRefereeProvider({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+        } catch { /* @silent-fallback-ok — no Codex CLI means no referee; the shadow records Jev-only rows as before */ }
+        console.log(pc.dim(`  Jev cascade referee: ${jevReferee ? 'Codex fast tier available' : 'unavailable (no Codex CLI)'}`));
         const shadow = buildJevSignalShadow({
           readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
           bootBlock: config.intelligence?.jevSignalShadow,
           readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
           stateDir: config.stateDir,
           metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+          referee: jevReferee,
         });
         messagingToneGate.setSignalShadow(shadow);
       } catch (err) {

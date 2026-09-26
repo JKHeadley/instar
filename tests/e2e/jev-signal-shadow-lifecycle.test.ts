@@ -37,11 +37,12 @@ function setup() {
   const readBlock = () => (JSON.parse(fs.readFileSync(configPath, 'utf8')).intelligence ?? {}).jevSignalShadow;
   const rows = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   const readIntel = () => JSON.parse(fs.readFileSync(configPath, 'utf8')).intelligence;
-  const build = (fetchImpl: unknown) => buildJevSignalShadow({
+  const build = (fetchImpl: unknown, referee?: IntelligenceProvider) => buildJevSignalShadow({
     readLiveIntelligence: readIntel,
     readSecret: (name) => (name === 'typesafe_api_key' ? 'k' : null),
     stateDir,
     fetchImpl: fetchImpl as never,
+    referee: referee ?? null,
   });
   return { configPath, logPath, migrate, readBlock, rows, build };
 }
@@ -94,5 +95,33 @@ describe('Jev signal shadow — production lifecycle', () => {
     expect(row.kind).toBe('compared');
     expect(row.disagree).toEqual([]);
     expect(JSON.stringify(row)).not.toContain('SessionManager');
+  });
+
+  it('the Luna referee cascade: dark until enabled live, then logs the referee verdict for unsure answers', async () => {
+    const e = setup();
+    e.migrate();
+    const answers = Object.fromEntries(SHADOW_QUESTIONS.map((q) => [q.rule, { noul: q.rule === 'api_endpoint' ? 0.5 : 0.03 }]));
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ model: 'jev-1.13.0', usage: { input_tokens: 90 }, answers }) }));
+    const referee = { evaluate: vi.fn(async () => '{"api_endpoint": true}') } as unknown as IntelligenceProvider;
+    const shadow = e.build(fetchImpl, referee);
+    const gate = new MessagingToneGate(provider, {});
+    gate.setSignalShadow(shadow);
+
+    const cfg = JSON.parse(fs.readFileSync(e.configPath, 'utf8'));
+    cfg.intelligence.jevSignalShadow.enabled = true;
+    cfg.intelligence.jevSignalShadow.soakEndsAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
+    fs.writeFileSync(e.configPath, JSON.stringify(cfg));
+
+    await gate.review(PATHY, { channel: 'telegram', messageKind: 'reply' } as never);
+    await shadow.lastDispatch; await shadow.lastReferee;
+    expect(referee.evaluate).not.toHaveBeenCalled();          // referee block absent ⇒ dark
+
+    cfg.intelligence.jevSignalShadow.referee = { enabled: true, auditRate: 0 };
+    fs.writeFileSync(e.configPath, JSON.stringify(cfg));
+    await gate.review(PATHY + ' again', { channel: 'telegram', messageKind: 'reply' } as never);
+    await shadow.lastDispatch; await shadow.lastReferee;
+    expect(referee.evaluate).toHaveBeenCalledTimes(1);
+    const ref = e.rows().find((r) => r.kind === 'referee');
+    expect(ref).toMatchObject({ escalated: { api_endpoint: 'unsure' }, referee: { api_endpoint: true } });
   });
 });
