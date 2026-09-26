@@ -14451,6 +14451,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const pendingLoginStore = new PendingLoginStore({ stateDir: config.stateDir });
     const enrollmentWizard = new EnrollmentWizard({
       store: pendingLoginStore,
+      // Agent-owned memory: a newly completed login links to this agent's memory at once.
+      agentHome: config.projectDir,
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       // WS5.2 §5.3/S7 — the follow-me completion gate reads the minted login's account email
       // from its config-home slot and validates it against operator expectation before the

@@ -81,6 +81,7 @@ import {
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1511,6 +1512,7 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
     this.migrateSubscriptionSigninAgentRun(result);
+    this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
     this.migrateIterativeConvergingAuditSkill(result);
@@ -4438,6 +4440,23 @@ export class PostUpdateMigrator {
     }
   }
 
+  /**
+   * Agent-owned memory (operator rule 2026-09-25: logins hold tokens and quota,
+   * never data). Links `projects/<agent key>/memory` in every Claude config home
+   * on this host to `.instar/agent-memory`, merging any login-local memory first
+   * (nothing is deleted; old folders become `memory.pre-shared`). Idempotent:
+   * correct links are left alone. Spawns re-check this for new logins and cwds.
+   */
+  private migrateAgentOwnedMemory(result: MigrationResult): void {
+    for (const r of ensureAgentOwnedMemoryAllHomes(this.config.projectDir)) {
+      if (r.error) {
+        result.errors.push(`agent-owned memory in ${r.configHome}: ${r.error}`);
+      } else if (r.result?.action === 'linked' || r.result?.action === 'migrated') {
+        result.upgraded.push(`agent-owned memory: ${r.result.action} ${r.result.linkPath}${r.result.setAsidePath ? ` (old folder kept at ${r.result.setAsidePath})` : ''}`);
+      }
+    }
+  }
+
   private migrateBuildSkillMethodology(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'build', 'SKILL.md');
@@ -6989,6 +7008,14 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(oldHeartbeatStatus, liveHeartbeatStatus);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat live-config status');
+    }
+    // Agent-owned memory (2026-09-25): the auto-memory folder is linked to the agent, not a login.
+    const oldAutoMemoryLine = "It's per-machine, not synced by Instar, and you don't control what goes in it.";
+    const agentOwnedAutoMemoryLine = 'Instar makes this folder (in every login\'s config home) a link to `.instar/agent-memory/`, so it belongs to you, not to whichever subscription login a session runs under — switching logins never loses it. Any memory a login held before is merged in; the old folder is kept as `memory.pre-shared`.';
+    if (content.includes(oldAutoMemoryLine)) {
+      content = content.replace(oldAutoMemoryLine, agentOwnedAutoMemoryLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: auto-memory is agent-owned, not per login');
     }
     if (!content.includes('Autonomous Throughput Floor')) {
       content += `\n## Autonomous Throughput Floor\n\nA pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run; the response shows the durable baseline, dual-flatline observation, and bounded-read breaker. HOLD still requires both an actual approval gate and authoritative saturation of every non-gated lane; this v1 has no lane authority and cannot grant HOLD. A future proactive surface requires a separately converged SelfHealGate.\n`;
