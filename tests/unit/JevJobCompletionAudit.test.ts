@@ -238,6 +238,15 @@ describe('batch — records, never acts; failed attempts debit the cap', () => {
     expect(Object.keys(AUDIT_QUESTIONS).sort()).toEqual(['failure_class', 'false_success', 'produced_declared_effect']);
   });
 
+  it('the run-description choice offers a success option, so a healthy run is never forced into a failure shape', () => {
+    const criteria = AUDIT_QUESTIONS.failure_class.criteria as Record<string, string>;
+    expect(Object.keys(criteria)).toContain('completed');
+    expect(Object.keys(criteria).filter((k) => k !== 'completed' && k !== 'cannot-tell').length).toBeGreaterThan(0);
+    // A check job that reports a problem has done its job — stated in both the choice and the false-success question.
+    expect(criteria.completed).toMatch(/reported problems/);
+    expect(AUDIT_QUESTIONS.false_success.instructions).toMatch(/including when what it reports is a problem/);
+  });
+
   it('audits a pack and writes a verdict row with no job text; secret-free', async () => {
     let sentBody = '';
     const f: typeof fetch = (async (_u: unknown, init: RequestInit) => {

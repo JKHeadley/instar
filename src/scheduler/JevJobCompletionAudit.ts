@@ -63,12 +63,17 @@ export const AUDIT_QUESTIONS = {
   false_success: {
     type: 'noul',
     instructions:
-      'This run claims or appears to report success while the evidence does NOT show the promised effect actually happened.',
+      'This run claims or appears to report success while the evidence does NOT show the promised effect actually happened. '
+      + 'A job whose purpose is to check something and report what it finds has done its work when it reports, including when what it reports is a problem.',
   },
   failure_class: {
     type: 'choice',
     instructions: 'Which description best fits this run?',
+    // 'completed' exists because a choice list made only of failure shapes
+    // FORCES every healthy run into one (2026-09-26: health checks that
+    // correctly reported a degraded server were labelled errored-but-exit-0).
     criteria: {
+      completed: 'The promised work happened in full. A check that ran and reported problems in what it inspected counts as completed.',
       'did-nothing': 'The run performed no substantive work at all.',
       partial: 'Some of the promised work happened, but not all of it.',
       'wrong-target': 'Work happened, but on the wrong thing.',
