@@ -232,6 +232,8 @@ export class TelegramOriginRuntime {
     await this.store.registerOwner({ ownerBootId: this.ownerBootId, machineId: this.options.identity.originMachineId });
     if (this.options.bot.token && this.options.noticeProcess?.role !== 'client') await this.notifier.recordingRecovered(this.options.alertDestinations().map(d => d.id));
   }
+  /** Synchronous worker health for /health and status; never touches the worker. */
+  storageHealth() { return { store: this.store.health(), spool: this.spool.health() }; }
   async status() {
     if (this.options.noticeProcess?.role === 'client') {
       for (const destination of this.options.alertDestinations()) {
@@ -244,7 +246,7 @@ export class TelegramOriginRuntime {
     catch { detectorHealth = { state: 'unavailable', reason: 'detector-health-unavailable' };
       DegradationReporter.getInstance().report({ feature: 'telegram-origin.detector-health', primary: 'Read detector diagnostics',
         fallback: 'Return explicit unavailable health', reason: 'Detector health projection failed', impact: 'Diagnostics are unavailable; no delivery authority changed.' }); }
-    return { detectorHealth, activation: assessOriginActivation(this.closed ? null : this.enrollment), metrics: await this.service.metrics(),
+    return { detectorHealth, storage: this.storageHealth(), activation: assessOriginActivation(this.closed ? null : this.enrollment), metrics: await this.service.metrics(),
       browserRecovery: await this.store.getBrowserRecoveryStates().then(states => ({ coverage: 'complete', states }))
         .catch(() => ({ coverage: 'unknown', states: null })),
       retention: { running: this.retentionRunning, succeededAt: this.retentionSucceededAt, unavailable: this.retentionUnavailable },
@@ -275,22 +277,22 @@ export class TelegramOriginRuntime {
     let processed = 0, recovered = 0;
     try {
       // Healthy workers may be holding another operation's receipt transaction.
-      // Never replace them merely because a queue drain was requested. The
-      // fifteen-minute restart brake applies only to failed worker generations;
-      // healthy queued work uses the existing scheduler and its own retry times.
-      if (this.store.isUnavailable() || this.spool.isUnavailable()) {
+      // Never replace them merely because a queue drain was requested. A store
+      // restarts its own failed generations with bounded backoff; this
+      // fifteen-minute reopen is only the slower path once it has given up.
+      if (this.store.needsReplacement() || this.spool.needsReplacement()) {
         const mayReopen = Date.now() - this.lastWorkerReopenAt >= 15 * 60_000;
-        if (!mayReopen && this.store.isUnavailable()) return { processed, recovered };
+        if (!mayReopen && this.store.needsReplacement()) return { processed, recovered };
         if (mayReopen) {
           this.lastWorkerReopenAt = Date.now();
-          if (this.store.isUnavailable()) {
-            const replacement = await OriginStore.open(this.options.storage, this.options.workerUrl);
+          if (this.store.needsReplacement()) {
+            const replacement = await OriginStore.openReplacement(this.store, this.options.storage, undefined, this.options.workerUrl);
             if (this.closed) { await replacement.close(); return { processed, recovered }; }
             this.store = replacement; this.service.options.store = replacement;
           }
-          if (this.spool.isUnavailable()) {
+          if (this.spool.needsReplacement()) {
             try {
-              const replacement = await OriginStore.openSpool(this.options.storage, this.options.workerUrl);
+              const replacement = await OriginStore.openReplacement(this.spool, this.options.storage, 'spool', this.options.workerUrl);
               if (this.closed) { await replacement.close(); return { processed, recovered }; }
               this.spool = replacement;
             } catch {
@@ -301,6 +303,12 @@ export class TelegramOriginRuntime {
           }
         }
       }
+      // A store still inside its own bounded restart policy is not replaced;
+      // this tick only asks for its next attempt now.
+      if (this.spool.isUnavailable() && !this.spool.needsReplacement()) {
+        await this.spool.restartNow().catch(() => console.warn('[telegram-origin] evidence spool remains unavailable'));
+      }
+      if (this.store.isUnavailable() && !this.store.needsReplacement()) await this.store.restartNow();
       const held = this.service.heldOperations();
       await this.confirmRecordingHealthy();
       await this.importLegacyQueue();

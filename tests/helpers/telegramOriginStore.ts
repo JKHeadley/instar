@@ -13,6 +13,12 @@ export async function compileOriginWorker(): Promise<URL> {
   await build({ entryPoints: [path.resolve('src/messaging/telegram-origin/OriginStore.worker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
   return pathToFileURL(output);
 }
+/** The real worker behind a test-only fault-injection wrapper (see stallableOriginWorker.ts). */
+export async function compileStallableOriginWorker(): Promise<URL> {
+  const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'StallableOriginStore.worker.mjs');
+  await build({ entryPoints: [path.resolve('tests/helpers/stallableOriginWorker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
+  return pathToFileURL(output);
+}
 export async function compileOriginConfigWorker(): Promise<URL> {
   const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'OriginConfigReader.worker.mjs');
   await build({ entryPoints: [path.resolve('src/messaging/telegram-origin/OriginConfigReader.worker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });

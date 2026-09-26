@@ -1366,6 +1366,48 @@ function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink)
   } };
 }
 
+/**
+ * origin-store-worker-restart — OriginStore replaces a failed worker generation
+ * (startup failure, crash, or a request stuck past the stall deadline) after an
+ * exponential backoff (1s doubling to 30s). The budget is consecutive failures,
+ * restored ONLY after a generation stays failure-free for a 5-minute healthy
+ * window (one served response between recurring stalls restores nothing);
+ * past the cap (6) the store stays down.
+ * The runtime's pre-existing 15-minute recovery reopen builds a replacement via
+ * openReplacement(), which inherits the spent count and outage episode, so a
+ * sustained outage never earns a fresh burst. Reconstruction here = that
+ * replacement (durable count carried). A process restart does reset the count;
+ * process restarts are the lifeline's own bounded controller.
+ */
+const originStoreWorkerRestart: SelfActionController = {
+  id: 'origin-store-worker-restart', actionVerb: 'restart-origin-store-worker',
+  models: 'OriginStore.fail(): bounded exponential-backoff restart of the origin worker, cap 6 consecutive failures, budget restored only after a 5-minute failure-free healthy window; openReplacement() carries the count across the runtime recovery reopen.',
+  modelsPath: 'src/messaging/telegram-origin/OriginStore.ts',
+  boundK: 6, perTargetBoundK: 6, ticks: 600, tickMs: 1_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginStoreRestartPressure },
+  makeUnderPressure: makeOriginStoreRestartPressure,
+};
+function makeOriginStoreRestartPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const failuresKey = 'origin-store:consecutive-failures', nextKey = 'origin-store:next-restart-at';
+  const backoff = (failures: number) => Math.min(1_000 * 2 ** (failures - 1), 30_000);
+  // The first generation has already failed when pressure begins.
+  if (!f.durableState.has(failuresKey)) {
+    f.durableState.set(failuresKey, 1);
+    f.durableState.set(nextKey, f.clock.nowMs() + backoff(1));
+  }
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const failures = f.durableState.get(failuresKey) as number;
+    if (failures > 6) return; // exhausted: only a failure-free healthy window restores the budget
+    if (f.clock.nowMs() < (f.durableState.get(nextKey) as number)) return;
+    sink.emit({ verb: 'restart-origin-store-worker', target: 'origin-store-worker' });
+    // Under sustained pressure the new generation fails as well.
+    f.durableState.set(failuresKey, failures + 1);
+    f.durableState.set(nextKey, f.clock.nowMs() + backoff(failures + 1));
+  } };
+}
+
 /** These entries count automatic diagnostic CYCLES, not their nested attempts.
  * One owned cycle has at most two sequential worker attempts; one native cycle
  * has at most one adapter invocation. The modeled zero-duration completion is
@@ -1490,6 +1532,7 @@ const passkeyRevokeOutbox: SelfActionController = {
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
+  originStoreWorkerRestart,
   telegramOriginOwnedDetectorCanary,
   telegramOriginNativeModelCanary,
   telegramBrowserCanaryRecovery,

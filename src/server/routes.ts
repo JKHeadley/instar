@@ -4731,6 +4731,12 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.writeAdmission) {
         base.eventLoop = ctx.writeAdmission.eventLoopStats();
       }
+      // Origin worker health rides the AUTHED extension: a held-sends outage is
+      // visible without a status fan-out, and never inferred from silence.
+      if (ctx.telegramOrigin) {
+        try { base.telegramOriginStorage = ctx.telegramOrigin.storageHealth(); }
+        catch { base.telegramOriginStorage = { state: 'unavailable' }; }
+      }
       base.project = ctx.config.projectName;
       base.node = process.version;
       base.memory = {
