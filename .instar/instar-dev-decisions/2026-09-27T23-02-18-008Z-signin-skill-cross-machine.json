@@ -1,0 +1,26 @@
+{
+  "ts": "2026-09-27T23:02:18.008Z",
+  "slug": "signin-skill-cross-machine",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/builtinSkillContent.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
