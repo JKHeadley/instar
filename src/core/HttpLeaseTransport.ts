@@ -69,6 +69,17 @@ export interface HttpLeaseTransportDeps {
    */
   requestTimeoutMs?: number;
   /**
+   * Overall deadline for one broadcast (lease-renew-unreachable-peers). broadcast()
+   * resolves true the moment ANY peer confirms, and false once this deadline passes
+   * with no confirmation — it never waits on the slowest peer. Without it, one
+   * permanently-unreachable peer (a rope that times out at requestTimeoutMs = 30s)
+   * held every renewal past the 20s tick await, so the holder's lease lapsed under
+   * load even while other peers were confirming (2026-09-27 Studio mute). Must sit
+   * well under the tick await so renew() always reaches its hold/grace decision.
+   * Default 8s. In-flight dials are not aborted; they settle on requestTimeoutMs.
+   */
+  broadcastDeadlineMs?: number;
+  /**
    * Coarse-reminder interval for the per-peer failure log gate (P19 brake:
    * per-attempt logging is amplification — a down peer at a 5s cadence wrote
    * ~17k lines/day). Default 360 consecutive failures (~30min at 5s).
@@ -126,6 +137,7 @@ export class HttpLeaseTransport implements LeaseTransport {
   private lastPullOkAt = 0;
   private readonly windowMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly broadcastDeadlineMs: number;
   /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
   private readonly logGate: PeerFailureLogGate;
 
@@ -133,6 +145,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     this.d = deps;
     this.windowMs = deps.reachabilityWindowMs ?? 60_000;
     this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.broadcastDeadlineMs = deps.broadcastDeadlineMs ?? 8_000;
     this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 360);
   }
 
@@ -155,8 +168,9 @@ export class HttpLeaseTransport implements LeaseTransport {
 
   /**
    * Broadcast our lease to every peer over the authenticated channel. Resolves
-   * true if at least one peer accepted (we have a live medium); false if none
-   * were reachable.
+   * true as soon as one peer confirms (we have a live medium); false if every
+   * peer settles unconfirmed or `broadcastDeadlineMs` passes first. The "any
+   * one peer confirms" rule is unchanged — only the wait on the slowest peer is cut.
    */
   async broadcast(lease: LeaseRecord): Promise<boolean> {
     const peers = this.d.peers();
@@ -165,12 +179,34 @@ export class HttpLeaseTransport implements LeaseTransport {
       this.lastBroadcastOkAt = this.now();
       return true;
     }
-    const results = await Promise.all(
-      peers.map((peer) => this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)),
-    );
-    const anyOk = results.some((r) => r.confirmed);
-    if (anyOk) this.lastBroadcastOkAt = this.now();
-    return anyOk;
+    return new Promise<boolean>((resolve) => {
+      let pending = peers.length;
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve(ok);
+      };
+      const deadline = setTimeout(() => finish(false), this.broadcastDeadlineMs);
+      for (const peer of peers) {
+        this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)
+          .then((r) => {
+            if (r.confirmed) {
+              this.lastBroadcastOkAt = this.now();
+              finish(true);
+            }
+          })
+          .catch(() => {
+            // @silent-fallback-ok: a dial that throws is an unconfirmed peer (dialPeer logs
+            // its own failures); it only counts toward `pending`, never toward confirmation.
+          })
+          .finally(() => {
+            pending -= 1;
+            if (pending === 0) finish(false);
+          });
+      }
+    });
   }
 
   private meshOn(): boolean {

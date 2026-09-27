@@ -5550,6 +5550,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // the whole TTL, but ABOVE the fleet's 5-40s receiver-stall envelope
           // so a slow-but-alive peer isn't converted into "no medium".
           requestTimeoutMs: Math.min(seamlessness.leaseTtlMs / 2, 30_000),
+          // lease-renew-unreachable-peers: a renewal broadcast resolves on the FIRST
+          // confirming peer and gives up well inside the tick await (≤ 40% of it), so
+          // renew() always reaches its solo-hold / grace decision — one dead peer can
+          // no longer hold every renewal past the tick timeout.
+          broadcastDeadlineMs: Math.min(
+            8_000,
+            Math.floor(Math.max(1000, config.multiMachine?.leaseSelfHeal?.tickWatchdog?.awaitTimeoutMs ?? 20_000) * 0.4),
+          ),
           resolver: meshResolver,
           meshTransportEnabled: meshEnabled,
           hedgeDelayMs: meshCfg?.hedgeDelayMs ?? 1500,

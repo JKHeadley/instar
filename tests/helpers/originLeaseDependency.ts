@@ -11,7 +11,11 @@ import { HttpLeaseTransport } from '../../src/core/HttpLeaseTransport.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 export async function originLeaseDependencyFixture(options: { enroll?: boolean; enabled?: boolean; developmentAgent?: boolean;
-  clock?: { value: number }; observeOnly?: boolean } = {}) {
+  clock?: { value: number }; observeOnly?: boolean;
+  /** lease-renew-unreachable-peers: peers the renewal broadcast dials, over this fetch. */
+  peers?: Array<{ machineId: string; url: string }>; fetchImpl?: typeof fetch; broadcastDeadlineMs?: number;
+  /** Solo-captain hold inputs (preferred captain + whether every peer is presumed gone). */
+  soloCaptain?: { allPeersPresumedGone: boolean } } = {}) {
   const root = await mkdtemp('/tmp/origin-lease-dependency-'), stateDir = path.join(root, '.instar');
   await mkdir(stateDir);
   const identities = new MachineIdentityManager(stateDir);
@@ -33,10 +37,14 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean; 
   { leaseTtlMs: 60_000, failoverThresholdMs: 15 * 60_000 });
   let sequence = 0;
   const transport = new HttpLeaseTransport({ selfMachineId: identity.machineId, signingKeyPem: privateKey,
-    peers: () => [], nextSequence: () => ++sequence, now });
+    peers: () => options.peers ?? [], nextSequence: () => ++sequence, now,
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.broadcastDeadlineMs !== undefined ? { broadcastDeadlineMs: options.broadcastDeadlineMs } : {}) });
   const store = new LocalLeaseStore({ filePath: path.join(stateDir, 'state/fenced-lease.json') });
   const lc = new LeaseCoordinator({ lease, store, tunnel: transport, presumedDeadHolders: () => new Set(), now,
-    ...(options.clock ? { monotonicNow: now } : {}) });
+    ...(options.clock ? { monotonicNow: now } : {}),
+    ...(options.soloCaptain ? { soloCaptainHold: () => ({ enabled: true }), isPreferredAwakeAgreed: () => true,
+      allPeersPresumedGone: () => options.soloCaptain!.allPeersPresumedGone } : {}) });
   const config = { stateDir, developmentAgent: options.developmentAgent,
     multiMachine: { leaseSelfHeal: { resilientRenew: { enabled: options.enabled },
       ...(options.observeOnly ? { leaseRole: 'observe-only' as const } : {}) } } };
