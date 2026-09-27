@@ -1512,6 +1512,7 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
     this.migrateSubscriptionSigninAgentRun(result);
+    this.migrateSubscriptionSigninCrossMachine(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -4408,6 +4409,54 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/subscription-signin/SKILL.md (added the agent-run repair subsection; local edits kept)');
     } catch (err) {
       result.errors.push(`skills/subscription-signin/SKILL.md agent-run migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Add the proven cross-machine procedure ("A machine with no usable browser", 2026-09-27: a
+   * Windows/WSL machine signed in to 13 accounts from a Mac's Chrome, no screen needed) and its
+   * three failure-table rows to an installed /subscription-signin skill. installBuiltinSkills never
+   * overwrites, so this is the only update path. Section and rows are inserted separately (each
+   * idempotent on its own text); local edits are kept; a copy without the stock headings is left
+   * untouched.
+   */
+  private migrateSubscriptionSigninCrossMachine(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const marker = '### A machine with no usable browser (sign it in from a Mac)';
+    const tableHeading = '## 4. When a repair does not finish';
+    const rowsMarker = '| "Continue with Google" returns "There was an error logging you in" |';
+    const anyRow = '| Anything else | Read the reason |';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      let current = fs.readFileSync(skillFile, 'utf8');
+      if (!current.includes('name: subscription-signin')) return;
+      const changes: string[] = [];
+      if (!current.includes(marker)) {
+        const start = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(marker);
+        const end = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(tableHeading);
+        if (current.includes(tableHeading) && start >= 0 && end > start) {
+          current = current.replace(tableHeading, SUBSCRIPTION_SIGNIN_SKILL_CONTENT.slice(start, end) + tableHeading);
+          changes.push('cross-machine section');
+        }
+      }
+      if (!current.includes(rowsMarker)) {
+        const start = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(rowsMarker);
+        const end = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(anyRow);
+        if (current.includes(anyRow) && start >= 0 && end > start) {
+          current = current.replace(anyRow, SUBSCRIPTION_SIGNIN_SKILL_CONTENT.slice(start, end) + anyRow);
+          changes.push('three failure-table rows');
+        }
+      }
+      if (changes.length === 0) {
+        if (!current.includes(marker) || !current.includes(rowsMarker)) {
+          result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no cross-machine section)');
+        }
+        return;
+      }
+      fs.writeFileSync(skillFile, current);
+      result.upgraded.push(`skills/subscription-signin/SKILL.md (added ${changes.join(' and ')}; local edits kept)`);
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md cross-machine migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

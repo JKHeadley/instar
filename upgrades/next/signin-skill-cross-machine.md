@@ -1,0 +1,39 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The built-in `/subscription-signin` skill gains a section, "A machine with no usable browser (sign it in from a Mac)". It covers a machine that needs Claude Code or Codex logins but cannot run a normal Chrome the agent can drive, such as Windows/WSL or headless Linux.
+
+- **The target machine starts its own login** through its `POST /subscription-pool/enroll` over the mesh. The login is minted there, so nothing is copied between machines.
+- **A Mac that holds the account's Google profile approves it.** The Mac drives Chrome only through pid-targeted Apple Events JavaScript and the page's own `element.click()`. It needs no screen, no mouse, and no Screen Recording or Accessibility permission, so a locked screen is not a blocker.
+- **Claude:** the Mac reads the paste-back code and pipes it into the target's `follow-me/enroll/<id>/submit-code`. On this path an outcome of `held` with reason `missing-expected-email` means the login completed; only the automatic pool-add was held.
+- **Codex:** the Mac types the target's device code, and the target then calls `enroll/<id>/complete`.
+- **New accounts** are registered with `POST /subscription-pool`.
+- **Verification** is a live `loginCheck` or `codex-app-server` read, plus one real call per Claude account, compared against the pool-wide account grid rather than the target's own list.
+
+The section also records the mechanics that made it work:
+- Allow pop-ups for the Claude, OpenAI and Google sign-in origins in the profile's Preferences.
+- Relaunch when the first launch after editing Preferences shows no scriptable window (`-1719`).
+- Enable Claude's Authorize button with synthetic focus and pointer events.
+
+The repair table gains three rows:
+- "Continue with Google" returns "There was an error logging you in": the sign-in pop-up is blocked.
+- The Codex "Select a workspace" step silently refuses device-code sign-in for a pre-selected workspace.
+- A machine shows "Set up" for accounts it was offline to receive.
+
+Existing agents receive it through the new `PostUpdateMigrator.migrateSubscriptionSigninCrossMachine`. It inserts the section before the repair table and the rows before the table's last generic row. Each insertion is idempotent on its own text, local edits are kept, and a copy without the stock headings is left untouched.
+
+## What to Tell Your User
+
+If you run your agent on more than one machine, it can now sign a machine with no usable browser, such as a Windows PC, in to your Claude and Codex accounts. It does this through a Mac you already use. Each machine still gets its own login, and nothing is copied between them.
+
+## Summary of New Capabilities
+
+- The sign-in skill carries a proven cross-machine procedure: a browserless machine starts its own logins, and a Mac with the Google profiles approves them without needing its screen.
+
+## Evidence
+
+- 2026-09-27, Echo, Mama PC (Windows 11, Instar in WSL) signed in from the Mac Studio's Chrome profiles while the Studio's screen was locked. Six signed-out Claude accounts were re-signed, and two missing Claude and three missing Codex accounts were added. One Codex account that read `active` while signed out, and that needed the workspace choice, was re-signed. All 13 then showed `loginCheck: "ok"` (Codex `codex-app-server`). Each of the 8 Claude accounts answered a real `claude -p` request as its expected email; one reported its weekly limit, which also proves the sign-in works.
+- Tests: `tests/unit/PostUpdateMigrator-subscriptionSigninCrossMachine.test.ts` (5 cases: placement, previous version to exactly current plus idempotent, local edits kept, stock v1 to full current, customized/absent untouched). The by-hand, agent-run and init skill tests are still green.
