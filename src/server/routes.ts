@@ -3009,18 +3009,32 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
-  router.post('/window-run-liveness/register', (req, res) => {
+  router.post('/window-run-liveness/register', async (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
     const body = req.body ?? {};
     if (Object.keys(body).some(key => /predicate|running|heartbeat|reachable|work|admitted|expires/i.test(key))) return res.status(400).json({ error: 'predicate-facts-are-server-owned' });
+    const authority = ctx.windowRunLivenessAuthority;
+    const input = {
+      windowId: body.windowId,
+      topicId: Number(body.topicId),
+      autonomousRunId: body.autonomousRunId,
+      lifecycleRunId: body.lifecycleRunId,
+      executorId: body.executorId,
+    };
     try {
-      const state = ctx.windowRunLivenessAuthority.register({
-        windowId: body.windowId,
-        topicId: Number(body.topicId),
-        autonomousRunId: body.autonomousRunId,
-        lifecycleRunId: body.lifecycleRunId,
-        executorId: body.executorId,
-      });
+      // register() takes the mutation lock synchronously (no retries), while the
+      // background tick holds the same lock across awaits. Retry ONLY on lock
+      // contention, yielding the event loop between attempts so the tick can
+      // release; bounded at ~2s (100 x 20ms), the async path's own budget. A
+      // synchronous spin here would deadlock: the holder needs this loop to finish.
+      let state: ReturnType<typeof authority.register> | undefined;
+      for (let attempt = 0; ; attempt++) {
+        try { state = authority.register(input); break; } catch (error) {
+          const locked = (error as { code?: string })?.code === 'ELOCKED';
+          if (!locked || attempt >= 100) throw error;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
       return res.status(201).json(state);
     } catch (error) {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
