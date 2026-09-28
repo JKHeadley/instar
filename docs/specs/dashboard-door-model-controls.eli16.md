@@ -12,9 +12,9 @@ the dashboard's Sessions tab, so you can do it from your phone:
 2. Each session's view gets a **Door + model** button. Pick a new pair, tap Switch, and that topic
    restarts on the new door with its conversation intact. If the server needs a confirmation (for
    example the topic is mid-task) the sheet shows the server's exact message and a "Switch anyway".
-3. The top of the Sessions list shows **Default for new topics** (for example "Claude Code ·
-   Opus 5.5"). It fills the New Session dropdowns in advance, and every topic you create from the
-   dashboard from then on starts on that pair. Changing it needs the dashboard PIN unlock.
+3. The top of the Sessions list shows **Default for dashboard-created topics** (for example
+   "Claude Code · Opus 5.5"). It fills the New Session dropdowns in advance, and every topic you
+   create from the dashboard from then on starts on that pair.
    Topics you start directly in Telegram are NOT covered in this version — they keep starting on
    the plain defaults, exactly as today. That half is held for a follow-up (below).
 
@@ -43,13 +43,13 @@ chat. Thinking depth and effort aren't in the sheet yet (the API already support
 On a fleet agent where topic profiles are still dark, the door switch works but the model choice is
 refused, and the screen says so rather than pretending.
 
-**Safety in one paragraph.** Two new write paths, both narrow and both behind the dashboard PIN
-unlock: the default itself, and an explicit door/model pick when creating a topic (a brand-new
-topic has no "owner" yet, so this is a new permission and is named as one rather than hidden under
-the ordinary API token). The creation-time seed can only set a pin on a topic that has none, never
-restarts anything, and posts exactly one line into the new topic saying what it started on. Switching an existing topic
-uses the exact route that exists today, with its existing "you must be the topic's operator" rule.
-The default replicates to Echo's other machines as a tiny record so a topic created on either
-machine starts the same way, and each machine keeps working on its own copy if the other is off.
-Rolling back: clear the default (future topics unaffected); topics already seeded keep their pin
-until you clear them individually, and the spec says so plainly.
+**Safety in one paragraph.** No PIN anywhere in this feature — you asked for that on 27 Sep, and it
+is right: the dashboard's normal login already holds the token that can move any topic onto any
+door, so a PIN here guarded nothing. Two new write paths, both narrow and both audited: the default
+itself, and an explicit door/model pick when creating a topic (a brand-new topic has no "owner"
+yet, so this is the one place a pin lands before anyone has messaged the topic; it is named as
+such rather than hidden). The creation-time seed can only set a pin on a topic that has none, never
+restarts anything, and posts exactly one line into the new topic saying what it started on.
+Switching an existing topic uses the exact route that exists today, with its existing "you must be
+the topic's operator" rule. Rolling back: clear the default (future topics unaffected); topics
+already seeded keep their pin until you clear them individually, and the spec says so plainly.

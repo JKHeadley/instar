@@ -12,7 +12,14 @@ integration+scalability, decision-completeness+lessons-aware) on the authoring s
 not assumed). Frameworks active in the 7-day window: codex-cli (GPT-tier) — externals were
 therefore mandatory and were never skipped or delta-skipped (the body changed every round).
 
-## Convergence verdict: NOT CONVERGED — cap reached (10/10), status `convergence-failed`
+## Convergence verdict: CONVERGED on the retry run (6 rounds), after the first run hit its cap
+
+The first run (10 rounds, below) ended `convergence-failed` at the cap. The operator approved the
+cut scope on 2026-09-27 19:24 PDT with one change — remove the dashboard PIN requirement — and a
+fresh run on the cut spec converged: rounds 5 and 6 of the retry had ZERO design-class findings from
+all three internal reviewer pairs and from codex (GPT-5.5). Details in "Retry run" at the end.
+
+### First run: NOT CONVERGED — cap reached (10/10), status `convergence-failed`
 
 The two-consecutive-design-quiet-rounds criterion was not met by the letter: rounds 8 and 9 each
 carried design-class findings, and round 10 is the cap. Round 10's result is recorded below. What
@@ -171,3 +178,23 @@ Echo, the dev-agent-live target, is a pool and would never run it, so it would h
 on real use. Two independent reviewers said so in round 10. It is cut; ask #3 in v1 is "the default
 used by the New Session modal and by every dashboard-created topic"; Telegram-created topics on any
 machine are tracked in #2085 with the pool design and the replicated default.
+
+
+## Retry run (operator-approved cut scope, PIN removed) — CONVERGED at round 6
+
+Cross-model: codex-cli:gpt-5.5, status `ok` every round (6/6). Standards-Conformance Gate ran every
+round, never degraded; its only recurring flag is the signal-only "Multi-Machine Entity" reading of
+the v1 machine-local default, which the deterministic marker lint accepts
+(`migrating-to-unified`, ratified `5a4efecc1`, tracking #2085, since 2026-09-27, expires 2027-03-25).
+
+| Round | Design | Precision | What changed |
+|---|---|---|---|
+| 1 | 5 (codex 1, sec 3, int 2 overlapping) | 9 | PIN removed per operator; every create on a non-holder refused (no off-owner spawn); typed seam; failure-after-spawn confirms instead of releasing; issue #2085 re-scoped |
+| 2 | 4 (sec 3, int 1) | 6 | Spawn through the `spawnSessionForTopic` chokepoint with claims corrected to what it actually does; `silentStart`; `spawningTopics` armed; guard drop-with-notice recorded as decision row 9 |
+| 3 | 2 (int 1, sec 1) | 7 | Thunk seat; intent header on all three dashboard fetches |
+| 4 | 1 (int + sec, same) | 5 | Thunk built at ctx construction via the late-bound `_spawningTopicsRegistryRef` |
+| 5 | **0** | 6 | Precision only (disclosure helper, pre-checks, rejected-alternatives paragraph) |
+| 6 | **0** | 4 | Precision only (line drift, §7 qualification, ELI16 PIN sentence removed) |
+
+Decision-Completeness final counts: 9 frontloaded decisions, 1 cheap-to-change-after tag
+(thinking/effort) that survived contest in every round, 0 contested-then-cleared.
