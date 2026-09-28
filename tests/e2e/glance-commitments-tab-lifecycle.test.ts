@@ -91,7 +91,11 @@ describe('Commitments glance — E2E feature-alive', () => {
   });
 
   it('feature OFF: /commitments 200 { enabled:false } → friendly empty glance, not a crash', async () => {
-    server = await bootApp({ config: { authToken: 't', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() }); // no commitmentTracker
+    // Own temp stateDir, never the machine-wide '/tmp/.instar': that path is shared with 20+ other
+    // test files and every other session's test runs, and the route layer reads state from it
+    // (this case failed once in a full-suite run with a 401 and passed in isolation).
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'glance-cmt-e2e-off-'));
+    server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date() }); // no commitmentTracker
     const res = await fetch(server.url + '/commitments?status=active');
     expect(res.status).toBe(200); // NOT 503
     const body = await res.json();
