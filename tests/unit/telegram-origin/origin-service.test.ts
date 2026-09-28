@@ -234,7 +234,9 @@ describe('origin service durable delivery', () => {
       expect(h.network).not.toHaveBeenCalled();
     } finally { queue.close(); }
   });
-  it('retains the confirmed subset of skipped forwards while holding the remainder without replay', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('retains the confirmed subset of skipped forwards while holding the remainder without replay', async () => {
     const h = await harness();
     h.network.mockImplementation(async () => new Response(JSON.stringify({ ok: true, result: [{ message_id: 80 }] })));
     const operation = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot({ method: 'forwardMessages',

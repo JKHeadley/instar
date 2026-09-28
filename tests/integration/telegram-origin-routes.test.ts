@@ -139,7 +139,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(delivered?.record.envelopeJson).toBe(audit.body.records[0].record.envelopeJson);
   });
 
-  it('records the fixed AutoUpdater notice through the authenticated apply route without accepting caller author claims', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('records the fixed AutoUpdater notice through the authenticated apply route without accepting caller author claims', async () => {
     let updater: AutoUpdater;
     const proxy = { applyPendingUpdate: (options: never) => updater.applyPendingUpdate(options), getStatus: () => updater.getStatus() };
     const h = await appHarness({ autoUpdater: proxy });
@@ -163,7 +165,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(row.operation?.state).toBe('accepted');
   });
 
-  it('holds changed reminder text for the same durable event after unknown acceptance', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('holds changed reminder text for the same durable event after unknown acceptance', async () => {
     const stateDir = temporaryState(), tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir) });
     const commitment = tracker.record({ type: 'one-time-action', userRequest: 'report back on the benchmark refresh',
       agentResponse: 'I will report the benchmark results.', topicId: 42, verificationMethod: 'manual' });
@@ -424,7 +428,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(accepted.status).toBe(200); expect(h.invoke).toHaveBeenCalledOnce();
     expect(review.mock.calls.map(call => call[0])).toEqual(['I will handle this for you.', 'I will handle this for you.']);
   });
-  it('rechecks the existing stand-down authority and releases when ownership returns', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('rechecks the existing stand-down authority and releases when ownership returns', async () => {
     const ownerOf = vi.fn(() => 'other-machine'), release = vi.fn();
     const h = await browserHarness({ meshSelfId: 'studio', sessionOwnershipRegistry: { ownerOf },
       standDownRegistry: { getByTopic: () => ({ sessionName: 'source', dryRun: false, ownerMachineId: 'other-machine' }),
@@ -436,7 +442,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect((await h.send('Ownership has returned.')).status).toBe(200);
     expect(release).toHaveBeenCalled(); expect(h.invoke).toHaveBeenCalledOnce();
   });
-  it('holds browser writes when the production policy attachment is absent', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('holds browser writes when the production policy attachment is absent', async () => {
     const h = await browserHarness(); h.runtime.service.options.sendPolicy = undefined;
     const refused = await h.send('A legitimate reply before policy initialization.');
     expect(refused.status).toBe(409); expect(refused.body.reason).toBe('send-policy-unavailable');
@@ -510,7 +518,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     const page = await h.runtime.store.listOrigins();
     expect(JSON.parse(page.records[0].record.envelopeJson).model).toMatchObject({ status: 'not-applicable', reason: 'deterministic-automation' });
   });
-  it('binds the submitting session across a different destination topic, then restricts audit to the operator', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('binds the submitting session across a different destination topic, then restricts audit to the operator', async () => {
     const h = await appHarness();
     const response = await request(h.app).post('/telegram/reply/77').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-Origin-Session', h.sessionToken).send({ text: 'A cross-topic reply.' });

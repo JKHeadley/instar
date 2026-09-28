@@ -24,8 +24,9 @@ Fix: when a reserved operation ends in an exception and no platform acceptance
 was seen, the operation releases its own reservation. "No platform acceptance"
 means no child already accepted in the store, and no `response.ok &&
 body.ok === true` (bot) or `outcome.state === 'accepted'` (browser) in this run.
-The release is an owner-fenced `UPDATE … SET expires_at = now WHERE operation_id
-= ?` (`SqliteOutboundDedupStore.releaseOrigin`). Accepted fingerprints in
+The release is an owner-fenced `UPDATE … SET expires_at = now`, matched on the
+operation and on the outbox claim token that reserved it
+(`SqliteOutboundDedupStore.releaseOrigin`; see §5). Accepted fingerprints in
 `outbound_dedup` are never touched. When a released operation is retried, its
 duplicate look-back reaches back to when it was prepared (`record.createdAt`).
 So a fresh send delivered in the meantime always supersedes it, however late the
@@ -48,9 +49,13 @@ is unchanged.
 
 ## Decision-point inventory
 
-- Origin content dedup (`reserveOrigin`, which answers `duplicate` → HTTP 200
-  `suppressedDuplicate`). **Modify:** a reservation owned by an operation that
-  ended with no platform acceptance no longer suppresses.
+- Origin content dedup (`reserveOrigin`). **Modify:** it now has two refusal
+  answers. `duplicate` (a recorded platform acceptance in `outbound_dedup`)
+  → HTTP 200 `suppressedDuplicate`, and the operation is terminally
+  `suppressed`. `pending` (another operation's live reservation, i.e. in flight
+  or partially accepted) → HTTP 409 `content-reservation-pending`, and the
+  operation stays queued and recoverable. A reservation owned by an operation
+  that ended with no platform acceptance is released, so it causes neither.
 - Route content dedup (`/telegram/reply`, `isDuplicate`/`tryReserve`).
   **Pass-through:** already records only on success.
 
@@ -59,9 +64,11 @@ is unchanged.
 ## 1. Over-block
 
 This change removes over-blocking. Before, an identical send was wrongly
-suppressed after every hold, refusal or unknown outcome. After, suppression needs
-one of three things: a recorded acceptance (`outbound_dedup`), an operation still
-in flight, or an operation that got at least partial platform acceptance.
+suppressed after every hold, refusal or unknown outcome. After, terminal
+suppression needs a recorded acceptance (`outbound_dedup`) and nothing else. Two
+other states hold an identical send without suppressing it (409
+`content-reservation-pending`, still queued): an operation still in flight, and
+an operation that got partial platform acceptance and so keeps its reservation.
 
 One remaining over-block, kept on purpose: if the process crashes mid-dispatch,
 no catch runs, so the reservation survives until `deadlineAt + window`. The send
@@ -79,22 +86,32 @@ really may be in flight, so keeping the reservation is correct there.
   unknown-outcome send itself (the outbox never retries outcome-unknown children),
   so the only possible duplicate is one the agent chose to make.
 - **Held send retried by the outbox after a fresh send.** Not a duplicate. The
-  retry goes back through `reservePreparedContent`. If the fresh send is in
-  flight, it finds the live reservation. If the fresh send was accepted,
-  `reserveOrigin` finds it in `outbound_dedup`. For this check the look-back is
+  retry goes back through `reservePreparedContent`. If the fresh send is still
+  in flight, the retry finds its live reservation, answers `pending`, returns
+  its undispatched claim and stays queued (not suppressed: in flight is not
+  delivered, and the fresh send may still fail). If the fresh send was accepted,
+  `reserveOrigin` finds it in `outbound_dedup` and answers `duplicate`. For this check the look-back is
   `min(now - window, record.createdAt)`, meaning any acceptance of this text since
   the operation was prepared. That covers retries that land more than 15 minutes
   later, which is normal on the browser path (its retry floor is 15 minutes). A
   429 backoff or a held-list retry can do it too. `outbound_dedup` keeps 24h of
-  rows, which is longer than the 6h deadline. Either way, the retry is recorded
-  `suppressed` (terminal) and nothing is sent. Proven in `origin-service.test.ts`
-  ("the held send cannot later duplicate it", an immediate retry) and in
-  `content-dedup.test.ts` (a retry 20 minutes after the fresh delivery). A new
-  operation prepared after the window is still an ordinary repeat.
+  rows, which is longer than the 6h deadline. Only in that recorded-acceptance
+  case is the retry marked `suppressed` (terminal) with nothing sent. Proven in
+  `origin-service.test.ts` ("the held send cannot later duplicate it", an
+  immediate retry after the fresh send was accepted; and the in-flight
+  interleaving, where the retry is held, stays recoverable and later delivers
+  once the fresh send is refused) and in `content-dedup.test.ts` (a retry 20
+  minutes after the fresh delivery). A new operation prepared after the window is
+  still an ordinary repeat.
   *(Added after second-pass round 1, which found that the plain 15-minute
   look-back let a late retry double-send.)*
-- **Partial multi-child delivery.** Kept suppressed: any accepted child keeps the
-  reservation, so the user never gets chunk 1 twice from a reworded resend path.
+- **Partial multi-child delivery.** Any accepted child keeps the operation's
+  reservation (it is neither released nor completed). An identical fresh send is
+  then held as `pending` (409, still queued), not suppressed, until that
+  reservation expires at the original `deadlineAt + window`; after that an
+  identical send can go out and repeat the accepted chunk. Dedup is exact-content
+  only: a reworded resend has a different fingerprint and is not held or
+  suppressed at all.
 
 ---
 
@@ -115,8 +132,9 @@ the relay script.
 - [x] No — this change has no new block/allow surface.
 
 The dedup is an existing deterministic invariant guard: exact fingerprint within
-a window. This change narrows when it holds authority, so that it only suppresses
-on evidence of acceptance or live in-flight state. It adds no brittle judgment.
+a window. This change narrows when it holds authority: it suppresses only on
+recorded acceptance, and a live reservation (in flight or partially accepted)
+only holds a send, leaving it queued. It adds no brittle judgment.
 
 ## 4b. Judgment-point check (Judgment Within Floors standard)
 
@@ -218,8 +236,9 @@ succeeds).
 
 The dedup now counts only platform-accepted sends as delivered. Held,
 known-failed and outcome-unknown sends release their own reservation, so an
-agent's fresh identical send goes out. Real and partial deliveries still
-suppress. An in-flight send holds identical sends without suppressing them. The
+agent's fresh identical send goes out. Recorded deliveries still suppress. An
+in-flight or partially accepted send holds identical sends (queued, 409) without
+suppressing them. The
 outbox's own retry of a held send stands down only after the fresh send is
 confirmed delivered, and reservation release is fenced to the execution that
 owns the outbox claim. So for ordinary sends and outbox retries, the platform
@@ -259,12 +278,53 @@ outcome that had in fact landed. The second pass concurred after one round of ch
    moved behind the exclusive outbox claim; the claim token owns release. Both bot
    and browser paths. Regression: Astra's concurrent-execution probe — one network
    call, fresh B held, later a confirmed duplicate.
-3. *Worker timing flake (present on main).* Repaired under Rule 37, not
+3. *Worker timing flake (on unchanged main code).* Repaired under Rule 37, not
    quarantined: `store-worker-recovery.test.ts` used a 100 ms caller deadline
    around real SQLite work, and `healthyWindowMs: 1` raced a same-millisecond
    response. Deadlines are now 1 s with stalls scaled past them, and the checks
    that assert episode closure wait out the healthy window. No production timeout
    changed. Verified 8 concurrent copies of the file green.
+
+## Round 4: Rule 37 disposition of the other observed test failures
+
+Astra's round-2 review (VERDICT NO) required a disposition for every failure
+seen during review. None of the test files involved is in the PR's changed code,
+and a passing rerun is not treated as exoneration.
+
+- `source-poller.test.ts` (both cases), **repaired (test-only)**. The test asserted
+  exactly one callback per source write. One write can show the poller two
+  metadata states. `writeFile` truncates before it writes: with a 1 ms poll, 60
+  of 60 plain writes fired twice. On APFS, `rename` updates ctime a moment after
+  the new file appears, and the fingerprint includes ctime: atomic writes still
+  fired twice in the real test. The consumer's invalidation is an idempotent
+  refresh. So the test now asserts at least one callback per change, waits for
+  the callback count to settle before the delete step, and asserts no callback
+  after close. Both sides were checked by mutation: a poller that never fires
+  fails both cases, and a poller that keeps firing after close fails the close
+  assertion. `OriginSourcePoller.ts` is unchanged.
+- `worker-bounds.test.ts` ("verifies a shared archive once per page…"),
+  **repaired (test-only)**. Each page hashes a ~2.6 MB archive, and under suite
+  load that went past the 2 s default caller deadline. The case tests paging
+  and verification counts, not deadlines, so its store gets
+  `requestTimeoutMs: 20_000`. No production timeout changed.
+- `telegram-origin-routes.test.ts`, 5 cases, **quarantined with a filed
+  defect**: [#2088](https://github.com/JKHeadley/instar/issues/2088). Two copies
+  of the file ran at the same time on unchanged `origin/main` (load ~16). They
+  failed 1 and 2 cases (policy-absent, AutoUpdater notice, cross-topic session
+  binding), while the PR head passed 26/26 twice in the same run. Astra's run and
+  a builder run also saw the stand-down case and the changed-reminder case flip
+  on the head. The likely cause is `#recordEvidence`'s fixed 250/500 ms sink
+  deadlines: under disk load the service correctly holds (409
+  `all-durable-recording-sinks-unavailable`). That cause is not proven. All five
+  cases are `it.skip` with a comment linking #2088; the issue lists what re-arming
+  them requires. None of these cases is in this PR's changed hunk. The PR's own
+  browser regressions in that file still run.
+- `origin-service.test.ts` ("retains the confirmed subset of skipped forwards…"),
+  **quarantined under the same defect #2088**. In the round-3 targeted run it
+  failed with the same hold (`all-durable-recording-sinks-unavailable`, thrown
+  from `recordIntent` → `#recordEvidence`), and that path is byte-identical to
+  main. The case is outside the PR's changed hunk. The PR's own regressions in
+  that file still run.
 
 ## Evidence pointers
 
