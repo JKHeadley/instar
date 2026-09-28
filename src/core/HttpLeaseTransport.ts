@@ -69,6 +69,17 @@ export interface HttpLeaseTransportDeps {
    */
   requestTimeoutMs?: number;
   /**
+   * Overall deadline for one broadcast (lease-renew-unreachable-peers). broadcast()
+   * resolves true the moment ANY peer confirms, and false once this deadline passes
+   * with no confirmation — it never waits on the slowest peer. Without it, one
+   * permanently-unreachable peer (a rope that times out at requestTimeoutMs = 30s)
+   * held every renewal past the 20s tick await, so the holder's lease lapsed under
+   * load even while other peers were confirming (2026-09-27 Studio mute). Must sit
+   * well under the tick await so renew() always reaches its hold/grace decision.
+   * Default 8s. In-flight dials are not aborted; they settle on requestTimeoutMs.
+   */
+  broadcastDeadlineMs?: number;
+  /**
    * Coarse-reminder interval for the per-peer failure log gate (P19 brake:
    * per-attempt logging is amplification — a down peer at a 5s cadence wrote
    * ~17k lines/day). Default 360 consecutive failures (~30min at 5s).
@@ -124,8 +135,16 @@ export class HttpLeaseTransport implements LeaseTransport {
   private lastPulledByPeer = new Map<string, { lease: LeaseRecord | null; observedAtMs: number }>();
   private lastBroadcastOkAt = 0;
   private lastPullOkAt = 0;
+  /**
+   * lease-renew-unreachable-peers — the highest epoch any peer has reported in a
+   * VERIFIED (signed, challenge-bound) broadcast ack that was higher than the epoch
+   * we sent. A monotonic high-water mark: a later same-epoch ack from another peer
+   * never lowers it. The coordinator's fencing reads it (see LeaseCoordinator).
+   */
+  private higherEpochSeen = 0;
   private readonly windowMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly broadcastDeadlineMs: number;
   /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
   private readonly logGate: PeerFailureLogGate;
 
@@ -133,6 +152,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     this.d = deps;
     this.windowMs = deps.reachabilityWindowMs ?? 60_000;
     this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.broadcastDeadlineMs = deps.broadcastDeadlineMs ?? 8_000;
     this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 360);
   }
 
@@ -155,22 +175,65 @@ export class HttpLeaseTransport implements LeaseTransport {
 
   /**
    * Broadcast our lease to every peer over the authenticated channel. Resolves
-   * true if at least one peer accepted (we have a live medium); false if none
-   * were reachable.
+   * true as soon as one peer confirms (we have a live medium); false if every
+   * peer settles unconfirmed or `broadcastDeadlineMs` passes first. The "any
+   * one peer confirms" rule is unchanged — only the wait on the slowest peer is cut.
+   *
+   * A slow-but-valid confirmation is NOT discarded at the deadline: when the
+   * broadcast already resolved false on the deadline and a peer confirms THIS
+   * lease afterward (still inside requestTimeoutMs), `onLateConfirm` fires once so
+   * the coordinator can adopt the renewal under its own epoch/freshness checks. A
+   * healthy peer that answers in ~10s therefore keeps the holder serving exactly as
+   * the old await-everyone broadcast did.
    */
-  async broadcast(lease: LeaseRecord): Promise<boolean> {
+  async broadcast(lease: LeaseRecord, onLateConfirm?: () => void): Promise<boolean> {
     const peers = this.d.peers();
     if (peers.length === 0) {
       // No peers → a single-machine mesh; treat as "reachable" (nothing to fail).
       this.lastBroadcastOkAt = this.now();
       return true;
     }
-    const results = await Promise.all(
-      peers.map((peer) => this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)),
-    );
-    const anyOk = results.some((r) => r.confirmed);
-    if (anyOk) this.lastBroadcastOkAt = this.now();
-    return anyOk;
+    return new Promise<boolean>((resolve) => {
+      let pending = peers.length;
+      let settled = false;
+      let resolvedFalse = false;
+      let lateReported = false;
+      const sentAt = this.now();
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolvedFalse = !ok;
+        clearTimeout(deadline);
+        resolve(ok);
+      };
+      const deadline = setTimeout(() => finish(false), this.broadcastDeadlineMs);
+      for (const peer of peers) {
+        this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)
+          .then((r) => {
+            if (r.confirmed) {
+              this.lastBroadcastOkAt = this.now();
+              // Only inside the supported response window (requestTimeoutMs): a dial
+              // should have aborted by then, so a later answer is not a live confirmation.
+              const inWindow = this.now() - sentAt <= this.requestTimeoutMs;
+              if (resolvedFalse && !lateReported && onLateConfirm && inWindow) {
+                // The deadline already answered false; this is a genuine confirmation
+                // of the same signed lease, arriving late. Hand it to the coordinator.
+                lateReported = true;
+                onLateConfirm();
+              }
+              finish(true);
+            }
+          })
+          .catch(() => {
+            // @silent-fallback-ok: a dial that throws is an unconfirmed peer (dialPeer logs
+            // its own failures); it only counts toward `pending`, never toward confirmation.
+          })
+          .finally(() => {
+            pending -= 1;
+            if (pending === 0) finish(false);
+          });
+      }
+    });
   }
 
   private meshOn(): boolean {
@@ -315,7 +378,11 @@ export class HttpLeaseTransport implements LeaseTransport {
       sentEpoch ?? -1,
       peer.publicKeyPem as string,
     );
-    // 'higher-epoch' is a real takeover signal — NOT a renewal confirmation.
+    // 'higher-epoch' is a real takeover signal — NOT a renewal confirmation. Keep the
+    // verified evidence (it fences our older epoch in LeaseCoordinator), and recover
+    // the signed holder lease through the existing pull path: the responder is not
+    // necessarily the holder, so we never fabricate a holder lease from the ack.
+    if (verdict === 'higher-epoch' && data?.ack) this.noteHigherEpoch(peer, data.ack.observedEpoch);
     return { confirmed: verdict === 'confirmed', lease: null };
   }
 
@@ -380,6 +447,21 @@ export class HttpLeaseTransport implements LeaseTransport {
 
   observed(): { lease: LeaseRecord | null; lastNonceByHolder: Record<string, number> } {
     return { lease: this.lastObserved, lastNonceByHolder: { ...this.lastNonceByHolder } };
+  }
+
+  /** Highest epoch a peer reported in a verified broadcast ack above what we sent (0 = none). */
+  higherEpochEvidence(): number {
+    return this.higherEpochSeen;
+  }
+
+  private noteHigherEpoch(peer: LeasePeer, epoch: number): void {
+    if (epoch <= this.higherEpochSeen) return;
+    this.higherEpochSeen = epoch;
+    this.log(`peer ${peer.machineId} reports verified epoch ${epoch} above ours — pulling its signed lease`);
+    this.pullPeer(peer).catch(() => {
+      // @silent-fallback-ok: the pull is best-effort recovery of the holder's signed
+      // lease; the verified epoch evidence already fences our older epoch without it.
+    });
   }
 
   isReachable(): boolean {

@@ -66,8 +66,12 @@ export interface LeaseStore {
 
 /** Optional low-latency tunnel transport for the lease. */
 export interface LeaseTransport {
-  /** Broadcast our lease to peers. Resolves false if unreachable. */
-  broadcast(lease: LeaseRecord): Promise<boolean>;
+  /**
+   * Broadcast our lease to peers. Resolves false if unreachable. `onLateConfirm`
+   * (optional) fires once if a peer confirms this lease after the call already
+   * resolved false on its deadline.
+   */
+  broadcast(lease: LeaseRecord, onLateConfirm?: () => void): Promise<boolean>;
   /** The most-recent lease observed over the tunnel (and its source nonce map). */
   observed(): { lease: LeaseRecord | null; lastNonceByHolder: Record<string, number> };
   /** Whether the tunnel medium is currently reachable. */
@@ -87,6 +91,12 @@ export interface LeaseTransport {
    * (L4/SEC-4): feeds the awakeMachineCount counting rule, never demotion.
    */
   observedByPeer?(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }>;
+  /**
+   * Highest epoch a peer reported in a VERIFIED broadcast ack above the epoch we
+   * sent (0/absent = none). A monotonic high-water mark; any epoch below it is
+   * superseded and fenced (holdsLease, renew and solo hold all refuse it).
+   */
+  higherEpochEvidence?(): number;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -170,6 +180,13 @@ export class LeaseCoordinator {
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
+   * The renewal whose own early broadcast deadline caused the current suspension
+   * (null otherwise). That deadline is provisional — the dials are still in flight —
+   * so a late verified confirmation of EXACTLY this renewal may still finish it
+   * (adoptLateRenewal). Any other suspension stays terminal until re-acquire.
+   */
+  private suspendedByRenewal: LeaseRecord | null = null;
+  /**
    * Epoch acquired from a PEER through the normal fenced takeover authority.
    * When this machine is the preferred captain, this is positive evidence that
    * it may keep that exact epoch alive while the peer remains unreachable:
@@ -186,6 +203,13 @@ export class LeaseCoordinator {
    * while it is not superseded by a higher epoch.
    */
   private selfIssued: LeaseRecord | null = null;
+  /**
+   * Bumped by relinquish(). A renewal whose broadcast was in flight when this
+   * machine gave the lease up must never re-install it (on time or late):
+   * relinquish only force-expires the local lease, so holder/epoch/released alone
+   * cannot tell a relinquished lease from a live one.
+   */
+  private relinquishGeneration = 0;
   /**
    * F2 (staleHolderTakeover) — per-holder freshness on the OBSERVER's own
    * monotonic clock: the time we last saw that holder's signed nonce watermark
@@ -309,7 +333,14 @@ export class LeaseCoordinator {
     // wall-clock `isExpired` check above is retained as a conservative second
     // gate (either gate may fence; both must pass to hold).
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return false;
+    // A peer's verified ack reported a higher epoch than ours: we are superseded,
+    // even before its signed holder lease reaches our observed view.
+    if (this.higherEpochEvidence() > view.epoch) return false;
     return true;
+  }
+
+  private higherEpochEvidence(): number {
+    return this.d.tunnel?.higherEpochEvidence?.() ?? 0;
   }
 
   /** The current effective epoch (for stamping writes/sends). */
@@ -368,6 +399,7 @@ export class LeaseCoordinator {
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
+    if (this.higherEpochEvidence() > ourEpoch) return false;
     return true;
   }
 
@@ -401,6 +433,7 @@ export class LeaseCoordinator {
    * win after we relinquish.
    */
   relinquish(): void {
+    this.relinquishGeneration++;
     this.selfIssued = null;
     this.d.store.forceLocalExpiry?.();
     this.log('relinquished self-lease (contested tie-break loser) — winner may now advance to N+1');
@@ -640,6 +673,7 @@ export class LeaseCoordinator {
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
+      this.suspendedByRenewal = null;
     }
     const dead = this.d.presumedDeadHolders();
     let retries = 0;
@@ -808,6 +842,8 @@ export class LeaseCoordinator {
   async renew(): Promise<boolean> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
+    // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
+    if (this.higherEpochEvidence() > view.epoch) return false;
 
     // Re-sign with a fresh expiry (same epoch — renewal never advances it).
     const renewed = this.fl.signLease(
@@ -824,7 +860,12 @@ export class LeaseCoordinator {
     // forever (which is exactly the partitioned-old-awake split-brain).
     let confirmed: boolean;
     if (this.d.tunnel) {
-      confirmed = await this.d.tunnel.broadcast(renewed).catch(() => false);
+      const generation = this.relinquishGeneration;
+      confirmed = await this.d.tunnel
+        .broadcast(renewed, () => this.adoptLateRenewal(renewed, generation))
+        .catch(() => false); // @silent-fallback-ok: a throw is an UNCONFIRMED renewal (fail-closed; hold/grace/suspend below)
+      // Relinquished while the broadcast was in flight: never re-install the lease.
+      if (generation !== this.relinquishGeneration) return false;
     } else {
       confirmed = this.d.store.refresh(renewed);
     }
@@ -853,6 +894,8 @@ export class LeaseCoordinator {
 
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
       this.suspended = true;
+      // Only the tunnel's early deadline is provisional; a git refresh result is final.
+      this.suspendedByRenewal = this.d.tunnel ? renewed : null;
       this.d.onSelfSuspend?.(
         `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms, monotonic) — lease lapsed`,
       );
@@ -862,6 +905,38 @@ export class LeaseCoordinator {
     // Within grace: keep serving on the EXISTING (soon-to-expire) lease — do
     // NOT extend selfIssued's expiry, so it lapses if we never reconfirm.
     return true;
+  }
+
+  /**
+   * A peer confirmed `renewed` after renew() had already returned on the broadcast
+   * deadline (a slow-but-valid peer). Adopt it exactly as an on-time confirmation
+   * would have — but only while it is still current: not suspended, not relinquished
+   * since the renewal was sent, still our lease at the same epoch, not released, not
+   * superseded by a higher epoch (observed or verified-ack evidence), not expired,
+   * and not older than a renewal we already installed.
+   *
+   * Suspension: if THIS renewal's own early deadline is what suspended us (a
+   * renewal started near the end of grace), that timeout was provisional, so the
+   * exact renewal may still finish and lift that suspension. Any other suspension
+   * (a different renewal, or none since re-acquire) still discards the ack. The
+   * monotonic fence stays armed until the confirmation actually arrives.
+   */
+  private adoptLateRenewal(renewed: LeaseRecord, generation: number): void {
+    if (this.suspended && this.suspendedByRenewal !== renewed) return;
+    if (generation !== this.relinquishGeneration) return;
+    if (this.fl.isExpired(renewed, this.now())) return;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) return;
+    if (view.epoch !== renewed.epoch || this.higherEpochEvidence() > renewed.epoch) return;
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce >= renewed.nonce) return;
+    if (this.suspended) {
+      this.suspended = false;
+      this.suspendedByRenewal = null;
+      this.log(`late confirmation of the renewal that timed out lifts its provisional suspension (epoch ${renewed.epoch})`);
+    }
+    this.selfIssued = renewed;
+    this.markRenewOk();
+    this.log(`late renewal confirmation adopted (epoch ${renewed.epoch}, nonce ${renewed.nonce})`);
   }
 
   private async broadcast(lease: LeaseRecord): Promise<void> {

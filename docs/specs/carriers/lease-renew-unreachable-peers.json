@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-09-27T23:24:05.522Z",
+  "slug": "lease-renew-unreachable-peers",
+  "carriers": {
+    "CMT-610": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "I will assess whether the origin display snapshot should tolerate a starved event loop (keep the last good snapshot through a transient config-read deadline, bounded) without weakening its fail-closed config-change guarantee, and ship a fix or a written ruling."
+    }
+  }
+}
