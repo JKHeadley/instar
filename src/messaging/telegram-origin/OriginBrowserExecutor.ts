@@ -148,13 +148,13 @@ export class OriginBrowserExecutor {
       stored.operation?.operationId !== operation.record.operationId || operation.record.destination.accountId !== this.options.accountId) {
       throw new TelegramOriginHoldError('sealed-browser-plan-mismatch', operation.record.operationId);
     }
-    const reserved = stored.children.some(child => child.state !== 'accepted');
-    if (reserved) {
-      await this.options.service.reviewPreparedSendPolicy(operation);
-      await this.options.service.reservePreparedContent(operation);
-    }
+    if (stored.children.some(child => child.state !== 'accepted')) await this.options.service.reviewPreparedSendPolicy(operation);
     const receipts: BrowserReceipt[] = [];
     let platformAccepted = stored.children.some(child => child.state === 'accepted');
+    // The claim token under which THIS execution holds the content reservation.
+    let reservedBy: string | null = null;
+    // The platform accepted every child, even if a local receipt write failed.
+    let acceptedAll = false;
     try {
       for (const child of operation.admission.children) {
         const accepted = stored.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted');
@@ -171,11 +171,19 @@ export class OriginBrowserExecutor {
           ownerBootId: this.options.service.options.ownerBootId, leaseMs: 60_000 });
         if (claim.status !== 'claimed') throw new TelegramOriginHoldError(`outbox-${claim.reason}`, operation.record.operationId);
         if (claim.child.materialization.requestJson !== materialization.requestJson) throw new TelegramOriginHoldError('sealed-browser-request-mismatch', operation.record.operationId);
+        // Reserve only under the exclusive claim: a contender that lost the
+        // claim never touches the winner's reservation.
+        await this.options.service.reservePreparedContent(operation, claim.child.claimToken,
+          () => store.releaseUndispatchedClaim({ ...claim.child, detail: 'content-reservation-held' }));
+        reservedBy = claim.child.claimToken;
         this.claims.set(child.childId, { claim: claim.child, request, destination: operation.record.destination, record: operation.record });
         try {
           const outcome = await this.broker.executePreparedChild({ ...request, childId: child.childId,
             originId: operation.record.originId, claimFence: claim.child.claimToken });
-          if (outcome.state === 'accepted') platformAccepted = true;
+          if (outcome.state === 'accepted') {
+            platformAccepted = true;
+            acceptedAll = child === operation.admission.children.at(-1);
+          }
           let saved;
           try {
             saved = await store.recordOutcome({ ...claim.child, outcome: outcome.state,
@@ -199,7 +207,8 @@ export class OriginBrowserExecutor {
         } finally { this.claims.delete(child.childId); }
       }
     } catch (error) {
-      if (reserved && !platformAccepted) await this.options.service.releasePreparedContent(operation);
+      if (acceptedAll) await this.options.service.completePreparedContent(operation);
+      else if (reservedBy && !platformAccepted) await this.options.service.releasePreparedContent(operation, reservedBy);
       throw error;
     }
     await this.options.service.completePreparedContent(operation);

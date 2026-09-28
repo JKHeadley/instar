@@ -43,7 +43,7 @@ export interface OriginServiceStore {
   admit(input: OriginAdmission): Promise<AdmissionResult>;
   claim(input: ClaimInput): Promise<ClaimResult>;
   markDispatched(fence: ClaimFence): Promise<boolean>;
-  releaseUndispatchedClaim?(fence: ClaimFence): Promise<boolean>;
+  releaseUndispatchedClaim?(fence: ClaimFence & { detail?: 'content-reservation-held' }): Promise<boolean>;
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult>;
   recordOperationState(input: {operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number}): Promise<boolean>;
   getOrigin(originId: string): Promise<OriginAuditRecord | null>;
@@ -232,7 +232,11 @@ export class TelegramOriginService {
     }
     this.authorizeSendPolicyDispatch(operation.record);
   }
-  async reservePreparedContent(operation: OriginPreparedBotOperation): Promise<void> {
+  /** Called only while the caller holds this operation's exclusive outbox
+   * claim (`claimToken`), which becomes the reservation's release owner. On a
+   * refusal, `releaseClaim` returns the undispatched claim first so the child
+   * stays queued for the outbox's own bounded retry. */
+  async reservePreparedContent(operation: OriginPreparedBotOperation, claimToken: string, releaseClaim: () => Promise<unknown>): Promise<void> {
     const authority = this.options.sendPolicy;
     if (!authority?.reserveContent || !authority.completeContent) {
       if (this.requiresSendPolicy(operation.record)) throw new TelegramOriginHoldError('content-dedup-unavailable', operation.record.operationId);
@@ -243,8 +247,12 @@ export class TelegramOriginService {
       if (this.requiresSendPolicy(operation.record)) throw new TelegramOriginHoldError('send-policy-input-unavailable', operation.record.operationId);
       return;
     }
-    const decision = await authority.reserveContent(operation.record, first.policy, operation.admission.deadlineAt);
+    const decision = await authority.reserveContent(operation.record, first.policy, operation.admission.deadlineAt, claimToken);
     if (!decision.ok) {
+      await releaseClaim();
+      // Only platform acceptance of this content is terminal. Another send
+      // still in flight ('content-reservation-pending') leaves this operation
+      // queued: if that send fails, this one must still deliver.
       if (decision.reason === 'duplicate-content') {
         // A suppressed fresh operation must never become a delayed duplicate
         // when the content window expires. The outbox owns this terminal state.
@@ -255,13 +263,14 @@ export class TelegramOriginService {
       throw new OriginSendPolicyRefusal(decision, operation.record.operationId);
     }
   }
-  /** A held, failed or outcome-unknown operation with no platform acceptance
-   * is not a delivery, so it must not suppress a fresh identical send. Nothing
-   * is replayed here; the outbox's own retry re-reserves (and is suppressed if
-   * a fresh send took the content over). Release is fenced to this operation. */
-  async releasePreparedContent(operation: OriginPreparedBotOperation): Promise<void> {
+  /** An execution that ended with no platform acceptance is not a delivery,
+   * so it must not suppress a fresh identical send. Nothing is replayed here;
+   * the outbox's own retry re-reserves (and is suppressed only if a fresh send
+   * of the same text was accepted meanwhile). Release is fenced to the claim
+   * token that reserved it, so a losing or stale execution releases nothing. */
+  async releasePreparedContent(operation: OriginPreparedBotOperation, claimToken: string): Promise<void> {
     const first = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? 'null') as unknown as { policy?: unknown };
-    if (validOriginSendPolicyInput(first?.policy)) await this.options.sendPolicy?.releaseContent?.(operation.record, first.policy);
+    if (validOriginSendPolicyInput(first?.policy)) await this.options.sendPolicy?.releaseContent?.(operation.record, first.policy, claimToken);
   }
   async completePreparedContent(operation: OriginPreparedBotOperation): Promise<void> {
     const first = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? 'null') as unknown as { policy?: unknown };
@@ -508,14 +517,15 @@ export class TelegramOriginService {
     const stored = await this.options.store.getOrigin(operation.record.originId);
     if (!stored || stored.record.envelopeJson !== canonicalOrigin(operation.record) ||
       stored.operation?.operationId !== operation.record.operationId) return this.#hold(operation, 'stored-origin-mismatch');
-    const reserved = stored.children.some(child => child.state !== 'accepted');
-    if (reserved) {
-      await this.reviewPreparedSendPolicy(operation);
-      await this.reservePreparedContent(operation);
-    }
+    if (stored.children.some(child => child.state !== 'accepted')) await this.reviewPreparedSendPolicy(operation);
     // Any platform acceptance (stored or in this run) keeps the reservation:
     // part of this content may be visible to the user.
     let platformAccepted = stored.children.some(child => child.state === 'accepted');
+    // The claim token under which THIS execution holds the content reservation.
+    let reservedBy: string | null = null;
+    // The platform accepted every child, even if a local receipt write failed:
+    // an observed acceptance is a delivery for dedup purposes.
+    let acceptedAll = false;
     let last: Response | null = null;
     try {
       for (const child of operation.admission.children) {
@@ -552,6 +562,13 @@ export class TelegramOriginService {
           ownerBootId: this.options.ownerBootId, leaseMs: 60_000 });
         if (claim.status !== 'claimed') return this.#hold(operation, `outbox-${claim.reason}`);
         if (claim.child.originId !== operation.record.originId || claim.child.operationId !== operation.record.operationId || claim.child.materialization.requestJson !== materialization.requestJson) return this.#hold(operation, 'claim-request-mismatch');
+        // Reserve only under the exclusive claim: a contender that lost the
+        // claim never touches the winner's reservation.
+        await this.reservePreparedContent(operation, claim.child.claimToken, async () => {
+          prepared?.cancel();
+          await this.options.store.releaseUndispatchedClaim?.({ ...claim.child, detail: 'content-reservation-held' });
+        });
+        reservedBy = claim.child.claimToken;
         // Ownership may be revoked while the durable claim transaction runs.
         if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
         this.authorizeSendPolicyDispatch(operation.record);
@@ -589,6 +606,7 @@ export class TelegramOriginService {
         const receipt = correlateBotReceipt(request, parsed?.result, this.#now());
         if (response.ok && parsed?.ok === true) platformAccepted = true;
         if (response.ok && parsed?.ok === true && receipt) {
+          acceptedAll = child === operation.admission.children.at(-1);
           let saved: OutcomeWriteResult;
           try { saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
           catch { throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown'); }
@@ -615,7 +633,8 @@ export class TelegramOriginService {
       }
       if (!last) return this.#hold(operation, 'empty-prepared-plan');
     } catch (error) {
-      if (reserved && !platformAccepted) await this.releasePreparedContent(operation);
+      if (acceptedAll) await this.completePreparedContent(operation);
+      else if (reservedBy && !platformAccepted) await this.releasePreparedContent(operation, reservedBy);
       throw error;
     }
     await this.completePreparedContent(operation);

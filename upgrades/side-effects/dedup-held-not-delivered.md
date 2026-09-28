@@ -128,19 +128,31 @@ judgment.
 
 ## 5. Interactions
 
-- **Shadowing:** `reservePreparedContent` still runs before dispatch, and the
-  release runs only after a thrown hold or failure from the dispatch loop. The
-  duplicate refusal itself is thrown by `reservePreparedContent`, outside the new
-  try, so a suppressed operation never releases another operation's reservation.
-  The owner fence makes this doubly safe.
+- **Shadowing (round 2):** `reservePreparedContent` now runs inside the dispatch
+  loop, right after the child's exclusive outbox claim is won, with that claim
+  token as the reservation's owner. A refusal (`duplicate-content` or
+  `content-reservation-pending`) first returns the undispatched claim
+  (`releaseUndispatchedClaim`, audit detail `content-reservation-held`) so the
+  child stays queued. The release runs only for the claim token this execution
+  reserved under, so neither a refused operation nor a claim loser releases
+  anything.
 - **Double-fire:** `completePreparedContent` runs only on the success path,
   outside the try. The release runs only in the catch. The two never both run for
   one execution.
-- **Races:** a fresh identical send that arrives while the first is still in
-  flight still sees the live reservation and is suppressed, as before. The
-  release happens only after the first has definitively failed. The release
-  `UPDATE` is fenced by `operation_id` and `expires_at > now`, so it can't clear a
-  reservation that a newer operation has since taken.
+- **Races (round 2, from the Astra review):** a fresh identical send that
+  arrives while the first is in flight is held (`409 content-reservation-pending`)
+  and stays queued, never marked suppressed: in flight is not delivered. If the
+  first then fails, the held one still delivers on its own retry. Two executions
+  of one operation (initial send and recovery, or main and lifeline) contend for
+  the outbox claim; the loser holds before reserving and cannot release the
+  winner's reservation. A later claim of the same operation adopts ownership, so
+  an earlier execution's late release is fenced out. The release `UPDATE` is
+  fenced by `operation_id`, the owning claim token and `expires_at > now`.
+- **Observed acceptance with an unsaved receipt:** when every child was accepted
+  by the platform but the local receipt write failed, the execution now records
+  the acceptance in the dedup store (`completePreparedContent`), so repeats are
+  suppressed as confirmed deliveries rather than by a lingering reservation.
+  Partial acceptance still keeps the reservation (conservative).
 - **Feedback loops:** none. Nothing re-drives because of a release.
 - **In-memory held list / outbox recovery:** both unchanged. They still own
   retries, and their retry re-reserves.
@@ -148,11 +160,12 @@ judgment.
   added with #2010). Two browser cases asserted the retention on purpose, and
   both are updated to the new contract. Their safety assertions are kept and
   strengthened:
-  - (a) While a browser send is in flight, identical sends are still suppressed.
-    Two suppressed operations do not release the in-flight owner's
-    reservation. After an unaccepted ambiguous failure, the agent's fresh send
-    goes out once. A genuine repeat after that is suppressed. Nothing is left
-    for the outbox to recover.
+  - (a) While a browser send is in flight, identical sends are held (409
+    `content-reservation-pending`), not suppressed and not sent, and they do
+    not release the in-flight owner's reservation. After an unaccepted
+    ambiguous failure, the agent's fresh send goes out once. A genuine repeat
+    after that is suppressed, and the two held contenders' own recovery then
+    finds the confirmed delivery and stands down with no further send.
   - (b) Held, then the agent's resend is held too (409, not "already
     delivered"). When authority returns, `recoverHeld()` delivers exactly once:
     one operation is `accepted`, the other is `suppressed`, and there is one
@@ -164,11 +177,15 @@ judgment.
 
 - **Telegram:** a resend after a hold now reaches the user instead of being
   dropped.
-- **Relay script output:** unchanged. "NOT SENT — suppressed duplicate" now
-  appears only when the text was really accepted (or is in flight).
+- **Relay script output:** "NOT SENT — suppressed duplicate" now appears only
+  when the text was really accepted. An identical send that meets one still in
+  flight gets the ordinary held 409 (`content-reservation-pending`).
 - **Persistent state:** `outbound_origin_reservations` rows get an earlier
-  `expires_at` on release. There is no schema change, and expired slots are
-  already reused in place.
+  `expires_at` on release. One additive table, `outbound_origin_reservation_owners`
+  (slot, operation, claim token), bounded by the 4096 slots. It is a side table
+  rather than a new column, so an older build's positional insert keeps working
+  after a rollback. The origin outbox gains one audit-detail value,
+  `content-reservation-held`.
 - **Operator surface:** no operator-facing actions.
 
 ## 6b. Operator-surface quality
@@ -190,9 +207,10 @@ could strand on a topic transfer.
 
 ## 8. Rollback cost
 
-This is a pure code change: revert and ship a patch. There's no schema or data
-migration. Released rows simply have an earlier `expires_at`, which the old code
-treats as expired slots.
+Revert and ship a patch. There is no data migration. Released rows simply have
+an earlier `expires_at`, which the old code treats as expired slots. The added
+owners table is ignored by the old code (tested: the old positional insert still
+succeeds).
 
 ---
 
@@ -200,10 +218,12 @@ treats as expired slots.
 
 The dedup now counts only platform-accepted sends as delivered. Held,
 known-failed and outcome-unknown sends release their own reservation, so an
-agent's fresh identical send goes out. Real deliveries, partial deliveries and
-in-flight sends still suppress. The outbox's own retry of a held send is
-suppressed if the fresh send took the content over, so the platform never
-double-sends. The one accepted trade is an agent-chosen resend after an unknown
+agent's fresh identical send goes out. Real and partial deliveries still
+suppress. An in-flight send holds identical sends without suppressing them. The
+outbox's own retry of a held send stands down only after the fresh send is
+confirmed delivered, and reservation release is fenced to the execution that
+owns the outbox claim. So for ordinary sends and outbox retries, the platform
+does not produce two confirmed deliveries of the same text. The one accepted trade is an agent-chosen resend after an unknown
 outcome that had in fact landed. The second pass concurred after one round of changes.
 
 ---
@@ -226,6 +246,25 @@ outcome that had in fact landed. The second pass concurred after one round of ch
   machine's clock, so clock skew shifts the look-back by the same amount.
 
 ---
+
+## Round 3 — Astra review of PR #2087 (CHANGES REQUIRED → addressed)
+
+1. *In-flight fresh send suppressed a held reply terminally.* The dedup result now
+   distinguishes `pending` (another operation's live reservation) from
+   `duplicate` (platform acceptance recorded). `pending` is a temporary hold that
+   leaves the operation queued; only `duplicate` marks it suppressed. Regression:
+   Astra's interleaving (held A, fresh B paused, A retried, B refused 400) — A is
+   held, stays recoverable, then delivers.
+2. *A claim loser released the winner's reservation (double send).* Reservation
+   moved behind the exclusive outbox claim; the claim token owns release. Both bot
+   and browser paths. Regression: Astra's concurrent-execution probe — one network
+   call, fresh B held, later a confirmed duplicate.
+3. *Worker timing flake (present on main).* Repaired under Rule 37, not
+   quarantined: `store-worker-recovery.test.ts` used a 100 ms caller deadline
+   around real SQLite work, and `healthyWindowMs: 1` raced a same-millisecond
+   response. Deadlines are now 1 s with stalls scaled past them, and the checks
+   that assert episode closure wait out the healthy window. No production timeout
+   changed. Verified 8 concurrent copies of the file green.
 
 ## Evidence pointers
 

@@ -425,6 +425,50 @@ describe('origin service durable delivery', () => {
       expect((await sendLong(h)).ok).toBe(true);
       expect(h.network).toHaveBeenCalledTimes(3);
     });
+    const pausedNetwork = (h: Awaited<ReturnType<typeof harness>>) => {
+      let started!: () => void, finish!: (response: Response) => void;
+      const began = new Promise<void>(resolve => { started = resolve; });
+      h.network.mockImplementationOnce(() => { started(); return new Promise<Response>(resolve => { finish = resolve; }); });
+      return { began, finish: (response: Response) => finish(response) };
+    };
+    it('a held retry behind an in-flight fresh send stays recoverable and still delivers when that send is refused', async () => {
+      const h = await harness();
+      const held = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(held);
+      h.authorize.mockResolvedValueOnce(false);
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'destination-not-authorized' });
+      const paused = pausedNetwork(h);
+      const fresh = sendLong(h).catch(error => error);
+      await paused.began;
+      // In flight is not delivered: a temporary hold, never a suppression.
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'content-reservation-pending' });
+      paused.finish(new Response(JSON.stringify({ ok: false, description: 'rejected' }), { status: 400 }));
+      expect(await fresh).toMatchObject({ outcome: 'known-failed' });
+      const row = await h.store.getOrigin(held.record.originId);
+      expect(row?.operation?.state).not.toBe('suppressed');
+      expect(row?.children.map(child => child.state)).toEqual(['queued']);
+      expect((await h.store.recoverableAdmissions()).map(a => a.operationId)).toContain(held.record.operationId);
+      // The outbox's own retry now delivers the reply.
+      expect((await h.service.executePreparedBot(held, h.network)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledTimes(2);
+    });
+    it('a competing execution that loses the claim never releases the live execution\'s reservation', async () => {
+      const h = await harness();
+      const op = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(op);
+      const paused = pausedNetwork(h);
+      const first = h.service.executePreparedBot(op, h.network);
+      await paused.began;
+      await expect(h.service.executePreparedBot(op, h.network)).rejects.toMatchObject({ reason: 'outbox-not-ready' });
+      // The identical fresh send finds the live reservation and is held, not sent.
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'content-reservation-pending' });
+      paused.finish(new Response(JSON.stringify({ ok: true, result: { message_id: 8, chat: { id: -100123 }, message_thread_id: 42 } }), { status: 200 }));
+      expect((await first).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // Once delivered, a further identical send is a confirmed duplicate.
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
   });
   it('does not prepare a session revoked while its runtime observation refreshes', async () => {
     const h = await harness();

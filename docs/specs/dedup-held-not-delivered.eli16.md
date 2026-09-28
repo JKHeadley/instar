@@ -39,7 +39,13 @@ text had already been delivered.
   not be saved. So a genuinely delivered message is still suppressed, exactly as
   before.
 - The release only touches the failing send's own reservation. It can't clear
-  another send's reservation or a delivery record.
+  another send's reservation or a delivery record. A send takes its reservation
+  only after it has won the outbox's exclusive right to transmit, and only that
+  same attempt can release it. So a second attempt that lost that race can never
+  free the winner's reservation and let a third identical send slip through.
+- A send that is still on its way is not a delivery. An identical send that meets
+  it is held and retried later, never marked "already delivered". If the first
+  send then fails, the held one still goes out.
 
 ## What did not change
 
@@ -47,8 +53,10 @@ text had already been delivered.
   uncertain send on its own. This change only stops the guard from blocking a new
   send that the agent chooses to make.
 - If the held send is later retried by the outbox, it takes a fresh reservation.
-  If the agent's new send already went out, the retry finds the delivery record
-  and is suppressed. So the two can't both reach the operator.
+  If the agent's new send is still on its way, the retry is held again and tries
+  later. Only once the new send is confirmed delivered does the retry find the
+  delivery record and stand down. So an ordinary held send and its replacement
+  can't both reach the operator. The one exception is the trade-off below.
 
 ## The one trade-off
 

@@ -324,7 +324,7 @@ export class OriginStore {
   registerOwner(input: { ownerBootId: string; machineId: string }): Promise<void> { return this.call('registerOwner', input); }
   claim(input: ClaimInput): Promise<ClaimResult> { return this.call('claim', input); }
   markDispatched(input: ClaimFence & { now?: number }): Promise<boolean> { return this.call('markDispatched', input); }
-  releaseUndispatchedClaim(input: ClaimFence & { now?: number }): Promise<boolean> { return this.call('releaseUndispatchedClaim', input); }
+  releaseUndispatchedClaim(input: ClaimFence & { now?: number; detail?: 'content-reservation-held' }): Promise<boolean> { return this.call('releaseUndispatchedClaim', input); }
   renewClaim(input: ClaimFence & { leaseMs: number; now?: number }): Promise<boolean> { return this.call('renewClaim', input); }
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult> { return this.call('recordOutcome', input); }
   reapAbandoned(now?: number): Promise<number> { return this.call('reapAbandoned', now); }

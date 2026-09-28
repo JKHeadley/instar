@@ -30,10 +30,14 @@ export interface OutboundDedupStore {
   /** Record that `fingerprint` was sent to `topicId` at `atMs`. Call after a successful send. */
   record(topicId: number | string, fingerprint: string, atMs: number): void;
   hasOriginReservation?(topicId: number | string, fingerprint: string, now: number): boolean | null;
-  reserveOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number; expiresAt: number; sentSince: number }): 'reserved' | 'duplicate' | 'unavailable';
+  reserveOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; ownerToken: string; now: number; expiresAt: number; sentSince: number }): OriginReservation;
   completeOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number; expiresAt: number }): boolean;
-  releaseOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number }): boolean;
+  releaseOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; ownerToken: string; now: number }): boolean;
 }
+
+/** `pending` = another operation holds a live reservation (in flight, not
+ * delivered). `duplicate` = the content was accepted by the platform. */
+export type OriginReservation = 'reserved' | 'pending' | 'duplicate' | 'unavailable';
 
 /** A no-op store — the explicit "no durable layer" fallback. */
 export const NULL_OUTBOUND_DEDUP_STORE: OutboundDedupStore = {
@@ -64,6 +68,11 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
         slot INTEGER PRIMARY KEY CHECK(slot >= 0 AND slot < 4096), topic_key TEXT NOT NULL,
         fingerprint TEXT NOT NULL, operation_id TEXT NOT NULL, expires_at INTEGER NOT NULL,
         UNIQUE(topic_key, fingerprint))`);
+      // The outbox claim that may release each slot's reservation. A side table
+      // (bounded by the 4096 slots) so an older build's positional INSERT into
+      // the reservations table keeps working after a rollback.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS outbound_origin_reservation_owners (
+        slot INTEGER PRIMARY KEY, operation_id TEXT NOT NULL, owner_token TEXT NOT NULL)`);
       // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown so
       // the handle never leaks (db-leak hygiene; relevant to the topic-21816
       // resource theme). Registered only after the db is successfully open.
@@ -128,21 +137,32 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
   }
 
   /** Fixed 4096-slot reservation table; expired slots are reused in place.
-   * This is content suppression state, never a transport claim or retry queue. */
-  reserveOrigin(input: { topicId: number | string; fingerprint: string; operationId: string; now: number; expiresAt: number; sentSince: number }): 'reserved' | 'duplicate' | 'unavailable' {
+   * This is content suppression state, never a transport claim or retry queue.
+   * Callers reserve only while holding the operation's exclusive outbox claim,
+   * so the same operation re-reserving adopts ownership for its current claim;
+   * an earlier execution's release is then fenced out. */
+  reserveOrigin(input: { topicId: number | string; fingerprint: string; operationId: string; ownerToken: string; now: number; expiresAt: number; sentSince: number }): OriginReservation {
     if (!this.db) return 'unavailable';
     try {
       return this.db.transaction(() => {
         const db = this.db!, key = String(input.topicId);
         const existing = db.prepare('SELECT slot,operation_id,expires_at FROM outbound_origin_reservations WHERE topic_key=? AND fingerprint=?').get(key, input.fingerprint) as { slot: number; operation_id: string; expires_at: number } | undefined;
-        if (existing && existing.expires_at > input.now) return existing.operation_id === input.operationId ? 'reserved' : 'duplicate';
+        const live = existing && existing.expires_at > input.now;
+        const own = (slot: number) => db.prepare('INSERT INTO outbound_origin_reservation_owners VALUES (?,?,?) ON CONFLICT(slot) DO UPDATE SET operation_id=excluded.operation_id,owner_token=excluded.owner_token')
+          .run(slot, input.operationId, input.ownerToken);
+        if (live && existing.operation_id === input.operationId) { own(existing.slot); return 'reserved'; }
+        // Platform acceptance outranks contention; a live row alone is only in flight.
         if (db.prepare('SELECT 1 FROM outbound_dedup WHERE topic_id=? AND fingerprint=? AND sent_at>=?').get(input.topicId, input.fingerprint, input.sentSince)) return 'duplicate';
+        if (live) return 'pending';
         const reusable = existing ?? db.prepare('SELECT slot FROM outbound_origin_reservations WHERE expires_at<=? ORDER BY slot LIMIT 1').get(input.now) as { slot: number } | undefined;
-        if (reusable) db.prepare('UPDATE outbound_origin_reservations SET topic_key=?,fingerprint=?,operation_id=?,expires_at=? WHERE slot=?').run(key, input.fingerprint, input.operationId, input.expiresAt, reusable.slot);
-        else {
+        if (reusable) {
+          db.prepare('UPDATE outbound_origin_reservations SET topic_key=?,fingerprint=?,operation_id=?,expires_at=? WHERE slot=?').run(key, input.fingerprint, input.operationId, input.expiresAt, reusable.slot);
+          own(reusable.slot);
+        } else {
           const count = (db.prepare('SELECT count(*) AS n FROM outbound_origin_reservations').get() as { n: number }).n;
           if (count >= 4096) return 'unavailable';
           db.prepare('INSERT INTO outbound_origin_reservations VALUES (?,?,?,?,?)').run(count, key, input.fingerprint, input.operationId, input.expiresAt);
+          own(count);
         }
         return 'reserved';
       }).immediate();
@@ -184,17 +204,20 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
     }
   }
 
-  /** Owner-fenced release of a reservation whose operation ended with no
-   * platform acceptance (held, known-failed, outcome-unknown). A reservation is
-   * not a delivery: leaving it live made a fresh identical send report
-   * "already delivered" for a message the user never received. Accepted
-   * fingerprints in outbound_dedup are untouched, so a real delivery is still
-   * suppressed; the operation's own retry simply re-reserves. */
-  releaseOrigin(input: { topicId: number | string; fingerprint: string; operationId: string; now: number }): boolean {
+  /** Owner-fenced release of a reservation whose execution ended with no
+   * platform acceptance (known-failed, outcome-unknown, held after its claim).
+   * A reservation is not a delivery: leaving it live made a fresh identical
+   * send report "already delivered" for a message the user never received.
+   * Fenced to the execution's own claim token, so a losing or earlier
+   * execution can never expire a live execution's reservation. Accepted
+   * fingerprints in outbound_dedup are untouched. */
+  releaseOrigin(input: { topicId: number | string; fingerprint: string; operationId: string; ownerToken: string; now: number }): boolean {
     if (!this.db) return false;
     try {
-      return this.db.prepare('UPDATE outbound_origin_reservations SET expires_at=? WHERE topic_key=? AND fingerprint=? AND operation_id=? AND expires_at>?')
-        .run(input.now, String(input.topicId), input.fingerprint, input.operationId, input.now).changes > 0;
+      return this.db.prepare(`UPDATE outbound_origin_reservations SET expires_at=? WHERE topic_key=? AND fingerprint=? AND operation_id=? AND expires_at>?
+        AND EXISTS (SELECT 1 FROM outbound_origin_reservation_owners o WHERE o.slot=outbound_origin_reservations.slot
+          AND o.operation_id=outbound_origin_reservations.operation_id AND o.owner_token=?)`)
+        .run(input.now, String(input.topicId), input.fingerprint, input.operationId, input.now, input.ownerToken).changes > 0;
     } catch {
       DegradationReporter.getInstance().report({
         feature: 'OutboundDedupStore.origin-reservation-release',

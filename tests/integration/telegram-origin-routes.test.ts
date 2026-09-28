@@ -254,10 +254,14 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     h.invoke.mockImplementationOnce(() => { started(); return new Promise((_resolve, reject) => { fail = reject; }); });
     const sending = h.send(text).then(response => response);
     await began;
-    // In flight: identical sends are suppressed, and a suppressed operation
-    // never releases the in-flight owner's reservation.
-    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
-    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    // In flight is not delivered: identical sends are held (never suppressed,
+    // never sent), and a contender never releases the in-flight owner's reservation.
+    for (let i = 0; i < 2; i++) {
+      const contender = await h.send(text);
+      expect(contender.status).toBe(409); expect(contender.body.reason).toBe('content-reservation-pending');
+      expect(contender.body.suppressedDuplicate).toBeUndefined();
+    }
+    expect(h.invoke).toHaveBeenCalledOnce();
     fail(new Error('fixture transport disconnected after possible acceptance'));
     expect((await sending).status).toBe(409);
     // No platform acceptance was seen, so it is not "already delivered": the
@@ -267,6 +271,11 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(fresh.status).toBe(200); expect(fresh.body.suppressedDuplicate).toBeUndefined();
     expect(h.invoke).toHaveBeenCalledTimes(2);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    // The two held contenders stay queued; their own recovery now finds the
+    // confirmed delivery and stands down without a second send.
+    expect(await h.runtime.store.recoverableAdmissions()).toHaveLength(2);
+    await h.runtime.recoverHeld();
+    expect(h.invoke).toHaveBeenCalledTimes(2);
     const rows = (await h.runtime.store.listOrigins()).records;
     expect(rows.filter(row => row.operation?.state === 'outcome-unknown')).toHaveLength(1);
     expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(3);

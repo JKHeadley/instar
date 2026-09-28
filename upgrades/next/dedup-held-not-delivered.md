@@ -13,9 +13,15 @@ message was already delivered". That happened at least four times on 2026-09-27
 (Mac Studio, topic 102965), and none of those messages had been delivered.
 
 Now, when an operation ends with no platform acceptance, it releases its own
-reservation. The release is owner-fenced (`SqliteOutboundDedupStore.releaseOrigin`)
-and wired through `TelegramOriginService.releasePreparedContent` for both the bot
-and browser transports. A send the platform accepted, even partly, and even if
+reservation. The reservation is taken only after the operation wins its exclusive
+outbox claim, and the claim token owns it, so only that execution can release it
+(`SqliteOutboundDedupStore.releaseOrigin`, fenced by operation and claim token).
+A contender that loses the claim never touches the winner's reservation. This is
+wired through `TelegramOriginService.releasePreparedContent` for both the bot and
+browser transports. A reservation held by a different operation that is still in
+flight now answers `409 content-reservation-pending`: the operation stays queued
+for the outbox's own retry and is never marked suppressed. Only confirmed
+platform acceptance suppresses. A send the platform accepted, even partly, and even if
 its receipt could not be saved, keeps its reservation. So a genuinely delivered
 identical message is still suppressed. Nothing is resent automatically. If the
 outbox later retries the held operation, the retry looks back to when that
@@ -32,8 +38,19 @@ suppressed.
   retry is then suppressed with no second Telegram call. An outcome-unknown send
   and a 429 both let the fresh send go out. The "goes out" cases fail on the
   previous code.
-- `tests/unit/telegram-origin/content-dedup.test.ts` covers the owner-fenced
-  release, and shows an accepted fingerprint is never un-suppressed.
+- The same file covers the two concurrency cases from review. A held retry that
+  meets an in-flight fresh send is held, stays recoverable, and still delivers
+  when that fresh send is refused. A second execution of an in-flight operation
+  loses the claim and does not release its reservation, so a fresh identical send
+  is held, and only one Telegram call happens.
+- `tests/unit/telegram-origin/content-dedup.test.ts` covers the claim-token-fenced
+  release, `pending` versus `duplicate`, and shows an accepted fingerprint is
+  never un-suppressed.
+- `tests/unit/telegram-origin/store-worker-recovery.test.ts`: a timing flake that
+  also exists on main is repaired (Rule 37). Real worker transactions ran under a
+  100 ms caller deadline and timed out under suite load. They now get a 1 s
+  deadline, with each injected stall scaled to stay well past the deadline it
+  tests.
 - `tests/integration/dedup-held-not-delivered.test.ts` covers the full
   `/telegram/reply` path. A 409 hold, then the identical resend is sent (200).
   Then a real repeat is suppressed. An outcome-unknown 409, then the resend is

@@ -14,12 +14,16 @@ export function originContentDedup(dedup: OutboundContentDedup, configuredChatId
     return JSON.stringify(['telegram-origin', d.accountId, d.chatId, d.topicId, d.messageId]);
   };
   return {
-    reserveContent: async (record, input, deadlineAt) => {
+    reserveContent: async (record, input, deadlineAt, ownerToken) => {
       // Editing an existing message is a distinct user action, not a duplicate
       // new message. Include the target identity for edits and other namespaces.
       const destination = destinationOf(record);
-      const result = dedup.reserveOrigin(destination, input.text, record.operationId, deadlineAt, record.createdAt);
+      const result = dedup.reserveOrigin(destination, input.text, record.operationId, ownerToken, deadlineAt, record.createdAt);
       if (result === 'reserved') return { ok: true };
+      // Another send of this text is still in flight: nothing is delivered yet,
+      // so this operation stays queued for the outbox's own retry.
+      if (result === 'pending') return { ok: false, status: 409, reason: 'content-reservation-pending',
+        body: { error: 'telegram-origin-held', reason: 'content-reservation-pending', outcome: 'held', originId: record.originId } };
       if (result === 'duplicate') return { ok: false, status: 200, reason: 'duplicate-content',
         body: { ok: true, suppressedDuplicate: true, originId: record.originId } };
       return { ok: false, status: 409, reason: 'content-dedup-unavailable', body: { error: 'content-dedup-unavailable', retryable: false } };
@@ -27,8 +31,8 @@ export function originContentDedup(dedup: OutboundContentDedup, configuredChatId
     completeContent: async (record, input) => {
       dedup.completeOrigin(destinationOf(record), input.text, record.operationId);
     },
-    releaseContent: async (record, input) => {
-      dedup.releaseOrigin(destinationOf(record), input.text, record.operationId);
+    releaseContent: async (record, input, ownerToken) => {
+      dedup.releaseOrigin(destinationOf(record), input.text, record.operationId, ownerToken);
     },
   };
 }
