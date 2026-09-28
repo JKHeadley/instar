@@ -337,3 +337,11 @@ of the blanket claim.
 Concur — concern resolved. `relinquishGeneration` is bumped in `relinquish()`, which every relinquish path goes through. It is captured before the broadcast and checked on both routes that install a renewal: renew's own continuation returns false before the confirmed, solo-hold and grace branches, and `adoptLateRenewal()` refuses first thing. The two new tests cover the late-ack and on-time-ack cases, and they match the revival I reproduced earlier. The unit file passes 15/15. The section-2 claim now matches the code.
 
 — second-pass reviewer subagent, round 2 (follow-up), 2026-09-27
+
+### CI note (round 2)
+
+`no-silent-fallbacks` counted renew()'s pre-existing `.catch(() => false)` once the
+round-2 reformat put the new relinquish-guard `return false` inside its 20-line
+scan window (496 > 495). A throwing broadcast is an unconfirmed renewal, which is
+fail-closed, so the catch now carries an on-line `@silent-fallback-ok` tag. No
+behavior change.

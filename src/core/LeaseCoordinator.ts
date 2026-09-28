@@ -855,7 +855,7 @@ export class LeaseCoordinator {
       const generation = this.relinquishGeneration;
       confirmed = await this.d.tunnel
         .broadcast(renewed, () => this.adoptLateRenewal(renewed, generation))
-        .catch(() => false);
+        .catch(() => false); // @silent-fallback-ok: a throw is an UNCONFIRMED renewal (fail-closed; hold/grace/suspend below)
       // Relinquished while the broadcast was in flight: never re-install the lease.
       if (generation !== this.relinquishGeneration) return false;
     } else {

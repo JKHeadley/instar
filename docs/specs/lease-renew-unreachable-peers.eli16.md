@@ -67,6 +67,12 @@ a separate commitment with a deadline. <!-- tracked: CMT-610 -->
 
 > **CMT-610** — "I will assess whether the origin display snapshot should tolerate a starved event loop (keep the last good snapshot through a transient config-read deadline, bounded) without weakening its fail-closed config-change guarantee, and ship a fix or a written ruling."
 
+## A note on one check
+
+A code scanner counts places that quietly swallow errors. The renewal already
+treated a failed send as "not confirmed", which is the safe direction. That line
+is now labeled so the scanner knows it is deliberate.
+
 ## Who decides what
 
 Nothing new is asked of anyone. No settings change; the deadline is derived
