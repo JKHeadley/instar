@@ -10,8 +10,8 @@ the dashboard's Sessions tab, so you can do it from your phone:
    can actually run here, and a door whose program isn't installed shows as greyed out with the
    reason.
 2. Each session's view gets a **Door + model** button. Pick a new pair, tap Switch, and that topic
-   restarts on the new door with its conversation intact. If the server needs a confirmation (for
-   example the topic is mid-task) the sheet shows the server's exact message and a "Switch anyway".
+   restarts on the new door with its conversation intact. If the server refuses the switch (for
+   example the topic hasn't had its first message yet), the sheet shows the server's exact message.
 3. The top of the Sessions list shows **Default for dashboard-created topics** (for example
    "Claude Code · Opus 5.5"). It fills the New Session dropdowns in advance, and every topic you
    create from the dashboard from then on starts on that pair.

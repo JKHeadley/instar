@@ -10707,6 +10707,26 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
     }
 
+    // Dashboard door + model controls (docs/specs/dashboard-door-model-controls.md
+    // §5) — one line appended to the Topic Profile section. Its OWN sniff string:
+    // the section backfill above sniffs the header only, so it would skip an
+    // agent whose section predates this line. Inserted right after the section's
+    // "- Config:" bullet when present (so framework shadow slices carry it),
+    // otherwise appended. Idempotent.
+    if (!content.includes('- **Dashboard door + model controls**')) {
+      const dashLine = `- **Dashboard door + model controls** (Sessions tab): the New Session modal picks the Door (framework) + Model for a new Telegram topic (it starts on that pin, with one disclosure line in the topic); a local Telegram session's "Door + model" button switches it (the ordinary token write — needs the topic's bound operator, i.e. one message in the topic first); the "Default for dashboard-created topics" row sets the starting door/model for topics created FROM THE DASHBOARD only (Telegram-created and existing topics are never changed; per-machine in v1). What the dropdowns offer here: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-profile/options\`. PROACTIVE: when the user wants to start a topic on a specific model from their phone, or asks "what model do new dashboard topics start on?", point them at these controls / read the options route.`;
+      const configBullet = content.indexOf('- Config: `.instar/config.json` → `topicProfiles`');
+      if (configBullet !== -1) {
+        const eol = content.indexOf('\n', configBullet);
+        const at = eol === -1 ? content.length : eol + 1;
+        content = content.slice(0, at) + (eol === -1 ? '\n' : '') + dashLine + '\n' + content.slice(at);
+      } else {
+        content += '\n' + dashLine + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard door + model controls line to Topic Profile section');
+    }
+
     // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing
     // agents learn the lease/voice + prose-inertness + honest-ack semantics + the
     // /threadline/negotiator surface via this appended section (Agent Awareness
@@ -11104,6 +11124,11 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // the conversational triggers + read surfaces will guess instead of
       // reading GET /topic-profile/:topicId (the B2/B36 failure class).
       '**Topic Profile (per-topic model, thinking, framework pins)**',
+      // Dashboard door + model controls (dashboard-door-model-controls §5): the
+      // line inside the Topic Profile section. The leading "- " makes it a clean
+      // boundary for the Topic Profile slice above and lets an existing shadow
+      // that already carries the section still receive the new line.
+      '- **Dashboard door + model controls**',
       // WS4.4 pool-stable links (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4):
       // framework-agnostic — a Codex/Gemini agent fronting a multi-machine pool
       // must know a /view/:id link proxies to the holder (and the security model:

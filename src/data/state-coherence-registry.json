@@ -1537,6 +1537,23 @@
         "maxOpenItems": 100,
         "note": "One record per deferred weekly window (window cardinality is tiny). RESOLVED by a successful send (removed), by exhaustion (terminal-failed, then removed on the next drain once the window is in recordedWindows), or by the drain clearing an already-decided window; never grows unbounded."
       }
+    },
+    {
+      "category": "new-topic-default-profile",
+      "description": "Dashboard 'default for dashboard-created topics' record ({framework, model, updatedAt, updatedBy}), read only by this machine's POST /sessions/create (docs/specs/dashboard-door-model-controls.md §3.2). Machine-local in v1: migrating-to-unified via issue #2085 (expires 2027-03-25); the surface labels it replication:'local-only'.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/new-topic-default-profile.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "A single replace-in-place record; {clear:true} deletes the file. No rows accumulate."
+      }
     }
   ]
 }

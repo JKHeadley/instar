@@ -399,6 +399,35 @@ export class TopicProfileStore {
     );
   }
 
+  // ── creation-time seed (dashboard-door-model-controls §3.2) ──────────────
+
+  /**
+   * Seed a pin ONLY if the topic has no entry at all (a `current: null` husk
+   * counts as present and blocks the seed). Runs under the same per-topic lock
+   * as `mutate`, so a concurrent write or a double-submitted create can never
+   * re-seed. Writes `{ current, previous: null }` — undo on a seed answers
+   * `nothing-to-undo`, as for the legacy seed. Callers validate first.
+   * A failed flush rolls back like `mutate` (throws FlushRefusedError).
+   */
+  async mutateIfAbsent(
+    topicKey: number | string,
+    seed: { framework: IntelligenceFramework; model?: string | null; updatedBy: string },
+  ): Promise<'seeded' | 'present'> {
+    const key = String(topicKey);
+    return this.withTopicLock(key, async () => {
+      if (this.topics[key]) return 'present';
+      const current: TopicProfile = {
+        framework: seed.framework,
+        ...(seed.model != null ? { model: seed.model } : {}),
+        updatedAt: this.now().toISOString(),
+        updatedBy: seed.updatedBy,
+      };
+      this.topics[key] = { current, previous: null, intendedProfile: null, parked: null, breakerCount: 0 };
+      await this.flushDurably();
+      return 'seeded';
+    });
+  }
+
   // ── REPLACE (transfer-apply / restore-apply, §5.3/§12) ───────────────────
 
   /**

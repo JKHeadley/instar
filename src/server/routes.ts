@@ -188,6 +188,7 @@ import {
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS } from './middleware.js';
+import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
 import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
@@ -1107,6 +1108,21 @@ export interface RouteContext {
     /** §5.3 transfer carrier — read-surface staleness (`pendingTransferPull`)
      *  + the /pool/transfer acquire seam. Null on single-machine installs. */
     carrier?: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
+    /** dashboard-door-model-controls §3.2 — the "default for dashboard-created
+     *  topics" record (state/new-topic-default-profile.json). */
+    newTopicDefault?: import('../core/dashboardTopicProfile.js').NewTopicDefaultStore;
+    /** §3.2 — the seed's audit sink (logs/topic-profile-changes.jsonl). */
+    audit?: (event: Record<string, unknown>) => void;
+    /** §3.2 — the seed's one disclosure line, sent with the deterministic
+     *  producer `topic-profile-creation-seed`. Fire-and-forget. */
+    discloseCreationSeed?: (topicKey: string, text: string) => Promise<unknown>;
+    /** §3.3 step 4/5 — spawn a just-created Telegram topic through the ONE
+     *  chokepoint (spawnSessionForTopic, silentStart) AND register the binding,
+     *  both under one spawningTopics token. Absent/not-wired ⇒ the
+     *  `telegram-routing-not-wired` refusal. A spawn throw propagates. */
+    spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+    /** §3.3 2b — the pool seam, evaluated at call time. Absent ⇒ `dark`. */
+    sessionPoolLocalClaim?: () => import('../core/dashboardTopicProfile.js').SessionPoolLocalClaimAnswer;
   } | null;
   /** Playwright Profile Registry (docs/specs/playwright-profile-registry.md) —
    *  optional factory override. Production constructs the registry per-request
@@ -10679,6 +10695,83 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   };
 
+  // ── Dashboard door + model controls (dashboard-door-model-controls.md) ──
+  // Registered BEFORE /topic-profile/:topicId so neither `options` nor
+  // `new-topic-default` is ever captured as a topic key.
+  const dashboardChoiceDeps = (tp: NonNullable<typeof ctx.topicProfile>): import('../core/dashboardTopicProfile.js').DashboardChoiceDeps => ({
+    enabledFrameworks: () => ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks,
+    doorAdmissibility: (fw) => tp.resolver.doorAdmissibility(fw),
+  });
+  /** §3.6 — seeds made from the default since boot (the sheet's count). */
+  let newTopicDefaultSeedsSinceBoot = 0;
+
+  // §3.1 — what the dropdowns may offer on THIS machine.
+  router.get('/topic-profile/options', (_req, res) => {
+    const tp = ctx.topicProfile;
+    if (!tp) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return;
+    }
+    const options = buildTopicProfileOptions({
+      ...dashboardChoiceDeps(tp),
+      frameworkDefaultModels: () => ctx.config.sessions?.frameworkDefaultModels ?? {},
+      regime: () => tp.surface.currentRegime(),
+      newTopicDefault: () => tp.newTopicDefault?.read() ?? null,
+    });
+    res.json({ ...options, newTopicDefault: { ...options.newTopicDefault, seedsSinceBoot: newTopicDefaultSeedsSinceBoot } });
+  });
+
+  // §3.2 — the "default for dashboard-created topics". Bearer + intent header
+  // exactly like POST /topic-profile/:topicId (operator decision 2026-09-27: NO
+  // PIN / operator-session step). `viaOperatorSession` is ATTRIBUTION ONLY.
+  const newTopicDefaultLimiter = rateLimiter(60_000, 5);
+  router.post('/topic-profile/new-topic-default', newTopicDefaultLimiter, (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'Topic-profile writes require the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    const tp = ctx.topicProfile;
+    if (!tp?.newTopicDefault) {
+      res.status(503).json({ error: 'Topic profiles not wired on this server' });
+      return;
+    }
+    const store = tp.newTopicDefault;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const viaOperatorSession = Boolean(
+      ctx.verifyDashboardOperatorSession?.(req.headers['x-instar-operator-session'] as string | undefined),
+    );
+    const before = store.read();
+    const audit = (next: unknown): void => {
+      tp.audit?.({
+        type: 'new-topic-default',
+        topicKey: '*new-topic-default*',
+        principal: 'api-token',
+        viaOperatorSession,
+        old: before ? { framework: before.framework, model: before.model } : null,
+        new: next,
+      });
+    };
+    try {
+      if (body.clear === true) {
+        store.clear();
+        audit(null);
+        res.json({ ok: true, newTopicDefault: null, replication: 'local-only' });
+        return;
+      }
+      const valid = validateDashboardProfileChoice(dashboardChoiceDeps(tp), { framework: body.framework, model: body.model });
+      if (!valid.ok) {
+        res.status(400).json({ ok: false, code: valid.code, error: valid.reason, ...(valid.chatPinAllowed ? { chatPinAllowed: true } : {}) });
+        return;
+      }
+      const record = { framework: valid.framework, model: valid.model, updatedAt: new Date().toISOString(), updatedBy: 'api-token' };
+      store.write(record);
+      audit({ framework: record.framework, model: record.model });
+      res.json({ ok: true, newTopicDefault: record, replication: 'local-only' });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/topic-profile/:topicId', (req, res) => {
     if (!TOPIC_PROFILE_KEY_RE.test(req.params.topicId)) {
       res.status(400).json({ error: 'Invalid topic key — numeric topic id or slack:<channel>[:<thread>]' });
@@ -11361,6 +11454,9 @@ export function createRoutes(ctx: RouteContext): Router {
   // Legacy: headless=true is equivalent to platform='headless'.
   router.post('/sessions/create', spawnLimiter, async (req, res) => {
     const { name, headless, platform } = req.body;
+    // dashboard-door-model-controls §3.3 — an optional door (framework) + model.
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const hasPreference = body.framework !== undefined || body.model !== undefined;
 
     if (!name || typeof name !== 'string' || name.trim().length < 1) {
       res.status(400).json({ error: '"name" is required (non-empty string)' });
@@ -11375,14 +11471,199 @@ export function createRoutes(ctx: RouteContext): Router {
     let topicId: number | undefined;
     let slackChannelId: string | undefined;
     const resolvedPlatform = platform || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : 'headless')));
+    const tp = ctx.topicProfile;
 
-    // Create Telegram topic
+    // §3.3 step 1 — a preference is a profile write: intent header, Telegram
+    // only, validated BEFORE anything is created.
+    if (hasPreference) {
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'Choosing a door/model requires the X-Instar-Request: 1 intent header' });
+        return;
+      }
+      if (resolvedPlatform !== 'telegram' || !ctx.telegram) {
+        // Never a silent headless fallback that drops the choice.
+        res.status(400).json({
+          error: resolvedPlatform !== 'telegram'
+            ? `A door/model choice needs a Telegram topic — "${resolvedPlatform}" sessions don't support it yet`
+            : 'A door/model choice needs a Telegram topic, and Telegram is not connected on this server',
+          code: 'preference-needs-telegram',
+        });
+        return;
+      }
+      if (!tp) {
+        res.status(503).json({ error: 'Topic profiles not wired on this server' });
+        return;
+      }
+      const valid = validateDashboardProfileChoice(dashboardChoiceDeps(tp), { framework: body.framework, model: body.model });
+      if (!valid.ok) {
+        res.status(400).json({ ok: false, code: valid.code, error: valid.reason, ...(valid.chatPinAllowed ? { chatPinAllowed: true } : {}) });
+        return;
+      }
+    }
+
+    // Telegram — the create saga (§3.3): the seed, once written, is retained;
+    // the placement is compensated by release; the Telegram topic is never
+    // deleted; every exit names the step it reached.
     if (resolvedPlatform === 'telegram' && ctx.telegram) {
+      // 2b pre-check — evaluated BEFORE step 2, so a refusal creates nothing.
+      const seam = tp?.sessionPoolLocalClaim;
+      const pre = seam?.() ?? { kind: 'dark' as const };
+      if (pre.kind === 'not-authoritative') {
+        res.status(409).json({
+          ok: false,
+          code: 'placement-not-authoritative-here',
+          holderMachineId: pre.holderMachineId,
+          holderNickname: pre.holderNickname,
+          error: pre.holderNickname || pre.holderMachineId
+            ? `New topics are placed by ${pre.holderNickname ?? pre.holderMachineId} right now — open that machine's dashboard to create this one.`
+            : 'This machine is not placing new topics right now — open the dashboard of the machine that holds the lease to create this one.',
+          step: 'placement-check',
+        });
+        return;
+      }
+
+      // Step 2 — create the Telegram topic.
+      let reused = false;
       try {
         const topic = await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'user' });
         topicId = topic.topicId;
+        reused = topic.reused === true;
       } catch (err) {
+        if (hasPreference) {
+          res.status(502).json({ ok: false, step: 'create-topic', error: `Telegram topic creation failed: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
         console.error(`[sessions/create] Telegram topic creation failed, proceeding headless: ${err}`);
+      }
+
+      if (topicId !== undefined) {
+        const key = String(topicId);
+        if (reused && hasPreference) {
+          res.status(409).json({ ok: false, code: 'topic-exists', topicId, step: 'create-topic', error: 'A topic with this name already exists — switch it from its session view.' });
+          return;
+        }
+
+        // 2b — place ownership on the new id (never on reuse).
+        let claim: import('../core/dashboardTopicProfile.js').DashboardClaimResult = { kind: 'dark' };
+        if (!reused) {
+          claim = claimDashboardCreatedTopic(seam, key);
+          if (claim.kind === 'not-authoritative') {
+            res.status(409).json({
+              ok: false,
+              code: 'placement-not-authoritative-here',
+              topicId,
+              holderMachineId: claim.holderMachineId,
+              holderNickname: claim.holderNickname,
+              step: 'place',
+              error: `The Telegram topic was created, but new topics are now placed by ${claim.holderNickname ?? claim.holderMachineId ?? 'another machine'} — finish on that machine (the topic's first message will start it there).`,
+            });
+            return;
+          }
+          if (claim.kind === 'refused') {
+            res.status(409).json({ ok: false, code: 'topic-owned-elsewhere', topicId, reason: claim.reason, step: 'place', error: 'This topic is already owned by another machine — nothing was seeded or started.' });
+            return;
+          }
+        }
+
+        // Step 3 — seed (explicit pick, else the new-topic default). Never on reuse.
+        let seed: Awaited<ReturnType<typeof seedTopicProfileAtCreation>> | null = null;
+        if (!reused && tp) {
+          const def = hasPreference ? null : (tp.newTopicDefault?.read() ?? null);
+          const source = hasPreference ? 'dashboard-create' as const : (def ? 'new-topic-default' as const : null);
+          if (source) {
+            try {
+              seed = await seedTopicProfileAtCreation({
+                ...dashboardChoiceDeps(tp),
+                store: tp.store,
+                regime: () => tp.surface.currentRegime(),
+                audit: (event) => tp.audit?.(event),
+                disclose: (k, text) => tp.discloseCreationSeed?.(k, text) ?? Promise.resolve(undefined),
+              }, key, source, hasPreference ? { framework: body.framework, model: body.model } : { framework: def!.framework, model: def!.model });
+              if (seed.outcome === 'seeded' && source === 'new-topic-default') newTopicDefaultSeedsSinceBoot++;
+            } catch (err) {
+              const settled = settleDashboardCreatedTopic(claim, key, 'spawn-threw');
+              res.status(500).json({
+                ok: false, step: 'seed', topicId, pinRetained: false, placement: settled,
+                error: `Could not record the starting door: ${err instanceof Error ? err.message : String(err)}. The topic exists but is unseeded — its first message runs on the defaults; set the door from the session view after that first message.`,
+              });
+              return;
+            }
+          }
+        }
+        const pinRetained = seed?.outcome === 'seeded';
+
+        // Steps 4+5 — spawn through the ONE chokepoint + register, under one guard token.
+        if (!tp?.spawnForTopic) {
+          const settled = settleDashboardCreatedTopic(claim, key, 'spawn-threw');
+          res.status(409).json({ ok: false, code: 'telegram-routing-not-wired', topicId, step: 'spawn', pinRetained, placement: settled, error: 'Telegram routing is not wired on this server yet — the topic exists; send it a message once the server is up.' });
+          return;
+        }
+        let spawned: Awaited<ReturnType<NonNullable<typeof tp.spawnForTopic>>>;
+        try {
+          spawned = await tp.spawnForTopic(topicId, topicName);
+        } catch (err) {
+          // Step 7 — no session came back: release so the next message is placed normally.
+          const settled = settleDashboardCreatedTopic(claim, key, 'spawn-threw');
+          res.status(500).json({
+            ok: false, step: 'spawn', topicId, pinRetained, placement: settled,
+            error: `The session failed to start: ${err instanceof Error ? err.message : String(err)}. `
+              + (pinRetained
+                ? 'The chosen door was retained on THIS machine — after the topic\'s first message, confirm the door from the session view.'
+                : 'The topic exists; its next message starts a session.'),
+          });
+          return;
+        }
+        if (!spawned.ok) {
+          // topic-spawning / topic-has-session: a local session is underway or
+          // bound — confirm, never release. telegram-routing-not-wired: nothing
+          // was spawned — release, like a thrown spawn.
+          const settled = settleDashboardCreatedTopic(claim, key, spawned.code === 'telegram-routing-not-wired' ? 'spawn-threw' : 'spawn-in-flight');
+          res.status(409).json({
+            ok: false, code: spawned.code, topicId, step: 'spawn', pinRetained, placement: settled,
+            error: spawned.code === 'telegram-routing-not-wired'
+              ? 'Telegram routing is not wired on this server yet — the topic exists; send it a message once the server is up.'
+              : `This topic already has a session ${spawned.code === 'topic-spawning' ? 'starting' : 'running'}. `
+                + (pinRetained ? 'The chosen door is recorded; if that session started on the default door, switch it from the session view after its first message.' : ''),
+          });
+          return;
+        }
+        if (!spawned.registered) {
+          // The session is alive here — confirm (releasing would invite a duplicate).
+          const settled = settleDashboardCreatedTopic(claim, key, 'register-failed');
+          res.status(500).json({
+            ok: false, step: 'register', topicId, session: spawned.session, pinRetained, placement: settled,
+            error: `The session started but its topic binding failed (${spawned.registerError}); the topic's first message repairs it.`,
+          });
+          return;
+        }
+        const settled = settleDashboardCreatedTopic(claim, key, 'spawned');
+        const resolved = tp.resolver.resolve(key);
+        res.status(201).json({
+          ok: true,
+          session: spawned.session,
+          name: topicName,
+          topicId,
+          slackChannelId: null,
+          platform: resolvedPlatform,
+          headless: false,
+          reused,
+          // §3.3 step 6 — as the resolver returned it, never an echo of the request.
+          profile: {
+            framework: resolved.framework,
+            model: resolved.model ?? null,
+            source: resolved.sources,
+            label: frameworkLabel(resolved.framework),
+          },
+          notices: resolved.notices,
+          seed: seed
+            ? (seed.outcome === 'seeded'
+              ? { outcome: 'seeded', framework: seed.framework, model: seed.model, modelDropped: seed.modelDropped }
+              : seed.outcome === 'present' ? { outcome: 'present' } : { outcome: 'refused', code: seed.code, reason: seed.reason })
+            : null,
+          placement: settled,
+          switchableAfterFirstMessage: true,
+        });
+        return;
       }
     }
 
@@ -11402,23 +11683,8 @@ export function createRoutes(ctx: RouteContext): Router {
       const tmuxSession = await ctx.sessionManager.spawnInteractiveSession(
         undefined, // no initial message
         topicName,
-        topicId ? { telegramTopicId: topicId } : undefined,
+        undefined,
       );
-
-      // Update topic-session registry if we created a Telegram topic
-      if (topicId) {
-        const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
-        try {
-          const reg = fs.existsSync(registryPath)
-            ? JSON.parse(fs.readFileSync(registryPath, 'utf-8'))
-            : { topicToSession: {}, topicToName: {} };
-          reg.topicToSession[String(topicId)] = tmuxSession;
-          reg.topicToName[String(topicId)] = topicName;
-          fs.writeFileSync(registryPath, JSON.stringify(reg, null, 2));
-        } catch {
-          // Non-fatal — registry is best-effort
-        }
-      }
 
       // Update Slack channel-session registry and invite authorized users
       if (slackChannelId && ctx.slack) {
@@ -11437,7 +11703,7 @@ export function createRoutes(ctx: RouteContext): Router {
         ok: true,
         session: tmuxSession,
         name: topicName,
-        topicId: topicId || null,
+        topicId: null,
         slackChannelId: slackChannelId || null,
         platform: resolvedPlatform,
         headless: resolvedPlatform === 'headless',

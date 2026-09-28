@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-09-28T03:21:14.241Z",
+  "slug": "dashboard-door-model-controls",
+  "carriers": {
+    "CMT-617": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Design and build the three items held from dashboard-door-model-controls v1, tracked in GitHub issue JKHeadley/instar#2085: replicate the new-topic default as a lean WS2 record kind (peer default only when no local record, revalidated on fold, Bearer write per machine); seed Telegram-created topics keyed on topic-ownership provenance (never epoch arithmetic or ledger absence), proven on Echo befor"
+    },
+    "CMT-618": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Route an inbound message that collides with a dashboard create mid-spawn into the pending-inject path so it is replayed after the spawn instead of dropped with the still-starting-up notice (single-machine / inbound queue dark). v1 drops with the existing notice (decision row 9)."
+    },
+    "CMT-619": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Add thinking depth and effort selects to the dashboard Door + model sheet; the topic-profile API already accepts both fields, so this is additive UI (Frontloaded Decision 2 of dashboard-door-model-controls)."
+    }
+  }
+}

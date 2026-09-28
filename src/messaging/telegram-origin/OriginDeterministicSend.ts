@@ -6,7 +6,7 @@ import { TelegramOriginHoldError } from './types.js';
  * enroll a transport or assert a deterministic author. */
 export type DeterministicOriginProducer = 'auto-updater' | 'session-monitor' | 'session-lifecycle' |
   'cold-start-fallback' | 'respawn-collision' | 'owner-dark-ladder' |
-  'telegram-lifeline';
+  'telegram-lifeline' | 'topic-profile-creation-seed';
 const transports = new WeakMap<object, TelegramOriginService>();
 export function bindOriginAutomationTransport(transport: object, service: TelegramOriginService): void {
   transports.set(transport, service);

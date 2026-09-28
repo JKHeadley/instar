@@ -4,6 +4,8 @@ slug: "dashboard-door-model-controls"
 author: "echo"
 requested-by: "Justin (Telegram topic 112490, 2026-09-27)"
 parent-spec: "TOPIC-PROFILE-SPEC.md"
+parent-principle: "Structure beats Willpower"
+parent-principle-fit: "Inherited from the parent TOPIC-PROFILE-SPEC: the dashboard choice is written as durable pin DATA before the topic's first spawn and resolved by the one spawn chokepoint, never a setting the agent must remember to apply."
 eli16-overview: "docs/specs/dashboard-door-model-controls.eli16.md"
 review-convergence: "2026-09-28T02:45:24.464Z"
 review-iterations: 6
@@ -47,7 +49,7 @@ three things, all in the Sessions tab:
 2. Switch an existing topic's door + model from the dashboard.
 3. Choose, from the dashboard, the default door + model that new Telegram-created topics start on.
 
-TOPIC-PROFILE-SPEC §12 deliberately deferred dashboard work. This spec is that deferred work.
+TOPIC-PROFILE-SPEC §12 left dashboard controls out of its scope. This spec adds them.
 
 **Scope of v1, stated up front:** asks #1 and #2 ship in full. Ask #3 ships as the default used by
 the New Session modal and by every dashboard-created topic. Seeding of topics the operator creates
@@ -450,7 +452,7 @@ Telegram topic is never deleted (it is the operator's); every exit names the ste
    moment." and RETURNS (`:3013-3017`); the message is NOT queued or replayed, so an operator who
    types into a topic seconds after creating it may have to resend. That is today's behavior for any
    topic mid-spawn and beats the alternative (a second session on the same machine). Routing the
-   collision into the pending-inject path is a follow-up, not v1 — and DELETE the raw `writeFileSync` of the
+   collision into the pending-inject path is a follow-up, not v1 <!-- tracked: CMT-618 --> — and DELETE the raw `writeFileSync` of the
    registry (§2: it is clobbered by the adapter's next save and would let a re-created topic look
    never-spawned).
 6. The 201 body reports `profile: { framework, model, source }` as the resolver returned it plus any
@@ -491,9 +493,10 @@ request, never from the generic `/topic-profile/:id` route or any inbound path.
 
 Unchanged route: `POST /topic-profile/:topicId` (token principal, requires bound operator). The
 dashboard adds no policy: the sheet shows the server's reply verbatim, including `no-bound-operator`
-("this topic gets an operator the first time you message it") and the existing
-`cooldown-confirm-required` / switch-now confirm, with a "Switch anyway" that re-sends with the
-confirm the surface already defines. A framework switch = respawn with the conversation preserved;
+("this topic gets an operator the first time you message it") and any other refusal. There is no
+"Switch anyway" step: `POST /topic-profile/:topicId` never returns a confirm-required refusal
+(`cooldown-confirm-required` belongs to `/topic-profile/:id/reapply` only — corrected at build
+time against the code), so the sheet has one Switch button and shows whatever the server says. A framework switch = respawn with the conversation preserved;
 the sheet says so before the tap.
 
 ### 3.5 One validation rule for every dashboard write
@@ -662,7 +665,7 @@ each machine; `memory-bearing` = something the agent must not lose if a machine 
   machine-local-justification: migrating-to-unified ratified=5a4efecc1 tracking=https://github.com/JKHeadley/instar/issues/2085 since=2026-09-27 expires=2027-03-25
   (`ratified` = the commit that ratified Amendment 1 of "An Instar Agent Is Always a Multi-Machine
   Entity" — operator directive, topic 52222, 2026-08-22 — establishing `unified` as the destination
-  for memory-bearing state; `tracking` = the follow-up issue.) The full destination design (lean WS2 record kind under
+  for memory-bearing state; `tracking` = the follow-up issue.) The full destination design (lean WS2 record kind under <!-- tracked: CMT-617 -->
   `multiMachine.stateSync.newTopicDefault`, singleton key, HLC-highest among PEER records, tombstone
   on clear, peer-default-only authority with local-wins and revalidate-on-fold, Bearer write per writing
   machine) is recorded in issue #2085, NOT here, so it cannot be mistaken for v1 scope; the v1
@@ -670,7 +673,7 @@ each machine; `memory-bearing` = something the agent must not lose if a machine 
 - **Options route**: OPERATIONAL state, not memory-bearing — a live probe of which door CLIs are
   installed and admissible on THIS machine's disk, cached seconds, never persisted. Posture:
   `proxied-on-read` (the constitution's valid posture for operational state). v1 has NO remote read
-  (remote tiles are read-only, §6); the posture is declared for the tracked follow-up, whose named
+  (remote tiles are read-only, §6); the posture is declared for the tracked follow-up, whose named <!-- tracked: CMT-617 -->
   merged read is the existing `?scope=pool` fan-out pattern, each machine answering for its own disk. It is deliberately NOT keyed `hardware-bound-resource`:
   DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §(432) already ruled that installed CLIs are not bound to
   specific physical hardware, and this spec follows that ruling rather than re-labelling the same
@@ -701,7 +704,7 @@ each machine; `memory-bearing` = something the agent must not lose if a machine 
 | 4 | Is a dashboard-created topic eligible for a seed | invariant | `mutateIfAbsent` on `store.get(key) === null` for the topic the handler just created; reuse ⇒ no seed (409 with a preference). Telegram-created topics: no evaluation in v1 (hold, #2085). |
 | 5 | Model axis of a seed under a non-live regime | invariant | Same regime table pins obey; dropped + audited, never shadow-applied. |
 | 6 | Who may change the new-topic default | invariant | Bearer + intent header, same as every profile write (operator decision 2026-09-27: no PIN). |
-| 7 | Whether a received peer default applies (follow-up #2085 — NOT v1) | invariant | Applies only with no local record/tombstone; local wins. Recorded so the follow-up inherits the classification; nothing to build here. |
+| 7 | Whether a received peer default applies (follow-up #2085 — NOT v1) | invariant | Applies only with no local record/tombstone; local wins. Recorded so the follow-up inherits the classification; nothing to build here. | <!-- tracked: CMT-617 -->
 | 8 | Pool placement on dashboard create (§3.3 2b) | invariant | Failure after a spawn that RETURNED ⇒ confirm + report (never release a live session's record); Seam `dark` ⇒ seed+spawn as today (single-machine); `not-authoritative` ⇒ every create 409 naming the holder (no off-owner spawn); `ready`: `reused` ⇒ skip; created + place ok ⇒ seed+spawn+confirm; created + place refused ⇒ 409, no seed; failure after place ⇒ seam `release` (confirm-if-placing, then release, journaled). |
 | 9 | Inbound message while a dashboard create is mid-spawn | invariant | Note: "the seed lands before anything can spawn" is a TIMING argument (seed precedes the thunk arming the guard; only the inbound poll could spawn earlier), not a construction guarantee — the 409s above are the construction guarantee. Guard armed ⇒ "still starting up" notice and the message is dropped on a single machine / with the inbound queue dark (today's mid-spawn behavior); on a pool with `sessionPool.inboundQueue` live the router queues it under `ownership-contention` (`SessionRouter.ts:298`) and replays it after step 5's confirm (`:22579`). Never a second session. |
 
@@ -729,7 +732,7 @@ each machine; `memory-bearing` = something the agent must not lose if a machine 
 ## Frontloaded Decisions
 
 1. Placement: all three controls in the Sessions tab (operator stated this).
-2. Scope: door + model only; thinking/effort deferred (cheap-to-change-after: additive UI over an
+2. Scope: door + model only; thinking/effort deferred (cheap-to-change-after: additive UI over an <!-- tracked: CMT-619 -->
    API that already accepts them; nothing durable or user-visible until built).
 3. Default semantics: creation-time seed, never a live layer; existing topics untouched by design.
 4. Newness is not inferred in v1: the only seeded topics are ones the dashboard handler just created. Telegram-created topics are a named hold (#2085) on every machine.
@@ -746,6 +749,15 @@ each machine; `memory-bearing` = something the agent must not lose if a machine 
 8. `/sessions/create` joins the chokepoint's contract (resolve → spawn; adapter registration; no raw
    registry write) rather than adding a second resolver.
 9. No `seedNewTopics` flag: clearing the default is the lever.
+
+> **Carriers (frozen excerpts — the work the deferral markers in this spec point at):** <!-- tracked: CMT-617 -->
+> **CMT-617** — "Design and build the three items held from dashboard-door-model-controls v1, tracked in GitHub issue JKHeadley/instar#2085: replicate the new-topic default as a lean WS2 record kind (peer default only when no local record, revalidated on fold, Bearer write per machine); seed Telegram-created topics keyed on topic-ownership provenance (never epoch arithmetic or ledger absence), proven on Echo befor"
+>
+> **CMT-618** — "Route an inbound message that collides with a dashboard create mid-spawn into the pending-inject path so it is replayed after the spawn instead of dropped with the still-starting-up notice (single-machine / inbound queue dark). v1 drops with the existing notice (decision row 9)."
+>
+> **CMT-619** — "Add thinking depth and effort selects to the dashboard Door + model sheet; the topic-profile API already accepts both fields, so this is additive UI (Frontloaded Decision 2 of dashboard-door-model-controls)."
+>
+> (Regenerate `docs/specs/carriers/dashboard-door-model-controls.json` with `node scripts/refresh-carrier-ledger.mjs dashboard-door-model-controls CMT-617 CMT-618 CMT-619`.)
 
 ## Open questions
 

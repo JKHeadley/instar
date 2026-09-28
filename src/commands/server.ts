@@ -66,6 +66,7 @@ import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps } from '../core/dashboardTopicProfile.js';
 import {
   classifyProfileIntent,
   toProfilePatch,
@@ -609,6 +610,14 @@ let _sessionPoolStage: () => string = () => 'dark';
 // premature because handleLocally is only that fall-through marker. This callback
 // advances placing → active only after the local tail has actually succeeded.
 let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = null;
+/** dashboard-door-model-controls §3.3 2b — placement replication (boot snapshot of
+ *  `multiMachine.coherenceJournal.replication.enabled`), hoisted out of the
+ *  ownership block so the dashboard-create pool seam can read it. */
+let _placementReplicationOn = false;
+/** dashboard-door-model-controls §3.3 2b — the self-place / confirm / release ops
+ *  over the authoritative ownership registry, built next to the router (they own
+ *  the CAS, the journal emit and the router nonce). Null until the router exists. */
+let _dashboardPoolClaimOps: import('../core/dashboardTopicProfile.js').ReadyPoolClaimOps | null = null;
 // ── Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md) ──
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
@@ -1033,7 +1042,7 @@ let _proactiveSwapMonitor: import('../core/ProactiveSwapMonitor.js').ProactiveSw
 let _swapAntiThrashEngine: import('../core/SwapAntiThrash.js').SwapAntiThrashEngine | null = null;
 let _swapWorkGate: import('../core/SwapWorkGate.js').SwapWorkGate | null = null;
 
-async function spawnSessionForTopic(
+export async function spawnSessionForTopic(
   sessionManager: SessionManager,
   telegram: TelegramAdapter,
   sessionName: string,
@@ -1049,8 +1058,17 @@ async function spawnSessionForTopic(
   /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
    *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
    *  worktree work resumes in ITS tree). Omitted = module project dir. */
-  spawnOpts?: { cwd?: string; awaitInitialInjection?: boolean },
+  spawnOpts?: {
+    cwd?: string;
+    awaitInitialInjection?: boolean;
+    /** dashboard-door-model-controls §3.3 step 4 — a dashboard-created topic
+     *  starts IDLE: no bootstrap build (no context read, no temp file, no
+     *  relay block) and no initial message, exactly what the raw
+     *  spawnInteractiveSession(undefined, …) path injected before. */
+    silentStart?: boolean;
+  },
 ): Promise<string> {
+  const silentStart = spawnOpts?.silentStart === true;
   const hasLatestMessage = typeof latestMessage === 'string' && latestMessage.length > 0;
   const msg = hasLatestMessage ? latestMessage : 'Session started — send a message to continue.';
 
@@ -1077,7 +1095,7 @@ async function spawnSessionForTopic(
 
   // Prefer TopicMemory (SQLite-backed, with summaries) over raw JSONL scan
   let usedFallback = false;
-  if (!contextContent && topicMemory?.isReady()) {
+  if (!silentStart && !contextContent && topicMemory?.isReady()) {
     try {
       contextContent = topicMemory.formatContextForSession(topicId, 50);
     } catch (err) {
@@ -1087,7 +1105,7 @@ async function spawnSessionForTopic(
   }
 
   // Fallback to JSONL-based history — this means TopicMemory is broken
-  if (!contextContent) {
+  if (!silentStart && !contextContent) {
     usedFallback = true;
     try {
       const history = telegram.getTopicHistory(topicId, 50);
@@ -1137,7 +1155,7 @@ async function spawnSessionForTopic(
   // snapshot into the bootstrap. This gives the session awareness of
   // WHO the agent is — name, description, capabilities, autonomy level.
   let agentContextBlock = '';
-  if (_selfKnowledgeTree) {
+  if (_selfKnowledgeTree && !silentStart) {
     try {
       const { ContextSnapshotBuilder } = await import('../core/ContextSnapshotBuilder.js');
       const snapshotBuilder = new ContextSnapshotBuilder({
@@ -1174,9 +1192,12 @@ async function spawnSessionForTopic(
   const tmpDir = getTelegramInboundDir(_projectDir);
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  let bootstrapMessage: string;
+  let bootstrapMessage: string | undefined;
 
-  if (contextContent) {
+  if (silentStart) {
+    // Short-circuit BEFORE the bootstrap build: nothing is injected.
+    bootstrapMessage = undefined;
+  } else if (contextContent) {
     // Also write full context to file for deeper lookup if needed
     const filepath = path.join(tmpDir, `history-${topicId}-${Date.now()}-${process.pid}.txt`);
     fs.writeFileSync(filepath, contextContent);
@@ -1269,7 +1290,7 @@ async function spawnSessionForTopic(
   // can exceed tmux send-keys limits. Write to a temp file and inject a reference,
   // same pattern as injectTelegramMessage's FILE_THRESHOLD.
   const BOOTSTRAP_FILE_THRESHOLD = 500;
-  if (bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
+  if (bootstrapMessage !== undefined && bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
     const bootstrapFilename = `bootstrap-${topicId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`;
     const bootstrapFilepath = path.join(tmpDir, bootstrapFilename);
     fs.writeFileSync(bootstrapFilepath, bootstrapMessage);
@@ -1283,12 +1304,14 @@ async function spawnSessionForTopic(
   // a SessionStart shell hook that Codex CLI doesn't honor — so we encode
   // the instruction framework-agnostically here. Appended LAST so recency
   // bias makes it the most salient part of the prompt.
-  try {
-    const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
-    const relayBlock = buildTelegramRelayBlock({ topicId, framework });
-    bootstrapMessage = `${bootstrapMessage}\n\n${relayBlock}`;
-  } catch (err) {
-    console.error('[spawnSessionForTopic] telegramRelayPrompt import failed (non-fatal):', err);
+  if (bootstrapMessage !== undefined) {
+    try {
+      const { buildTelegramRelayBlock } = await import('../messaging/shared/telegramRelayPrompt.js');
+      const relayBlock = buildTelegramRelayBlock({ topicId, framework });
+      bootstrapMessage = `${bootstrapMessage}\n\n${relayBlock}`;
+    } catch (err) {
+      console.error('[spawnSessionForTopic] telegramRelayPrompt import failed (non-fatal):', err);
+    }
   }
 
   // Check for a resume UUID from a previously-killed session on this topic.
@@ -22071,6 +22094,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Single-machine agents (no replication) stay on InMemory — strict no-op.
         const { shouldActivateDurableOwnership, isPlacementReplicationEnabled } = await import('../core/durableOwnershipActivation.js');
         const _replicationOn = isPlacementReplicationEnabled(config);
+        _placementReplicationOn = _replicationOn;
         const durableOwnershipOn = shouldActivateDurableOwnership(config, resolveDevAgentGate);
         let durableOwnershipStore:
           | import('../core/LocalSessionOwnershipStore.js').LocalSessionOwnershipStore
@@ -24558,6 +24582,18 @@ export async function startServer(options: StartOptions): Promise<void> {
               },
             }, sk);
           };
+          // dashboard-door-model-controls §3.3 2b — the dashboard-create pool
+          // seam's ops. place = self-place + journal emit on the SAME router
+          // nonce stream; confirm = the local-claim closure above (claims only
+          // a self-owned `placing` record); release = confirm-if-placing →
+          // release → journal emit (release from `placing` is refused by the FSM).
+          _dashboardPoolClaimOps = createDashboardPoolClaimOps({
+            ownershipRegistry: ownReg,
+            selfMachineId: meshSelfId,
+            nextNonce: (kind) => `${meshSelfId}:${kind}:${++routerNonce}`,
+            emitPlacement,
+            confirmLocal: (sk) => _confirmLocalSessionPoolClaim?.(sk) ?? false,
+          });
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(undefined, {
@@ -26256,7 +26292,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       confirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots;
       orchestrator: TopicProfileOrchestrator | null;
       carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
-    } | null =
+    } & Pick<NonNullable<import('../server/routes.js').RouteContext['topicProfile']>,
+      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim'> | null =
       (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
         ? {
             store: _topicProfileStore,
@@ -26265,6 +26302,49 @@ export async function startServer(options: StartOptions): Promise<void> {
             confirmSlots: _topicProfileConfirmSlots,
             orchestrator: null,
             carrier: _topicProfileCarrier,
+            // dashboard-door-model-controls (§3.2/§3.3) — the dashboard create path.
+            newTopicDefault: new NewTopicDefaultStore(config.stateDir),
+            audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
+            discloseCreationSeed: async (topicKey, text) => {
+              if (!telegram) return undefined;
+              return sendDeterministicTelegramNotice(telegram, 'topic-profile-creation-seed', Number(topicKey), text);
+            },
+            // §3.3 step 4/5: the ONE spawn chokepoint + adapter registration under
+            // ONE spawningTopics token. The guard ref is null until Telegram
+            // routing wires — that IS the `telegram-routing-not-wired` refusal.
+            spawnForTopic: createSpawnForTopic({
+              guard: () => _spawningTopicsRegistryRef,
+              telegram: () => telegram ?? null,
+              spawn: (topicId, name) => spawnSessionForTopic(
+                sessionManager, telegram!, name, topicId,
+                undefined, undefined, undefined, undefined, undefined,
+                { silentStart: true },
+              ),
+            }),
+            // §3.3 2b — evaluated AT CALL TIME. `ready` only when router-live AND
+            // placement replication on AND this machine holds the lease; a null
+            // lease accessor is not-authoritative (never the `: true` fallback).
+            sessionPoolLocalClaim: () => {
+              const ops = _dashboardPoolClaimOps;
+              const routerLive = (): boolean => !!_sessionRouter && _sessionPoolStage() !== 'dark';
+              const holder = (): { machineId: string | null; nickname: string | null } => {
+                const machineId = leaseCoordinatorRef?.currentHolder() ?? null;
+                const nickname = machineId
+                  ? ((_listPoolMachines?.() ?? []).find((m) => m.machineId === machineId)?.nickname ?? null)
+                  : null;
+                return { machineId, nickname };
+              };
+              if (!ops) {
+                return routerLive() ? { kind: 'not-authoritative', holderMachineId: null, holderNickname: null } : { kind: 'dark' };
+              }
+              return evaluateSessionPoolLocalClaim({
+                routerLive,
+                replicationOn: _placementReplicationOn,
+                holdsLease: _holdsLeaseForSpawn,
+                holder,
+                ops,
+              });
+            },
           }
         : null;
 

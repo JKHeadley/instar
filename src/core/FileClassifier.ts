@@ -176,6 +176,10 @@ const DEFAULT_GENERATED_PATTERNS = [
   // axes: syncing the marker would silently arm a peer's sentinel the operator
   // never consented to (the silent-re-arm class the armEpoch design prevents).
   '.instar/state/external-hog-arm.json',
+  // Dashboard "default for dashboard-created topics" record — machine-local in
+  // v1 (dashboard-door-model-controls §7, migrating-to-unified via #2085). Its
+  // WriteDomainRegistry story names git-sync-excluded as the file-level arm.
+  '.instar/state/new-topic-default-profile.json',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
