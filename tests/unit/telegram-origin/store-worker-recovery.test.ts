@@ -19,10 +19,17 @@ afterEach(async () => {
 const inject = (stateDir: string, name: 'stall-ms' | 'stall-n' | 'fail-starts', value: number | string) =>
   fs.writeFileSync(path.join(stateDir, `origin-worker-${name}`), String(value));
 const remaining = (stateDir: string) => Number(fs.readFileSync(path.join(stateDir, 'origin-worker-fail-starts'), 'utf8'));
+// Caller deadlines leave real SQLite work (a synchronous fsync) a full second
+// even on a loaded machine; every injected stall sits well past the deadline it
+// tests. A 100 ms deadline made real transactions time out under suite load
+// (Rule 37 repair of a demonstrated flake, PR #2087 review item 3).
 function options(stateDir: string, extra: Partial<OriginStoreOptions> = {}): OriginStoreOptions {
-  return { stateDir, agentId: 'echo', requestTimeoutMs: 100, stallTimeoutMs: 600,
+  return { stateDir, agentId: 'echo', requestTimeoutMs: 1000, stallTimeoutMs: 1500,
     restart: { baseDelayMs: 20, maxDelayMs: 200, maxAttempts: 3, healthyWindowMs: 1 }, ...extra };
 }
+// healthyWindowMs is 1: a response in the same millisecond the generation became
+// ready is (correctly) still inside the window and does not close the episode.
+const pastHealthyWindow = () => new Promise(resolve => setTimeout(resolve, 5));
 function quietReports() {
   return vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
 }
@@ -30,9 +37,9 @@ function quietReports() {
 describe('origin store worker: a slow moment never permanently silences the agent', () => {
   it('a caller deadline answers only that caller; a slow disk keeps the same worker serving', async () => {
     const stateDir = temporaryState(), report = quietReports();
-    const store = await OriginStore.open(options(stateDir, { requestTimeoutMs: 100, stallTimeoutMs: 5000 }), worker); stores.push(store);
+    const store = await OriginStore.open(options(stateDir, { stallTimeoutMs: 10_000 }), worker); stores.push(store);
     const slow = admission('slow-disk');
-    inject(stateDir, 'stall-ms', 600);
+    inject(stateDir, 'stall-ms', 2500);
     const error = await store.admit(slow).catch(e => e);
     expect(error).toBeInstanceOf(OriginStoreUnavailableError);
     expect(error.mutationMayHaveCommitted).toBe(true);
@@ -41,7 +48,7 @@ describe('origin store worker: a slow moment never permanently silences the agen
     expect(store.health()).toMatchObject({ state: 'ready', generation: 1, restarts: 0 });
     // Reads serialize behind the slow write, so a re-read once the disk catches
     // up sees what it committed — exactly once, never replayed.
-    await new Promise(resolve => setTimeout(resolve, 700));
+    await new Promise(resolve => setTimeout(resolve, 2000));
     expect((await store.getOrigin(slow.record.originId))?.record.originId).toBe(slow.record.originId);
     await expect(store.admit(admission('after-slow'))).resolves.toBeTruthy();
     expect(report).not.toHaveBeenCalled();
@@ -55,13 +62,14 @@ describe('origin store worker: a slow moment never permanently silences the agen
     const error = await store.admit(stuck).catch(e => e);
     expect(error).toBeInstanceOf(OriginStoreUnavailableError);
     expect(error.mutationMayHaveCommitted).toBe(true);
-    await vi.waitFor(() => expect(store.health().state).toBe('restarting'), { timeout: 3000 });
+    await vi.waitFor(() => expect(store.health().state).toBe('restarting'), { timeout: 5000 });
     // Fail-closed while down: nothing is admitted, and the refusal is a known non-commit.
     const refused = await store.admit(admission('while-down')).catch(e => e);
     expect(refused).toBeInstanceOf(OriginStoreUnavailableError);
     expect(refused.mutationMayHaveCommitted).toBe(false);
     expect(store.needsReplacement()).toBe(false);
-    await vi.waitFor(() => expect(store.health()).toMatchObject({ state: 'ready', generation: 2 }), { timeout: 3000 });
+    await vi.waitFor(() => expect(store.health()).toMatchObject({ state: 'ready', generation: 2 }), { timeout: 5000 });
+    await pastHealthyWindow();
     await store.healthTransaction();
     const after = admission('after-recovery');
     await expect(store.admit(after)).resolves.toBeTruthy();
@@ -81,14 +89,14 @@ describe('origin store worker: a slow moment never permanently silences the agen
 
   it('a stall that keeps coming back between served responses still reaches the cap (no endless restart)', async () => {
     const stateDir = temporaryState(), report = quietReports();
-    const store = await OriginStore.open(options(stateDir, { stallTimeoutMs: 300,
+    const store = await OriginStore.open(options(stateDir, { stallTimeoutMs: 1000,
       restart: { baseDelayMs: 20, maxDelayMs: 20, maxAttempts: 2, healthyWindowMs: 60_000 } }), worker); stores.push(store);
     for (let cycle = 1; cycle <= 3; cycle++) {
       inject(stateDir, 'stall-ms', 60_000);
       await store.admit(admission(`recurring-${cycle}`)).catch(() => undefined);
-      await vi.waitFor(() => expect(store.health().consecutiveFailures).toBe(cycle), { timeout: 3000 });
+      await vi.waitFor(() => expect(store.health().consecutiveFailures).toBe(cycle), { timeout: 5000 });
       if (cycle < 3) {
-        await vi.waitFor(() => expect(store.health().state).toBe('ready'), { timeout: 3000 });
+        await vi.waitFor(() => expect(store.health().state).toBe('ready'), { timeout: 5000 });
         // Served between stalls, but inside the healthy window: the budget is not restored.
         await store.healthTransaction();
         expect(store.health().consecutiveFailures).toBe(cycle);
@@ -101,15 +109,15 @@ describe('origin store worker: a slow moment never permanently silences the agen
 
   it('queue wait behind a progressing worker is not a stall', async () => {
     const stateDir = temporaryState(); quietReports();
-    const store = await OriginStore.open(options(stateDir, { requestTimeoutMs: 100, stallTimeoutMs: 600 }), worker); stores.push(store);
-    // Three slow-but-progressing operations, 400ms each, posted together: the
-    // last waits ~1.2s from posting (past the 600ms stall deadline) while the
-    // worker answers every 400ms. A per-request clock would kill this worker.
-    inject(stateDir, 'stall-n', '3,400');
+    const store = await OriginStore.open(options(stateDir), worker); stores.push(store);
+    // Three slow-but-progressing operations, 900ms each, posted together: the
+    // last waits ~2.7s from posting (past the 1.5s stall deadline) while the
+    // worker answers every 900ms. A per-request clock would kill this worker.
+    inject(stateDir, 'stall-n', '3,900');
     const started = Date.now();
     await Promise.all([0, 1, 2].map(i => store.admit(admission(`queued-${i}`)).catch(() => undefined)));
-    await vi.waitFor(async () => expect(await store.getOrigin('origin-queued-2').catch(() => null)).not.toBeNull(), { timeout: 5000, interval: 50 });
-    expect(Date.now() - started).toBeGreaterThan(1000);
+    await vi.waitFor(async () => expect(await store.getOrigin('origin-queued-2').catch(() => null)).not.toBeNull(), { timeout: 10_000, interval: 50 });
+    expect(Date.now() - started).toBeGreaterThan(2500);
     expect(store.health()).toMatchObject({ state: 'ready', generation: 1, restarts: 0 });
     for (let i = 0; i < 3; i++) expect(await store.getOrigin(`origin-queued-${i}`)).not.toBeNull();
   });
@@ -120,6 +128,7 @@ describe('origin store worker: a slow moment never permanently silences the agen
     const store = await OriginStore.openForRuntime(options(stateDir), undefined, worker); stores.push(store);
     expect(store.isUnavailable()).toBe(true);
     await vi.waitFor(() => expect(store.health().state).toBe('ready'), { timeout: 5000 });
+    await pastHealthyWindow();
     await store.healthTransaction();
     expect(store.health()).toMatchObject({ generation: 4, restarts: 3, consecutiveFailures: 0, downSince: null });
     expect(remaining(stateDir)).toBe(0);
@@ -178,6 +187,7 @@ describe('origin store worker: a slow moment never permanently silences the agen
     const replacement = await OriginStore.openReplacement(exhausted, options(stateDir, { restart: { baseDelayMs: 20, maxDelayMs: 20, maxAttempts: 2, healthyWindowMs: 1 } }), undefined, worker); stores.push(replacement);
     expect(replacement.health()).toMatchObject({ state: 'ready', consecutiveFailures: 3 });
     expect(replacement.health().downSince).not.toBeNull();
+    await pastHealthyWindow();
     await replacement.healthTransaction();
     expect(replacement.health()).toMatchObject({ consecutiveFailures: 0, downSince: null });
     expect(report).toHaveBeenCalledOnce();

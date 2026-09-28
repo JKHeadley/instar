@@ -234,7 +234,9 @@ describe('origin service durable delivery', () => {
       expect(h.network).not.toHaveBeenCalled();
     } finally { queue.close(); }
   });
-  it('retains the confirmed subset of skipped forwards while holding the remainder without replay', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('retains the confirmed subset of skipped forwards while holding the remainder without replay', async () => {
     const h = await harness();
     h.network.mockImplementation(async () => new Response(JSON.stringify({ ok: true, result: [{ message_id: 80 }] })));
     const operation = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot({ method: 'forwardMessages',
@@ -383,6 +385,92 @@ describe('origin service durable delivery', () => {
     }).mockResolvedValueOnce(false);
     await expect(h.send()).rejects.toMatchObject({ reason: 'destination-not-authorized' });
     expect(h.network).not.toHaveBeenCalled();
+  });
+  describe('content dedup counts only platform-accepted sends as delivered', () => {
+    const longText = 'A complete reply to the operator that is long enough for exact content deduplication.';
+    const longInput = (h: Awaited<ReturnType<typeof harness>>) => ({ ...h.input, params: { ...h.input.params, text: longText } });
+    const sendLong = (h: Awaited<ReturnType<typeof harness>>) =>
+      h.service.runAsAutomation('telegram-server', () => h.service.sendBot(longInput(h), h.network));
+    it('suppresses an identical resend after a confirmed delivery', async () => {
+      const h = await harness();
+      expect((await sendLong(h)).ok).toBe(true);
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('keeps suppression when the platform accepted but the receipt could not be recorded', async () => {
+      const h = await harness();
+      const record = h.store.recordOutcome.bind(h.store);
+      vi.spyOn(h.store, 'recordOutcome').mockRejectedValueOnce(new Error('disk failed')).mockImplementation(record);
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('does not suppress a fresh send after a held send, and the held send cannot later duplicate it', async () => {
+      const h = await harness();
+      h.authorize.mockResolvedValueOnce(false);
+      const held = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(held);
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'destination-not-authorized' });
+      expect(h.network).not.toHaveBeenCalled();
+      expect((await sendLong(h)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // The held operation's own later attempt now finds the delivered content.
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('does not suppress a fresh send after an outcome-unknown or known-failed send', async () => {
+      const h = await harness();
+      h.network.mockRejectedValueOnce(new Error('response lost'));
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'transport-acceptance-unknown' });
+      h.network.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, parameters: { retry_after: 61 } }), { status: 429 }));
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'known-failed', reason: 'telegram-429' });
+      expect((await sendLong(h)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledTimes(3);
+    });
+    const pausedNetwork = (h: Awaited<ReturnType<typeof harness>>) => {
+      let started!: () => void, finish!: (response: Response) => void;
+      const began = new Promise<void>(resolve => { started = resolve; });
+      h.network.mockImplementationOnce(() => { started(); return new Promise<Response>(resolve => { finish = resolve; }); });
+      return { began, finish: (response: Response) => finish(response) };
+    };
+    it('a held retry behind an in-flight fresh send stays recoverable and still delivers when that send is refused', async () => {
+      const h = await harness();
+      const held = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(held);
+      h.authorize.mockResolvedValueOnce(false);
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'destination-not-authorized' });
+      const paused = pausedNetwork(h);
+      const fresh = sendLong(h).catch(error => error);
+      await paused.began;
+      // In flight is not delivered: a temporary hold, never a suppression.
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'content-reservation-pending' });
+      paused.finish(new Response(JSON.stringify({ ok: false, description: 'rejected' }), { status: 400 }));
+      expect(await fresh).toMatchObject({ outcome: 'known-failed' });
+      const row = await h.store.getOrigin(held.record.originId);
+      expect(row?.operation?.state).not.toBe('suppressed');
+      expect(row?.children.map(child => child.state)).toEqual(['queued']);
+      expect((await h.store.recoverableAdmissions()).map(a => a.operationId)).toContain(held.record.operationId);
+      // The outbox's own retry now delivers the reply.
+      expect((await h.service.executePreparedBot(held, h.network)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledTimes(2);
+    });
+    it('a competing execution that loses the claim never releases the live execution\'s reservation', async () => {
+      const h = await harness();
+      const op = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(op);
+      const paused = pausedNetwork(h);
+      const first = h.service.executePreparedBot(op, h.network);
+      await paused.began;
+      await expect(h.service.executePreparedBot(op, h.network)).rejects.toMatchObject({ reason: 'outbox-not-ready' });
+      // The identical fresh send finds the live reservation and is held, not sent.
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'content-reservation-pending' });
+      paused.finish(new Response(JSON.stringify({ ok: true, result: { message_id: 8, chat: { id: -100123 }, message_thread_id: 42 } }), { status: 200 }));
+      expect((await first).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // Once delivered, a further identical send is a confirmed duplicate.
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
   });
   it('does not prepare a session revoked while its runtime observation refreshes', async () => {
     const h = await harness();

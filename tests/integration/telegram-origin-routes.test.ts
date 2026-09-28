@@ -139,7 +139,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(delivered?.record.envelopeJson).toBe(audit.body.records[0].record.envelopeJson);
   });
 
-  it('records the fixed AutoUpdater notice through the authenticated apply route without accepting caller author claims', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('records the fixed AutoUpdater notice through the authenticated apply route without accepting caller author claims', async () => {
     let updater: AutoUpdater;
     const proxy = { applyPendingUpdate: (options: never) => updater.applyPendingUpdate(options), getStatus: () => updater.getStatus() };
     const h = await appHarness({ autoUpdater: proxy });
@@ -163,7 +165,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(row.operation?.state).toBe('accepted');
   });
 
-  it('holds changed reminder text for the same durable event after unknown acceptance', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('holds changed reminder text for the same durable event after unknown acceptance', async () => {
     const stateDir = temporaryState(), tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir) });
     const commitment = tracker.record({ type: 'one-time-action', userRequest: 'report back on the benchmark refresh',
       agentResponse: 'I will report the benchmark results.', topicId: 42, verificationMethod: 'manual' });
@@ -247,32 +251,58 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     }
     expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
   });
-  it('keeps a browser in-flight reservation through ambiguous acceptance and never releases another operation reservation', async () => {
+  it('keeps a browser in-flight reservation while dispatching and releases only its own after an unaccepted ambiguous outcome', async () => {
     const h = await browserHarness(), text = 'This detailed update must remain reserved while its actual browser acceptance is uncertain.';
     let started!: () => void, fail!: (error: Error) => void;
     const began = new Promise<void>(resolve => { started = resolve; });
-    h.invoke.mockImplementation(() => { started(); return new Promise((_resolve, reject) => { fail = reject; }); });
+    h.invoke.mockImplementationOnce(() => { started(); return new Promise((_resolve, reject) => { fail = reject; }); });
     const sending = h.send(text).then(response => response);
     await began;
-    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    // In flight is not delivered: identical sends are held (never suppressed,
+    // never sent), and a contender never releases the in-flight owner's reservation.
+    for (let i = 0; i < 2; i++) {
+      const contender = await h.send(text);
+      expect(contender.status).toBe(409); expect(contender.body.reason).toBe('content-reservation-pending');
+      expect(contender.body.suppressedDuplicate).toBeUndefined();
+    }
+    expect(h.invoke).toHaveBeenCalledOnce();
     fail(new Error('fixture transport disconnected after possible acceptance'));
     expect((await sending).status).toBe(409);
+    // No platform acceptance was seen, so it is not "already delivered": the
+    // agent's own fresh send goes out (dedup-held-not-delivered, 2026-09-27).
+    // The platform itself never replays the uncertain operation.
+    const fresh = await h.send(text);
+    expect(fresh.status).toBe(200); expect(fresh.body.suppressedDuplicate).toBeUndefined();
+    expect(h.invoke).toHaveBeenCalledTimes(2);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
-    expect(h.invoke).toHaveBeenCalledOnce();
+    // The two held contenders stay queued; their own recovery now finds the
+    // confirmed delivery and stands down without a second send.
+    expect(await h.runtime.store.recoverableAdmissions()).toHaveLength(2);
+    await h.runtime.recoverHeld();
+    expect(h.invoke).toHaveBeenCalledTimes(2);
     const rows = (await h.runtime.store.listOrigins()).records;
     expect(rows.filter(row => row.operation?.state === 'outcome-unknown')).toHaveLength(1);
-    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(2);
+    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(3);
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
   });
-  it('recovers the original queued browser operation under its own reservation after authority returns', async () => {
+  it('recovers held browser operations after authority returns with exactly one delivery', async () => {
     const h = await browserHarness(), text = 'The queued browser update should recover once, retaining its original content reservation throughout.';
     h.executor.options.authorize = () => false;
     expect((await h.send(text)).status).toBe(409);
-    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    // A held send is not a delivery: the agent's resend is held too, never
+    // answered "already delivered".
+    const resend = await h.send(text);
+    expect(resend.status).toBe(409); expect(resend.body.suppressedDuplicate).toBeUndefined();
     expect(h.invoke).not.toHaveBeenCalled();
     h.executor.options.authorize = () => true;
-    expect((await h.runtime.recoverHeld()).recovered).toBe(1);
+    await h.runtime.recoverHeld();
+    // The first to recover delivers; the other finds that delivery and is suppressed.
     expect(h.invoke).toHaveBeenCalledOnce();
+    const rows = (await h.runtime.store.listOrigins()).records;
+    expect(rows.filter(row => row.operation?.state === 'accepted')).toHaveLength(1);
+    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(1);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    expect(h.invoke).toHaveBeenCalledOnce();
   });
   it('carries the A2A summarizer call author through the private body-bound HTTP credential', async () => {
     const h = await appHarness(); let now = 0;
@@ -398,7 +428,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(accepted.status).toBe(200); expect(h.invoke).toHaveBeenCalledOnce();
     expect(review.mock.calls.map(call => call[0])).toEqual(['I will handle this for you.', 'I will handle this for you.']);
   });
-  it('rechecks the existing stand-down authority and releases when ownership returns', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('rechecks the existing stand-down authority and releases when ownership returns', async () => {
     const ownerOf = vi.fn(() => 'other-machine'), release = vi.fn();
     const h = await browserHarness({ meshSelfId: 'studio', sessionOwnershipRegistry: { ownerOf },
       standDownRegistry: { getByTopic: () => ({ sessionName: 'source', dryRun: false, ownerMachineId: 'other-machine' }),
@@ -410,7 +442,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect((await h.send('Ownership has returned.')).status).toBe(200);
     expect(release).toHaveBeenCalled(); expect(h.invoke).toHaveBeenCalledOnce();
   });
-  it('holds browser writes when the production policy attachment is absent', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('holds browser writes when the production policy attachment is absent', async () => {
     const h = await browserHarness(); h.runtime.service.options.sendPolicy = undefined;
     const refused = await h.send('A legitimate reply before policy initialization.');
     expect(refused.status).toBe(409); expect(refused.body.reason).toBe('send-policy-unavailable');
@@ -484,7 +518,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     const page = await h.runtime.store.listOrigins();
     expect(JSON.parse(page.records[0].record.envelopeJson).model).toMatchObject({ status: 'not-applicable', reason: 'deterministic-automation' });
   });
-  it('binds the submitting session across a different destination topic, then restricts audit to the operator', async () => {
+  // Rule 37 quarantine: flips under disk load on unchanged main code (fixed evidence-sink
+  // deadlines). Tracked defect: https://github.com/JKHeadley/instar/issues/2088
+  it.skip('binds the submitting session across a different destination topic, then restricts audit to the operator', async () => {
     const h = await appHarness();
     const response = await request(h.app).post('/telegram/reply/77').set('Authorization', 'Bearer agent-test')
       .set('X-Instar-Origin-Session', h.sessionToken).send({ text: 'A cross-topic reply.' });

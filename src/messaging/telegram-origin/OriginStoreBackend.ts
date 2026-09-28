@@ -502,8 +502,9 @@ export class OriginStoreBackend {
   /** Only the still-claimed phase may return its unused attempt budget. The
    * caller invalidates its private wire closure first; dispatched crash state
    * can never use this path. Retain the canceled attempt as audit evidence. */
-  releaseUndispatchedClaim(input: ClaimFence & { now?: number }): boolean {
+  releaseUndispatchedClaim(input: ClaimFence & { now?: number; detail?: 'content-reservation-held' }): boolean {
     const now = input.now ?? Date.now();
+    const detail = input.detail === 'content-reservation-held' ? input.detail : 'capacity-held-before-dispatch';
     return this.db.transaction(() => {
       const child = this.child(input.childId); if (!child) return false;
       const entry = this.entry(child.delivery_id)!;
@@ -511,10 +512,10 @@ export class OriginStoreBackend {
       if (!attempt || attempt.phase !== 'claimed' || attempt.outcome !== null || entry.entry_kind !== 'telegram-origin' ||
         entry.state !== 'claimed' || entry.claimed_by !== input.claimToken || entry.owner_boot_id !== attempt.owner_boot_id || (entry.lease_until ?? 0) <= now) return false;
       this.db.prepare("UPDATE telegram_origin_attempts SET outcome='known-failed',resolved_at=? WHERE attempt_id=? AND outcome IS NULL").run(now, attempt.attempt_id);
-      this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, 'capacity-held-before-dispatch', now);
+      this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, detail, now);
       this.db.prepare("UPDATE telegram_origin_children SET state='queued' WHERE child_id=?").run(child.child_id);
       this.db.prepare("UPDATE entries SET state='queued',claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,attempts=MAX(0,attempts-1),next_attempt_at=NULL WHERE delivery_id=? AND claimed_by=?").run(child.delivery_id, input.claimToken);
-      this.event(attempt.attempt_id, 'attempt:capacity-held-before-dispatch');
+      this.event(attempt.attempt_id, `attempt:${detail}`);
       this.refreshOperation(child.operation_id); return true;
     }).immediate();
   }

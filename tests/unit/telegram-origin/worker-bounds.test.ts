@@ -48,7 +48,10 @@ describe('origin worker byte backpressure and bounded archive reads', () => {
 
   it('verifies a shared archive once per page and paginates by bytes without losing records', async () => {
     const stateDir = temporaryState();
-    const store = await OriginStore.open({ stateDir, agentId: 'echo' }, worker); stores.push(store);
+    // Hashing a 2.6 MB archive per page is real disk work; the 2 s default
+    // caller deadline was exceeded under suite load. This case tests paging and
+    // verification counts, not deadlines (Rule 37 repair, PR #2087 round 3).
+    const store = await OriginStore.open({ stateDir, agentId: 'echo', requestTimeoutMs: 20_000 }, worker); stores.push(store);
     const ids: string[] = [];
     for (let i = 0; i < 40; i++) {
       const operation = admission(`archive-${i}`);

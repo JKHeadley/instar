@@ -148,51 +148,68 @@ export class OriginBrowserExecutor {
       stored.operation?.operationId !== operation.record.operationId || operation.record.destination.accountId !== this.options.accountId) {
       throw new TelegramOriginHoldError('sealed-browser-plan-mismatch', operation.record.operationId);
     }
-    if (stored.children.some(child => child.state !== 'accepted')) {
-      await this.options.service.reviewPreparedSendPolicy(operation);
-      await this.options.service.reservePreparedContent(operation);
-    }
+    if (stored.children.some(child => child.state !== 'accepted')) await this.options.service.reviewPreparedSendPolicy(operation);
     const receipts: BrowserReceipt[] = [];
-    for (const child of operation.admission.children) {
-      const accepted = stored.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted');
-      if (accepted?.receiptJson) { receipts.push(JSON.parse(accepted.receiptJson)); continue; }
-      const materialization = await materializeBrowserSignature({ store, operation, child,
-        resolveAgentPublicKey: this.options.resolveAgentPublicKey, signBody: this.options.signBody,
-        now: this.options.now?.() ?? Date.now() });
-      const request = parseOriginJson(materialization.requestJson) as unknown as SealedBrowserRequest;
-      if (wireDigest(materialization.requestJson) !== materialization.requestDigest ||
-        !await this.options.authorize(operation.record.destination)) throw new TelegramOriginHoldError('browser-not-authorized', operation.record.operationId);
-      await this.options.service.authorizeOriginDispatch(operation.record);
-      this.options.service.authorizeSendPolicyDispatch(operation.record);
-      const claim = await store.claim({ childId: child.childId, materializationId: materialization.materializationId,
-        ownerBootId: this.options.service.options.ownerBootId, leaseMs: 60_000 });
-      if (claim.status !== 'claimed') throw new TelegramOriginHoldError(`outbox-${claim.reason}`, operation.record.operationId);
-      if (claim.child.materialization.requestJson !== materialization.requestJson) throw new TelegramOriginHoldError('sealed-browser-request-mismatch', operation.record.operationId);
-      this.claims.set(child.childId, { claim: claim.child, request, destination: operation.record.destination, record: operation.record });
-      try {
-        const outcome = await this.broker.executePreparedChild({ ...request, childId: child.childId,
-          originId: operation.record.originId, claimFence: claim.child.claimToken });
-        let saved;
+    let platformAccepted = stored.children.some(child => child.state === 'accepted');
+    // The claim token under which THIS execution holds the content reservation.
+    let reservedBy: string | null = null;
+    // The platform accepted every child, even if a local receipt write failed.
+    let acceptedAll = false;
+    try {
+      for (const child of operation.admission.children) {
+        const accepted = stored.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted');
+        if (accepted?.receiptJson) { receipts.push(JSON.parse(accepted.receiptJson)); continue; }
+        const materialization = await materializeBrowserSignature({ store, operation, child,
+          resolveAgentPublicKey: this.options.resolveAgentPublicKey, signBody: this.options.signBody,
+          now: this.options.now?.() ?? Date.now() });
+        const request = parseOriginJson(materialization.requestJson) as unknown as SealedBrowserRequest;
+        if (wireDigest(materialization.requestJson) !== materialization.requestDigest ||
+          !await this.options.authorize(operation.record.destination)) throw new TelegramOriginHoldError('browser-not-authorized', operation.record.operationId);
+        await this.options.service.authorizeOriginDispatch(operation.record);
+        this.options.service.authorizeSendPolicyDispatch(operation.record);
+        const claim = await store.claim({ childId: child.childId, materializationId: materialization.materializationId,
+          ownerBootId: this.options.service.options.ownerBootId, leaseMs: 60_000 });
+        if (claim.status !== 'claimed') throw new TelegramOriginHoldError(`outbox-${claim.reason}`, operation.record.operationId);
+        if (claim.child.materialization.requestJson !== materialization.requestJson) throw new TelegramOriginHoldError('sealed-browser-request-mismatch', operation.record.operationId);
+        // Reserve only under the exclusive claim: a contender that lost the
+        // claim never touches the winner's reservation.
+        await this.options.service.reservePreparedContent(operation, claim.child.claimToken,
+          () => store.releaseUndispatchedClaim({ ...claim.child, detail: 'content-reservation-held' }));
+        reservedBy = claim.child.claimToken;
+        this.claims.set(child.childId, { claim: claim.child, request, destination: operation.record.destination, record: operation.record });
         try {
-          saved = await store.recordOutcome({ ...claim.child, outcome: outcome.state,
-            ...(outcome.state === 'accepted' ? { receiptJson: canonicalOrigin(outcome.receipt) } : { reason: outcome.reason }),
-            ...(outcome.state === 'known-failed' && ['unsupported-browser-build', 'browser-account-mismatch',
-              'browser-transport-failed', 'browser-recovery-cooldown'].includes(outcome.reason) ? {
-                nextAttemptAt: nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
-                  maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt,
-                  now: this.options.now?.() ?? Date.now(), minimumDelayMs: 15 * 60_000 }),
-              } : {}) });
-        } catch {
-          this.options.service.requestDiagnosis(operation.record.originId, 'browser-receipt-persistence-unavailable');
-          throw new TelegramOriginHoldError('browser-outcome-unrecorded', operation.record.operationId, 'outcome-unknown');
-        }
-        if (!saved.recorded) throw new TelegramOriginHoldError('browser-outcome-unrecorded', operation.record.operationId, 'outcome-unknown');
-        if (outcome.state !== 'accepted') {
-          if (outcome.state === 'outcome-unknown') this.options.service.requestDiagnosis(operation.record.originId, outcome.reason);
-          throw new TelegramOriginHoldError(outcome.reason, operation.record.operationId, outcome.state);
-        }
-        receipts.push(outcome.receipt);
-      } finally { this.claims.delete(child.childId); }
+          const outcome = await this.broker.executePreparedChild({ ...request, childId: child.childId,
+            originId: operation.record.originId, claimFence: claim.child.claimToken });
+          if (outcome.state === 'accepted') {
+            platformAccepted = true;
+            acceptedAll = child === operation.admission.children.at(-1);
+          }
+          let saved;
+          try {
+            saved = await store.recordOutcome({ ...claim.child, outcome: outcome.state,
+              ...(outcome.state === 'accepted' ? { receiptJson: canonicalOrigin(outcome.receipt) } : { reason: outcome.reason }),
+              ...(outcome.state === 'known-failed' && ['unsupported-browser-build', 'browser-account-mismatch',
+                'browser-transport-failed', 'browser-recovery-cooldown'].includes(outcome.reason) ? {
+                  nextAttemptAt: nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
+                    maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt,
+                    now: this.options.now?.() ?? Date.now(), minimumDelayMs: 15 * 60_000 }),
+                } : {}) });
+          } catch {
+            this.options.service.requestDiagnosis(operation.record.originId, 'browser-receipt-persistence-unavailable');
+            throw new TelegramOriginHoldError('browser-outcome-unrecorded', operation.record.operationId, 'outcome-unknown');
+          }
+          if (!saved.recorded) throw new TelegramOriginHoldError('browser-outcome-unrecorded', operation.record.operationId, 'outcome-unknown');
+          if (outcome.state !== 'accepted') {
+            if (outcome.state === 'outcome-unknown') this.options.service.requestDiagnosis(operation.record.originId, outcome.reason);
+            throw new TelegramOriginHoldError(outcome.reason, operation.record.operationId, outcome.state);
+          }
+          receipts.push(outcome.receipt);
+        } finally { this.claims.delete(child.childId); }
+      }
+    } catch (error) {
+      if (acceptedAll) await this.options.service.completePreparedContent(operation);
+      else if (reservedBy && !platformAccepted) await this.options.service.releasePreparedContent(operation, reservedBy);
+      throw error;
     }
     await this.options.service.completePreparedContent(operation);
     return { originId: operation.record.originId, receipts };

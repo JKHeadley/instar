@@ -43,7 +43,7 @@ export interface OriginServiceStore {
   admit(input: OriginAdmission): Promise<AdmissionResult>;
   claim(input: ClaimInput): Promise<ClaimResult>;
   markDispatched(fence: ClaimFence): Promise<boolean>;
-  releaseUndispatchedClaim?(fence: ClaimFence): Promise<boolean>;
+  releaseUndispatchedClaim?(fence: ClaimFence & { detail?: 'content-reservation-held' }): Promise<boolean>;
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult>;
   recordOperationState(input: {operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number}): Promise<boolean>;
   getOrigin(originId: string): Promise<OriginAuditRecord | null>;
@@ -232,7 +232,11 @@ export class TelegramOriginService {
     }
     this.authorizeSendPolicyDispatch(operation.record);
   }
-  async reservePreparedContent(operation: OriginPreparedBotOperation): Promise<void> {
+  /** Called only while the caller holds this operation's exclusive outbox
+   * claim (`claimToken`), which becomes the reservation's release owner. On a
+   * refusal, `releaseClaim` returns the undispatched claim first so the child
+   * stays queued for the outbox's own bounded retry. */
+  async reservePreparedContent(operation: OriginPreparedBotOperation, claimToken: string, releaseClaim: () => Promise<unknown>): Promise<void> {
     const authority = this.options.sendPolicy;
     if (!authority?.reserveContent || !authority.completeContent) {
       if (this.requiresSendPolicy(operation.record)) throw new TelegramOriginHoldError('content-dedup-unavailable', operation.record.operationId);
@@ -243,8 +247,12 @@ export class TelegramOriginService {
       if (this.requiresSendPolicy(operation.record)) throw new TelegramOriginHoldError('send-policy-input-unavailable', operation.record.operationId);
       return;
     }
-    const decision = await authority.reserveContent(operation.record, first.policy, operation.admission.deadlineAt);
+    const decision = await authority.reserveContent(operation.record, first.policy, operation.admission.deadlineAt, claimToken);
     if (!decision.ok) {
+      await releaseClaim();
+      // Only platform acceptance of this content is terminal. Another send
+      // still in flight ('content-reservation-pending') leaves this operation
+      // queued: if that send fails, this one must still deliver.
       if (decision.reason === 'duplicate-content') {
         // A suppressed fresh operation must never become a delayed duplicate
         // when the content window expires. The outbox owns this terminal state.
@@ -254,6 +262,15 @@ export class TelegramOriginService {
       }
       throw new OriginSendPolicyRefusal(decision, operation.record.operationId);
     }
+  }
+  /** An execution that ended with no platform acceptance is not a delivery,
+   * so it must not suppress a fresh identical send. Nothing is replayed here;
+   * the outbox's own retry re-reserves (and is suppressed only if a fresh send
+   * of the same text was accepted meanwhile). Release is fenced to the claim
+   * token that reserved it, so a losing or stale execution releases nothing. */
+  async releasePreparedContent(operation: OriginPreparedBotOperation, claimToken: string): Promise<void> {
+    const first = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? 'null') as unknown as { policy?: unknown };
+    if (validOriginSendPolicyInput(first?.policy)) await this.options.sendPolicy?.releaseContent?.(operation.record, first.policy, claimToken);
   }
   async completePreparedContent(operation: OriginPreparedBotOperation): Promise<void> {
     const first = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? 'null') as unknown as { policy?: unknown };
@@ -500,106 +517,126 @@ export class TelegramOriginService {
     const stored = await this.options.store.getOrigin(operation.record.originId);
     if (!stored || stored.record.envelopeJson !== canonicalOrigin(operation.record) ||
       stored.operation?.operationId !== operation.record.operationId) return this.#hold(operation, 'stored-origin-mismatch');
-    if (stored.children.some(child => child.state !== 'accepted')) {
-      await this.reviewPreparedSendPolicy(operation);
-      await this.reservePreparedContent(operation);
-    }
+    if (stored.children.some(child => child.state !== 'accepted')) await this.reviewPreparedSendPolicy(operation);
+    // Any platform acceptance (stored or in this run) keeps the reservation:
+    // part of this content may be visible to the user.
+    let platformAccepted = stored.children.some(child => child.state === 'accepted');
+    // The claim token under which THIS execution holds the content reservation.
+    let reservedBy: string | null = null;
+    // The platform accepted every child, even if a local receipt write failed:
+    // an observed acceptance is a delivery for dedup purposes.
+    let acceptedAll = false;
     let last: Response | null = null;
-    for (const child of operation.admission.children) {
-      let materialization = child.materializations[0];
-      let request = parseOriginJson(materialization.requestJson) as unknown as SealedBotRequest;
-      Object.freeze(request.destination);
-      Object.freeze(request);
-      if (wireDigest(materialization.requestJson) !== materialization.requestDigest || canonicalOrigin(request.destination) !== child.destinationJson ||
-        request.accountId !== operation.record.destination.accountId) return this.#hold(operation, 'sealed-request-mismatch');
-      const existing = stored.children.find(row => row.childId === child.childId);
-      if (existing?.state === 'accepted') {
-        const receiptJson = stored.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted')?.receiptJson;
-        if (!receiptJson) return this.#hold(operation, 'accepted-child-receipt-unavailable');
-        if (!request.companionOf) last = replayBotReceipt(JSON.parse(receiptJson) as OriginBotReceipt);
-        continue;
-      }
-      if (request.companionOf) {
-        materialization = await bindBotCompanion(this.options.store, operation, child, request);
-        request = parseOriginJson(materialization.requestJson) as unknown as SealedBotRequest;
-        Object.freeze(request.destination); Object.freeze(request);
-      }
-      if (operation.record.producerKind === 'imported-legacy') {
-        if (!this.options.reviewLegacyRecovery) return this.#hold(operation, 'legacy-review-unavailable');
-        const body = JSON.parse(request.body);
-        if (!await this.options.reviewLegacyRecovery(String(body.text ?? ''))) return this.#hold(operation, 'legacy-review-rejected');
-      }
-      if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
-      await this.authorizeOriginDispatch(operation.record);
-      this.authorizeSendPolicyDispatch(operation.record);
-      let prepared: Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>> | undefined;
-      try { prepared = await network.prepare?.(request); }
-      catch (error) { if (error instanceof OriginCapacityUnavailable) return this.#hold(operation, error.message); throw error; }
-      const claim = await this.options.store.claim({ childId: child.childId, materializationId: materialization.materializationId,
-        ownerBootId: this.options.ownerBootId, leaseMs: 60_000 });
-      if (claim.status !== 'claimed') return this.#hold(operation, `outbox-${claim.reason}`);
-      if (claim.child.originId !== operation.record.originId || claim.child.operationId !== operation.record.operationId || claim.child.materialization.requestJson !== materialization.requestJson) return this.#hold(operation, 'claim-request-mismatch');
-      // Ownership may be revoked while the durable claim transaction runs.
-      if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
-      this.authorizeSendPolicyDispatch(operation.record);
-      if (prepared && !prepared.valid()) {
-        prepared.cancel();
-        await this.options.store.releaseUndispatchedClaim?.(claim.child);
-        return this.#hold(operation, 'credential-capacity-unavailable');
-      }
-      if (!await this.options.store.markDispatched(claim.child)) return this.#hold(operation, 'stale-dispatch-fence');
-      await this.authorizeOriginDispatch(operation.record);
-      this.authorizeSendPolicyDispatch(operation.record);
-      let response: Response;
-      try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
-      catch (error) {
-        const localRefusal = consumeOriginLocalRefusal(error, request);
-        if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork) {
-          const reason = localRefusal ? 'credential-capacity-unavailable' : 'telegram-request-cancelled-before-network';
-          // Only a request-bound proof from the egress closure returns budget.
-          // A crash without that proof remains uncertain on recovery.
-          const nextAttemptAt = localRefusal
-            ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)
-            : nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
-            maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now() });
-          await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason,
-            ...(localRefusal ? { localRefusal: true } : {}),
-            ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
-          return this.#hold(operation, reason);
+    try {
+      for (const child of operation.admission.children) {
+        let materialization = child.materializations[0];
+        let request = parseOriginJson(materialization.requestJson) as unknown as SealedBotRequest;
+        Object.freeze(request.destination);
+        Object.freeze(request);
+        if (wireDigest(materialization.requestJson) !== materialization.requestDigest || canonicalOrigin(request.destination) !== child.destinationJson ||
+          request.accountId !== operation.record.destination.accountId) return this.#hold(operation, 'sealed-request-mismatch');
+        const existing = stored.children.find(row => row.childId === child.childId);
+        if (existing?.state === 'accepted') {
+          const receiptJson = stored.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted')?.receiptJson;
+          if (!receiptJson) return this.#hold(operation, 'accepted-child-receipt-unavailable');
+          if (!request.companionOf) last = replayBotReceipt(JSON.parse(receiptJson) as OriginBotReceipt);
+          continue;
         }
-        await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
-        throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
-      }
-      type BotResponse = { ok?: boolean; result?: unknown; error_code?: unknown; description?: unknown; parameters?: { retry_after?: unknown } };
-      let parsed: BotResponse | null = null;
-      try { parsed = JSON.parse(await response.clone().text()) as BotResponse; } catch { /* No concrete receipt; never infer success from HTTP alone. */ }
-      const receipt = correlateBotReceipt(request, parsed?.result, this.#now());
-      if (response.ok && parsed?.ok === true && receipt) {
-        let saved: OutcomeWriteResult;
-        try { saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
-        catch { throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown'); }
-        if (!saved.recorded) throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown');
-        if (!request.companionOf) last = response;
-      } else if (response.status >= 400 && response.status < 500 && parsed?.ok === false) {
-        const retryAfter = parsed.parameters?.retry_after;
-        const nextAttemptAt = response.status === 429 ? nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
-          maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now(),
-          minimumDelayMs: Number.isSafeInteger(retryAfter) && Number(retryAfter) > 0 ? Number(retryAfter) * 1000 : 0 }) : undefined;
-        const saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
-          ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
-        const error = new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
-        if (saved.recorded) recordTelegramEditRejection(error, response.status, parsed, {
-          method: request.method, accountId: request.accountId, params: JSON.parse(request.body),
+        if (request.companionOf) {
+          materialization = await bindBotCompanion(this.options.store, operation, child, request);
+          request = parseOriginJson(materialization.requestJson) as unknown as SealedBotRequest;
+          Object.freeze(request.destination); Object.freeze(request);
+        }
+        if (operation.record.producerKind === 'imported-legacy') {
+          if (!this.options.reviewLegacyRecovery) return this.#hold(operation, 'legacy-review-unavailable');
+          const body = JSON.parse(request.body);
+          if (!await this.options.reviewLegacyRecovery(String(body.text ?? ''))) return this.#hold(operation, 'legacy-review-rejected');
+        }
+        if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
+        await this.authorizeOriginDispatch(operation.record);
+        this.authorizeSendPolicyDispatch(operation.record);
+        let prepared: Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>> | undefined;
+        try { prepared = await network.prepare?.(request); }
+        catch (error) { if (error instanceof OriginCapacityUnavailable) return this.#hold(operation, error.message); throw error; }
+        const claim = await this.options.store.claim({ childId: child.childId, materializationId: materialization.materializationId,
+          ownerBootId: this.options.ownerBootId, leaseMs: 60_000 });
+        if (claim.status !== 'claimed') return this.#hold(operation, `outbox-${claim.reason}`);
+        if (claim.child.originId !== operation.record.originId || claim.child.operationId !== operation.record.operationId || claim.child.materialization.requestJson !== materialization.requestJson) return this.#hold(operation, 'claim-request-mismatch');
+        // Reserve only under the exclusive claim: a contender that lost the
+        // claim never touches the winner's reservation.
+        await this.reservePreparedContent(operation, claim.child.claimToken, async () => {
+          prepared?.cancel();
+          await this.options.store.releaseUndispatchedClaim?.({ ...claim.child, detail: 'content-reservation-held' });
         });
-        throw error;
-      } else {
-        const partial = response.ok && parsed?.ok === true ? correlatePartialBotReceipt(request, parsed.result, this.#now()) : null;
-        const reason = partial ? 'partial-platform-receipt' : 'response-without-correlated-receipt';
-        await this.#outcomeUnknown(operation, claim.child, reason, partial ?? undefined);
-        throw new TelegramOriginHoldError(reason, operation.record.operationId, 'outcome-unknown');
+        reservedBy = claim.child.claimToken;
+        // Ownership may be revoked while the durable claim transaction runs.
+        if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
+        this.authorizeSendPolicyDispatch(operation.record);
+        if (prepared && !prepared.valid()) {
+          prepared.cancel();
+          await this.options.store.releaseUndispatchedClaim?.(claim.child);
+          return this.#hold(operation, 'credential-capacity-unavailable');
+        }
+        if (!await this.options.store.markDispatched(claim.child)) return this.#hold(operation, 'stale-dispatch-fence');
+        await this.authorizeOriginDispatch(operation.record);
+        this.authorizeSendPolicyDispatch(operation.record);
+        let response: Response;
+        try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
+        catch (error) {
+          const localRefusal = consumeOriginLocalRefusal(error, request);
+          if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork) {
+            const reason = localRefusal ? 'credential-capacity-unavailable' : 'telegram-request-cancelled-before-network';
+            // Only a request-bound proof from the egress closure returns budget.
+            // A crash without that proof remains uncertain on recovery.
+            const nextAttemptAt = localRefusal
+              ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)
+              : nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
+              maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now() });
+            await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason,
+              ...(localRefusal ? { localRefusal: true } : {}),
+              ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
+            return this.#hold(operation, reason);
+          }
+          await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
+          throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
+        }
+        type BotResponse = { ok?: boolean; result?: unknown; error_code?: unknown; description?: unknown; parameters?: { retry_after?: unknown } };
+        let parsed: BotResponse | null = null;
+        try { parsed = JSON.parse(await response.clone().text()) as BotResponse; } catch { /* No concrete receipt; never infer success from HTTP alone. */ }
+        const receipt = correlateBotReceipt(request, parsed?.result, this.#now());
+        if (response.ok && parsed?.ok === true) platformAccepted = true;
+        if (response.ok && parsed?.ok === true && receipt) {
+          acceptedAll = child === operation.admission.children.at(-1);
+          let saved: OutcomeWriteResult;
+          try { saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
+          catch { throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown'); }
+          if (!saved.recorded) throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown');
+          if (!request.companionOf) last = response;
+        } else if (response.status >= 400 && response.status < 500 && parsed?.ok === false) {
+          const retryAfter = parsed.parameters?.retry_after;
+          const nextAttemptAt = response.status === 429 ? nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
+            maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now(),
+            minimumDelayMs: Number.isSafeInteger(retryAfter) && Number(retryAfter) > 0 ? Number(retryAfter) * 1000 : 0 }) : undefined;
+          const saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
+            ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
+          const error = new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
+          if (saved.recorded) recordTelegramEditRejection(error, response.status, parsed, {
+            method: request.method, accountId: request.accountId, params: JSON.parse(request.body),
+          });
+          throw error;
+        } else {
+          const partial = response.ok && parsed?.ok === true ? correlatePartialBotReceipt(request, parsed.result, this.#now()) : null;
+          const reason = partial ? 'partial-platform-receipt' : 'response-without-correlated-receipt';
+          await this.#outcomeUnknown(operation, claim.child, reason, partial ?? undefined);
+          throw new TelegramOriginHoldError(reason, operation.record.operationId, 'outcome-unknown');
+        }
       }
+      if (!last) return this.#hold(operation, 'empty-prepared-plan');
+    } catch (error) {
+      if (acceptedAll) await this.completePreparedContent(operation);
+      else if (reservedBy && !platformAccepted) await this.releasePreparedContent(operation, reservedBy);
+      throw error;
     }
-    if (!last) return this.#hold(operation, 'empty-prepared-plan');
     await this.completePreparedContent(operation);
     const held = this.#held.get(operation.record.operationId);
     if (held?.operation) this.#heldBytes -= held.operation.admission.payloadBytes;
