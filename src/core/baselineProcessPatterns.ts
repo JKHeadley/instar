@@ -36,3 +36,13 @@ export const BASELINE_PROCESS_PATTERNS: readonly RegExp[] = [
  */
 export const MCP_STACK_ROOT_PATTERNS: readonly RegExp[] =
   BASELINE_PROCESS_PATTERNS.filter((p) => !/caffeinate/.test(p.source));
+
+/**
+ * Claude Code runs every Bash tool call — foreground AND `run_in_background` —
+ * as `<shell> -c source <config-home>/shell-snapshots/snapshot-….sh … eval '…'`.
+ * A live process matching this is the agent's OWN in-flight command (a build,
+ * a test run, a watch loop waiting on other sessions), never resident noise.
+ * The session reaper uses it so a quiet session that is WAITING on its own
+ * background shells is not mistaken for an abandoned one.
+ */
+export const CLAUDE_TOOL_SHELL_PATTERN = /\/shell-snapshots\/snapshot-/;

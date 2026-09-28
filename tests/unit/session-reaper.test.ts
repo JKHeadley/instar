@@ -227,6 +227,88 @@ describe('SessionReaper — stale-idle active-process override (reapStaleIdleWit
   });
 });
 
+describe('SessionReaper — a session waiting on its own background shells is not abandoned', () => {
+  // 2026-09-28: a coordinating session (topic silent all day, pane quiet) was
+  // reaped three times while its run_in_background watch loops waited on
+  // builders running in OTHER tmux sessions. Stale-idle relaxed the
+  // active-process veto as if those shells were idle MCP children.
+  const staleIdleDeps = {
+    topicBinding: () => 42,
+    recentUserMessage: () => false,
+    hasActiveProcesses: () => true,
+  };
+
+  it('KEEPs a stale-topic session whose own tool shell is still running', () => {
+    const h = harness({ deps: { ...staleIdleDeps, hasLiveToolShell: () => true } });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('keep');
+    expect(e.keptBy).toBe('active-process');
+    expect(e.staleIdleRelaxed).toBe(false);
+  });
+
+  it('never reaps it across ticks at normal-tier reaping', async () => {
+    const h = harness({ tier: 'normal', cfg: { normalTierReaps: true }, deps: { ...staleIdleDeps, hasLiveToolShell: () => true } });
+    for (let i = 0; i < 6; i++) { h.setNow(1_000_000 + i * 120_000); await h.reaper.tick(); }
+    expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it('KEEPs when the shell probe throws (cannot inspect ⇒ never relax)', () => {
+    const h = harness({ deps: { ...staleIdleDeps, hasLiveToolShell: () => { throw new Error('ps failed'); } } });
+    expect(h.reaper.evaluate(mkSession()).keptBy).toBe('active-process');
+  });
+
+  it('STILL reaps a stale-topic session whose children are only idle resident processes', async () => {
+    const h = harness({ deps: { ...staleIdleDeps, hasLiveToolShell: () => false } });
+    const e = h.reaper.evaluate(mkSession());
+    expect(e.verdict).toBe('reap-eligible');
+    expect(e.staleIdleRelaxed).toBe(true);
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: [] });
+  });
+
+  it('a genuinely idle session with no children is still reaped with no evidence', async () => {
+    const h = harness({ deps: { hasLiveToolShell: () => false } });
+    await driveToReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: false, workEvidence: [] });
+  });
+
+  const cpuFlatAt = (tier: PressureTier, liveShell: boolean) => harness({
+    tier,
+    cfg: { cpuAwareActiveProcessKeep: true, cpuActiveMinRatePerSec: 0.02 },
+    deps: { hasActiveProcesses: () => true, hasLiveToolShell: () => liveShell, descendantCpuSeconds: () => 5 },
+  });
+  const tickUntilReap = async (h: Harness) => {
+    for (let i = 0; i < 6 && h.terminate.mock.calls.length === 0; i++) {
+      h.setNow(1_000_000 + i * 120_000); await h.reaper.tick();
+    }
+  };
+
+  it('moderate pressure: a CPU-flat watch loop does NOT relax the veto (never reaped)', async () => {
+    const h = cpuFlatAt('moderate', true);
+    await tickUntilReap(h);
+    expect(h.terminate).not.toHaveBeenCalled();
+    expect(h.reaper.evaluate(mkSession(), { cpuFlat: true, tier: 'moderate' }).keptBy).toBe('active-process');
+  });
+
+  it('moderate pressure: a CPU-flat child with NO tool shell still relaxes (idle MCP case unchanged)', async () => {
+    const h = cpuFlatAt('moderate', false);
+    await tickUntilReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: [] });
+  });
+
+  it('when reaped under real pressure (cpu-flat relax), the reap carries background-shell evidence', async () => {
+    const h = harness({
+      tier: 'critical',
+      cfg: { cpuAwareActiveProcessKeep: true, cpuActiveMinRatePerSec: 0.02 },
+      deps: { hasActiveProcesses: () => true, hasLiveToolShell: () => true, descendantCpuSeconds: () => 5 },
+    });
+    for (let i = 0; i < 6 && h.terminate.mock.calls.length === 0; i++) {
+      h.setNow(1_000_000 + i * 120_000); await h.reaper.tick();
+    }
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: ['background-shell'] });
+  });
+});
+
 describe('SessionReaper — transcript growth across ticks keeps a working session', () => {
   it('KEEPs when the transcript grew between ticks (mid-generation, quiet pane)', async () => {
     const h = harness();

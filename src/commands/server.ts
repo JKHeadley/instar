@@ -20048,6 +20048,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       {
         ...reapGuardDeps,
         dirtyCheck: _yieldSafetyDirtyCheck,
+        hasLiveToolShell: (s) => sessionManager.hasLiveToolShell(s),
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,

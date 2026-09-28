@@ -26,7 +26,7 @@ import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNa
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
-import { BASELINE_PROCESS_PATTERNS } from './baselineProcessPatterns.js';
+import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
@@ -4256,6 +4256,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const proc = processes.get(p.pid);
       // Direct child of pane PID running claude/node is the main process
       if (proc?.ppid === panePid) {
+        // A Claude Code tool shell sources a snapshot under the config home
+        // (`~/.claude…/shell-snapshots/…`), so its command line contains the word
+        // "claude" — it is the agent's running command, never the main process.
+        if (CLAUDE_TOOL_SHELL_PATTERN.test(p.command)) return true;
         return !/\bclaude\b/.test(p.command) && !/\bnode\b.*\bclaude\b/.test(p.command);
       }
       return true;
@@ -4287,6 +4291,60 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // If we can't check processes, assume active (fail-safe: don't kill)
       return true;
     }
+  }
+
+  /**
+   * Does this session have a live Claude Code tool shell (a Bash tool call still
+   * running — typically a `run_in_background` watch or build)? Such a session is
+   * WAITING on its own work, not abandoned, however quiet its pane and topic are.
+   *
+   * Separate from `hasActiveProcesses` because that probe answers "is any child
+   * alive" (an idle MCP server also qualifies), while this answers "is the
+   * agent's own command still running". Fail-safe like its sibling: a probe that
+   * cannot run resolves to TRUE (never let an unreadable tree look abandoned).
+   */
+  hasLiveToolShell(tmuxSession: string): boolean {
+    try {
+      const panePid = withSyncOp(() => execFileSync(
+        this.config.tmuxPath,
+        ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
+        { encoding: 'utf-8', timeout: 5000 }
+      )).trim();
+      if (!panePid || !/^\d+$/.test(panePid)) return false;
+      const psOutput = withSyncOp(() => execFileSync(
+        'ps', ['-eo', 'pid,ppid,command'],
+        { encoding: 'utf-8', timeout: 5000 }
+      ));
+      return SessionManager.computeHasLiveToolShell(panePid, psOutput);
+    } catch {
+      // If we can't check processes, assume a live shell (fail-safe: don't kill)
+      return true;
+    }
+  }
+
+  /** Pure half of `hasLiveToolShell`: any descendant of `panePid` whose command
+   *  is a Claude Code tool shell. */
+  static computeHasLiveToolShell(panePid: string, psOutput: string): boolean {
+    const children = new Map<string, Array<{ pid: string; command: string }>>();
+    for (const line of psOutput.split('\n').slice(1)) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const list = children.get(m[2]) ?? [];
+      list.push({ pid: m[1], command: m[3] });
+      children.set(m[2], list);
+    }
+    const seen = new Set<string>([panePid]);
+    const queue = [panePid];
+    while (queue.length > 0) {
+      const parent = queue.shift()!;
+      for (const c of children.get(parent) ?? []) {
+        if (seen.has(c.pid)) continue;
+        if (CLAUDE_TOOL_SHELL_PATTERN.test(c.command)) return true;
+        seen.add(c.pid);
+        queue.push(c.pid);
+      }
+    }
+    return false;
   }
 
   /**
