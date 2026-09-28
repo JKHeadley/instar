@@ -198,6 +198,7 @@ export class HttpLeaseTransport implements LeaseTransport {
       let settled = false;
       let resolvedFalse = false;
       let lateReported = false;
+      const sentAt = this.now();
       const finish = (ok: boolean) => {
         if (settled) return;
         settled = true;
@@ -211,7 +212,10 @@ export class HttpLeaseTransport implements LeaseTransport {
           .then((r) => {
             if (r.confirmed) {
               this.lastBroadcastOkAt = this.now();
-              if (resolvedFalse && !lateReported && onLateConfirm) {
+              // Only inside the supported response window (requestTimeoutMs): a dial
+              // should have aborted by then, so a later answer is not a live confirmation.
+              const inWindow = this.now() - sentAt <= this.requestTimeoutMs;
+              if (resolvedFalse && !lateReported && onLateConfirm && inWindow) {
                 // The deadline already answered false; this is a genuine confirmation
                 // of the same signed lease, arriving late. Hand it to the coordinator.
                 lateReported = true;

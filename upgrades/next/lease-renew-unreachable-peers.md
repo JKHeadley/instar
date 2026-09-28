@@ -39,8 +39,10 @@ are untouched.
   inside the budget), unreachable but recently alive (self-fence applies), and a
   peer at a higher epoch (no hold). It also runs real signed acks over the
   production mesh path on a fake clock: four renewals with 10s acks keep the
-  holder serving; with no confirmation the self-fence still lapses and a later
-  ack does not revive it; a verified higher-epoch ack blocks the solo hold,
+  holder serving; a renewal dispatched late in grace (t=55s of a 60s TTL) whose
+  deadline suspends is restored by its own 10s ack, while an earlier renewal's
+  ack cannot lift that suspension; with no confirmation inside the 30s response
+  window the self-fence still lapses and a later ack does not revive it; a verified higher-epoch ack blocks the solo hold,
   fences beside a confirming peer, fences after early success, and fences after
   the deadline. The five new ack cases fail on the round-1 code.
 - `tests/integration/lease-renew-unreachable-peer-sends.test.ts` runs the full

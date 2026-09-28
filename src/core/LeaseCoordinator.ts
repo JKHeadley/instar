@@ -180,6 +180,13 @@ export class LeaseCoordinator {
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
+   * The renewal whose own early broadcast deadline caused the current suspension
+   * (null otherwise). That deadline is provisional — the dials are still in flight —
+   * so a late verified confirmation of EXACTLY this renewal may still finish it
+   * (adoptLateRenewal). Any other suspension stays terminal until re-acquire.
+   */
+  private suspendedByRenewal: LeaseRecord | null = null;
+  /**
    * Epoch acquired from a PEER through the normal fenced takeover authority.
    * When this machine is the preferred captain, this is positive evidence that
    * it may keep that exact epoch alive while the peer remains unreachable:
@@ -666,6 +673,7 @@ export class LeaseCoordinator {
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
+      this.suspendedByRenewal = null;
     }
     const dead = this.d.presumedDeadHolders();
     let retries = 0;
@@ -886,6 +894,8 @@ export class LeaseCoordinator {
 
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
       this.suspended = true;
+      // Only the tunnel's early deadline is provisional; a git refresh result is final.
+      this.suspendedByRenewal = this.d.tunnel ? renewed : null;
       this.d.onSelfSuspend?.(
         `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms, monotonic) — lease lapsed`,
       );
@@ -902,15 +912,28 @@ export class LeaseCoordinator {
    * deadline (a slow-but-valid peer). Adopt it exactly as an on-time confirmation
    * would have — but only while it is still current: not suspended, not relinquished
    * since the renewal was sent, still our lease at the same epoch, not released, not
-   * superseded by a higher epoch (observed or verified-ack evidence), and not older
-   * than a renewal we already installed.
+   * superseded by a higher epoch (observed or verified-ack evidence), not expired,
+   * and not older than a renewal we already installed.
+   *
+   * Suspension: if THIS renewal's own early deadline is what suspended us (a
+   * renewal started near the end of grace), that timeout was provisional, so the
+   * exact renewal may still finish and lift that suspension. Any other suspension
+   * (a different renewal, or none since re-acquire) still discards the ack. The
+   * monotonic fence stays armed until the confirmation actually arrives.
    */
   private adoptLateRenewal(renewed: LeaseRecord, generation: number): void {
-    if (this.suspended || generation !== this.relinquishGeneration) return;
+    if (this.suspended && this.suspendedByRenewal !== renewed) return;
+    if (generation !== this.relinquishGeneration) return;
+    if (this.fl.isExpired(renewed, this.now())) return;
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) return;
     if (view.epoch !== renewed.epoch || this.higherEpochEvidence() > renewed.epoch) return;
     if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce >= renewed.nonce) return;
+    if (this.suspended) {
+      this.suspended = false;
+      this.suspendedByRenewal = null;
+      this.log(`late confirmation of the renewal that timed out lifts its provisional suspension (epoch ${renewed.epoch})`);
+    }
     this.selfIssued = renewed;
     this.markRenewOk();
     this.log(`late renewal confirmation adopted (epoch ${renewed.epoch}, nonce ${renewed.nonce})`);

@@ -85,10 +85,23 @@ code (which awaited the ack) kept serving. That was a loss of previously working
 service, not only the tick giving up on work it could not use.
 
 Round 2 closes it: a confirmation arriving after the deadline, still inside
-`requestTimeoutMs`, is adopted through `adoptLateRenewal()`. A peer answering
-anywhere in the 5–30s receiver-stall envelope confirms the renewal as before; renew
-itself returns within the 8s deadline and serves on grace in between. Tested
-directly (four consecutive renewals with 10s signed acks).
+`requestTimeoutMs`, is adopted through `adoptLateRenewal()`. Renew itself returns
+within the 8s deadline and serves on grace in between.
+
+Round 3 (review round 2 found a remaining gap): a renewal dispatched late in the
+grace period (t=55s of a 60s TTL) hit its 8s deadline at t=63, self-suspended, and
+then discarded its own valid ack at t=65, where the base code confirmed. The early
+deadline is now provisional for that exact renewal: its own late, verified,
+unexpired, same-epoch ack lifts the suspension it caused. A suspension caused by a
+different renewal still discards the ack, and the transport forwards a late
+confirm only inside `requestTimeoutMs` of the send.
+
+What the evidence covers, and no more: 10s signed acks on steady 30s renewals
+(four in a row), a 10s ack on a renewal dispatched at t=55s, and 20s acks where an
+earlier renewal's ack is refused and the suspending renewal's own ack is adopted.
+The unconfirmed window between lease expiry and the late ack (t=60–65 above) is
+fenced, exactly as on the base code. Other timings inside 5–30s are expected to
+behave the same by construction but are not each tested.
 
 New fence: a peer's verified `higher-epoch` ack stops this machine holding its
 older epoch. That is correct fencing, not over-block: the peer signed, against our
@@ -345,3 +358,21 @@ round-2 reformat put the new relinquish-guard `return false` inside its 20-line
 scan window (496 > 495). A throwing broadcast is an unconfirmed renewal, which is
 fail-closed, so the catch now carries an on-line `@silent-fallback-ok` tag. No
 behavior change.
+
+## Second-pass review — round 3
+
+Scope: the provisional-deadline repair (`suspendedByRenewal`, the `isExpired` check
+in `adoptLateRenewal()`, the `requestTimeoutMs` window on `onLateConfirm`).
+
+Concur with the review. A suspension is lifted only when the late ack confirms the
+exact renewal whose deadline caused it (`suspendedByRenewal === renewed`, set only
+on the tunnel path), the relinquish generation is unchanged, the renewed lease is
+unexpired, and the same-epoch / not-released / no-higher-epoch / nonce guards all
+pass before the flag is cleared. `acquireIfEligible` clears both fields and already
+un-suspends on its own, so this is no weaker. After a re-acquire at a higher epoch
+the epoch check rejects the old ack, and an older renewal's ack cannot lift a newer
+renewal's suspension. `onSelfSuspend` only logs, so un-suspending leaves nothing
+inconsistent. The monotonic fence stays armed until the ack arrives (tested
+t=63–65). The round-3 text matches both new tests; the unit file passes 17/17.
+
+— second-pass reviewer subagent, round 3, 2026-09-27

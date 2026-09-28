@@ -261,6 +261,43 @@ describe('signed accept-acks: slow confirmations are kept, higher epochs fence',
     expect(lc.holdsLease()).toBe(false);
   });
 
+  it('a renewal started near the end of grace: its deadline suspends, but its own valid 10s ack still restores the lease', async () => {
+    const { lc, tunnel, connect } = mesh({ delayMs: 10_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(55_000); // delayed dispatch (CPU starvation)
+    expect(lc.holdsLease()).toBe(true);
+    const p = lc.renew();
+    await vi.advanceTimersByTimeAsync(8_000); // t=63: the early deadline is past the TTL
+    expect(await p).toBe(false);
+    expect(lc.isSuspended).toBe(true);
+    expect(lc.holdsLease()).toBe(false); // the fence stays armed while unconfirmed
+    await vi.advanceTimersByTimeAsync(2_000); // t=65: the signed same-epoch ack lands
+    expect(tunnel.isReachable()).toBe(true);
+    expect(lc.isSuspended).toBe(false);
+    expect(lc.holdsLease()).toBe(true);
+  });
+
+  it('a late ack for an earlier renewal cannot lift a suspension caused by a later one; the later one\'s ack can', async () => {
+    const { lc, connect } = mesh({ delayMs: 20_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(45_000);
+    const r1 = lc.renew();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(await r1).toBe(true); // t=53: grace
+    await vi.advanceTimersByTimeAsync(2_000);
+    const r2 = lc.renew();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(await r2).toBe(false); // t=63: r2's deadline suspends
+    await vi.advanceTimersByTimeAsync(2_000); // t=65: r1's ack lands — not the renewal that suspended
+    expect(lc.isSuspended).toBe(true);
+    expect(lc.holdsLease()).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000); // t=75: r2's own ack lands
+    expect(lc.isSuspended).toBe(false);
+    expect(lc.holdsLease()).toBe(true);
+  });
+
   it('a late ack for a renewal sent before relinquish() never brings the lease back', async () => {
     const { lc, connect } = mesh({ delayMs: 10_000, peerIds: ['C'] });
     expect(await lc.acquireIfEligible()).toBe(true);

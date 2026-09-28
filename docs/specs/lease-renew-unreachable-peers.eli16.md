@@ -32,6 +32,9 @@ refused.
   10 seconds, which a busy but healthy machine can take), the confirmation is
   kept and the slip is renewed then. Only a confirmation for the current slip
   counts: it cannot bring back a slip that already lapsed or was replaced.
+  If the 8-second wait itself ran past the end of the slip (the renewal started
+  late), this machine goes quiet, but that same renewal's valid answer still
+  brings it back when it arrives. An answer to an older renewal cannot.
 - If another machine answers "I already know of a newer slip" (a signed answer
   that it has seen a higher epoch), this machine stops speaking right away and
   fetches that newer slip. Before, that answer was checked and then ignored.
