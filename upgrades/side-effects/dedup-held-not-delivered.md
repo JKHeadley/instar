@@ -144,6 +144,19 @@ judgment.
 - **Feedback loops:** none. Nothing re-drives because of a release.
 - **In-memory held list / outbox recovery:** both unchanged. They still own
   retries, and their retry re-reserves.
+- **Tests that pinned the old contract** (`tests/integration/telegram-origin-routes.test.ts`,
+  added with #2010). Two browser cases asserted the retention on purpose, and
+  both are updated to the new contract. Their safety assertions are kept and
+  strengthened:
+  - (a) While a browser send is in flight, identical sends are still suppressed.
+    Two suppressed operations do not release the in-flight owner's
+    reservation. After an unaccepted ambiguous failure, the agent's fresh send
+    goes out once. A genuine repeat after that is suppressed. Nothing is left
+    for the outbox to recover.
+  - (b) Held, then the agent's resend is held too (409, not "already
+    delivered"). When authority returns, `recoverHeld()` delivers exactly once:
+    one operation is `accepted`, the other is `suppressed`, and there is one
+    wire call.
 
 ---
 

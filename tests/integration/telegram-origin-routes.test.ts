@@ -247,32 +247,49 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     }
     expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
   });
-  it('keeps a browser in-flight reservation through ambiguous acceptance and never releases another operation reservation', async () => {
+  it('keeps a browser in-flight reservation while dispatching and releases only its own after an unaccepted ambiguous outcome', async () => {
     const h = await browserHarness(), text = 'This detailed update must remain reserved while its actual browser acceptance is uncertain.';
     let started!: () => void, fail!: (error: Error) => void;
     const began = new Promise<void>(resolve => { started = resolve; });
-    h.invoke.mockImplementation(() => { started(); return new Promise((_resolve, reject) => { fail = reject; }); });
+    h.invoke.mockImplementationOnce(() => { started(); return new Promise((_resolve, reject) => { fail = reject; }); });
     const sending = h.send(text).then(response => response);
     await began;
+    // In flight: identical sends are suppressed, and a suppressed operation
+    // never releases the in-flight owner's reservation.
+    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
     fail(new Error('fixture transport disconnected after possible acceptance'));
     expect((await sending).status).toBe(409);
+    // No platform acceptance was seen, so it is not "already delivered": the
+    // agent's own fresh send goes out (dedup-held-not-delivered, 2026-09-27).
+    // The platform itself never replays the uncertain operation.
+    const fresh = await h.send(text);
+    expect(fresh.status).toBe(200); expect(fresh.body.suppressedDuplicate).toBeUndefined();
+    expect(h.invoke).toHaveBeenCalledTimes(2);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
-    expect(h.invoke).toHaveBeenCalledOnce();
     const rows = (await h.runtime.store.listOrigins()).records;
     expect(rows.filter(row => row.operation?.state === 'outcome-unknown')).toHaveLength(1);
-    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(2);
+    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(3);
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
   });
-  it('recovers the original queued browser operation under its own reservation after authority returns', async () => {
+  it('recovers held browser operations after authority returns with exactly one delivery', async () => {
     const h = await browserHarness(), text = 'The queued browser update should recover once, retaining its original content reservation throughout.';
     h.executor.options.authorize = () => false;
     expect((await h.send(text)).status).toBe(409);
-    expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    // A held send is not a delivery: the agent's resend is held too, never
+    // answered "already delivered".
+    const resend = await h.send(text);
+    expect(resend.status).toBe(409); expect(resend.body.suppressedDuplicate).toBeUndefined();
     expect(h.invoke).not.toHaveBeenCalled();
     h.executor.options.authorize = () => true;
-    expect((await h.runtime.recoverHeld()).recovered).toBe(1);
+    await h.runtime.recoverHeld();
+    // The first to recover delivers; the other finds that delivery and is suppressed.
     expect(h.invoke).toHaveBeenCalledOnce();
+    const rows = (await h.runtime.store.listOrigins()).records;
+    expect(rows.filter(row => row.operation?.state === 'accepted')).toHaveLength(1);
+    expect(rows.filter(row => row.operation?.state === 'suppressed')).toHaveLength(1);
     expect((await h.send(text)).body.suppressedDuplicate).toBe(true);
+    expect(h.invoke).toHaveBeenCalledOnce();
   });
   it('carries the A2A summarizer call author through the private body-bound HTTP credential', async () => {
     const h = await appHarness(); let now = 0;
