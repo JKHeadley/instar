@@ -22,6 +22,7 @@ export interface OriginSendPolicyAuthority {
   authorizeDispatch(record: TelegramOriginRecord): OriginSendPolicyDecision;
   reserveContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput, deadlineAt: number): Promise<OriginSendPolicyDecision>;
   completeContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput): Promise<void>;
+  releaseContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput): Promise<void>;
 }
 export class OriginSendPolicyRefusal extends TelegramOriginHoldError {
   constructor(readonly decision: Exclude<OriginSendPolicyDecision, { ok: true }>, operationId: string | null) {

@@ -32,6 +32,7 @@ export interface OutboundDedupStore {
   hasOriginReservation?(topicId: number | string, fingerprint: string, now: number): boolean | null;
   reserveOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number; expiresAt: number; sentSince: number }): 'reserved' | 'duplicate' | 'unavailable';
   completeOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number; expiresAt: number }): boolean;
+  releaseOrigin?(input: { topicId: number | string; fingerprint: string; operationId: string; now: number }): boolean;
 }
 
 /** A no-op store — the explicit "no durable layer" fallback. */
@@ -178,6 +179,29 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
         fallback: 'Retain the existing reservation and return incomplete',
         reason: 'Origin completion database transaction failed',
         impact: 'Content suppression may last until the original deadline; accepted transport receipts remain unchanged',
+      });
+      return false;
+    }
+  }
+
+  /** Owner-fenced release of a reservation whose operation ended with no
+   * platform acceptance (held, known-failed, outcome-unknown). A reservation is
+   * not a delivery: leaving it live made a fresh identical send report
+   * "already delivered" for a message the user never received. Accepted
+   * fingerprints in outbound_dedup are untouched, so a real delivery is still
+   * suppressed; the operation's own retry simply re-reserves. */
+  releaseOrigin(input: { topicId: number | string; fingerprint: string; operationId: string; now: number }): boolean {
+    if (!this.db) return false;
+    try {
+      return this.db.prepare('UPDATE outbound_origin_reservations SET expires_at=? WHERE topic_key=? AND fingerprint=? AND operation_id=? AND expires_at>?')
+        .run(input.now, String(input.topicId), input.fingerprint, input.operationId, input.now).changes > 0;
+    } catch {
+      DegradationReporter.getInstance().report({
+        feature: 'OutboundDedupStore.origin-reservation-release',
+        primary: 'Release the content reservation of an operation that was never accepted',
+        fallback: 'Retain the reservation until its original deadline',
+        reason: 'Origin release database write failed',
+        impact: 'An identical fresh send may be suppressed until the held operation deadline passes',
       });
       return false;
     }

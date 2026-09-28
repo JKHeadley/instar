@@ -97,6 +97,38 @@ describe('origin content reservation authority', () => {
     now += 15 * 60_000 + 1;
     expect(make().reserveOrigin(42, text, 'later-legitimate-repeat', now + 1000)).toBe('reserved');
   });
+  it('releases only its own unaccepted reservation and never un-suppresses an accepted send', () => {
+    const store = new SqliteOutboundDedupStore(':memory:'), now = Date.now();
+    const held = { topicId: 42, fingerprint: 'held', operationId: 'held-op', now, expiresAt: now + 60_000, sentSince: now - 1000 };
+    expect(store.reserveOrigin(held)).toBe('reserved');
+    expect(store.releaseOrigin({ ...held, operationId: 'not-the-owner' })).toBe(false);
+    expect(store.reserveOrigin({ ...held, operationId: 'fresh-op' })).toBe('duplicate');
+    expect(store.releaseOrigin(held)).toBe(true);
+    expect(store.reserveOrigin({ ...held, operationId: 'fresh-op' })).toBe('reserved');
+    const accepted = { ...held, fingerprint: 'accepted', operationId: 'accepted-op' };
+    expect(store.reserveOrigin(accepted)).toBe('reserved');
+    expect(store.completeOrigin(accepted)).toBe(true);
+    store.releaseOrigin(accepted);
+    expect(store.reserveOrigin({ ...accepted, operationId: 'fresh-op' })).toBe('duplicate');
+  });
+  it('a released held operation retried after the window still finds a fresh send delivered since it was prepared', async () => {
+    let now = Date.now();
+    const dedup = new OutboundContentDedup({}, () => now, new SqliteOutboundDedupStore(':memory:'));
+    const policy = originContentDedup(dedup, '-100123');
+    const record = (operationId: string, createdAt: number): TelegramOriginRecord => ({ operationId, originId: operationId, createdAt,
+      destination: { accountId: 'operator', chatId: 'channel:123', topicId: '42', messageId: null } } as TelegramOriginRecord);
+    const held = record('held', now), deadline = now + 6 * 60 * 60_000;
+    expect(await policy.reserveContent!(held, { text }, deadline)).toEqual({ ok: true });
+    await policy.releaseContent!(held, { text });
+    now += 60_000;
+    const fresh = record('fresh', now);
+    expect(await policy.reserveContent!(fresh, { text }, deadline)).toEqual({ ok: true });
+    await policy.completeContent!(fresh, { text });
+    now += 20 * 60_000; // Past the ordinary 15-minute window (the browser retry floor is 15 minutes).
+    expect(await policy.reserveContent!(held, { text }, deadline)).toMatchObject({ ok: false, reason: 'duplicate-content' });
+    // A new operation prepared now is an ordinary repeat after the window.
+    expect(await policy.reserveContent!(record('later', now), { text }, deadline)).toEqual({ ok: true });
+  });
   it('uses the reply authority for the configured forum and isolates other accounts, chats and edit targets', async () => {
     const dedup = new OutboundContentDedup({}, Date.now, new SqliteOutboundDedupStore(':memory:'));
     const policy = originContentDedup(dedup, '-100123'), deadline = Date.now() + 60_000;

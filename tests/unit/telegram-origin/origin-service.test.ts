@@ -384,6 +384,48 @@ describe('origin service durable delivery', () => {
     await expect(h.send()).rejects.toMatchObject({ reason: 'destination-not-authorized' });
     expect(h.network).not.toHaveBeenCalled();
   });
+  describe('content dedup counts only platform-accepted sends as delivered', () => {
+    const longText = 'A complete reply to the operator that is long enough for exact content deduplication.';
+    const longInput = (h: Awaited<ReturnType<typeof harness>>) => ({ ...h.input, params: { ...h.input.params, text: longText } });
+    const sendLong = (h: Awaited<ReturnType<typeof harness>>) =>
+      h.service.runAsAutomation('telegram-server', () => h.service.sendBot(longInput(h), h.network));
+    it('suppresses an identical resend after a confirmed delivery', async () => {
+      const h = await harness();
+      expect((await sendLong(h)).ok).toBe(true);
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('keeps suppression when the platform accepted but the receipt could not be recorded', async () => {
+      const h = await harness();
+      const record = h.store.recordOutcome.bind(h.store);
+      vi.spyOn(h.store, 'recordOutcome').mockRejectedValueOnce(new Error('disk failed')).mockImplementation(record);
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+      await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('does not suppress a fresh send after a held send, and the held send cannot later duplicate it', async () => {
+      const h = await harness();
+      h.authorize.mockResolvedValueOnce(false);
+      const held = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot(longInput(h)));
+      await h.service.admit(held);
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'destination-not-authorized' });
+      expect(h.network).not.toHaveBeenCalled();
+      expect((await sendLong(h)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // The held operation's own later attempt now finds the delivered content.
+      await expect(h.service.executePreparedBot(held, h.network)).rejects.toMatchObject({ reason: 'duplicate-content' });
+      expect(h.network).toHaveBeenCalledOnce();
+    });
+    it('does not suppress a fresh send after an outcome-unknown or known-failed send', async () => {
+      const h = await harness();
+      h.network.mockRejectedValueOnce(new Error('response lost'));
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'transport-acceptance-unknown' });
+      h.network.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, parameters: { retry_after: 61 } }), { status: 429 }));
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'known-failed', reason: 'telegram-429' });
+      expect((await sendLong(h)).ok).toBe(true);
+      expect(h.network).toHaveBeenCalledTimes(3);
+    });
+  });
   it('does not prepare a session revoked while its runtime observation refreshes', async () => {
     const h = await harness();
     const token = await h.service.options.sessions.issue({ sessionId: 'session', harnessId: 'codex-cli', projectDir: process.cwd() });
