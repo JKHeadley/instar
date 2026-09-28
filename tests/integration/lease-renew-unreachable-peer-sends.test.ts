@@ -22,6 +22,8 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
 import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
+import { signLeaseAck } from '../../src/server/machineAuth.js';
+import type { LeasePeer } from '../../src/core/HttpLeaseTransport.js';
 
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -47,11 +49,20 @@ const DEAD = { machineId: 'mac-mini', url: 'http://dead-peer' };
 const DEAD2 = { machineId: 'laptop', url: 'http://dead-peer-2' };
 const LIVE = { machineId: 'standby', url: 'http://live-peer' };
 
-async function sendAfter70s(opts: Parameters<typeof originLeaseDependencyFixture>[0]) {
+/** A slow-but-healthy peer: every legacy 2xx confirmation lands after the broadcast deadline. */
+const slowPeerFetch = (async () => {
+  await delay(250);
+  return { ok: true, json: async () => ({}) };
+}) as unknown as typeof fetch;
+
+type Fixture = Awaited<ReturnType<typeof originLeaseDependencyFixture>>;
+
+async function sendAfter70s(opts: Parameters<typeof originLeaseDependencyFixture>[0], afterFixture?: (lease: Fixture) => void) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const clock = { value: Date.now() };
-  const lease = await originLeaseDependencyFixture({ ...opts, clock, fetchImpl: peerFetch, broadcastDeadlineMs: 100 });
+  const lease = await originLeaseDependencyFixture({ fetchImpl: peerFetch, ...opts, clock, broadcastDeadlineMs: 100 });
   cleanup.push(lease.close);
+  afterFixture?.(lease);
   const telegramConfig = { token: '123:lease-unreachable-fixture', chatId: '-100123', messageOrigin: { display: { enabled: false } } };
   const config = { projectDir: lease.root, stateDir: lease.stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
     messaging: [{ type: 'telegram', enabled: true, config: telegramConfig }] };
@@ -100,6 +111,45 @@ describe('sends stay authorized on the preferred captain while peers are unreach
 
   it('every peer unreachable but recently alive: the split-brain fence still lapses the lease and the send is held', async () => {
     const { lease, response, wire } = await sendAfter70s({ peers: [DEAD, DEAD2], soloCaptain: { allPeersPresumedGone: false } });
+    expect(lease.coordinator.holdsLease()).toBe(false);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(wire).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('a slow-but-healthy peer (every ack lands after the deadline): late confirmations renew the lease and the send goes out', async () => {
+    const { lease, response, wire, epoch } = await sendAfter70s({ peers: [LIVE], fetchImpl: slowPeerFetch });
+    expect(lease.coordinator.holdsLease()).toBe(true);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(wire).toHaveBeenCalledOnce();
+    expect(lease.lc.currentEpoch()).toBe(epoch);
+  }, 60_000);
+});
+
+describe('a verified higher-epoch ack fences the old holder at the send gate', () => {
+  it('C confirms first, then the fixture peer\'s signed epoch+1 ack arrives: the send is held', async () => {
+    let fx: Fixture | undefined;
+    const peers: LeasePeer[] = [];
+    const cKeys = (await import('node:crypto')).generateKeyPairSync('ed25519', {
+      publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+    const meshFetch = (async (url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body);
+      const isB = url.startsWith('https://fixture-peer.example');
+      const key = isB ? fx!.peerPrivateKeyPem : cKeys.privateKey;
+      const id = isB ? 'fixture-peer' : 'standby-c';
+      if (url.endsWith('/api/lease/pull')) {
+        const ack = { machineId: id, reqNonce: body.reqNonce, observedEpoch: 0 };
+        return { ok: true, json: async () => ({ lease: null, ack, sig: signLeaseAck(ack, key) }) };
+      }
+      if (isB) await delay(50); // B answers after C's early success
+      const ack = { machineId: id, reqNonce: body.reqNonce, observedEpoch: isB ? body.lease.epoch + 1 : body.lease.epoch };
+      return { ok: true, json: async () => ({ ack, sig: signLeaseAck(ack, key) }) };
+    }) as unknown as typeof fetch;
+    const { lease, response, wire } = await sendAfter70s({ peers, mesh: true, fetchImpl: meshFetch }, (l) => {
+      fx = l;
+      peers.push({ machineId: 'fixture-peer', url: 'https://fixture-peer.example', publicKeyPem: l.peerPublicKeyPem, meshAckCapable: true },
+        { machineId: 'standby-c', url: 'https://standby-c.example', publicKeyPem: cKeys.publicKey, meshAckCapable: true });
+    });
+    expect(lease.transport.higherEpochEvidence()).toBeGreaterThan(0);
     expect(lease.coordinator.holdsLease()).toBe(false);
     expect(response.status, JSON.stringify(response.body)).toBe(409);
     expect(wire).not.toHaveBeenCalled();

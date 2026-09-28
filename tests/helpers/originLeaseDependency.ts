@@ -7,13 +7,16 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { FencedLease } from '../../src/core/FencedLease.js';
 import { LeaseCoordinator } from '../../src/core/LeaseCoordinator.js';
 import { LocalLeaseStore } from '../../src/core/LocalLeaseStore.js';
-import { HttpLeaseTransport } from '../../src/core/HttpLeaseTransport.js';
+import { HttpLeaseTransport, type LeasePeer } from '../../src/core/HttpLeaseTransport.js';
+import { PeerEndpointResolver } from '../../src/core/PeerEndpointResolver.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 export async function originLeaseDependencyFixture(options: { enroll?: boolean; enabled?: boolean; developmentAgent?: boolean;
   clock?: { value: number }; observeOnly?: boolean;
   /** lease-renew-unreachable-peers: peers the renewal broadcast dials, over this fetch. */
-  peers?: Array<{ machineId: string; url: string }>; fetchImpl?: typeof fetch; broadcastDeadlineMs?: number;
+  peers?: LeasePeer[]; fetchImpl?: typeof fetch; broadcastDeadlineMs?: number;
+  /** Wire the production mesh resolver so signed accept-acks are verified (the ack-capable path). */
+  mesh?: boolean;
   /** Solo-captain hold inputs (preferred captain + whether every peer is presumed gone). */
   soloCaptain?: { allPeersPresumedGone: boolean } } = {}) {
   const root = await mkdtemp('/tmp/origin-lease-dependency-'), stateDir = path.join(root, '.instar');
@@ -39,7 +42,10 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean; 
   const transport = new HttpLeaseTransport({ selfMachineId: identity.machineId, signingKeyPem: privateKey,
     peers: () => options.peers ?? [], nextSequence: () => ++sequence, now,
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    ...(options.broadcastDeadlineMs !== undefined ? { broadcastDeadlineMs: options.broadcastDeadlineMs } : {}) });
+    ...(options.broadcastDeadlineMs !== undefined ? { broadcastDeadlineMs: options.broadcastDeadlineMs } : {}),
+    ...(options.mesh ? { resolver: new PeerEndpointResolver({ config: { enabled: true, hedgeDelayMs: 1500, priorityTailscale: 10,
+      priorityLan: 20, priorityCloudflare: 30, tailscaleEnabled: true, lanSubnetGate: false, unhealthyAfterFailures: 3,
+      endpointEvictionMs: 3_600_000, maxProbeBackoffMs: 300_000, requestTimeoutMs: 30_000 } }) } : {}) });
   const store = new LocalLeaseStore({ filePath: path.join(stateDir, 'state/fenced-lease.json') });
   const lc = new LeaseCoordinator({ lease, store, tunnel: transport, presumedDeadHolders: () => new Set(), now,
     ...(options.clock ? { monotonicNow: now } : {}),
@@ -53,6 +59,7 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean; 
   const release = options.enroll === false ? () => undefined : coordinator.enrollOriginWriterLeaseRenewal();
   coordinator.attachLeaseCoordinator(lc);
   await coordinator.initializeLease();
-  return { root, stateDir, identity, config, coordinator, lc, store, transport, peerLease, release,
+  const peerPrivateKeyPem = peerKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  return { root, stateDir, identity, config, coordinator, lc, store, transport, peerLease, peerPublicKeyPem: peerPublic, peerPrivateKeyPem, release,
     close: async () => { release(); coordinator.stop(); await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-lease-dependency:cleanup' }); } };
 }

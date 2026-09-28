@@ -5553,7 +5553,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // lease-renew-unreachable-peers: a renewal broadcast resolves on the FIRST
           // confirming peer and gives up well inside the tick await (≤ 40% of it), so
           // renew() always reaches its solo-hold / grace decision — one dead peer can
-          // no longer hold every renewal past the tick timeout.
+          // no longer hold every renewal past the tick timeout. A confirmation after
+          // the deadline is still adopted (LeaseCoordinator.adoptLateRenewal). Derived
+          // once at startup: lowering the tick await later needs a restart to re-derive.
           broadcastDeadlineMs: Math.min(
             8_000,
             Math.floor(Math.max(1000, config.multiMachine?.leaseSelfHeal?.tickWatchdog?.awaitTimeoutMs ?? 20_000) * 0.4),

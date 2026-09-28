@@ -28,6 +28,13 @@ refused.
   budget). So the renewal always gets far enough to decide what to do next:
   keep the slip because a peer confirmed, keep it because this is the preferred
   machine and the others are long gone, or let it lapse safely.
+- A slow answer still counts. If a machine confirms after the 8 seconds (say at
+  10 seconds, which a busy but healthy machine can take), the confirmation is
+  kept and the slip is renewed then. Only a confirmation for the current slip
+  counts: it cannot bring back a slip that already lapsed or was replaced.
+- If another machine answers "I already know of a newer slip" (a signed answer
+  that it has seen a higher epoch), this machine stops speaking right away and
+  fetches that newer slip. Before, that answer was checked and then ignored.
 
 ## What did not change
 
@@ -39,6 +46,11 @@ refused.
 - Holding the slip never increases its number (the epoch).
 
 ## Safeguards, in plain terms
+
+One confirmation proves this machine reached one other machine. It does not prove
+no other machine thinks it may speak: if the machines split into two groups that
+cannot see each other, each group can hold its own view until they reconnect.
+That limit already existed and this change does not alter it.
 
 The tests prove both sides. When peers answer, or all of them are long gone,
 the preferred machine keeps sending. When a peer is unreachable but recently

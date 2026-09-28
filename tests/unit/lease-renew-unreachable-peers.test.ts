@@ -10,12 +10,14 @@
  * is injected (a hanging fetch models a peer whose every rope is dead).
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { HttpLeaseTransport, type LeasePeer } from '../../src/core/HttpLeaseTransport.js';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
 import { LeaseCoordinator, type LeaseStore } from '../../src/core/LeaseCoordinator.js';
 import type { LeaseRecord } from '../../src/core/types.js';
+import { PeerEndpointResolver } from '../../src/core/PeerEndpointResolver.js';
+import { signLeaseAck } from '../../src/server/machineAuth.js';
 
 function genKey() {
   return crypto.generateKeyPairSync('ed25519', {
@@ -160,14 +162,177 @@ describe('LeaseCoordinator.renew over a real transport with unreachable peers', 
     expect(lc.holdsLease()).toBe(false);
   });
 
-  it('a live peer at a higher epoch: no hold, even with every peer unreachable and presumed-gone', async () => {
+  it('an already-observed higher-epoch lease: no hold, even with every peer unreachable and presumed-gone', async () => {
     const { lc, tunnel, advance } = captain([{ machineId: 'dead', url: DEAD }], { allGone: true });
     expect(await lc.acquireIfEligible()).toBe(true);
-    // Peer B took over at epoch 2 (a real takeover always wins).
+    // Peer B's signed epoch-2 lease is already in our observed view (push/pull path).
     tunnel.recordObserved(fl('B').signLease(2, new Date(1_000).toISOString(), new Date(1_000 + TTL).toISOString(), 5));
     advance(TTL + 1);
     expect(await lc.renew()).toBe(false);
     expect(lc.holdsLease()).toBe(false);
     expect(lc.currentHolder()).toBe('B');
+  });
+});
+
+/**
+ * Real signed accept-acks over the production mesh path (resolver + verifyLeaseAck),
+ * on a fake clock. Covers the two review findings: a genuine slow confirmation must
+ * not be thrown away at the deadline, and a verified higher-epoch ack — early, late,
+ * or beside a confirming peer — must fence the older holder.
+ */
+describe('signed accept-acks: slow confirmations are kept, higher epochs fence', () => {
+  const ACK_KEYS: Record<string, { publicKey: string; privateKey: string }> = { A: KEYS.A, B: KEYS.B, C: genKey() };
+  afterEach(() => vi.useRealTimers());
+
+  function mesh(opts: { delayMs?: number; bDelayMs?: number; bEpoch?: number; peerIds: string[]; solo?: boolean }) {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    let peers: LeasePeer[] = [];
+    let suspended: string | null = null;
+    let stored: LeaseRecord | null = null;
+    let seq = 0;
+    const bLease = fl('B').signLease(2, new Date(1_000_000).toISOString(), new Date(1_000_000 + 10 * TTL).toISOString(), 7);
+    const resolver = new PeerEndpointResolver({ config: {
+      enabled: true, hedgeDelayMs: 1500, priorityTailscale: 10, priorityLan: 20, priorityCloudflare: 30,
+      tailscaleEnabled: true, lanSubnetGate: false, unhealthyAfterFailures: 3, endpointEvictionMs: 3_600_000,
+      maxProbeBackoffMs: 300_000, requestTimeoutMs: 30_000,
+    } });
+    const tunnel = new HttpLeaseTransport({
+      selfMachineId: 'A', signingKeyPem: KEYS.A.privateKey, peers: () => peers, nextSequence: () => ++seq,
+      now: Date.now, resolver, broadcastDeadlineMs: 8_000,
+      fetchImpl: (async (url: string, init: { body: string }) => {
+        const body = JSON.parse(init.body);
+        const id = url.includes('peer-b') ? 'B' : 'C';
+        if (id === 'B' && opts.bDelayMs) await new Promise((r) => setTimeout(r, opts.bDelayMs));
+        if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
+        if (url.endsWith('/api/lease/pull')) {
+          const ack = { machineId: id, reqNonce: body.reqNonce, observedEpoch: 0 };
+          return { ok: true, json: async () => ({ lease: id === 'B' ? bLease : null, ack, sig: signLeaseAck(ack, ACK_KEYS[id].privateKey) }) };
+        }
+        const observedEpoch = id === 'B' && opts.bEpoch ? opts.bEpoch : body.lease.epoch;
+        const ack = { machineId: id, reqNonce: body.reqNonce, observedEpoch };
+        return { ok: true, json: async () => ({ ack, sig: signLeaseAck(ack, ACK_KEYS[id].privateKey) }) };
+      }) as unknown as typeof fetch,
+    });
+    const lc = new LeaseCoordinator({
+      lease: fl('A'), tunnel, now: Date.now, monotonicNow: Date.now, presumedDeadHolders: () => new Set(),
+      onSelfSuspend: (r) => { suspended = r; },
+      store: { read: () => ({ lease: stored, epoch: stored?.epoch ?? 0 }), refresh: () => false,
+        casWrite: (c: LeaseRecord) => { stored = c; return { ok: true, observed: { lease: stored, epoch: c.epoch } }; },
+        // As LocalLeaseStore: keep epoch + holder as the floor, expiry deep in the past.
+        forceLocalExpiry: () => { if (stored) stored = { ...stored, expiresAt: new Date(0).toISOString() }; } },
+      ...(opts.solo ? { soloCaptainHold: () => ({ enabled: true }), isPreferredAwakeAgreed: () => true, allPeersPresumedGone: () => true } : {}),
+    });
+    const connect = () => {
+      peers = opts.peerIds.map((id) => ({ machineId: id, url: `https://peer-${id.toLowerCase()}.example`,
+        publicKeyPem: ACK_KEYS[id].publicKey, meshAckCapable: true }));
+    };
+    return { lc, tunnel, connect, suspended: () => suspended };
+  }
+
+  it('a healthy peer whose genuine acks take 10s keeps the holder serving across renewals', async () => {
+    const { lc, connect, suspended } = mesh({ delayMs: 10_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    for (const at of [30_000, 60_000, 90_000, 120_000]) {
+      await vi.advanceTimersByTimeAsync(at - (Date.now() - 1_000_000));
+      const p = lc.renew();
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(await p).toBe(true); // the deadline answers inside the tick budget (grace)
+      await vi.advanceTimersByTimeAsync(2_000); // the genuine ack lands at +10s and is adopted
+      expect(lc.holdsLease()).toBe(true);
+    }
+    expect(suspended()).toBe(null);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('without any confirmation the same schedule still lapses (the self-fence is intact)', async () => {
+    const { lc, connect, suspended } = mesh({ delayMs: 40_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    let p = lc.renew(); await vi.advanceTimersByTimeAsync(8_000); expect(await p).toBe(true);
+    await vi.advanceTimersByTimeAsync(22_000);
+    p = lc.renew(); await vi.advanceTimersByTimeAsync(8_000); expect(await p).toBe(false);
+    expect(suspended()).toMatch(/could not confirm/);
+    expect(lc.holdsLease()).toBe(false);
+    // A confirmation arriving after suspension never revives the lapsed lease.
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(lc.holdsLease()).toBe(false);
+  });
+
+  it('a late ack for a renewal sent before relinquish() never brings the lease back', async () => {
+    const { lc, connect } = mesh({ delayMs: 10_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const p = lc.renew();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(await p).toBe(true); // grace
+    lc.relinquish();
+    expect(lc.holdsLease()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000); // the pre-relinquish renewal's ack lands
+    expect(lc.holdsLease()).toBe(false);
+  });
+
+  it('an on-time ack for a renewal in flight across relinquish() never brings the lease back', async () => {
+    const { lc, connect } = mesh({ delayMs: 1_000, peerIds: ['C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const p = lc.renew();
+    lc.relinquish();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await p).toBe(false);
+    expect(lc.holdsLease()).toBe(false);
+  });
+
+  it('a verified higher-epoch ack blocks the solo-captain hold', async () => {
+    const { lc, tunnel, connect } = mesh({ bEpoch: 2, peerIds: ['B'], solo: true });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(await lc.renew()).toBe(false);
+    expect(tunnel.higherEpochEvidence()).toBe(2);
+    expect(lc.holdsLease()).toBe(false);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(lc.currentHolder()).toBe('B'); // B's signed lease recovered through the pull path
+  });
+
+  it('B reports epoch 2 while C confirms epoch 1: the old holder is fenced', async () => {
+    const { lc, connect } = mesh({ bEpoch: 2, peerIds: ['B', 'C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await lc.renew();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(lc.holdsLease()).toBe(false);
+    expect(await lc.renew()).toBe(false); // a later same-epoch confirmation cannot erase it
+    expect(lc.holdsLease()).toBe(false);
+  });
+
+  it('C confirms first, B\'s verified higher-epoch ack arrives after early success: the old holder is fenced', async () => {
+    const { lc, tunnel, connect } = mesh({ bEpoch: 2, bDelayMs: 100, peerIds: ['B', 'C'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await lc.renew()).toBe(true); // early success on C
+    expect(lc.holdsLease()).toBe(true);
+    await vi.advanceTimersByTimeAsync(100); // B's authenticated epoch-2 ack lands late
+    expect(tunnel.higherEpochEvidence()).toBe(2);
+    expect(lc.holdsLease()).toBe(false);
+  });
+
+  it('a higher-epoch ack arriving after the deadline still fences, and no late adopt revives the lease', async () => {
+    const { lc, tunnel, connect } = mesh({ bEpoch: 2, bDelayMs: 12_000, peerIds: ['B'] });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    connect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const p = lc.renew();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(await p).toBe(true); // grace — nothing confirmed yet
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(tunnel.higherEpochEvidence()).toBe(2);
+    expect(lc.holdsLease()).toBe(false);
   });
 });
