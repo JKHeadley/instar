@@ -29,28 +29,41 @@ Fix:
 1. `SessionManager.hasLiveToolShell()` / pure `computeHasLiveToolShell()`:
    true if any descendant of the pane runs a Claude Code tool shell
    (`CLAUDE_TOOL_SHELL_PATTERN = /\/shell-snapshots\/snapshot-/`, in
-   `baselineProcessPatterns.ts`). Probe failure ⇒ true.
-2. `SessionReaper.evaluate()`: the stale-idle relaxation applies only when no
-   tool shell is live, and the cpu-flat relaxation (`cpuAwareActiveProcessKeep`)
-   applies to a session with a live tool shell only at `critical` tier (a watch
-   loop is CPU-flat by nature; at `moderate` — routine on the Studio during
-   builder runs — it would otherwise still reap the coordinator; second-pass
-   finding). Probed lazily, once per evaluation, only for a session held by
-   `active-process` with a relax pending; a throwing dep ⇒ treated as live
+   `baselineProcessPatterns.ts`). Probe failure (tmux or ps cannot run) THROWS:
+   an unreadable tree is unknown, not an observed shell (round 2, Astra).
+   The reaper's keep wrapper reads a throw as "keep"; the evidence collector
+   reads it as "omit".
+2. `SessionReaper.evaluate()`: below `critical` tier, neither the stale-idle
+   relaxation nor the cpu-flat relaxation (`cpuAwareActiveProcessKeep`) applies
+   to a session with a live tool shell (a watch loop is CPU-flat by nature; at
+   `moderate` — routine on the Studio during builder runs — it would otherwise
+   still reap the coordinator; second-pass finding). At `critical` both
+   existing relaxes stay available whatever the shell signal reads (live or
+   unknown), independent of the CPU feature flag — the emergency reclaim path
+   (round 2, Astra: the fleet default has `cpuAwareActiveProcessKeep` off, so
+   without this a live shell pinned the session even at critical). Probed
+   lazily, once per evaluation, only for a session held by `active-process`
+   with a relax pending below critical; a throwing dep ⇒ treated as live
    (keep). `tick()` now passes the tier to `evaluate()`.
 3. `SessionReaper.#performReap()`: pre-kill, a live tool shell adds new STRONG
    work evidence `background-shell` (`WorkEvidence.ts`), so a critical-pressure
-   reap of such a session is resume-eligible.
+   reap of such a session is eligible for revival, subject to the resume
+   queue's existing gates and cap. A throwing probe omits the signal.
 4. `computeHasActiveProcesses()`: a direct child of the pane that is a tool
    shell is no longer filtered as "the Claude main process" (its command line
    contains `.claude…/shell-snapshots`, which matched `\bclaude\b`). Without
    this, a background shell between children (no `sleep` running at that
-   instant) read as no activity at all.
-5. Wiring in `server.ts`; CLAUDE.md template bullet under SessionReaper.
+   instant) read as no activity at all. A tool shell also wins over the
+   baseline-pattern exclusion (round 2, Astra): its command text may merely
+   mention `caffeinate`, `mcp-stdio-entry`, or another baseline name, and was
+   discarded as noise, so the relax branch was never entered.
+5. Wiring in `server.ts`; CLAUDE.md bullet under SessionReaper, shared by the
+   template and a content-sniffed `migrateClaudeMd` step for existing agents.
 
 Files: `src/core/SessionManager.ts`, `src/core/baselineProcessPatterns.ts`,
 `src/core/WorkEvidence.ts`, `src/monitoring/SessionReaper.ts`,
-`src/commands/server.ts`, `src/scaffold/templates.ts`, tests.
+`src/commands/server.ts`, `src/scaffold/templates.ts`,
+`src/core/PostUpdateMigrator.ts`, tests.
 
 ### Considered and dropped (Occam)
 
@@ -59,8 +72,8 @@ Files: `src/core/SessionManager.ts`, `src/core/baselineProcessPatterns.ts`,
   cap is not reached. Not changed.
 - **Exempting tool shells from the cpu-flat relaxation at every tier.** That
   would pin such sessions even at `critical` pressure. The brief asks that
-  pressure reaping still work, so `critical` keeps the relax and the revive
-  evidence covers it.
+  pressure reaping still work, so `critical` keeps both relaxes and the
+  evidence makes the session eligible for revival (subject to the queue's cap).
 - **Reusing `active-process` as the evidence.** It is WEAK (one idle MCP child
   games it), so alone it never queues a revive. A tool shell is the agent's
   own command, which is direct evidence of in-flight work; a new strong value
@@ -69,17 +82,21 @@ Files: `src/core/SessionManager.ts`, `src/core/baselineProcessPatterns.ts`,
 ## Decision-point inventory
 
 - `SessionReaper.evaluate()` stale-idle relaxation: modified, can only KEEP more.
-- `computeHasActiveProcesses()` main-process filter: modified, can only report
-  active more often (every consumer treats active as keep / don't-kill).
+- `computeHasActiveProcesses()` main-process and baseline filters: modified,
+  can only report active more often (every consumer treats active as keep /
+  don't-kill).
 - `WorkEvidence` STRONG set: one value added; affects only resume eligibility.
 
 ## 1. Over-block
 
 A silent-topic session with a forgotten long-running background command (a dev
 server, a `tail -f`) is now kept at `normal` / `moderate` tier where it was
-reaped before. At `critical` pressure the cpu-flat relaxation still reaps it
-(if the command is CPU-flat), and it is then revived at most
-`maxResurrections` (2) times per window. At `moderate`, a CPU-flat forgotten
+reaped before. At `critical` pressure the stale-idle relaxation (and, with the
+CPU flag on, the cpu-flat one) still reclaims it, and it is then revived at most
+`maxResurrections` (2) times per window. There is no absolute age bound below
+critical: the age gate defers to the (now true) activity probe. Accepted
+residue — an arbitrary normal-tier TTL would recreate this outage for
+legitimate long work. At `moderate`, a CPU-flat forgotten
 command now pins the session too (it did not before, on agents with
 `cpuAwareActiveProcessKeep`). A CPU-busy forgotten command was already un-reapable before
 this change (active-process holds). Accepted: the reaper's contract is "never
@@ -98,9 +115,13 @@ window between children. More keep, never less.
 - A session waiting on work in OTHER tmux sessions without any shell of its own
   (just idle at the prompt) is still reaped after 8h of topic silence. Nothing
   local can see that dependency; the brief's case always had watch shells.
-- Claude Code could change its shell-snapshot path; the test fixture is the
-  real captured command line, so a change shows up as a failing detection, and
-  the fallback is today's behavior (not worse).
+- Claude Code could change its shell-snapshot path. The test fixture is a
+  hard-coded captured command line, so it cannot detect a future upstream
+  format change by itself; if the path changes, detection silently stops and
+  behavior falls back to today's (not worse).
+- The signal is a path substring: a resident command whose arguments merely
+  mention a snapshot path reads as a live shell. It proves the agent's own
+  command is running, not that it makes useful progress.
 
 ## 3. Level-of-abstraction fit
 
@@ -131,7 +152,9 @@ still running" is an enumerable fact, and it resolves to keep.
   stale-idle was blocked by a shell, so the terminate authority re-checks
   active-process as before.
 - **Races:** the shell may exit between `evaluate()` and `#performReap()`; then
-  the evidence is simply absent (same as today). Hysteresis and the two-phase
+  the evidence is simply absent (same as today). A probe that cannot inspect
+  the tree at evidence time throws and the signal is omitted — unknown is
+  never recorded as strong evidence. Hysteresis and the two-phase
   grace are unchanged.
 - **Feedback loops:** `background-shell` evidence can revive a pressure-reaped
   session that is then reaped again; the resume queue's resurrection cap bounds
@@ -165,9 +188,11 @@ kill switch `reapStaleIdleWithActiveChildren: false` is unaffected.
 The reaper's 8h stale-idle override (and, at moderate load, its cpu-flat
 override) treated a coordinator's own running watch loops like idle plugin
 servers. It now keeps a session while one of its tool shells runs, below
-critical pressure; reports such a shell as strong evidence when critical
-pressure still forces a reap; and the process probe no longer hides direct-child tool shells. Only
-keeps are added. Clear to ship after second-pass review.
+critical pressure; keeps the existing reclaim at critical pressure (live or
+unknown shell, CPU flag on or off); reports an observed shell as strong
+evidence when critical pressure forces a reap; and the process probe no longer
+hides tool shells behind the Claude-main or baseline filters. Below critical
+only keeps are added. Clear to ship after second-pass review.
 
 ## Second-pass review (if required)
 
@@ -185,8 +210,11 @@ else enumerates evidence values. Non-blocking notes, and what was done:
 2. PresenceProxy's tier-3 process filter in `server.ts` also drops a
    direct-child tool shell via `\bclaude\b`. Not touched: it decides a
    standby status message, not a kill, and is not part of this incident.
-3. The new CLAUDE.md bullet reaches new agents only; this matches how every
-   other SessionReaper bullet shipped (no `migrateClaudeMd` step for them).
+3. The round-1 claim here — that no other SessionReaper bullet was migrated —
+   was false: `migrateClaudeMd` already carries a SessionReaper CPU-aware +
+   decision-audit section. **Fixed in round 2**: the bullet now reaches
+   existing agents through `migrateClaudeMd` (content-sniffed on its marker,
+   inserted before the busy-orphan bullet or appended; idempotent).
 
 ## Evidence pointers
 
@@ -203,11 +231,31 @@ else enumerates evidence values. Non-blocking notes, and what was done:
   origin/main) while still filtering claude and MCP.
 - `tests/unit/work-evidence.test.ts`: `background-shell` survives the clamp and
   is eligible alone.
+- Round 2 (Astra CHANGES REQUIRED):
+  - `SessionManager-live-tool-shell.test.ts`: a tool shell whose command
+    mentions `caffeinate` / `mcp-stdio-entry` counts as active (fails before
+    the fix); MCP servers + a bare `caffeinate` stay baseline; the production
+    `hasLiveToolShell` THROWS when tmux cannot be queried.
+  - `session-reaper.test.ts` → "critical pressure keeps its stale-idle escape":
+    CPU flag off; normal and moderate KEEP a live shell and an unknown shell
+    (the production `SessionManager.hasLiveToolShell` with a failing tmux);
+    critical reclaims a live shell WITH `background-shell` and an unknown one
+    WITHOUT evidence; another keep guard (active subagent) still holds at
+    critical.
+  - `tests/integration/reaper-live-tool-shell-real-tmux.test.ts`: each pane's
+    creation is asserted, the between-children shell blocks on an open fifo
+    (`read x <> fifo`), the intended process shape is asserted through `ps`
+    before any probe result, and a vanished session makes the probe throw.
+  - `PostUpdateMigrator-reaperBackgroundWorkBullet.test.ts`: insertion before
+    the busy-orphan bullet, append fallback, idempotency, and revival wording.
+  - Architecture check: `node scripts/check-architecture.mjs` is a 2.0 script
+    absent from 1.x; the 1.x equivalent `npm run lint` exits 0 on this tree.
 
 ## Class-Closure Declaration (display-only mirror)
 
 The change modifies a self-triggered controller (the SessionReaper) only by
 removing kill cases and adding a revive evidence value. Convergence: kills are
-a subset of before; revives remain bounded by the unchanged resume-queue
+a subset of before below critical (at critical the pre-existing relaxes are
+unchanged); revives remain bounded by the unchanged resume-queue
 resurrection cap (`maxResurrections`, default 2) and its one-per-minute drain.
 No agent-authored-artifact defect — not applicable.

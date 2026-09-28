@@ -723,16 +723,21 @@ export class SessionReaper extends EventEmitter {
       // loops wait on builders in other sessions) is quiet, not abandoned: its
       // shells are neither the idle MCP children the stale-idle relax targets nor
       // the wedged child the cpu-flat relax targets (a watch loop is CPU-flat by
-      // nature). Neither relax applies to it — except cpu-flat at `critical`
-      // pressure, where the reap carries `background-shell` evidence and the
-      // resume queue revives it. (2026-09-28: a 2.0 coordinating session was
-      // reaped three times in one day.) Probed lazily and at most once: only a
-      // session held by active-process with a relax pending pays the fork.
+      // nature). Neither relax applies to it below `critical` pressure. At
+      // `critical` both existing relaxes stay available whatever the shell
+      // signal reads (live OR unknown), independent of the CPU feature flag —
+      // the emergency reclaim path; the reap then carries `background-shell`
+      // evidence when the shell was observed, making the session eligible for
+      // revival subject to the resume queue's gates and cap. (2026-09-28: a 2.0
+      // coordinating session was reaped three times in one day.) Probed lazily
+      // and at most once: only a session held by active-process with a relax
+      // pending below critical pays the fork.
       let liveShell: boolean | undefined;
       const hasShell = (): boolean => (liveShell ??= this.hasLiveToolShell(session));
       const heldByProcess = blocked.reason === 'active-process';
-      const cpuRelax = heldByProcess && opts?.cpuFlat === true && (opts.tier === 'critical' || !hasShell());
-      const staleRelax = heldByProcess && staleIdle && !hasShell();
+      const critical = opts?.tier === 'critical';
+      const cpuRelax = heldByProcess && opts?.cpuFlat === true && (critical || !hasShell());
+      const staleRelax = heldByProcess && staleIdle && (critical || !hasShell());
       if (cpuRelax || staleRelax) {
         // Relax the active-process veto and fall through (no return) to the stateful
         // transcript-growth + positive-idle checks, which STILL must all clear before
@@ -781,8 +786,9 @@ export class SessionReaper extends EventEmitter {
     return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened, busyOrphanSuspect, staleIdleRelaxed };
   }
 
-  /** `hasLiveToolShell` dep, fail-safe: a throwing probe reads as "shell alive"
-   *  (never relax a veto on a tree we could not inspect). Absent dep ⇒ false. */
+  /** `hasLiveToolShell` dep, fail-safe for the KEEP decision: a throwing probe
+   *  (unreadable tree) reads as "shell alive" — never relax a veto below
+   *  critical on a tree we could not inspect. Absent dep ⇒ false. */
   private hasLiveToolShell(session: Session): boolean {
     if (!this.#deps.hasLiveToolShell) return false;
     try { return this.#deps.hasLiveToolShell(session.tmuxSession); }
@@ -1924,8 +1930,9 @@ export class SessionReaper extends EventEmitter {
         catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
       // A session reaped while its own tool shell still runs (reachable only via
-      // the cpu-flat relax at critical pressure) was mid-work:
-      // tag it so the resume queue revives it. Probe errors omit the signal.
+      // a relax at critical pressure) was mid-work: tag it so it is eligible for
+      // revival, subject to the resume queue's existing gates and cap. A probe
+      // that throws (unreadable tree) omits the signal — unknown is not evidence.
       if (this.#deps.hasLiveToolShell) {
         try { if (this.#deps.hasLiveToolShell(session.tmuxSession)) workEvidence.push('background-shell'); }
         catch { /* @silent-fallback-ok: evidence collection never endangers the kill path */ }

@@ -35,7 +35,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -9253,6 +9253,22 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added SessionReaper CPU-aware + decision-audit section');
     } else {
       result.skipped.push('CLAUDE.md: SessionReaper CPU-aware + decision-audit section already present');
+    }
+
+    // SessionReaper background-work bullet (reaper idle-coordinator fix): a
+    // session waiting on its own Bash commands is not abandoned. Existing agents
+    // carry the SessionReaper bullet list (or the section above) without it.
+    // Placed before the busy-orphan bullet when that anchor exists, else appended.
+    // Idempotent via content-sniffing on the bullet's marker.
+    if (!content.includes(REAPER_BACKGROUND_WORK_MARKER)) {
+      const anchorIdx = content.indexOf('- **Busy-orphan detection**');
+      content = anchorIdx >= 0
+        ? content.slice(0, anchorIdx) + REAPER_BACKGROUND_WORK_BULLET + '\n' + content.slice(anchorIdx)
+        : content + '\n' + REAPER_BACKGROUND_WORK_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added SessionReaper background-work bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: SessionReaper background-work bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

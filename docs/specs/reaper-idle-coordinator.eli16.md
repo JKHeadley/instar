@@ -37,8 +37,13 @@ posted into the topic by hand. Each shutdown cost the 2.0 build about an hour.
   no longer applies to the session's own shell commands.
 - When the machine is under critical memory or CPU pressure, the reaper can
   still shut down such a session. When it does, it now records "a background shell
-  was still running" as strong mid-work evidence, so the resume queue revives
-  it.
+  was still running" as strong mid-work evidence, so the session is eligible
+  for revival, subject to the resume queue's existing gates and cap. This
+  critical-pressure escape works whether or not the CPU-aware setting is on.
+- A shell whose command merely mentions a helper name (like `caffeinate`) used
+  to be thrown away as helper noise. It now counts as the agent's own work.
+- If the process check itself fails, that is "unknown". Unknown still means
+  "keep" below critical pressure, but it is never recorded as evidence of work.
 
 ## What did not change
 
@@ -52,10 +57,12 @@ posted into the topic by hand. Each shutdown cost the 2.0 build about an hour.
 ## Safeguards, in plain terms
 
 The change only adds reasons to keep a session. It never adds a new way to
-shut one down. If the process check cannot run, the answer is "keep". The one
+shut one down below critical pressure. If the process check cannot run, the
+answer is "keep" (and "no evidence" if it is shut down anyway). The one
 cost: a session whose topic is silent and that has a forgotten background
 command (for example a dev server) is kept at normal load. Under pressure it
-is still shut down, and then revived once or twice at most.
+is still shut down, and then revived once or twice at most (if the resume
+queue's gates allow).
 
 ## Who decides what
 

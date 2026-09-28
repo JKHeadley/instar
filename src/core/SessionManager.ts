@@ -4243,8 +4243,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
 
-    // Filter out baseline processes
+    // Filter out baseline processes. A Claude Code tool shell wins over the
+    // baseline match: its command text is the agent's own command line, which
+    // may merely mention a baseline name (`caffeinate`, `mcp-stdio-entry`, …).
     const activeProcesses = descendants.filter(p => {
+      if (CLAUDE_TOOL_SHELL_PATTERN.test(p.command)) return true;
       return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
     });
 
@@ -4300,26 +4303,24 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *
    * Separate from `hasActiveProcesses` because that probe answers "is any child
    * alive" (an idle MCP server also qualifies), while this answers "is the
-   * agent's own command still running". Fail-safe like its sibling: a probe that
-   * cannot run resolves to TRUE (never let an unreadable tree look abandoned).
+   * agent's own command still running". THROWS when the tree cannot be
+   * inspected (tmux or ps failure) — an unreadable tree is UNKNOWN, not an
+   * observed shell: the reaper's keep path treats a throw as "keep", and its
+   * evidence collector omits the signal (never records `background-shell` on
+   * a failed probe).
    */
   hasLiveToolShell(tmuxSession: string): boolean {
-    try {
-      const panePid = withSyncOp(() => execFileSync(
-        this.config.tmuxPath,
-        ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
-        { encoding: 'utf-8', timeout: 5000 }
-      )).trim();
-      if (!panePid || !/^\d+$/.test(panePid)) return false;
-      const psOutput = withSyncOp(() => execFileSync(
-        'ps', ['-eo', 'pid,ppid,command'],
-        { encoding: 'utf-8', timeout: 5000 }
-      ));
-      return SessionManager.computeHasLiveToolShell(panePid, psOutput);
-    } catch {
-      // If we can't check processes, assume a live shell (fail-safe: don't kill)
-      return true;
-    }
+    const panePid = withSyncOp(() => execFileSync(
+      this.config.tmuxPath,
+      ['list-panes', '-t', `=${tmuxSession}:`, '-F', '#{pane_pid}'],
+      { encoding: 'utf-8', timeout: 5000 }
+    )).trim();
+    if (!panePid || !/^\d+$/.test(panePid)) return false;
+    const psOutput = withSyncOp(() => execFileSync(
+      'ps', ['-eo', 'pid,ppid,command'],
+      { encoding: 'utf-8', timeout: 5000 }
+    ));
+    return SessionManager.computeHasLiveToolShell(panePid, psOutput);
   }
 
   /** Pure half of `hasLiveToolShell`: any descendant of `panePid` whose command

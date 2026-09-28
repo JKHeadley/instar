@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SessionManager } from '../../src/core/SessionManager.js';
+import { StateManager } from '../../src/core/StateManager.js';
 import {
   SessionReaper,
   type SessionReaperDeps,
@@ -306,6 +308,68 @@ describe('SessionReaper — a session waiting on its own background shells is no
       h.setNow(1_000_000 + i * 120_000); await h.reaper.tick();
     }
     expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: ['background-shell'] });
+  });
+});
+
+describe('SessionReaper — critical pressure keeps its stale-idle escape for a live/unknown shell (CPU flag OFF)', () => {
+  // Fleet default: cpuAwareActiveProcessKeep is dark, so cpuFlat is undefined
+  // and the only relax is stale-idle. Below critical a live or unknown shell
+  // blocks it; at critical the existing emergency reclaim path stays open.
+  const staleIdleDeps = { topicBinding: () => 42, recentUserMessage: () => false, hasActiveProcesses: () => true };
+  const tickUntilReap = async (h: Harness) => {
+    for (let i = 0; i < 6 && h.terminate.mock.calls.length === 0; i++) {
+      h.setNow(1_000_000 + i * 120_000); await h.reaper.tick();
+    }
+  };
+  // The PRODUCTION probe contract: a SessionManager whose tree cannot be
+  // inspected (tmux fails) throws from hasLiveToolShell.
+  const withFailingProbe = async (fn: (probe: (s: string) => boolean) => Promise<void>) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-unknown-shell-'));
+    const sm = new SessionManager({
+      tmuxPath: '/usr/bin/false', claudePath: '/usr/local/bin/claude', projectDir: dir,
+      maxSessions: 1, protectedSessions: [], completionPatterns: [],
+    }, new StateManager(dir));
+    try { await fn((s) => sm.hasLiveToolShell(s)); }
+    finally {
+      sm.stopMonitoring();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-reaper.test.ts:unknown-shell' });
+    }
+  };
+
+  for (const tier of ['normal', 'moderate'] as const) {
+    it(`${tier}: a live shell is KEPT (never reaped) with the CPU flag off`, async () => {
+      const h = harness({ tier, cfg: { normalTierReaps: true }, deps: { ...staleIdleDeps, hasLiveToolShell: () => true } });
+      await tickUntilReap(h);
+      expect(h.terminate).not.toHaveBeenCalled();
+    });
+
+    it(`${tier}: an unknown (throwing production probe) shell is KEPT`, async () => {
+      await withFailingProbe(async (probe) => {
+        const h = harness({ tier, cfg: { normalTierReaps: true }, deps: { ...staleIdleDeps, hasLiveToolShell: probe } });
+        await tickUntilReap(h);
+        expect(h.terminate).not.toHaveBeenCalled();
+      });
+    });
+  }
+
+  it('critical: a live shell is reclaimed, carrying background-shell evidence', async () => {
+    const h = harness({ tier: 'critical', deps: { ...staleIdleDeps, hasLiveToolShell: () => true } });
+    expect(h.reaper.evaluate(mkSession(), { tier: 'critical' }).staleIdleRelaxed).toBe(true);
+    await tickUntilReap(h);
+    expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: ['background-shell'] });
+  });
+
+  it('critical: an unknown (throwing production probe) shell is reclaimed WITHOUT background-shell evidence', async () => {
+    await withFailingProbe(async (probe) => {
+      const h = harness({ tier: 'critical', deps: { ...staleIdleDeps, hasLiveToolShell: probe } });
+      await tickUntilReap(h);
+      expect(h.terminate).toHaveBeenCalledWith('s1', 'reaped-idle', { bypassActiveProcessKeep: true, workEvidence: [] });
+    });
+  });
+
+  it('critical: the other keep guards still hold (a non-stale topic is not relaxed)', () => {
+    const h = harness({ tier: 'critical', deps: { topicBinding: () => 42, recentUserMessage: () => false, hasActiveProcesses: () => true, activeSubagentCount: () => 1, hasLiveToolShell: () => true } });
+    expect(h.reaper.evaluate(mkSession(), { tier: 'critical' }).keptBy).toBe('active-subagent');
   });
 });
 

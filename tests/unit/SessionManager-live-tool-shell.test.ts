@@ -9,7 +9,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const HEADER = '  PID  PPID COMMAND';
 const CLAUDE = '49248  1194 /usr/local/bin/claude --dangerously-skip-permissions --resume c779 --model opus';
@@ -56,5 +61,42 @@ describe('SessionManager.computeHasActiveProcesses — a tool shell is not the C
   it('still filters the claude main process when the pane is a wrapper shell', () => {
     const wrapped = ps('100 1 -zsh', '101 100 /usr/local/bin/claude --resume abc');
     expect(hasActive('100', wrapped)).toBe(false);
+  });
+});
+
+describe('SessionManager.computeHasActiveProcesses — a tool shell wins over the baseline exclusion', () => {
+  // The shell's command text is the agent's own command line; a watch that
+  // mentions a baseline name (`caffeinate`, `mcp-stdio-entry`) used to be
+  // discarded as baseline noise, so the session read as idle between children.
+  const CAFFEINATED = "64339 49248 /bin/zsh -c source /Users/u/.claude-followme-x/shell-snapshots/snapshot-zsh-1790619212445-ue14tc.sh 2>/dev/null || true && eval 'caffeinate -i sh -c \"until gh pr checks 1; do sleep 60; done\"'";
+  const MCP_NAMED = "64340 49248 /bin/zsh -c source /Users/u/.claude-followme-x/shell-snapshots/snapshot-zsh-1790619212445-ue14tc.sh 2>/dev/null || true && eval 'tail -f /x/logs/mcp-stdio-entry.log'";
+
+  it('a tool shell whose command mentions caffeinate counts as active (and as a live tool shell)', () => {
+    expect(hasActive('49248', ps(CLAUDE, ...MCP, CAFFEINATED))).toBe(true);
+    expect(SessionManager.computeHasLiveToolShell('49248', ps(CLAUDE, ...MCP, CAFFEINATED))).toBe(true);
+  });
+
+  it('a tool shell whose command mentions mcp-stdio-entry counts as active', () => {
+    expect(hasActive('49248', ps(CLAUDE, ...MCP, MCP_NAMED))).toBe(true);
+  });
+
+  it('negative neighbor: resident MCP servers and a bare caffeinate (no tool shell) stay baseline', () => {
+    expect(hasActive('49248', ps(CLAUDE, ...MCP, '49400 49248 caffeinate -i -w 49248'))).toBe(false);
+  });
+});
+
+describe('SessionManager.hasLiveToolShell — an uninspectable tree THROWS (unknown, never "observed")', () => {
+  it('throws when tmux cannot be queried', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-shell-probe-'));
+    try {
+      const sm = new SessionManager({
+        tmuxPath: '/usr/bin/false', claudePath: '/usr/local/bin/claude', projectDir: dir,
+        maxSessions: 1, protectedSessions: [], completionPatterns: [],
+      }, new StateManager(dir));
+      expect(() => sm.hasLiveToolShell('no-such-session')).toThrow();
+      sm.stopMonitoring();
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SessionManager-live-tool-shell.test.ts' });
+    }
   });
 });
