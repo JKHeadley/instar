@@ -349,6 +349,19 @@ const DEFAULT_MAX_DURATION_MINUTES = 240;
  *  window is harmless (the idle-detection block below still reaps it later). */
 const AGE_GATE_TRANSCRIPT_ACTIVE_MS = 120_000;
 
+/** How long after the age gate last SAW an over-age session working it still
+ *  counts that session as working. Each age-gate verdict is one sample taken
+ *  every few seconds, and every probe has a blind moment: a coordinator that
+ *  waits on background watch loops is, for a few seconds after a watch ends,
+ *  mid-turn with no child process — and on 2026-09-29 its transcript probe was
+ *  keyed to a stale Claude session id and read nothing. One such sample
+ *  terminal-killed the Instar 2.0 coordinating session (920m, topic 52075)
+ *  two seconds after its last transcript write; its background watch (a live
+ *  child process) had ended about ten seconds earlier. The memory only renews
+ *  on a sample that reads working from the three existing probes, so a
+ *  session with no real work is age-killed this long after its last one. */
+const AGE_GATE_RECENT_WORK_MS = 10 * 60_000;
+
 /**
  * Pure age-gate idle decision — extracted so the exact 2026-06-13 incident can be
  * reproduced at the decision boundary (Bug-Fix Evidence Bar). A session past its
@@ -360,13 +373,16 @@ const AGE_GATE_TRANSCRIPT_ACTIVE_MS = 120_000;
  * OUT of the pane's process tree. The incident inputs
  * (idleAtPrompt=true, hasActiveProcs=false, transcriptActive=true) return
  * `false` ⇒ DEFERRED, not killed — which the pre-fix two-signal decision got wrong.
+ * `recentlySeenWorking` (the gate saw the session working within
+ * AGE_GATE_RECENT_WORK_MS) also defers, so one blind sample cannot kill it.
  */
 export function isAgeGateTrulyIdle(
   idleAtPrompt: boolean,
   hasActiveProcs: boolean,
   transcriptActive: boolean,
+  recentlySeenWorking = false,
 ): boolean {
-  return idleAtPrompt && !hasActiveProcs && !transcriptActive;
+  return idleAtPrompt && !hasActiveProcs && !transcriptActive && !recentlySeenWorking;
 }
 
 /** Minutes of idle-at-prompt before a non-protected session is killed */
@@ -870,6 +886,9 @@ export class SessionManager extends EventEmitter {
    * once per session, not every tick.
    */
   private overAgeButActiveLogged = new Set<string>();
+  /** When the age gate last saw each over-age session working (epoch ms) —
+   *  see AGE_GATE_RECENT_WORK_MS. */
+  private ageGateLastWorkingAt = new Map<string, number>();
   /** Per-session back-off so the age-gate respects the KEEP-guard's verdict: after a kill
    *  is vetoed (session kept), suppress re-requests for a window instead of re-asking every
    *  5s tick (the 2026-06-05 17,503-line flood). Constructed in the constructor. */
@@ -2358,6 +2377,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
+      // Drop age-gate work memory for sessions that are no longer running
+      // (bounded map — any exit path, not only an age kill).
+      if (this.ageGateLastWorkingAt.size > 0) {
+        const liveIds = new Set(running.map(s => s.id));
+        for (const id of this.ageGateLastWorkingAt.keys()) {
+          if (!liveIds.has(id)) this.ageGateLastWorkingAt.delete(id);
+        }
+      }
       for (const session of running) {
         // Grace period: don't check sessions that started less than 15 seconds ago.
         // Claude Code takes several seconds to start — the process might not be
@@ -2586,7 +2613,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
             // is alive and producing. Treat it exactly like a live child process:
             // defer the kill.
             const ageGateTranscriptActive = this.isTranscriptRecentlyActive(session, AGE_GATE_TRANSCRIPT_ACTIVE_MS);
-            const ageGateTrulyIdle = isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive);
+            const ageGateNow = Date.now();
+            const ageGateLastWorking = this.ageGateLastWorkingAt.get(session.id);
+            const ageGateRecentlyWorking = ageGateLastWorking !== undefined
+              && ageGateNow - ageGateLastWorking < AGE_GATE_RECENT_WORK_MS;
+            const ageGateSeenWorking = !isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive);
+            if (ageGateSeenWorking) this.ageGateLastWorkingAt.set(session.id, ageGateNow);
+            const ageGateTrulyIdle = isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive, ageGateRecentlyWorking);
 
             if (!ageGateTrulyIdle) {
               // Over age limit but actively working. Log once per session to
@@ -2596,7 +2629,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 this.overAgeButActiveLogged.add(session.id);
                 console.warn(
                   `[SessionManager] Session "${session.name}" is past the age limit (${Math.round(elapsed)}m > ${maxMinutes}m) ` +
-                  `but is actively working (procs=${ageGateHasProcs}, idleAtPrompt=${!!ageGateIsIdle}, transcriptActive=${ageGateTranscriptActive}). Deferring kill; ` +
+                  `but is actively working (procs=${ageGateHasProcs}, idleAtPrompt=${!!ageGateIsIdle}, transcriptActive=${ageGateTranscriptActive}, recentlyWorking=${ageGateRecentlyWorking}). Deferring kill; ` +
                   `the idle-detection block will catch it once it stops producing work.`
                 );
               }
@@ -2647,6 +2680,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               if (ageKillResult.terminated) {
                 // Actually killed — drop any back-off state for the (now gone) session.
                 this.ageKillBackoff.recordKilled(session.id);
+                this.ageGateLastWorkingAt.delete(session.id);
               } else {
                 // The KEEP-guard kept it (skipped:<reason>). Respect that and back off:
                 // suppress re-requests for the back-off window instead of nagging every
