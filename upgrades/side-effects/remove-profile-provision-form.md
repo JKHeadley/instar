@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Removes the "Dedicated browser profiles" section from the Subscriptions dashboard tab: the `<section>` and `#subProfileProvision` container and the `sub-profile-*` CSS in `dashboard/index.html`, and `renderProfileProvisioner`, `wireProfileProvisioner`, the `profileProvisionWired` state flag, the `profileProvision` element wiring and the `provisionProfile` URL entry in `dashboard/subscriptions.js`. The server route `POST /playwright-profiles/provision` and the Playwright profile registry are unchanged. Agent-facing wording is corrected: the CLAUDE.md template registry-table row (`src/scaffold/templates.ts`), the provisioning bullet in `PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION` (now the exported `DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET`), and one sentence in the built-in /subscription-signin skill (`src/data/builtinSkillContent.ts`). Migration parity: `migrateClaudeMd` rewrites the old bullet in existing CLAUDE.md files, and the new `migrateSubscriptionSigninDropProfileFormPointer` drops the stale sentence from installed skill copies.
+Removes the "Dedicated browser profiles" section from the Subscriptions dashboard tab: the `<section>` and `#subProfileProvision` container and the `sub-profile-*` CSS in `dashboard/index.html`, and `renderProfileProvisioner`, `wireProfileProvisioner`, the `profileProvisionWired` state flag, the `profileProvision` element wiring and the `provisionProfile` URL entry in `dashboard/subscriptions.js`. The server route `POST /playwright-profiles/provision` and the Playwright profile registry are unchanged. Agent-facing wording is corrected: the CLAUDE.md template registry-table row (`src/scaffold/templates.ts`), the provisioning bullet in `PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION` (now the exported `DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET`), and one sentence in the built-in /subscription-signin skill (`src/data/builtinSkillContent.ts`). Migration parity: `migrateClaudeMd` swaps the exact shipped text of the old bullet (both wordings) and of the old registry-table row answer in existing CLAUDE.md files (`OBSOLETE_PROFILE_FORM_CLAUDEMD_TEXT`) — operator additions around that text survive, and an edited wording is left intact and reported in `skipped`, never silently rewritten — and the new `migrateSubscriptionSigninDropProfileFormPointer` drops the stale sentence from installed skill copies.
 
 ## Decision-point inventory
 
@@ -63,7 +63,7 @@ No new static heuristic at a competing-signals decision point.
 
 ## 6. External surfaces
 
-- Other agents / install base: on update their CLAUDE.md bullet and skill sentence are rewritten; local edits kept.
+- Other agents / install base: on update their CLAUDE.md bullet, registry-table row and skill sentence are rewritten where they still hold the exact stock text; local additions kept; customized wording left alone.
 - External systems / persistent state: none. The registry and route are unchanged.
 - **Operator surface (Mobile-Complete Operator Actions):** this removes an operator form. The action it offered (create an empty profile) is not an operator action any more: the agent creates and signs in profiles itself via Bearer-authenticated registry routes, and the operator's only remaining role is answering a Secret Drop / provider link, which is already phone-completable. Justin approved the removal (2026-09-28, topic 33890).
 

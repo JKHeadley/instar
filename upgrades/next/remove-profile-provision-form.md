@@ -17,8 +17,11 @@ The agent now creates, signs in and repairs these profiles itself (the
   (`POST /playwright-profiles` + `/accounts`), then sign it in with
   /subscription-signin; the provision route is noted as the one-call, PIN-scoped
   equivalent with no dashboard form.
-- Existing agents: `migrateClaudeMd` rewrites the old "Remote/phone-complete
-  provisioning" bullet (either shipped wording), and a new skill migration drops the
+- Existing agents: `migrateClaudeMd` swaps the exact shipped text of the old
+  "Remote/phone-complete provisioning" bullet (either wording) and of the old
+  registry-table row answer for the new text; text an operator added around it is
+  kept, and a line whose stock wording was edited is left as-is and reported in
+  `skipped`. A new skill migration drops the
   "Phone-first alternative: the Subscriptions dashboard's profile provisioning."
   sentence from an installed /subscription-signin skill. Both are idempotent and
   keep local edits.
@@ -31,7 +34,9 @@ The agent now creates, signs in and repairs these profiles itself (the
 - `tests/integration/playwright-profile-routes.test.ts`: the provision route tests
   are unchanged and green.
 - `tests/unit/PostUpdateMigrator-profileFormRemoved.test.ts`: both old CLAUDE.md
-  bullet wordings are rewritten once and then left alone; a current CLAUDE.md is
+  bullet wordings and the old table row are rewritten once and then left alone;
+  operator text appended to them survives; a customized bullet is left intact with
+  no second bullet added; a current CLAUDE.md is
   untouched; the skill sentence is dropped with local edits kept, idempotent.
 
 ## What to Tell Your User

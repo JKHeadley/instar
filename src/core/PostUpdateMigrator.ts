@@ -402,6 +402,26 @@ export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\
  */
 export const DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET = `- **Dedicated Google profile provisioning**: create it yourself — \`POST /playwright-profiles\` then \`POST /playwright-profiles/<id>/accounts\` with \`{"service":"google","identity":"<email>","owner":…,"vaultRefs":[…]}\` — then sign it in with the /subscription-signin skill. \`POST /playwright-profiles/provision\` does the create + assign in one call but needs a recent dashboard PIN session (\`X-Instar-Operator-Session\`); there is no dashboard form for it. If a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.\n`;
 
+/**
+ * The Registry-First table answer to "How do I create a dedicated Google browser profile without
+ * host-machine access?" (generateClaudeMd uses it; migrateClaudeMd swaps the old stock answer for it).
+ */
+export const DEDICATED_PROFILE_REGISTRY_ROW_ANSWER = `Do it yourself: \`POST /playwright-profiles\` + \`POST /playwright-profiles/<id>/accounts\`, then sign it in with /subscription-signin (\`POST /playwright-profiles/provision\` is the one-call, PIN-scoped equivalent; there is no dashboard form). If credentials are needed, send one Secret Drop link and continue after receipt — never ask the operator to access the machine`;
+
+/**
+ * Exact text this repo shipped that pointed at the removed dashboard form, paired with its
+ * replacement. migrateClaudeMd swaps ONLY these exact strings, so anything an operator added around
+ * them survives and a line whose stock wording was edited is left alone (never silently rewritten).
+ */
+export const OBSOLETE_PROFILE_FORM_CLAUDEMD_TEXT: ReadonlyArray<readonly [string, string]> = [
+  // Bullet, as the Playwright Profile Registry section shipped it.
+  ['- **Remote/phone-complete provisioning**: the Subscriptions dashboard creates and materializes a dedicated Google profile after a recent PIN unlock. Programmatic equivalent: `POST /playwright-profiles/provision` with `X-Instar-Operator-Session` + `{profileId,identity,loginMethod}`. Handle everything else yourself; if a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.', DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET.trimEnd()],
+  // Bullet, as migrateClaudeMd patched it into existing agents.
+  ['- **Remote/phone-complete provisioning**: use the Subscriptions dashboard or `POST /playwright-profiles/provision` with a recent dashboard operator session to create + materialize a dedicated Google profile. If credentials are missing, send one Secret Drop link; never ask the operator to access the host machine.', DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET.trimEnd()],
+  // Registry-First table answer.
+  ['Use the Subscriptions dashboard or PIN-scoped `POST /playwright-profiles/provision`; if credentials are needed, send one Secret Drop link and continue after receipt — never ask the operator to access the machine', DEDICATED_PROFILE_REGISTRY_ROW_ANSWER],
+];
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -6744,17 +6764,23 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added phone-complete Playwright profile provisioning awareness');
     }
-    // The dashboard provisioning form was removed: rewrite the old bullet (either shipped wording
-    // pointed the operator at "the Subscriptions dashboard") to the agent-does-it bullet.
-    // Idempotent on the old bullet heading, which the new bullet does not contain.
+    // The dashboard provisioning form was removed: swap each exact shipped text that pointed at it
+    // (both bullet wordings + the Registry-First row answer) for the agent-does-it text. Only the
+    // exact stock text is replaced, so operator additions around it survive; an edited wording is
+    // left intact and reported in `skipped`. Idempotent: the replacements contain no stock text.
     {
-      const oldStart = content.indexOf('- **Remote/phone-complete provisioning**:');
-      if (oldStart >= 0) {
-        const lineEnd = content.indexOf('\n', oldStart);
-        const end = lineEnd >= 0 ? lineEnd + 1 : content.length;
-        content = content.slice(0, oldStart) + DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET + content.slice(end);
+      let rewrote = false;
+      for (const [stale, current] of OBSOLETE_PROFILE_FORM_CLAUDEMD_TEXT) {
+        if (content.includes(stale)) {
+          content = content.split(stale).join(current);
+          rewrote = true;
+        }
+      }
+      if (rewrote) {
         patched = true;
-        result.upgraded.push('CLAUDE.md: profile provisioning bullet no longer points at the removed dashboard form');
+        result.upgraded.push('CLAUDE.md: profile provisioning guidance no longer points at the removed dashboard form');
+      } else if (content.includes('- **Remote/phone-complete provisioning**:') || content.includes('Use the Subscriptions dashboard or PIN-scoped')) {
+        result.skipped.push('CLAUDE.md: customized profile provisioning guidance left as-is (it may still mention the removed dashboard form)');
       }
     }
 

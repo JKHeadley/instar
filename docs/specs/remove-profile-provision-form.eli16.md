@@ -19,7 +19,7 @@ Nothing new is added. The form, its styling and the code that drew it and sent i
 ## The safeguards
 
 - The server route and the registry are untouched, and their existing tests still pass.
-- Agents that are already installed get the corrected instructions on their next update. The update only swaps out the one outdated bullet in CLAUDE.md and the one outdated sentence in the skill. It keeps any edits the agent made, and running it twice changes nothing the second time.
+- Agents that are already installed get the corrected instructions on their next update. The update only swaps out the exact outdated text: one bullet and one table row in CLAUDE.md, and one sentence in the skill. Anything added around that text is kept. If someone reworded the bullet, the update leaves it alone rather than overwrite it, and running it twice changes nothing the second time.
 - A new test checks that the page no longer shows the form.
 
 ## What you'll notice
