@@ -28,20 +28,26 @@ check was judged alone, so one bad sample was enough.
 
 ## What changed
 
-- **The screen check now looks for the "working" footer.** Claude Code shows
-  "esc to interrupt" only while a turn is running. If it is on screen, the
-  session is working. Other safety checks already use this signal.
 - **A short memory.** If the age check saw the session working in the last
   10 minutes, it still counts as working. One blind sample can no longer end
-  it.
+  it. Only real signs of work renew the memory: a running command or fresh
+  transcript writes. Text on the screen does not.
+- **The memory forgets ended sessions.** Every check drops entries for
+  sessions that are no longer running, so it cannot grow without limit.
 
-Either change alone would have saved this session.
+The session's own transcript shows its background watch ran until eleven
+seconds before the kill, and a running watch counts as work. So the memory
+alone would have kept this session.
+
+A first version also treated the on-screen text "esc to interrupt" as proof
+of work. Review showed that text can sit in old screen output after the work
+ends, which would keep an idle session alive forever. That check was removed.
 
 ## What did not change
 
 A session that is really stale is still ended by the age limit. The only
-difference is that this now happens up to 10 minutes after it was last seen
-working. All other keep rules (recent user message, open commitment, and so
+difference is that this now happens up to 10 minutes after a check last saw
+real work. All other keep rules (recent user message, open commitment, and so
 on) are unchanged. There are no new settings, messages, or routes.
 
 ## Why not "restart and resume" instead

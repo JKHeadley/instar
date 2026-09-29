@@ -356,14 +356,11 @@ const AGE_GATE_TRANSCRIPT_ACTIVE_MS = 120_000;
  *  mid-turn with no child process — and on 2026-09-29 its transcript probe was
  *  keyed to a stale Claude session id and read nothing. One such sample
  *  terminal-killed the Instar 2.0 coordinating session (920m, topic 52075)
- *  two seconds after its last transcript write. A genuinely stale session is
- *  still age-killed, at most this long after it was last seen working. */
+ *  two seconds after its last transcript write; its background watch (a live
+ *  child process) had ended about ten seconds earlier. The memory only renews
+ *  on a sample that reads working from the three existing probes, so a
+ *  session with no real work is age-killed this long after its last one. */
 const AGE_GATE_RECENT_WORK_MS = 10 * 60_000;
-
-/** Raw pane lines the age gate reads for Claude Code's mid-turn footer. The
- *  spinner line carrying "esc to interrupt" sits above the input box, outside
- *  the 5-line meaningful tail the idle-prompt check reads. */
-const AGE_GATE_FOOTER_LINES = 30;
 
 /**
  * Pure age-gate idle decision — extracted so the exact 2026-06-13 incident can be
@@ -2380,6 +2377,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
+      // Drop age-gate work memory for sessions that are no longer running
+      // (bounded map — any exit path, not only an age kill).
+      if (this.ageGateLastWorkingAt.size > 0) {
+        const liveIds = new Set(running.map(s => s.id));
+        for (const id of this.ageGateLastWorkingAt.keys()) {
+          if (!liveIds.has(id)) this.ageGateLastWorkingAt.delete(id);
+        }
+      }
       for (const session of running) {
         // Grace period: don't check sessions that started less than 15 seconds ago.
         // Claude Code takes several seconds to start — the process might not be
@@ -2596,10 +2601,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
             // Activity check — defer kill if the session is doing real work.
             const ageGateOutput = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
-            // IDLE_PROMPT_PATTERNS are status-bar strings shown mid-turn too, so
-            // the prompt only counts as idle when the mid-turn footer is absent.
-            const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p))
-              && !paneShowsClaudeWorking(await this.captureOutputMaybeAsync(session.tmuxSession, AGE_GATE_FOOTER_LINES));
+            const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
             const ageGateHasProcs = await this.hasActiveProcessesMaybeAsync(session.tmuxSession);
             // Transcript-activity backstop (2026-06-13 incident): the pane+procs
             // check is BLIND to MCP/tool work. A session driving Playwright (or any

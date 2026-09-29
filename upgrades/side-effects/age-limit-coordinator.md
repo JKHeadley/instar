@@ -25,17 +25,27 @@ a background watch ended. All three probes missed it at that one sample:
    09:32:48.906, after the tick had read the session record.
 
 Earlier ticks (05:39, 07:46) had logged the session as over-age but working
-(`procs=true`).
+(`procs=true`; that line is logged once per session, so it does not show later
+ticks). The session's own transcript shows the background watch it was waiting
+on (task `b584xsjlb`) started at 09:17:36Z and reported done at 09:32:38Z,
+eleven seconds before the kill. A Claude Code background shell is a descendant
+of the pane, so `hasActiveProcesses` reads true while it runs; with 5-second
+ticks the gate saw the session working until about 09:32:38Z.
 
-Two changes, both in the age gate only:
+One change, in the age gate only:
 
-- `ageGateIsIdle` also requires that the mid-turn footer be absent
-  (`paneShowsClaudeWorking` on a 30-line raw capture). The capture only runs
-  when the 5-line tail already matched an idle pattern.
 - `ageGateLastWorkingAt` records when the gate last saw each over-age session
-  working. Within `AGE_GATE_RECENT_WORK_MS` (10 minutes) of that, the session is
-  not truly idle (new optional 4th input to `isAgeGateTrulyIdle`). The entry is
-  dropped when the age gate kills the session.
+  working (from the three existing probes). Within `AGE_GATE_RECENT_WORK_MS`
+  (10 minutes) of that, the session is not truly idle (new optional 4th input
+  to `isAgeGateTrulyIdle`). Each monitor tick drops entries for sessions that
+  are no longer running, whatever ended them.
+
+Round 1 also read Claude Code's mid-turn footer ("esc to interrupt") from a
+30-line capture. Review showed that capture includes history, so quoted footer
+text on an idle pane renewed the memory every tick and the session was never
+age-killed. That signal is removed: the memory alone covers this incident
+(last working sample about 11 seconds before the kill), and it renews only on
+the existing probes.
 
 ### Considered and dropped (Occam)
 
@@ -47,7 +57,7 @@ Two changes, both in the age gate only:
   killed.
 - **Fixing the claudeSessionId rotation itself.** That is a separate defect in
   `setClaudeSessionId`'s last-writer-wins (its comment assumes every hook
-  event carries the main conversation id). Either change here covers the age
+  event carries the main conversation id). The recent-work memory covers the age
   gate without it. The rotation still affects other transcript consumers;
   noted for a follow-up, not widened into this fix.
 - **A longer transcript window.** It would not help: the probe read the wrong
@@ -61,36 +71,30 @@ Two changes, both in the age gate only:
 ## 1. Over-block
 
 - A genuinely stale over-age session is now age-killed up to 10 minutes later
-  than before, measured from the last tick that saw it working. On a limit of
-  240m + 48m this is negligible.
-- The 30-line capture includes conversation text, not only the footer. A
-  session whose last 30 lines contain the literal text "esc to interrupt" (for
-  example output that quotes this diff) reads as working until that text
-  scrolls away. Worst case is a deferred kill; the idle-detection block below
-  the age gate is unchanged.
-- A session stuck mid-turn, showing the footer with no child process, is no
-  longer age-killed. Before, the footer sat outside the 5-line tail, so the
-  age gate would kill it. The age gate is a lifetime recycle, not the recovery
-  path for a hung turn; whether other monitors cover that case was not
-  re-verified in this change.
+  than before, measured from the last tick where a probe read working. On a
+  limit of 240m + 48m this is negligible. Pane text cannot renew it: the
+  memory only renews on a sample the pre-existing three-probe decision
+  already called working (so a stuck live child process defers exactly as it
+  did before this change, no longer).
 
 ## 2. Under-block
 
 - A session seen working, and then actually finished, stays up to 10 more
   minutes. Accepted.
 - A session that is working but where every probe is blind for more than 10
-  minutes (no footer, no child process, wrong transcript id) is still killed.
-  Nothing in this incident fits that shape.
-- The map is not cleared for sessions that end some other way. That is one
-  number per over-age session over the server's lifetime, the same lifecycle
-  as the existing `overAgeButActiveLogged` set.
+  minutes (no child process, idle-looking status bar, wrong transcript id) is
+  still killed. A turn that thinks for over 10 minutes with no tool running,
+  right after the claudeSessionId rotation, would fit; this incident did not
+  (blind for about 11 seconds). The rotation is the upstream defect and is not
+  repaired here.
+- Map lifetime: entries are pruned every tick against the running-session
+  snapshot, so the map holds at most one number per running over-age session.
 
 ## 3. Level-of-abstraction fit
 
-Both signals live in the age gate beside the probes they complement. The
-footer signal is the canonical `claudeActivityIndicators` module already used
-by the stand-down drain and injection paths. The ReapGuard and the terminate
-authority are untouched.
+The memory lives in the age gate beside the probes it smooths, and is pruned
+beside the monitor's existing per-tick sweeps (permission-prompt resolver,
+startup tails). The ReapGuard and the terminate authority are untouched.
 
 ## 4. Signal vs authority compliance
 
@@ -109,10 +113,8 @@ irreversible action: "seen working recently" resolves to keep.
   before when the gate says idle.
 - **Idle-detection block:** unchanged; it has its own 15m / 4h (topic-bound)
   idle-prompt rules.
-- **Races:** the footer capture is a separate tmux call from the 5-line tail; a
-  turn starting between them reads as working (keep).
-- **Cost:** one extra capture per over-age tick, and only when the prompt
-  patterns matched. Over-age sessions are rare.
+- **Cost:** one map read/write per over-age tick and one pass over the (small)
+  map per tick. No extra tmux calls.
 
 ## 6. External surfaces
 
@@ -126,7 +128,24 @@ No operator surface — not applicable.
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
 Machine-local: the age gate judges local panes. The new map is in-memory and
-per process.
+per process, keyed by the session's incarnation id.
+
+## 7b. Constitutional Rules touched (Instar 2.0 `docs/01-the-rules.md`)
+
+- **Rule 26 (verify the state, not its symbol):** the memory renews only on a
+  sample the existing probes read as working (a live child process or
+  transcript writes). Pane text is not treated as proof of work; the round-1
+  footer signal that did so is removed.
+- **Rule 60 (bounded resources):** `ageGateLastWorkingAt` is pruned every
+  monitor tick to the running-session set; its size is bounded by running
+  over-age sessions. A lifecycle test proves an ended session's entry is
+  removed while a running session keeps its grace.
+- **Rules 68 / 97 (preserve live work, continuity):** one blind sample right
+  after real work can no longer terminal-kill the session; the incident replay
+  test shows the keep.
+- **Rules 32 / 113 (machine-local ephemeral state, authority unchanged):** the
+  memory is in-process, not persisted or shared; reap authority, the
+  KEEP-guard and termination routing are unchanged.
 
 ## 8. Rollback cost
 
@@ -134,10 +153,11 @@ Pure code change. Revert and ship a patch. No state to migrate.
 
 ## Conclusion
 
-The age gate judged each over-age tick alone, and its idle-prompt check could
-not tell a running turn from the prompt. It now reads the mid-turn footer and
-remembers recent work for 10 minutes. Only keeps are added. Genuinely stale
-sessions are still age-killed. Clear to ship after second-pass review.
+The age gate judged each over-age tick alone, so one blind sample right after
+real work killed a working session. It now remembers recent work for 10
+minutes, renewed only by the existing probes, and forgets sessions once they
+end. Only keeps are added. Genuinely stale sessions, including ones with stale
+"working" text on screen, are still age-killed. Clear to ship after review.
 
 ## Second-pass review (if required)
 
@@ -152,17 +172,34 @@ KEEP-guard back-off is unchanged; the tests cover both sides of the memory.
 Non-blocking notes, and what was done:
 
 1. Conversation text in the 30-line capture that contains "esc to interrupt"
-   reads as working. **Added to section 1.**
+   reads as working. **Added to section 1 in round 1; superseded in round 2**
+   (Astra showed it renews forever; the footer signal is removed).
 2. The claim that other monitors cover a session hung mid-turn was not
-   verified. **Reworded in section 1** to say so plainly.
+   verified. **Moot in round 2**: without the footer signal, a hung turn with
+   no child process is age-killed as before.
+
+## Round 2 review (Astra, CHANGES REQUIRED → repaired)
+
+1. Quoted/historical footer text renewed the exemption forever. **Footer
+   signal removed**; contrasting monitor test added.
+2. The map leaked ended sessions. **Pruned every tick** against the running
+   snapshot; lifecycle test added.
+3. Rule mapping. **Section 7b.**
+
+The round-1 claims "at most ten minutes" and "either change alone would have
+saved it" are corrected above: the delay bound holds now that only the
+existing probes renew the memory, and the incident is covered by the memory,
+backed by the transcript's watch timing.
 
 ## Evidence pointers
 
-- `tests/unit/session-manager-terminate.test.ts` → "age gate: a pane showing
-  the mid-turn footer is working ⇒ not age-killed" and "age gate REPRO: seen
-  working (background shell) then one quiet sample ⇒ kept; quiet past the
-  grace ⇒ age-killed". Both fail on origin/main (verified by running them
-  against the HEAD version of `SessionManager.ts`).
+- `tests/unit/session-manager-terminate.test.ts`:
+  - "age gate REPRO: seen working (background shell) then one quiet sample ⇒
+    kept; quiet past the grace ⇒ age-killed" — fails on origin/main.
+  - "age gate: quoted "esc to interrupt" left on an idle pane does not keep it
+    alive ⇒ age-killed" — fails on the round-1 commit (02dcf1087).
+  - "age gate: work memory is dropped for an ended session and kept for a
+    running one" — fails on the round-1 commit.
 - `tests/unit/session-timeout-activity-aware.test.ts`: both sides of
   `recentlySeenWorking`; the source-shape test pins the four-input call.
 
@@ -170,5 +207,6 @@ Non-blocking notes, and what was done:
 
 Modifies a self-triggered controller (the age gate) only by removing kill
 cases. Kills are a subset of before, each delayed by at most
-`AGE_GATE_RECENT_WORK_MS` after the last working sample. No revive path is
+`AGE_GATE_RECENT_WORK_MS` after the last sample the existing probes read as
+working. No revive path is
 added. No agent-authored-artifact defect; not applicable.

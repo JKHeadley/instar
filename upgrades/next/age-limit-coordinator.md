@@ -16,11 +16,15 @@ background watches finished:
 
 Earlier ticks had seen the watch running, but every tick was judged alone.
 
-- The age gate now reads the pane's mid-turn footer (`paneShowsClaudeWorking`,
-  30 raw lines). A pane showing "esc to interrupt" is not idle.
-- The age gate remembers when it last saw each over-age session working. For
-  10 minutes after that (`AGE_GATE_RECENT_WORK_MS`) the session still counts as
-  working, so one blind sample cannot kill it.
+The session's transcript shows its background watch ran until 11 seconds
+before the kill, and a background shell counts as a live child process.
+
+- The age gate remembers when it last saw each over-age session working
+  (a live child process or fresh transcript writes). For 10 minutes after
+  that (`AGE_GATE_RECENT_WORK_MS`) the session still counts as working, so one
+  blind sample cannot kill it. On-screen text does not renew this memory.
+- Each monitor tick drops that memory for sessions that are no longer
+  running, so it stays bounded.
 
 A genuinely stale session is still age-killed, at most 10 minutes after it was
 last seen working. Every other keep guard is unchanged.
@@ -28,11 +32,15 @@ last seen working. Every other keep guard is unchanged.
 ## Evidence
 
 - `tests/unit/session-manager-terminate.test.ts` drives the real monitor tick:
-  - A pane showing the mid-turn footer is not age-killed.
+  - Quoted "esc to interrupt" text left on an idle pane does not keep it
+    alive: past the grace it is age-killed.
+  - The memory is dropped for a session that ended some other way, and kept
+    for one still running.
   - Replaying the incident: a tick sees a live child process, then one tick
     where every probe reads idle. The session is kept. Eleven minutes of quiet
     later it is age-killed (`status: killed`, `endedReason: age-limit`).
-  - Both tests fail on origin/main.
+  - The replay fails on origin/main; the other two fail on the first version
+    of this fix.
 - `tests/unit/session-timeout-activity-aware.test.ts` covers both sides of the
   new `recentlySeenWorking` input to `isAgeGateTrulyIdle`.
 
@@ -44,5 +52,5 @@ really stopped.
 
 ## Summary of New Capabilities
 
-- Over-age sessions are only ended when the mid-turn footer is absent and they
-  have not been seen working for 10 minutes.
+- Over-age sessions are only ended when they have not been seen working for
+  10 minutes.
