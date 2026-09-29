@@ -1092,52 +1092,7 @@ const URLS = {
   relogin: '/subscription-relogin?scope=pool',
   reloginAction: '/subscription-relogin',
   repairCell: '/subscription-relogin/repair-cell',
-  provisionProfile: '/playwright-profiles/provision',
 };
-
-export function renderProfileProvisioner(doc, target) {
-  if (!target) return;
-  const card = el(doc, 'div', 'sub-profile-provision');
-  card.setAttribute('data-interaction-open', '1');
-  card.appendChild(el(doc, 'div', 'sub-profile-title', 'Create a dedicated sign-in profile'));
-  card.appendChild(el(doc, 'p', 'sub-profile-copy',
-    'Instar prepares the private Chrome profile on this machine. If a password or verification step is needed, your agent will send a secure link — you never need to access this machine.'));
-
-  const identity = el(doc, 'input', 'sub-profile-input');
-  identity.setAttribute('type', 'email');
-  identity.setAttribute('inputmode', 'email');
-  identity.setAttribute('autocomplete', 'email');
-  identity.setAttribute('placeholder', 'Google account email');
-  identity.setAttribute('aria-label', 'Google account email');
-  card.appendChild(identity);
-
-  const profileId = el(doc, 'input', 'sub-profile-input');
-  profileId.setAttribute('type', 'text');
-  profileId.setAttribute('placeholder', 'Profile name, for example work-google');
-  profileId.setAttribute('aria-label', 'Profile name');
-  card.appendChild(profileId);
-
-  const method = el(doc, 'select', 'sub-profile-input');
-  method.setAttribute('aria-label', 'Sign-in method');
-  for (const [value, label] of [
-    ['session-cookie', 'Already signed in / provider approval'],
-    ['password', 'Password'],
-    ['password+totp', 'Password + authenticator'],
-  ]) {
-    const option = el(doc, 'option', '', label);
-    option.setAttribute('value', value);
-    method.appendChild(option);
-  }
-  card.appendChild(method);
-
-  const button = el(doc, 'button', 'sub-profile-create', 'Create dedicated profile');
-  button.setAttribute('type', 'button');
-  card.appendChild(button);
-  const status = el(doc, 'div', 'sub-profile-status', '');
-  status.setAttribute('aria-live', 'polite');
-  card.appendChild(status);
-  target.replaceChildren(card);
-}
 
 export function createController(opts) {
   const {
@@ -1160,7 +1115,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
-    reloginWired: false, reloginEpisodes: [], reloginFailures: [], profileProvisionWired: false,
+    reloginWired: false, reloginEpisodes: [], reloginFailures: [],
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -1225,59 +1180,8 @@ export function createController(opts) {
     state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
     state.reloginFailures = reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.failed)
       ? reloginBody.pool.failed : [];
-    if (els.profileProvision && !state.profileProvisionWired) {
-      renderProfileProvisioner(doc, els.profileProvision);
-      wireProfileProvisioner();
-    }
     render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
-  }
-
-  function wireProfileProvisioner() {
-    if (!els.profileProvision || state.profileProvisionWired) return;
-    state.profileProvisionWired = true;
-    els.profileProvision.addEventListener('click', (event) => {
-      const button = event.target && event.target.closest ? event.target.closest('.sub-profile-create') : null;
-      if (!button) return;
-      const proof = getOperatorSessionToken();
-      const identity = els.profileProvision.querySelector('[aria-label="Google account email"]')?.value?.trim() || '';
-      const profileId = els.profileProvision.querySelector('[aria-label="Profile name"]')?.value?.trim() || '';
-      const loginMethod = els.profileProvision.querySelector('[aria-label="Sign-in method"]')?.value || 'session-cookie';
-      const status = els.profileProvision.querySelector('.sub-profile-status');
-      if (!proof) {
-        requestUnlock();
-        status.textContent = 'Enter your dashboard PIN, then retry.';
-        return;
-      }
-      if (!identity || !profileId) { status.textContent = 'Enter the Google account and a profile name.'; return; }
-      button.setAttribute('disabled', 'disabled');
-      status.textContent = 'Preparing the private profile…';
-      void (async () => {
-        try {
-          const response = await fetchImpl(URLS.provisionProfile, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
-            body: JSON.stringify({ profileId, identity, loginMethod }),
-          });
-          const body = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            if (response.status === 401) requestUnlock();
-            status.textContent = response.status === 401
-              ? 'Enter your dashboard PIN, then retry.'
-              : `Couldn’t create the profile: ${body.error || 'try again'}`;
-            button.removeAttribute('disabled');
-            return;
-          }
-          status.textContent = loginMethod === 'session-cookie'
-            ? 'Profile ready. Your agent can now open the provider sign-in and send you any required approval link.'
-            : 'Profile ready. Your agent will send a secure credential link before the first sign-in.';
-          button.textContent = 'Profile created';
-        } catch {
-          status.textContent = 'Couldn’t reach the server — try again.';
-          button.removeAttribute('disabled');
-        }
-      })();
-    });
   }
 
   // ── Episode + outcome bookkeeping (D1/D4/D5) ───────────────────────────────

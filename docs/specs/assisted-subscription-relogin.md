@@ -248,9 +248,10 @@ The dashboard Subscriptions grid shows one action: **Repair sign-in**. After the
 state machine and only interrupts the operator for a genuinely operator-only challenge. Telegram
 receives no per-pass noise: one actionable approval, one final success, or one durable blocker.
 
-The same dashboard includes **Create a dedicated sign-in profile**. A recent dashboard PIN proof
-authorizes one exact Google identity/profile tuple; the server creates the jailed 0700 machine-local
-profile directory and registry mapping idempotently. The agent completes all routine setup. If a
+The dashboard's former **Create a dedicated sign-in profile** form was removed (2026-09-28): it only
+created an empty profile and never signed in. The agent creates the machine-local profile and its
+registry mapping itself (`POST /playwright-profiles` + `/accounts`; `POST /playwright-profiles/provision`
+remains as the one-call, PIN-scoped equivalent) and signs it in. If a
 password, TOTP, CAPTCHA, phone check, or provider consent genuinely requires the operator, the only
 operator task is one secure Secret Drop/provider link or one dashboard challenge response. Physical
 or remote-desktop access to the host machine is never part of the workflow.

@@ -84,7 +84,7 @@ API calls below use \`Authorization: Bearer $AUTH\` against \`http://localhost:$
 
 ## 1. Setting up an account on a machine (once)
 
-1. Check the profile registry: \`GET /playwright-profiles/resolve?service=google&identity=<email>\`. If there is none, create it: \`POST /playwright-profiles\` then \`POST /playwright-profiles/<id>/accounts\` with \`{"service":"google","identity":"<email>","owner":"operator"|"agent","vaultRefs":[...]}\`. Phone-first alternative: the Subscriptions dashboard's profile provisioning.
+1. Check the profile registry: \`GET /playwright-profiles/resolve?service=google&identity=<email>\`. If there is none, create it: \`POST /playwright-profiles\` then \`POST /playwright-profiles/<id>/accounts\` with \`{"service":"google","identity":"<email>","owner":"operator"|"agent","vaultRefs":[...]}\`.
 2. Make sure the vault holds the account's Google password and its authenticator (TOTP) secret, e.g. \`google_password_<name>\` / \`google_totp_<name>\`, and that the profile's account entry lists them in \`vaultRefs\`. If the account's authenticator is already on the person's phone (Google allows only one), don't replace it: store the account's unused backup codes instead (\`google_backup_codes_<name>\`, bound as \`backupCode\`). With both present the agent can sign the profile in to Google itself. If the account has no authenticator yet, adding one changes the person's 2-step settings: ask once for a yes, then add it from the signed-in profile and store the secret.
 3. Enroll the subscription if it is not in the pool: \`POST /subscription-pool/enroll\` (never ask anyone to paste a token).
 

@@ -395,6 +395,33 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 /** The one `google-passkey` bullet inside the Playwright Profile Registry section (also patched into existing CLAUDE.md files). */
 export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store exists on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n- **Passkey grants + issuers (per account × machine, ⚗️ dark)**: a passkey may be minted/loaded on a machine only under a GRANT written on that machine. Read them: \`GET /passkeys/grants\` (grants, issued peer-grant copies, confirmed issuers, revoke high-water, \`issuerBootstrapRequired\`). PIN levers: \`POST /passkeys/grant\` \`{"pin":"…","email":"…"}\`, \`POST /passkeys/revoke\` \`{"pin":"…","email":"…"}\` (stops THIS agent's passkey path only — live sessions and stored passwords remain), \`POST /passkeys/issuer-add\` / \`issuer-remove\` \`{"pin":"…","machineId":"…"}\`. Add \`targetMachineId\` to act on a PEER: the op is signed with this machine's identity key as a \`passkey-cell\` mandate and delivered to the peer's \`POST /passkeys/cell-action\`, which accepts it only from a machine the operator confirmed as an issuer on THAT machine's own dashboard (no trust-on-first-use), once per nonce, within 15 minutes (revokes never expire). On a multi-machine agent the first grant is refused with \`issuer-bootstrap-required\` until a peer issuer is confirmed. NEVER ask the user to paste the PIN into chat — point them at the dashboard.\n`;
 
+/**
+ * The dedicated-profile provisioning bullet inside the Playwright Profile Registry section. The
+ * dashboard's "Create a dedicated sign-in profile" form was removed (it only made an empty profile
+ * and never signed in); the agent creates and signs in these profiles itself.
+ */
+export const DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET = `- **Dedicated Google profile provisioning**: create it yourself — \`POST /playwright-profiles\` then \`POST /playwright-profiles/<id>/accounts\` with \`{"service":"google","identity":"<email>","owner":…,"vaultRefs":[…]}\` — then sign it in with the /subscription-signin skill. \`POST /playwright-profiles/provision\` does the create + assign in one call but needs a recent dashboard PIN session (\`X-Instar-Operator-Session\`); there is no dashboard form for it. If a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.\n`;
+
+/**
+ * The Registry-First table answer to "How do I create a dedicated Google browser profile without
+ * host-machine access?" (generateClaudeMd uses it; migrateClaudeMd swaps the old stock answer for it).
+ */
+export const DEDICATED_PROFILE_REGISTRY_ROW_ANSWER = `Do it yourself: \`POST /playwright-profiles\` + \`POST /playwright-profiles/<id>/accounts\`, then sign it in with /subscription-signin (\`POST /playwright-profiles/provision\` is the one-call, PIN-scoped equivalent; there is no dashboard form). If credentials are needed, send one Secret Drop link and continue after receipt — never ask the operator to access the machine`;
+
+/**
+ * Exact text this repo shipped that pointed at the removed dashboard form, paired with its
+ * replacement. migrateClaudeMd swaps ONLY these exact strings, so anything an operator added around
+ * them survives and a line whose stock wording was edited is left alone (never silently rewritten).
+ */
+export const OBSOLETE_PROFILE_FORM_CLAUDEMD_TEXT: ReadonlyArray<readonly [string, string]> = [
+  // Bullet, as the Playwright Profile Registry section shipped it.
+  ['- **Remote/phone-complete provisioning**: the Subscriptions dashboard creates and materializes a dedicated Google profile after a recent PIN unlock. Programmatic equivalent: `POST /playwright-profiles/provision` with `X-Instar-Operator-Session` + `{profileId,identity,loginMethod}`. Handle everything else yourself; if a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.', DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET.trimEnd()],
+  // Bullet, as migrateClaudeMd patched it into existing agents.
+  ['- **Remote/phone-complete provisioning**: use the Subscriptions dashboard or `POST /playwright-profiles/provision` with a recent dashboard operator session to create + materialize a dedicated Google profile. If credentials are missing, send one Secret Drop link; never ask the operator to access the host machine.', DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET.trimEnd()],
+  // Registry-First table answer.
+  ['Use the Subscriptions dashboard or PIN-scoped `POST /playwright-profiles/provision`; if credentials are needed, send one Secret Drop link and continue after receipt — never ask the operator to access the machine', DEDICATED_PROFILE_REGISTRY_ROW_ANSWER],
+];
+
 export function PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port: number): string {
   return `\n### Playwright Profile Registry (which browser profile holds which account)
 
@@ -402,8 +429,7 @@ A durable per-agent registry mapping each Playwright browser **profile** (a phys
 - **List profiles + accounts** (the FULL detail — identities, owner, vault key NAMES, loginMethod, last-asserted/verified, dangling-ref flags; never values): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`
 - **The compact boot pointer** (also injected at session start): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/session-context\`
 - **Create a custom profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles -H 'Content-Type: application/json' -d '{"id":"justin-google","description":"..."}'\` (userDataDir auto-allocated under the agent home, or supply an absolute path jailed to it).
-- **Remote/phone-complete provisioning**: the Subscriptions dashboard creates and materializes a dedicated Google profile after a recent PIN unlock. Programmatic equivalent: \`POST /playwright-profiles/provision\` with \`X-Instar-Operator-Session\` + \`{profileId,identity,loginMethod}\`. Handle everything else yourself; if a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.
-- **Assign an account to a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/default/accounts -H 'Content-Type: application/json' -d '{"service":"github","identity":"EchoOfDawn","owner":"agent","vaultRefs":["github_token"],"loginMethod":"oauth-token"}'\` (\`owner\` REQUIRED — \`agent\`|\`operator\`; refs validated against the live vault, fails CLOSED).
+${DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET}- **Assign an account to a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/default/accounts -H 'Content-Type: application/json' -d '{"service":"github","identity":"EchoOfDawn","owner":"agent","vaultRefs":["github_token"],"loginMethod":"oauth-token"}'\` (\`owner\` REQUIRED — \`agent\`|\`operator\`; refs validated against the live vault, fails CLOSED).
 ${PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET}- **Pick the right profile for a task**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/playwright-profiles/resolve?service=github&identity=EchoOfDawn"\` → the owning profile + \`dirExists\`; an ambiguous service-only match returns \`{ambiguous:true, candidates}\` (disambiguate by identity — never silently pick a privileged account).
 - **Switch the browser onto a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/<id>/activate\` (rewrites the MCP config + restarts the session; ships \`dryRun:true\` — it LOGS the intended rewrite/refresh until a deliberate \`dryRun:false\`; reversible by activating \`default\`).
 - **Registry First**: which browser profile holds account X? → \`GET /playwright-profiles\` / \`…/resolve\` — read it, never guess.
@@ -1513,6 +1539,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninByHand(result);
     this.migrateSubscriptionSigninAgentRun(result);
     this.migrateSubscriptionSigninCrossMachine(result);
+    this.migrateSubscriptionSigninDropProfileFormPointer(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -4460,6 +4487,25 @@ export class PostUpdateMigrator {
     }
   }
 
+  /**
+   * The dashboard's "Create a dedicated sign-in profile" form was removed. Drop the one sentence in
+   * an installed /subscription-signin skill that pointed at it. Only that exact stock sentence is
+   * removed; the rest of the file (and any local edits) is kept. Idempotent: once gone, a no-op.
+   */
+  private migrateSubscriptionSigninDropProfileFormPointer(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const stale = " Phone-first alternative: the Subscriptions dashboard's profile provisioning.";
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (!current.includes('name: subscription-signin') || !current.includes(stale)) return;
+      fs.writeFileSync(skillFile, current.replace(stale, ''));
+      result.upgraded.push('skills/subscription-signin/SKILL.md (removed the pointer to the retired dashboard profile form)');
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md profile-form pointer migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateSubscriptionSigninByHand(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
     const marker = '## 3. Signing in by hand';
@@ -6711,12 +6757,31 @@ setTimeout(() => process.exit(0), 2000);
     }
     if (content.includes('Playwright Profile Registry') && !content.includes('/playwright-profiles/provision')) {
       const marker = '- **Assign an account to a profile**:';
-      const addition = `- **Remote/phone-complete provisioning**: use the Subscriptions dashboard or \`POST /playwright-profiles/provision\` with a recent dashboard operator session to create + materialize a dedicated Google profile. If credentials are missing, send one Secret Drop link; never ask the operator to access the host machine.\n`;
+      const addition = DEDICATED_PROFILE_PROVISIONING_CLAUDEMD_BULLET;
       const at = content.indexOf(marker);
       if (at >= 0) content = content.slice(0, at) + addition + content.slice(at);
       else content += `\n${addition}`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added phone-complete Playwright profile provisioning awareness');
+    }
+    // The dashboard provisioning form was removed: swap each exact shipped text that pointed at it
+    // (both bullet wordings + the Registry-First row answer) for the agent-does-it text. Only the
+    // exact stock text is replaced, so operator additions around it survive; an edited wording is
+    // left intact and reported in `skipped`. Idempotent: the replacements contain no stock text.
+    {
+      let rewrote = false;
+      for (const [stale, current] of OBSOLETE_PROFILE_FORM_CLAUDEMD_TEXT) {
+        if (content.includes(stale)) {
+          content = content.split(stale).join(current);
+          rewrote = true;
+        }
+      }
+      if (rewrote) {
+        patched = true;
+        result.upgraded.push('CLAUDE.md: profile provisioning guidance no longer points at the removed dashboard form');
+      } else if (content.includes('- **Remote/phone-complete provisioning**:') || content.includes('Use the Subscriptions dashboard or PIN-scoped')) {
+        result.skipped.push('CLAUDE.md: customized profile provisioning guidance left as-is (it may still mention the removed dashboard form)');
+      }
     }
 
     // Passkey login method (spec agent-held-google-passkey §3.4 / §6) — Agent Awareness
