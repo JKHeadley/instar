@@ -30,8 +30,10 @@ check was judged alone, so one bad sample was enough.
 
 - **A short memory.** If the age check saw the session working in the last
   10 minutes, it still counts as working. One blind sample can no longer end
-  it. Only real signs of work renew the memory: a running command or fresh
-  transcript writes. Text on the screen does not.
+  it. The memory renews whenever the existing "is it working?" decision says
+  working. That is the same three checks as before: a running command, fresh
+  transcript writes, or a screen that does not show the idle prompt. An empty
+  or unreadable screen also counts as working, as it always has.
 - **The memory forgets ended sessions.** Every check drops entries for
   sessions that are no longer running, so it cannot grow without limit.
 
@@ -39,16 +41,27 @@ The session's own transcript shows its background watch ran until eleven
 seconds before the kill, and a running watch counts as work. So the memory
 alone would have kept this session.
 
-A first version also treated the on-screen text "esc to interrupt" as proof
-of work. Review showed that text can sit in old screen output after the work
-ends, which would keep an idle session alive forever. That check was removed.
+A first version also added a new check that treated the on-screen text
+"esc to interrupt" as proof of work. Review showed that text can sit in old
+screen output after the work ends, which would keep an idle session alive
+forever. That added check is gone.
+
+The three original checks are still imperfect. The screen check and the
+process check can be wrong, and the session-id mix-up that blinded the
+transcript check is not fixed here. The memory only smooths over short blind
+moments; it does not make the checks better.
 
 ## What did not change
 
-A session that is really stale is still ended by the age limit. The only
-difference is that this now happens up to 10 minutes after a check last saw
-real work. All other keep rules (recent user message, open commitment, and so
-on) are unchanged. There are no new settings, messages, or routes.
+A session that is really stale is still ended by the age limit. The memory
+expires 10 minutes after the last check that said working. After that, the
+next check that says idle can end the session, subject to the same keep rules
+and back-off as before. So 10 minutes is not a hard limit from when the work
+really stopped: while the old checks keep saying working (for example the
+screen does not show the idle prompt), the session is kept, exactly as it was
+before this change. All other keep rules (recent user message, open
+commitment, and so on) are unchanged. There are no new settings, messages, or
+routes.
 
 ## Why not "restart and resume" instead
 

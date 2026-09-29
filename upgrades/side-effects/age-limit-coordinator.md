@@ -72,10 +72,17 @@ the existing probes.
 
 - A genuinely stale over-age session is now age-killed up to 10 minutes later
   than before, measured from the last tick where a probe read working. On a
-  limit of 240m + 48m this is negligible. Pane text cannot renew it: the
-  memory only renews on a sample the pre-existing three-probe decision
-  already called working (so a stuck live child process defers exactly as it
-  did before this change, no longer).
+  limit of 240m + 48m this is negligible. The memory renews on every sample
+  the pre-existing three-probe decision reads non-idle, including its
+  conservative pane cases: a tail with no `IDLE_PROMPT_PATTERNS` match, or an
+  empty/unreadable tail, renews it even with no child process and no
+  transcript activity. Such a sample already deferred the kill before this
+  change, so anything the old decision kept (a stuck child process, a pane
+  that never shows the idle prompt) is kept exactly as before, no longer and
+  no shorter. Ten minutes is the memory's expiry after the last non-idle
+  sample; termination then happens on a later eligible tick, subject to the
+  unchanged KEEP guards and backoff. It is not an unconditional bound after
+  work actually stops.
 
 ## 2. Under-block
 
@@ -132,10 +139,14 @@ per process, keyed by the session's incarnation id.
 
 ## 7b. Constitutional Rules touched (Instar 2.0 `docs/01-the-rules.md`)
 
-- **Rule 26 (verify the state, not its symbol):** the memory renews only on a
-  sample the existing probes read as working (a live child process or
-  transcript writes). Pane text is not treated as proof of work; the round-1
-  footer signal that did so is removed.
+- **Rule 26 (verify the state, not its symbol):** no new symbol is trusted.
+  The memory renews whenever the existing three-probe decision reads
+  non-idle, including its conservative pane/unknown cases (no idle-prompt
+  match, empty or unreadable tail). The round-1 quoted-footer exemption,
+  which added a new text signal, is removed. Inherited limitation, stated
+  honestly: the pane classifier and the process probe are imperfect
+  evidence, and the claudeSessionId rotation is unrepaired; the memory only
+  bridges their brief blind samples.
 - **Rule 60 (bounded resources):** `ageGateLastWorkingAt` is pruned every
   monitor tick to the running-session set; its size is bounded by running
   over-age sessions. A lifecycle test proves an ended session's entry is
@@ -146,6 +157,18 @@ per process, keyed by the session's incarnation id.
 - **Rules 32 / 113 (machine-local ephemeral state, authority unchanged):** the
   memory is in-process, not persisted or shared; reap authority, the
   KEEP-guard and termination routing are unchanged.
+- **Rule 49 (traceability):** the incident timeline is tied to server.log
+  lines and transcript events, and each test names the commit it fails on.
+- **Rule 70 (bug evidence):** the incident replay test fails on origin/main
+  and passes here; the reconstructed last working sample is labelled as
+  reconstructed from process lifetime and tick cadence.
+- **Rule 74 (side effects):** this review; its renewal description was
+  corrected in round 3 after Astra's counterexample.
+- **Rule 111 (the layer below):** the probes and the terminate authority are
+  used as they are; their limits are recorded above, not papered over.
+- **Rule 116 (simplest robust route):** one small per-session map beside the
+  existing probes, pruned by the existing running-session snapshot; no new
+  classifier, parser or revival route.
 
 ## 8. Rollback cost
 
@@ -155,9 +178,11 @@ Pure code change. Revert and ship a patch. No state to migrate.
 
 The age gate judged each over-age tick alone, so one blind sample right after
 real work killed a working session. It now remembers recent work for 10
-minutes, renewed only by the existing probes, and forgets sessions once they
-end. Only keeps are added. Genuinely stale sessions, including ones with stale
-"working" text on screen, are still age-killed. Clear to ship after review.
+minutes, renewed whenever the existing three-probe decision reads non-idle,
+and forgets sessions once they end. Only keeps are added. Sessions the
+existing decision reads as idle for 10 minutes are still age-killed (subject
+to the unchanged KEEP guards/backoff); the round-1 quoted-footer exemption is
+gone. Clear to ship after review.
 
 ## Second-pass review (if required)
 
@@ -186,10 +211,18 @@ Non-blocking notes, and what was done:
    snapshot; lifecycle test added.
 3. Rule mapping. **Section 7b.**
 
+## Round 3 review (Astra round 2, CHANGES REQUIRED → docs corrected)
+
+1. The docs claimed only processes/transcript writes renew the memory and
+   pane text cannot. False: renewal is the negation of the original
+   three-input idle decision, so a non-idle pane tail (or an empty/unreadable
+   one) renews it. **Corrected** in section 1, section 7b, the conclusion,
+   the upgrade note and the ELI16. No code change.
+
 The round-1 claims "at most ten minutes" and "either change alone would have
-saved it" are corrected above: the delay bound holds now that only the
-existing probes renew the memory, and the incident is covered by the memory,
-backed by the transcript's watch timing.
+saved it" are corrected above: the ten minutes is the memory's expiry after
+the last non-idle sample (see section 1), and the incident is covered by the
+memory, backed by the transcript's watch timing.
 
 ## Evidence pointers
 
@@ -206,7 +239,7 @@ backed by the transcript's watch timing.
 ## Class-Closure Declaration (display-only mirror)
 
 Modifies a self-triggered controller (the age gate) only by removing kill
-cases. Kills are a subset of before, each delayed by at most
-`AGE_GATE_RECENT_WORK_MS` after the last sample the existing probes read as
-working. No revive path is
-added. No agent-authored-artifact defect; not applicable.
+cases. Kills are a subset of before; the memory expires
+`AGE_GATE_RECENT_WORK_MS` after the last sample the existing three-probe
+decision read as non-idle, and a later eligible tick then decides as before.
+No revive path is added. No agent-authored-artifact defect; not applicable.

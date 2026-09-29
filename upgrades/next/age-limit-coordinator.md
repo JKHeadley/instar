@@ -19,15 +19,24 @@ Earlier ticks had seen the watch running, but every tick was judged alone.
 The session's transcript shows its background watch ran until 11 seconds
 before the kill, and a background shell counts as a live child process.
 
-- The age gate remembers when it last saw each over-age session working
-  (a live child process or fresh transcript writes). For 10 minutes after
-  that (`AGE_GATE_RECENT_WORK_MS`) the session still counts as working, so one
-  blind sample cannot kill it. On-screen text does not renew this memory.
+- The age gate remembers when it last saw each over-age session working.
+  "Working" is the unchanged three-probe decision reading non-idle: a live
+  child process, fresh transcript writes, or a pane tail with no
+  `IDLE_PROMPT_PATTERNS` match (an empty or unreadable tail also reads
+  non-idle, conservatively, as before). For 10 minutes after the last such
+  sample (`AGE_GATE_RECENT_WORK_MS`) the session still counts as working, so
+  one blind sample cannot kill it. The round-1 quoted-footer ("esc to
+  interrupt") exemption is gone.
 - Each monitor tick drops that memory for sessions that are no longer
   running, so it stays bounded.
 
-A genuinely stale session is still age-killed, at most 10 minutes after it was
-last seen working. Every other keep guard is unchanged.
+The memory expires 10 minutes after the last non-idle sample. A later tick
+that reads idle can then age-kill the session, still subject to the unchanged
+KEEP guards and backoff. This is not an unconditional bound after work really
+stops: while the pane classifier keeps reading non-idle, the session is kept,
+as it was before this change. The pane classifier and process probe remain
+imperfect evidence, and the claudeSessionId rotation that blinded the
+transcript probe is not repaired here.
 
 ## Evidence
 
@@ -52,5 +61,5 @@ really stopped.
 
 ## Summary of New Capabilities
 
-- Over-age sessions are only ended when they have not been seen working for
-  10 minutes.
+- Over-age sessions are only ended when the existing activity probes have not
+  read them as working for 10 minutes.
