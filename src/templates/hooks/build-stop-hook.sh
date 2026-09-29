@@ -17,7 +17,7 @@ if [ ! -f "$STATE_FILE" ]; then
 fi
 
 # Read state
-PHASE=$(python3 -c "import json; d=json.load(open('$STATE_FILE')); print(d.get('phase','idle'))" 2>/dev/null)
+PHASE=$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('phase','idle'))" "$STATE_FILE" 2>/dev/null)
 
 # Terminal phases — allow exit
 if [ "$PHASE" = "complete" ] || [ "$PHASE" = "failed" ] || [ "$PHASE" = "escalated" ]; then
@@ -90,7 +90,7 @@ fi
 # Check and update reinforcement counter
 RESULT=$(python3 -c "
 import json, sys
-with open('$STATE_FILE') as f:
+with open(sys.argv[1]) as f:
     state = json.load(f)
 
 protection = state.get('protection', {})
@@ -102,7 +102,7 @@ if used >= max_r:
     sys.exit(0)
 
 state['reinforcementsUsed'] = used + 1
-with open('$STATE_FILE', 'w') as f:
+with open(sys.argv[1], 'w') as f:
     json.dump(state, f, indent=2)
 
 phase = state.get('phase', 'idle')
@@ -135,7 +135,7 @@ reason = (
 ) % (phase, label, state['reinforcementsUsed'], max_r, steps_info, wt_info, task, hint)
 
 print(json.dumps({'decision': 'block', 'reason': reason}))
-" 2>/dev/null)
+" "$STATE_FILE" 2>/dev/null)
 
 echo "$RESULT"
 exit 0

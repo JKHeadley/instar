@@ -34,6 +34,12 @@ just never ran for that session.
   setting is missing.
 - The update check that warns "a hook in settings points to a missing file"
   now also checks hooks written in the project-root form.
+- The project-root path is now written inside quotes. Without them, a home
+  folder with a space in its name (`Agent Home`) got cut in two and every
+  hook broke. Existing agents' settings get the quotes on the next update.
+- Two hook programs pass that path to a small Python helper. They used to
+  paste it into the Python code itself, so a folder named `Justin's Agent`
+  broke the code. They now hand it over as plain data.
 
 ## What stays the same
 

@@ -42,15 +42,15 @@ export interface HookEventTemplate {
  * - PreCompact: when context compaction is about to occur (with trigger reason)
  */
 export const HOOK_EVENT_TEMPLATES: HookEventTemplate[] = [
-  { event: 'PostToolUse', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'SubagentStart', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'SubagentStop', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'Stop', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'WorktreeCreate', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'WorktreeRemove', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'TaskCompleted', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'SessionEnd', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
-  { event: 'PreCompact', config: { type: 'command', command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js', timeout: 3000 } },
+  { event: 'PostToolUse', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'SubagentStart', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'SubagentStop', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'Stop', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'WorktreeCreate', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'WorktreeRemove', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'TaskCompleted', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'SessionEnd', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
+  { event: 'PreCompact', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
 ];
 
 // Backwards-compat export — old name, new behavior

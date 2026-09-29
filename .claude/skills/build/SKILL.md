@@ -63,7 +63,7 @@ with open('.claude/settings.json') as f:
     s = json.load(f)
 hooks = s.setdefault('hooks', {}).setdefault('Stop', [])
 if not any('build-stop-hook' in str(h) for h in hooks):
-    hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh', 'timeout': 10000}]})
+    hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': 'bash \"\${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh\"', 'timeout': 10000}]})
     with open('.claude/settings.json', 'w') as f:
         json.dump(s, f, indent=2)
     print('Build stop hook registered')

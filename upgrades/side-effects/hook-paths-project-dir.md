@@ -46,6 +46,33 @@ Changes:
    the `${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/…` form, so anchoring does
    not silently drop commands out of the missing-file check.
 
+6. **Round 3 (Astra review of PR #2093).** Two repairs:
+   - *Quoted paths.* Unquoted, `${CLAUDE_PROJECT_DIR}` splits on a space in
+     the home path (`/tmp/Agent Home` → `node /tmp/Agent`), which broke every
+     hook where the bare form had still worked from the root. Every Claude
+     settings generator (templates, `settings-template.json`, init,
+     `instarSettingsHooks.ts`, the migrator's ensure blocks, the `/build` and
+     `/autonomous` registration snippets) now emits
+     `node "${CLAUDE_PROJECT_DIR}/…"`, keeping trailing arguments. The
+     migration pass rewrites both the bare form and the unquoted anchored
+     form (built-in `.instar/hooks/instar/` and the autonomous skill's stop
+     hook only) to the quoted form; a quoted command no longer matches, so it
+     is idempotent and never double-prefixes. `validateHookReferences()`
+     accepts the leading quote. The two skill snippets also escape `\$` and
+     `\"` so bash no longer expands `${CLAUDE_PROJECT_DIR}` at registration
+     time. Presence detection elsewhere is filename-based, so quoting cannot
+     cause a duplicate registration.
+   - *Paths as data to Python.* `build-stop-hook.sh` (template + inline twin)
+     and `slack-channel-context.sh` spliced the now-absolute path into
+     single-quoted Python source; a home named `Justin's Agent` was a
+     SyntaxError (build stop hook silently approved; Slack hook lost its
+     port/token). The path now goes in as `sys.argv[1]`. The Slack upgrade
+     marker changed to the argv form, so round-1 copies are upgraded once.
+   - Not changed: Codex hooks (`installCodexHooks.ts`) write absolute paths
+     unquoted. That is a separate config whose command strings feed Codex's
+     trust/arm slots; changing them re-arms every agent. Left for its own
+     change.
+
 ### Considered and dropped (Occam)
 
 - Absolute paths baked in at install time: break when the agent home moves;
@@ -194,3 +221,20 @@ Closes the class "built-in hook command resolved against the session cwd" for
 shipped templates and deployed settings (migration). Hook scripts that read
 agent-home files now resolve them from `CLAUDE_PROJECT_DIR`. No controller or
 decision logic modified.
+
+## Round 3 second-pass review
+
+An independent reviewer checked the round-3 diff: 15 regex edge cases in
+node (bare, `./`, unquoted anchored, autonomous stop hook, trailing arguments,
+already-quoted, custom, `$CLAUDE_PROJECT_DIR` without braces, `sh -c`
+wrappers), the skill snippets through real bash, filename-based presence
+checks (no duplicate registrations), the build-stop template/twin identity,
+live runs of both hooks under `/tmp/Justin's Agent X` from a subdirectory,
+and the Slack upgrade marker against the round-1 and pre-PR copies.
+Residual, not fixed here: already-installed `/autonomous` and `/build`
+SKILL.md files keep their old registration snippets (no skill-content
+migration). Those entries still work from the agent root and are re-quoted
+by `migrateSettings()` at the next update; they only fail for a spaced home
+or a subdirectory session in the window before that update.
+
+Concur with the review.

@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js\"",
             "blocking": true,
             "timeout": 5000
           }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
             "timeout": 5
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
             "timeout": 5
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
             "timeout": 5
           }
         ]
@@ -73,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-topic-context.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-topic-context.sh\"",
             "timeout": 5000
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -109,7 +109,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -121,7 +121,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -131,7 +131,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh\"",
             "timeout": 10000
           }
         ]
@@ -143,7 +143,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -155,7 +155,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -167,7 +167,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -179,7 +179,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -191,7 +191,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -203,7 +203,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js\"",
             "timeout": 5000
           }
         ]

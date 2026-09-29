@@ -125,6 +125,28 @@ describe('build-stop-hook session-scoping', () => {
     expect(r.counter).toBe(1);
   });
 
+  it("still blocks when the agent home path contains an apostrophe and a space", () => {
+    // The absolute state path is handed to Python as argv, never spliced into
+    // its source — a home like "Justin's Agent" must not become a SyntaxError.
+    const home = path.join(tmpDir, "Justin's Agent Home");
+    fs.mkdirSync(path.join(home, '.instar', 'state', 'build'), { recursive: true });
+    const env = { ...process.env, INSTAR_HOOK_TMUX_SESSION: 'echo-A' };
+    execSync(`python3 "${BUILD_STATE}" init "apostrophe" --size SMALL --owner-session uuid-A --owner-tmux echo-A`, { cwd: home, env, encoding: 'utf8' });
+    execSync(`python3 "${BUILD_STATE}" transition planning`, { cwd: home, encoding: 'utf8' });
+    execSync(`python3 "${BUILD_STATE}" transition executing`, { cwd: home, encoding: 'utf8' });
+    const sub = path.join(home, '.instar', 'lanes', 'pipeline');
+    fs.mkdirSync(sub, { recursive: true });
+    const out = execSync(`bash "${hookPath}"`, {
+      cwd: sub,
+      env: { ...env, CLAUDE_PROJECT_DIR: home },
+      input: JSON.stringify({ session_id: 'uuid-A' }),
+      encoding: 'utf8',
+    });
+    expect(JSON.parse(out.trim()).decision).toBe('block');
+    const state = JSON.parse(fs.readFileSync(path.join(home, '.instar', 'state', 'build', 'build-state.json'), 'utf8'));
+    expect(state.reinforcementsUsed).toBe(1);
+  });
+
   it('owner identified by SESSION UUID alone (owner tmux empty) is blocked', () => {
     startBuild('', 'uuid-A');
     const r = fireHook({ sessionId: 'uuid-A', myTmux: 'echo-anything' });

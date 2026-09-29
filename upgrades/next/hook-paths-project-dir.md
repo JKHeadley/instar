@@ -12,32 +12,42 @@ Instar 2.0 coordinating session, cwd `.instar/lanes/pipeline`) got
 `MODULE_NOT_FOUND` / `No such file or directory` on every tool call and stop,
 and those hooks silently never ran.
 
-- The hook-event reporter templates, `settings-template.json` and the
-  `/build` stop-hook registration now write
-  `${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/…`, like every other built-in
-  entry.
-- `migrateSettings()` rewrites existing bare built-in commands to that form,
-  once. Custom hooks are never touched.
+- Every settings hook command instar generates (templates,
+  `settings-template.json`, init, migrations, the `/build` and `/autonomous`
+  stop-hook registrations) now writes the quoted form
+  `node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/…"`, keeping any trailing
+  arguments. The quotes keep an agent home whose path contains a space
+  (`/Users/x/Agent Home`) working.
+- `migrateSettings()` rewrites existing built-in commands, both the bare form
+  and the unquoted `${CLAUDE_PROJECT_DIR}/…` form, to the quoted form, once.
+  Custom hooks are never touched.
 - `build-stop-hook.sh`, the scope-coherence and claim-intercept hooks, and
   `slack-channel-context.sh` read agent-home files from `CLAUDE_PROJECT_DIR`
-  (falling back to the cwd when it is unset). Deployed Slack hooks are
-  upgraded once.
-- The missing-hook-file check on update also covers anchored commands.
+  (falling back to the cwd when it is unset). The two shell hooks hand that
+  path to Python as an argument, never inside the Python source, so a home
+  named `Justin's Agent` parses. Deployed Slack hooks are upgraded once.
+- The missing-hook-file check on update also covers anchored and quoted
+  commands.
 
 ## Evidence
 
 - `tests/unit/hook-command-project-dir-anchor.test.ts`: templates and
   init-generated settings have no `node .instar/` / `bash .instar/` built-in
   command; an old settings file is rewritten once and a second run leaves it
-  byte-identical; a custom hook is untouched.
+  byte-identical; a custom hook is untouched; the unquoted anchored form is
+  quoted with arguments kept and no double prefix; every emitted command runs
+  from a subdirectory of a home named `Agent Home` (the unquoted form fails
+  there); the Slack hook reads port, token and agent id from a home named
+  `Justin's Agent Home`.
 - `tests/unit/build-stop-hook-session-scoping.test.ts`: the shipped build stop
-  hook fired from `.instar/lanes/pipeline` finds the build state; this test
-  fails on the previous hook.
+  hook fired from `.instar/lanes/pipeline` finds the build state, also under a
+  home named `Justin's Agent Home`; both fail on the previous hook.
 
 ## What to Tell Your User
 
 My built-in safety and reporting hooks now work even when I'm working inside
-a subfolder of my home. Before, they could quietly stop running there.
+a subfolder of my home, and when my home folder's name has a space or an
+apostrophe in it. Before, they could quietly stop running there.
 
 ## Summary of New Capabilities
 

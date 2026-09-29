@@ -50,32 +50,32 @@ const PD = '${CLAUDE_PROJECT_DIR}';
 export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry> = [
   {
     type: 'command',
-    command: `bash ${PD}/.instar/hooks/instar/dangerous-command-guard.sh "$TOOL_INPUT"`,
+    command: `bash "${PD}/.instar/hooks/instar/dangerous-command-guard.sh" "$TOOL_INPUT"`,
     blocking: true,
   },
   {
     type: 'command',
-    command: `bash ${PD}/.instar/hooks/instar/grounding-before-messaging.sh "$TOOL_INPUT"`,
+    command: `bash "${PD}/.instar/hooks/instar/grounding-before-messaging.sh" "$TOOL_INPUT"`,
     blocking: false,
   },
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/deferral-detector.js`,
+    command: `node "${PD}/.instar/hooks/instar/deferral-detector.js"`,
     timeout: 5000,
   },
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/self-stop-guard.js`,
+    command: `node "${PD}/.instar/hooks/instar/self-stop-guard.js"`,
     timeout: 5000,
   },
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/external-communication-guard.js`,
+    command: `node "${PD}/.instar/hooks/instar/external-communication-guard.js"`,
     timeout: 5000,
   },
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/post-action-reflection.js`,
+    command: `node "${PD}/.instar/hooks/instar/post-action-reflection.js"`,
     timeout: 5000,
   },
   {
@@ -84,7 +84,7 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
     // the branch's lease; blocks (exit 2) only on a deny. Dev-gated dark + dryRun;
     // fail-open on every uncertainty (a broken guard never blocks a push).
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/pr-hand-lease-guard.js`,
+    command: `node "${PD}/.instar/hooks/instar/pr-hand-lease-guard.js"`,
     blocking: true,
     timeout: 6000,
   },
@@ -96,7 +96,7 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
     // matching fails CLOSED (a non-sanctioned command in the doorway-scan session is
     // refused). Strict no-op everywhere else.
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/doorway-scan-guard.js`,
+    command: `node "${PD}/.instar/hooks/instar/doorway-scan-guard.js"`,
     blocking: true,
     timeout: 5000,
   },
@@ -109,7 +109,7 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
 export const INSTAR_MCP_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry> = [
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/external-operation-gate.js`,
+    command: `node "${PD}/.instar/hooks/instar/external-operation-gate.js"`,
     blocking: true,
     timeout: 5000,
   },
@@ -131,10 +131,10 @@ export const INSTAR_MCP_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry>
  * a marker-file stat, with zero HTTP unless this session is actually listed.
  */
 export const INSTAR_WILDCARD_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry> = [
-  { type: 'command', command: `node ${PD}/.instar/hooks/instar/telegram-origin-guard.js`, blocking: true, timeout: 2000 },
+  { type: 'command', command: `node "${PD}/.instar/hooks/instar/telegram-origin-guard.js"`, blocking: true, timeout: 2000 },
   {
     type: 'command',
-    command: `node ${PD}/.instar/hooks/instar/standdown-guard.js`,
+    command: `node "${PD}/.instar/hooks/instar/standdown-guard.js"`,
     blocking: true,
     // Deliberately SHORTER than the lease guard's 6s: that hook fires only on a
     // `git push`, this one fires on every tool call, and fail-open makes a short
@@ -153,7 +153,7 @@ export const INSTAR_BASH_PRETOOLUSE_FILENAMES: ReadonlyArray<string> =
 
 /**
  * Extract the instar hook script filename from a settings hook command, e.g.
- * `node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js` ->
+ * `node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js"` ->
  * `deferral-detector.js`. Returns null if the command does not reference an
  * instar hook script. Used for idempotent presence detection during migration
  * (substring/filename match is robust to ${CLAUDE_PROJECT_DIR} vs absolute
