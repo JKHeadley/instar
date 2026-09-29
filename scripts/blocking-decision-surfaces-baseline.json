@@ -73,7 +73,7 @@
     {
       "path": "src/templates/hooks/compaction-recovery.sh",
       "sha256": "ffbdc114a6845550085e282d2da08dd8790dc584539110f11c4bb2c8365b6e57",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/hooks/model-tier-reconciler.js",
@@ -83,7 +83,7 @@
     {
       "path": "src/templates/hooks/model-tier-skill-entry.sh",
       "sha256": "29a6dc1f5b1fd4f86017c203746f1f81a0fd02de4817071a4eeec6c1810ea90f",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/hooks/session-start.sh",
@@ -93,17 +93,17 @@
     {
       "path": "src/templates/hooks/skill-usage-telemetry.sh",
       "sha256": "77fb4080da1555c4961b22a0cb27cb71c5384718991a7ed14ceba7801a77e60f",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/hooks/slack-channel-context.sh",
-      "sha256": "45f3eddcd4feab6f15f270edc5c8be3131c362fe0e4b9232834d62bbe0a3dbad",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "sha256": "25c92afb8e34f9d63c312ab30e08a94695a7935fb9f74dfbf45ae2e93b1bb5a2",
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/hooks/telegram-topic-context.sh",
       "sha256": "c4af64e9364ed241b3480fd07e4822faf036612ac73a9d8b4afb22a1ea7fdc15",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/scripts/emit-session-clock.sh",
@@ -113,7 +113,7 @@
     {
       "path": "src/templates/scripts/health-watchdog.sh",
       "sha256": "4be25bb6180bc16e0039359ed15688e3c6c1fc99fe369297d5e100c0eb1bad18",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/scripts/instar-watchdog.sh",
@@ -128,7 +128,7 @@
     {
       "path": "src/templates/scripts/load-assess.sh",
       "sha256": "0d8c335b167a7e46099b8636692849a48d4c0ca5722853a453d1a963427c9b88",
-      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",

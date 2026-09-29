@@ -8,7 +8,7 @@
 #
 # Reads state from .instar/state/build/build-state.json.
 
-STATE_FILE=".instar/state/build/build-state.json"
+STATE_FILE="${CLAUDE_PROJECT_DIR:-.}/.instar/state/build/build-state.json"
 
 # No state file = no active build = allow exit
 if [ ! -f "$STATE_FILE" ]; then

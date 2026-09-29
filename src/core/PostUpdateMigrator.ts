@@ -5794,10 +5794,10 @@ if [[ "$ACTIVE" != "true" ]]; then`;
           const cmd = typeof hook?.command === 'string' ? hook.command : '';
           if (!cmd) continue;
           // Extract a path that looks like `.instar/hooks/...` from the command.
-          // Matches bash .instar/hooks/instar/foo.sh, node .instar/hooks/instar/foo.js,
+          // Matches bash .instar/hooks/instar/foo.sh, node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/foo.js,
           // or any direct reference to a file path under the hooks tree. Custom hooks
           // live under .instar/hooks/custom/ and are skipped — the agent owns them.
-          const match = cmd.match(/(?:^|\s)(\.instar\/hooks\/instar\/[^\s"]+)/);
+          const match = cmd.match(/(?:^|\s)(?:\$\{CLAUDE_PROJECT_DIR\}\/)?(\.instar\/hooks\/instar\/[^\s"]+)/);
           if (!match) continue;
           const relPath = match[1];
           const abs = path.join(this.config.projectDir, relPath);
@@ -5924,6 +5924,46 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
       }
     }
+  }
+
+  /**
+   * Rewrite built-in hook commands from the bare relative form
+   * (`node .instar/hooks/instar/X.js`) to the project-anchored form
+   * (`node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/X.js`).
+   *
+   * Claude Code runs a hook command from the session's working directory, so
+   * a bare relative path fails with MODULE_NOT_FOUND / "No such file" in any
+   * session started in a subdirectory of the agent home — the hook silently
+   * never runs. Only built-in `.instar/hooks/instar/` commands are touched;
+   * custom hooks are the agent's own. Idempotent: an anchored command no
+   * longer matches.
+   */
+  private anchorBuiltinHookCommandPaths(
+    hooks: Record<string, unknown[]>,
+    result: MigrationResult,
+  ): boolean {
+    const bare = /^(node|bash|sh)\s+(?:\.\/)?\.instar\/hooks\/instar\//;
+    let count = 0;
+    const anchor = (h: unknown): void => {
+      if (typeof h !== 'object' || h === null) return;
+      const obj = h as Record<string, unknown>;
+      if (typeof obj.command === 'string' && bare.test(obj.command)) {
+        obj.command = obj.command.replace(bare, '$1 ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/');
+        count++;
+      }
+    };
+    for (const entries of Object.values(hooks)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        anchor(entry);
+        const nested = (entry as { hooks?: unknown } | null)?.hooks;
+        if (Array.isArray(nested)) nested.forEach(anchor);
+      }
+    }
+    if (count > 0) {
+      result.upgraded.push(`.claude/settings.json: anchored ${count} built-in hook command(s) on \${CLAUDE_PROJECT_DIR} (hooks now run from any session cwd)`);
+    }
+    return count > 0;
   }
 
   /**
@@ -11424,6 +11464,8 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       templateFilename: string;
       shippedMarker: string;
       label: string;
+      /** Extra marker a current install must also carry (beyond INSTAR_AUTH_TOKEN). */
+      currentMarker?: string;
     };
     const targets: Target[] = [
       {
@@ -11448,6 +11490,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         templateFilename: 'slack-channel-context.sh',
         shippedMarker: 'slack-channel-context.sh',
         label: '.claude/hooks/instar/slack-channel-context.sh',
+        // Config read anchored on the project dir, so the hook works for a
+        // session started in a subdirectory.
+        currentMarker: 'CONFIG_FILE="${CLAUDE_PROJECT_DIR:-.}/.instar/config.json"',
       },
     ];
 
@@ -11456,8 +11501,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       try {
         const existing = fs.readFileSync(target.relPath, 'utf-8');
         const looksShipped = existing.includes(target.shippedMarker);
-        const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
-        if (!looksShipped || hasAuthEnvHandling) {
+        const isCurrent = existing.includes('INSTAR_AUTH_TOKEN')
+          && (!target.currentMarker || existing.includes(target.currentMarker));
+        if (!looksShipped || isCurrent) {
           // Skip custom forks and already-current installs.
           continue;
         }
@@ -11904,6 +11950,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // so they just stop after each response. This was a critical gap where the hook files
     // existed but were never registered in settings.json.
     if (this.ensureAutonomousStopHook(hooks, result)) {
+      patched = true;
+    }
+
+    // Anchor built-in hook commands on the project dir. Runs last so it also
+    // covers entries the steps above just rewrote or added.
+    if (this.anchorBuiltinHookCommandPaths(hooks, result)) {
       patched = true;
     }
 
@@ -17199,7 +17251,7 @@ echo "[\$(date -Iseconds)] Server restart initiated"
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
+const STATE_FILE = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state', 'scope-coherence.json');
 const SCOPE_DOC_PATTERNS = [
   'docs/', 'specs/', 'SPEC', 'PROPOSAL', 'DESIGN', 'ARCHITECTURE',
   'README', '.instar/AGENT.md', '.instar/USER.md', '.claude/context/',
@@ -17327,7 +17379,7 @@ function saveState(state) {
   const path = await import('node:path');
   const http = await import('node:http');
 
-const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
+const STATE_FILE = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state', 'scope-coherence.json');
 const DEPTH_THRESHOLD = 20;
 const COOLDOWN_MS = 30 * 60 * 1000;  // 30 minutes
 const MIN_AGE_MS = 5 * 60 * 1000;    // 5 minutes
@@ -17511,7 +17563,7 @@ function fetchActiveJob() {
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_DIR = path.join('.instar', 'state');
+const STATE_DIR = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
 const RATE_LIMIT_MS = 10000; // 10 seconds between checks
 const LOG_FILE = path.join(STATE_DIR, 'claim-intercept.log');
@@ -18219,7 +18271,7 @@ if (!reviewEnabled) {
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_DIR = path.join('.instar', 'state');
+const STATE_DIR = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
 const RATE_LIMIT_MS = 10000;
 const LOG_FILE = path.join(STATE_DIR, 'claim-intercept.log');
@@ -18636,7 +18688,7 @@ if (!sid || !sessionName || !serverUrl || !authToken) process.exit(0);
 #
 # Reads state from .instar/state/build/build-state.json.
 
-STATE_FILE=".instar/state/build/build-state.json"
+STATE_FILE="\${CLAUDE_PROJECT_DIR:-.}/.instar/state/build/build-state.json"
 
 # No state file = no active build = allow exit
 if [ ! -f "\$STATE_FILE" ]; then
