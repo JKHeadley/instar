@@ -224,6 +224,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     captureMeaningfulTailMaybeAsync(): Promise<string>;
     hasActiveProcessesMaybeAsync(): Promise<boolean>;
     isTranscriptRecentlyActive(): boolean;
+    captureOutputMaybeAsync(): Promise<string>;
   };
 
   const runLocalExpiredMonitorTick = async (
@@ -244,6 +245,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     seam.captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
     seam.hasActiveProcessesMaybeAsync = async () => false;
     seam.isTranscriptRecentlyActive = () => false;
+    seam.captureOutputMaybeAsync = async () => '';
 
     const blocked: string[] = [];
     const authorityScopes: string[] = [];
@@ -535,6 +537,57 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(true);
     expect(blocked).toContain('tmux-kill-failed');
     expect(authorityScopes).toEqual([]);
+  });
+
+  // ── Age gate: one blind sample must not kill a working session ─────────────
+  // 2026-09-29 02:32 PDT: the Instar 2.0 coordinator (920m old, topic 52075) was
+  // age-killed as `terminal` two seconds after its last transcript write. It was
+  // mid-turn right after a background watch ended: no child process, the status
+  // bar matched IDLE_PROMPT_PATTERNS, and the transcript probe read a stale
+  // Claude session id. Earlier ticks had seen the watch running.
+  const standby = () => {
+    state.setSessionPoolActive(true);
+    state.setReadOnly(true);
+  };
+  const monitorSeam = () => manager as unknown as MonitorSeam;
+
+  it('age gate: a pane showing the mid-turn footer is working ⇒ not age-killed', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-footer-working', () => {
+      standby();
+      monitorSeam().captureOutputMaybeAsync = async () => '✻ Pondering… (12s · esc to interrupt)\n> \nbypass permissions on';
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(authorityScopes).toEqual([]);
+  });
+
+  it('age gate REPRO: seen working (background shell) then one quiet sample ⇒ kept; quiet past the grace ⇒ age-killed', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    // Tick 1: the coordinator's background watch is running (live child process).
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-coordinator', () => {
+      standby();
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+
+    // Tick 2: the watch just ended — every probe reads idle for this one sample.
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await maintenanceTick();
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(authorityScopes).toEqual([]);
+
+    // Genuinely stale: nothing seen working for longer than the grace window.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      await maintenanceTick();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(authorityScopes).toEqual(['local-age-limit']);
   });
 
   it('an arbitrary public origin label is normalized to autonomous authority', async () => {

@@ -65,7 +65,7 @@ describe('Activity-aware session-timeout gate', () => {
     expect(SM_SOURCE).toMatch(/ageGateTranscriptActive\s*=\s*this\.isTranscriptRecentlyActive/);
     // The idle decision is the extracted pure function fed all three signals
     // (the transcript term is the new one).
-    expect(SM_SOURCE).toMatch(/ageGateTrulyIdle\s*=\s*isAgeGateTrulyIdle\(\s*!!ageGateIsIdle,\s*ageGateHasProcs,\s*ageGateTranscriptActive\s*\)/);
+    expect(SM_SOURCE).toMatch(/ageGateTrulyIdle\s*=\s*isAgeGateTrulyIdle\(\s*!!ageGateIsIdle,\s*ageGateHasProcs,\s*ageGateTranscriptActive,\s*ageGateRecentlyWorking\s*\)/);
     // The probe + window constant must exist (the helper resolves the per-framework
     // transcript and compares its mtime to the activity window).
     expect(SM_SOURCE).toContain('AGE_GATE_TRANSCRIPT_ACTIVE_MS');
@@ -145,5 +145,10 @@ describe('isAgeGateTrulyIdle (age-kill decision boundary)', () => {
       }
     }
     expect(trueCount).toBe(1);
+  });
+
+  it('recently seen working defers the kill even when every live probe reads idle', () => {
+    expect(isAgeGateTrulyIdle(true, false, false, true)).toBe(false);
+    expect(isAgeGateTrulyIdle(true, false, false, false)).toBe(true);
   });
 });
