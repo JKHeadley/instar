@@ -2444,6 +2444,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           });
           this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
+          // The result is recorded; a job's retained dead pane has no further
+          // use. Job names are unique per run, so no later spawn reclaims it.
+          if (fresh.jobSlug) await this.removeDeadJobPane(fresh.tmuxSession);
           continue;
         }
 
@@ -2894,6 +2897,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (Date.now() - this.lastCleanupAt > CLEANUP_INTERVAL_MS) {
         this.lastCleanupAt = Date.now();
         this.cleanupStaleSessions();
+        await this.sweepDeadJobPanes();
       }
 
       // Update cached session list (non-blocking) for health endpoint
@@ -4109,8 +4113,51 @@ rm()  { "${shimRunner}" rm  "$@"; }
         'set-option', '-t', `=${tmuxSession}:`, 'remain-on-exit', 'failed',
       ], { encoding: 'utf-8', timeout: 5000 }));
     } catch (err) {
+      // @silent-fallback-ok — logged; the only loss is the failed pane's exit code (tmux tears it down normally).
       console.warn(`[SessionManager] Could not retain failed exit status for "${tmuxSession}": ${err}`);
     }
+  }
+
+  /**
+   * Remove a job's tmux session once its pane is dead. Job panes keep
+   * `remain-on-exit failed` only so the monitor can read the exit status; a
+   * non-zero exit otherwise leaves one dead session behind per run. Re-probes
+   * `pane_dead` first, so a live pane is never killed.
+   */
+  private async removeDeadJobPane(tmuxSession: string): Promise<boolean> {
+    if (this.config.protectedSessions.includes(tmuxSession)) return false;
+    const probe = await this.tmuxExecAsync(['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_dead}']);
+    if (probe.state !== 'success' || probe.stdout.trim() !== '1') return false;
+    const kill = await this.tmuxExecAsync(['kill-session', '-t', `=${tmuxSession}`]);
+    return kill.state === 'success';
+  }
+
+  /**
+   * Bounded backstop for dead job panes a completion path missed (e.g. left
+   * over from before a restart). Only sessions named like this agent's job
+   * sessions, whose tmux environment names THIS agent home and a job slug,
+   * and which no running record still owns. Interactive sessions carry no
+   * INSTAR_JOB_SLUG, and other agents carry a different INSTAR_AGENT_HOME.
+   */
+  async sweepDeadJobPanes(maxKills = 50): Promise<number> {
+    const listed = await this.tmuxExecAsync(['list-sessions', '-F', '#{session_name}\t#{pane_dead}']);
+    if (listed.state !== 'success') return 0;
+    const prefix = `${path.basename(this.config.projectDir)}-job-`;
+    const running = new Set(this.state.listSessions({ status: 'running' }).map(s => s.tmuxSession));
+    let killed = 0;
+    for (const line of listed.stdout.split('\n')) {
+      if (killed >= maxKills) break;
+      const [name, dead] = line.split('\t');
+      if (!name?.startsWith(prefix) || dead !== '1' || running.has(name)) continue;
+      const env = await this.tmuxExecAsync(['show-environment', '-t', `=${name}`]);
+      if (env.state !== 'success') continue;
+      const vars = env.stdout.split('\n');
+      if (!vars.includes(`INSTAR_AGENT_HOME=${this.config.projectDir}`)) continue;
+      if (!vars.some(v => v.startsWith('INSTAR_JOB_SLUG='))) continue;
+      if (await this.removeDeadJobPane(name)) killed++;
+    }
+    if (killed > 0) console.log(`[SessionManager] Removed ${killed} dead job session(s) left by finished jobs.`);
+    return killed;
   }
 
   /**
