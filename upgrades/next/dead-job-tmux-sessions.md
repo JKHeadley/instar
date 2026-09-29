@@ -11,9 +11,12 @@ whose Grok jobs exit non-zero during startup, left about 1,000 dead
 `groky-job-*` sessions per day on the shared tmux server.
 
 - After the monitor records a job session's self-exit, it removes that tmux
-  session. `pane_dead` is re-probed first, so a live pane is never killed.
-- `SessionManager.sweepDeadJobPanes()` runs every 5 minutes (at most 50 kills
-  per pass) as a backstop for dead job panes a completion path missed. It only
+  session. `pane_dead` is re-probed for every pane in the session first; if any
+  pane is live (for example one an operator split in) or the read is uncertain,
+  the session is kept.
+- `SessionManager.sweepDeadJobPanes()` runs every 5 minutes (at most 50
+  candidates examined per pass, counted whether or not they are removed; a tmux
+  read that times out ends the pass) as a backstop for dead job panes a completion path missed. It only
   kills a session named `<agent>-job-*` whose pane is dead, whose tmux
   environment carries this agent's `INSTAR_AGENT_HOME` and an
   `INSTAR_JOB_SLUG`, and which no running session record owns.

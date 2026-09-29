@@ -29,9 +29,10 @@ everyone.
 ## What is new
 
 1. Right after the monitor records that a job's program ended, it closes that
-   job's terminal. Before closing, it checks again that the program inside is
-   really gone, so a running job is never closed.
-2. A small backstop sweep, every 5 minutes, closes at most 50 dead job
+   job's terminal. Before closing, it checks every pane inside that terminal
+   again; if any of them is still running (for example a pane a person opened
+   to look around), the terminal is kept.
+2. A small backstop sweep, every 5 minutes, looks at no more than 50 dead job
    terminals that were missed (for example ones left over from before this
    fix, or from before a restart). It only closes a terminal when all of these
    are true: its name starts with this agent's job prefix, its program has
@@ -40,13 +41,14 @@ everyone.
 
 ## Safeguards in plain terms
 
-- A terminal whose program is still running is never closed.
+- A terminal with any pane still running is never closed.
 - Another agent's terminals are never closed: the sweep checks the owner
   recorded inside each terminal, not just its name.
 - Chat sessions are not touched by this change. Their existing same-name
   cleanup stays as it is.
-- The sweep is bounded (50 per 5 minutes) so it can never flood the shared tmux
-  server with commands.
+- The sweep is bounded (50 terminals looked at per 5 minutes, whether or not
+  they get closed, and it stops early if tmux is slow to answer) so it can
+  never flood the shared tmux server with commands or hold up the monitor.
 
 ## What the reader needs to decide
 

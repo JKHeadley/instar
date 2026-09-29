@@ -140,4 +140,42 @@ describe.skipIf(!realTmux)('dead job pane cleanup (real tmux, private socket)', 
       expect(exists(kept), kept).toBe(true);
     }
   });
+
+  it('a job session whose active pane is dead but which holds a live split pane is kept (completion path and sweep)', async () => {
+    const job = `${base()}-job-inspected-d1`;
+    start(job, 'exit 3', { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'inspected' });
+    await waitDead([job]);
+    // An operator splits a live pane into the failed job's session; the active pane stays dead.
+    expect(tmux('split-window', '-d', '-t', `=${job}:`, 'sleep 60').status).toBe(0);
+    expect(tmux('list-panes', '-s', '-t', `=${job}:`, '-F', '#{pane_dead}').stdout.trim().split('\n').sort()).toEqual(['0', '1']);
+    record('j3', job, 'inspected');
+
+    await tick();
+    expect(state.getSession('j3')?.status).toBe('completed');
+    expect(exists(job)).toBe(true);
+
+    expect(await manager.sweepDeadJobPanes()).toBe(0);
+    expect(exists(job)).toBe(true);
+
+    // Once every pane is dead the session is reclaimed.
+    tmux('kill-pane', '-a', '-t', `=${job}:.0`);
+    await waitDead([job]);
+    expect(await manager.sweepDeadJobPanes()).toBe(1);
+    expect(exists(job)).toBe(false);
+  });
+
+  it('rejected sweep candidates use up the per-pass attempt budget', async () => {
+    // tmux lists sessions by name, so the three rejected lookalikes come first.
+    const rejected = ['e1', 'e2', 'e3'].map((n) => `${base()}-job-a-lookalike-${n}`);
+    const killable = `${base()}-job-z-real-e4`;
+    for (const r of rejected) start(r, 'exit 1', { INSTAR_AGENT_HOME: dir }); // no job slug ⇒ rejected
+    start(killable, 'exit 1', { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'real' });
+    await waitDead([...rejected, killable]);
+
+    expect(await manager.sweepDeadJobPanes(3)).toBe(0); // budget spent on rejections
+    expect(exists(killable)).toBe(true);
+    expect(await manager.sweepDeadJobPanes(4)).toBe(1);
+    expect(exists(killable)).toBe(false);
+    for (const r of rejected) expect(exists(r), r).toBe(true);
+  });
 });

@@ -4122,12 +4122,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Remove a job's tmux session once its pane is dead. Job panes keep
    * `remain-on-exit failed` only so the monitor can read the exit status; a
    * non-zero exit otherwise leaves one dead session behind per run. Re-probes
-   * `pane_dead` first, so a live pane is never killed.
+   * `pane_dead` for EVERY pane in every window first: the whole session is
+   * killed only when all of them are dead (an operator may have split a live
+   * pane into a failed job's session), and an uncertain read keeps it.
    */
   private async removeDeadJobPane(tmuxSession: string): Promise<boolean> {
     if (this.config.protectedSessions.includes(tmuxSession)) return false;
-    const probe = await this.tmuxExecAsync(['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_dead}']);
-    if (probe.state !== 'success' || probe.stdout.trim() !== '1') return false;
+    const probe = await this.tmuxExecAsync(['list-panes', '-s', '-t', `=${tmuxSession}:`, '-F', '#{pane_dead}']);
+    if (probe.state !== 'success') return false;
+    const panes = probe.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+    if (panes.length === 0 || panes.some(p => p !== '1')) return false;
     const kill = await this.tmuxExecAsync(['kill-session', '-t', `=${tmuxSession}`]);
     return kill.state === 'success';
   }
@@ -4138,18 +4142,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * sessions, whose tmux environment names THIS agent home and a job slug,
    * and which no running record still owns. Interactive sessions carry no
    * INSTAR_JOB_SLUG, and other agents carry a different INSTAR_AGENT_HOME.
+   * Every candidate that reaches tmux probing is charged against
+   * `maxAttempts` whether or not it is removed, and an unanswered tmux read
+   * ends the pass, so a backlog of rejected or unprobeable candidates cannot
+   * stretch one monitor tick; the rest waits for the next pass.
    */
-  async sweepDeadJobPanes(maxKills = 50): Promise<number> {
+  async sweepDeadJobPanes(maxAttempts = 50): Promise<number> {
     const listed = await this.tmuxExecAsync(['list-sessions', '-F', '#{session_name}\t#{pane_dead}']);
     if (listed.state !== 'success') return 0;
     const prefix = `${path.basename(this.config.projectDir)}-job-`;
     const running = new Set(this.state.listSessions({ status: 'running' }).map(s => s.tmuxSession));
     let killed = 0;
+    let attempts = 0;
     for (const line of listed.stdout.split('\n')) {
-      if (killed >= maxKills) break;
+      if (attempts >= maxAttempts) break;
       const [name, dead] = line.split('\t');
       if (!name?.startsWith(prefix) || dead !== '1' || running.has(name)) continue;
+      attempts++;
       const env = await this.tmuxExecAsync(['show-environment', '-t', `=${name}`]);
+      if (env.state === 'indeterminate') break; // tmux is not answering — defer the rest
       if (env.state !== 'success') continue;
       const vars = env.stdout.split('\n');
       if (!vars.includes(`INSTAR_AGENT_HOME=${this.config.projectDir}`)) continue;

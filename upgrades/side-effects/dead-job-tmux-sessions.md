@@ -27,15 +27,20 @@ nothing ever reclaims a job's dead pane.
 Fix (`src/core/SessionManager.ts`):
 
 1. In the self-exit branch, after the record and events, if the session has a
-   `jobSlug`, `removeDeadJobPane()` re-probes `#{pane_dead}` and runs
-   `kill-session` only when it reads `1`.
-2. `sweepDeadJobPanes(maxKills = 50)` runs from the existing 5-minute cleanup
+   `jobSlug`, `removeDeadJobPane()` re-probes `#{pane_dead}` for every pane in
+   every window (`list-panes -s`) and runs `kill-session` only when all of them
+   read `1`. Any live pane, an empty read, or a failed/uncertain read keeps the
+   session.
+2. `sweepDeadJobPanes(maxAttempts = 50)` runs from the existing 5-minute cleanup
    slot in `#monitorTick`. It lists sessions, and kills (via the same
    `removeDeadJobPane`) only those whose name starts with
    `<basename(projectDir)>-job-`, whose pane is dead, which no running record
    owns, and whose tmux session environment contains
    `INSTAR_AGENT_HOME=<this projectDir>` and an `INSTAR_JOB_SLUG=` entry (both
-   set by every job spawn path).
+   set by every job spawn path). Every candidate that reaches tmux probing is
+   charged against `maxAttempts` before its first probe, whether it is then
+   rejected, fails, or is killed; an indeterminate (timed-out) ownership read
+   ends the pass. Leftovers wait for the next pass.
 
 All tmux calls go through the existing bounded `tmuxExecAsync` (SIGKILL-capped
 timeout). No agent-installed files change, so no migration is needed.
@@ -55,8 +60,12 @@ to exempt it (the documented window artifact; count stays at the 495 baseline).
 ## 1. Over-block
 
 Not a block/allow surface. The over-reach question is "can it kill something it
-shouldn't?": a live pane is never killed (fresh `pane_dead` probe right before
-the kill); an interactive session is never killed (the self-exit path requires
+shouldn't?": a session is killed only when a fresh read of EVERY pane in every
+window, right before the kill, shows all of them dead — a dead active pane is
+not enough. An operator who splits a live pane into a failed job's session keeps
+that session (round-1 review found the earlier active-pane-only probe did not;
+covered by a real-tmux regression). The residual window is the gap between that
+read and `kill-session` (one bounded tmux call); an interactive session is never killed (the self-exit path requires
 `jobSlug`; the sweep requires `INSTAR_JOB_SLUG` in the tmux env, which only job
 spawns set); another agent's session is never killed (its env names a different
 `INSTAR_AGENT_HOME`); protected sessions are skipped. A dead pane still owned by
@@ -144,7 +153,8 @@ not that failure.
 ## Second-pass review (if required)
 
 **Reviewer:** independent general-purpose subagent (read-only)
-**Independent read of the artifact: concur**
+**Independent read of the artifact: concur** (round 1; superseded in part by
+the round-1 Astra review below)
 
 Concur: nothing can kill a live pane, an interactive or topic session, a
 protected session, or another agent's session; `JobScheduler.notifyJobComplete`
@@ -155,15 +165,28 @@ a large backlog the first sweep runs one `show-environment` per matching dead
 session; accepted, as each is a single bounded tmux call and only
 prefix-matching dead panes are probed.
 
+**Round-1 review (Astra): CHANGES REQUIRED — both fixed in round 2.** (1) The
+active-pane-only probe authorized killing a session that still held a live split
+pane; the second-pass "nothing can kill a live pane" claim was wrong for
+multi-pane sessions. Fixed by the all-panes check above. (2) The unlimited-probe
+acceptance above is withdrawn: with a backlog of rejected or unprobeable
+candidates one monitor tick could run unbounded (120 candidates, none killed).
+Fixed by the per-pass attempt budget charged before probing, plus stopping the
+pass on an indeterminate read.
+
 ## Evidence pointers
 
 - `tests/unit/dead-job-pane-cleanup.test.ts` (real tmux, private `-L` socket):
   job exit → removed; interactive dead pane kept; live job kept; sweep removes
-  only this agent's dead unowned job panes and respects its cap. The first test
-  fails with the self-exit kill removed (verified by reverting the call).
+  only this agent's dead unowned job panes and respects its cap; a session with
+  a dead active pane plus a live split pane is kept by both the completion path
+  and the sweep (and removed once every pane is dead); rejected candidates use
+  up the per-pass attempt budget. The first test fails with the self-exit kill
+  removed; the two round-2 tests fail on the round-1 code (both verified).
 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect. The sweep is a self-triggered cleanup that
 only removes already-dead resources: it never spawns, restarts, notifies or
-retries, and is bounded (50 kills per 5-minute pass), so it cannot oscillate.
+retries, and is bounded (50 candidate attempts per 5-minute pass, charged
+whether or not they succeed), so it cannot oscillate.
