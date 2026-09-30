@@ -15471,6 +15471,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 text: entry.text,
                 fromUser: entry.fromUser,
                 timestamp: entry.timestamp,
+                provenance: entry.provenance,
               });
             };
             // Anti-"shipped-but-asleep" marker for the wiring-integrity test.

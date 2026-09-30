@@ -1,0 +1,33 @@
+{
+  "ts": "2026-09-30T18:38:53.219Z",
+  "slug": "worktree-monitor-dedupe",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 153,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicIntentCapture.ts",
+      "src/monitoring/WorktreeMonitor.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 139,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds a settling brake to an existing self-triggered notify, no new action: under a sustained unchanged finding the rate drops from one per session/scan to at most one per 24h per notice kind; proven by tests/e2e/worktree-monitor-announce-lifecycle.test.ts (10 sessions -> 1 notice)"
+  },
+  "verdict": "pass"
+}

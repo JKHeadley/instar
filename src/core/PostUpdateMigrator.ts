@@ -10533,6 +10533,25 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('CLAUDE.md: Worktree Convention section already present');
     }
 
+    // Worktree Notices (announce-on-change): tells the agent why worktree
+    // notices went quiet and where the live findings are, so silence is not
+    // read as "fixed". Idempotent via content-sniffing on the heading.
+    if (!content.includes('## Worktree Notices')) {
+      const section = `
+## Worktree Notices
+
+The worktree monitor announces unmerged, orphan and stale worktree branches only when the flagged set CHANGES (a branch appears or resolves), plus one reminder a day while the same set stays open. Restarts do not re-announce. It used to repeat the same notice after every job session. These automated notices (like every \`provenance: automation\` send) are also not fed to the topic-intent extractor; only user and agent conversation is.
+
+- Current findings: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4040/hooks/worktrees\` (live scan) or \`/hooks/worktrees/last-report\` (last scan; \`actions\` shows whether it alerted or suppressed an unchanged finding).
+- Proactive: user asks "why did the worktree alerts stop?" / "is that branch still unmerged?" → read \`/hooks/worktrees\`; silence means nothing changed, not that it was fixed.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Worktree Notices section');
+    } else {
+      result.skipped.push('CLAUDE.md: Worktree Notices section already present');
+    }
+
     // W26 item 0(a) — refresh the Worktree Convention's identity paragraph on
     // agents that ALREADY carry the section. The insert above is add-if-absent,
     // so without this those agents would keep reading the old promise: that the
@@ -11020,6 +11039,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '### Playbook — Adaptive Context Engineering',
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
+      '## Worktree Notices',
       '**Multi-Session Autonomy**',
       '- **Pre-admission continuation carrier:**',
       '### Authoritative Window Run Liveness',

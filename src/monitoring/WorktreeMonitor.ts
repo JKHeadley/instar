@@ -9,6 +9,12 @@
  *   1. Post-session scan: fires after each session completes, checks for new worktrees
  *   2. Periodic health scan: runs on interval, detects stale/orphan worktrees
  *
+ * Announce on change only: each alert kind remembers the fingerprint of the
+ * set it last announced (persisted, so a restart does not re-announce). An
+ * unchanged set is re-announced at most once per `reminderIntervalMs`. Before
+ * this, the same two notices about one unmerged branch went out ~550 times a
+ * day (docs/research/jev/field-notes/2026-09-30-idea4-notification-tiering.md).
+ *
  * Part of the Claude Code Feature Integration Audit (Item 1: Worktree Support).
  */
 
@@ -65,20 +71,35 @@ export interface WorktreeMonitorConfig {
   pollIntervalMs?: number;
   /** Max worktree age before flagging as stale (ms). Default: 86400000 (24h). */
   staleThresholdMs?: number;
+  /** Re-announce an unchanged, still-open finding at most this often (ms). Default: 86400000 (24h). */
+  reminderIntervalMs?: number;
   /** Callback for sending alerts */
   alertCallback?: (message: string) => Promise<void>;
+}
+
+/** Which notice a fingerprint belongs to. */
+type AlertKind = 'session' | 'stale';
+
+interface AnnouncedEntry {
+  /** Sorted item keys of the set last announced. */
+  fingerprint: string;
+  /** Epoch ms of that announcement. */
+  at: number;
 }
 
 // ── Implementation ─────────────────────────────────────────────────
 
 const DEFAULT_POLL_INTERVAL = 300_000;     // 5 minutes
 const DEFAULT_STALE_THRESHOLD = 86_400_000; // 24 hours
+const DEFAULT_REMINDER_INTERVAL = 86_400_000; // 24 hours
 
 export class WorktreeMonitor extends EventEmitter {
   private config: WorktreeMonitorConfig;
   private interval: ReturnType<typeof setInterval> | null = null;
   private stateFile: string;
   private lastReport: WorktreeReport | null = null;
+  private announcedFile: string;
+  private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
 
   constructor(config: WorktreeMonitorConfig) {
     super();
@@ -88,6 +109,7 @@ export class WorktreeMonitor extends EventEmitter {
       fs.mkdirSync(stateDir, { recursive: true });
     }
     this.stateFile = path.join(stateDir, 'last-report.json');
+    this.announcedFile = path.join(stateDir, 'announced.json');
     this.loadState();
   }
 
@@ -126,10 +148,20 @@ export class WorktreeMonitor extends EventEmitter {
       }
     }
 
-    if (report.withUnmergedWork.length > 0 || report.orphanBranches.length > 0) {
-      const message = this.formatSessionAlert(session, report);
-      report.actions.push(`Alert generated for session ${session.name}`);
-      await this.sendAlert(message);
+    const items = [
+      ...report.withUnmergedWork.map(d => `unmerged:${d.worktree.branch}`),
+      ...report.orphanBranches.map(b => `orphan:${b}`),
+    ];
+    if (items.length > 0) {
+      if (this.isAnnounceDue('session', items)) {
+        const message = this.formatSessionAlert(session, report);
+        report.actions.push(`Alert generated for session ${session.name}`);
+        if (await this.sendAlert(message)) this.markAnnounced('session', items);
+      } else {
+        report.actions.push('Alert suppressed: findings unchanged since last announcement');
+      }
+    } else {
+      this.markAnnounced('session', []);
     }
 
     this.saveState(report);
@@ -224,10 +256,20 @@ export class WorktreeMonitor extends EventEmitter {
       return age !== null && age > staleThreshold;
     });
 
+    const items = [
+      ...staleWorktrees.map(wt => `stale:${wt.branch ?? wt.path}`),
+      ...report.orphanBranches.map(b => `orphan:${b}`),
+    ];
     if (staleWorktrees.length > 0) {
-      const message = await this.formatPeriodicAlert(report, staleWorktrees);
-      report.actions.push(`Stale worktree alert: ${staleWorktrees.length} worktree(s)`);
-      await this.sendAlert(message);
+      if (this.isAnnounceDue('stale', items)) {
+        const message = await this.formatPeriodicAlert(report, staleWorktrees);
+        report.actions.push(`Stale worktree alert: ${staleWorktrees.length} worktree(s)`);
+        if (await this.sendAlert(message)) this.markAnnounced('stale', items);
+      } else {
+        report.actions.push('Stale worktree alert suppressed: findings unchanged since last announcement');
+      }
+    } else {
+      this.markAnnounced('stale', []);
     }
 
     this.saveState(report);
@@ -469,13 +511,38 @@ export class WorktreeMonitor extends EventEmitter {
     }
   }
 
-  private async sendAlert(message: string): Promise<void> {
-    if (this.config.alertCallback) {
-      try {
-        await this.config.alertCallback(message);
-      } catch (err) {
-        this.emit('error', err);
-      }
+  /** True when `items` differ from the last announced set, or the reminder interval has passed. */
+  private isAnnounceDue(kind: AlertKind, items: string[]): boolean {
+    const prev = this.announced[kind];
+    if (!prev || prev.fingerprint !== fingerprintOf(items)) return true;
+    const reminder = this.config.reminderIntervalMs ?? DEFAULT_REMINDER_INTERVAL;
+    return Date.now() - prev.at >= reminder;
+  }
+
+  /** Record the announced set; an empty set clears it so a reappearance announces again. */
+  private markAnnounced(kind: AlertKind, items: string[]): void {
+    if (items.length === 0) {
+      if (!this.announced[kind]) return;
+      delete this.announced[kind];
+    } else {
+      this.announced[kind] = { fingerprint: fingerprintOf(items), at: Date.now() };
+    }
+    try {
+      fs.writeFileSync(this.announcedFile, JSON.stringify(this.announced, null, 2));
+    } catch {
+      // Non-fatal — worst case is one repeat announcement after a restart
+    }
+  }
+
+  /** Returns true when the alert was delivered (or there is no callback to deliver to). */
+  private async sendAlert(message: string): Promise<boolean> {
+    if (!this.config.alertCallback) return true;
+    try {
+      await this.config.alertCallback(message);
+      return true;
+    } catch (err) {
+      this.emit('error', err);
+      return false;
     }
   }
 
@@ -487,6 +554,14 @@ export class WorktreeMonitor extends EventEmitter {
     } catch {
       this.lastReport = null;
     }
+    try {
+      if (fs.existsSync(this.announcedFile)) {
+        const parsed = JSON.parse(fs.readFileSync(this.announcedFile, 'utf-8'));
+        this.announced = parsed && typeof parsed === 'object' ? parsed : {};
+      }
+    } catch {
+      this.announced = {};
+    }
   }
 
   private saveState(report: WorktreeReport): void {
@@ -497,4 +572,8 @@ export class WorktreeMonitor extends EventEmitter {
       // Non-fatal — state persistence is best-effort
     }
   }
+}
+
+function fingerprintOf(items: string[]): string {
+  return [...items].sort().join('\n');
 }

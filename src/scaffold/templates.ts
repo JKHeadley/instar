@@ -1731,6 +1731,13 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 
 **Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.
 
+## Worktree Notices
+
+The worktree monitor announces unmerged, orphan and stale worktree branches only when the flagged set CHANGES (a branch appears or resolves), plus one reminder a day while the same set stays open. Restarts do not re-announce. It used to repeat the same notice after every job session. These automated notices (like every \`provenance: automation\` send) are also not fed to the topic-intent extractor; only user and agent conversation is.
+
+- Current findings: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/hooks/worktrees\` (live scan) or \`/hooks/worktrees/last-report\` (last scan; \`actions\` shows whether it alerted or suppressed an unchanged finding).
+- Proactive: user asks "why did the worktree alerts stop?" / "is that branch still unmerged?" → read \`/hooks/worktrees\`; silence means nothing changed, not that it was fixed.
+
 ## Test-As-Self (Throwaway-Deploy Harness)
 
 \`instar test-as-self\` deploys the CURRENT dist into a throwaway agent home, verifies it's healthy, optionally runs a real Telegram round-trip, and tears down — clean evidence instead of post-hoc log forensics. Use it BEFORE shipping a change to the deploy/lifeline/server path, AFTER landing one, or to reproduce a crash deterministically.
