@@ -3289,10 +3289,14 @@ export function createRoutes(ctx: RouteContext): Router {
     toneAdvisoryAckReason?: string;
     toneAdvisoryDecisionRef?: string;
     toneAdvisoryComplied?: string;
+    liveArtefactSignals: true;
   } {
     const str = (v: unknown, max: number): string | undefined =>
       typeof v === 'string' ? v.slice(0, max) : undefined;
     return {
+      // jev-signal-live: a caller that threads the advisory acknowledge path
+      // can override an advisory verdict, so it opts in to Jev-shaped signals.
+      liveArtefactSignals: true,
       toneAdvisoryAck: str(metadata?.toneAdvisoryAck, 64),
       toneAdvisoryAckReason: str(metadata?.toneAdvisoryAckReason, 500),
       toneAdvisoryDecisionRef: str(metadata?.toneAdvisoryDecisionRef, 128),
@@ -3525,6 +3529,15 @@ export function createRoutes(ctx: RouteContext): Router {
        * decision-quality meter, never authority. Never overrides a blocking rule.
        */
       toneAdvisoryAck?: string;
+      /**
+       * jev-signal-live opt-in: pass `true` ONLY from a caller whose sender can
+       * acknowledge-and-override an advisory verdict (toneAdvisoryMetadata sets
+       * it; /telegram/reply and the origin send policy pass it). Absent ⇒ the
+       * tone gate uses detector-only artefact signals — so a caller that treats
+       * any hold as final (the growth digest, /attention) never sees a
+       * model-sourced signal.
+       */
+      liveArtefactSignals?: boolean;
       /**
        * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
        * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
@@ -3928,6 +3941,10 @@ export function createRoutes(ctx: RouteContext): Router {
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
+          // jev-signal-live: only callers with an acknowledge-and-override path
+          // opt in (see the option's doc). Everyone else — and every non-route
+          // caller of the gate — keeps the detector-only path.
+          liveArtefactSignals: options.liveArtefactSignals === true,
         }),
         gateBudgetMs,
         undefined,
@@ -4172,6 +4189,8 @@ export function createRoutes(ctx: RouteContext): Router {
       toneAdvisoryAckReason?: string;
       toneAdvisoryDecisionRef?: string;
       toneAdvisoryComplied?: string;
+      /** jev-signal-live opt-in — see evaluateOutbound's option doc. */
+      liveArtefactSignals?: boolean;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -4249,6 +4268,8 @@ export function createRoutes(ctx: RouteContext): Router {
       ...(record.destination.topicId === null ? {} : { topicId: Number(record.destination.topicId) }),
       messageKind: record.producerKind === 'session' ? 'reply' : 'automated',
       ...input.reaction,
+      // The origin boundary carries the sender's reaction (override/complied), so an advisory is overridable here.
+      liveArtefactSignals: true,
     }),
     authorizeDispatch: record => {
       // A local stand-down marker belongs to the losing LOCAL copy. It must
@@ -16714,6 +16735,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         toneAdvisoryAckReason,
         toneAdvisoryDecisionRef,
         toneAdvisoryComplied,
+        // jev-signal-live: this reply path carries the acknowledge-and-override fields.
+        liveArtefactSignals: true,
       })) return;
       ctx.telegramOrigin?.service.markCurrentSendPolicyReviewed();
     }

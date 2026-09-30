@@ -656,6 +656,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'jevSignalLive',
+    configPath: 'intelligence.jevSignalLive.enabled',
+    description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',
+    justification: 'Advisory input only — takes effect only where the tone gate\'s advisory migration makes B1–B7 overridable and decision-quality recording is live (so the route never hardens the advisory); never a new block; the deterministic degraded floor and the credential wall are untouched. Inert without the vault typesafe_api_key (only the dev agent holds one). Reuses the shadow\'s single Jev call (no extra calls while the shadow runs; after its soak, one Jev call per reviewed message), the Luna referee stays bound to the shadow\'s soak, text is secret-scrubbed before egress, the wait is bounded at timeoutMs+250ms, and a vendor-down breaker returns to the detector path. No destructive action.',
+  },
+  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',

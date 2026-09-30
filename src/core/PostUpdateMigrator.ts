@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevSignalLiveAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6598,6 +6598,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev job-completion audit awareness card');
     }
 
+    if (!content.includes('### Jev Artefact Signals')) {
+      content += jevSignalLiveAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev live artefact-signal awareness card');
+    }
+
     if (!content.includes('Queued-message review pacing:')) {
       content += '\n' + telegramOriginRecoveryAwareness();
       patched = true;
@@ -10940,6 +10946,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // happens in the scheduler), so a Codex/Gemini agent must be able to
       // explain it honestly too — especially that it is dark by default.
       '### Jev Job-Completion Audit',
+      // Jev live artefact signals: server-side tone-gate behaviour, identical for
+      // any framework's sends, so a Codex/Gemini agent must be able to explain it.
+      '### Jev Artefact Signals',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by

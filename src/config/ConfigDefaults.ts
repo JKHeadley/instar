@@ -76,6 +76,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // materializes the operator-tunable knobs. applyDefaults is add-missing-only,
   // so an operator's hand-tuned value is NEVER overwritten on migration.
   intelligence: {
+    // Jev live artefact signals (docs/specs/jev-signal-live.md) — dev-gated:
+    // `enabled` is DELIBERATELY OMITTED so developmentAgent decides (live on a dev
+    // agent, dark on the fleet). Reaches existing agents via applyDefaults add-missing.
+    jevSignalLive: {
+      timeoutMs: 1000,
+    },
     spawnCap: {
       maxConcurrent: 8,
       acquireMs: 5000,
