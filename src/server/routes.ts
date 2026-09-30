@@ -13068,7 +13068,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // feature is dark (config off / no Blob token) — the standard null-dep pattern.
   router.get('/feedback-inbox/status', (_req, res) => {
     if (!ctx.inboxDrainer) {
-      res.status(503).json({ error: 'feedback-inbox drainer unavailable (feedbackFactory.receiverPersistence disabled or no Blob token)' });
+      res.status(503).json({ error: 'feedback-inbox drainer unavailable (feedbackFactory.receiverPersistence disabled, not the operated host, or no Blob token in env or vault)' });
       return;
     }
     res.json(ctx.inboxDrainer.status());

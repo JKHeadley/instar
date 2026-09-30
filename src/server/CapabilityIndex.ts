@@ -1052,7 +1052,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'feedbackInbox',
     prefixes: ['/feedback-inbox'],
-    description: 'Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving end) — read-only status of the cloud Blob-inbox → durable canonical FeedbackStore mover on the operated machine. Ships dark (feedbackFactory.receiverPersistence.enabled + Blob token env required); 503 when dark.',
+    description: 'Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving end) — read-only status of the cloud Blob-inbox → durable canonical FeedbackStore mover on the operated machine. Ships dark (feedbackFactory.receiverPersistence.enabled required; runs only on the operated host; Blob token from env FEEDBACK_INBOX_BLOB_TOKEN, else vault key feedback_inbox_blob_token); 503 when dark.',
     build: ({ ctx }) => ({
       enabled: !!ctx.inboxDrainer,
       endpoints: [

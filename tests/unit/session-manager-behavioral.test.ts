@@ -192,6 +192,20 @@ describe('SessionManager behavioral tests', () => {
       expect(args).toContain('INSTAR_SENDER_CLASS=llm-session');
     });
 
+    // Spec feedback-inbox-vault-token §B: a job run gets its own declared-failure file.
+    it('a job spawn carries INSTAR_JOB_FAILURE_FILE named by its tmux session; a non-job spawn does not', async () => {
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'fail-file-job', prompt: 'p', jobSlug: 'feedback-factory-process' });
+      const failArg = newSessionArgs().find((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='));
+      expect(failArg).toBeDefined();
+      expect(failArg).toMatch(/[\\/]state[\\/]job-declared-failures[\\/]/);
+      expect(failArg!.endsWith(`${session.tmuxSession}.txt`)).toBe(true);
+
+      vi.mocked(execFileSync).mockClear();
+      await manager.spawnSession({ name: 'fail-file-plain', prompt: 'p' });
+      expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='))).toBe(false);
+    });
+
     it('an interactive (jobSlug-less) spawn carries NONE of the kind env vars', async () => {
       vi.mocked(execFileSync).mockClear();
       await manager.spawnSession({ name: 'kindless-job', prompt: 'p' });

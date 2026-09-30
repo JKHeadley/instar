@@ -8,6 +8,7 @@
  * no JSONL discovery, no machine coordination.
  */
 
+import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -1797,8 +1798,17 @@ export class JobScheduler {
     const job = this.jobs.find(j => j.slug === session.jobSlug);
     if (!job) return;
 
+    // A prompt job can declare its own run failed (spec feedback-inbox-vault-token
+    // §B). Read synchronously, before any await, from the file named by this
+    // run's unique tmux session.
+    const declaredFailure = readJobDeclaredFailure(this.stateDir, tmuxSession);
+
     // Update job state with completion result
-    const failed = session.status === 'failed' || session.status === 'killed';
+    const failed = session.status === 'failed' || session.status === 'killed' || declaredFailure !== null;
+    const failureError = !failed ? undefined
+      : session.status === 'failed' || session.status === 'killed'
+        ? `Session ${session.status} (${session.name})${declaredFailure ? ` — declared failure: ${declaredFailure}` : ''}`
+        : `Declared failure: ${declaredFailure}`;
 
     // Capture session output FIRST — needed for both history and notifications
     let output = '';
@@ -1813,7 +1823,7 @@ export class JobScheduler {
       slug: job.slug,
       lastRun: existingState?.lastRun ?? new Date().toISOString(),
       lastResult: failed ? 'failure' : 'success',
-      lastError: failed ? `Session ${session.status} (${session.name})` : undefined,
+      lastError: failureError,
       consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
       nextScheduled: this.getNextRun(job.slug),
     };
@@ -1825,7 +1835,7 @@ export class JobScheduler {
       this.runHistory.recordCompletion({
         runId,
         result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
-        error: failed ? `Session ${session.status} (${session.name})` : undefined,
+        error: failureError,
         outputSummary: output ? output.slice(-1000) : undefined,
       });
 

@@ -3531,8 +3531,9 @@ export interface InstarConfig {
    * writes accepted reports to a durable Blob inbox; the InboxDrainer on THIS machine
    * ingests them into the durable canonical JsonlFeedbackStore. Ships DARK
    * (enabled !== true ⇒ no drainer, route 503s). The Blob token is read from the env
-   * var named by `blobTokenEnv` (default FEEDBACK_INBOX_BLOB_TOKEN) — never stored in
-   * config.json.
+   * var named by `blobTokenEnv` (default FEEDBACK_INBOX_BLOB_TOKEN), else from the
+   * encrypted vault key named by `blobTokenVaultKey` (default feedback_inbox_blob_token)
+   * — never stored in config.json.
    */
   feedbackFactory?: {
     /** Sole machine-registry owner of the canonical feedback drain. Nonowners
@@ -3543,6 +3544,8 @@ export interface InstarConfig {
       enabled?: boolean;
       /** Env var holding the Vercel Blob read-write token. Default FEEDBACK_INBOX_BLOB_TOKEN. */
       blobTokenEnv?: string;
+      /** Vault key holding the token when the env var is unset. Default feedback_inbox_blob_token. */
+      blobTokenVaultKey?: string;
       /** Override the Blob API base (tests / fake server). */
       blobApiBase?: string;
       /** Drain poll cadence (default 60000). */
