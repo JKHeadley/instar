@@ -3909,6 +3909,24 @@ export interface InstarConfig {
       bands?: Record<string, { lo: number; hi: number }>;
     };
     /**
+     * Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md). LOG-ONLY:
+     * every 5 tool actions per session, asks Jev the measured five-label question
+     * over the last 15 actions and appends a content-free row (would-nudge or
+     * not, with 30-min cooldown accounting). Delivers nothing. `enabled` is
+     * OMITTED by default so the development-agent gate decides (live on a dev
+     * agent, dark on the fleet); explicit false is the kill switch, read live.
+     * Needs the vault `typesafe_api_key`.
+     */
+    jevCirclesShadow?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted calls (default 2000). */
+      maxChecksPerDay?: number;
+    };
+    /**
      * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
      * default. Observe-only: captures an evidence pack when a scheduled job
      * completes, and a batch job asks Jev whether the evidence shows the

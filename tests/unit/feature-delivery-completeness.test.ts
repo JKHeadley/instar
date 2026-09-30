@@ -125,6 +125,7 @@ describe('Feature Delivery Completeness', () => {
     const featureSections = [
       '### Telegram message origin',
       '### Jev Memory Picker', // jev-memory-picker: the session-start memory ranking card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
+      '### Jev Circles Shadow', // jev-circles-shadow: the log-only measurement card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Jev Artefact Signals', // jev-signal-live: the live advisory card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Jev Job-Completion Audit', // jev-job-supervision: the dark observe-only audit card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       // duplicate-session-standdown: both audiences (capability + the muzzled

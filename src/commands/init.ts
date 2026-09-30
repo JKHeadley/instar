@@ -4489,6 +4489,11 @@ process.stdin.on('end', async () => {
       // detail. Optional + designed-benign: the receiver stores extra fields
       // as-is and a payload without it remains valid.
       file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
+      // jev-circles-shadow (docs/specs/jev-circles-shadow.md): the session's own
+      // transcript path, so the server can build the measured action window
+      // (commands, results AND failures — a failed tool fires PostToolUseFailure,
+      // which this hook never sees). A path, never content.
+      transcript_path: input.transcript_path || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);

@@ -1,0 +1,47 @@
+# A log-only measurement of "going in circles", on development agents
+
+## What Changed
+
+A new dark research instrument measures how often a "you're going in circles"
+nudge would fire, without ever sending one. On a development agent, every five
+tool actions in a Claude Code session, the server reads the last fifteen actions
+from that session's own transcript, strips secrets before cutting anything, and asks Jev (TypeSafe,
+`jev-1.13.0`) the question measured in the 30 September research: is this
+circling, polling, converging, or normal work? It writes one content-free row
+to `logs/jev-circles-shadow.jsonl` (the label, how sure, and whether a nudge
+would have fired, with a 30-minute cooldown per session). `GET
+/jev-circles/summary` reports the counts.
+
+The built-in tool-use hook now also forwards the session's transcript path.
+Failed tool calls never reach that hook (Claude Code reports them as a
+different event), and failures are what a loop looks like, so the window is
+built from the transcript itself.
+
+Dev-gated: live on a development agent, dark on the fleet
+(`intelligence.jevCirclesShadow`, `enabled` omitted). Needs the vault
+`typesafe_api_key`. Bounded by a daily call cap (default 2000), a 1.5 s
+timeout and two calls at a time; the kill switch is read live.
+
+## Evidence
+
+- The window builder reproduced 2,904 of 3,000 real research windows
+  byte-for-byte; the other 96 differ only because a secret is now removed
+  before the text is cut, which the research harness did not do.
+- A live probe on Claude Code 2.1.286: a failing command fired
+  `PostToolUseFailure` only.
+- Live through the real module: the author's session read "normal"
+  (P(circling) 0.04); three research-labelled loops read 0.93, 0.71 and 0.88
+  (research: 0.96, 0.71, 0.88).
+- Unit, integration and e2e tests; the e2e runs the migrated hook script
+  against a real server and shows the feature alive on a development agent and
+  dark on the fleet.
+
+## What to Tell Your User
+
+Nothing changes for you. On a development agent, Instar now quietly measures
+how often a "you're going in circles" nudge would appear, so we can decide
+later whether a real one is worth building.
+
+## Summary of New Capabilities
+
+- `GET /jev-circles/summary`: checks run, would-nudges and per-session counts from the log-only circles shadow (development agents).

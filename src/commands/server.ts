@@ -18387,6 +18387,25 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));
     }
 
+    // Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md) — log-only,
+    // delivers nothing. Dev-gated (live on a development agent, dark on the fleet),
+    // read live per action, inert without the vault typesafe_api_key.
+    try {
+      const { buildJevCirclesShadow, installJevCirclesShadow } = await import('../core/JevCirclesShadow.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      installJevCirclesShadow(buildJevCirclesShadow({
+        readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+        bootBlock: config.intelligence?.jevCirclesShadow,
+        developmentAgent: config.developmentAgent === true,
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        stateDir: config.stateDir,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      }));
+    } catch (err) {
+      console.log(pc.yellow(`  Jev circles shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+    }
+
     // Outbound dedup gate — deterministic near-duplicate detection on every
     // outbound agent message. Catches respawn races and idempotency gaps.
     const { OutboundDedupGate } = await import('../core/OutboundDedupGate.js');
