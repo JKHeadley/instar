@@ -288,6 +288,22 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'observe-only research rows about THIS machine\'s scheduler runs; nothing consumes them on any decision path, so no cross-machine convergence is needed',
     },
   });
+  // POST /memory-picker/session-context — the Jev memory picker
+  // (jev-memory-picker spec). Writes ONLY this machine's research rows
+  // (logs/jev-memory-picker.jsonl); each machine ranks its own Claude Code
+  // memory index for its own sessions by design.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/memory-picker/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'signal-only research rows about THIS machine\'s session starts; nothing consumes them on any decision path, so no cross-machine convergence is needed',
+    },
+  });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // ── Jobs-as-agent.md mutation surface (dashboard Phase 4) ────────────────

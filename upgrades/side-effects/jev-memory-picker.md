@@ -68,7 +68,7 @@ No static heuristic at a competing-signals decision point. The ranking itself is
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-Machine-local BY DESIGN. Claude Code owns the index per login and per machine, and each machine ranks its own index for its own sessions. The shadow log is a machine-local research record. There is no user-facing notice, no durable state that could strand on a topic transfer, and no generated URL.
+Machine-local BY DESIGN, and declared so in `src/core/WriteDomainRegistry.ts` (`POST /memory-picker/`, per-machine path, git-sync-excluded). Claude Code owns the index per login and per machine, and each machine ranks its own index for its own sessions. The shadow log is a machine-local research record. There is no user-facing notice, no durable state that could strand on a topic transfer, and no generated URL.
 
 ---
 
