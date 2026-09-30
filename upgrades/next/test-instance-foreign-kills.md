@@ -1,7 +1,5 @@
 # Test runs and repair paths no longer signal processes they did not start
 
-<!-- internal-only -->
-
 ## What Changed
 
 An investigation into six `claude -p` builders SIGKILLed on the Mac Studio
@@ -38,3 +36,16 @@ instance did not start. It did find three real hazards, and this change fixes th
   process survived, although the old `pkill` pattern matches it.
 - `tests/unit/lifeline/version-skew-recovery.test.ts` pins that the restart
   fallback no longer contains `pkill`/`killall` and signals the lock-holder and marker pids.
+
+## What to Tell Your User
+
+If my lifeline ever has to be restarted by hand and the normal restart
+fails, the fallback now stops only the lifeline itself. Before, it could
+also stop other programs on the machine whose command line happened to
+mention my name and the word "lifeline", such as a coding session working on
+it.
+
+## Summary of New Capabilities
+
+- None new. Two repair paths (the lifeline restart fallback and the
+  pipe-session timeout) now stop only processes they started themselves.
