@@ -31,6 +31,17 @@ function validBand(b: unknown): b is CascadeBand {
 }
 
 /**
+ * The unsure band for one rule: `bands[rule]` when valid, else `band` when
+ * valid, else the default. Shared by the referee selection and the live signal
+ * merge, so "unsure" means the same thing in both places.
+ */
+export function bandFor(rule: string, opts: { band?: CascadeBand; bands?: Record<string, CascadeBand> } = {}): CascadeBand {
+  const perRule = opts.bands?.[rule];
+  if (validBand(perRule)) return perRule;
+  return validBand(opts.band) ? opts.band : DEFAULT_CASCADE_BAND;
+}
+
+/**
  * Which answers go to the referee, and why. `bands[rule]` overrides the
  * default band for that rule; an invalid band falls back to the default.
  * The audit draw is made ONCE per state: an audited state escalates every
@@ -40,13 +51,11 @@ export function selectEscalations(
   answers: Record<string, number>,
   opts: { band?: CascadeBand; bands?: Record<string, CascadeBand>; auditRate?: number; random?: () => number } = {},
 ): Record<string, EscalationReason> {
-  const base = validBand(opts.band) ? opts.band : DEFAULT_CASCADE_BAND;
   const out: Record<string, EscalationReason> = {};
   const confident: string[] = [];
   for (const [rule, p] of Object.entries(answers)) {
     if (typeof p !== 'number' || !Number.isFinite(p)) continue;
-    const perRule = opts.bands?.[rule];
-    const band = validBand(perRule) ? perRule : base;
+    const band = bandFor(rule, opts);
     if (p >= band.lo && p <= band.hi) out[rule] = 'unsure';
     else confident.push(rule);
   }

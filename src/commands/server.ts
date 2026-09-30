@@ -18369,6 +18369,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const shadow = buildJevSignalShadow({
           readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
           bootBlock: config.intelligence?.jevSignalShadow,
+          // jev-signal-live: dev-gated live advisory input (live on a development agent, dark on the fleet).
+          bootLiveBlock: config.intelligence?.jevSignalLive,
+          developmentAgent: config.developmentAgent === true,
           readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
           stateDir: config.stateDir,
           metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },

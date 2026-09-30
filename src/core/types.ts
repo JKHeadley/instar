@@ -3892,6 +3892,23 @@ export interface InstarConfig {
       };
     };
     /**
+     * Jev as a LIVE advisory input to the tone gate's B1–B7 artefact signals
+     * (docs/specs/jev-signal-live.md). `enabled` is OMITTED by default so the
+     * development-agent gate decides (live on a dev agent, dark on the fleet);
+     * explicit false is the kill switch. Only takes effect where the tone gate's
+     * advisory migration is on, and needs the vault `typesafe_api_key`. Confident
+     * Jev answers decide a kind; unsure/missing answers and every failure fall
+     * back to the deterministic detectors. Read live per candidate.
+     */
+    jevSignalLive?: {
+      enabled?: boolean;
+      /** Fetch abort for the live call (default 1000; clamped to 100–3000). */
+      timeoutMs?: number;
+      /** Confident-vs-unsure band (default 0.30–0.70), optionally per rule. */
+      band?: { lo: number; hi: number };
+      bands?: Record<string, { lo: number; hi: number }>;
+    };
+    /**
      * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
      * default. Observe-only: captures an evidence pack when a scheduled job
      * completes, and a batch job asks Jev whether the evidence shows the
