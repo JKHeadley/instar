@@ -1632,6 +1632,9 @@ export interface RouteContext {
    *  multiMachine.stateSync.preferences.enabled is true. Null/absent ⇒ the route
    *  keeps its legacy own-only / seamlessness-merge path, byte-identical. */
   preferencesUnionReader?: import('../core/ReplicatedStoreReader.js').ReplicatedStoreReader | null;
+  /** Jev memory picker (docs/specs/jev-memory-picker.md). Null/absent ⇒
+   *  POST /memory-picker/session-context answers 503. */
+  jevMemoryPicker?: import('../core/JevMemoryPicker.js').JevMemoryPicker | null;
   /** P1.5b owner-routed mutation (§3.4): forward a mutate intent to the
    *  owning machine (verdict back, or durably queued). Null/absent = dark
    *  (replica-targeted mutations answer 409 explaining the layer is off). */
@@ -25727,6 +25730,48 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // The block is bounded by `maxInjectedPreferencesBytes` (default 4000) and
   // priority-ordered (recency × confidence × dedupeCount). Serves ONLY the
   // `learning` text + metadata — never any raw extras.
+  // Jev memory picker (docs/specs/jev-memory-picker.md) — ranks the Claude Code
+  // memory index against the session's opening context. Signal only: shadow
+  // mode (the default) answers 202 at once and only logs; inject mode waits
+  // (bounded) and returns the ranked entries beyond the load cut. 503 when not
+  // constructed or disabled (the kill switch, read live).
+  router.post('/memory-picker/session-context', async (req, res) => {
+    const picker = ctx.jevMemoryPicker;
+    const cfg = picker?.config() ?? null;
+    if (!picker || !cfg) {
+      res.status(503).json({ error: 'jev memory picker disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as { configDir?: unknown; projectDir?: unknown; topicId?: unknown; context?: unknown; source?: unknown };
+    const { memoryIndexPath, resolveMemoryIndexPath, topicOpeningContext, pickSource, renderInjectBlock } = await import('../core/JevMemoryPicker.js');
+    if (memoryIndexPath(body.configDir, body.projectDir, picker.homeDir) === null) {
+      res.status(400).json({ error: 'configDir must be an absolute .claude* directory inside the home directory, projectDir an absolute path' });
+      return;
+    }
+    const topicId = typeof body.topicId === 'number' ? body.topicId : typeof body.topicId === 'string' ? parseInt(body.topicId, 10) : NaN;
+    let topic: Parameters<typeof topicOpeningContext>[0] = null;
+    if (Number.isFinite(topicId) && ctx.topicMemory) {
+      try {
+        topic = ctx.topicMemory.getTopicContext(topicId, 3);
+      } catch {
+        // @silent-fallback-ok — no topic history means the explicit context (if any) is all there is; an empty context skips with no-context.
+        topic = null;
+      }
+    }
+    const context = topicOpeningContext(topic, body.context);
+    const source = pickSource(body.source);
+    const indexPath = await resolveMemoryIndexPath(body.configDir, body.projectDir, picker.homeDir);
+    const run = indexPath ? picker.pick(indexPath, context, source) : picker.pick('', context, source);
+    if (cfg.mode === 'shadow') {
+      picker.lastRun = run.catch(() => null);
+      res.status(202).json({ mode: 'shadow' });
+      return;
+    }
+    const result = await run.catch(() => null);
+    const block = result ? renderInjectBlock(result.inject) : '';
+    res.json({ mode: 'inject', present: block !== '', block, outcome: result?.outcome ?? 'fallback', reason: result?.reason });
+  });
+
   router.get('/preferences/session-context', async (_req, res) => {
     try {
       const cfg = ctx.config.monitoring?.correctionLearning;

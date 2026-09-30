@@ -1460,6 +1460,7 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'memory-picker', reason: 'Jev memory picker (jev-memory-picker spec) — POST /memory-picker/session-context is the session-start hook\'s call (and its compaction twin); dev-gated, shadow by default (503 when off); the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
   { prefix: 'jev-audit', reason: 'Jev job-completion audit (jev-job-supervision spec) — POST /jev-audit/batch is the cadence trigger the jev-completion-audit built-in job calls; ships dark (503 unless constructed; inert without an enabled soak); the agent learns it via the CLAUDE.md awareness card, not /capabilities, and it has no read surface by design' },
   { prefix: 'mcp', reason: 'Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — ships dark/experimental behind sessions.dynamicMcp.enabled (the routes 503 when off); the agent learns it via the CLAUDE.md awareness section, not /capabilities, until it matures past dark' },
   { prefix: 'users', reason: 'POST /users/allow-test-identity (silent-loss-refusal-conservation §2.D) — a dashboard-PIN-gated route that mints a signed allow-marker for a legitimate user whose id collides with a known test-identity marker; operator/support-only, not an agent-invokable conversational capability' },
