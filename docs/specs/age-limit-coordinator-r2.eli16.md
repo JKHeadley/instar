@@ -31,12 +31,21 @@ is recorded as mid-work. The restart queue can then bring the session back
 with its conversation, under the same limits it always uses (at most twice a
 day per topic, among others).
 
+## Also fixed: an active goal really is protected now
+
+A session with an active autonomous run or goal is supposed to be left alone.
+The check behind that only looked at whether the run's file had been written
+in the last 30 minutes. A run that sat waiting for more than 30 minutes looked
+finished, and the session could be ended for age. Now the check reads the run
+itself: while the run is switched on and its time window has not ended, the
+session is kept, however old the file is. A run that is switched off, paused,
+or past its window no longer keeps the session.
+
 ## What did not change
 
 - When sessions are ended. The age limit ends exactly the same sessions at
   the same moments.
-- A session with a running background command, or an active goal, is still
-  left alone.
+- A session with a running background command is still left alone.
 - A session with no running work and a clean folder is still ended and not
   restarted automatically. (On this agent, sessions work in its home folder,
   and that folder nearly always has some unfinished changes. So in practice

@@ -87,7 +87,7 @@ import { applyStageBStartupReadiness } from '../core/StageBStartupReadiness.js';
 import { inboundDeliveryStoreOptionsFromQueue } from '../core/InboundDeliveryStore.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, readAutonomousRunMarkers, stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, readAutonomousRunMarkers, stopAutonomousTopic, structuralLongWorkActive } from '../core/AutonomousSessions.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { gapBEligibleForTopic, recentUserMessageFromHistory, recentUserMessageAtFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
@@ -19829,14 +19829,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         try { return csid ? subagentTracker.getActiveSubagents(csid).length : 0; }
         catch { return 1; } // cannot tell → protect
       },
-      buildOrAutonomousActive: (topicId) => {
-        const fresh = (p: string): boolean => {
-          try { return fs.existsSync(p) && (Date.now() - fs.statSync(p).mtimeMs) < 30 * 60_000; }
-          catch { return false; }
-        };
-        if (topicId != null && fresh(path.join(config.stateDir, 'autonomous', `${topicId}.local.md`))) return true;
-        return fresh(path.join(config.stateDir, 'state', 'build', 'build-state.json'));
-      },
+      // Real run state (active + inside its window), not state-file mtime — see
+      // structuralLongWorkActive.
+      buildOrAutonomousActive: (topicId) => structuralLongWorkActive(config.stateDir, topicId),
       hasActiveProcesses: (s) => sessionManager.hasActiveProcesses(s),
     };
 

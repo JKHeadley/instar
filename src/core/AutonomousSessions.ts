@@ -176,6 +176,37 @@ export function autonomousRunRemainingForTopic(
 }
 
 /**
+ * The ReapGuard's structural-long-work signal (`ReapGuardDeps.buildOrAutonomousActive`).
+ * A topic's autonomous / native-goal run counts only while it is ACTIVE and still
+ * inside its window — read through `autonomousRunRemainingForTopic`, never from the
+ * state file's mtime. A run's file is written once per iteration, so a run waiting
+ * at its prompt for more than 30 minutes used to lose KEEP while still active
+ * (age-limit kill, 2026-09-30 review). Inactive, paused, expired or absent ⇒ false.
+ * A /build run has no window of its own, so its state file keeps the 30-minute
+ * freshness rule. Unreadable ⇒ false (the other guards still apply).
+ */
+export function structuralLongWorkActive(
+  stateDir: string,
+  topicId: number | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (topicId != null) {
+    try {
+      if (autonomousRunRemainingForTopic(stateDir, topicId, nowMs) != null) return true;
+    } catch {
+      // @silent-fallback-ok — run state unreadable ⇒ no autonomous KEEP; the build check and other guards still run.
+    }
+  }
+  try {
+    const buildState = path.join(stateDir, 'state', 'build', 'build-state.json');
+    return fs.existsSync(buildState) && (nowMs - fs.statSync(buildState).mtimeMs) < 30 * 60_000;
+  } catch {
+    // @silent-fallback-ok — build state unreadable ⇒ no build KEEP (unchanged pre-fix behaviour).
+    return false;
+  }
+}
+
+/**
  * Run-state markers the AutonomousProgressHeartbeat reads for its cheap-first
  * predicates (autonomous-progress-heartbeat spec §predicates #2 + #3):
  *   - `movedTo` / `moveSuspendedAt`: a mid-handoff marker (predicate #2 — this

@@ -23,7 +23,15 @@ in practice revived with its conversation, as idle-reaped ones already are.
 The resurrection cap (≤2 per topic per 24h) bounds this. On the fleet,
 `yieldSafety` is off, so nothing changes there.
 
-Kill timing, the KEEP guard and the resume queue's gates (resurrection cap,
+Review round 2 found the KEEP guard's run check read the state file's age,
+not the run: an active autonomous run or native goal whose file was more
+than 30 minutes old lost KEEP and was age-killed. `buildOrAutonomousActive`
+is now `structuralLongWorkActive` (`src/core/AutonomousSessions.ts`), which
+answers from `autonomousRunRemainingForTopic`: active, not paused and inside
+its window ⇒ kept; inactive, paused, expired or absent ⇒ no KEEP. The
+`/build` state-file check is unchanged.
+
+Kill timing, the other KEEP guards and the resume queue's gates (resurrection cap,
 dry-run, drain-time checks) are unchanged.
 
 ## Evidence
@@ -36,15 +44,22 @@ dry-run, drain-time checks) are unchanged.
     removed.
   - A clean worktree is still reaped and is `insufficient-evidence`.
   - A throwing probe omits the signal, and the kill still happens.
-  - An active autonomous run keeps an over-age idle session.
+  - Through the real `structuralLongWorkActive` dependency: an active run
+    with time left keeps an over-age idle session even with a 31-minute-old
+    run file; an inactive run and an expired run are still age-killed.
 
 ## What to Tell Your User
 
 If a long-running session of mine is ended for age while it still has
 unfinished changes in its folder, it now restarts with its conversation
-instead of staying down until you message it.
+instead of staying down until you message it. And a session working through
+an autonomous run or goal is no longer ended for age while that run is still
+on and inside its time window.
 
 ## Summary of New Capabilities
+
+- A session with an active autonomous run or goal is kept for the whole run
+  window, not only while the run file is less than 30 minutes old.
 
 - Age-limit kills record uncommitted worktree changes as work in progress,
   the same way idle clean-ups do, so the restart queue can revive the

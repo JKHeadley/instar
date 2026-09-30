@@ -83,9 +83,31 @@ in the resume queue, unchanged.
 - A live background shell (`run_in_background` or a timed-out foreground
   command) is a non-baseline descendant of the pane, so `hasActiveProcesses`
   reads true. The age gate and the idle block use the same probe.
-- An active autonomous run or goal: the age kill goes through the ReapGuard
-  KEEP cascade. Guard L (`buildOrAutonomousActive`, which checks for a fresh
-  `autonomous/<topic>.local.md`) vetoes it. A new test pins this.
+### Changed in round 2 (review finding)
+
+- An active autonomous run or native goal: the age kill goes through the
+  ReapGuard KEEP cascade, and Guard L (`buildOrAutonomousActive`) vetoes it.
+  Before this round that dependency only checked that
+  `autonomous/<topic>.local.md` had been written in the last 30 minutes. A
+  run waiting at its prompt for longer than that lost KEEP while still active
+  and was age-killed at normal pressure (reproduced by the review through the
+  real monitor tick). The dependency is now `structuralLongWorkActive`
+  (`src/core/AutonomousSessions.ts`), which reads the run through
+  `autonomousRunRemainingForTopic`.
+  - Protected now: a topic whose run file (per-topic or legacy, matched by
+    `report_topic`) is `active: true`, not paused, has a `started_at` and a
+    `duration_seconds`, and still has time left in that window. File age does
+    not matter.
+  - Not protected: an inactive, paused or expired run, a run with no
+    `duration_seconds` (the autonomous skill requires one), or no run file.
+    A run file written in the last 30 minutes no longer protects by itself.
+  - Unchanged: a `/build` run still counts while
+    `state/build/build-state.json` was written in the last 30 minutes. The
+    stand-down `contestedWork` label check still uses file freshness for its
+    `autonomous-run` label; it only chooses the refusal label.
+  - Tests drive the real dependency through the monitor tick: an active run
+    with a 31-minute-old file is kept; an inactive and an expired run on
+    neighbouring topics are age-killed.
 - Recent transcript writes and the 10-minute work memory are unchanged
   (from round 1, PR #2092).
 
@@ -111,12 +133,32 @@ in the resume queue, unchanged.
 - Age-kill work-evidence stamp (`#terminateLocalAgeExpiredSession`): changed
   from the chokepoint fallback to killer-supplied evidence. The result is the
   fallback set plus an optional `uncommitted-worktree-work`.
-- No keep or kill decision changes. `isAgeGateTrulyIdle`, the KEEP guard and
-  the backoff are untouched.
+- Round 1 changed no keep or kill decision. `isAgeGateTrulyIdle` and the
+  backoff are untouched in both rounds.
+- Round 2: the KEEP guard's structural-long-work input
+  (`buildOrAutonomousActive` → `structuralLongWorkActive`) now answers from the
+  run's state instead of its file's age. It feeds three consumers, all through
+  the shared `reapGuardDeps`:
+  - the ReapAuthority's guard, used by the age-limit and idle-zombie kills;
+  - the SessionReaper (idle reaping), which spreads the same deps;
+  - the stand-down `contestedWork` refusal, which now also refuses for an
+    active run whose file is over 30 minutes old. It labels that case
+    `structural-long-work` rather than `autonomous-run` (the label check
+    before it still reads file age). Refusing more is the safe direction.
 
 ## 1. Over-block
 
-No new block. The kill happens exactly when it did before.
+Round 1: no new block; the kill happens exactly when it did before.
+
+Round 2 narrows one KEEP. A run file written in the last 30 minutes that is
+inactive (`active:false`, e.g. preparing or recovering), paused, or past its
+window used to keep its topic's session for those 30 minutes; it no longer
+does. The subagent, process, transcript, commitment and user-message guards
+still apply to such a session. A run without `duration_seconds` also gets no
+KEEP, but `setup-autonomous.sh`, the only writer, always writes one (8h
+default). Round 2 widens KEEP the other way: an active in-window run is kept
+for its whole window, and a legacy single-file run now matches by
+`report_topic`.
 
 ## 2. Under-block
 
@@ -200,6 +242,18 @@ Clear to ship after review.
 
 ## Second-pass review (if required)
 
+### Round 2 second pass
+
+**Reviewer:** independent general-purpose subagent
+**Concern raised → addressed.** No code defect found: duration is always
+written, `String()` topic matching holds, the tests drive the real dependency
+through the monitor tick. The concern: this artifact still said no keep/kill
+change (decision-point inventory, §1) and did not name the SessionReaper and
+stand-down consumers. **Addressed:** both sections now state the round-2
+narrowing and widening and list all three consumers.
+
+### Round 1 second pass
+
 **Reviewer:** independent general-purpose subagent
 **Independent read of the artifact: concern raised → addressed**
 
@@ -225,10 +279,18 @@ a home-dir exclusion were not chosen.
     `classifyEligibility` accepts) fails with the fix line removed.
   - A clean worktree is still reaped and is `insufficient-evidence`.
   - A throwing probe omits the signal and the kill still happens.
-  - An active autonomous run keeps an over-age idle session.
+  - Round 2, through the real `structuralLongWorkActive` dependency: an
+    active run with time left and a 31-minute-old run file keeps an over-age
+    idle session at normal pressure; an inactive run and an expired run on
+    neighbouring topics are age-killed.
+- `tests/unit/AutonomousSessions.test.ts`, "structuralLongWorkActive": an
+  active in-window run counts whatever its file age; inactive, paused,
+  expired, unbounded and absent runs do not, even with a fresh file; the
+  `/build` state file counts only while under 30 minutes old.
 
 ## Class-Closure Declaration (display-only mirror)
 
-Adds a signal to an existing self-triggered controller's evidence stamp; no
-kill or keep case changes. Revival remains governed by the resume queue's
+Round 1 adds a signal to an existing self-triggered controller's evidence
+stamp. Round 2 changes one KEEP input: an active in-window run is kept past
+30 minutes, and a fresh but inactive/expired run file no longer keeps. Revival remains governed by the resume queue's
 existing cap. Not an agent-authored-artifact defect; not applicable.

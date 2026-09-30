@@ -710,12 +710,58 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(events[0].workEvidence ?? []).not.toContain('uncommitted-worktree-work');
   });
 
-  it('age gate R2: an active autonomous run on the topic keeps an over-age idle session', async () => {
-    manager.setReapGuard(topicBoundGuard({ buildOrAutonomousActive: (t) => t === 52075 }));
+  // The REAL production dependency (structuralLongWorkActive, wired as
+  // buildOrAutonomousActive in server.ts) over run files whose mtime is 31
+  // minutes old — past the old freshness cut-off that killed an active run.
+  const writeRunFile = (topic: number, fields: { active: boolean; startedMinutesAgo: number; durationSeconds: number }) => {
+    const dir = path.join(tmpDir, 'autonomous');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${topic}.local.md`);
+    fs.writeFileSync(file, `---\nactive: ${fields.active}\nreport_topic: ${topic}\nstarted_at: "${new Date(Date.now() - fields.startedMinutesAgo * 60_000).toISOString()}"\nduration_seconds: ${fields.durationSeconds}\ngoal_mode: "native"\ngoal: "Finish the work"\n---\n`);
+    const old = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(file, old, old);
+  };
+  const productionRunGuard = async (topic: number) => {
+    const { structuralLongWorkActive } = await import('../../src/core/AutonomousSessions.js');
+    return topicBoundGuard({
+      topicBinding: () => topic,
+      buildOrAutonomousActive: (t) => structuralLongWorkActive(tmpDir, t),
+    });
+  };
+
+  it('age gate R2: an active run with time left keeps an over-age idle session although its file is 31 minutes old', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52075));
     manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
     const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-r2-goal', standby);
     expect(state.getSession(id)!.status).toBe('running');
     expect(authorityScopes).toEqual([]);
+  });
+
+  it('age gate R2: an inactive run on a neighbouring topic does not keep the session ⇒ age-killed', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    writeRunFile(52076, { active: false, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52076));
+    manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
+    const { id } = await runLocalExpiredMonitorTick('age-r2-goal-inactive', standby);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+  });
+
+  it('age gate R2: an expired run on a neighbouring topic does not keep the session ⇒ age-killed', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    writeRunFile(52077, { active: true, startedMinutesAgo: 5 * 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52077));
+    manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
+    const { id } = await runLocalExpiredMonitorTick('age-r2-goal-expired', standby);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+  });
+
+  it('age gate R2: server.ts wires the real run reader as the KEEP guard dependency', () => {
+    const server = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(server).toMatch(/buildOrAutonomousActive: \(topicId\) => structuralLongWorkActive\(config\.stateDir, topicId\)/);
   });
 
   it('an arbitrary public origin label is normalized to autonomous authority', async () => {
