@@ -221,11 +221,12 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     isSessionAliveAsync(): Promise<boolean>;
     recordBuildContextMaybeAsync(): Promise<void>;
     detectCompletionMaybeAsync(): Promise<boolean>;
-    captureMeaningfulTailMaybeAsync(): Promise<string>;
+    captureMeaningfulTailMaybeAsync(): Promise<string | null>;
     hasActiveProcessesMaybeAsync(): Promise<boolean>;
     isTranscriptRecentlyActive(): boolean;
     captureOutputMaybeAsync(): Promise<string>;
     ageGateLastWorkingAt: Map<string, number>;
+    ageGateConfirmedWorkPastLimit: Set<string>;
   };
 
   const runLocalExpiredMonitorTick = async (
@@ -641,8 +642,9 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
   // although its worktree held uncommitted work the idle reaper would have
   // recorded. The age kill now collects that evidence too.
   const reapedEvents = () => {
-    const events: Array<{ midWork?: boolean; workEvidence?: string[]; disposition?: string }> = [];
-    manager.on('sessionReaped', (e: { midWork?: boolean; workEvidence?: string[]; disposition?: string }) => { events.push(e); });
+    type Reaped = { midWork?: boolean; workEvidence?: string[]; disposition?: string; seenWorkingPastAgeLimit?: boolean };
+    const events: Reaped[] = [];
+    manager.on('sessionReaped', (e: Reaped) => { events.push(e); });
     return events;
   };
   // Topic sessions record the agent home as their cwd; the probe reads it.
@@ -676,6 +678,9 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(events).toHaveLength(1);
     expect(events[0].midWork).toBe(true);
     expect(events[0].workEvidence).toContain('uncommitted-worktree-work');
+    // A live child process defers the kill but is not confirmed work (it may be
+    // an idle MCP server), so it does not reset the resume queue's loop brake.
+    expect(events[0].seenWorkingPastAgeLimit).toBeUndefined();
     const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
     expect(classifyEligibility({
       sessionName: 'age-r2-coordinator', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
@@ -692,12 +697,89 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     const { id } = await runLocalExpiredMonitorTick('age-r2-stale', () => { withCwd('age-r2-stale'); standby(); });
     expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
     expect(events[0].midWork).toBe(false);
+    expect(events[0].seenWorkingPastAgeLimit).toBeUndefined();
     const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
     expect(classifyEligibility({
       sessionName: 'age-r2-stale', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
       reason: 'age-limit', disposition: 'terminal', origin: 'autonomous',
       workEvidence: events[0].workEvidence ?? [],
     }, { includeOperatorKills: false })).toEqual({ eligible: false, why: 'insufficient-evidence' });
+  });
+
+  // ── Age gate round 3 (2026-09-30 18:14Z, topic 52075) ────────────────────
+  // Two idle-reap revivals, then the revived coordinator worked for five hours
+  // (transcript writes past its age limit), went quiet, and was age-killed with
+  // uncommitted work. The resume queue refused it with resurrection-cap. Only a
+  // transcript write past the limit is confirmed work and restarts the ledger;
+  // uncertain samples (Astra round 1) defer the kill but never earn the reset.
+  const replayCapAfterTwoRevivals = async (reaped: { seenWorkingPastAgeLimit?: boolean }) => {
+    const { ResumeQueue } = await import('../../src/monitoring/ResumeQueue.js');
+    const q = new ResumeQueue({ stateDir: tmpDir }, { dryRun: false, maxResurrections: 2 });
+    q.start();
+    try {
+      const candidate = {
+        sessionName: 'coord', tmuxSession: 'tmux-coord', topicId: 52075, cwd: tmpDir,
+        reason: 'age-limit', disposition: 'terminal' as const, origin: 'autonomous' as const,
+        workEvidence: ['uncommitted-worktree-work'],
+      };
+      for (let i = 0; i < 2; i++) {
+        const enqueued = q.considerEnqueue(candidate);
+        expect(enqueued.enqueued).toBe(true);
+        q.transition(enqueued.entry!.id, 'respawned');
+        q.recordResumeSuccess('topic:52075');
+      }
+      const result = q.considerEnqueue({ ...candidate, ...reaped });
+      return { flag: reaped.seenWorkingPastAgeLimit, enqueued: result.enqueued, why: result.why };
+    } finally { q.stop(); }
+  };
+
+  it('age gate R3 REPRO: a transcript written past the age limit flags the kill ⇒ revived despite two earlier revivals', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r3-coordinator', () => {
+      withCwd('age-r3-coordinator');
+      standby();
+      monitorSeam().isTranscriptRecentlyActive = () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    monitorSeam().isTranscriptRecentlyActive = () => false;
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(events[0].seenWorkingPastAgeLimit).toBe(true);
+    expect(monitorSeam().ageGateConfirmedWorkPastLimit.has(id)).toBe(false);
+    expect(await replayCapAfterTwoRevivals(events[0])).toEqual({ flag: true, enqueued: true, why: undefined });
+  });
+
+  it.each([null, '', 'process-probe-error', 'idle-child-process'])('age gate R3: an uncertain sample (%j) defers the kill but does not clear the cap', async (sample) => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r3-uncertain', () => {
+      withCwd('age-r3-uncertain');
+      standby();
+      if (sample === 'process-probe-error') {
+        monitorSeam().hasActiveProcessesMaybeAsync = async () => {
+          const cp = await import('node:child_process');
+          vi.mocked(cp.execFileSync).mockImplementationOnce(() => { throw new Error('injected process-probe timeout'); });
+          return manager.hasActiveProcesses('age-r3-uncertain');
+        };
+      } else if (sample === 'idle-child-process') {
+        monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+      } else {
+        monitorSeam().captureMeaningfulTailMaybeAsync = async () => sample;
+      }
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    monitorSeam().captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(await replayCapAfterTwoRevivals(events[0])).toEqual({ flag: undefined, enqueued: false, why: 'resurrection-cap' });
   });
 
   it('age gate R2: a failing dirty-worktree probe omits the signal and never blocks the kill', async () => {

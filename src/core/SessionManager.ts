@@ -893,6 +893,11 @@ export class SessionManager extends EventEmitter {
   /** When the age gate last saw each over-age session working (epoch ms) —
    *  see AGE_GATE_RECENT_WORK_MS. */
   private ageGateLastWorkingAt = new Map<string, number>();
+  /** Over-age sessions whose transcript the age gate saw being written: work
+   *  CONFIRMED past the age limit. Uncertain samples (empty pane capture, a
+   *  failed process probe, an idle MCP child) defer the kill but never enter
+   *  here. Feeds `seenWorkingPastAgeLimit` on the age kill. */
+  private ageGateConfirmedWorkPastLimit = new Set<string>();
   /** Per-session back-off so the age-gate respects the KEEP-guard's verdict: after a kill
    *  is vetoed (session kept), suppress re-requests for a window instead of re-asking every
    *  5s tick (the 2026-06-05 17,503-line flood). Constructed in the constructor. */
@@ -1899,6 +1904,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
        *  It proves the request originated in THIS SessionManager's monitor over
        *  THIS machine's state tree and local tmux namespace. Never public. */
       localAgeLimitReapCapability?: typeof LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+      /** Age-limit kill only: the age gate saw this session working after it
+       *  passed its age limit. Passed through on `sessionReaped` so the resume
+       *  queue does not count the revival as a kill-resume-kill loop. */
+      seenWorkingPastAgeLimit?: boolean;
       /** Birth-bound SessionReaper assertion after ownership/liveness/dwell. */
       localPostTransferCloseout?: boolean;
       /**
@@ -2191,6 +2200,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         midWork,
         workEvidence,
         ...(opts?.via ? { via: opts.via } : {}),
+        ...(reason === 'age-limit' && opts?.seenWorkingPastAgeLimit ? { seenWorkingPastAgeLimit: true } : {}),
       });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
@@ -2211,6 +2221,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       disposition: 'terminal',
       localAgeLimitReapCapability: LOCAL_AGE_LIMIT_REAP_CAPABILITY,
       workEvidence: this.#ageKillWorkEvidence(sessionId),
+      // The session's transcript was written after it passed its age limit, so it
+      // lived and worked its full lifetime: its revival is not a kill-resume-kill
+      // loop (2026-09-30 18:14Z, topic 52075: refused by the resurrection cap).
+      seenWorkingPastAgeLimit: this.ageGateConfirmedWorkPastLimit.has(sessionId),
     });
   }
 
@@ -2422,10 +2436,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       // Drop age-gate work memory for sessions that are no longer running
       // (bounded map — any exit path, not only an age kill).
-      if (this.ageGateLastWorkingAt.size > 0) {
+      if (this.ageGateLastWorkingAt.size > 0 || this.ageGateConfirmedWorkPastLimit.size > 0) {
         const liveIds = new Set(running.map(s => s.id));
         for (const id of this.ageGateLastWorkingAt.keys()) {
           if (!liveIds.has(id)) this.ageGateLastWorkingAt.delete(id);
+        }
+        for (const id of this.ageGateConfirmedWorkPastLimit) {
+          if (!liveIds.has(id)) this.ageGateConfirmedWorkPastLimit.delete(id);
         }
       }
       for (const session of running) {
@@ -2662,6 +2679,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               && ageGateNow - ageGateLastWorking < AGE_GATE_RECENT_WORK_MS;
             const ageGateSeenWorking = !isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive);
             if (ageGateSeenWorking) this.ageGateLastWorkingAt.set(session.id, ageGateNow);
+            if (ageGateTranscriptActive) this.ageGateConfirmedWorkPastLimit.add(session.id);
             const ageGateTrulyIdle = isAgeGateTrulyIdle(!!ageGateIsIdle, ageGateHasProcs, ageGateTranscriptActive, ageGateRecentlyWorking);
 
             if (!ageGateTrulyIdle) {
@@ -2724,6 +2742,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 // Actually killed — drop any back-off state for the (now gone) session.
                 this.ageKillBackoff.recordKilled(session.id);
                 this.ageGateLastWorkingAt.delete(session.id);
+                this.ageGateConfirmedWorkPastLimit.delete(session.id);
               } else {
                 // The KEEP-guard kept it (skipped:<reason>). Respect that and back off:
                 // suppress re-requests for the back-off window instead of nagging every
