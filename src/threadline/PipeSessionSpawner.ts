@@ -558,34 +558,43 @@ export class PipeSessionSpawner {
 
     // Kill only the incarnation this spawner recorded: the live session under
     // this name must still carry the recorded tmux session id AND pane pid.
-    // Once our pane has exited the pid can be reused by an unrelated process
-    // (and its group SIGKILLed), and the name can be reused by another
-    // spawner's session — in both cases nothing is signalled.
+    // The name can be reused by another spawner's session, and a retained dead
+    // pane (remain-on-exit) keeps reporting a pane pid the kernel may already
+    // have handed to an unrelated process. So:
+    //   - owned session, pane confirmed LIVE (pane_dead=0) → signal its group;
+    //   - owned session, pane confirmed DEAD → remove the tmux session by id,
+    //     signal no process;
+    //   - anything else (gone, replaced, unreadable) → signal nothing.
     let owned = false;
+    let paneLive = false;
     if (session.tmuxId && session.pid > 0) {
       try {
-        const current = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{session_id} #{pane_pid}' 2>/dev/null`, {
+        const rows = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{session_id} #{pane_pid} #{pane_dead}' 2>/dev/null`, {
           encoding: 'utf-8',
         }).trim().split('\n');
-        owned = current.includes(`${session.tmuxId} ${session.pid}`);
+        const row = rows.find((r) => r.startsWith(`${session.tmuxId} ${session.pid} `));
+        owned = row !== undefined;
+        paneLive = row === `${session.tmuxId} ${session.pid} 0`;
       } catch { /* session gone — the recorded incarnation is over */ }
     }
     if (!owned) {
       console.log(`[pipe] ${sessionName}: recorded session is gone or replaced — not signalling anything`);
     } else {
-      // Process-group kill to prevent orphaned subprocesses
-      try {
-        // Get process group ID
-        const pgidStr = execSync(`ps -o pgid= -p ${session.pid} 2>/dev/null`, {
-          encoding: 'utf-8',
-        }).trim();
-        const pgid = parseInt(pgidStr, 10);
-        if (pgid > 0) {
-          try { process.kill(-pgid, 'SIGKILL'); } catch { /* ignore */ }
-        }
-      } catch {
-        // Fallback: kill individual process
-        try { process.kill(session.pid, 'SIGKILL'); } catch { /* ignore */ }
+      if (paneLive) {
+        // Process-group kill to prevent orphaned subprocesses. If the group
+        // cannot be read, signal nothing: killing the session below still
+        // hangs up the pane.
+        try {
+          const pgidStr = execSync(`ps -o pgid= -p ${session.pid} 2>/dev/null`, {
+            encoding: 'utf-8',
+          }).trim();
+          const pgid = parseInt(pgidStr, 10);
+          if (pgid > 0) {
+            try { process.kill(-pgid, 'SIGKILL'); } catch { /* ignore */ }
+          }
+        } catch { /* @silent-fallback-ok — unreadable group, no process signal */ }
+      } else {
+        console.log(`[pipe] ${sessionName}: pane is dead or its state unreadable — removing the session only, no process signal`);
       }
 
       // Kill the tmux session by its unique id, never by name

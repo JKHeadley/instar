@@ -14,11 +14,12 @@
  *     nothing else;
  *   - a triage spawn replaces its own session under the name, never a foreign one;
  *   - PipeSessionSpawner kills its own recorded session, but not a replacement
- *     session under the same name, not a stale pid, and it refuses to spawn over
+ *     session under the same name, not a stale pid, never a process on the
+ *     strength of a retained dead pane's pid, and it refuses to spawn over
  *     a pre-existing foreign `pipe-<threadId>` session.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,6 +29,7 @@ import { OrphanProcessReaper } from '../../src/monitoring/OrphanProcessReaper.js
 import { PipeSessionSpawner } from '../../src/threadline/PipeSessionSpawner.js';
 import { detectTmuxPath } from '../../src/core/Config.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { processStartMs } from '../../src/core/processIdentity.js';
 import { createTempProject, waitFor } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import type { InstarConfig, Session } from '../../src/core/types.js';
@@ -63,7 +65,8 @@ describeMaybe('an instance kills only what it can prove it started', () => {
   let fakeClaude: string;
   /** Exact names of every session this file creates by hand — killed in afterAll. */
   const handMade: string[] = [];
-  const detachedPids: number[] = [];
+  /** Detached children this file started, with their start time (pid reuse guard). */
+  const detachedPids: Array<{ pid: number; start: number | null }> = [];
 
   beforeAll(() => {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-claude-'));
@@ -76,7 +79,9 @@ describeMaybe('an instance kills only what it can prove it started', () => {
     for (const name of handMade) {
       try { tmux('kill-session', '-t', `=${name}`); } catch { /* @silent-fallback-ok — already gone */ }
     }
-    for (const pid of detachedPids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    for (const { pid, start } of detachedPids) {
+      if (start !== null && alive(pid) && processStartMs(pid) === start) process.kill(pid, 'SIGKILL');
+    }
     SafeFsExecutor.safeRmSync(scratch, { recursive: true, force: true, operation: 'tests/integration/foreign-process-survives-test-instance.test.ts' });
   });
 
@@ -210,13 +215,37 @@ describeMaybe('an instance kills only what it can prove it started', () => {
     };
     const spawnerIn = () => new PipeSessionSpawner({ stateDir: fs.mkdtempSync(path.join(scratch, 'pipe-')) });
 
-    it('kills its own recorded session (process group and tmux session)', () => {
+    it('kills its own recorded session (process group and tmux session)', async () => {
       const name = `pipe-own-${process.pid}`;
       handMade.push(name);
       const { tmuxId, pid } = newSession(name, 'sleep 600');
       const spawner = spawnerIn();
       record(spawner, name, pid, tmuxId);
       spawner.killAll();
+      expect(sessionExists(name)).toBe(false);
+      await waitFor(() => !alive(pid), 5000);
+    });
+
+    it('a retained dead pane (remain-on-exit): removes the owned session but signals no process', async () => {
+      // tmux keeps reporting a dead pane's pid; by cleanup time the kernel may
+      // have handed that pid to an unrelated process. Nothing may be signalled
+      // on its strength — whatever now runs at that pid.
+      const name = `pipe-deadpane-${process.pid}`;
+      handMade.push(name);
+      const { tmuxId, pid } = newSession(name, 'sleep 600');
+      tmux('set-option', '-t', tmuxId, 'remain-on-exit', 'on');
+      process.kill(pid, 'SIGKILL'); // the exact pane pid this test started
+      await waitFor(() => tmux('list-panes', '-t', tmuxId, '-F', '#{pane_dead}').trim() === '1', 5000);
+      expect(tmux('list-panes', '-t', tmuxId, '-F', '#{pane_pid}').trim()).toBe(String(pid));
+      const spawner = spawnerIn();
+      record(spawner, name, pid, tmuxId);
+      const kill = vi.spyOn(process, 'kill');
+      try {
+        spawner.killAll();
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        kill.mockRestore();
+      }
       expect(sessionExists(name)).toBe(false);
     });
 
@@ -238,7 +267,7 @@ describeMaybe('an instance kills only what it can prove it started', () => {
       // looks like after a pipe session's pane exited.
       const child = spawn('sleep', ['600'], { detached: true, stdio: 'ignore' });
       child.unref();
-      detachedPids.push(child.pid!);
+      detachedPids.push({ pid: child.pid!, start: processStartMs(child.pid!) });
       const spawner = spawnerIn();
       record(spawner, `pipe-gone-${process.pid}`, child.pid!, '$999999');
       spawner.killAll();

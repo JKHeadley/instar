@@ -144,3 +144,65 @@ describe('acquireLockFile', () => {
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
   }, 15_000);
 });
+
+describe('failed start-time lookup (ps denied / erroring)', () => {
+  let savedPath: string | undefined;
+  /** Put a `ps` that always fails first on PATH — the shape of a denied or broken lookup. */
+  function breakPs(): void {
+    const bin = lockDir();
+    fs.writeFileSync(path.join(bin, 'ps'), '#!/bin/sh\necho "ps: operation not permitted" >&2\nexit 1\n', { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath ?? ''}`;
+  }
+  afterEach(() => {
+    if (savedPath !== undefined) process.env.PATH = savedPath;
+    savedPath = undefined;
+  });
+
+  it('a live holder whose identity cannot be read is unproven, and its lock is kept', async () => {
+    const holder = plainSleeper();
+    const procStart = await startOf(holder.pid!);
+    const lockPath = path.join(lockDir(), 'lifeline.lock');
+    const record = { pid: holder.pid, procStart, startedAt: tenMinutesAgo() };
+    fs.writeFileSync(lockPath, JSON.stringify(record));
+    breakPs();
+    expect(processStartMs(holder.pid!)).toBeNull();
+    expect(checkRecordedProcess(record)).toBe('unproven');
+    expect(acquireLockFile(lockPath)).toBe(false);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(alive(holder)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(holder.pid);
+  });
+
+  it('identity turning unreadable during the SIGTERM grace: no SIGKILL, lock kept', async () => {
+    // A proven, wedged holder that ignores SIGTERM (our own child).
+    const holder = spawn('/bin/sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'], { stdio: 'ignore' });
+    children.push(holder);
+    const procStart = await startOf(holder.pid!);
+    const lockPath = path.join(lockDir(), 'lifeline.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, procStart, startedAt: tenMinutesAgo() }));
+    // `ps` answers the first identity check, then fails for the rest.
+    const bin = lockDir();
+    const count = path.join(bin, 'count');
+    fs.writeFileSync(path.join(bin, 'ps'), `#!/bin/sh\nif [ -f "${count}" ]; then exit 1; fi\n: > "${count}"\nexec /bin/ps "$@"\n`, { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath ?? ''}`;
+    expect(acquireLockFile(lockPath)).toBe(false);
+    expect(alive(holder)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(holder.pid);
+  }, 15_000);
+
+  it('a confirmed-dead holder (ESRCH) is still gone, and the lock is taken over', async () => {
+    const holder = plainSleeper();
+    const procStart = await startOf(holder.pid!);
+    holder.kill('SIGKILL');
+    await new Promise((r) => holder.once('exit', r));
+    const lockPath = path.join(lockDir(), 'lifeline.lock');
+    const record = { pid: holder.pid, procStart, startedAt: tenMinutesAgo() };
+    fs.writeFileSync(lockPath, JSON.stringify(record));
+    breakPs();
+    expect(checkRecordedProcess(record)).toBe('gone');
+    expect(acquireLockFile(lockPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+  });
+});

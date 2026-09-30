@@ -86,9 +86,15 @@ export function acquireLockFile(lockPath: string): boolean {
             }
             // Re-prove identity before escalating: the holder may have exited
             // during the grace window and its pid been reused.
-            if (checkRecordedProcess(data) === 'same') {
+            const afterGrace = checkRecordedProcess(data);
+            if (afterGrace === 'same') {
               console.log(`[Lifeline] PID ${data.pid} survived SIGTERM grace — SIGKILL`);
               try { process.kill(data.pid, 'SIGKILL'); } catch { /* ignore */ }
+            } else if (afterGrace === 'unproven') {
+              // Identity became unreadable while the pid is still there: the
+              // holder may be alive — neither escalate nor take its lock.
+              console.log(`[Lifeline] PID ${data.pid} identity unreadable after SIGTERM grace — respecting the lock, not signalling`);
+              return false;
             }
           } else {
             // Process is alive and not a zombie — another lifeline is truly running

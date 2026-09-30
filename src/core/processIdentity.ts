@@ -40,11 +40,14 @@ export function ownProcessIdentity(): { pid: number; procStart: number | null } 
 
 /**
  * - `same`: the live process at `pid` has the recorded start time — the recorder itself.
- * - `gone`: nothing runs at `pid`.
+ * - `gone`: nothing runs at `pid` — confirmed by an existence probe (ESRCH),
+ *   never inferred from a failed or unreadable start-time lookup.
  * - `reused`: the live process started after the record was written, so it
  *   cannot be the recorder (the pid was reused).
  * - `unproven`: alive, but no recorded start time to compare (legacy record) or
- *   a mismatch that timing cannot settle. Never signal on this.
+ *   a mismatch that timing cannot settle, or the start time could not be read
+ *   (ps denied, timed out, unparseable) while the pid may still be alive.
+ *   Never signal on this, and never treat it as a free lock.
  */
 export type RecordedProcessVerdict = 'same' | 'gone' | 'reused' | 'unproven';
 
@@ -52,7 +55,7 @@ export function checkRecordedProcess(record: { pid?: unknown; procStart?: unknow
   const pid = record.pid;
   if (typeof pid !== 'number') return 'unproven';
   const liveStart = processStartMs(pid);
-  if (liveStart === null) return 'gone';
+  if (liveStart === null) return pidExists(pid) ? 'unproven' : 'gone';
   if (typeof record.procStart === 'number' && record.procStart === liveStart) return 'same';
   // The recorder was alive when it wrote the record, and two live processes
   // never share a pid — so a process that started after the write (beyond the
@@ -60,4 +63,19 @@ export function checkRecordedProcess(record: { pid?: unknown; procStart?: unknow
   const writtenAt = typeof record.startedAt === 'string' ? Date.parse(record.startedAt) : NaN;
   if (Number.isFinite(writtenAt) && liveStart > writtenAt + 2000) return 'reused';
   return 'unproven';
+}
+
+/**
+ * False only when the kernel confirms nothing runs at `pid` (ESRCH). Any other
+ * outcome — alive, EPERM (alive but not ours), a non-integer pid — is treated
+ * as possibly alive.
+ */
+function pidExists(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
+  }
 }

@@ -46,11 +46,18 @@ keyword in the command line is no longer enough.
    process that looks stuck, it terminates that process only if it is proven
    to be the old lifeline. If the process at that ID started after the lock was
    written, the ID has been reused: the new lifeline takes the lock without
-   signalling anyone. If ownership is unclear, it leaves the lock alone.
+   signalling anyone. If ownership is unclear, it leaves the lock alone. That
+   includes the case where `ps` cannot read the start time at all (denied,
+   timed out): the holder counts as dead only when the kernel confirms
+   nothing runs at that ID.
 3. **Threadline pipe sessions.** The spawner records tmux's unique session
    number and the pane's process ID. At timeout or shutdown, it kills only that
    exact session. It no longer kills a newer session that reuses the name, or
-   a process group whose pane has gone. If a `pipe-<thread>` session it did
+   a process group whose pane has gone. tmux can keep a dead pane around
+   (`remain-on-exit`) and keep showing its old process ID, which may by then
+   belong to another program. So the process group is signalled only while
+   tmux says the pane is alive; for a dead pane (or one whose state cannot be
+   read) only the tmux session itself is removed. If a `pipe-<thread>` session it did
    not start already exists, it refuses to spawn rather than killing that
    session.
 4. **Triage sessions.** The name comes from the project folder's basename,
@@ -60,9 +67,14 @@ keyword in the command line is no longer enough.
 5. **Orphan reaper.** Automatic orphan cleanup used to trust a session name
    that the agent had ever recorded. Now it also requires the live session to
    carry this agent's own recorded session ID. A process in a session that only
-   reuses such a name is reported and never killed. The delayed SIGKILL after
-   SIGTERM checks the start time again, and so does the operator-requested
-   kill.
+   reuses such a name is reported and never killed. Only live panes are used
+   to map a process to a session, so a dead pane's old process ID cannot pull
+   an unrelated process into an owned session. The start time read when
+   ownership was established must still match right before SIGTERM (an
+   unreadable start time sends nothing), and again before the delayed
+   SIGKILL. Ownership of the tmux session is checked again right before it is
+   removed. The operator's explicit "clean this process" command stays a
+   separate path.
 6. **Test fixtures.** Two old integration tests cleaned up by broad name
    prefixes (`akit-integ-`, `akit-sched-`). Those prefixes could match sessions
    they never made. Those calls are removed. The shared helper's `cleanup()`
@@ -80,7 +92,13 @@ session. Nothing new runs on a schedule. Nothing is migrated.
 
 ## What to decide
 
-Nothing. This change only narrows what gets signalled. If builders keep
-dying, the cause is outside these paths. The next step is to capture the dead
-builder's own PID and command at the time, which the builder charter's
-"Exit 137" step now asks for.
+Nothing. This change only narrows what gets signalled.
+
+The six original builder deaths remain unattributed. The tests show the
+specific cases they exercise (listed in the side-effects review); they do not
+show that these paths were not the cause, and they do not cover every kill
+path in instar. Known limits: start times have 1-second resolution; a few
+milliseconds pass between the last ownership check and the signal; the
+`kill-session` after an ownership re-check still goes by name. If builders
+keep dying, the next step is to capture the dead builder's own PID and command
+at the time, which the builder charter's "Exit 137" step now asks for.

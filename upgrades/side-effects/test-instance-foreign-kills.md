@@ -7,10 +7,31 @@
 
 ## Summary of the change
 
-Round 2, after Astra's review of round 1 (six must-fixes). Every automatic kill
-path the review named now proves ownership through one shared small check
-before it signals anything. Where it cannot prove ownership, it logs or
-reports and does not signal.
+Round 3, after Astra's round-2 review (four must-fixes: M1 unreadable identity
+read as a dead lifeline; M2 and M3 retained dead tmux panes; M4 overreaching
+claims). The kill paths the reviews named now check ownership through one
+small shared check before they signal, in the cases the tests below exercise.
+Where a check cannot prove ownership, the path logs or reports and does not
+signal.
+
+Round 3 changes:
+
+- `processIdentity.checkRecordedProcess`: an unreadable start time (ps denied,
+  timed out, unparseable) is `gone` only when `kill(pid, 0)` returns ESRCH;
+  otherwise `unproven`, so a live lifeline lock is kept (M1). In
+  `acquireLockFile`, if the holder's identity turns unreadable during the
+  SIGTERM grace, the new lifeline neither sends SIGKILL nor takes the lock
+  (found by the round-3 second-pass review).
+- `PipeSessionSpawner.killPipeSession`: reads `#{pane_dead}`. The process
+  group is signalled only for an owned pane tmux reports live; an owned dead
+  or unreadable pane gets only `kill-session -t <session_id>`. The fallback
+  SIGKILL of the bare pane pid (when the pgid read failed) is removed (M2).
+- `OrphanProcessReaper`: only live panes (`pane_dead=0`) map a pid to a
+  session. The start time read at classification is carried on the orphan and
+  must still match right before SIGTERM; null sends nothing and the tmux
+  session is left alone. Session ownership is re-checked before the terminal
+  `kill-session`. The operator-requested external kill is a separate mode of
+  `killProcess` (M3).
 
 - `src/core/processIdentity.ts` (new, ~60 lines): `processStartMs(pid)` reads
   `ps -o lstart=`. `checkRecordedProcess({pid, procStart, startedAt})` returns
@@ -67,8 +88,14 @@ reports and does not signal.
   taken over. The first restart after the update normally goes through
   launchd's `kickstart -k`, which does not use these paths. Once a lifeline
   from this version is running, its records carry `procStart`.
-- A process whose start time `ps` cannot read counts as unproven, so it is not
-  signalled.
+- A process whose start time `ps` cannot read is not signalled. For the
+  lifeline lock it counts as gone only on a confirmed ESRCH; a live holder
+  whose start time cannot be read keeps its lock, so a new lifeline refuses to
+  start until `ps` works again.
+- Pipe spawner: a live owned pane whose pgid cannot be read gets no process
+  signal; `kill-session` still hangs up the pane.
+- Orphan reaper: an owned orphan whose start time cannot be read is skipped
+  (reported as "Skipped orphan"), not killed.
 - Triage: if a session record was purged while its tmux session lived on, the
   triage name stays occupied and the spawn throws. `TriageOrchestrator`
   already handles a failed spawn. That is better than killing an unproven
@@ -88,8 +115,14 @@ reports and does not signal.
 - Two SessionManagers sharing one agent state dir are treated as one agent
   and may clean up each other's sessions. That is the same agent, which is
   intended.
-- This change does not identify what killed the six builders, and it does
-  not claim to.
+- The final ownership check and the signal are separate calls, a few
+  milliseconds apart. The reaper's terminal `kill-session` goes by name after
+  an ownership re-check.
+- Only the paths named here were changed. Other kill paths (for example the
+  SessionWatchdog, and SessionManager's own passes) were not re-audited in
+  this change.
+- This change does not identify what killed the six builders. Those deaths
+  remain unattributed, and these paths are not excluded as a possible cause.
 
 ## 3. Level-of-abstraction fit
 
@@ -145,17 +178,30 @@ code ignores them. No migration is needed.
 
 ## Conclusion
 
-Clear to ship. Every automatic kill path Astra named now signals only a proven
-incarnation, and the positive cleanup cases still work (see the tests).
+Clear to ship pending review. In the cases the tests exercise, the paths
+Astra named signal only a proven incarnation, and the positive cleanup cases
+still work. The limits in section 2 remain.
 
 ---
 
 ## Second-pass review (if required)
 
-**Reviewer:** independent reviewer subagent (general-purpose, read-only)
-**Verdict: Concur with the review**
+**Round 3 reviewer:** independent reviewer subagent (general-purpose,
+read-only). **Verdict: Concur.** M1-M4 closed in the code read; no automatic
+path read signals an unproven process. Its minor points: (a) identity turning
+unreadable during the lifeline SIGTERM grace fell through to a takeover —
+fixed in this round, with a test; (b) the reaper reads `procStart` just after
+the ownership check, not from the original `ps` scan (documented limit);
+(c) the integration test's teardown killed detached children on an `alive`
+check only — it now also requires the recorded start time.
 
-- All six must-fixes are closed in the touched code. No touched path lets a
+**Round 2 reviewer:** independent reviewer subagent (general-purpose, read-only).
+**Verdict: Concur with the review** (round 2). Astra's round-2 review then
+found M1-M3 below, so this verdict did not hold; the round-3 fixes await
+Astra's next review.
+
+- Round-2 reviewer's claim (superseded): all six must-fixes are closed in the
+  touched code. No touched path lets a
   name, keyword or bare pid alone authorize an automatic signal. The lifeline
   restart and takeover signal only on `same`, and SIGKILL re-checks. Pipe
   teardown needs an exact id+pid match and kills by id. Triage throws on a
@@ -183,6 +229,24 @@ incarnation, and the positive cleanup cases still work (see the tests).
   `checkRecordedProcess` changed to accept any live pid, 3 fail. The legacy
   "respect" case does not discriminate on its own, because a fresh child cannot
   carry a 5-minute-old lock. Its verdict is covered by the `checkRecordedProcess` case.
+- Round 3: `tests/unit/lifeline/lifeline-lock-identity.test.ts` adds a `ps`
+  that always fails on PATH: a live holder is `unproven` and keeps its lock; a
+  holder confirmed dead (ESRCH) is `gone` and the lock is taken over.
+- Round 3: a holder that ignores SIGTERM, with `ps` failing after the first
+  identity check: `acquireLockFile` returns false, sends no SIGKILL, and the
+  lock is unchanged. This case fails against the round-2 `lifelineLock.ts`.
+- Round 3: the integration file adds a real retained dead pane
+  (`remain-on-exit`, its pane process killed by exact pid): `process.kill` is
+  never called and the owned session is removed. With the round-2 spawner this
+  case fails. The live-pane positive case now also asserts the pane process
+  exits. 8/8 pass.
+- Round 3: `tests/unit/orphan-reaper-pane-identity.test.ts` (scripted ps/tmux,
+  stubbed `process.kill`): a foreign pid reusing a dead or indeterminate
+  pane's pid is not an orphan and gets no signal; the same pid in a live owned
+  pane is reaped (SIGTERM then SIGKILL, ownership re-checked before tmux
+  cleanup); a changed or unreadable start time sends nothing; the operator
+  kill still works. All six fail against the round-2 reaper. PID reuse itself
+  is simulated, not reproduced.
 - Round-1 live check: a foreign `claude -p … fix the lifeline` process survived
   the `lifeline restart` fallback.
 
