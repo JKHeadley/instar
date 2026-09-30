@@ -1,0 +1,71 @@
+# Jev ranks which memory-index lines a session should see (development agents, shadow)
+
+## What Changed
+
+Claude Code's memory index (`MEMORY.md`, one line per memory) loads by position: only
+about the first 25,000 characters reach a session. On a large index the rest is
+dropped whether or not it matters. On the development agent's index, 44% of the
+relevant entries sat past that cut.
+
+With the new `intelligence.jevMemoryPicker` switch, the session-start hook calls
+`POST /memory-picker/session-context`. The server then asks Jev (TypeSafe) in one
+bounded call to score the index lines past the cut against the session's topic and
+last three messages.
+
+- **Shadow mode, the default.** The route answers 202 at once and writes one row to
+  `logs/jev-memory-picker.jsonl`: the line ids it would add, their scores, counts,
+  latency and the triggering event. It never records memory or message text. Nothing
+  is injected.
+- **Inject mode** (`"mode": "inject"`). The hook prints the top-ranked lines past the
+  cut, at most 40 lines and 10,000 characters by default.
+- Two frozen questions per line (same subject; specific system, not a general
+  principle), averaged. The picker keeps a fixed top-N by rank, never a confidence
+  cutoff.
+- `<!-- pinned -->` on a line makes it always load past the cut, with no Jev call.
+  Nothing is pinned automatically.
+- An optional `glossary` (up to 20 short notes) lets Jev connect internal names.
+- Every failure (no key, timeout, vendor error, daily cap of 300, 2 in flight) adds
+  nothing ranked. With nothing pinned, the session gets today's load.
+- The context and the index lines are secret-scrubbed before egress. Every call is
+  metered as feature `jev-memory-picker`.
+- Dev-gated: `enabled` is omitted (live on a development agent, dark on the fleet).
+  `false` is the kill switch, read live. The session-start hook step reaches existing
+  agents through the always-overwritten built-in hook. The CLAUDE.md card arrives
+  through the CLAUDE.md migration.
+
+## Evidence
+
+- `tests/unit/JevMemoryPicker.test.ts` (33 tests): the 25,000-character / 200-line
+  cut, including the measured real shape (117 in, 118 out); pinned vs ranked; top-N
+  by mean score with ties by position; the character cap; every fallback reason adds
+  nothing ranked; timeout against a never-settling fetch; the daily cap and the
+  in-flight bound; scrubbing of the context, the glossary and the lines; the 401 key
+  re-read; path derivation and its refusals (outside home, traversal, a symlinked
+  index, a config dir linked out of home); rows carry no text; the dev gate and the
+  kill switch.
+- `tests/integration/jev-memory-picker-route.test.ts` (7 tests): the route over real
+  HTTP (503 off, 400 on a bad path, 202 shadow with a ranked row, 200 inject with the
+  block, vendor error, missing index, no context).
+- `tests/e2e/jev-memory-picker-lifecycle.test.ts` (5 tests): the production factory
+  reading a real config.json live, alive on a dev agent and dark on the fleet. The
+  MIGRATED session-start hook runs under bash against a real server: it prints the
+  block in inject mode and nothing in shadow mode. The CLAUDE.md card lands once.
+- Real-shape replay against the real endpoint (2026-09-30): Echo's real index put the
+  cut at line 117 (prefix 117 of 287), with 170 candidates. Each call took 258–442 ms.
+  The Mama PC topic's top line was "Windows machine access". The note's hard case
+  ("change this model to gpt-5.6-sol") surfaced the Codex quota rules only with a
+  two-line glossary.
+
+## What to Tell Your User
+
+Nothing changes unless you run a development agent. On a development agent, each new
+session now quietly asks a fast model which of my older saved memories matter for the
+conversation, and only writes that down so we can check it helps. It doesn't change
+what I see yet, and it can be turned off at once.
+
+## Summary of New Capabilities
+
+- `intelligence.jevMemoryPicker`: Jev ranks the memory-index lines past the load cut
+  at session start. Dev-gated and shadow by default; `"mode": "inject"` prints them,
+  and `"enabled": false` turns it off.
+- `POST /memory-picker/session-context`: the route the session-start hook calls.

@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevSignalLiveAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6604,6 +6604,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev live artefact-signal awareness card');
     }
 
+    if (!content.includes('### Jev Memory Picker')) {
+      content += jevMemoryPickerAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
+    }
+
     if (!content.includes('Queued-message review pacing:')) {
       content += '\n' + telegramOriginRecoveryAwareness();
       patched = true;
@@ -10949,6 +10955,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Jev live artefact signals: server-side tone-gate behaviour, identical for
       // any framework's sends, so a Codex/Gemini agent must be able to explain it.
       '### Jev Artefact Signals',
+      // Jev memory picker: server-side ranking the session-start hooks call; a
+      // Codex/Gemini agent must be able to explain it (and that it ranks Claude
+      // Code's MEMORY.md), including that it ships dark and shadow-only.
+      '### Jev Memory Picker',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
@@ -13552,6 +13562,53 @@ exit 0
 `;
   }
 
+  /**
+   * The Jev memory picker hook step (docs/specs/jev-memory-picker.md), shared
+   * by session-start and its compaction-recovery twin (Compaction Parity). The
+   * caller sets MEM_PORT, MEM_TOKEN and MEM_EVENT first.
+   */
+  private jevMemoryPickerHookStep(): string {
+    return `# JEV MEMORY PICKER — docs/specs/jev-memory-picker.md. MEMORY.md loads by
+# position (the first ~25,000 characters); Jev ranks the entries past that cut
+# against this session's topic. Shadow mode (the default) only logs on the
+# server and prints nothing; inject mode prints the ranked entries. The index is
+# keyed on the git root (Claude Code keys worktree sessions there too).
+# Fail-open: route 503 (disabled) / unreachable / timeout -> silent skip.
+if [ -n "\$MEM_PORT" ] && [ -n "\$MEM_TOKEN" ]; then
+  MEM_PROJ="\${CLAUDE_PROJECT_DIR:-\$(pwd)}"
+  MEM_COMMON=\$(git -C "\$MEM_PROJ" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ -n "\$MEM_COMMON" ] && [ "\$(basename "\$MEM_COMMON")" = ".git" ]; then
+    MEM_PROJ=\$(dirname "\$MEM_COMMON")
+  fi
+  MEM_BODY=\$(MEM_PROJ="\$MEM_PROJ" MEM_CFG="\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}" MEM_EVENT="\$MEM_EVENT" python3 -c "
+import json, os
+print(json.dumps({'configDir': os.environ['MEM_CFG'], 'projectDir': os.environ['MEM_PROJ'], 'topicId': os.environ.get('INSTAR_TELEGRAM_TOPIC') or None, 'source': os.environ['MEM_EVENT']}))
+" 2>/dev/null)
+  if [ -n "\$MEM_BODY" ]; then
+    MEM_RESPONSE=\$(curl -sf --max-time 4 -X POST -H "Authorization: Bearer \$MEM_TOKEN" -H 'Content-Type: application/json' \\
+      -d "\$MEM_BODY" "http://localhost:\${MEM_PORT}/memory-picker/session-context" 2>/dev/null)
+    if [ -n "\$MEM_RESPONSE" ]; then
+      MEM_BLOCK=\$(echo "\$MEM_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$MEM_BLOCK" ]; then
+        echo ""
+        echo "\$MEM_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
+`;
+  }
+
   private getSessionStartHook(): string {
     return `#!/bin/bash
 # Session start hook — injects identity context on session lifecycle events.
@@ -13701,7 +13758,8 @@ except Exception:
   fi
 fi
 
-# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
+MEM_PORT="\$PORT"; MEM_TOKEN="\$TOKEN"; MEM_EVENT="\$EVENT"
+${this.jevMemoryPickerHookStep()}# AUTO-LEARNED PREFERENCES injection — Correction & Preference Learning Sentinel
 # (Slice 1a). Fetches /preferences/session-context and injects the structured
 # block of preferences the correction loop has learned about this user, so the
 # agent reasons with them from message one. SIGNAL-ONLY — these are preferences,
@@ -15101,6 +15159,17 @@ except Exception:
   fi
 fi
 
+# JEV MEMORY PICKER twin (Compaction Parity). MEMORY.md is loaded again after a
+# compaction, so the picker ranks again for the post-compaction context.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  MEM_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  MEM_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$MEM_TOKEN" ]; then
+    MEM_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  MEM_EVENT="compact"
+fi
+${this.jevMemoryPickerHookStep()}
 # WORKING-SET ARTIFACT grounding twin (Compaction Parity — intelligent-working-set-lazy-sync
 # Layer-3). Mirrors the session-start injection so after a compaction the agent is RE-grounded
 # on the interactive artifacts it recorded for this conversation. ADVISORY only (a path is

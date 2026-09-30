@@ -3929,6 +3929,29 @@ export interface InstarConfig {
       /** Batch cadence for the built-in job (default 6). */
       batchIntervalHours?: number;
     };
+    /**
+     * Jev memory picker (docs/specs/jev-memory-picker.md). Ranks the Claude Code
+     * memory index against a session's opening context at session start.
+     * `enabled` omitted ⇒ the developmentAgent gate decides (live on a dev
+     * agent, dark on the fleet); false is the kill switch. Read live.
+     */
+    jevMemoryPicker?: {
+      enabled?: boolean;
+      /** "shadow" (default) logs only; "inject" prints the ranked entries. */
+      mode?: 'shadow' | 'inject';
+      /** Pinned model id (default "jev-1.13.0"). */
+      model?: string;
+      /** Fetch abort (default 1500; clamped 100–3000). */
+      timeoutMs?: number;
+      /** Ranked entries added beyond the load cut (default 40). */
+      injectLines?: number;
+      /** Character cap on the added entries (default 10000). */
+      injectMaxChars?: number;
+      /** Up to 20 short notes on internal names, sent with the context. */
+      glossary?: string[];
+      /** Jev calls per UTC day, per process (default 300). */
+      dailyCallCap?: number;
+    };
     circuitBreaker?: {
       /** Master switch for the rate-limit circuit breaker (default: true). */
       enabled?: boolean;

@@ -662,6 +662,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Advisory input only — takes effect only where the tone gate\'s advisory migration makes B1–B7 overridable and decision-quality recording is live (so the route never hardens the advisory); never a new block; the deterministic degraded floor and the credential wall are untouched. Inert without the vault typesafe_api_key (only the dev agent holds one). Reuses the shadow\'s single Jev call (no extra calls while the shadow runs; after its soak, one Jev call per reviewed message), the Luna referee stays bound to the shadow\'s soak, text is secret-scrubbed before egress, the wait is bounded at timeoutMs+250ms, and a vendor-down breaker returns to the detector path. No destructive action.',
   },
   {
+    name: 'jevMemoryPicker',
+    configPath: 'intelligence.jevMemoryPicker.enabled',
+    description: 'Jev ranks the Claude Code memory index (MEMORY.md) against a session\'s opening topic at session start (jev-memory-picker.md); shadow mode (the default) only logs which lines it would add past the positional load cut.',
+    justification: 'Signal only — it chooses which already-saved index lines are offered to a session and cannot block, send or change anything; in shadow mode it changes nothing. Inert without the vault typesafe_api_key (only the dev agent holds one). One bounded Jev call per session start, only when the index overflows the load cut, under a daily call cap and at most 2 in flight; text is secret-scrubbed before egress; every failure is today\'s load. No destructive action.',
+  },
+  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
