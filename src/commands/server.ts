@@ -10738,7 +10738,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[reap-log] recordExited failed (non-fatal):', err);
       }
     });
-    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
+    sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator'; midWork?: boolean; workEvidence?: string[]; via?: string; seenWorkingPastAgeLimit?: boolean }) => {
       // ── F7: schedule a post-grace reachability verify for the affected topic. Both a
       //    terminal kill AND a recovery-bounce schedule one (a recovery whose respawn
       //    wedges is exactly the orphan to catch); the verifier's grace lets a normal
@@ -10930,6 +10930,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             disposition: e.disposition ?? 'terminal',
             origin: e.origin ?? 'autonomous',
             workEvidence: candidateWorkEvidence,
+            ...(e.seenWorkingPastAgeLimit ? { seenWorkingPastAgeLimit: true } : {}),
           });
         }
       } catch (err) {

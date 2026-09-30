@@ -641,8 +641,9 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
   // although its worktree held uncommitted work the idle reaper would have
   // recorded. The age kill now collects that evidence too.
   const reapedEvents = () => {
-    const events: Array<{ midWork?: boolean; workEvidence?: string[]; disposition?: string }> = [];
-    manager.on('sessionReaped', (e: { midWork?: boolean; workEvidence?: string[]; disposition?: string }) => { events.push(e); });
+    type Reaped = { midWork?: boolean; workEvidence?: string[]; disposition?: string; seenWorkingPastAgeLimit?: boolean };
+    const events: Reaped[] = [];
+    manager.on('sessionReaped', (e: Reaped) => { events.push(e); });
     return events;
   };
   // Topic sessions record the agent home as their cwd; the probe reads it.
@@ -676,6 +677,9 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(events).toHaveLength(1);
     expect(events[0].midWork).toBe(true);
     expect(events[0].workEvidence).toContain('uncommitted-worktree-work');
+    // Round 3 (18:14Z): it was seen working past its age limit, so the resume
+    // queue must not count this revival toward the kill-loop cap.
+    expect(events[0].seenWorkingPastAgeLimit).toBe(true);
     const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
     expect(classifyEligibility({
       sessionName: 'age-r2-coordinator', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
@@ -692,6 +696,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     const { id } = await runLocalExpiredMonitorTick('age-r2-stale', () => { withCwd('age-r2-stale'); standby(); });
     expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
     expect(events[0].midWork).toBe(false);
+    expect(events[0].seenWorkingPastAgeLimit).toBeUndefined();
     const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
     expect(classifyEligibility({
       sessionName: 'age-r2-stale', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,

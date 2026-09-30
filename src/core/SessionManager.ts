@@ -1899,6 +1899,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
        *  It proves the request originated in THIS SessionManager's monitor over
        *  THIS machine's state tree and local tmux namespace. Never public. */
       localAgeLimitReapCapability?: typeof LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+      /** Age-limit kill only: the age gate saw this session working after it
+       *  passed its age limit. Passed through on `sessionReaped` so the resume
+       *  queue does not count the revival as a kill-resume-kill loop. */
+      seenWorkingPastAgeLimit?: boolean;
       /** Birth-bound SessionReaper assertion after ownership/liveness/dwell. */
       localPostTransferCloseout?: boolean;
       /**
@@ -2191,6 +2195,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         midWork,
         workEvidence,
         ...(opts?.via ? { via: opts.via } : {}),
+        ...(reason === 'age-limit' && opts?.seenWorkingPastAgeLimit ? { seenWorkingPastAgeLimit: true } : {}),
       });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
@@ -2211,6 +2216,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       disposition: 'terminal',
       localAgeLimitReapCapability: LOCAL_AGE_LIMIT_REAP_CAPABILITY,
       workEvidence: this.#ageKillWorkEvidence(sessionId),
+      // The session did real work after it passed its age limit, so it lived and
+      // worked its full lifetime: its revival is not a kill-resume-kill loop
+      // (2026-09-30 18:14Z, topic 52075: refused by the resurrection cap).
+      seenWorkingPastAgeLimit: this.ageGateLastWorkingAt.has(sessionId),
     });
   }
 
