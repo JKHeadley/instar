@@ -5112,7 +5112,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
   const sessionStartHook = {
     type: 'command',
-    command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh',
+    command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
     timeout: 5,
   };
 
@@ -5168,7 +5168,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // PostToolUse: scope coherence collector tracks implementation depth
   const scopeCollectorHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-collector.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-collector.js"',
     timeout: 5000,
   };
 
@@ -5181,7 +5181,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // (scope collector also added to Read and Skill)
   const claimInterceptHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept.js"',
     timeout: 5000,
   };
 
@@ -5207,21 +5207,21 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // Stop: response review pipeline — Coherence Gate LLM-powered review
   const responseReviewHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/response-review.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/response-review.js"',
     timeout: 10000,
   };
 
   // Stop: scope coherence checkpoint fires the zoom-out prompt
   const scopeCheckpointHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-checkpoint.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-checkpoint.js"',
     timeout: 10000,
   };
 
   // Stop: claim intercept response checks direct text for false claims
   const claimInterceptResponseHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept-response.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept-response.js"',
     timeout: 10000,
   };
 
@@ -5263,7 +5263,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   if (!hasAutonomousHook) {
     const autonomousEntry = { matcher: '', hooks: [{
       type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
+      command: 'bash "${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh"',
       timeout: 10000,
     }] };
     const stopGateIndex = stopHooks.findIndex(e =>
@@ -5290,7 +5290,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       matcher: '',
       hooks: [{
         type: 'command',
-        command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js',
+        command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js"',
         timeout: 5000,
       }],
     });

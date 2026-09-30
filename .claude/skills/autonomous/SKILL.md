@@ -69,7 +69,7 @@ hooks = s.setdefault('hooks', {}).setdefault('Stop', [])
 # never deployed, so the hook silently failed every Stop and the loop never
 # re-engaged.) Self-heal: drop any prior autonomous-stop-hook entry (incl. the
 # legacy wrong path), then add exactly one correct-path entry.
-correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'
+correct = 'bash \"\${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"'
 before = json.dumps(hooks)
 hooks[:] = [e for e in hooks if not any('autonomous-stop-hook' in str(h.get('command','')) for h in e.get('hooks', []))]
 hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': correct, 'timeout': 10000}]})

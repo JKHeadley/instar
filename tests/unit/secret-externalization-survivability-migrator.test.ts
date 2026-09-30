@@ -140,6 +140,51 @@ describe('secret-externalization survivability migration', () => {
     expect(final).toContain('INSTAR_AUTH_TOKEN');
     expect(final).toContain('isinstance(v, str)');
   });
+
+  it('upgrades an auth-current slack-channel-context.sh that still reads config cwd-relative, then leaves it alone', () => {
+    const cwdRelative = [
+      '#!/bin/bash',
+      '# slack-channel-context.sh — auto-inject Slack channel history',
+      'AUTH="${INSTAR_AUTH_TOKEN:-}"',
+      'if [ -f ".instar/config.json" ]; then',
+      '  :',
+      'fi',
+    ].join('\n') + '\n';
+    const hookPath = path.join(claudeHooksInstarDir, 'slack-channel-context.sh');
+    fs.writeFileSync(hookPath, cwdRelative);
+
+    const first = runMigrate(makeMigrator());
+    const final = fs.readFileSync(hookPath, 'utf-8');
+    expect(final).toContain('CONFIG_FILE="${CLAUDE_PROJECT_DIR:-.}/.instar/config.json"');
+    expect(final).not.toContain('open(\'.instar/config.json\')');
+    expect(final).not.toContain("open('$CONFIG_FILE')");
+    expect(first.upgraded.some(u => u.includes('slack-channel-context.sh'))).toBe(true);
+
+    const second = runMigrate(makeMigrator());
+    expect(second.upgraded.some(u => u.includes('slack-channel-context.sh'))).toBe(false);
+  });
+
+  it('upgrades a slack-channel-context.sh that interpolates $CONFIG_FILE into Python source', () => {
+    // The round-1 shape: an absolute path with an apostrophe breaks the Python.
+    const interpolated = [
+      '#!/bin/bash',
+      '# slack-channel-context.sh — auto-inject Slack channel history',
+      'AUTH="${INSTAR_AUTH_TOKEN:-}"',
+      'CONFIG_FILE="${CLAUDE_PROJECT_DIR:-.}/.instar/config.json"',
+      'PORT=$(python3 -c "import json; print(json.load(open(\'$CONFIG_FILE\')).get(\'port\',\'\'))" 2>/dev/null)',
+    ].join('\n') + '\n';
+    const hookPath = path.join(claudeHooksInstarDir, 'slack-channel-context.sh');
+    fs.writeFileSync(hookPath, interpolated);
+
+    const first = runMigrate(makeMigrator());
+    const final = fs.readFileSync(hookPath, 'utf-8');
+    expect(final).not.toContain("open('$CONFIG_FILE')");
+    expect(final).toContain('open(sys.argv[1])');
+    expect(first.upgraded.some(u => u.includes('slack-channel-context.sh'))).toBe(true);
+
+    const second = runMigrate(makeMigrator());
+    expect(second.upgraded.some(u => u.includes('slack-channel-context.sh'))).toBe(false);
+  });
 });
 
 describe('migrateReplyScriptTo408: extended INSTAR_AUTH_TOKEN marker check', () => {

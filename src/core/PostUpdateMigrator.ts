@@ -1548,6 +1548,7 @@ export class PostUpdateMigrator {
     this.migrateClassClosureTemplateSelfActionClause(result);
     this.migrateSpecConvergeFoundationAudit(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
+    this.migrateSkillStopHookRegistrationQuoting(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
@@ -5221,6 +5222,49 @@ if [[ "$ACTIVE" != "true" ]]; then`;
   }
 
   /**
+   * The /autonomous and /build skills each carry a python block that registers
+   * their Stop hook in .claude/settings.json. Shipped copies wrote the command
+   * unquoted, so running the installed block after an update rewrote the quoted
+   * command (migrateSettings) back to a form that breaks in a home path with a
+   * space or apostrophe. Swap exactly those shipped lines for the quoted ones;
+   * the rest of the file, customized or not, is left alone. Idempotent: once
+   * replaced, the old line is no longer present.
+   */
+  private migrateSkillStopHookRegistrationQuoting(result: MigrationResult): void {
+    const autonomousNew = String.raw`correct = 'bash \"\${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"'`;
+    const buildNew = String.raw`'command': 'bash \"\${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh\"'`;
+    const targets: Array<{ relPath: string; replacements: Array<[string, string]> }> = [
+      {
+        relPath: '.claude/skills/autonomous/SKILL.md',
+        replacements: [
+          [String.raw`correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'`, autonomousNew],
+        ],
+      },
+      {
+        relPath: '.claude/skills/build/SKILL.md',
+        replacements: [
+          [`'command': 'bash .instar/hooks/instar/build-stop-hook.sh'`, buildNew],
+          [`'command': 'bash \${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh'`, buildNew],
+        ],
+      },
+    ];
+    for (const { relPath, replacements } of targets) {
+      try {
+        const skillFile = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(skillFile)) continue;
+        const current = fs.readFileSync(skillFile, 'utf8');
+        let next = current;
+        for (const [from, to] of replacements) next = next.split(from).join(to);
+        if (next === current) continue;
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push(`${relPath} (Stop hook registration quotes the hook path)`);
+      } catch (err) {
+        result.errors.push(`${relPath} hook-registration quoting: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /**
    * Deploy any missing built-in skills (e.g., guardian job skills added after initial setup).
    * Non-destructive — only writes SKILL.md files that don't already exist.
    */
@@ -5794,10 +5838,10 @@ if [[ "$ACTIVE" != "true" ]]; then`;
           const cmd = typeof hook?.command === 'string' ? hook.command : '';
           if (!cmd) continue;
           // Extract a path that looks like `.instar/hooks/...` from the command.
-          // Matches bash .instar/hooks/instar/foo.sh, node .instar/hooks/instar/foo.js,
+          // Matches bash .instar/hooks/instar/foo.sh, node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/foo.js",
           // or any direct reference to a file path under the hooks tree. Custom hooks
           // live under .instar/hooks/custom/ and are skipped — the agent owns them.
-          const match = cmd.match(/(?:^|\s)(\.instar\/hooks\/instar\/[^\s"]+)/);
+          const match = cmd.match(/(?:^|\s)"?(?:\$\{CLAUDE_PROJECT_DIR\}\/)?(\.instar\/hooks\/instar\/[^\s"]+)/);
           if (!match) continue;
           const relPath = match[1];
           const abs = path.join(this.config.projectDir, relPath);
@@ -5924,6 +5968,48 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
       }
     }
+  }
+
+  /**
+   * Rewrite built-in hook commands to the quoted project-anchored form
+   * (`node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/X.js"`), from either the
+   * bare relative form (`node .instar/hooks/instar/X.js`) or the unquoted
+   * anchored form (`node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/X.js`).
+   *
+   * Claude Code runs a hook command from the session's working directory, so
+   * a bare relative path fails with MODULE_NOT_FOUND / "No such file" in any
+   * session started in a subdirectory of the agent home — the hook silently
+   * never runs. Unquoted, an agent home containing a space splits the path.
+   * Only built-in scripts (`.instar/hooks/instar/`, the autonomous skill's
+   * stop hook) are touched; custom hooks are the agent's own. Trailing
+   * arguments are kept. Idempotent: a quoted command no longer matches.
+   */
+  private anchorBuiltinHookCommandPaths(
+    hooks: Record<string, unknown[]>,
+    result: MigrationResult,
+  ): boolean {
+    const unquoted = /^(node|bash|sh)\s+(?:(?:\.\/)?(?=\.instar\/hooks\/instar\/)|\$\{CLAUDE_PROJECT_DIR\}\/(?=\.instar\/hooks\/instar\/|\.claude\/skills\/autonomous\/hooks\/))([^\s"']+)/;
+    let count = 0;
+    const anchor = (h: unknown): void => {
+      if (typeof h !== 'object' || h === null) return;
+      const obj = h as Record<string, unknown>;
+      if (typeof obj.command === 'string' && unquoted.test(obj.command)) {
+        obj.command = obj.command.replace(unquoted, '$1 "${CLAUDE_PROJECT_DIR}/$2"');
+        count++;
+      }
+    };
+    for (const entries of Object.values(hooks)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        anchor(entry);
+        const nested = (entry as { hooks?: unknown } | null)?.hooks;
+        if (Array.isArray(nested)) nested.forEach(anchor);
+      }
+    }
+    if (count > 0) {
+      result.upgraded.push(`.claude/settings.json: anchored ${count} built-in hook command(s) on a quoted \${CLAUDE_PROJECT_DIR} path (hooks now run from any session cwd and any home path)`);
+    }
+    return count > 0;
   }
 
   /**
@@ -6103,7 +6189,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       matcher: '',
       hooks: [{
         type: 'command',
-        command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js',
+        command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js"',
         timeout: 5000,
       }],
     });
@@ -6280,7 +6366,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // `hasAutonomousHook` check below treats any autonomous-stop-hook entry as
     // "present", so without this repair a wrong-path entry blocks the correct
     // registration forever. Rewrite any such command to the deployed skill path.
-    const correctStopHookCmd = 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+    const correctStopHookCmd = 'bash "${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh"';
     for (const e of stopEntries) {
       for (const h of e.hooks ?? []) {
         if (
@@ -6305,7 +6391,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         matcher: '',
         hooks: [{
           type: 'command',
-          command: 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
+          command: 'bash "${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh"',
           timeout: 10000,
         }],
       };
@@ -6338,7 +6424,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     let patched = false;
     const commandHook = {
       type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js',
+      command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"',
       timeout: 3000,
     };
 
@@ -11424,6 +11510,8 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       templateFilename: string;
       shippedMarker: string;
       label: string;
+      /** Extra marker a current install must also carry (beyond INSTAR_AUTH_TOKEN). */
+      currentMarker?: string;
     };
     const targets: Target[] = [
       {
@@ -11448,6 +11536,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         templateFilename: 'slack-channel-context.sh',
         shippedMarker: 'slack-channel-context.sh',
         label: '.claude/hooks/instar/slack-channel-context.sh',
+        // Config read anchored on the project dir (works from a subdirectory)
+        // and handed to Python as argv, so any home path parses.
+        currentMarker: '"$CONFIG_FILE" 2>/dev/null',
       },
     ];
 
@@ -11456,8 +11547,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       try {
         const existing = fs.readFileSync(target.relPath, 'utf-8');
         const looksShipped = existing.includes(target.shippedMarker);
-        const hasAuthEnvHandling = existing.includes('INSTAR_AUTH_TOKEN');
-        if (!looksShipped || hasAuthEnvHandling) {
+        const isCurrent = existing.includes('INSTAR_AUTH_TOKEN')
+          && (!target.currentMarker || existing.includes(target.currentMarker));
+        if (!looksShipped || isCurrent) {
           // Skip custom forks and already-current installs.
           continue;
         }
@@ -11530,7 +11622,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
 
     const sessionStartHook = {
       type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh',
+      command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
       timeout: 5,
     };
 
@@ -11561,7 +11653,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         matcher: '',
         hooks: [{
           type: 'command',
-          command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-topic-context.sh',
+          command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-topic-context.sh"',
           timeout: 5000,
         }],
       });
@@ -11582,7 +11674,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         matcher: 'mcp__.*',
         hooks: [{
           type: 'command',
-          command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js',
+          command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js"',
           blocking: true,
           timeout: 5000,
         }],
@@ -11609,7 +11701,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         matcher: 'Write|Edit|MultiEdit',
         hooks: [{
           type: 'command',
-          command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/working-set-artifact-recorder.js',
+          command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/working-set-artifact-recorder.js"',
           timeout: 5000,
         }],
       });
@@ -11705,7 +11797,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         bashEntry.hooks = bashEntry.hooks ?? [];
         bashEntry.hooks.push({
           type: 'command',
-          command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js',
+          command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js"',
           timeout: 5000,
         });
         patched = true;
@@ -11717,7 +11809,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: 'Bash',
           hooks: [{
             type: 'command',
-            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js',
+            command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js"',
             timeout: 5000,
           }] as never,
         });
@@ -11737,7 +11829,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: 'Skill',
           hooks: [{
             type: 'command' as never,
-            command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/skill-usage-telemetry.sh',
+            command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/skill-usage-telemetry.sh"',
             timeout: 3000,
           } as never],
         });
@@ -11759,7 +11851,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         const skillEntry = postToolUse.find(e => e.matcher === 'Skill');
         const hookDef = {
           type: 'command' as never,
-          command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-skill-entry.sh',
+          command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-skill-entry.sh"',
           timeout: 3000,
         } as never;
         if (skillEntry) {
@@ -11783,7 +11875,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: '',
           hooks: [{
             type: 'command' as never,
-            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-reconciler.js',
+            command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-reconciler.js"',
             timeout: 5000,
           } as never],
         });
@@ -11808,7 +11900,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: '',
           hooks: [{
             type: 'command',
-            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/stop-gate-router.js',
+            command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/stop-gate-router.js"',
             timeout: 5000,
           }],
         });
@@ -11830,7 +11922,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: '',
           hooks: [{
             type: 'command',
-            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/action-claim-followthrough.js',
+            command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/action-claim-followthrough.js"',
             timeout: 6000,
           }],
         });
@@ -11851,7 +11943,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
           matcher: '',
           hooks: [{
             type: 'command',
-            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/completion-claim-observe.js',
+            command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/completion-claim-observe.js"',
             timeout: 6000,
           }],
         });
@@ -11904,6 +11996,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // so they just stop after each response. This was a critical gap where the hook files
     // existed but were never registered in settings.json.
     if (this.ensureAutonomousStopHook(hooks, result)) {
+      patched = true;
+    }
+
+    // Anchor built-in hook commands on the project dir. Runs last so it also
+    // covers entries the steps above just rewrote or added.
+    if (this.anchorBuiltinHookCommandPaths(hooks, result)) {
       patched = true;
     }
 
@@ -17199,7 +17297,7 @@ echo "[\$(date -Iseconds)] Server restart initiated"
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
+const STATE_FILE = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state', 'scope-coherence.json');
 const SCOPE_DOC_PATTERNS = [
   'docs/', 'specs/', 'SPEC', 'PROPOSAL', 'DESIGN', 'ARCHITECTURE',
   'README', '.instar/AGENT.md', '.instar/USER.md', '.claude/context/',
@@ -17327,7 +17425,7 @@ function saveState(state) {
   const path = await import('node:path');
   const http = await import('node:http');
 
-const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
+const STATE_FILE = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state', 'scope-coherence.json');
 const DEPTH_THRESHOLD = 20;
 const COOLDOWN_MS = 30 * 60 * 1000;  // 30 minutes
 const MIN_AGE_MS = 5 * 60 * 1000;    // 5 minutes
@@ -17511,7 +17609,7 @@ function fetchActiveJob() {
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_DIR = path.join('.instar', 'state');
+const STATE_DIR = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
 const RATE_LIMIT_MS = 10000; // 10 seconds between checks
 const LOG_FILE = path.join(STATE_DIR, 'claim-intercept.log');
@@ -18219,7 +18317,7 @@ if (!reviewEnabled) {
   const fs = await import('node:fs');
   const path = await import('node:path');
 
-const STATE_DIR = path.join('.instar', 'state');
+const STATE_DIR = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
 const RATE_LIMIT_MS = 10000;
 const LOG_FILE = path.join(STATE_DIR, 'claim-intercept.log');
@@ -18636,7 +18734,7 @@ if (!sid || !sessionName || !serverUrl || !authToken) process.exit(0);
 #
 # Reads state from .instar/state/build/build-state.json.
 
-STATE_FILE=".instar/state/build/build-state.json"
+STATE_FILE="\${CLAUDE_PROJECT_DIR:-.}/.instar/state/build/build-state.json"
 
 # No state file = no active build = allow exit
 if [ ! -f "\$STATE_FILE" ]; then
@@ -18645,7 +18743,7 @@ if [ ! -f "\$STATE_FILE" ]; then
 fi
 
 # Read state
-PHASE=\$(python3 -c "import json; d=json.load(open('\$STATE_FILE')); print(d.get('phase','idle'))" 2>/dev/null)
+PHASE=\$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('phase','idle'))" "\$STATE_FILE" 2>/dev/null)
 
 # Terminal phases — allow exit
 if [ "\$PHASE" = "complete" ] || [ "\$PHASE" = "failed" ] || [ "\$PHASE" = "escalated" ]; then
@@ -18718,7 +18816,7 @@ fi
 # Check and update reinforcement counter
 RESULT=\$(python3 -c "
 import json, sys
-with open('\$STATE_FILE') as f:
+with open(sys.argv[1]) as f:
     state = json.load(f)
 
 protection = state.get('protection', {})
@@ -18730,7 +18828,7 @@ if used >= max_r:
     sys.exit(0)
 
 state['reinforcementsUsed'] = used + 1
-with open('\$STATE_FILE', 'w') as f:
+with open(sys.argv[1], 'w') as f:
     json.dump(state, f, indent=2)
 
 phase = state.get('phase', 'idle')
@@ -18763,7 +18861,7 @@ reason = (
 ) % (phase, label, state['reinforcementsUsed'], max_r, steps_info, wt_info, task, hint)
 
 print(json.dumps({'decision': 'block', 'reason': reason}))
-" 2>/dev/null)
+" "\$STATE_FILE" 2>/dev/null)
 
 echo "\$RESULT"
 exit 0
