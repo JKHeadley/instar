@@ -31,7 +31,9 @@ nothing running in its own window (its builds run in other sessions).
 ## What changed
 
 When the age limit ends a session, the server now notes whether it saw that
-session working after the session passed its age limit. A session like that
+session's conversation record being written after the session passed its age
+limit. Only that counts; a check that failed or could not read the screen
+never does. A session like that
 lived its whole allowed lifetime and was doing real work late in it. That is
 the opposite of a session that keeps dying, so the restart queue starts its
 count for that topic again from zero and queues the restart.

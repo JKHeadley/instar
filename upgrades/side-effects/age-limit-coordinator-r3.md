@@ -37,11 +37,18 @@ limit's job; the defect was the revival refusal.
 
 The change:
 
-- `SessionManager.#terminateLocalAgeExpiredSession` passes
-  `seenWorkingPastAgeLimit: this.ageGateLastWorkingAt.has(sessionId)`. That
-  map holds a session only when the age gate, which runs only on over-age
-  sessions, saw it working. The chokepoint emits the flag on `sessionReaped`
-  only for reason `age-limit`.
+- The age gate, which runs only on over-age sessions, records a session in
+  `ageGateConfirmedWorkPastLimit` when its transcript was written within the
+  last two minutes (`isTranscriptRecentlyActive`). That is the only sample
+  counted as confirmed work. `#terminateLocalAgeExpiredSession` passes
+  `seenWorkingPastAgeLimit: ageGateConfirmedWorkPastLimit.has(sessionId)`, and
+  the chokepoint emits the flag on `sessionReaped` only for reason
+  `age-limit`. The set is pruned for ended sessions and cleared at the kill.
+- Uncertain samples still defer the kill exactly as before but never earn the
+  flag: an empty or missing pane capture, a failed process probe (which
+  returns "active" to stay safe), and a live child process (which can be an
+  idle MCP server). Round 1 used the kill-deferral memory, which includes
+  those; Astra found it (see Second-pass review).
 - `server.ts` forwards the flag into the resume candidate.
 - `ResumeQueue.considerEnqueue`: when the flag is set and a prior resume
   exists, the ledger restarts (`resurrections 0`, `windowStartAt now`,
@@ -74,8 +81,9 @@ No new block. The change only admits candidates the cap refused.
 ## 2. Under-block
 
 The brake still stops fast kill→revive→kill loops: a flagged kill needs a
-session at least `maxDurationMinutes` old (240 by default) that was seen
-working after passing that age. At most one ledger restart per topic per
+session at least `maxDurationMinutes` old (240 by default) whose transcript
+was written after it passed that age. Probe failures and idle children never
+earn it (tested for each). At most one ledger restart per topic per
 such lifetime; between restarts the ≤2 cap applies (tested). A revived
 session that only runs its resume turn at spawn is never over age at that
 moment, so it cannot earn the flag. A session kept busy by repeated inbound
@@ -97,8 +105,8 @@ and consumed by the component that owns the loop brake (the resume queue).
 
 ## 4b. Judgment-point check (Judgment Within Floors standard)
 
-No new heuristic. It reuses the age gate's existing three-probe working
-verdict (`isAgeGateTrulyIdle`) through `ageGateLastWorkingAt`.
+No new heuristic. It reuses the age gate's existing transcript probe, the
+one positive observation among its three probes.
 
 ## 5. Interactions
 
@@ -128,14 +136,14 @@ per machine, `topic-owner-elsewhere` checked at drain).
 
 ## 7b. Constitutional Rules touched (Instar 2.0 `docs/01-the-rules.md`)
 
-- **Rule 26 (verify the state):** the flag comes from the age gate's probes
-  of the live session, not from a label.
+- **Rule 26 (verify the state):** the flag comes from an observed transcript
+  write, not from a label or a fail-safe default.
 - **Rules 68 / 97 (preserve live work, continuity):** a session that worked
   through its lifetime and still holds unfinished work is revived.
 - **Rule 70 (bug evidence):** the replay tests fail without the fix.
 - **Rule 74 (side effects):** this review.
-- **Rule 116 (simplest robust route):** one boolean passed through three
-  existing calls and one branch in the cap.
+- **Rule 116 (simplest robust route):** one per-session set, one boolean
+  passed through three existing calls, one branch in the cap.
 - **Safety floors:** spend stays bounded (above) and the fleet dry-run
   default is unchanged; no duplicate sends (drainer `live-session-exists`
   unchanged); stop is unchanged (operator kills never queue).
@@ -162,14 +170,28 @@ verdict, and read before its delete; the chokepoint emits the flag only for
 stated in section 2: the `maxResurrections: 0` wording held only for a fresh
 window, and a server restart loses the in-memory flag (safe direction).
 
+### Astra round 1 — CHANGES REQUIRED → addressed
+
+Must-fix: the flag read `ageGateLastWorkingAt`, which records any non-idle
+sample, including a missing or empty pane capture and a failed process probe.
+An idle session could earn a ledger reset from a probe failure. **Addressed:**
+the flag now comes only from a transcript write past the limit
+(`ageGateConfirmedWorkPastLimit`). Astra's repro cases (null pane, empty pane,
+process-probe error) plus an idle child process are in the tests; each fails
+on the round-1 code and passes now, through the real monitor tick and the
+real ResumeQueue.
+
 ## Evidence pointers
 
 - `tests/unit/resume-queue.test.ts` — "REPRO 52075", "NOT seen working ...
   still counts", "after a ledger restart ... capped again", "stale age-limit
   kill with no work evidence".
-- `tests/unit/session-manager-terminate.test.ts` — "age gate R2 REPRO" now
-  asserts `seenWorkingPastAgeLimit:true`; "stale topic-bound session" asserts
-  it is absent.
+- `tests/unit/session-manager-terminate.test.ts` — "age gate R3 REPRO": a
+  transcript write past the limit flags the kill and the real queue revives
+  it after two earlier revivals; "age gate R3: an uncertain sample" (null
+  pane, empty pane, process-probe error, idle child process): killed later,
+  no flag, `resurrection-cap`. "age gate R2 REPRO" (live child only) and the
+  stale-session test assert the flag is absent.
 - `tests/integration/resume-idle-autonomous-wiring.test.ts` — real queue +
   drainer revive the flagged third age kill; server forwards the flag.
 

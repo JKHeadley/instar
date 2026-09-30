@@ -16,8 +16,10 @@ builds run in other tmux sessions). The ten-minute recent-work memory and the
 two-minute transcript window both expired before 18:14:11Z.
 
 - `SessionManager` passes `seenWorkingPastAgeLimit` on the `sessionReaped`
-  event of an age-limit kill when the age gate saw the session working after
-  it passed its age limit (`ageGateLastWorkingAt` holds it).
+  event of an age-limit kill when the age gate saw the session's transcript
+  being written after it passed its age limit. Uncertain samples (empty pane
+  capture, failed process probe, idle child process) still defer the kill but
+  never set the flag.
 - `server.ts` forwards it to `ResumeQueue.considerEnqueue`.
 - `ResumeQueue` treats such a re-reap as proof there is no kill loop: the
   topic's resurrection ledger restarts at zero (audited as
@@ -33,8 +35,10 @@ two-minute transcript window both expired before 18:14:11Z.
   reset, quick re-reaps are capped again; an age kill with no work evidence
   is never queued. The replay and the reset test fail without the fix.
 - `tests/unit/session-manager-terminate.test.ts`: through the real monitor
-  tick, an age kill of a session seen working past its limit carries
-  `seenWorkingPastAgeLimit:true`; a stale session's kill does not. Fails
+  tick and the real queue, an age kill after a transcript write past the
+  limit carries `seenWorkingPastAgeLimit:true` and is revived after two
+  earlier revivals; after only uncertain samples (null or empty pane, failed
+  process probe, idle child process) it carries no flag and is capped. Fails
   without the fix.
 - `tests/integration/resume-idle-autonomous-wiring.test.ts`: the real queue
   and drainer revive the third, flagged age kill with no cap notice; the
