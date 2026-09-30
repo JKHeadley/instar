@@ -11,7 +11,6 @@ import { detectTmuxPath } from '../../src/core/Config.js';
 import {
   createTempProject,
   createMockClaude,
-  cleanupTmuxSessions,
   waitFor,
 } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
@@ -46,7 +45,6 @@ describeMaybe('Session Lifecycle (integration)', () => {
 
   afterAll(() => {
     sm.stopMonitoring();
-    cleanupTmuxSessions(TMUX_PREFIX);
     project.cleanup();
   });
 

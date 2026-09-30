@@ -1802,42 +1802,35 @@ lifelineCmd
       // respawn loop indefinitely. Escalate to SIGKILL after a short
       // grace period so the lock is released and the new lifeline can
       // take over.
-      // The fallback signals ONLY the lifeline's own recorded pids — the
+      // The fallback signals ONLY the lifeline's own recorded processes — the
       // lock holder (`lifeline.lock`, the process actually wedging the respawn)
-      // and the startup-marker pid — each re-checked to still be a lifeline
-      // process. It used to be `pkill -f '<projectName>.*lifeline'`, which
-      // matches ANY command line carrying both words — e.g. a `claude -p`
-      // builder whose prompt names the agent's home and mentions the lifeline
-      // — and SIGKILLed it.
-      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline pids`));
-      const isOurLifeline = (pid: number | null): pid is number => {
-        if (!pid || pid === process.pid) return false;
-        try {
-          const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' });
-          return /\blifeline\b/.test(cmd);
-        } catch {
-          return false; // not running
-        }
-      };
-      let lockPid: number | null = null;
-      try {
-        const lock = JSON.parse(fs.readFileSync(path.join(config.stateDir, 'lifeline.lock'), 'utf-8'));
-        if (typeof lock?.pid === 'number') lockPid = lock.pid;
-      } catch { /* no lock file — nothing holds it */ }
-      const targets = [...new Set([lockPid, baselinePid])].filter(isOurLifeline);
+      // and the startup-marker pid — and only while the live process at each pid
+      // is PROVEN to be the one that wrote the record (same process start time).
+      // It used to be `pkill -f '<projectName>.*lifeline'`, which matches ANY
+      // command line carrying both words — e.g. a `claude -p` builder whose
+      // prompt names the agent's home and mentions the lifeline — and SIGKILLed
+      // it. A keyword check on the command line is no better: a reused pid can
+      // belong to such a builder. Legacy records without a start time are
+      // never signalled.
+      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
+      const { provenLifelineRecords } = await import('./lifeline/lifelineLock.js');
+      const { checkRecordedProcess } = await import('./core/processIdentity.js');
+      const targets = provenLifelineRecords(path.join(config.stateDir, 'lifeline.lock'), baseline);
       if (targets.length === 0) {
-        console.warn(pc.yellow('no running lifeline at the recorded pids — nothing to signal'));
+        console.warn(pc.yellow('no lifeline process proven at the recorded pids — nothing to signal'));
       } else {
-        for (const pid of targets) {
-          try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ }
+        for (const t of targets) {
+          try { process.kill(t.pid, 'SIGTERM'); } catch { /* already exited */ }
         }
         // Grace period for clean exit (signal handlers, queue flush, etc.).
         // After this, anything still alive is stuck and holding the lock.
         await new Promise(r => setTimeout(r, 3000));
-        for (const pid of targets.filter(isOurLifeline)) {
+        // Re-prove identity before escalating — a pid freed during the grace
+        // window may already belong to another process.
+        for (const t of targets.filter(r => checkRecordedProcess(r) === 'same')) {
           try {
-            process.kill(pid, 'SIGKILL');
-            console.warn(pc.yellow(`escalated to SIGKILL — old lifeline ${pid} did not exit on SIGTERM`));
+            process.kill(t.pid, 'SIGKILL');
+            console.warn(pc.yellow(`escalated to SIGKILL — old lifeline ${t.pid} did not exit on SIGTERM`));
           } catch { /* exited in between */ }
         }
       }

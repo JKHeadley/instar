@@ -61,10 +61,12 @@ describe('Version-skew recovery — CLI service label', () => {
     expect(code).not.toMatch(/pkill|killall/);
     // The lock holder is a target too: the marker is written before the lock
     // is taken, so in the stuck-lock case the marker names a dead respawn.
-    expect(code).toMatch(/lifeline\.lock/);
-    expect(code).toMatch(/\[lockPid, baselinePid\]/);
-    expect(code).toMatch(/process\.kill\(pid, 'SIGTERM'\)/);
-    expect(code).toMatch(/process\.kill\(pid, 'SIGKILL'\)/);
+    // Targets are only records whose pid is PROVEN to be the recorder (same
+    // process start time) — behavior pinned in lifeline-lock-identity.test.ts.
+    expect(code).toMatch(/provenLifelineRecords\(path\.join\(config\.stateDir, 'lifeline\.lock'\), baseline\)/);
+    expect(code).toMatch(/process\.kill\(t\.pid, 'SIGTERM'\)/);
+    // Identity is re-proven before the delayed SIGKILL.
+    expect(code).toMatch(/checkRecordedProcess\(r\) === 'same'\)\) \{\s*try \{\s*process\.kill\(t\.pid, 'SIGKILL'\)/);
   });
 });
 
@@ -152,12 +154,12 @@ describe('Version-skew recovery — replay drop-policy', () => {
 describe('Version-skew recovery — stuck-lock detection', () => {
   it('lock-acquire treats sleeping (S) state > 5 min as recoverable', () => {
     const src = fs.readFileSync(
-      path.join(repoRoot, 'src', 'lifeline', 'TelegramLifeline.ts'),
+      path.join(repoRoot, 'src', 'lifeline', 'lifelineLock.ts'),
       'utf-8',
     );
     const lockFn = src.slice(
-      src.indexOf('function acquireLockFile('),
-      src.indexOf('function acquireLockFile(') + 5000,
+      src.indexOf('export function acquireLockFile('),
+      src.indexOf('export function acquireLockFile(') + 6000,
     );
     // Existing zombie/stopped path retained
     expect(lockFn).toMatch(/Z.*T|isZombieOrStopped/);

@@ -149,6 +149,10 @@ interface ActivePipeSession {
   sessionName: string;
   threadId: string;
   pid: number;
+  /** tmux's unique `#{session_id}` (e.g. `$12`) of the session this spawner
+   *  created. With `pid` it is the recorded incarnation: a later session that
+   *  reuses the name has a different id, so it is never killed as ours. */
+  tmuxId?: string;
   pgid?: number;
   startedAt: number;
   timeoutTimer: ReturnType<typeof setTimeout>;
@@ -378,6 +382,19 @@ export class PipeSessionSpawner {
       }
     }
 
+    // A live session already holding this name is replaced only when it is one
+    // this spawner recorded; anyone else's (another spawner, another agent on
+    // the shared tmux server) is left alone and this spawn refuses.
+    if (this.activeSessions.has(sessionName)) {
+      this.killPipeSession(sessionName, 'replaced');
+    }
+    try {
+      execSync(`tmux has-session -t "=${sessionName}" 2>/dev/null`);
+      return { spawned: false, reason: `tmux session ${sessionName} exists and was not started by this spawner — not replacing it` };
+    } catch {
+      // No existing session — good
+    }
+
     // Build prompt
     const prompt = buildPipePrompt(request, summarizedHistory);
 
@@ -461,20 +478,13 @@ export class PipeSessionSpawner {
     ].join(' ');
 
     try {
-      // Check for existing tmux session with same name
-      try {
-        execSync(`tmux has-session -t "=${sessionName}" 2>/dev/null`);
-        // Session exists — kill it first
-        execSync(`tmux kill-session -t "=${sessionName}" 2>/dev/null`);
-      } catch {
-        // No existing session — good
-      }
-
-      // Spawn tmux session
-      execSync(
-        `tmux new-session -d -s "${sessionName}" -x 200 -y 50 'bash -c "${shellCmd.replace(/"/g, '\\"')}"'`,
-        { timeout: 10_000 },
-      );
+      // Spawn tmux session, recording its incarnation (session id + pane pid)
+      const created = execSync(
+        `tmux new-session -d -P -F '#{session_id} #{pane_pid}' -s "${sessionName}" -x 200 -y 50 'bash -c "${shellCmd.replace(/"/g, '\\"')}"'`,
+        { timeout: 10_000, encoding: 'utf-8' },
+      ).trim();
+      const [tmuxId, panePid] = created.split(' ');
+      const pid = parseInt(panePid, 10) || undefined;
 
       // Wait for session to be created
       await new Promise(r => setTimeout(r, 2000));
@@ -486,17 +496,6 @@ export class PipeSessionSpawner {
         // Session failed to create
         try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:296' }); } catch { /* ignore */ }
         return { spawned: false, reason: 'tmux session failed to create' };
-      }
-
-      // Get the pane PID for process-group kill
-      let pid: number | undefined;
-      try {
-        const pidStr = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{pane_pid}'`, {
-          encoding: 'utf-8',
-        }).trim();
-        pid = parseInt(pidStr, 10);
-      } catch {
-        // Non-critical — we can still kill via tmux
       }
 
       // Set up timeout and warning timers
@@ -513,6 +512,7 @@ export class PipeSessionSpawner {
         sessionName,
         threadId: request.threadId,
         pid: pid ?? 0,
+        tmuxId: tmuxId?.startsWith('$') ? tmuxId : undefined,
         startedAt: Date.now(),
         timeoutTimer,
         warningTimer,
@@ -556,17 +556,24 @@ export class PipeSessionSpawner {
 
     console.log(`[pipe] Killing session ${sessionName}: ${reason}`);
 
-    // Process-group kill to prevent orphaned subprocesses — only while the
-    // recorded pid is still this session's pane. Once the pane has exited the
-    // pid can be reused by an unrelated process, and its group SIGKILLed.
-    let paneStillOurs = false;
-    try {
-      const current = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{pane_pid}' 2>/dev/null`, {
-        encoding: 'utf-8',
-      }).trim().split('\n').map(s => parseInt(s, 10));
-      paneStillOurs = current.includes(session.pid);
-    } catch { /* session gone — the recorded pid is stale */ }
-    if (session.pid > 0 && paneStillOurs) {
+    // Kill only the incarnation this spawner recorded: the live session under
+    // this name must still carry the recorded tmux session id AND pane pid.
+    // Once our pane has exited the pid can be reused by an unrelated process
+    // (and its group SIGKILLed), and the name can be reused by another
+    // spawner's session — in both cases nothing is signalled.
+    let owned = false;
+    if (session.tmuxId && session.pid > 0) {
+      try {
+        const current = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{session_id} #{pane_pid}' 2>/dev/null`, {
+          encoding: 'utf-8',
+        }).trim().split('\n');
+        owned = current.includes(`${session.tmuxId} ${session.pid}`);
+      } catch { /* session gone — the recorded incarnation is over */ }
+    }
+    if (!owned) {
+      console.log(`[pipe] ${sessionName}: recorded session is gone or replaced — not signalling anything`);
+    } else {
+      // Process-group kill to prevent orphaned subprocesses
       try {
         // Get process group ID
         const pgidStr = execSync(`ps -o pgid= -p ${session.pid} 2>/dev/null`, {
@@ -580,12 +587,12 @@ export class PipeSessionSpawner {
         // Fallback: kill individual process
         try { process.kill(session.pid, 'SIGKILL'); } catch { /* ignore */ }
       }
-    }
 
-    // Kill tmux session
-    try {
-      execSync(`tmux kill-session -t "=${sessionName}" 2>/dev/null`);
-    } catch { /* ignore */ }
+      // Kill the tmux session by its unique id, never by name
+      try {
+        execSync(`tmux kill-session -t '${session.tmuxId}' 2>/dev/null`);
+      } catch { /* ignore */ }
+    }
 
     this.cleanupSession(sessionName, reason);
   }

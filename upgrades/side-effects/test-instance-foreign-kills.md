@@ -1,4 +1,4 @@
-# Side-Effects Review — test runs and repair paths never signal processes they did not start
+# Side-Effects Review — automatic kills signal only what the agent can prove it started
 
 **Version / slug:** `test-instance-foreign-kills`
 **Date:** `2026-09-30`
@@ -7,163 +7,184 @@
 
 ## Summary of the change
 
-Three kill paths are narrowed so that each one can only reach processes its own
-caller started:
+Round 2, after Astra's review of round 1 (six must-fixes). Every automatic kill
+path the review named now proves ownership through one shared small check
+before it signals anything. Where it cannot prove ownership, it logs or
+reports and does not signal.
 
-1. `tests/helpers/setup.ts`: `createTempProject().cleanup()` now kills the tmux
-   sessions named `<basename(tempDir)>-*`. mkdtemp makes that name unique, so
-   only this project's sessions match.
-2. `src/cli.ts` (`instar lifeline restart`): the fallback when
-   `launchctl kickstart` fails no longer runs `pkill -TERM/-KILL -f
-   '<projectName>.*lifeline'`. It now signals the lifeline's own recorded
-   pids: the `lifeline.lock` holder and the startup-marker pid. Each is
-   signalled only while `ps` shows its command line contains `lifeline`.
-3. `src/threadline/PipeSessionSpawner.ts`: `killPipeSession` now does the
-   process-group SIGKILL only when `tmux list-panes -t =<name>:` still lists
-   the recorded pid. Every `-t` target in the file is now exact (`=name`, and
-   `=name:` for pane commands).
-4. `src/core/SessionManager.ts`: the triage respawn's `kill-session` target
-   is now exact (`=name`), as the reviewer noted.
-
-A regression test (`tests/integration/foreign-process-survives-test-instance.test.ts`)
-covers 1 and 3, and a source-shape unit test covers 2. No decision logic about
-*whether* to kill changes; only *which* process may be signalled changes.
+- `src/core/processIdentity.ts` (new, ~60 lines): `processStartMs(pid)` reads
+  `ps -o lstart=`. `checkRecordedProcess({pid, procStart, startedAt})` returns
+  one of four verdicts: `same` (the start time matches), `gone`, `reused` (the
+  live process started after the record was written), or `unproven`.
+- `src/lifeline/lifelineLock.ts` (new; `acquireLockFile` moved here from
+  `TelegramLifeline.ts`): the lock records `procStart`. Takeover signals are
+  sent only on `same`, and identity is proven again before SIGKILL. On
+  `reused`, the new lifeline takes the lock without a signal. On `unproven`,
+  it respects the lock. `provenLifelineRecords()` selects the `lifeline
+  restart` targets.
+- `src/lifeline/startupMarker.ts`: the marker records `procStart`.
+- `src/cli.ts` (`lifeline restart` fallback): targets come from
+  `provenLifelineRecords(lock, marker)`, and SIGKILL goes only to targets
+  that are still `same` after the grace period. The round-1 keyword check is
+  removed.
+- `src/threadline/PipeSessionSpawner.ts`: `new-session -P -F '#{session_id}
+  #{pane_pid}'` records the incarnation. `killPipeSession` signals the group
+  and runs `kill-session -t <session_id>` only while the named session still
+  lists that exact id and pid; otherwise it signals nothing. `spawn()` replaces
+  a same-name session only when it is recorded in `activeSessions`, and
+  otherwise refuses.
+- `src/core/SessionManager.ts`: new `ownsLiveTmuxSession(name)`. It reads the
+  live session's `INSTAR_SESSION_ID` (every spawn path sets it) and checks
+  that this agent's state holds a record with that id for that tmux name.
+  `spawnTriageSession` refuses to kill an occupied name without that proof.
+- `src/monitoring/OrphanProcessReaper.ts`: a historical-name match becomes
+  `instar-orphan` (auto-kill eligible) only with `ownsLiveTmuxSession`.
+  Without it, the process is classed `external` and only reported.
+  `killProcess` records the start time before SIGTERM and sends SIGKILL only
+  if it is unchanged.
+- Tests: the broad `cleanupTmuxSessions('akit-integ-'/'akit-sched-')` calls are
+  removed. `scheduler-basic` waits for in-flight spawns before cleanup (a
+  late spawn leaked a dead-pane session). The regression test is rewritten with 7 real-tmux cases, both sides
+  of each decision, with teardown in `finally`. There is a new unit test with
+  real child processes for the lifeline identity.
 
 ## Decision-point inventory
 
-- `lifeline restart` fallback target selection — modify — command-line pattern → recorded pid.
-- `PipeSessionSpawner.killPipeSession` group-kill target — modify — adds a pane-still-ours identity check.
-- Test fixture cleanup — modify — adds own-name tmux cleanup (test-only).
+- Lifeline restart target selection — modify — keyword → proven incarnation.
+- Lifeline lock takeover — modify — any live pid → proven incarnation; reused → silent takeover; unproven → respect.
+- Pipe kill / pipe spawn over an existing name — modify — name → recorded session id + pane pid; foreign name → refuse.
+- Triage spawn over an existing name — modify — name → `ownsLiveTmuxSession`; foreign → refuse (throw).
+- Orphan auto-kill eligibility — modify — historical name → name + live `INSTAR_SESSION_ID` match.
+- Delayed SIGKILL escalations (reaper, lifeline) — modify — `kill(pid,0)` → same start time.
 
 ---
 
 ## 1. Over-block
 
-The case the SIGKILL escalation was built for (b2lead) is a stuck old lifeline
-holding `lifeline.lock`. That lock holder is signalled directly. The marker
-alone would not be enough: it is written before the lock is taken, so in the
-stuck case it names a respawn that already exited. A lifeline that holds no
-lock and has no live marker could now be missed. Before, the pattern kill
-would have found it. Now
-the fallback logs "nothing to signal" and goes on to the existing 30 s respawn
-poll, which reports the failure. The fallback only runs after `launchctl
-kickstart` has already failed. That is an operator-invoked repair, so a clear
-failure is better than a guess.
-
-For pipe sessions: if the tmux session has gone but its descendants live on,
-the group kill no longer reaches them. That is an accepted cost. Once the pane
-is gone, its pid is exactly what we can no longer trust.
-
----
+- A legacy lifeline lock or marker, written before this change and so with no
+  `procStart`, is never signalled by `lifeline restart`. At startup, a legacy
+  lock whose live pid started before the lock was written is respected, not
+  taken over. The first restart after the update normally goes through
+  launchd's `kickstart -k`, which does not use these paths. Once a lifeline
+  from this version is running, its records carry `procStart`.
+- A process whose start time `ps` cannot read counts as unproven, so it is not
+  signalled.
+- Triage: if a session record was purged while its tmux session lived on, the
+  triage name stays occupied and the spawn throws. `TriageOrchestrator`
+  already handles a failed spawn. That is better than killing an unproven
+  session.
+- Orphan reaper: an orphan whose record was purged, or whose tmux env lacks
+  `INSTAR_SESSION_ID` (a very old session), is only reported. The operator
+  can still use the explicit external-process API.
+- Pipe spawner: a pipe session from before a server restart, which is no
+  longer in `activeSessions`, blocks a new pipe spawn for that thread. The
+  caller then falls through to the normal A2A path, as it does for any
+  `spawned:false`.
 
 ## 2. Under-block
 
-A reused pid that happens to belong to another process with `lifeline` in its
-command line would still pass the lifeline check. That needs an exact pid
-collision, not just a pattern match. It is far narrower than before, and it is
-the same trust the respawn poll already puts in the marker.
-
----
+- Start-time resolution is 1 s. A pid reused within the same second as the
+  original start would pass. That is not a realistic collision.
+- Two SessionManagers sharing one agent state dir are treated as one agent
+  and may clean up each other's sessions. That is the same agent, which is
+  intended.
+- This change does not identify what killed the six builders, and it does
+  not claim to.
 
 ## 3. Level-of-abstraction fit
 
-Each fix sits at the call site that picked the target, and each uses the
-identity the caller already records: the marker pid, the pane pid, and the
-unique temp-dir name. No new layer is added.
-
----
+There is one shared primitive for pids (`processIdentity`) and one for
+sessions (`ownsLiveTmuxSession`, which uses the `INSTAR_SESSION_ID` every
+spawn already sets). The pipe spawner uses tmux's own unique session id. No
+new subsystem, store or loop is added.
 
 ## 4. Signal vs authority compliance
 
-- [x] No — this change has no block/allow surface.
+- [x] No — no block/allow surface on information flow. These checks narrow an
+  irreversible action (a signal) to proven targets. Each one removes reach and
+  none adds authority.
 
-These are kill-target selections, not gates on information flow. Each change
-removes reach. None adds authority.
+## 4b. Judgment-point check
 
----
-
-## 4b. Judgment-point check (Judgment Within Floors standard)
-
-No new static heuristic at a competing-signals decision point. The pid-identity
-checks are safety guards on an irreversible action (a SIGKILL), deterministic by design.
-
----
+The checks are deterministic safety floors on a SIGKILL. They are not
+heuristics at a competing-signals decision point.
 
 ## 5. Interactions
 
-- The same command already reads the lifeline marker for its respawn poll.
-  The marker pid and the lock-file pid, which `acquireLockFile` also reads,
-  are now the kill targets.
-- The PipeSessionSpawner `kill-session` still runs afterwards. `=name`
-  guarantees it removes only this session and never a prefix match such as
-  `pipe-<id>…`.
-- Fixture cleanup runs before the temp dir is removed. Tests that also call
-  `cleanupTmuxSessions` themselves stay correct, because a second kill of an
-  already-dead session is a no-op.
-
----
+- The SessionWatchdog already checks the parent pid, command and incarnation
+  before its descendant signals, and this change leaves it untouched.
+  SessionManager's own passes iterate its own records.
+- The reaper's `trackedNow` path to `terminateSession` is unchanged.
+  Ownership proof only gates the non-tracked, historical-record path.
+- `TelegramLifeline.releaseLockFile` still compares pid only when removing its
+  own lock file (a file, not a signal). That is unchanged.
+- `acquireLockFile` behavior for a dead pid (take over) and a fresh proven
+  holder (respect) is unchanged.
 
 ## 6. External surfaces
 
-`instar lifeline restart` prints a different fallback message. Nothing else is
-visible outside the process.
-
----
+- New optional JSON fields: `procStart` in `state/lifeline.lock` and
+  `state/lifeline-started-at.json`. Readers ignore unknown fields, and
+  `readStartupMarker` keeps its existing validation.
+- A new `spawned:false` reason from the pipe spawner, and a new triage spawn
+  error message.
+- Orphan reaper reports can now list a process as `external` with the reason
+  "ownership unproven".
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-Machine-local BY DESIGN. Process IDs and tmux sessions are per-host, and every
-fix narrows a per-host kill.
-
----
+Machine-local BY DESIGN. Pids, start times and tmux sessions are per-host, and
+every check is on the host that would send the signal.
 
 ## 8. Rollback cost
 
-Revert the commit and ship a patch release. No state, data, or migration is involved.
+Revert and ship a patch release. The new JSON fields are additive, and older
+code ignores them. No migration is needed.
 
 ---
 
 ## Conclusion
 
-Clear to ship. The investigation found no SessionManager/test-instance path able
-to reach a foreign process (see the ELI16 overview for the evidence). This
-change closes the three real foreign-signal hazards the search surfaced and
-stops the test-session leak.
+Clear to ship. Every automatic kill path Astra named now signals only a proven
+incarnation, and the positive cleanup cases still work (see the tests).
 
 ---
 
 ## Second-pass review (if required)
 
 **Reviewer:** independent reviewer subagent (general-purpose, read-only)
-**Independent read of the artifact: concern raised, then resolved**
+**Verdict: Concur with the review**
 
-- Concern: `TelegramLifeline.start()` writes the startup marker (line 426)
-  before taking `lifeline.lock` (line 440). So in the stuck-lock case the
-  marker names a dead respawn, and a marker-only fallback cannot reach the
-  stuck lock holder, which is the case the SIGKILL escalation exists for.
-  Resolution: the fallback also targets the `lifeline.lock` pid, with the same
-  `ps` identity check. Verified live: with `launchctl` failing, the lock
-  holder was killed. A foreign `claude -p /agents/lrprobe/ fix the lifeline`
-  process survived, although `pgrep -f 'lrprobe.*lifeline'` (the old pattern)
-  matches it.
-- Minor: `SessionManager.ts` triage respawn `kill-session -t tmuxSession`
-  lacked `=`. Fixed.
-- Otherwise concurred: the PipeSessionSpawner targets and check are correct,
-  the fixture cleanup is scoped to the unique mkdtemp name, and there is no
-  SessionManager / test-instance path that signals a foreign process.
+- All six must-fixes are closed in the touched code. No touched path lets a
+  name, keyword or bare pid alone authorize an automatic signal. The lifeline
+  restart and takeover signal only on `same`, and SIGKILL re-checks. Pipe
+  teardown needs an exact id+pid match and kills by id. Triage throws on a
+  session it does not own. The reaper's name-only matches are report-only,
+  and its SIGKILL re-checks the start time.
+- `ownsLiveTmuxSession` checks the id against a regex before
+  `StateManager.getSession`, so its `validateKey` cannot throw. All four spawn
+  paths set `INSTAR_SESSION_ID`.
+- The over-block and under-block lists are accurate.
+- Minor residuals, none blocking. After proving ownership, the reaper kills
+  the tmux session by name, which leaves a window of milliseconds. Its first
+  SIGTERM goes to a pid from the same scan. A wedged legacy lifeline is left to
+  launchd's `kickstart -k`, as section 1 says.
 
 ---
 
 ## Evidence pointers
 
-- Red/green: the new integration test fails against the old `setup.ts`
-  (leaked `instar-test-…-job-fast-test`). It also fails against the old
-  `PipeSessionSpawner.ts`, where the stale-pid detached process was SIGKILLed.
-  With the change it passes.
-- Live repro: a `claude`-named process in a separate tmux session survived a
-  full `scheduler-basic` run. The run leaked a 14th `instar-test-*` session
-  before the fix.
-- Kernel log 2026-09-30 03:10-03:50: no jetsam/memorystatus kill.
+- `tests/integration/foreign-process-survives-test-instance.test.ts`: 7/7
+  pass. We restored each old behavior in turn: the reaper name match, the
+  round-1 `PipeSessionSpawner.ts`, no triage guard, and the pre-fix
+  `tests/helpers/setup.ts`. Each makes its matching case fail (1, 2, 1 and 1
+  failures).
+- `tests/unit/lifeline/lifeline-lock-identity.test.ts`: 7/7 pass. With
+  `checkRecordedProcess` changed to accept any live pid, 3 fail. The legacy
+  "respect" case does not discriminate on its own, because a fresh child cannot
+  carry a 5-minute-old lock. Its verdict is covered by the `checkRecordedProcess` case.
+- Round-1 live check: a foreign `claude -p … fix the lifeline` process survived
+  the `lifeline restart` fallback.
 
 ---
 
@@ -171,9 +192,6 @@ stops the test-session leak.
 
 - **`defectClass`** — `unbounded-self-action`
 - **`closure`** — `n/a` (negative declaration)
-- **`reason`** — No new trigger or loop. The change only narrows which pid
-  existing kills may signal. `instar lifeline restart` is a one-shot CLI that
-  an operator runs. The pipe-session kill still fires at most once per session,
-  from its own timeout or shutdown. The triage `kill-session` target only
-  gains the exact-match `=` prefix. There is no agent-authored-artifact
-  defect.
+- **`reason`** — No new trigger or loop. The change only narrows which
+  pid or session existing kills may signal, and adds ownership proof before
+  each one.

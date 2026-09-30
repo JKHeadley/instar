@@ -28,6 +28,7 @@ import {
   matchProcessSignal,
   type FrameworkProcessSignal,
 } from './frameworkProcessSignals.js';
+import { processStartMs } from '../core/processIdentity.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -450,11 +451,24 @@ export class OrphanProcessReaper extends EventEmitter {
         // This replaces the old prefix-startsWith match per
         // UNIFIED-SESSION-LIFECYCLE §P0 #6 — a user-created session that happens
         // to share the project prefix is NOT classified as orphan.
+        //
+        // A historical NAME match is still not ownership: another agent, a test
+        // instance or a user can create a session under a name this agent once
+        // used. Only a live session carrying the INSTAR_SESSION_ID of this
+        // agent's own record for that name is the incarnation this agent
+        // spawned; anything else is reported, never auto-killed.
         if (knownInstarSessions.has(tmuxSession)) {
+          if (this.sessionManager.ownsLiveTmuxSession(tmuxSession)) {
+            return {
+              ...proc,
+              classification: 'instar-orphan' as const,
+              reason: `In instar-owned tmux "${tmuxSession}" but not currently tracked by SessionManager`,
+            };
+          }
           return {
             ...proc,
-            classification: 'instar-orphan' as const,
-            reason: `In instar-known tmux "${tmuxSession}" but not currently tracked by SessionManager`,
+            classification: 'external' as const,
+            reason: `In tmux "${tmuxSession}", a name instar once used, but the session carries no matching INSTAR_SESSION_ID — ownership unproven, report only`,
           };
         }
 
@@ -544,11 +558,15 @@ export class OrphanProcessReaper extends EventEmitter {
 
   private killProcess(pid: number): boolean {
     try {
+      // Record which process this is before signalling: the SIGKILL below is
+      // sent only if the pid still has the same start time — once the target
+      // exits, its pid can be handed to an unrelated process within the grace.
+      const startedAt = processStartMs(pid);
       process.kill(pid, 'SIGTERM');
       // Give it 5 seconds, then SIGKILL if needed
       setTimeout(() => {
         try {
-          process.kill(pid, 0); // Check if still alive
+          if (startedAt === null || processStartMs(pid) !== startedAt) return; // exited (or pid reused)
           process.kill(pid, 'SIGKILL');
           console.log(`[OrphanReaper] SIGKILL sent to PID ${pid} (SIGTERM wasn't enough)`);
         } catch { // @silent-fallback-ok — process already dead (expected)
