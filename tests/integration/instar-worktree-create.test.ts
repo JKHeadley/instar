@@ -52,6 +52,10 @@ function makeFixture(): Fixture {
   execFileSync('git', ['-C', bareRepo, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'commit.gpgsign', 'false'], { stdio: 'pipe' });
+  // No detached auto-gc/maintenance: one still writing .git/objects after the
+  // test made cleanup's rmdir fail with ENOTEMPTY (CI, PR #2097).
+  execFileSync('git', ['-C', bareRepo, 'config', 'gc.auto', '0'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', bareRepo, 'config', 'maintenance.auto', 'false'], { stdio: 'pipe' });
   fs.writeFileSync(path.join(bareRepo, 'README.md'), '# Test\n');
   fs.writeFileSync(path.join(bareRepo, 'package.json'), JSON.stringify({
     name: 'instar',
@@ -103,7 +107,7 @@ function makeFixture(): Fixture {
 }
 
 function cleanup(fix: Fixture): void {
-  fs.rmSync(path.dirname(fix.instarHome), { recursive: true, force: true });
+  fs.rmSync(path.dirname(fix.instarHome), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 describe('createWorktree (integration)', () => {
