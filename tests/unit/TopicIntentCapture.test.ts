@@ -182,6 +182,35 @@ describe('captureTurn', () => {
     expect(store.read(TOPIC).turn).toBe(1);
   });
 
+  it('automation-provenance turn → skipped-automation, extractor never called, counter ticks', async () => {
+    const { extractor, calls } = makeExtractor([
+      { kind: 'new-ref', refId: null, propositionText: 'worktree scan found unmerged branches', refKind: 'fact' },
+    ]);
+    const out = await captureTurn(baseDeps(extractor), entry({
+      fromUser: false,
+      provenance: 'automation',
+      text: '⚠️ Worktree activity detected after session "job-x" completed:\n\nUNMERGED WORK:\n  Branch: fix/codex-session-reliability',
+    }));
+    expect(out.status).toBe('skipped-automation');
+    expect(calls()).toBe(0);
+    const cap = store.read(TOPIC).telemetry.capture!;
+    expect(cap.prefilter_skipped).toBe(1);
+    expect(cap.turns_seen).toBe(1);
+    expect(cap.extractions_attempted).toBe(0);
+    expect(store.getRefsAtOrAbove(TOPIC, 'observation').length).toBe(0);
+  });
+
+  it.each([
+    ['agent', { fromUser: false, provenance: 'agent' }],
+    ['user', { fromUser: true, provenance: 'user' }],
+    ['unstamped (legacy)', { fromUser: false }],
+  ])('%s-provenance substantive turn is still captured', async (_label, over) => {
+    const { extractor, calls } = makeExtractor([]);
+    const out = await captureTurn(baseDeps(extractor), entry(over));
+    expect(out.status).toBe('captured');
+    expect(calls()).toBe(1);
+  });
+
   it('substantive turn → ingest invoked, ref created, funnel counters move', async () => {
     const { extractor, calls } = makeExtractor([
       { kind: 'new-ref', refId: null, propositionText: 'ship rung 0 first', refKind: 'decision' },

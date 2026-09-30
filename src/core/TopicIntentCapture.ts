@@ -28,6 +28,7 @@
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import type { TopicIntentStore, EstablishedRef, ProjectionResult } from './TopicIntent.js';
 import type { TopicIntentExtractor, ExtractorInput } from './TopicIntentExtractor.js';
+import type { MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 
 // ── Pre-filter (deterministic state-detector, fail-open) ──────────────────
 
@@ -177,6 +178,8 @@ export interface CaptureTurnEntry {
   fromUser: boolean;
   /** ISO8601 string or epoch ms. */
   timestamp?: string | number;
+  /** Structural origin stamped at the send/receive seam. `automation` is not captured. */
+  provenance?: MessageProvenance;
 }
 
 /** Minimal rolling-summary surface (satisfied by TopicMemory). */
@@ -199,6 +202,7 @@ export interface CaptureLoopDeps {
 export type CaptureStatus =
   | 'captured'
   | 'skipped-prefilter'
+  | 'skipped-automation'
   | 'skipped-shed'
   | 'skipped-rate'
   | 'no-topic'
@@ -281,6 +285,20 @@ export async function captureTurn(
     const turn = entry.fromUser
       ? deps.store.bumpTurn(topicId)
       : (deps.store.read(topicId).turn ?? 0);
+
+    // Server-generated traffic (job sends, monitor/sentinel notices, standby
+    // lines) is not conversation. It was ~64% of extractor tokens and mostly
+    // filed near-identical "unmerged branches" facts
+    // (docs/research/jev/field-notes/2026-09-30-idea1-intent-skip.md). Keyed on
+    // the structural provenance stamp, never on text; a missing stamp (legacy
+    // or unstamped path) is still captured. Skipping also skips this message's
+    // awareness refresh; the rolling topic summary still covers automated
+    // messages, so the next conversational turn's extraction sees them as
+    // context.
+    if (entry.provenance === 'automation') {
+      deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, prefilter_skipped: 1 });
+      return { status: 'skipped-automation' };
+    }
 
     // Pre-filter — deterministic, fail-open.
     if (!isSubstantiveTurn(entry.text, entry.fromUser)) {

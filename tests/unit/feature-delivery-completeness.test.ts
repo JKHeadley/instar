@@ -152,6 +152,7 @@ describe('Feature Delivery Completeness', () => {
       'Threadline Network',
       'Playbook',
       'Worktree Convention',
+      '## Worktree Notices', // WorktreeMonitor announce-on-change + automation skipped by intent capture (templates.ts + migrator + shadow-marker parity)
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
       'Pre-admission continuation carrier', // W32: inactive preparation/recovery remains honestly active:false while the bounded Codex continuation carrier keeps the setup turn alive; template + migrator + framework-shadow parity.
       'Durable Inbound Message Queue', // custody queue + hold-for-stability (templates.ts + migrator parity, CMT-1118)

@@ -346,6 +346,131 @@ describe('WorktreeMonitor', () => {
     });
   });
 
+  // ── Announce on change only ──────────────────────────────────
+
+  describe('announce on change only', () => {
+    it('does not re-announce an unchanged finding on the next session', async () => {
+      createWorktree(repoDir, 'same', { addCommits: 1 });
+
+      await monitor.onSessionComplete(makeSession({ name: 'job-a' }));
+      const second = await monitor.onSessionComplete(makeSession({ name: 'job-b' }));
+
+      expect(alerts).toHaveLength(1);
+      expect(second.actions).toEqual(['Alert suppressed: findings unchanged since last announcement']);
+    });
+
+    it('announces again when a new branch appears', async () => {
+      createWorktree(repoDir, 'first', { addCommits: 1 });
+      await monitor.onSessionComplete(makeSession());
+
+      createOrphanBranch(repoDir, 'second');
+      await monitor.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(2);
+      expect(alerts[1]).toContain('worktree-second');
+    });
+
+    it('announces again when one item resolves and others remain', async () => {
+      createOrphanBranch(repoDir, 'keep');
+      createOrphanBranch(repoDir, 'drop');
+      await monitor.onSessionComplete(makeSession());
+
+      shell('git branch -D worktree-drop', repoDir);
+      await monitor.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(2);
+      expect(alerts[1]).toContain('worktree-keep');
+      expect(alerts[1]).not.toContain('worktree-drop');
+    });
+
+    it('announces a reappearing finding after the set was clear', async () => {
+      createOrphanBranch(repoDir, 'flap');
+      await monitor.onSessionComplete(makeSession());
+      shell('git branch -D worktree-flap', repoDir);
+      await monitor.onSessionComplete(makeSession());
+      createOrphanBranch(repoDir, 'flap');
+      await monitor.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(2);
+    });
+
+    it('does not re-announce after a restart', async () => {
+      createOrphanBranch(repoDir, 'persisted');
+      await monitor.onSessionComplete(makeSession());
+
+      const restartedAlerts: string[] = [];
+      const restarted = new WorktreeMonitor({
+        projectDir: repoDir,
+        stateDir,
+        pollIntervalMs: 0,
+        alertCallback: async (msg) => { restartedAlerts.push(msg); },
+      });
+      await restarted.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(1);
+      expect(restartedAlerts).toHaveLength(0);
+      expect(fs.existsSync(path.join(stateDir, 'worktree-monitor', 'announced.json'))).toBe(true);
+    });
+
+    it('re-announces an unchanged finding once the reminder interval has passed', async () => {
+      const reminding = new WorktreeMonitor({
+        projectDir: repoDir,
+        stateDir,
+        pollIntervalMs: 0,
+        reminderIntervalMs: 0,
+        alertCallback: async (msg) => { alerts.push(msg); },
+      });
+      createOrphanBranch(repoDir, 'long-open');
+
+      await reminding.onSessionComplete(makeSession());
+      await reminding.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(2);
+    });
+
+    it('does not record a failed send as announced', async () => {
+      let fail = true;
+      const flaky = new WorktreeMonitor({
+        projectDir: repoDir,
+        stateDir,
+        pollIntervalMs: 0,
+        alertCallback: async (msg) => {
+          if (fail) throw new Error('Telegram down');
+          alerts.push(msg);
+        },
+      });
+      flaky.on('error', () => {});
+      createOrphanBranch(repoDir, 'retry-me');
+
+      await flaky.onSessionComplete(makeSession());
+      fail = false;
+      await flaky.onSessionComplete(makeSession());
+
+      expect(alerts).toHaveLength(1);
+    });
+
+    it('periodic stale notice is announced once for an unchanged stale set', async () => {
+      const periodic = new WorktreeMonitor({
+        projectDir: repoDir,
+        stateDir,
+        pollIntervalMs: 0,
+        staleThresholdMs: -1,
+        alertCallback: async (msg) => { alerts.push(msg); },
+      });
+      createWorktree(repoDir, 'old');
+
+      await periodic.periodicScan();
+      const second = await periodic.periodicScan();
+      createWorktree(repoDir, 'older');
+      await periodic.periodicScan();
+
+      expect(alerts).toHaveLength(2);
+      expect(alerts[0]).toContain('Stale worktrees detected');
+      expect(second.actions).toEqual(['Stale worktree alert suppressed: findings unchanged since last announcement']);
+      expect(alerts[1]).toContain('worktree-older');
+    });
+  });
+
   // ── State Persistence ────────────────────────────────────────
 
   describe('state persistence', () => {
