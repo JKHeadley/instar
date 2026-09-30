@@ -19870,6 +19870,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         }),
         config: { residueDenylist: ysCfg.residueDenylist, cacheTtlMs: ysCfg.dirtyCheckCacheTtlMs },
       });
+      // The age-limit kill collects the same pre-kill evidence as the reaper.
+      sessionManager.setWorktreeDirtyCheck(_yieldSafetyDirtyCheck);
     }
 
     // ── Post-transfer closeout correctness (F1) ───────────────────────────────

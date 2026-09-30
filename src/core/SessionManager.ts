@@ -797,6 +797,9 @@ export class SessionManager extends EventEmitter {
 
   /** Pressure-tier provider for the work-evidence fallback (reap-notify R2.1). */
   private pressureTier?: () => 'normal' | 'moderate' | 'critical';
+  /** Build-Session Yield Safety (ACT-839) dirty-worktree probe, shared with the
+   *  SessionReaper. Present only when the dev-gated feature is live. */
+  private worktreeDirtyCheck?: (worktreePath: string) => boolean;
   /** Sessions the §P5 backstop has flagged long-`indeterminate` — excluded from
    *  the ABSOLUTE spawn cap so unverifiable panes can't lock out spawning. */
   private longIndeterminateSessions = new Set<string>();
@@ -2193,7 +2196,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
       finalStatus: 'killed',
       disposition: 'terminal',
       localAgeLimitReapCapability: LOCAL_AGE_LIMIT_REAP_CAPABILITY,
+      workEvidence: this.#ageKillWorkEvidence(sessionId),
     });
+  }
+
+  /**
+   * Pre-kill work evidence for an age-limit kill, collected the way the idle
+   * reaper collects it: the guard's observe-only set plus a dirty worktree.
+   * Without the dirty-worktree probe, an age-killed session with uncommitted
+   * work was recorded `midWork:false` and never revived, while the idle reaper
+   * revived the same session for the same worktree (2026-09-30 01:52Z, topic
+   * 52075: resume queue `enqueue-skipped insufficient-evidence`). The probe is
+   * bounded, cached and fail-open; it runs here in the monitor loop, never on
+   * the terminate chokepoint.
+   */
+  #ageKillWorkEvidence(sessionId: string): string[] {
+    const evidence = this.collectWorkEvidence(sessionId);
+    const cwd = this.state.getSession(sessionId)?.cwd;
+    if (this.worktreeDirtyCheck && cwd) {
+      try { if (this.worktreeDirtyCheck(cwd)) evidence.push('uncommitted-worktree-work'); }
+      catch { /* @silent-fallback-ok: evidence collection never endangers the kill path; a failed probe just omits the signal */ }
+    }
+    return evidence;
   }
 
   /**
@@ -2219,6 +2243,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setPressureTierProvider(provider: () => 'normal' | 'moderate' | 'critical'): void {
     this.pressureTier = provider;
+  }
+
+  /** Wire the shared dirty-worktree probe (see `worktreeDirtyCheck`). */
+  setWorktreeDirtyCheck(check: (worktreePath: string) => boolean): void {
+    this.worktreeDirtyCheck = check;
   }
 
   /**

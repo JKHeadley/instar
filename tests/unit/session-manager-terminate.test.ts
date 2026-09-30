@@ -634,6 +634,90 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(authorityScopes).toEqual(['local-age-limit']);
   });
 
+  // ── Age gate round 2 (2026-09-30 01:28 → 01:52Z, topic 52075) ─────────────
+  // 01:28 the coordinator was deferred (procs=true: a backgrounded command ran
+  // until 01:38). 01:52 it was idle with nothing running and age-killed with
+  // `midWork:false`, so the resume queue skipped it (`insufficient-evidence`)
+  // although its worktree held uncommitted work the idle reaper would have
+  // recorded. The age kill now collects that evidence too.
+  const reapedEvents = () => {
+    const events: Array<{ midWork?: boolean; workEvidence?: string[]; disposition?: string }> = [];
+    manager.on('sessionReaped', (e: { midWork?: boolean; workEvidence?: string[]; disposition?: string }) => { events.push(e); });
+    return events;
+  };
+  // Topic sessions record the agent home as their cwd; the probe reads it.
+  const withCwd = (name: string) => {
+    const s = state.listSessions({ status: 'running' }).find((x) => x.name === name)!;
+    state.saveSession({ ...s, cwd: tmpDir });
+  };
+  const topicBoundGuard = (over: Partial<ReapGuardDeps> = {}) =>
+    guardWith({ hasActiveProcesses: () => false, topicBinding: () => 52075, ...over });
+
+  it('age gate R2 REPRO: live shell classifies as working on every sample; later idle kill carries the dirty worktree ⇒ resume-eligible', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    // 01:28 — a live tool shell under the session.
+    const { id } = await runLocalExpiredMonitorTick('age-r2-coordinator', () => {
+      withCwd('age-r2-coordinator');
+      standby();
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    // The same signals classify the same way on a later sample (no flip).
+    await advanceMinutes(20);
+    expect(state.getSession(id)!.status).toBe('running');
+    // 01:52 — the shell has ended and nothing has run for over ten minutes
+    // (advanceMinutes is measured from real time, so 34 = 14 after the last sample).
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await advanceMinutes(34);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(events[0].midWork).toBe(true);
+    expect(events[0].workEvidence).toContain('uncommitted-worktree-work');
+    const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
+    expect(classifyEligibility({
+      sessionName: 'age-r2-coordinator', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
+      reason: 'age-limit', disposition: 'terminal', origin: 'autonomous',
+      workEvidence: events[0].workEvidence ?? [],
+    }, { includeOperatorKills: false })).toEqual({ eligible: true });
+  });
+
+  it('age gate R2: a stale topic-bound session (clean worktree, no work) is still reaped and not revived', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => false);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r2-stale', () => { withCwd('age-r2-stale'); standby(); });
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events[0].midWork).toBe(false);
+    const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
+    expect(classifyEligibility({
+      sessionName: 'age-r2-stale', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
+      reason: 'age-limit', disposition: 'terminal', origin: 'autonomous',
+      workEvidence: events[0].workEvidence ?? [],
+    }, { includeOperatorKills: false })).toEqual({ eligible: false, why: 'insufficient-evidence' });
+  });
+
+  it('age gate R2: a failing dirty-worktree probe omits the signal and never blocks the kill', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => { throw new Error('git timed out'); });
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r2-probe-fails', () => { withCwd('age-r2-probe-fails'); standby(); });
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events[0].workEvidence ?? []).not.toContain('uncommitted-worktree-work');
+  });
+
+  it('age gate R2: an active autonomous run on the topic keeps an over-age idle session', async () => {
+    manager.setReapGuard(topicBoundGuard({ buildOrAutonomousActive: (t) => t === 52075 }));
+    manager.setAwakeChecker(() => false);
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-r2-goal', standby);
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(authorityScopes).toEqual([]);
+  });
+
   it('an arbitrary public origin label is normalized to autonomous authority', async () => {
     manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
     manager.setAwakeChecker(() => false);
