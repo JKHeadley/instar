@@ -12,6 +12,7 @@ import {
   listAutonomousJobs,
   activeAutonomousJobs,
   autonomousRunRemainingForTopic,
+  structuralLongWorkActive,
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
@@ -298,5 +299,41 @@ describe('autonomousRunRemainingForTopic (honest-recycle helper)', () => {
     expect(autonomousRunRemainingForTopic(stateDir, 'paused', now)).toBeNull();
     writeRun('nodur', { durationSeconds: null });
     expect(autonomousRunRemainingForTopic(stateDir, 'nodur', now)).toBeNull();
+  });
+});
+
+describe('structuralLongWorkActive (ReapGuard buildOrAutonomousActive)', () => {
+  const now = Date.parse('2026-09-30T02:00:00Z');
+  function writeRun(topic: string, fm: string, mtimeMinutesAgo = 31) {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+    fs.writeFileSync(file, `---\n${fm}\nreport_topic: "${topic}"\n---\n\ntask\n`);
+    const t = new Date(Date.now() - mtimeMinutesAgo * 60_000);
+    fs.utimesSync(file, t, t);
+  }
+
+  it('an active run inside its window counts, however old its file is', () => {
+    writeRun('1', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 600);
+    expect(structuralLongWorkActive(stateDir, 1, now)).toBe(true);
+  });
+
+  it('inactive, paused, expired, unbounded and absent runs do not count, even with a fresh file', () => {
+    writeRun('2', 'active: false\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('3', 'active: true\npaused: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('4', 'active: true\nstarted_at: "2026-09-29T20:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('5', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"', 0);
+    for (const t of [2, 3, 4, 5, 6]) expect(structuralLongWorkActive(stateDir, t, now)).toBe(false);
+    expect(structuralLongWorkActive(stateDir, null, now)).toBe(false);
+  });
+
+  it('a /build state file counts only while written in the last 30 minutes', () => {
+    const dir = path.join(stateDir, 'state', 'build');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'build-state.json');
+    fs.writeFileSync(file, '{}');
+    expect(structuralLongWorkActive(stateDir, null)).toBe(true);
+    const old = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(file, old, old);
+    expect(structuralLongWorkActive(stateDir, null)).toBe(false);
   });
 });
