@@ -47,17 +47,24 @@ describe('Version-skew recovery — CLI service label', () => {
     expect(restartSection).not.toMatch(/`com\.instar\.\$\{[^}]+\}\.lifeline`/);
   });
 
-  it('pkill fallback escalates to SIGKILL after SIGTERM grace', () => {
+  it('fallback signals only the recorded lifeline pids (lock holder + marker), escalating to SIGKILL after SIGTERM grace', () => {
     const cliSource = fs.readFileSync(path.join(repoRoot, 'src', 'cli.ts'), 'utf-8');
     const restartSection = extractSectionAroundFirstMatch(
       cliSource,
       /lifelineCmd\s*\.command\('restart'\)/,
       8000,
     );
-    // SIGTERM path
-    expect(restartSection).toMatch(/pkill -TERM/);
-    // Escalation path
-    expect(restartSection).toMatch(/pkill -KILL/);
+    // A pattern kill (`pkill -f '<agent>.*lifeline'`) matched unrelated
+    // processes whose command line carried both words (e.g. a builder's
+    // prompt) and SIGKILLed them. Only the marker's own pid may be signalled.
+    const code = restartSection!.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+    expect(code).not.toMatch(/pkill|killall/);
+    // The lock holder is a target too: the marker is written before the lock
+    // is taken, so in the stuck-lock case the marker names a dead respawn.
+    expect(code).toMatch(/lifeline\.lock/);
+    expect(code).toMatch(/\[lockPid, baselinePid\]/);
+    expect(code).toMatch(/process\.kill\(pid, 'SIGTERM'\)/);
+    expect(code).toMatch(/process\.kill\(pid, 'SIGKILL'\)/);
   });
 });
 

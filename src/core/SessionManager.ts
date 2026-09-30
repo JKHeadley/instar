@@ -6670,7 +6670,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Kill existing triage session if present (triage sessions are ephemeral)
     if (this.tmuxSessionExists(tmuxSession)) {
       try {
-        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', tmuxSession], { encoding: 'utf-8' }));
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`], { encoding: 'utf-8' }));
       } catch {
         // Best-effort
       }

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-09-30T11:39:52.037Z",
+  "slug": "test-instance-foreign-kills",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/core/SessionManager.ts",
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 57,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop: only narrows which pid existing kills may signal. lifeline restart is an operator-invoked one-shot CLI; the pipe-session kill still fires at most once per session from its own timeout/shutdown; the triage kill-session target just gains an exact-match prefix."
+  },
+  "verdict": "blocked"
+}
