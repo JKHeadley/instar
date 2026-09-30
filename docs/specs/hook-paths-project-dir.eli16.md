@@ -40,6 +40,12 @@ just never ran for that session.
 - Two hook programs pass that path to a small Python helper. They used to
   paste it into the Python code itself, so a folder named `Justin's Agent`
   broke the code. They now hand it over as plain data.
+- The `/autonomous` and `/build` skills each contain a small block that adds
+  their stop hook to the settings file. Copies already installed on an agent
+  still wrote the old unquoted line, so running the skill after an update
+  undid the quoting fix. The update now swaps that one line in the installed
+  skills for the quoted version and leaves the rest of the file, including
+  any edits you made, alone.
 
 ## What stays the same
 

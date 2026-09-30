@@ -1548,6 +1548,7 @@ export class PostUpdateMigrator {
     this.migrateClassClosureTemplateSelfActionClause(result);
     this.migrateSpecConvergeFoundationAudit(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
+    this.migrateSkillStopHookRegistrationQuoting(result);
     this.migrateSelfKnowledgeTree(result);
     this.migrateSoulMd(result);
     this.migrateAgentMdSections(result);
@@ -5218,6 +5219,49 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'SCOPE_ACCRETION',
       'skills/autonomous/SKILL.md (W32 preparation-aware active state)',
     );
+  }
+
+  /**
+   * The /autonomous and /build skills each carry a python block that registers
+   * their Stop hook in .claude/settings.json. Shipped copies wrote the command
+   * unquoted, so running the installed block after an update rewrote the quoted
+   * command (migrateSettings) back to a form that breaks in a home path with a
+   * space or apostrophe. Swap exactly those shipped lines for the quoted ones;
+   * the rest of the file, customized or not, is left alone. Idempotent: once
+   * replaced, the old line is no longer present.
+   */
+  private migrateSkillStopHookRegistrationQuoting(result: MigrationResult): void {
+    const autonomousNew = String.raw`correct = 'bash \"\${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"'`;
+    const buildNew = String.raw`'command': 'bash \"\${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh\"'`;
+    const targets: Array<{ relPath: string; replacements: Array<[string, string]> }> = [
+      {
+        relPath: '.claude/skills/autonomous/SKILL.md',
+        replacements: [
+          [String.raw`correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'`, autonomousNew],
+        ],
+      },
+      {
+        relPath: '.claude/skills/build/SKILL.md',
+        replacements: [
+          [`'command': 'bash .instar/hooks/instar/build-stop-hook.sh'`, buildNew],
+          [`'command': 'bash \${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh'`, buildNew],
+        ],
+      },
+    ];
+    for (const { relPath, replacements } of targets) {
+      try {
+        const skillFile = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(skillFile)) continue;
+        const current = fs.readFileSync(skillFile, 'utf8');
+        let next = current;
+        for (const [from, to] of replacements) next = next.split(from).join(to);
+        if (next === current) continue;
+        fs.writeFileSync(skillFile, next);
+        result.upgraded.push(`${relPath} (Stop hook registration quotes the hook path)`);
+      } catch (err) {
+        result.errors.push(`${relPath} hook-registration quoting: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**

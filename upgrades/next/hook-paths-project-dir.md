@@ -28,6 +28,12 @@ and those hooks silently never ran.
   named `Justin's Agent` parses. Deployed Slack hooks are upgraded once.
 - The missing-hook-file check on update also covers anchored and quoted
   commands.
+- Installed `/autonomous` and `/build` skills get their Stop-hook
+  registration line swapped for the quoted one, once
+  (`migrateSkillStopHookRegistrationQuoting`). Only the exact shipped line is
+  replaced; the rest of the file, custom edits included, is kept. Without
+  this, running an installed registration block after update rewrote the
+  quoted settings command back to the unquoted form.
 
 ## Evidence
 
@@ -39,6 +45,12 @@ and those hooks silently never ran.
   from a subdirectory of a home named `Agent Home` (the unquoted form fails
   there); the Slack hook reads port, token and agent id from a home named
   `Justin's Agent Home`.
+- `tests/unit/PostUpdateMigrator-skillHookRegistrationQuoting.test.ts`: a
+  pre-fix installed `/autonomous` or `/build` skill in a home named
+  `Justin's Agent Home` is upgraded with custom content kept; its
+  registration block then keeps the settings command quoted and the command
+  runs (the pre-fix block writes an unquoted command that fails); a second
+  run is a no-op; a custom skill is untouched.
 - `tests/unit/build-stop-hook-session-scoping.test.ts`: the shipped build stop
   hook fired from `.instar/lanes/pipeline` finds the build state, also under a
   home named `Justin's Agent Home`; both fail on the previous hook.

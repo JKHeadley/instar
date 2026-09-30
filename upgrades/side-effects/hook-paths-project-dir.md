@@ -238,3 +238,25 @@ by `migrateSettings()` at the next update; they only fail for a spaced home
 or a subdirectory session in the window before that update.
 
 Concur with the review.
+
+## Round 4: installed skill snippets
+
+The Astra round-2 review turned the residual above into a must-fix: an
+installed pre-fix registration block, run after an update, rewrote the
+quoted settings command back to the unquoted form. `PostUpdateMigrator`
+now runs `migrateSkillStopHookRegistrationQuoting()` after the autonomous
+skill upgrades. It replaces only the exact shipped registration line in
+`.claude/skills/autonomous/SKILL.md` and `.claude/skills/build/SKILL.md`
+(for `/build`, also the unreleased round-1 unquoted line) with the quoted
+line, leaving every other byte alone. A skill without the shipped line
+(custom or already upgraded) is not touched, so a second run is a no-op.
+Over-block: none (no gate). Under-block: a user who hand-edited that one
+line keeps their version; `migrateSettings()` still re-quotes the settings
+entry on the next update.
+
+## Round 4 second-pass review
+
+Checked byte-for-byte that the migration's old literals occur exactly once in the db15e1ea2 `/autonomous` and `/build` SKILL.md files (and the round-1 `/build` line in b0932f101), and that migrating each old file yields the current bundled file exactly.
+The quoted replacement strings contain none of the old strings (idempotent); only the exact line is swapped, so custom content survives, and the unit test (6 tests) passes.
+The call sits after `migrateBuildSkillMethodology` and `migrateAutonomousStopHookTopicKeyed`, the two whole-file SKILL.md redeploys; no other shipped copy of these registration blocks exists in `src/` (init copies the bundled files).
+Concur with the review.
