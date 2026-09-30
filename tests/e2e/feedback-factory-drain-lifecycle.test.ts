@@ -271,4 +271,26 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect(resumedTick.status).toBe(202);
     expect((await request(app).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
   });
+
+  it('the dashboard proposal is alive on the production path and tracks the live owner binding', async () => {
+    const app = server.getApp();
+    const res = await request(app).get('/feedback-factory/readiness-authorities/proposal').set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    // The failover above moved the owner epoch to 2 and rebound the authority to it.
+    expect(res.body).toMatchObject({ status: 'active', current: { agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 2 } });
+    // This fixture's intelligence is a bare provider, not the router, so there is no
+    // routed model to bind — the card must say so and offer no Approve rather than guess.
+    expect(res.body.proposal).toBeNull();
+    expect(res.body.blockers.join(' ')).toMatch(/No model is currently available/);
+    expect(res.body.approveAction).toBeNull();
+    // The new approve path is PIN-gated like every other authority mutation.
+    expect((await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, operatorDecisionRef: 'agent-self-attempt' })).status).toBe(403);
+    const refused = await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, pin: PIN, operatorDecisionRef: 'operator-no-route' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/not approvable/);
+  });
 });

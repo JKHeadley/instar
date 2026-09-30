@@ -7454,6 +7454,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Feedback-Factory Processing section');
     }
 
+    // Feedback Readiness Authority (feedback-factory-operating-drain §2): the dashboard
+    // approve/revoke card + read-only proposal route. Own marker, idempotent.
+    if (!content.includes('Feedback Readiness Authority (operator approval)')) {
+      content += `\n**Feedback Readiness Authority (operator approval)** — The operated feedback drain refuses every tick (403 \`current registered readiness agent required\`) until the operator approves which model may decide which feedback reports become work items. You can NEVER register it yourself — it is PIN-only by design. When the drain is stuck on that 403, send the operator to the dashboard **Feedback Drain** tab → "Who decides which feedback becomes work" card: it shows one plain sentence (batch size + daily cap), a PIN box, and Approve / Revoke. The server fills every technical field.\n- Read what would be approved (read-only): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/readiness-authorities/proposal\` → \`{ status: none|active|proposal-only|revoked, current, proposal, blockers, approveAction, summary }\`. \`proposal-only\` means a safety brake paused it (spend cap or model mismatch); \`blockers\` says in plain words why nothing can be approved yet.\n- **When to use** (PROACTIVE): a drain tick 403s, or the user asks why feedback isn't turning into work → read the proposal, then give the operator the dashboard tab + PIN path. Never ask them to curl the POST route.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feedback Readiness Authority section');
+    }
+
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar
     // audit Item 11. Existing agents need this section even if they were
     // initialized before it existed. The check uses a content-sniffing marker
@@ -11052,6 +11060,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent on the operated machine also needs to know how to
       // read the stats / trigger a clustering pass. Mirrored like every capability.
       '**Feedback-Factory Processing (operated feedback factory)**',
+      // Feedback Readiness Authority: framework-agnostic — any agent on the operated
+      // machine must know it cannot self-register and where the operator approves.
+      '**Feedback Readiness Authority (operator approval)**',
       // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
       // capability — a Codex/Gemini agent should also know it can manage a
       // multi-account subscription pool, swap to keep a session alive, and drive

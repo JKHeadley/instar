@@ -460,6 +460,7 @@ export class AgentServer {
   };
 
     isRestorePending: () => boolean;
+    authorityBinding: () => { ownerMachineId: string | null; ownerEpoch: number };
   } | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
@@ -2668,7 +2669,9 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending };
+        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+          // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
+          authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         if (options.config.stateDir && sourceCheckout) {
           const selfHealBootId = randomUUID();
           void runFeedbackFactoryDefaultsSelfHeal({

@@ -3670,6 +3670,7 @@
       <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
       <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
       <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
+      <section id="fdAuthority" class="ph-section spend-arm-root"></section>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -9985,8 +9986,41 @@
         fdText('fdStamp', '');
       }
     }
+    // Readiness authority approve/revoke card. Rendered on tab open and after each
+    // action — NOT on the 15s poll, which would wipe a PIN mid-entry.
+    let __fraModule = null;
+    async function loadFeedbackAuthority() {
+      const root = document.getElementById('fdAuthority');
+      if (!root) return;
+      if (!__fraModule) {
+        try { __fraModule = await import('/dashboard/feedback-readiness-authority.js'); }
+        catch (e) { console.error('[feedback-readiness-authority] module load failed', e); root.textContent = 'Loading the approval card failed — refresh to retry.'; return; }
+      }
+      const M = __fraModule;
+      const readProposal = async (envelope) => {
+        const qs = envelope ? '?' + new URLSearchParams(envelope).toString() : '';
+        try { return await apiFetch('/feedback-factory/readiness-authorities/proposal' + qs); } catch { return null; }
+      };
+      const proposal = await readProposal();
+      if (!proposal) { root.textContent = 'The readiness approval is unavailable while the drain is not live on this machine.'; return; }
+      M.renderAuthorityCard(document, root, proposal, {
+        preview: readProposal,
+        submit: async (action, envelope, pin) => {
+          const response = await fetch('/feedback-factory/readiness-authorities', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef())),
+          });
+          const data = await response.json().catch(() => ({}));
+          const note = M.resultNote(response.ok, data);
+          if (response.ok) { await loadFeedbackAuthority(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
+          return note;
+        },
+      });
+    }
     function startFeedbackDrain() {
       stopFeedbackDrain();
+      void loadFeedbackAuthority();
       void loadFeedbackDrain();
       __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
     }

@@ -174,6 +174,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
 import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
+import { buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
@@ -1433,6 +1434,8 @@ export interface RouteContext {
       reconciliation: import('../feedback-factory/drain/FeedbackDrainStore.js').InitiativeLinkReconciliationResult;
     };
     isRestorePending: () => boolean;
+    /** Owner binding the readiness authority must match (for the operator proposal). Optional for older wiring. */
+    authorityBinding?: () => { ownerMachineId: string | null; ownerEpoch: number };
   } | null;
   feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
@@ -13391,8 +13394,42 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // Server-computed readiness authority proposal for the dashboard card. Read-only
+  // (Bearer): it derives every binding the runtime later compares, so the operator
+  // only chooses the envelope. Registering still requires the PIN route below.
+  const readinessAuthorityProposal = (envelope?: Partial<ReadinessEnvelope>) => {
+    const drain = ctx.feedbackDrain!;
+    const intel = ctx.intelligence;
+    const r = READINESS_ARBITER_ROUTING;
+    const route = intel instanceof IntelligenceRouter
+      ? intel.previewPrimary(r.component, { category: r.category, nature: r.nature, injectionExposed: r.injectionExposed, model: r.model })
+      : null;
+    const current = drain.store.getAuthority(READINESS_AUTHORITY_ID);
+    return buildReadinessAuthorityProposal({
+      agentId: ctx.config.projectName ?? '',
+      binding: drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 },
+      route,
+      piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
+      current,
+      currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
+      envelope,
+    });
+  };
+
+  router.get('/feedback-factory/readiness-authorities/proposal', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    const q = req.query;
+    res.json(readinessAuthorityProposal({
+      maxBatch: typeof q.maxBatch === 'string' && q.maxBatch.trim() !== '' ? Number(q.maxBatch) : undefined,
+      maxTokens: typeof q.maxTokens === 'string' && q.maxTokens.trim() !== '' ? Number(q.maxTokens) : undefined,
+      maxDailySpendUsd: typeof q.maxDailySpendUsd === 'string' && q.maxDailySpendUsd.trim() !== '' ? Number(q.maxDailySpendUsd) : undefined,
+    }));
+  });
+
   // Operator-rooted authority mutation. Runtime agents/models cannot call this
   // with Bearer alone, so “registered” is a real security boundary.
+  // `useProposal: true` (create/replace) makes the SERVER derive every binding
+  // field from the live proposal; only the operator's envelope comes from the body.
   router.post('/feedback-factory/readiness-authorities', (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
@@ -13402,7 +13439,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
       if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
       const existing = ctx.feedbackDrain.store.getAuthority(String(body.authorityId ?? 'feedback-readiness-default'));
-      const source = (action === 'revoke' || action === 'restore') && existing ? existing : body;
+      let proposed: Record<string, unknown> | null = null;
+      if (body.useProposal === true && (action === 'create' || action === 'replace')) {
+        const built = readinessAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
+        if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+        proposed = { ...built.proposal };
+      }
+      const source = proposed ?? ((action === 'revoke' || action === 'restore') && existing ? existing : body);
       const record = ctx.feedbackDrain.store.mutateAuthority({
         action,
         operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
