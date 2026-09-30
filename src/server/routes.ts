@@ -25781,10 +25781,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const run = indexPath ? picker.pick(indexPath, context, source) : picker.pick('', context, source);
     if (cfg.mode === 'shadow') {
       picker.lastRun = run.catch(() => null);
+      // @silent-fallback-ok — pick() never rejects (it logs its own failure row); this guard only keeps a stray rejection unhandled-free.
       res.status(202).json({ mode: 'shadow' });
       return;
     }
     const result = await run.catch(() => null);
+    // @silent-fallback-ok — pick() never rejects; a null here injects nothing, which is today's load exactly.
     const block = result ? renderInjectBlock(result.inject) : '';
     res.json({ mode: 'inject', present: block !== '', block, outcome: result?.outcome ?? 'fallback', reason: result?.reason });
   });
