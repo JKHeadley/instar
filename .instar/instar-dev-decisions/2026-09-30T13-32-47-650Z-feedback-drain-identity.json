@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-30T13:32:47.650Z",
+  "slug": "feedback-drain-identity",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainStore.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

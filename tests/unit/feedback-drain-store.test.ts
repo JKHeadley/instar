@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DrainConflictError, FeedbackDrainStore, type FeedbackDrainCrashPoint } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
+import { DrainConflictError, FeedbackDrainStore, sameSqliteFileIdentity, type FeedbackDrainCrashPoint } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const KEY = 'k'.repeat(32);
@@ -376,6 +377,77 @@ describe('FeedbackDrainStore', () => {
       disk.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'feedback-drain-store checkpoint test' });
     }
+  });
+
+  it('compares file identity on inode + birth time, ignoring a legacy st_dev part', () => {
+    // Live evidence: APFS renumbered st_dev 16777231 -> 16777232 on the same untouched file.
+    expect(sameSqliteFileIdentity('16777231:454176:1787103639952.4048', '454176:1787103639952.4048')).toBe(true);
+    expect(sameSqliteFileIdentity('454176:1787103639952.4048', '454176:1787103639952.4048')).toBe(true);
+    expect(sameSqliteFileIdentity('16777231:454177:1787103639952.4048', '454176:1787103639952.4048')).toBe(false);
+    expect(sameSqliteFileIdentity('16777231:454176:1787103640000', '454176:1787103639952.4048')).toBe(false);
+    expect(sameSqliteFileIdentity('454176:1', '454176:1787103639952.4048')).toBe(false);
+  });
+
+  describe('restorePending across an st_dev change', () => {
+    let dir: string;
+    let dbPath: string;
+    let disk: FeedbackDrainStore | null;
+    const checkpointPath = () => path.join(dir, 'feedback-drain-checkpoint.json');
+    // Rewrite the signed checkpoint's identity (re-signing the manifest) to model a
+    // checkpoint recorded before a reboot, in the legacy dev:ino:birthtime form.
+    const rewriteIdentity = (identity: string) => {
+      const cp = JSON.parse(fs.readFileSync(checkpointPath(), 'utf8'));
+      cp.dbFileIdentity = identity;
+      const payload = { schemaVersion: cp.schemaVersion, snapshotId: cp.snapshotId, checksum: cp.checksum,
+        dbFileIdentity: cp.dbFileIdentity, ownerAuthorityEpoch: cp.ownerAuthorityEpoch, createdAt: cp.createdAt };
+      cp.manifestChecksum = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      fs.writeFileSync(checkpointPath(), JSON.stringify(cp));
+    };
+
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-identity-'));
+      dbPath = path.join(dir, 'feedback-drain.db');
+      disk = new FeedbackDrainStore({ dbPath, tokenHmacKey: KEY, clock: () => now });
+    });
+    afterEach(() => {
+      disk?.close();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'feedback-drain-store identity test' });
+    });
+
+    it('writes an identity without st_dev and treats the same file as not restored', () => {
+      const checkpoint = disk!.checkpointForBackup(1);
+      const stat = fs.statSync(dbPath);
+      expect(checkpoint.dbFileIdentity).toBe(`${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk!.restorePending()).toBe(false);
+    });
+
+    it('a legacy checkpoint whose st_dev differs from today is not a restore', () => {
+      disk!.checkpointForBackup(1);
+      const stat = fs.statSync(dbPath);
+      rewriteIdentity(`${Number(stat.dev) + 1}:${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk!.restorePending()).toBe(false);
+    });
+
+    it('a genuinely replaced file (new inode and birth time) is still detected as restored', () => {
+      disk!.checkpointForBackup(1);
+      const snapshot = path.join(dir, 'snapshot.db');
+      fs.copyFileSync(dbPath, snapshot);
+      const stat = fs.statSync(dbPath);
+      disk!.close();
+      disk = null;
+      for (const suffix of ['', '-wal', '-shm']) {
+        if (fs.existsSync(`${dbPath}${suffix}`)) SafeFsExecutor.safeUnlinkSync(`${dbPath}${suffix}`, { operation: 'feedback-drain-store identity test' });
+      }
+      fs.copyFileSync(snapshot, dbPath);
+      disk = new FeedbackDrainStore({ dbPath, tokenHmacKey: KEY, clock: () => now });
+      const restoredStat = fs.statSync(dbPath);
+      // Guard the fixture: the replacement really is a different file.
+      expect(`${restoredStat.ino}:${restoredStat.birthtimeMs}`).not.toBe(`${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk.restorePending()).toBe(true);
+      // Also with a legacy three-part checkpoint for the original file.
+      rewriteIdentity(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk.restorePending()).toBe(true);
+    });
   });
 
   it('escapes control and newline injection at the authoritative queue boundary', () => {
