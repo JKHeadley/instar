@@ -6,6 +6,7 @@ import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js'
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildSyntheticAgent, mkAgentMd, mkManifest } from './scheduler/agentmd-helpers.js';
+import { jobDeclaredFailurePath } from '../../src/scheduler/jobDeclaredFailure.js';
 
 describe('JobScheduler', () => {
   let project: TempProject;
@@ -626,6 +627,46 @@ describe('JobScheduler', () => {
   });
 
   describe('notifyJobComplete', () => {
+    // Spec feedback-inbox-vault-token §B: a prompt job declares its run failed.
+    async function completeWithDeclaredFailure(reason: string | null, status: 'completed' | 'killed' = 'completed') {
+      createScheduler();
+      scheduler.start();
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+      const session = mockSM._sessions[mockSM._sessions.length - 1];
+      session.status = status;
+      project.state.saveSession(session);
+      const file = jobDeclaredFailurePath(project.stateDir, session.tmuxSession);
+      if (reason !== null) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, reason);
+      }
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+      return { file, state: project.state.getJobState('health-check') };
+    }
+
+    it('a declared-failure file records the run as failure with the reason, and is removed', async () => {
+      const { file, state } = await completeWithDeclaredFailure('drain posture unavailable: enabled-missing-operated-host-owner\n');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.lastError).toBe('Declared failure: drain posture unavailable: enabled-missing-operated-host-owner');
+      expect(state?.consecutiveFailures).toBe(1);
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    it('no declared-failure file keeps a normal completion a success', async () => {
+      const { state } = await completeWithDeclaredFailure(null);
+      expect(state?.lastResult).toBe('success');
+      expect(state?.lastError).toBeUndefined();
+    });
+
+    it('a killed session keeps timeout precedence and carries the declared reason', async () => {
+      const { file, state } = await completeWithDeclaredFailure('drain status unreadable: HTTP 401', 'killed');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.lastError).toContain('Session killed');
+      expect(state?.lastError).toContain('declared failure: drain status unreadable: HTTP 401');
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
     it('saves the job state before recording terminal completion', async () => {
       createScheduler();
       scheduler.start();

@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
+import { JOB_FAILURE_FILE_ENV, jobDeclaredFailureDir, jobDeclaredFailurePath } from '../scheduler/jobDeclaredFailure.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
@@ -1186,6 +1187,19 @@ export class SessionManager extends EventEmitter {
    *  exactly as before). Mirrors the existing credential-injection art
    *  (INSTAR_AUTH_TOKEN / ANTHROPIC_API_KEY via tmux -e). The hardened triage
    *  spawn deliberately does NOT call this — it scrubs credentials. */
+  /** Spec feedback-inbox-vault-token §B: the per-run file a job writes to
+   *  declare its run failed (`INSTAR_JOB_FAILURE_FILE`), read by
+   *  JobScheduler.notifyJobComplete. Named by the unique tmux session. */
+  private jobFailureFileEnvFlags(tmuxSession: string): string[] {
+    try {
+      fs.mkdirSync(jobDeclaredFailureDir(this.vaultStateDir), { recursive: true });
+    } catch {
+      // @silent-fallback-ok — the job's own write then fails visibly in its
+      // transcript; spawning must never depend on this directory.
+    }
+    return ['-e', `${JOB_FAILURE_FILE_ENV}=${jobDeclaredFailurePath(this.vaultStateDir, tmuxSession)}`];
+  }
+
   private ghTokenEnvFlags(): string[] {
     const token = resolveGhTokenFromVault(this.vaultStateDir);
     return token ? ['-e', `GH_TOKEN=${token}`] : [];
@@ -3534,6 +3548,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ? [
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
+              ...this.jobFailureFileEnvFlags(tmuxSession),
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
               // Test-runner bound (test-runner-concurrency-bound §2.6): a
               // server-launched job session is BACKGROUND class — test suites
@@ -3889,6 +3904,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ? [
               '-e', 'INSTAR_MESSAGE_KIND=automated',
               '-e', `INSTAR_JOB_SLUG=${options.jobSlug}`,
+              ...this.jobFailureFileEnvFlags(tmuxSession),
               '-e', 'INSTAR_SENDER_CLASS=llm-session',
               // Test-runner bound (test-runner-concurrency-bound §2.6): a
               // server-launched job session is BACKGROUND class — test suites

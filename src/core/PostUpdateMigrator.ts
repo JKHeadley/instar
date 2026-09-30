@@ -22,6 +22,8 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
+import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
+import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
 import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
@@ -6608,6 +6610,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram network deadline awareness');
     }
 
+    const refreshedInboxToken = refreshFeedbackInboxTokenAwareness(content);
+    if (refreshedInboxToken !== content) {
+      content = refreshedInboxToken;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: feedback inbox token may come from the vault');
+    }
+
     const refreshedCapacity = refreshOriginCapacityAwareness(content);
     if (refreshedCapacity !== content) {
       content = refreshedCapacity;
@@ -7303,6 +7312,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: documented the durable built-in job enablement surface');
     }
 
+    // Declared job failure (spec feedback-inbox-vault-token §B/§D): a prompt job
+    // records its run failed only by writing $INSTAR_JOB_FAILURE_FILE. Inserted
+    // after the built-in-job enablement bullet; content-sniffed on the env name.
+    if (content.includes('**Job Scheduler**') && !content.includes('INSTAR_JOB_FAILURE_FILE')) {
+      const enableAnchor = 'Custom jobs under `jobs/user/` are never touched by any of this.\n';
+      const idx = content.indexOf(enableAnchor);
+      content = idx !== -1
+        ? content.slice(0, idx + enableAnchor.length) + JOB_DECLARED_FAILURE_AWARENESS + content.slice(idx + enableAnchor.length)
+        : content + '\n' + JOB_DECLARED_FAILURE_AWARENESS;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented declared job failure ($INSTAR_JOB_FAILURE_FILE)');
+    }
+
     // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
     // Migration Parity item 3: an agent whose CLAUDE.md already carries the
     // Outbound advisory section (installed by the block above or by init)
@@ -7410,7 +7432,7 @@ setTimeout(() => process.exit(0), 2000);
     // idempotent (run twice → single block). Agent Awareness Standard: the
     // feature ships dark, but an agent that enables it must know the route.
     if (!content.includes('Feedback-Inbox Receiving End')) {
-      content += `\n**Feedback-Inbox Receiving End (operated feedback factory)** — When this install runs an operated feedback-factory instance, the receiving end is: the canonical front (Vercel) durably writes each ACCEPTED fleet report into a cloud Blob inbox, and the InboxDrainer on this machine ingests them into the durable canonical FeedbackStore — so no operated machine is ever in the intake critical path (a machine asleep/restarting only delays processing, never loses a report). Ships dark behind \`feedbackFactory.receiverPersistence.enabled\` + a Blob token env; the route 503s when dark.\n- Status (read-only counters): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-inbox/status\` → \`{ running, drained, duplicates, quarantined, errors, ticks, lastTickAt, lastDrainAt, lastError }\`.\n- **When to use** (PROACTIVE): "are fleet feedback reports flowing / stuck?" → read this status. A growing \`errors\` + stale \`lastDrainAt\` means the inbox is backing up (reports are SAFE in the inbox — durability is cloud-side); \`quarantined > 0\` means malformed objects were preserved under \`quarantine/\` for inspection, never dropped.\n`;
+      content += `\n**Feedback-Inbox Receiving End (operated feedback factory)** — When this install runs an operated feedback-factory instance, the receiving end is: the canonical front (Vercel) durably writes each ACCEPTED fleet report into a cloud Blob inbox, and the InboxDrainer on this machine ingests them into the durable canonical FeedbackStore — so no operated machine is ever in the intake critical path (a machine asleep/restarting only delays processing, never loses a report). ${FEEDBACK_INBOX_TOKEN_SENTENCE}\n- Status (read-only counters): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-inbox/status\` → \`{ running, drained, duplicates, quarantined, errors, ticks, lastTickAt, lastDrainAt, lastError }\`.\n- **When to use** (PROACTIVE): "are fleet feedback reports flowing / stuck?" → read this status. A growing \`errors\` + stale \`lastDrainAt\` means the inbox is backing up (reports are SAFE in the inbox — durability is cloud-side); \`quarantined > 0\` means malformed objects were preserved under \`quarantine/\` for inspection, never dropped.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feedback-Inbox Receiving End section');
     }
@@ -11229,11 +11251,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
         ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
+        ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
           appended = appended.trimEnd() + '\n\n' + render();
           mirrored++;
         }
+      }
+
+      const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);
+      if (refreshedInboxShadow !== appended) {
+        appended = refreshedInboxShadow;
+        mirrored++;
       }
 
       const refreshedCapacityShadow = refreshOriginCapacityAwareness(appended);

@@ -55,6 +55,7 @@ import {
 } from '../coordination/FollowMeConsumerBackoffStore.js';
 import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
+import { resolveInboxBlobToken, DEFAULT_INBOX_BLOB_TOKEN_ENV, DEFAULT_INBOX_BLOB_TOKEN_VAULT_KEY } from '../feedback-factory/inbox/resolveInboxBlobToken.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
 import { JsonlFeedbackStore } from '../feedback-factory/store/JsonlFeedbackStore.js';
 import { FeedbackProcessingService, resolveCanonicalStoreDir } from '../feedback-factory/processing/FeedbackProcessingService.js';
@@ -2476,17 +2477,47 @@ export class AgentServer {
     // Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving
     // end): the cloud Blob inbox → durable canonical JsonlFeedbackStore mover.
     // Ships DARK — constructed only when feedbackFactory.receiverPersistence is
-    // explicitly enabled AND the Blob token env var is set; otherwise the
-    // /feedback-inbox/status route 503s. Own try/catch: an init failure here can
+    // explicitly enabled AND a Blob token resolves (env var first, else the
+    // agent's encrypted vault — the tmux-spawned server never sees lifeline env);
+    // otherwise the /feedback-inbox/status route 503s. Own try/catch: an init failure here can
     // never block boot (deny-safe null → 503).
     try {
       const rp = options.config.feedbackFactory?.receiverPersistence;
-      if (rp?.enabled === true && options.config.stateDir) {
-        const tokenEnv = rp.blobTokenEnv ?? 'FEEDBACK_INBOX_BLOB_TOKEN';
-        const token = process.env[tokenEnv];
+      // Single owner: the vault (and often config) syncs to every machine of the
+      // agent, and the drainer deletes each blob after its LOCAL commit — two
+      // drainers would scatter reports across machines. Same owner resolution as
+      // the operated drain below; absence in a mesh is not permission to self-elect.
+      const inboxSelfMachineId = options.meshSelfId ?? options.config.projectName;
+      const inboxOwner = resolveFeedbackDrainOwnerMachineId(
+        options.config.feedbackFactory?.operatedHostMachineId, inboxSelfMachineId, options.coordinator?.enabled === true);
+      if (rp?.enabled === true && options.config.stateDir && inboxOwner !== inboxSelfMachineId) {
+        console.warn(`[feedback-inbox] receiverPersistence enabled but ${inboxOwner === null ? 'the drain owner is unresolved' : 'this machine is not the operated host'} — drainer stays dark`);
+      } else if (rp?.enabled === true && options.config.stateDir) {
+        const tokenEnv = rp.blobTokenEnv ?? DEFAULT_INBOX_BLOB_TOKEN_ENV;
+        const vaultKey = rp.blobTokenVaultKey ?? DEFAULT_INBOX_BLOB_TOKEN_VAULT_KEY;
+        const { token, source, vaultError } = resolveInboxBlobToken({
+          env: process.env,
+          envName: tokenEnv,
+          stateDir: options.config.stateDir,
+          vaultKey,
+          forceFileKey: options.config.secrets?.forceFileKey,
+        });
         if (!token) {
-          console.warn(`[feedback-inbox] receiverPersistence enabled but env ${tokenEnv} is unset — drainer stays dark`);
+          console.warn(
+            `[feedback-inbox] receiverPersistence enabled but no Blob token (env ${tokenEnv} unset; ` +
+            `vault key ${vaultKey} ${vaultError ? 'unreadable' : 'absent'}) — drainer stays dark`,
+          );
+          // This machine IS the owner and receiving is switched on, so a dark
+          // drainer is a real outage, not a posture — say so beyond one log line.
+          DegradationReporter.getInstance().report({
+            feature: 'FeedbackInbox.blobToken',
+            primary: 'Drain the cloud feedback inbox into the canonical store on the operated host',
+            fallback: 'Drainer stays dark; fleet reports wait in the cloud inbox',
+            reason: vaultError ? `vault key ${vaultKey} unreadable and env ${tokenEnv} unset` : `no Blob token: env ${tokenEnv} unset and vault key ${vaultKey} absent`,
+            impact: 'No fleet feedback reaches this machine until the token is stored and the server restarts.',
+          });
         } else {
+          console.log(`[feedback-inbox] Blob token source: ${source}`);
           const dataDir = rp.dataDir ?? path.join(options.config.stateDir, 'state', 'feedback-factory', 'store');
           const store = new JsonlFeedbackStore(dataDir);
           const client = new BlobInboxClient({ token, apiBase: rp.blobApiBase });
@@ -2698,6 +2729,19 @@ export class AgentServer {
           sourceContext: 'feedback-drain:integrity',
         });
       }
+    }
+    // A development agent's drain posture is an exact value the server computed;
+    // report it here instead of relying only on the cadenced job's model to notice
+    // (spec feedback-inbox-vault-token §C2 — it read `unavailable` for weeks while
+    // every job run recorded success). Signal only; nothing is blocked.
+    if (options.config.developmentAgent === true && this.feedbackDrainPosture.state === 'unavailable') {
+      DegradationReporter.getInstance().report({
+        feature: 'FeedbackFactory.drainPosture',
+        primary: 'Run the operated feedback drain on this development agent',
+        fallback: 'Drain stays unavailable; fleet reports wait in the cloud inbox',
+        reason: `drain posture unavailable: ${this.feedbackDrainPosture.reason}`,
+        impact: 'Fleet feedback is not clustered or turned into tasks until the cause is fixed and the server restarts.',
+      });
     }
 
     // Process-ceiling state check (docs/specs/launchd-process-ceiling-floor.md §3).
