@@ -28,6 +28,7 @@ import {
   matchProcessSignal,
   type FrameworkProcessSignal,
 } from './frameworkProcessSignals.js';
+import { processStartMs } from '../core/processIdentity.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -56,6 +57,12 @@ export type ProcessClassification = 'tracked' | 'instar-orphan' | 'external';
 export interface ClassifiedProcess extends FrameworkProcess {
   classification: ProcessClassification;
   reason: string;
+  /**
+   * For an `instar-orphan`: the process start time (epoch ms) read when its
+   * ownership was established. The automatic kill signals only while the pid
+   * still has this start time; null (unreadable) never authorizes a signal.
+   */
+  procStart?: number | null;
 }
 
 export interface ReaperReport {
@@ -190,7 +197,15 @@ export class OrphanProcessReaper extends EventEmitter {
           console.log(`[OrphanReaper] ${msg}`);
           continue;
         }
-        this.killProcess(orphan.pid);
+        // Signal only the process whose ownership this scan established: same
+        // pid AND same start time. Unreadable or changed identity → no signal,
+        // and the tmux session is left alone too.
+        if (!this.killProcess(orphan.pid, orphan.procStart ?? null)) {
+          const msg = `Skipped orphan PID ${orphan.pid} (tmux: ${orphan.tmuxSession || 'none'}) — process identity unreadable or changed since ownership was established, not signalling`;
+          report.actionsPerformed.push(msg);
+          console.log(`[OrphanReaper] ${msg}`);
+          continue;
+        }
         // Also kill the tmux session if it exists — but NEVER the server session.
         // §P0 #6 route through ReapAuthority when the orphan's tmuxSession
         // matches a CURRENTLY-tracked session (a race between this scan and a
@@ -206,7 +221,9 @@ export class OrphanProcessReaper extends EventEmitter {
               disposition: 'terminal',
               finalStatus: 'killed',
             });
-          } else {
+          } else if (this.sessionManager.ownsLiveTmuxSession(orphan.tmuxSession)) {
+            // Re-proven just now: the session under this name is still the
+            // incarnation this agent spawned (not a replacement under the name).
             this.killTmuxSession(orphan.tmuxSession);
           }
         }
@@ -375,20 +392,25 @@ export class OrphanProcessReaper extends EventEmitter {
   }
 
   /**
-   * List all tmux sessions and map pane PIDs to session names.
+   * List all tmux sessions and map LIVE pane PIDs to session names.
+   *
+   * A dead pane retained by remain-on-exit keeps reporting its old pane_pid,
+   * which the kernel may already have handed to an unrelated process — so only
+   * panes tmux reports as live (pane_dead=0) are mapped; dead or indeterminate
+   * panes map nothing.
    */
   private listAllTmuxSessions(): Map<number, string> {
     const pidToSession = new Map<number, string>();
     try {
       const output = shellExec(
-        `${this.config.sessions.tmuxPath} list-panes -a -F "#{session_name}||#{pane_pid}" 2>/dev/null`,
+        `${this.config.sessions.tmuxPath} list-panes -a -F "#{session_name}||#{pane_pid}||#{pane_dead}" 2>/dev/null`,
       ).trim();
 
       if (!output) return pidToSession;
 
       for (const line of output.split('\n')) {
-        const [sessionName, pidStr] = line.split('||');
-        if (sessionName && pidStr) {
+        const [sessionName, pidStr, paneDead] = line.split('||');
+        if (sessionName && pidStr && paneDead === '0') {
           const pid = parseInt(pidStr, 10);
           if (!isNaN(pid)) {
             pidToSession.set(pid, sessionName);
@@ -450,11 +472,25 @@ export class OrphanProcessReaper extends EventEmitter {
         // This replaces the old prefix-startsWith match per
         // UNIFIED-SESSION-LIFECYCLE §P0 #6 — a user-created session that happens
         // to share the project prefix is NOT classified as orphan.
+        //
+        // A historical NAME match is still not ownership: another agent, a test
+        // instance or a user can create a session under a name this agent once
+        // used. Only a live session carrying the INSTAR_SESSION_ID of this
+        // agent's own record for that name is the incarnation this agent
+        // spawned; anything else is reported, never auto-killed.
         if (knownInstarSessions.has(tmuxSession)) {
+          if (this.sessionManager.ownsLiveTmuxSession(tmuxSession)) {
+            return {
+              ...proc,
+              classification: 'instar-orphan' as const,
+              reason: `In instar-owned tmux "${tmuxSession}" but not currently tracked by SessionManager`,
+              procStart: processStartMs(proc.pid),
+            };
+          }
           return {
             ...proc,
-            classification: 'instar-orphan' as const,
-            reason: `In instar-known tmux "${tmuxSession}" but not currently tracked by SessionManager`,
+            classification: 'external' as const,
+            reason: `In tmux "${tmuxSession}", a name instar once used, but the session carries no matching INSTAR_SESSION_ID — ownership unproven, report only`,
           };
         }
 
@@ -542,13 +578,29 @@ export class OrphanProcessReaper extends EventEmitter {
     }
   }
 
-  private killProcess(pid: number): boolean {
+  /**
+   * SIGTERM `pid`, then SIGKILL after 5 s if the same process is still there.
+   *
+   * `expectedStart` is the start time observed when ownership was established
+   * (automatic orphan reaping): the SIGTERM is sent only if the live process
+   * still has exactly that start time — null or a mismatch sends nothing.
+   * `'operator-requested'` is the explicit user-command path
+   * (killExternalProcess), where the user named the pid.
+   */
+  private killProcess(pid: number, expectedStart: number | null | 'operator-requested'): boolean {
     try {
+      // Record which process this is before signalling: the SIGKILL below is
+      // sent only if the pid still has the same start time — once the target
+      // exits, its pid can be handed to an unrelated process within the grace.
+      const startedAt = processStartMs(pid);
+      if (expectedStart !== 'operator-requested' && (expectedStart === null || startedAt !== expectedStart)) {
+        return false;
+      }
       process.kill(pid, 'SIGTERM');
       // Give it 5 seconds, then SIGKILL if needed
       setTimeout(() => {
         try {
-          process.kill(pid, 0); // Check if still alive
+          if (startedAt === null || processStartMs(pid) !== startedAt) return; // exited (or pid reused)
           process.kill(pid, 'SIGKILL');
           console.log(`[OrphanReaper] SIGKILL sent to PID ${pid} (SIGTERM wasn't enough)`);
         } catch { // @silent-fallback-ok — process already dead (expected)
@@ -608,7 +660,7 @@ export class OrphanProcessReaper extends EventEmitter {
       return { success: false, message: `PID ${pid} is not in the external process list.` };
     }
 
-    const killed = this.killProcess(pid);
+    const killed = this.killProcess(pid, 'operator-requested');
     if (process.tmuxSession) {
       this.killTmuxSession(process.tmuxSession);
     }
@@ -634,7 +686,7 @@ export class OrphanProcessReaper extends EventEmitter {
     let freedKB = 0;
 
     for (const proc of report.external) {
-      const killed = this.killProcess(proc.pid);
+      const killed = this.killProcess(proc.pid, 'operator-requested');
       if (proc.tmuxSession) {
         this.killTmuxSession(proc.tmuxSession);
       }

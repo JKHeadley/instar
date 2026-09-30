@@ -61,6 +61,7 @@ import {
 } from './forwardErrors.js';
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
+import { acquireLockFile } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { decidePollAction, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
@@ -92,116 +93,6 @@ import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetri
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
-
-/**
- * Acquire an exclusive lock file to prevent multiple lifeline instances.
- * Returns true if lock acquired, false if another instance holds it.
- *
- * Handles three cases:
- * 1. No lock file → acquire immediately
- * 2. Lock held by dead process → take over (stale lock)
- * 3. Lock held by alive process → check age. If the lock holder has been
- *    running for >5 minutes but isn't responding (zombie after sleep/wake),
- *    force-kill it and take over. This prevents permanently stuck lifelines
- *    from blocking new instances after a crash.
- */
-function acquireLockFile(lockPath: string): boolean {
-  try {
-    // Check if lock file exists and if the PID is still alive
-    if (fs.existsSync(lockPath)) {
-      const raw = fs.readFileSync(lockPath, 'utf-8');
-      const data = JSON.parse(raw);
-      if (data.pid && typeof data.pid === 'number') {
-        try {
-          // Signal 0 checks if process exists without killing it
-          process.kill(data.pid, 0);
-
-          // Process is alive — but is it actually functional?
-          // We have three "stuck" states to detect:
-          //   1. Zombie (Z) or stopped (T) — clearly dead-but-not-reaped.
-          //   2. Sleeping (S) for >5 min without responding to SIGTERM —
-          //      observed in the 2026-05-20 b2lead-insights incident: the
-          //      previous lifeline received SIGTERM via the CLI's pkill
-          //      fallback path and went to 'S' state but never exited,
-          //      holding the lock for >5 min until manual SIGKILL.
-          //   3. A live, healthy lifeline (R/S < 5 min) — DON'T touch it.
-          if (data.startedAt) {
-            const lockAge = Date.now() - new Date(data.startedAt).getTime();
-            const fiveMinutes = 5 * 60_000;
-            if (lockAge > fiveMinutes) {
-              // Check process state
-              const procInfo = spawnSync('/bin/ps', ['-p', String(data.pid), '-o', 'stat='], {
-                encoding: 'utf-8', timeout: 3000,
-              }).stdout?.trim() ?? '';
-
-              // Z (zombie) / T (stopped) — always recoverable.
-              const isZombieOrStopped = procInfo.includes('Z') || procInfo.includes('T');
-
-              // Sleeping process that is post-SIGTERM-but-not-exiting:
-              // if it received SIGTERM and is still alive after 5 min,
-              // it's wedged. We probe by sending SIGTERM ourselves (or
-              // detect 'S+' / sleep + signal-pending) and if it's still
-              // alive after the grace window, escalate. The presence of
-              // 'S' state alone for >5 min after the lock was written
-              // is the failure shape — a healthy lifeline writes the
-              // lock and starts running tasks within seconds, leaving
-              // 'R' or short 'S' bursts. Sustained 'S' for 5+ min with
-              // no progress is the wedged state we observed.
-              const isWedgedSleeping =
-                /^S/i.test(procInfo) && lockAge > fiveMinutes;
-
-              if (isZombieOrStopped) {
-                console.log(`[Lifeline] Lock holder PID ${data.pid} is zombie/stopped (state: ${procInfo}) — taking over`);
-                try { process.kill(data.pid, 'SIGKILL'); } catch { /* ignore */ }
-              } else if (isWedgedSleeping) {
-                // Try SIGTERM with a short grace window, then SIGKILL.
-                console.log(`[Lifeline] Lock holder PID ${data.pid} sleeping >5min after lock write (state: ${procInfo}) — sending SIGTERM`);
-                try { process.kill(data.pid, 'SIGTERM'); } catch { /* ignore */ }
-                // Synchronously poll for exit up to 3s, then SIGKILL.
-                const killDeadline = Date.now() + 3000;
-                let alive = true;
-                while (Date.now() < killDeadline) {
-                  try {
-                    process.kill(data.pid, 0);
-                    spawnSync('/bin/sleep', ['0.25'], { timeout: 500 });
-                  } catch {
-                    alive = false;
-                    break;
-                  }
-                }
-                if (alive) {
-                  console.log(`[Lifeline] PID ${data.pid} survived SIGTERM grace — SIGKILL`);
-                  try { process.kill(data.pid, 'SIGKILL'); } catch { /* ignore */ }
-                }
-              } else {
-                // Process is alive and not a zombie — another lifeline is truly running
-                return false;
-              }
-            } else {
-              // Lock is fresh — another lifeline is running
-              return false;
-            }
-          } else {
-            // No startedAt — legacy lock, respect it
-            return false;
-          }
-        } catch {
-          // Process is dead — stale lock, we can take over
-          console.log(`[Lifeline] Removing stale lock (PID ${data.pid} is dead)`);
-        }
-      }
-    }
-
-    // Write our PID
-    const tmpPath = `${lockPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
-    fs.renameSync(tmpPath, lockPath);
-    return true;
-  } catch (err) {
-    console.error(`[Lifeline] Lock acquisition failed: ${err}`);
-    return false;
-  }
-}
 
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {

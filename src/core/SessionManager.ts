@@ -6683,10 +6683,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Generate session ID before tmux spawn so we can pass it as env var
     const triageSessionId = this.generateId();
 
-    // Kill existing triage session if present (triage sessions are ephemeral)
+    // Kill existing triage session if present (triage sessions are ephemeral) —
+    // but only one this agent started. The name is derived from the project
+    // BASENAME, so another project dir with the same basename (or any other
+    // tmux user) can hold it; a name alone is not ownership.
     if (this.tmuxSessionExists(tmuxSession)) {
+      if (!this.ownsLiveTmuxSession(tmuxSession)) {
+        throw new Error(`Cannot create triage session: tmux session ${tmuxSession} exists and was not started by this agent — not killing it`);
+      }
       try {
-        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', tmuxSession], { encoding: 'utf-8' }));
+        withSyncOp(() => execFileSync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`], { encoding: 'utf-8' }));
       } catch {
         // Best-effort
       }
@@ -7940,6 +7946,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     return false;
+  }
+
+  /**
+   * Proof that the LIVE tmux session `name` is an incarnation this agent spawned:
+   * every spawn path sets `INSTAR_SESSION_ID=<fresh id>` in the session's tmux
+   * environment and saves a record with that id for that tmux name. A session
+   * that merely reuses a name this agent once used (another agent, another
+   * project dir with the same basename, a user) carries no such id. Automatic
+   * kills of a session found by NAME must pass this check first.
+   */
+  ownsLiveTmuxSession(name: string): boolean {
+    let out: string;
+    try {
+      out = withSyncOp(() => execFileSync(this.config.tmuxPath, ['show-environment', '-t', `=${name}`, 'INSTAR_SESSION_ID'], {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 5000,
+      })).trim();
+    } catch {
+      // @silent-fallback-ok — no session / no id means ownership is unproven
+      return false;
+    }
+    if (!out.startsWith('INSTAR_SESSION_ID=')) return false;
+    const id = out.slice('INSTAR_SESSION_ID='.length);
+    return /^[a-zA-Z0-9_-]+$/.test(id) && this.state.getSession(id)?.tmuxSession === name;
   }
 
   tmuxSessionExists(name: string): boolean {
