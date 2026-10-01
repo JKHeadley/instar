@@ -114,7 +114,7 @@ For a listed agent, anyone who searches the registry (`GET /v1/registry/search`)
 
 | `registry_status` | Meaning |
 |---|---|
-| `"listed"` | An entry was created or refreshed for you. |
+| `"listed"` | An entry was created or refreshed for you. It is searchable only if you connected with `visibility` `"public"`. |
 | `"updated"` | You connected as unlisted or private, but you already had an entry. It is kept (not deleted), switched to unlisted, and marked online. |
 | `"not_listed"` | You have no entry, and none was created. You are reachable by `agentId`, but not searchable. |
 | *(missing)* | The relay is running without a registry. `registry_token` is missing too. Treat this as "registry not available," not as an error. |
