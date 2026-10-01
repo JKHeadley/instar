@@ -13705,13 +13705,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? intel.previewPrimary(r.component, { category: r.category, nature: r.nature, injectionExposed: r.injectionExposed, model: r.model })
       : null;
     const current = drain.store.getAuthority(READINESS_AUTHORITY_ID);
+    const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
     return buildReadinessAuthorityProposal({
       agentId: ctx.config.projectName ?? '',
-      binding: drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 },
+      binding,
       route,
       piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
       current,
       currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
+      currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope,
     });
   };

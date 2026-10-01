@@ -795,6 +795,8 @@ export class FeedbackDrainStore {
       }
       this.inject('restore-after-runs');
       this.setMeta('owner_authority_epoch', String(nextEpoch));
+      // A restore breaks owner continuity: the readiness authority needs a fresh approval.
+      this.setMeta('drain_owner_continuity', JSON.stringify({ host: '', sinceEpoch: nextEpoch }));
       this.inject('restore-after-epoch');
       this.audit('restore', input.operatorDecisionRef, String(input.restoredOwnerAuthorityEpoch), String(nextEpoch), 'restore-owner-epoch-bump');
       return { ownerAuthorityEpoch: nextEpoch, invalidatedClaims: claims.length, abandonedRuns: activeRuns.length };
@@ -862,6 +864,7 @@ export class FeedbackDrainStore {
       if (active) return { runId: active.run_id, state: active.state, acquired: false };
       const now = this.now(); const runId = `run:${randomUUID()}`;
       this.db.prepare(`INSERT INTO drain_runs(run_id,state,owner_host,owner_epoch,lease_expires_at,reason,created_at,updated_at) VALUES (?,'accepted',?,?,?,?,?,?)`).run(runId, clamp(input.ownerHost, 200), input.ownerEpoch, now + input.leaseMs, '', now, now);
+      this.noteDrainOwner(clamp(input.ownerHost, 200), input.ownerEpoch);
       return { runId, state: 'accepted' as const, acquired: true };
     }).immediate();
   }
@@ -1017,6 +1020,9 @@ export class FeedbackDrainStore {
         input.modelFamily, input.promptVersion, input.schemaVersion, input.decisionPointId,
         input.maxBatch, input.maxTokens, input.maxDailySpendUsd, revoked ? 1 : 0, now);
       this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES ('authority_generation',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(generation));
+      // An operator approval binds this machine at this epoch; it starts continuity when the
+      // durable record names a different (or no) drain owner.
+      if (!revoked) this.noteDrainOwner(input.ownerMachineId, input.ownerEpoch);
       const payloadHash = createHash('sha256').update(canonical({ ...input, operatorDecisionRef: undefined, generation, revoked })).digest('hex');
       const prior = this.db.prepare('SELECT checksum FROM authority_audit ORDER BY sequence DESC LIMIT 1').get() as { checksum: string } | undefined;
       const previousChecksum = prior?.checksum ?? '0'.repeat(64);
@@ -1038,6 +1044,59 @@ export class FeedbackDrainStore {
     const row: { mode: 'active' | 'proposal-only'; reason: string; updated_at: number } | undefined =
       this.db.prepare(`SELECT mode,reason,updated_at FROM authority_posture WHERE authority_id=? AND generation=?`).get(authorityId, generation) as { mode: 'active' | 'proposal-only'; reason: string; updated_at: number } | undefined;
     return row ? { mode: row.mode, reason: row.reason, updatedAt: row.updated_at } : { mode: 'active', reason: '', updatedAt: 0 };
+  }
+
+  /**
+   * The first owner epoch of the drain owner's unbroken tenure. A same-machine lease
+   * re-acquire (routine restart/release) advances the epoch without breaking tenure;
+   * another machine running the drain, or a restore, starts a new tenure.
+   */
+  drainOwnerContinuity(): { host: string; sinceEpoch: number } | null {
+    const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { value: string } | undefined;
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.value) as { host?: unknown; sinceEpoch?: unknown };
+        if (typeof parsed.host === 'string' && Number.isSafeInteger(parsed.sinceEpoch)) return { host: parsed.host, sinceEpoch: Number(parsed.sinceEpoch) };
+      } catch { /* corrupt marker: fall through to null, which fails authority closed */ }
+      return null;
+    }
+    // Pre-marker stores: derive tenure from the durable run history. A foreign run or a
+    // restore breaks it; only runs after the latest break count.
+    const last = this.db.prepare(`SELECT owner_host FROM drain_runs ORDER BY created_at DESC, run_id DESC LIMIT 1`).get() as { owner_host: string } | undefined;
+    if (!last) return null;
+    const since = this.db.prepare(`SELECT MIN(owner_epoch) since FROM drain_runs WHERE owner_host=? AND created_at > MAX(
+      COALESCE((SELECT MAX(created_at) FROM drain_runs WHERE owner_host!=?), -1),
+      COALESCE((SELECT MAX(created_at) FROM drain_audit WHERE kind='restore'), -1))`).get(last.owner_host, last.owner_host) as { since: number | null };
+    return since.since === null ? null : { host: last.owner_host, sinceEpoch: Number(since.since) };
+  }
+
+  /** Whether an authority's owner binding still holds for this owner at this epoch. */
+  authorityOwnerCurrent(authority: AuthorityRecord, ownerHost: string, ownerEpoch: number): boolean {
+    if (authority.ownerMachineId !== ownerHost || authority.ownerEpoch > ownerEpoch) return false;
+    if (authority.ownerEpoch === ownerEpoch) return true;
+    const tenure = this.drainOwnerContinuity();
+    return Boolean(tenure && tenure.host === ownerHost && tenure.sinceEpoch <= authority.ownerEpoch);
+  }
+
+  private noteDrainOwner(host: string, epoch: number): void {
+    const stored = this.db.prepare(`SELECT 1 found FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { found: 1 } | undefined;
+    const tenure = this.drainOwnerContinuity();
+    if (stored && tenure?.host === host) return;
+    // First write on a pre-marker store persists the derived tenure when it is this owner's.
+    this.setMeta('drain_owner_continuity', JSON.stringify(tenure?.host === host ? tenure : { host, sinceEpoch: epoch }));
+  }
+
+  /** Count a transient (retryable) authority invocation failure; returns the consecutive count. */
+  recordAuthorityTransientFailure(authorityId: string, generation: number): number {
+    const key = `authority_transient_failures:${authorityId}:${generation}`;
+    const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key=?`).get(key) as { value: string } | undefined;
+    const count = (Number(row?.value ?? 0) || 0) + 1;
+    this.setMeta(key, String(count));
+    return count;
+  }
+
+  clearAuthorityTransientFailures(authorityId: string, generation: number): void {
+    this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_transient_failures:${authorityId}:${generation}`);
   }
 
   demoteAuthority(authorityId: string, generation: number, reason: string): void {

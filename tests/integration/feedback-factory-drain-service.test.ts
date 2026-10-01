@@ -8,7 +8,8 @@ import { FeedbackProcessingService } from '../../src/feedback-factory/processing
 import { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackInitiativeConsumer } from '../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 import { FeedbackReadinessArbiter } from '../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService } from '../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { CodexExecJsonTimeoutError } from '../../src/providers/adapters/openai-codex/transport/codexSpawn.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -17,6 +18,7 @@ afterEach(() => {
 
 function setup(consumerLive = true, consumerBatchBound = 50, failAfterFirstArtifact = false, settings: {
   title?: string; arbiterThrows?: boolean; arbiterNever?: boolean; stageBudgetMs?: number;
+  arbiterError?: () => Error | undefined; resolvedModel?: string;
   afterArtifact?: () => void;
   sourceCompactionIntervalMs?: number;
   seedFeedback?: boolean;
@@ -46,7 +48,9 @@ function setup(consumerLive = true, consumerBatchBound = 50, failAfterFirstArtif
     evaluate: async (_prompt, evalOptions) => {
       if (settings.arbiterNever) return await new Promise<string>(() => undefined);
       if (settings.arbiterThrows) throw new Error('provider unavailable');
-      evalOptions?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
+      const injected = settings.arbiterError?.();
+      if (injected) throw injected;
+      evalOptions?.onModel?.({ model: settings.resolvedModel ?? 'claude-fable-5', framework: 'claude-code' });
       return JSON.stringify({ decisions: [{ clusterId: 'cluster-1', outcome: 'ready', confidence: 0.95, reasonCodes: ['coherent-recurrence'], evidenceIds: ['cluster:cluster-1'] }] });
     },
   });
@@ -68,6 +72,7 @@ function setup(consumerLive = true, consumerBatchBound = 50, failAfterFirstArtif
     isCanonicalOwner: settings.ownership?.held ?? (() => true), isConsumerLive: () => consumerLive,
     consumerBatchBound: () => consumerBatchBound, clock: () => now,
     stageBudgetMs: settings.stageBudgetMs,
+    readinessStageBudgetMs: settings.stageBudgetMs,
     sourceCompactionIntervalMs: settings.sourceCompactionIntervalMs,
   });
   return { service, store, tracker, canonical, advance: (ms: number) => { now += ms; } };
@@ -106,7 +111,52 @@ describe('FeedbackDrainService lifecycle', () => {
     const result = await service.tick();
     expect(result).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed', approved: 0, enqueued: 0 });
     expect(store.getReadiness('cluster-1')).toMatchObject({ state: 'collecting', reasonCode: 'readiness-authority-failed' });
-    expect(store.authorityPosture('dev-readiness', 1)).toMatchObject({ mode: 'proposal-only' });
+    expect(store.authorityPosture('dev-readiness', 1)).toMatchObject({ mode: 'active' });
+  });
+
+  // Live 2026-10-01 run a49ad1e8: one CodexExecJsonTimeoutError demoted the authority for good.
+  it('retries a transient invocation failure and demotes only after a run of them', async () => {
+    let failing = true;
+    const { service, store, advance } = setup(false, 50, false, { arbiterError: () => failing ? new CodexExecJsonTimeoutError(60_000, '') : undefined });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      expect(await service.tick()).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed' });
+      expect(store.authorityPosture('dev-readiness', 1).mode).toBe('active');
+      advance(16 * 60 * 1000);
+    }
+    failing = false;
+    await service.tick();
+    expect(store.authorityPosture('dev-readiness', 1).mode).toBe('active');
+    expect(store.getReadiness('cluster-1')?.state).toBe('queued');
+  });
+
+  it('demotes after the consecutive transient failure limit', async () => {
+    const { service, store, advance } = setup(false, 50, false, { arbiterError: () => new CodexExecJsonTimeoutError(60_000, '') });
+    for (let attempt = 1; attempt < READINESS_TRANSIENT_FAILURE_LIMIT; attempt++) { await service.tick(); advance(16 * 60 * 1000); }
+    expect(store.authorityPosture('dev-readiness', 1).mode).toBe('active');
+    await service.tick();
+    expect(store.authorityPosture('dev-readiness', 1)).toMatchObject({ mode: 'proposal-only', reason: 'readiness-authority-repeated-invocation-failure' });
+  });
+
+  it('still demotes at once on a provenance violation', async () => {
+    const { service, store } = setup(false, 50, false, { resolvedModel: 'gpt-5.5' });
+    expect(await service.tick()).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed' });
+    expect(store.authorityPosture('dev-readiness', 1)).toMatchObject({ mode: 'proposal-only', reason: 'readiness-schema-provenance-or-routing-failure' });
+  });
+
+  it('keeps the authority after a same-machine lease epoch advance, and refuses it on a new owner machine', async () => {
+    let epoch = 1;
+    const { service, store, advance } = setup(false, 50, false, { ownership: { held: () => true, epoch: () => epoch } });
+    store.ensureReadiness('cluster-1', 0);
+    epoch = 3; // two same-machine restarts after approval at epoch 1
+    expect(await service.tick()).toMatchObject({ reviewed: 1, approved: 1 });
+    expect(service.canAgentMutateReadiness('echo')).toBe(true);
+    // Another machine owned the drain: the record bound to machine-a at epoch 1 is stale.
+    const foreign = store.startRun({ ownerHost: 'machine-b', ownerEpoch: 4, leaseMs: 1 });
+    store.transitionRun(foreign.runId, 'accepted', 'running', '', { ownerHost: 'machine-b', ownerEpoch: 4 });
+    store.transitionRun(foreign.runId, 'running', 'succeeded', '', { ownerHost: 'machine-b', ownerEpoch: 4 });
+    advance(1_000);
+    epoch = 5;
+    expect(service.canAgentMutateReadiness('echo')).toBe(false);
   });
 
   it('bounds a stalled frontier-model authority stage and leaves work collecting', async () => {

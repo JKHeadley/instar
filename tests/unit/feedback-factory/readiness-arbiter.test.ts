@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IntelligenceProvider } from '../../../src/core/types.js';
-import { FeedbackReadinessArbiter } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
+import { FeedbackReadinessArbiter, FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
+import { CodexExecJsonTimeoutError } from '../../../src/providers/adapters/openai-codex/transport/codexSpawn.js';
 import type { AuthorityRecord } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 
 const authority: AuthorityRecord = {
@@ -71,5 +72,60 @@ describe('FeedbackReadinessArbiter', () => {
     const arbiter = new FeedbackReadinessArbiter({ evaluate: async () => { called = true; return ''; } });
     await expect(arbiter.decideBatch({ ...authority, schemaVersion: 'drifted' }, [candidate])).rejects.toThrow(/canary/);
     expect(called).toBe(false);
+  });
+
+  // Live 2026-09-30 run 1 (drain run a671f4cc): one benign title tripped the injection
+  // pattern and all 50 candidates were escalated without a model call.
+  it('escalates only the suspected candidate and sends the rest of the batch to the model', async () => {
+    const liveTitle = 'AgentMdReconcile flags execute.type:script user jobs as orphan-manifest';
+    const others = Array.from({ length: 3 }, (_, i) => ({ ...candidate, clusterId: `cluster-${i + 2}`, evidenceIds: [`cluster:cluster-${i + 2}`] }));
+    let prompt = '';
+    const arbiter = new FeedbackReadinessArbiter({
+      evaluate: async (p, options) => {
+        prompt = p;
+        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
+        return JSON.stringify({ decisions: others.map((o) => ({ clusterId: o.clusterId, outcome: 'ready', confidence: 0.9, reasonCodes: ['coherent-recurrence'], evidenceIds: o.evidenceIds })) });
+      },
+    });
+    const decisions = await arbiter.decideBatch(authority, [{ ...candidate, title: liveTitle, injectionSuspected: true }, ...others]);
+    expect(decisions).toHaveLength(4);
+    expect(decisions.find((d) => d.clusterId === 'cluster-1')).toMatchObject({ outcome: 'escalate-human', reasonCodes: ['injection-suspected'] });
+    expect(decisions.filter((d) => d.outcome === 'ready').map((d) => d.clusterId)).toEqual(['cluster-2', 'cluster-3', 'cluster-4']);
+    expect(prompt).not.toContain(liveTitle);
+  });
+
+  // Live 2026-10-01 run 2 (drain run a49ad1e8): codex gpt-6-astra hit CodexExecJsonTimeoutError at 20s.
+  it('passes an invocation timeout through as a non-contract failure, with a budget sized for a full batch', async () => {
+    let timeoutMs = 0;
+    const arbiter = new FeedbackReadinessArbiter({
+      evaluate: async (_p, options) => {
+        timeoutMs = options?.timeoutMs ?? 0;
+        options?.onModel?.({ model: 'gpt-6-astra', framework: 'codex-cli' });
+        throw new CodexExecJsonTimeoutError(options?.timeoutMs ?? 0, '');
+      },
+    });
+    const codexAuthority = { ...authority, provider: 'codex-cli', modelFamily: 'gpt-6-astra' };
+    const error = await arbiter.decideBatch(codexAuthority, [candidate]).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CodexExecJsonTimeoutError);
+    expect(error).not.toBeInstanceOf(ReadinessContractViolation);
+    expect(timeoutMs).toBe(FEEDBACK_READINESS_MODEL_TIMEOUT_MS);
+    expect(timeoutMs).toBeGreaterThan(20_000);
+  });
+
+  it('classifies provenance and schema breaks as contract violations', async () => {
+    const ok = { decisions: [{ clusterId: 'cluster-1', outcome: 'ready', confidence: 1, reasonCodes: ['x'], evidenceIds: ['feedback:1'] }] };
+    for (const arbiter of [
+      new FeedbackReadinessArbiter(provider(ok, 'gpt-5.5')),
+      new FeedbackReadinessArbiter(provider('not json')),
+      new FeedbackReadinessArbiter(provider({ decisions: [] })),
+    ]) {
+      await expect(arbiter.decideBatch(authority, [candidate])).rejects.toBeInstanceOf(ReadinessContractViolation);
+    }
+  });
+
+  it('accepts a single surrounding markdown fence as formatting', async () => {
+    const body = JSON.stringify({ decisions: [{ clusterId: 'cluster-1', outcome: 'collecting', confidence: 0.6, reasonCodes: ['single-report'], evidenceIds: ['feedback:1'] }] });
+    const [decision] = await new FeedbackReadinessArbiter(provider(`\`\`\`json\n${body}\n\`\`\``)).decideBatch(authority, [candidate]);
+    expect(decision.outcome).toBe('collecting');
   });
 });
