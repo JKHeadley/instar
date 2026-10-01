@@ -292,9 +292,7 @@ export class FeedbackDrainStore {
   /** Quiescent, checksummed SQLite checkpoint metadata consumed by BackupManager. */
   checkpointForBackup(ownerAuthorityEpoch: number): { schemaVersion: 1; snapshotId: string; checksum: string; dbFileIdentity: string; ownerAuthorityEpoch: number; createdAt: string; manifestChecksum: string } {
     if (this.dbPath === ':memory:') throw new Error('in-memory feedback drain cannot be checkpointed for backup');
-    const recordedEpoch = this.ownerAuthorityEpoch();
-    if (recordedEpoch === null) this.setMeta('owner_authority_epoch', String(ownerAuthorityEpoch));
-    else if (recordedEpoch !== ownerAuthorityEpoch) throw new DrainConflictError('backup owner authority epoch is stale');
+    this.advanceOwnerAuthorityEpoch(ownerAuthorityEpoch, 'backup owner authority epoch is stale');
     const checkpointRows = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number; log: number; checkpointed: number }>;
     const checkpoint = checkpointRows[0];
     if (!checkpoint || checkpoint.busy !== 0 || checkpoint.checkpointed !== checkpoint.log) {
@@ -616,7 +614,7 @@ export class FeedbackDrainStore {
 
   claimNext(input: { consumerId: string; ownerAuthorityEpoch: number; leaseMs: number; now?: number }): Claim | null {
     const claim = this.db.transaction(() => {
-      this.assertOrInitializeOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
+      this.advanceOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
       const now = input.now ?? this.now();
       const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
       if (!row) return null;
@@ -919,7 +917,7 @@ export class FeedbackDrainStore {
   } {
     const now = input.now ?? this.now();
     const limit = Math.max(0, Math.min(1_000, Math.trunc(input.limit ?? 500)));
-    this.assertOrInitializeOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
+    this.advanceOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
     const foreignActive = this.db.prepare(`SELECT 1 found FROM drain_runs WHERE state IN ('accepted','running') AND (owner_host!=? OR owner_epoch!=?) LIMIT 1`)
       .get(clamp(input.ownerHost, 200), input.ownerAuthorityEpoch) as { found: 1 } | undefined;
     if (foreignActive) throw new DrainConflictError('retention writer fence is not owned');
@@ -1216,11 +1214,19 @@ export class FeedbackDrainStore {
     }
   }
 
-  private assertOrInitializeOwnerAuthorityEpoch(epoch: number): void {
+  /**
+   * The recorded owner epoch follows the live owner epoch forward and never moves back.
+   * A newer epoch (a coordinator lease re-acquire, a failover) supersedes every older
+   * claim; an older one is a stale writer and is refused. A restored DB file is caught
+   * before any writer opens by restorePending()'s checkpoint identity check.
+   */
+  private advanceOwnerAuthorityEpoch(epoch: number, staleMessage = 'owner authority epoch is stale'): void {
     if (!Number.isSafeInteger(epoch) || epoch < 1) throw new DrainConflictError('owner authority epoch is invalid');
     const current = this.ownerAuthorityEpoch();
-    if (current === null) this.setMeta('owner_authority_epoch', String(epoch));
-    else if (current !== epoch) throw new DrainConflictError('owner authority epoch is stale');
+    if (current !== null && epoch < current) throw new DrainConflictError(staleMessage);
+    if (current === epoch) return;
+    this.setMeta('owner_authority_epoch', String(epoch));
+    if (current !== null) this.audit('owner-epoch', 'owner_authority_epoch', String(current), String(epoch), 'owner-epoch-advance');
   }
 
   private hashToken(token: string): string { return createHmac('sha256', this.hmacKey).update(token).digest('hex'); }
