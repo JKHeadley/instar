@@ -186,12 +186,22 @@ describe('feedback drain networked two-machine split-brain proxy fence', () => {
     expect((verifyB.prepare('SELECT COUNT(*) n FROM artifact_links').get() as { n: number }).n).toBe(0);
     verifyB.close(); verifyA.close();
 
-    // An epoch advance without a matching operator-ratified authority record is
-    // refused before another run can be admitted.
+    // A same-machine epoch advance (routine restart/lease re-acquire) keeps the
+    // operator-ratified authority: A has owned the drain without a break.
     registry.epoch = 8;
-    const staleEpoch = await post(endpointA.baseUrl, '/tick', { agentId: 'codey', nonce: 'network-stale-epoch-nonce-001' });
-    expect(staleEpoch.status).toBe(403);
-    expect(machineA.store.lastRun()?.runId).toBe(nonownerResponse.body.runId);
+    const sameOwner = await post(endpointA.baseUrl, '/tick', { agentId: 'codey', nonce: 'network-same-owner-nonce-001' });
+    expect(sameOwner.status, JSON.stringify(sameOwner.body)).toBe(202);
+    await eventually(() => !['accepted', 'running'].includes(machineA.store.lastRun()?.state ?? ''));
+    expect(machineA.store.lastRun()?.ownerEpoch).toBe(8);
+    // Once another machine has run the drain against this store, the record is a stale
+    // owner and nothing more is admitted until the operator re-approves.
+    const foreign = machineA.store.startRun({ ownerHost: 'machine-b', ownerEpoch: 9, leaseMs: 1_000 });
+    machineA.store.transitionRun(foreign.runId, 'accepted', 'running', '', { ownerHost: 'machine-b', ownerEpoch: 9 });
+    machineA.store.transitionRun(foreign.runId, 'running', 'succeeded', '', { ownerHost: 'machine-b', ownerEpoch: 9 });
+    registry.epoch = 10;
+    const staleOwnerTick = await post(endpointA.baseUrl, '/tick', { agentId: 'codey', nonce: 'network-stale-owner-nonce-001' });
+    expect(staleOwnerTick.status).toBe(403);
+    expect(machineA.store.lastRun()?.runId).toBe(foreign.runId);
 
     // Once the registry owner changes, even a previously valid, asymmetrically
     // signed envelope targeting A is stale and cannot execute there.

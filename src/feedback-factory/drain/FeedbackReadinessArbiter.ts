@@ -11,6 +11,21 @@ export const FEEDBACK_READINESS_ARBITER_STAGE = {
 export const FEEDBACK_READINESS_PROMPT_ID = 'feedback-readiness-v1';
 export const FEEDBACK_READINESS_SCHEMA_ID = 'feedback-readiness-decision-v1';
 export const FEEDBACK_READINESS_DECISION_POINT = 'feedback-cluster-readiness';
+/**
+ * Per-call model budget. A 50-candidate batch on a codex frontier model does not finish in
+ * 20s (live 2026-10-01: CodexExecJsonTimeoutError at 20s demoted the authority).
+ */
+export const FEEDBACK_READINESS_MODEL_TIMEOUT_MS = 60_000;
+
+/**
+ * The authority broke its contract: canary/envelope drift, a resolved model or framework
+ * other than the registered one, or output outside the decision schema. These demote the
+ * authority. Any other failure (timeout, provider/router error) is a transient invocation
+ * failure the drain retries.
+ */
+export class ReadinessContractViolation extends Error {
+  constructor(message: string) { super(message); this.name = 'ReadinessContractViolation'; }
+}
 
 export interface ReadinessCandidate {
   clusterId: string;
@@ -60,30 +75,33 @@ export class FeedbackReadinessArbiter {
   async decideBatch(authority: AuthorityRecord, candidates: ReadinessCandidate[]): Promise<ReadinessDecision[]> {
     if (authority.revoked || authority.promptVersion !== FEEDBACK_READINESS_PROMPT_ID ||
       authority.schemaVersion !== FEEDBACK_READINESS_SCHEMA_ID || authority.decisionPointId !== FEEDBACK_READINESS_DECISION_POINT) {
-      throw new Error('readiness authority canary does not match the deployed prompt/schema/decision point');
+      throw new ReadinessContractViolation('readiness authority canary does not match the deployed prompt/schema/decision point');
     }
     const maxBatch = Math.min(50, Math.max(0, authority.maxBatch));
     if (candidates.length === 0 || candidates.length > maxBatch) {
-      throw new Error('readiness batch exceeds registered authority envelope');
+      throw new ReadinessContractViolation('readiness batch exceeds registered authority envelope');
     }
     const seen = new Set<string>();
     for (const candidate of candidates) {
-      if (!candidate.clusterId || seen.has(candidate.clusterId)) throw new Error('candidate ids must be unique and nonempty');
-      if (candidate.reportCount <= 0 || candidate.evidenceIds.length === 0) throw new Error('candidate lacks deterministic evidence floor');
-      if (candidate.injectionSuspected) {
-        return candidates.map((item) => ({
-          clusterId: item.clusterId,
-          outcome: 'escalate-human',
-          confidence: 0,
-          reasonCodes: ['injection-suspected'],
-          evidenceIds: [...item.evidenceIds],
-          evidenceHash: evidenceHash(item),
-        }));
-      }
+      if (!candidate.clusterId || seen.has(candidate.clusterId)) throw new ReadinessContractViolation('candidate ids must be unique and nonempty');
+      if (candidate.reportCount <= 0 || candidate.evidenceIds.length === 0) throw new ReadinessContractViolation('candidate lacks deterministic evidence floor');
       seen.add(candidate.clusterId);
     }
+    // A suspected-injection candidate goes to a human without reaching the model; it must not
+    // take the rest of the batch with it (live 2026-09-30: one title naming `execute.type`
+    // escalated all 50 candidates and the model was never asked).
+    const escalated: ReadinessDecision[] = candidates.filter((item) => item.injectionSuspected).map((item) => ({
+      clusterId: item.clusterId,
+      outcome: 'escalate-human',
+      confidence: 0,
+      reasonCodes: ['injection-suspected'],
+      evidenceIds: [...item.evidenceIds],
+      evidenceHash: evidenceHash(item),
+    }));
+    const clean = candidates.filter((item) => !item.injectionSuspected);
+    if (clean.length === 0) return escalated;
 
-    const packet = candidates.map((candidate) => ({
+    const packet = clean.map((candidate) => ({
       clusterId: bounded(candidate.clusterId, 200),
       title: bounded(candidate.title, 240),
       type: bounded(candidate.type, 40),
@@ -105,7 +123,7 @@ export class FeedbackReadinessArbiter {
       model: 'capable',
       maxTokens: Math.min(1200, Math.max(128, authority.maxTokens)),
       temperature: 0,
-      timeoutMs: 20_000,
+      timeoutMs: FEEDBACK_READINESS_MODEL_TIMEOUT_MS,
       attribution: {
         component: 'FeedbackReadinessArbiter',
         category: 'gate',
@@ -133,35 +151,37 @@ export class FeedbackReadinessArbiter {
     });
     if (!resolvedModel || !resolvedModel.toLowerCase().includes(authority.modelFamily.toLowerCase()) ||
       !resolvedFramework || resolvedFramework.toLowerCase() !== authority.provider.toLowerCase()) {
-      throw new Error('resolved model does not match registered readiness authority');
+      throw new ReadinessContractViolation('resolved model does not match registered readiness authority');
     }
-    return this.parse(raw, candidates);
+    return [...escalated, ...this.parse(raw, clean)];
   }
 
   private parse(raw: string, candidates: ReadinessCandidate[]): ReadinessDecision[] {
     let parsed: unknown;
-    try { parsed = JSON.parse(raw.trim()); } catch { throw new Error('readiness authority returned invalid JSON'); }
+    // One surrounding markdown fence is formatting, not a schema change.
+    const body = raw.trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, '$1');
+    try { parsed = JSON.parse(body); } catch { throw new ReadinessContractViolation('readiness authority returned invalid JSON'); }
     const rows = (parsed as { decisions?: unknown })?.decisions;
-    if (!Array.isArray(rows) || rows.length !== candidates.length) throw new Error('readiness authority returned incomplete decision set');
+    if (!Array.isArray(rows) || rows.length !== candidates.length) throw new ReadinessContractViolation('readiness authority returned incomplete decision set');
     const byId = new Map(candidates.map((candidate) => [candidate.clusterId, candidate]));
     const decided = new Set<string>();
     return rows.map((value) => {
       const row = value as Record<string, unknown>;
       const clusterId = String(row.clusterId ?? '');
       const candidate = byId.get(clusterId);
-      if (!candidate || decided.has(clusterId)) throw new Error('readiness authority changed or duplicated candidate ids');
+      if (!candidate || decided.has(clusterId)) throw new ReadinessContractViolation('readiness authority changed or duplicated candidate ids');
       decided.add(clusterId);
       const outcome = String(row.outcome ?? '') as ReadinessOutcome;
-      if (!OUTPUTS.has(outcome)) throw new Error('readiness authority returned forbidden outcome');
+      if (!OUTPUTS.has(outcome)) throw new ReadinessContractViolation('readiness authority returned forbidden outcome');
       const confidence = Number(row.confidence);
-      if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error('readiness authority returned invalid confidence');
+      if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new ReadinessContractViolation('readiness authority returned invalid confidence');
       const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes.map(String) : [];
       if (reasonCodes.length === 0 || reasonCodes.length > 8 || reasonCodes.some((reason) => !REASON.test(reason))) {
-        throw new Error('readiness authority returned invalid reason codes');
+        throw new ReadinessContractViolation('readiness authority returned invalid reason codes');
       }
       const evidenceIds = Array.isArray(row.evidenceIds) ? row.evidenceIds.map(String) : [];
       if (evidenceIds.length === 0 || evidenceIds.some((id) => !candidate.evidenceIds.includes(id))) {
-        throw new Error('readiness authority cited evidence outside the candidate packet');
+        throw new ReadinessContractViolation('readiness authority cited evidence outside the candidate packet');
       }
       const boundedOutcome = outcome === 'ready' && confidence < 0.8 ? 'collecting' : outcome;
       return { clusterId, outcome: boundedOutcome, confidence, reasonCodes, evidenceIds, evidenceHash: evidenceHash(candidate) };

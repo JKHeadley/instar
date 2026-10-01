@@ -388,6 +388,76 @@ describe('FeedbackDrainStore', () => {
     expect(sameSqliteFileIdentity('454176:1', '454176:1787103639952.4048')).toBe(false);
   });
 
+  describe('readiness authority owner continuity (live 2026-10-01: epoch 22677 -> 22679 on same-machine restarts)', () => {
+    function run(host: string, epoch: number) {
+      const started = store.startRun({ ownerHost: host, ownerEpoch: epoch, leaseMs: 60_000 });
+      store.transitionRun(started.runId, 'accepted', 'running', '', { ownerHost: host, ownerEpoch: epoch });
+      store.transitionRun(started.runId, 'running', 'succeeded', '', { ownerHost: host, ownerEpoch: epoch });
+      now += 1_000;
+    }
+
+    it('keeps an approved authority valid across same-machine epoch advances', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-a', 8);
+      run('machine-a', 9);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(true);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 6)).toBe(false);
+      expect(store.authorityOwnerCurrent(auth, 'machine-b', 9)).toBe(false);
+    });
+
+    it('requires re-approval once another machine has owned the drain, even after it comes back', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-b', 8);
+      run('machine-a', 9);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(false);
+      const fresh = authority('replace');
+      expect(fresh.generation).toBe(2);
+      expect(store.authorityOwnerCurrent({ ...fresh, ownerEpoch: 9 }, 'machine-a', 10)).toBe(true);
+    });
+
+    it('requires re-approval after a restore', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      store.finalizeRestore({ restoredOwnerAuthorityEpoch: 7, operatorDecisionRef: 'restore-1', oldOwnerQuiesced: true });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+      run('machine-a', 8);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+    });
+
+    it('derives tenure from run history on a store written before the marker existed', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-a', 9);
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='drain_owner_continuity'`).run();
+      expect(store.drainOwnerContinuity()).toEqual({ host: 'machine-a', sinceEpoch: 7 });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(true);
+      // The next run persists the derived tenure instead of re-deriving forever.
+      run('machine-a', 10);
+      const marker = store['db'].prepare(`SELECT value FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { value: string };
+      expect(JSON.parse(marker.value)).toEqual({ host: 'machine-a', sinceEpoch: 7 });
+    });
+
+    it('treats a restore recorded before the marker existed as a tenure break', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      store.finalizeRestore({ restoredOwnerAuthorityEpoch: 7, operatorDecisionRef: 'restore-1', oldOwnerQuiesced: true });
+      now += 1_000;
+      run('machine-a', 8);
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='drain_owner_continuity'`).run();
+      expect(store.drainOwnerContinuity()).toEqual({ host: 'machine-a', sinceEpoch: 8 });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+    });
+
+    it('counts consecutive transient authority failures and clears on success', () => {
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(2);
+      store.clearAuthorityTransientFailures('frontier-reader', 1);
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+    });
+  });
+
   describe('restorePending across an st_dev change', () => {
     let dir: string;
     let dbPath: string;

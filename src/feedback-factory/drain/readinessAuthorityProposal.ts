@@ -39,6 +39,11 @@ export interface ReadinessAuthorityProposalInput {
   piModel?: string;
   current: AuthorityRecord | null;
   currentMode?: 'active' | 'proposal-only';
+  /**
+   * store.authorityOwnerCurrent(current, binding): the current record's owner binding still
+   * holds — same machine, unbroken tenure — even though a restart advanced the lease epoch.
+   */
+  currentOwnerValid?: boolean;
   envelope?: Partial<ReadinessEnvelope>;
 }
 
@@ -116,7 +121,7 @@ export function buildReadinessAuthorityProposal(input: ReadinessAuthorityProposa
   } : null;
 
   const matches = Boolean(current && proposal &&
-    BINDING_FIELDS.every((field) => current[field] === proposal[field]) &&
+    BINDING_FIELDS.every((field) => current[field] === proposal[field] || (field === 'ownerEpoch' && input.currentOwnerValid === true)) &&
     current.maxBatch === proposal.maxBatch && current.maxTokens === proposal.maxTokens &&
     current.maxDailySpendUsd === proposal.maxDailySpendUsd);
   const status: ReadinessAuthorityProposal['status'] = !current ? 'none'

@@ -1,15 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Cluster } from '../processor/types.js';
 import type { FeedbackProcessingService } from '../processing/FeedbackProcessingService.js';
-import { FeedbackDrainStore } from './FeedbackDrainStore.js';
+import { DrainConflictError, FeedbackDrainStore } from './FeedbackDrainStore.js';
 import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js';
-import type { FeedbackReadinessArbiter, ReadinessCandidate } from './FeedbackReadinessArbiter.js';
+import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, type FeedbackReadinessArbiter, type ReadinessCandidate } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
   stage: 'operated-drain',
 } as const;
+
+/** Consecutive transient authority invocation failures before the authority is demoted. */
+export const READINESS_TRANSIENT_FAILURE_LIMIT = 3;
 
 export interface FeedbackDrainServiceOptions {
   store: FeedbackDrainStore;
@@ -26,6 +29,8 @@ export interface FeedbackDrainServiceOptions {
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
   stageBudgetMs?: number;
+  /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
+  readinessStageBudgetMs?: number;
   maxWallClockMs?: number;
   sourceCompactionIntervalMs?: number;
   onRecoverableStall?: (reason: string) => void;
@@ -83,6 +88,7 @@ export class FeedbackDrainService {
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
+  private readonly readinessStageBudgetMs: number;
   private readonly maxWallClockMs: number;
   private readonly sourceCompactionIntervalMs: number;
 
@@ -91,7 +97,8 @@ export class FeedbackDrainService {
     this.maxReadyScans = Math.min(250, Math.max(1, opts.maxReadyScansPerTick ?? 250));
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, Math.min(90_000, opts.maxWallClockMs ?? 90_000));
+    this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, opts.maxWallClockMs ?? 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -107,7 +114,7 @@ export class FeedbackDrainService {
   canAgentMutateReadiness(agentId: string): boolean {
     const authority = this.opts.store.getAuthority(this.opts.authorityId);
     return Boolean(authority && !authority.revoked && authority.agentId === agentId &&
-      authority.ownerMachineId === this.opts.ownerHost && authority.ownerEpoch === this.opts.ownerEpoch() &&
+      this.opts.store.authorityOwnerCurrent(authority, this.opts.ownerHost, this.opts.ownerEpoch()) &&
       this.opts.isCanonicalOwner() && this.opts.store.authorityPosture(authority.authorityId, authority.generation).mode === 'active');
   }
 
@@ -234,7 +241,7 @@ export class FeedbackDrainService {
       const due = this.opts.store.dueReadiness(50, now);
       const authority = this.opts.store.getAuthority(this.opts.authorityId);
       if (due.length > 0 && authority && !authority.revoked && this.opts.arbiter &&
-        authority.ownerMachineId === this.opts.ownerHost && authority.ownerEpoch === ownerEpoch &&
+        this.opts.store.authorityOwnerCurrent(authority, this.opts.ownerHost, ownerEpoch) &&
         this.opts.store.authorityPosture(authority.authorityId, authority.generation).mode === 'active') {
         const liveDue = due.filter((row) => byId.has(row.clusterId)).slice(0, authority.maxBatch);
         for (const stale of due.filter((row) => !byId.has(row.clusterId))) this.opts.store.holdReadiness(stale.clusterId, 'source-cluster-missing');
@@ -248,8 +255,9 @@ export class FeedbackDrainService {
         try {
           const decisionNonce = `decision:${randomUUID()}`;
           const proposalSetHash = createHash('sha256').update(JSON.stringify(liveDue.map((row) => ({ clusterId: row.clusterId, epoch: row.epoch })).sort((a, b) => a.clusterId.localeCompare(b.clusterId)))).digest('hex');
-          const decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, liveDue.map((row) => candidate(byId.get(row.clusterId)!, now))));
+          const decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, liveDue.map((row) => candidate(byId.get(row.clusterId)!, now))), this.readinessStageBudgetMs);
           stopIfCancelled();
+          this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
           out.reviewed = decisions.length;
           for (const decision of decisions) {
             if (decision.outcome === 'ready') {
@@ -263,12 +271,19 @@ export class FeedbackDrainService {
               });
             }
           }
-        } catch {
+        } catch (error) {
+          if (error instanceof FeedbackDrainCancellation) throw error;
           for (const row of liveDue) this.opts.store.recordCollectingEvaluation(row.clusterId, {
             reason: 'readiness-authority-failed', nextReviewAt: now + 15 * 60 * 1000,
           });
           out.reason = 'readiness-authority-failed';
-          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
+          // Contract violations (and a refused promotion) demote at once. A timeout or provider
+          // error is retried on the next review; only a run of them in a row demotes.
+          if (error instanceof ReadinessContractViolation || error instanceof DrainConflictError) {
+            this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
+          } else if (this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation) >= READINESS_TRANSIENT_FAILURE_LIMIT) {
+            this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-authority-repeated-invocation-failure');
+          }
         }
         }
       } else if (due.length > 0) {
@@ -376,16 +391,16 @@ export class FeedbackDrainService {
     if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
   }
 
-  private async withStageBudget<T>(stage: string, operation: () => Promise<T>): Promise<T> {
+  private async withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {
     const startedAt = this.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${stage} stage budget exceeded`)), this.stageBudgetMs);
+        timer = setTimeout(() => reject(new Error(`${stage} stage budget exceeded`)), budgetMs);
         if (typeof timer.unref === 'function') timer.unref();
       });
       const result = await Promise.race([operation(), timeout]);
-      this.assertStageBudget(startedAt, stage);
+      if (this.now() - startedAt > budgetMs) throw new Error(`${stage} stage budget exceeded`);
       return result;
     } finally { if (timer) clearTimeout(timer); }
   }
