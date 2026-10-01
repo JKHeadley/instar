@@ -172,6 +172,11 @@ export class TopicProfileWriteSurface {
 
   // ── the main write path ───────────────────────────────────────────────────
 
+  /** The live write regime (read-only; dashboard-door-model-controls §3.1 `regime`). */
+  currentRegime(): ProfileWriteRegime {
+    return this.deps.regime();
+  }
+
   async applyWrite(req: {
     topicKey: string | number;
     patch: ProfilePatchInput;

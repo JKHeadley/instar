@@ -1731,6 +1731,50 @@
       color: var(--text);
     }
 
+    /* Door + model controls (dashboard-door-model-controls §3.6) — native
+       selects, full width at phone width, no horizontal scroll. */
+    .modal-field select {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      padding: 8px 12px;
+      background: var(--bg-panel);
+      color: var(--text-bright);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .modal-field select:disabled { opacity: 0.5; }
+    .modal-note {
+      font-size: 12px;
+      color: var(--text);
+      margin: 6px 0 0;
+      overflow-wrap: anywhere;
+    }
+    .modal-note.warn { color: var(--yellow, #e5c07b); }
+    .modal-note.err { color: var(--red, #e06c75); }
+    .ntd-row {
+      margin: 0 12px 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+    .ntd-row:hover { background: var(--bg-hover); }
+    .ntd-row .ntd-note { color: var(--text-dim); font-size: 11px; }
+    .door-model-btn {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+
     .modal-hint {
       font-size: 11px;
       color: var(--text-dim);
@@ -3027,6 +3071,7 @@
         </div>
       </div>
       <div class="tab-purpose" style="padding:0 12px 8px">Your agent's live sessions — pick one to watch its terminal in real time.</div>
+      <div class="ntd-row" id="newTopicDefaultRow" style="display:none" onclick="openNewTopicDefaultSheet()" role="button" tabindex="0"></div>
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
           <div class="icon">&#x1F4AD;</div>
@@ -3048,6 +3093,7 @@
             <h3 id="termSessionName">—</h3>
             <span class="type-badge" id="termTypeBadge" style="display:none"></span>
             <span class="model-badge" id="termModelBadge" style="display:none"></span>
+            <button class="door-model-btn" id="termDoorModelBtn" style="display:none" onclick="openDoorModelSheet()" title="Switch this topic's door and model">Door + model</button>
           </div>
           <div class="terminal-actions">
             <button class="action-btn" onclick="sendKey('Enter')" title="Send Enter">Enter</button>
@@ -3126,7 +3172,7 @@
       </div>
       <div class="modal-field">
         <label for="newSessionPlatform">Platform</label>
-        <select id="newSessionPlatform" style="width:100%;padding:8px 12px;background:var(--bg-panel);color:var(--text-bright);border:1px solid var(--border);border-radius:6px;font-size:14px;">
+        <select id="newSessionPlatform" onchange="onNewSessionPlatformChange()" style="width:100%;padding:8px 12px;background:var(--bg-panel);color:var(--text-bright);border:1px solid var(--border);border-radius:6px;font-size:14px;">
           <option value="auto">Auto (best available)</option>
           <option value="telegram">✈️ Telegram</option>
           <option value="slack">💬 Slack</option>
@@ -3134,11 +3180,70 @@
         </select>
         <div class="modal-hint">Choose which messaging platform to link this session to.</div>
       </div>
+      <div class="modal-field">
+        <label for="newSessionDoor">Door</label>
+        <select id="newSessionDoor" onchange="onNewSessionDoorChange()"></select>
+      </div>
+      <div class="modal-field">
+        <label for="newSessionModel">Model</label>
+        <select id="newSessionModel" onchange="updateCreateButtonLabel()"></select>
+        <div class="modal-hint" id="newSessionDoorHint">You can change this again after the topic's first message.</div>
+        <div class="modal-note warn" id="newSessionRegimeNote" style="display:none"></div>
+        <div class="modal-note err" id="newSessionError" style="display:none"></div>
+      </div>
       <!-- Keep hidden checkbox for backward compat -->
       <input type="hidden" id="newSessionHeadless">
       <div class="modal-actions">
         <button class="modal-btn-cancel" onclick="closeNewSessionModal()">Cancel</button>
         <button class="modal-btn-create" id="createSessionBtn" onclick="createNewSession()">Create Session</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Default for dashboard-created topics (dashboard-door-model-controls §3.2/§3.6) -->
+  <div class="modal-backdrop" id="newTopicDefaultSheet" style="display:none" onclick="closeSheet(event, 'newTopicDefaultSheet')">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <h3>Default for dashboard-created topics</h3>
+      <div class="modal-note">Applies to topics you create from this dashboard. Topics you start in Telegram and topics that already exist are not changed.</div>
+      <div class="modal-field" style="margin-top:12px">
+        <label for="ntdDoor">Door</label>
+        <select id="ntdDoor" onchange="onSheetDoorChange('ntdDoor','ntdModel')"></select>
+      </div>
+      <div class="modal-field">
+        <label for="ntdModel">Model</label>
+        <select id="ntdModel"></select>
+      </div>
+      <div class="modal-note" id="ntdCount"></div>
+      <div class="modal-note warn" id="ntdRegimeNote" style="display:none"></div>
+      <div class="modal-note" id="ntdCaveat"></div>
+      <div class="modal-note" id="ntdStatus" style="display:none"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" onclick="clearNewTopicDefault()">Clear</button>
+        <button class="modal-btn-cancel" onclick="closeSheet(null, 'newTopicDefaultSheet')">Close</button>
+        <button class="modal-btn-create" id="ntdSaveBtn" onclick="saveNewTopicDefault()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Switch an existing topic's door + model (dashboard-door-model-controls §3.4/§3.6) -->
+  <div class="modal-backdrop" id="doorModelSheet" style="display:none" onclick="closeSheet(event, 'doorModelSheet')">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <h3>Door + model</h3>
+      <div class="modal-note" id="dmCurrent">Loading…</div>
+      <div class="modal-field" style="margin-top:12px">
+        <label for="dmDoor">Door</label>
+        <select id="dmDoor" onchange="onSheetDoorChange('dmDoor','dmModel')"></select>
+      </div>
+      <div class="modal-field">
+        <label for="dmModel">Model</label>
+        <select id="dmModel"></select>
+      </div>
+      <div class="modal-note">Switching the door restarts this topic's session; the conversation is kept.</div>
+      <div class="modal-note warn" id="dmRegimeNote" style="display:none"></div>
+      <div class="modal-note" id="dmStatus" style="display:none"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" onclick="closeSheet(null, 'doorModelSheet')">Close</button>
+        <button class="modal-btn-create" id="dmSwitchBtn" onclick="switchDoorModel()">Switch</button>
       </div>
     </div>
   </div>
@@ -4200,6 +4305,11 @@
     // API token is intentionally insufficient for operator-only actions.
     let operatorSessionToken = '';
     let sessions = [];
+    // Door + model controls (dashboard-door-model-controls §3.6).
+    let topicProfileOptions = null;
+    const switchingModel = new Set(); // tmux sessions whose topic is mid-switch
+    let pendingDoorSwitch = null;     // { topicId, model, since, tmuxSession }
+    let doorModelSheetTopic = null;   // { topicId, tmuxSession }
     // Sessions running on OTHER machines in the pool (GET /sessions?scope=pool).
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
@@ -4265,6 +4375,7 @@
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            loadTopicProfileOptions();
           } else {
             showAuthError('Incorrect PIN');
           }
@@ -4291,6 +4402,7 @@
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            loadTopicProfileOptions();
           }
         })
         .catch(() => {});
@@ -4567,7 +4679,7 @@
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
-            <span class="model-badge ${model}">${model}</span>
+            <span class="model-badge ${escapeHtml(model)}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(model)}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
@@ -4652,6 +4764,9 @@
       } else {
         badge.style.display = 'none';
       }
+
+      if (switchingModel.has(tmuxSession) && !session.remote) badge.textContent = 'switching…';
+      refreshDoorModelButton(session);
 
       // Show session type badge
       const sType = session.type || (session.jobSlug ? 'job' : 'interactive');
@@ -4948,7 +5063,17 @@
       const nameInput = document.getElementById('newSessionName');
       nameInput.value = '';
       document.getElementById('newSessionHeadless').checked = false;
+      showNote('newSessionError', '');
       setTimeout(() => nameInput.focus(), 50);
+      // Door/Model preselect from the default (§3.6) — refreshed on every open.
+      loadTopicProfileOptions().then(() => {
+        const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+        fillDoorSelect('newSessionDoor', def && def.framework ? def.framework : '', true);
+        fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value,
+          def && def.framework ? def.model : null);
+        showRegimeNote('newSessionRegimeNote');
+        onNewSessionPlatformChange();
+      });
     }
 
     function closeNewSessionModal(e) {
@@ -4973,6 +5098,16 @@
 
       btn.disabled = true;
       btn.textContent = 'Creating...';
+      showNote('newSessionError', '');
+
+      // A pick that differs from the dashboard default is sent explicitly; an
+      // unchanged pick sends nothing and the server seeds the default (§3.2).
+      const pick = newSessionPick();
+      const payload = { name, headless, platform: platform === 'auto' ? undefined : platform };
+      if (pick && pickDiffersFromDefault(pick)) {
+        payload.framework = pick.framework;
+        payload.model = pick.model;
+      }
 
       try {
         const resp = await fetch('/sessions/create', {
@@ -4980,23 +5115,354 @@
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
+            // Required for a door/model pick (403 without it) — §3.6.
+            'X-Instar-Request': '1',
           },
-          body: JSON.stringify({ name, headless, platform: platform === 'auto' ? undefined : platform }),
+          body: JSON.stringify(payload),
         });
         const data = await resp.json();
 
         if (!resp.ok) {
+          // Server copy verbatim, rendered as text (§3.6).
+          showNote('newSessionError', data.error || data.message || 'Failed to create session');
           showToast(data.error || 'Failed to create session', 'error');
           return;
         }
 
-        showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' : ' (headless)'}`, 'success');
+        const where = data.profile ? ` on ${data.profile.label}${data.profile.model ? ' · ' + data.profile.model : ''}` : '';
+        showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' + where : ' (headless)'}`, 'success');
         document.getElementById('newSessionModal').style.display = 'none';
+        if (data.seed && data.seed.outcome === 'seeded') loadTopicProfileOptions();
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Create Session';
+        updateCreateButtonLabel();
+      }
+    }
+
+    // ── Door + model controls (docs/specs/dashboard-door-model-controls.md) ──
+    // Every server-supplied string is rendered with textContent / option.text.
+
+    function showNote(id, text) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.display = text ? 'block' : 'none';
+    }
+
+    async function loadTopicProfileOptions() {
+      try {
+        const r = await fetch('/topic-profile/options', { headers: { 'Authorization': `Bearer ${token}` } });
+        topicProfileOptions = r.ok ? await r.json() : null;
+      } catch {
+        topicProfileOptions = null;
+      }
+      renderNewTopicDefaultRow();
+      return topicProfileOptions;
+    }
+
+    function doorOf(fw) {
+      return ((topicProfileOptions && topicProfileOptions.doors) || []).find(d => d.framework === fw) || null;
+    }
+
+    function doorModelLabel(fw, model) {
+      const d = doorOf(fw);
+      return (d ? d.label : fw) + ' · ' + (model || 'Account default');
+    }
+
+    // withDefaultOption: the modal offers "Agent default" (no pick) when no
+    // dashboard default is set, so an untouched create stays exactly as today.
+    function fillDoorSelect(id, selected, withDefaultOption) {
+      const sel = document.getElementById(id);
+      sel.textContent = '';
+      const hasDefault = topicProfileOptions && topicProfileOptions.newTopicDefault && topicProfileOptions.newTopicDefault.framework;
+      if (withDefaultOption && !hasDefault) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.text = 'Agent default';
+        sel.appendChild(o);
+      }
+      for (const d of ((topicProfileOptions && topicProfileOptions.doors) || [])) {
+        const o = document.createElement('option');
+        o.value = d.framework;
+        let text = d.label;
+        if (d.availability === 'assumed') text += ' (not verified)';
+        if (!d.selectable) {
+          text += ' — ' + (d.reason || 'unavailable');
+          if (d.chatOnly) text += ' (you can still pin this in chat)';
+          o.disabled = true;
+        }
+        o.text = text;
+        sel.appendChild(o);
+      }
+      const canSelect = [...sel.options].some(o => o.value === selected && !o.disabled);
+      sel.value = canSelect ? selected : (sel.options[0] && !sel.options[0].disabled ? sel.options[0].value : '');
+    }
+
+    function fillModelSelect(id, fw, selected) {
+      const sel = document.getElementById(id);
+      sel.textContent = '';
+      const d = doorOf(fw);
+      if (!d) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.text = '—';
+        sel.appendChild(o);
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
+      const acct = document.createElement('option');
+      acct.value = '';
+      acct.text = 'Account default';
+      sel.appendChild(acct);
+      for (const m of d.models) {
+        const o = document.createElement('option');
+        o.value = m;
+        o.text = m;
+        sel.appendChild(o);
+      }
+      const want = selected !== undefined && selected !== null ? selected : (d.defaultModel || '');
+      sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+    }
+
+    function showRegimeNote(id) {
+      const regime = topicProfileOptions && topicProfileOptions.regime;
+      showNote(id, regime === 'dry-run'
+        ? 'On this agent a chosen model is recorded as intent, not applied — the door still switches.'
+        : regime === 'disabled'
+          ? 'On this agent the door switch works, but model choice is turned off — the model will be refused.'
+          : '');
+    }
+
+    function onSheetDoorChange(doorId, modelId) {
+      fillModelSelect(modelId, document.getElementById(doorId).value, null);
+    }
+
+    function newSessionPick() {
+      const fw = document.getElementById('newSessionDoor').value;
+      if (!fw) return null;
+      const m = document.getElementById('newSessionModel').value;
+      return { framework: fw, model: m || null };
+    }
+
+    function pickDiffersFromDefault(pick) {
+      const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+      if (!def || !def.framework) return true;
+      return def.framework !== pick.framework || (def.model || null) !== pick.model;
+    }
+
+    function updateCreateButtonLabel() {
+      const btn = document.getElementById('createSessionBtn');
+      const doorSel = document.getElementById('newSessionDoor');
+      const pick = doorSel && !doorSel.disabled ? newSessionPick() : null;
+      btn.textContent = pick && pickDiffersFromDefault(pick)
+        ? 'Create on ' + doorModelLabel(pick.framework, pick.model)
+        : 'Create Session';
+    }
+
+    function onNewSessionDoorChange() {
+      fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value, null);
+      updateCreateButtonLabel();
+    }
+
+    // Door/Model apply only to Telegram topics in v1 — disabled for Headless/Slack.
+    function onNewSessionPlatformChange() {
+      const p = document.getElementById('newSessionPlatform').value;
+      const off = p === 'headless' || p === 'slack' || !topicProfileOptions;
+      document.getElementById('newSessionDoor').disabled = off;
+      document.getElementById('newSessionModel').disabled = off || !document.getElementById('newSessionDoor').value;
+      document.getElementById('newSessionDoorHint').textContent = off && topicProfileOptions
+        ? 'Door and model apply to Telegram topics only.'
+        : 'You can change this again after the topic\'s first message.';
+      updateCreateButtonLabel();
+    }
+
+    function closeSheet(e, id) {
+      if (e && e.target !== e.currentTarget) return;
+      document.getElementById(id).style.display = 'none';
+    }
+
+    // Sessions list header row — "Default for dashboard-created topics".
+    function renderNewTopicDefaultRow() {
+      const row = document.getElementById('newTopicDefaultRow');
+      if (!row) return;
+      if (!topicProfileOptions) { row.style.display = 'none'; return; }
+      const def = topicProfileOptions.newTopicDefault || {};
+      row.textContent = '';
+      const main = document.createElement('div');
+      main.textContent = 'Default for dashboard-created topics: '
+        + (def.framework ? doorModelLabel(def.framework, def.model) : 'not set') + ' ▸';
+      const note = document.createElement('div');
+      note.className = 'ntd-note';
+      note.textContent = def.replication === 'local-only' ? 'this machine only' : (def.replication || '');
+      row.appendChild(main);
+      row.appendChild(note);
+      row.style.display = 'block';
+    }
+
+    function openNewTopicDefaultSheet() {
+      document.getElementById('newTopicDefaultSheet').style.display = 'flex';
+      showNote('ntdStatus', '');
+      loadTopicProfileOptions().then(() => {
+        const def = (topicProfileOptions && topicProfileOptions.newTopicDefault) || {};
+        fillDoorSelect('ntdDoor', def.framework || '', false);
+        fillModelSelect('ntdModel', document.getElementById('ntdDoor').value, def.framework ? def.model : null);
+        showRegimeNote('ntdRegimeNote');
+        const n = def.seedsSinceBoot || 0;
+        document.getElementById('ntdCount').textContent =
+          `${n} dashboard topic${n === 1 ? '' : 's'} started on this default since the server started.`;
+        document.getElementById('ntdCaveat').textContent =
+          `Applies to new topics created on ${selfMachineNickname || 'this machine'}. Your other machines keep their own default until replication lands. `
+          + 'Topics you start in Telegram are not covered yet (coming with the cross-machine work).';
+      });
+    }
+
+    async function postNewTopicDefault(body) {
+      const headers = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-Instar-Request': '1',
+      };
+      // Attribution only (never a refusal): lets the audit tell a dashboard human
+      // from an agent session holding the same Bearer.
+      if (operatorSessionToken) headers['X-Instar-Operator-Session'] = operatorSessionToken;
+      const r = await fetch('/topic-profile/new-topic-default', { method: 'POST', headers, body: JSON.stringify(body) });
+      let data = {};
+      try { data = await r.json(); } catch { /* non-JSON error body */ }
+      return { ok: r.ok, data };
+    }
+
+    async function saveNewTopicDefault() {
+      const fw = document.getElementById('ntdDoor').value;
+      if (!fw) return;
+      const model = document.getElementById('ntdModel').value || null;
+      const { ok, data } = await postNewTopicDefault({ framework: fw, model });
+      if (!ok) { showNote('ntdStatus', data.error || 'Could not save the default'); return; }
+      await loadTopicProfileOptions();
+      const saved = data.newTopicDefault;
+      showNote('ntdStatus', 'Saved: ' + doorModelLabel(saved.framework, saved.model));
+    }
+
+    async function clearNewTopicDefault() {
+      const { ok, data } = await postNewTopicDefault({ clear: true });
+      if (!ok) { showNote('ntdStatus', data.error || 'Could not clear the default'); return; }
+      await loadTopicProfileOptions();
+      fillDoorSelect('ntdDoor', '', false);
+      fillModelSelect('ntdModel', document.getElementById('ntdDoor').value, null);
+      showNote('ntdStatus', 'Cleared — dashboard-created topics start on the agent defaults.');
+    }
+
+    // The session view's "Door + model" button — local Telegram tiles only
+    // (remote and Slack tiles keep the read-only badge, §6).
+    async function refreshDoorModelButton(session) {
+      const btn = document.getElementById('termDoorModelBtn');
+      btn.style.display = 'none';
+      doorModelSheetTopic = null;
+      if (!session || session.remote) return;
+      try {
+        const r = await fetch('/sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const list = await r.json();
+        const arr = Array.isArray(list) ? list : (list.sessions || []);
+        const s = arr.find(x => x.tmuxSession === session.tmuxSession);
+        if (!s || s.platform !== 'telegram' || s.platformId == null) return;
+        if (activeSession !== session.tmuxSession) return;
+        doorModelSheetTopic = { topicId: String(s.platformId), tmuxSession: s.tmuxSession };
+        btn.style.display = 'inline-block';
+      } catch { /* read-only badge stays */ }
+    }
+
+    function describeSource(profile) {
+      const src = profile.resolved && profile.resolved.sources ? profile.resolved.sources.framework : '';
+      const by = profile.pin && profile.pin.updatedBy ? profile.pin.updatedBy : '';
+      if (src === 'profile-pin' && (by === 'system:dashboard-create' || by === 'system:new-topic-default')) return 'seeded at creation';
+      if (src === 'profile-pin') return 'pinned by you';
+      return 'default';
+    }
+
+    async function openDoorModelSheet() {
+      if (!doorModelSheetTopic) return;
+      document.getElementById('doorModelSheet').style.display = 'flex';
+      showNote('dmStatus', '');
+      document.getElementById('dmCurrent').textContent = 'Loading…';
+      await loadTopicProfileOptions();
+      try {
+        const r = await fetch('/topic-profile/' + encodeURIComponent(doorModelSheetTopic.topicId), { headers: { 'Authorization': `Bearer ${token}` } });
+        const p = await r.json();
+        if (!r.ok) { document.getElementById('dmCurrent').textContent = p.error || 'Could not read this topic\'s profile'; return; }
+        document.getElementById('dmCurrent').textContent = 'Now: ' + doorModelLabel(p.resolved.framework, p.resolved.model) + ' (' + describeSource(p) + ')';
+        fillDoorSelect('dmDoor', p.resolved.framework, false);
+        fillModelSelect('dmModel', document.getElementById('dmDoor').value, p.resolved.model);
+        showRegimeNote('dmRegimeNote');
+      } catch (err) {
+        document.getElementById('dmCurrent').textContent = 'Network error: ' + (err.message || 'Cannot reach server');
+      }
+    }
+
+    async function switchDoorModel() {
+      if (!doorModelSheetTopic) return;
+      const fw = document.getElementById('dmDoor').value;
+      const model = document.getElementById('dmModel').value || null;
+      const btn = document.getElementById('dmSwitchBtn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/topic-profile/' + encodeURIComponent(doorModelSheetTopic.topicId), {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+          body: JSON.stringify({ framework: fw, model }),
+        });
+        let data = {};
+        try { data = await r.json(); } catch { /* non-JSON error body */ }
+        // The server's reply verbatim — including no-bound-operator (§3.4).
+        showNote('dmStatus', data.message || data.error || (r.ok ? 'Done.' : 'Refused.'));
+        if (r.ok && !data.noop) {
+          pendingDoorSwitch = { topicId: doorModelSheetTopic.topicId, model, since: Date.now(), tmuxSession: doorModelSheetTopic.tmuxSession };
+          switchingModel.add(doorModelSheetTopic.tmuxSession);
+          renderSessionList();
+          watchDoorSwitch();
+        }
+      } catch (err) {
+        showNote('dmStatus', 'Network error: ' + (err.message || 'Cannot reach server'));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // "switching…" until GET /sessions reports the LAUNCHED model for the topic —
+    // never an echo of the selection (§3.6 / P20 badge declaration).
+    async function watchDoorSwitch() {
+      const job = pendingDoorSwitch;
+      if (!job) return;
+      const badge = document.getElementById('termModelBadge');
+      if (activeSession === job.tmuxSession) { badge.textContent = 'switching…'; badge.style.display = 'inline-block'; }
+      for (let i = 0; i < 60 && pendingDoorSwitch === job; i++) {
+        await new Promise(res => setTimeout(res, 3000));
+        try {
+          const r = await fetch('/sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) continue;
+          const list = await r.json();
+          const arr = Array.isArray(list) ? list : (list.sessions || []);
+          const s = arr.find(x => String(x.platformId) === job.topicId
+            && new Date(x.startedAt).getTime() >= job.since - 1000
+            && (job.model === null || x.model === job.model));
+          if (s) {
+            switchingModel.delete(job.tmuxSession);
+            pendingDoorSwitch = null;
+            if (activeSession === job.tmuxSession || activeSession === s.tmuxSession) {
+              badge.textContent = s.model || '';
+              badge.className = 'model-badge ' + (s.model || '');
+            }
+            renderSessionList();
+            return;
+          }
+        } catch { /* retry */ }
+      }
+      if (pendingDoorSwitch === job) {
+        switchingModel.delete(job.tmuxSession);
+        pendingDoorSwitch = null;
+        renderSessionList();
       }
     }
 

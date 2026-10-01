@@ -306,6 +306,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // POST /topic-profile/new-topic-default — the "default for dashboard-created
+  // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).
+  // Machine-local in v1 by declared posture: migrating-to-unified, tracked in
+  // issue #2085 (expires 2027-03-25); the surface reports replication:"local-only".
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/topic-profile/new-topic-default',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'state/new-topic-default-profile.json is read only by THIS machine\'s /sessions/create; each machine keeps its own default until the replicated record (#2085) lands',
+    },
+  });
+
   // ── Jobs-as-agent.md mutation surface (dashboard Phase 4) ────────────────
   // A job DEFINITION is a markdown file under `.instar/jobs/`, which GitSync
   // treats as content that should sync between machines (GitSync.ts: "should
