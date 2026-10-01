@@ -203,10 +203,14 @@
     .session-meta {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
       font-size: 11px;
       color: var(--text-dim);
     }
+
+    /* A badge wraps as a whole to the next line, never mid-word. */
+    .model-badge, .machine-badge { white-space: nowrap; }
 
     .session-meta .model-badge {
       padding: 1px 6px;
@@ -216,7 +220,7 @@
       text-transform: uppercase;
     }
 
-    .model-badge.opus { background: #2d1b4e; color: #c084fc; }
+    .model-badge.opus, .model-badge.fable { background: #2d1b4e; color: #c084fc; }
     .model-badge.sonnet { background: #1b2e4e; color: #60a5fa; }
     .model-badge.haiku { background: #1b3e3e; color: #5eead4; }
 
@@ -1773,7 +1777,23 @@
       background: var(--bg);
       color: var(--text);
       cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
+    .terminal-header .session-info .model-badge,
+    .terminal-header .session-info .type-badge { flex-shrink: 0; }
+    .terminal-header .session-info .model-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .terminal-header .session-info .model-badge.opus,
+    .terminal-header .session-info .model-badge.fable { color: #c084fc; }
+    .terminal-header .session-info .model-badge.sonnet { color: #60a5fa; }
+    .terminal-header .session-info .model-badge.haiku { color: #5eead4; }
 
     .modal-hint {
       font-size: 11px;
@@ -2718,8 +2738,13 @@
         min-width: 0;
       }
 
+      /* Phone width: the topic name matters more than the session-type tag. */
+      .terminal-header .session-info .type-badge { display: none !important; }
+
       .terminal-header .session-info h3 {
         font-size: 13px;
+        flex: 1;
+        min-width: 0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -4679,7 +4704,7 @@
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
-            <span class="model-badge ${escapeHtml(model)}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(model)}</span>
+            <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(model)}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
@@ -4758,8 +4783,9 @@
 
       const badge = document.getElementById('termModelBadge');
       if (session.model) {
-        badge.textContent = session.model;
-        badge.className = `model-badge ${session.model}`;
+        badge.textContent = friendlyModelName(session.model);
+        badge.title = session.model;
+        badge.className = `model-badge ${modelFamilyClass(session.model)}`;
         badge.style.display = 'inline-block';
       } else {
         badge.style.display = 'none';
@@ -5168,7 +5194,7 @@
 
     function doorModelLabel(fw, model) {
       const d = doorOf(fw);
-      return (d ? d.label : fw) + ' · ' + (model || 'Account default');
+      return (d ? d.label : fw) + ' · ' + (model ? friendlyModelName(model) : 'Account default');
     }
 
     // withDefaultOption: the modal offers "Agent default" (no pick) when no
@@ -5200,6 +5226,38 @@
       sel.value = canSelect ? selected : (sel.options[0] && !sel.options[0].disabled ? sel.options[0].value : '');
     }
 
+    // Friendly display name for a model id ("claude-opus-5-5" → "Opus 5.5").
+    // Display only — option VALUES and every request keep the raw id. An id
+    // this does not recognize is shown unchanged.
+    function friendlyModelName(id) {
+      if (!id) return '';
+      const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+      let m = /^(fable|opus|sonnet|haiku)$/.exec(id);
+      if (m) return cap(m[1]);
+      m = /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-(\d{8}))?$/.exec(id);
+      if (m) return cap(m[1]) + ' ' + m[2] + (m[3] ? '.' + m[3] : '');
+      m = /^gpt-(\d+(?:\.\d+)?)(?:-([a-z]+))?$/.exec(id);
+      if (m) return 'GPT-' + m[1] + (m[2] ? ' ' + cap(m[2]) : '');
+      return id;
+    }
+
+    // Colour class for a model badge: the family, never the raw id.
+    function modelFamilyClass(id) {
+      const m = /(fable|opus|sonnet|haiku)/.exec(id || '');
+      return m ? m[1] : '';
+    }
+
+    // A dated id ("claude-haiku-4-5-20251001") is hidden when its undated twin
+    // is listed too — same model, one row. A currently-selected id always stays.
+    function visibleModels(models, selected) {
+      const set = new Set(models);
+      return models.filter(m => {
+        if (m === selected) return true;
+        const dated = /^(.*)-\d{8}$/.exec(m);
+        return !(dated && set.has(dated[1]));
+      });
+    }
+
     function fillModelSelect(id, fw, selected) {
       const sel = document.getElementById(id);
       sel.textContent = '';
@@ -5217,10 +5275,11 @@
       acct.value = '';
       acct.text = 'Account default';
       sel.appendChild(acct);
-      for (const m of d.models) {
+      for (const m of visibleModels(d.models, selected)) {
         const o = document.createElement('option');
         o.value = m;
-        o.text = m;
+        // A bare alias ("opus") follows whatever is newest — say so in the list.
+        o.text = friendlyModelName(m) + (/^(fable|opus|sonnet|haiku)$/.test(m) ? ' (latest)' : '');
         sel.appendChild(o);
       }
       const want = selected !== undefined && selected !== null ? selected : (d.defaultModel || '');
@@ -5451,8 +5510,9 @@
             switchingModel.delete(job.tmuxSession);
             pendingDoorSwitch = null;
             if (activeSession === job.tmuxSession || activeSession === s.tmuxSession) {
-              badge.textContent = s.model || '';
-              badge.className = 'model-badge ' + (s.model || '');
+              badge.textContent = friendlyModelName(s.model);
+              badge.title = s.model || '';
+              badge.className = 'model-badge ' + modelFamilyClass(s.model);
             }
             renderSessionList();
             return;

@@ -723,7 +723,7 @@ export class TopicProfileWriteSurface {
         this.deps.audit({ type: 'write', outcome: 'refused', reason: 'no-bound-operator', topic: topicKey, principal: 'api-token', origin });
         return {
           ok: false,
-          reply: 'This topic has no bound operator yet — it gets one the first time its operator messages the topic.',
+          reply: 'Send one message in this topic first, then switch. The topic only learns who its operator is from that first message.',
           refusal: { reason: 'no-bound-operator' },
         };
       }
