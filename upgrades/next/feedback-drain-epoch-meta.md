@@ -1,0 +1,22 @@
+# Feedback drain: backups and post-run cleanup work again
+
+## What Changed
+
+The operated feedback drain stored its owner epoch once and then required an exact
+match. On the Mac Studio it was recorded as 1 (single-machine mode, 2026-08-28) while
+the coordinator lease epoch is 22677+, so the hourly `checkpointForBackup` failed with
+`backup owner authority epoch is stale` and `pruneOperationalHistory` threw after every
+run. `FeedbackDrainStore` now advances the recorded epoch to a newer live owner epoch
+(with an `owner-epoch` audit row) and still refuses an older one. Single-machine mode
+resumes from the recorded epoch on boot instead of 1, so a restart after a restore is no
+longer stale. Restore detection (checkpoint file identity + checksum) is unchanged.
+Existing stores heal on the next run; no migration.
+
+## What to Tell Your User
+
+The feedback sorter's hourly backup had been failing quietly since August because of a
+stuck counter. It fixes itself on the next run, with nothing for you to do.
+
+## Summary of New Capabilities
+
+- The drain's owner epoch tracks the live owner forward and never back; backups and pruning resume.

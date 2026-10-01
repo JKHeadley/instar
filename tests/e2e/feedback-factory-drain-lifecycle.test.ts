@@ -293,4 +293,21 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect(refused.status).toBe(409);
     expect(refused.body.error).toMatch(/not approvable/);
   });
+
+  it('a restart after the restore bump resumes at the recorded owner epoch, so backup checkpoints keep working', async () => {
+    await server.stop();
+    tracker = new InitiativeTracker(stateDir);
+    server = new AgentServer({ config, state: new StateManager(stateDir), initiativeTracker: tracker, intelligence,
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never });
+    await server.start();
+    const drain = (server as unknown as { feedbackDrain: { authorityBinding(): { ownerEpoch: number }; checkpointBackup(trigger: 'promotion' | 'failover'): void;
+      store: { ownerAuthorityEpoch(): number | null } } }).feedbackDrain;
+    // Before this fix a single-machine restart presented epoch 1 against the recorded 2.
+    expect(drain.store.ownerAuthorityEpoch()).toBe(2);
+    expect(drain.authorityBinding().ownerEpoch).toBe(2);
+    expect(() => drain.checkpointBackup('failover')).not.toThrow();
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'feedback-factory', 'store', 'feedback-drain-checkpoint.json'), 'utf8'));
+    expect(manifest.ownerAuthorityEpoch).toBe(2);
+    expect((await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
+  });
 });

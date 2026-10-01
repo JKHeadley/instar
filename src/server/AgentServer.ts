@@ -2594,7 +2594,9 @@ export class AgentServer {
         // installs retain the local fallback because there is no competing owner.
         const ownerHost = resolveFeedbackDrainOwnerMachineId(options.config.feedbackFactory?.operatedHostMachineId, selfMachineId, multiMachineMode);
         const serviceOwnerHost = ownerHost ?? `unconfigured:${selfMachineId}`;
-        let localOwnerEpoch = 1;
+        // Single-machine owner epoch resumes from the store (a restore bump or a past coordinator
+        // lease epoch), so a restart never presents an epoch older than the recorded one.
+        let localOwnerEpoch = store.ownerAuthorityEpoch() ?? 1;
         let restorePending = store.restorePending();
         const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
         const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();

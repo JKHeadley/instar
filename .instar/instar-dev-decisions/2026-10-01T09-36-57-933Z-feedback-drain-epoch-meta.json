@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-01T09:36:57.933Z",
+  "slug": "feedback-drain-epoch-meta",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

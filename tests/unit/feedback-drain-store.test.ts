@@ -372,7 +372,10 @@ describe('FeedbackDrainStore', () => {
       expect(checkpoint).toMatchObject({ ownerAuthorityEpoch: 7, createdAt: new Date(now).toISOString() });
       expect(checkpoint.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(JSON.parse(fs.readFileSync(path.join(dir, 'feedback-drain-checkpoint.json'), 'utf8'))).toEqual(checkpoint);
-      expect(() => disk.checkpointForBackup(8)).toThrow(DrainConflictError);
+      // A newer live owner epoch moves the recorded epoch forward; an older one is stale.
+      expect(disk.checkpointForBackup(8).ownerAuthorityEpoch).toBe(8);
+      expect(disk.ownerAuthorityEpoch()).toBe(8);
+      expect(() => disk.checkpointForBackup(7)).toThrow(DrainConflictError);
     } finally {
       disk.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'feedback-drain-store checkpoint test' });
@@ -539,6 +542,27 @@ describe('FeedbackDrainStore', () => {
     expect(store.lastRun()).toMatchObject({ state: 'abandoned', reason: 'cancelled-at-stage-boundary' });
   });
 
+  it('tracks the live owner epoch forward (a store stuck at 1 under a coordinator lease self-heals) and never back', () => {
+    const work = enqueue();
+    const old = store.claimNext({ consumerId: 'consumer', ownerAuthorityEpoch: 1, leaseMs: 60_000 })!;
+    expect(store.ownerAuthorityEpoch()).toBe(1);
+    // The live shape on the Studio: drain_meta at 1 while the drain runs at lease epoch 22677.
+    store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 });
+    expect(store.ownerAuthorityEpoch()).toBe(22_677);
+    const db = (store as unknown as { db: Database.Database }).db;
+    expect(db.prepare(`SELECT from_state,to_state,reason FROM drain_audit WHERE kind='owner-epoch'`).all())
+      .toEqual([{ from_state: '1', to_state: '22677', reason: 'owner-epoch-advance' }]);
+    // The pre-advance claim is superseded: it can no longer settle.
+    expect(() => store.complete({ workId: work.workId, leaseEpoch: old.leaseEpoch, claimToken: old.claimToken, ownerAuthorityEpoch: 1 })).toThrow(DrainConflictError);
+    expect(() => store.markArtifactReadable({ workId: work.workId, leaseEpoch: old.leaseEpoch, claimToken: old.claimToken, ownerAuthorityEpoch: 22_677, artifactId: 'x', artifactKind: 'initiative' })).toThrow(DrainConflictError);
+    // A same-machine lease re-acquire advances again; an older writer is refused everywhere.
+    store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_679 });
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 })).toThrow(DrainConflictError);
+    expect(() => store.claimNext({ consumerId: 'stale', ownerAuthorityEpoch: 22_678, leaseMs: 1_000 })).toThrow(DrainConflictError);
+    expect(store.ownerAuthorityEpoch()).toBe(22_679);
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 0 })).toThrow(DrainConflictError);
+  });
+
   it('prunes queue/audit at 400 days and run detail at 30 days, bounded and owner-fenced, while retaining idempotency tombstones', () => {
     const work = enqueue();
     const claim = store.claimNext({ consumerId: 'consumer', ownerAuthorityEpoch: 4, leaseMs: 100 });
@@ -548,7 +572,7 @@ describe('FeedbackDrainStore', () => {
     store.transitionRun(run.runId, 'accepted', 'running', '', { ownerHost: 'host', ownerEpoch: 4 });
     store.transitionRun(run.runId, 'running', 'succeeded', '', { ownerHost: 'host', ownerEpoch: 4 });
     now += 401 * 24 * 60 * 60 * 1000;
-    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 5, now })).toThrow(DrainConflictError);
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 3, now })).toThrow(DrainConflictError);
     const result = store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 4, now, limit: 100 });
     expect(result.retiredWork).toBe(1);
     expect(result.prunedAudit).toBeGreaterThan(0);
