@@ -82,6 +82,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     jevSignalLive: {
       timeoutMs: 1000,
     },
+    // Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md) — log-only,
+    // dev-gated: `enabled` DELIBERATELY OMITTED (live on a dev agent, dark on the fleet).
+    jevCirclesShadow: {
+      timeoutMs: 1500,
+      maxChecksPerDay: 2000,
+    },
     spawnCap: {
       maxConcurrent: 8,
       acquireMs: 5000,

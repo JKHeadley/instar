@@ -668,6 +668,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Signal only — it chooses which already-saved index lines are offered to a session and cannot block, send or change anything; in shadow mode it changes nothing. Inert without the vault typesafe_api_key (only the dev agent holds one). One bounded Jev call per session start, only when the index overflows the load cut, under a daily call cap and at most 2 in flight; text is secret-scrubbed before egress; every failure is today\'s load. No destructive action.',
   },
   {
+    name: 'jevCirclesShadow',
+    configPath: 'intelligence.jevCirclesShadow.enabled',
+    description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',
+    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',

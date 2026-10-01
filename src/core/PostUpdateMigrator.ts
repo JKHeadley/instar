@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCirclesShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6515,6 +6515,11 @@ process.stdin.on('end', async () => {
       // detail. Optional + designed-benign: the receiver stores extra fields
       // as-is and a payload without it remains valid.
       file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
+      // jev-circles-shadow (docs/specs/jev-circles-shadow.md): the session's own
+      // transcript path, so the server can build the measured action window
+      // (commands, results AND failures — a failed tool fires PostToolUseFailure,
+      // which this hook never sees). A path, never content.
+      transcript_path: input.transcript_path || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);
@@ -6608,6 +6613,12 @@ setTimeout(() => process.exit(0), 2000);
       content += jevMemoryPickerAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
+    }
+
+    if (!content.includes('### Jev Circles Shadow')) {
+      content += jevCirclesShadowAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev circles-shadow awareness card');
     }
 
     if (!content.includes('Queued-message review pacing:')) {
@@ -10986,6 +10997,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent must be able to explain it (and that it ranks Claude
       // Code's MEMORY.md), including that it ships dark and shadow-only.
       '### Jev Memory Picker',
+      // Jev circles shadow: a server-side log-only instrument whose summary any
+      // framework's agent can read; the card says it measures Claude Code sessions.
+      '### Jev Circles Shadow',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by

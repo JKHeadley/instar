@@ -143,6 +143,7 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { PasskeyGrantStore, canonicalEmail as canonicalPasskeyEmail } from '../core/PasskeyGrantStore.js';
 import { PasskeyIssuerSet, type IssuerMachineStatus } from '../core/PasskeyIssuerSet.js';
 import { PasskeyNonceLedger } from '../core/PasskeyNonceLedger.js';
@@ -5685,6 +5686,10 @@ export function createRoutes(ctx: RouteContext): Router {
     if (payload.event === 'PostToolUse') {
       reflectionMetrics.recordToolCall();
 
+      // jev-circles-shadow: log-only "going in circles" measurement. Synchronous
+      // counter here; every 5th action a detached check runs. Delivers nothing.
+      getJevCirclesShadow()?.observe({ sessionId: payload.session_id, transcriptPath: payload.transcript_path });
+
       // Track commits for homeostasis (work-velocity awareness).
       // Detect git commit in Bash tool output — Structure > Willpower.
       const toolName = payload.tool_name || payload.toolName || '';
@@ -5745,6 +5750,18 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     res.json({ ok: true, event: payload.event });
+  });
+
+  // GET /jev-circles/summary — the jev-circles-shadow log, summarised
+  // (docs/specs/jev-circles-shadow.md): checks run, would-nudges, per-session
+  // counts. Read-only; content-free rows. 503 when the shadow is not constructed.
+  router.get('/jev-circles/summary', (_req, res) => {
+    const shadow = getJevCirclesShadow();
+    if (!shadow) {
+      res.status(503).json({ error: 'jev-circles shadow not constructed on this agent' });
+      return;
+    }
+    res.json(shadow.summary());
   });
 
   router.get('/hooks/events/:sessionId', (req, res) => {
@@ -25764,10 +25781,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const run = indexPath ? picker.pick(indexPath, context, source) : picker.pick('', context, source);
     if (cfg.mode === 'shadow') {
       picker.lastRun = run.catch(() => null);
+      // @silent-fallback-ok — pick() never rejects (it logs its own failure row); this guard only keeps a stray rejection unhandled-free.
       res.status(202).json({ mode: 'shadow' });
       return;
     }
     const result = await run.catch(() => null);
+    // @silent-fallback-ok — pick() never rejects; a null here injects nothing, which is today's load exactly.
     const block = result ? renderInjectBlock(result.inject) : '';
     res.json({ mode: 'inject', present: block !== '', block, outcome: result?.outcome ?? 'fallback', reason: result?.reason });
   });
