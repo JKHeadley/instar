@@ -101,6 +101,8 @@ interface FakeDrain {
   tick: { code: number; body: unknown };
   /** lastRun the status route reports once the tick was accepted. */
   run?: { state: string; reason?: string };
+  /** The run reports `running` until this long after the tick (a slow tick); never terminal when Infinity. */
+  runningForMs?: number;
   after?: Record<string, unknown>;
 }
 
@@ -120,19 +122,24 @@ describe('feedback-factory-process job script — honest outcomes against a drai
     SafeFsExecutor.safeRmSync(workspace, { recursive: true, force: true, operation: 'tests/integration/feedback-factory-process-job-body.test.ts' });
   });
 
-  async function runAgainst(fake: FakeDrain): Promise<{ failure: string | null; stdout: string; ticks: number }> {
+  async function runAgainst(fake: FakeDrain, pollSeconds = '5'): Promise<{ failure: string | null; stdout: string; ticks: number }> {
     let ticks = 0;
+    let tickedAt = 0;
     const server = http.createServer((req, res) => {
       const send = (code: number, payload: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(payload)); };
       if (req.headers.authorization !== 'Bearer job-token') { send(401, { error: 'auth' }); return; }
       if (req.method === 'POST' && req.url === '/feedback-factory/drain/tick') {
         ticks++;
+        tickedAt = Date.now();
         const intent = req.headers['x-instar-request'] === '1' && /^feedback-drain-\d+-\d+$/.test(String(req.headers['x-instar-request-nonce']));
         if (!intent) { send(400, { error: 'missing intent headers' }); return; }
         send(fake.tick.code, fake.tick.body); return;
       }
       if (req.method === 'GET' && req.url === '/feedback-factory/drain/status') {
         if (ticks > 0 && fake.run) {
+          if (Date.now() - tickedAt < (fake.runningForMs ?? 0)) {
+            send(200, { ...(fake.status.body as object), lastRun: { runId: 'run:1', state: 'running', reason: '' } }); return;
+          }
           send(200, { ...(fake.status.body as object), ...(fake.after ?? {}), lastRun: { runId: 'run:1', ...fake.run } }); return;
         }
         send(fake.status.code, fake.status.body); return;
@@ -146,7 +153,7 @@ describe('feedback-factory-process job script — honest outcomes against a drai
       const stdout = await new Promise<string>((resolve, reject) => {
         const child = spawn('python3', ['-'], {
           cwd: workspace,
-          env: { ...process.env, INSTAR_AUTH_TOKEN: 'job-token', INSTAR_AGENT_ID: 'echo', INSTAR_PORT: String(port), INSTAR_JOB_FAILURE_FILE: failureFile, FEEDBACK_DRAIN_POLL_SECONDS: '5' },
+          env: { ...process.env, INSTAR_AUTH_TOKEN: 'job-token', INSTAR_AGENT_ID: 'echo', INSTAR_PORT: String(port), INSTAR_JOB_FAILURE_FILE: failureFile, FEEDBACK_DRAIN_POLL_SECONDS: pollSeconds },
         });
         let out = '';
         child.stdout.on('data', (chunk) => { out += String(chunk); });
@@ -208,5 +215,31 @@ describe('feedback-factory-process job script — honest outcomes against a drai
   it('simulation work counts that advance break the invariant', async () => {
     const result = await runAgainst({ status: live, tick: accepted, run: { state: 'succeeded' }, after: { drain: { work: { claimed: 1, completed: 0 } } } });
     expect(result.failure).toMatch(/^invariant broken: claimed\/completed work advanced while the consumer is in simulation/);
+  });
+
+  // Live 2026-10-01: drain runs ef0f6cbf and 10674e04 took 70 s and ended degraded, but the
+  // job's 60 s poll gave up first ("still in flight; the next cadence observes it") and the
+  // scheduler recorded success. No later cadence ever reads an earlier run's outcome.
+  it('polls past the drain wall clock (115 s ceiling) by default', () => {
+    const match = script.match(/FEEDBACK_DRAIN_POLL_SECONDS'\) or (\d+)\)/);
+    expect(match).toBeTruthy();
+    expect(Number(match![1])).toBeGreaterThan(115);
+    expect(script).not.toContain('the next cadence observes it');
+  });
+
+  it('a slow run that ends degraded after polling began still fails the job', async () => {
+    const result = await runAgainst({ status: live, tick: accepted, run: { state: 'degraded', reason: 'readiness-authority-failed' }, runningForMs: 4_000 }, '12');
+    expect(result.failure).toBe('drain run degraded: readiness-authority-failed (run run:1)');
+  });
+
+  it('a slow succeeded run carrying the time-exhausted note is a success', async () => {
+    const result = await runAgainst({ status: live, tick: accepted, run: { state: 'succeeded', reason: 'readiness-time-exhausted-rest-due' }, runningForMs: 4_000 }, '12');
+    expect(result.failure).toBeNull();
+    expect(result.stdout).toContain('FEEDBACK_DRAIN_RESULT succeeded run:1');
+  });
+
+  it('a run still in flight when polling ends fails the job instead of passing silently', async () => {
+    const result = await runAgainst({ status: live, tick: accepted, run: { state: 'degraded' }, runningForMs: Infinity }, '4');
+    expect(result.failure).toBe('drain run run:1 still in flight after 4 s, past the drain wall clock (last seen: run:1 running)');
   });
 });
