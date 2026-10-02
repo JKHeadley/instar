@@ -36,6 +36,8 @@ describe('status line', () => {
     expect(statusLine(NONE)).toMatch(/Not set up yet/);
     expect(statusLine({ status: 'revoked', current: { generation: 2 } })).toMatch(/Revoked \(version 2\)/);
     expect(statusLine({ status: 'proposal-only', current: { generation: 4 } })).toMatch(/Paused by a safety brake/);
+    expect(statusLine({ status: 'proposal-only', current: { generation: 4 }, pausedBecause: 'The daily spend cap was reached.' }))
+      .toBe('Paused by a safety brake (version 4) — The daily spend cap was reached. Approve again to resume.');
     expect(statusLine({ status: 'active', current: { generation: 1, maxBatch: 50, maxDailySpendUsd: 5, matchesProposal: true } }))
       .toBe('Active (version 1): up to 50 reports per batch, at most $5 per day.');
     expect(statusLine({ status: 'active', current: { generation: 1, matchesProposal: false } })).toMatch(/out of date/);

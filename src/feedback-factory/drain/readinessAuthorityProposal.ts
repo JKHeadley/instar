@@ -39,6 +39,8 @@ export interface ReadinessAuthorityProposalInput {
   piModel?: string;
   current: AuthorityRecord | null;
   currentMode?: 'active' | 'proposal-only';
+  /** The posture reason recorded when the current record was paused. */
+  currentModeReason?: string;
   /**
    * store.authorityOwnerCurrent(current, binding): the current record's owner binding still
    * holds — same machine, unbroken tenure — even though a restart advanced the lease epoch.
@@ -56,6 +58,8 @@ export interface ReadinessAuthorityProposal {
   /** The action an Approve tap performs in this state, or null when nothing to approve. */
   approveAction: 'create' | 'replace' | 'restore' | null;
   summary: string;
+  /** Why the current record is paused, in plain words; null unless status is proposal-only. */
+  pausedBecause: string | null;
 }
 
 /** The model string the provider will report via onModel for this hint (what the arbiter compares). */
@@ -89,7 +93,21 @@ export function envelopeProblems(envelope: ReadinessEnvelope): string[] {
 
 export function plainSummary(envelope: ReadinessEnvelope): string {
   return `Let the sorting model decide which feedback reports become work items: up to ${envelope.maxBatch} reports per batch, ` +
-    `at most $${envelope.maxDailySpendUsd} per day. Anything outside that comes to you.`;
+    `at most $${envelope.maxDailySpendUsd} per day. Anything outside that comes to you. ` +
+    'An answer that fails the checks is set aside and retried; it pauses itself only at the daily cap, ' +
+    'if a different model answers, or after three runs in a row with no usable answer.';
+}
+
+/** What a recorded brake reason means, in the operator's words. */
+export function brakePlainWords(reason: string): string {
+  switch (reason) {
+    case 'readiness-spend-brake': return 'The daily spend cap was reached.';
+    case 'readiness-schema-provenance-or-routing-failure':
+      return 'The answer did not come from the approved model, or the deployed prompt no longer matches the approval.';
+    case 'readiness-authority-repeated-invocation-failure':
+      return 'Three runs in a row produced no usable answer (timeouts, provider errors, or answers that failed the checks).';
+    default: return reason ? `Paused (${reason}).` : 'Paused by a safety brake.';
+  }
 }
 
 const BINDING_FIELDS = ['agentId', 'ownerMachineId', 'ownerEpoch', 'provider', 'modelFamily', 'promptVersion', 'schemaVersion', 'decisionPointId'] as const;
@@ -139,5 +157,6 @@ export function buildReadinessAuthorityProposal(input: ReadinessAuthorityProposa
     blockers,
     approveAction: blockers.length > 0 && approveAction !== 'restore' ? null : approveAction,
     summary: plainSummary(envelope),
+    pausedBecause: status === 'proposal-only' ? brakePlainWords(input.currentModeReason ?? '') : null,
   };
 }

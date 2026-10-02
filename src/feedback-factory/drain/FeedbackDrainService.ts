@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Cluster } from '../processor/types.js';
 import type { FeedbackProcessingService } from '../processing/FeedbackProcessingService.js';
-import { DrainConflictError, FeedbackDrainStore, type AuthorityRecord, type ReadinessProjection } from './FeedbackDrainStore.js';
+import { FeedbackDrainStore, type AuthorityRecord, type ReadinessProjection } from './FeedbackDrainStore.js';
 import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js';
-import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, type FeedbackReadinessArbiter, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
+import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, ReadinessOutputRejected, outputExcerpt, type FeedbackReadinessArbiter, type ReadinessCallDiagnosis, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
@@ -97,6 +97,19 @@ function candidate(cluster: Cluster, now: number): ReadinessCandidate {
     lastSeenAt: time(cluster.updatedAt ?? cluster.createdAt, now),
     evidenceIds: [`cluster:${cluster.clusterId}`],
     injectionSuspected: instructionPattern.test(title),
+  };
+}
+
+/** The durable record of a failed readiness call: the arbiter's own diagnosis, or the error's name and message. */
+function diagnose(error: unknown, clusterIds: string[]): ReadinessCallDiagnosis {
+  const own = (error as { diagnosis?: ReadinessCallDiagnosis } | null)?.diagnosis;
+  if (own) return own;
+  const name = error instanceof Error ? error.name || 'Error' : 'unknown';
+  return {
+    check: error instanceof ReadinessContractViolation ? error.check : name,
+    message: outputExcerpt(error instanceof Error ? error.message : String(error), 300),
+    candidateIds: clusterIds.slice(0, 20).map((id) => id.slice(0, 120)),
+    candidateCount: clusterIds.length,
   };
 }
 
@@ -413,15 +426,22 @@ export class FeedbackDrainService {
       }
       pending = pending.slice(chunk.length);
       const startedAt = this.now();
-      // Contract violations (and a refused promotion) demote at once. A timeout or provider
-      // error is retried on the next review; only a run of failed ticks in a row demotes.
+      // Only a decider that is not the approved one (model/framework/prompt/schema identity) or a
+      // call outside the approved envelope demotes at once. A rejected answer, a refused store
+      // write, a timeout or a provider error fails this call: its rows retry in 15 minutes and
+      // the tick counts toward READINESS_TRANSIENT_FAILURE_LIMIT. Every failure is diagnosed.
       const failed = (error: unknown): void => {
+        const rejected = error instanceof ReadinessOutputRejected;
+        const rowReason = rejected ? 'readiness-output-rejected' : 'readiness-authority-failed';
         // Rows this call already approved before a store error keep their decision.
         for (const row of chunk) if (this.opts.store.getReadiness(row.clusterId)?.state === 'collecting') this.opts.store.recordCollectingEvaluation(row.clusterId, {
-          reason: 'readiness-authority-failed', nextReviewAt: now + 15 * 60 * 1000,
+          reason: rowReason, nextReviewAt: now + 15 * 60 * 1000,
         });
-        out.reason = 'readiness-authority-failed';
-        if (error instanceof ReadinessContractViolation || error instanceof DrainConflictError) {
+        out.reason = rowReason;
+        const violation = error instanceof ReadinessContractViolation;
+        this.opts.store.recordReadinessDiagnosis(out.runId, violation ? 'contract-violation' : rejected ? 'output-rejected' : 'call-failed',
+          diagnose(error, chunk.map((row) => row.clusterId)));
+        if (violation) {
           this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
           contractViolation = true;
         } else {
@@ -497,4 +517,4 @@ export class FeedbackDrainService {
 }
 
 class FeedbackDrainCancellation extends Error {}
-class StageBudgetExceeded extends Error {}
+class StageBudgetExceeded extends Error { override name = 'StageBudgetExceeded'; }

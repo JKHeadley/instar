@@ -1,0 +1,58 @@
+# Feedback drain: one imperfect readiness answer no longer voids the operator's approval
+
+## What Changed
+
+Live on 2026-10-02 at 02:30 (Mac Studio, authority generation 4), one normal readiness call
+demoted the operator-approved authority to `proposal-only`. After that, every tick returned
+403 until the operator re-approved with a PIN, and nothing recorded which check had failed.
+
+Reproduced with real gpt-6-astra calls on the same candidates and prompt (2 of 3 calls): two
+near-duplicate clusters each cited the other's evidence id. The parser treated that as a
+contract violation, which is the same class as "a different model answered".
+
+The brake now separates its failure classes:
+- **Still demote at once** (the approved decider is not the one answering, or the envelope
+  was exceeded): a canary mismatch (prompt, schema or decision point), a resolved model or
+  framework mismatch, a batch over the approved size, or the daily spend cap.
+- **A bad answer is rejected, not punished**: invalid JSON, a decision set that does not match
+  the candidates, a forbidden outcome, or an out-of-range confidence or reason code.
+  - Nothing from the call is applied.
+  - The rows come due again in 15 minutes (reason `readiness-output-rejected`).
+  - The call counts like a timeout: only three ticks in a row with no usable answer demote.
+- **Evidence is a per-row floor**: a row citing no evidence, or evidence that is not its own,
+  can never be `ready`. It gets the reason code `evidence-not-own`. The rest of the answer
+  stands.
+- **A refused store write** while applying decisions is a failed call, not a demotion.
+
+Every failed call now leaves a durable diagnosis in `drain_audit` (`kind='readiness-call'`). It
+records the exact check, a scrubbed and bounded excerpt of the offending output, the candidate
+ids, the call id and the resolved model.
+- `GET /feedback-factory/drain/status` shows `lastReadinessFailure`, plus
+  `authority.pausedReason` and `authority.pausedBecause` in plain words.
+- The readiness-authority proposal and the dashboard card say why the authority is paused.
+- The drain job's 403 failure now names the pause reason.
+- Existing agents get the updated CLAUDE.md brake wording through `migrateClaudeMd`. They get
+  the job body through `installBuiltinJobs`.
+
+## Evidence
+
+- Live store (read-only copy): `drain_audit` seq 123; run `run:2e06aa3b` degraded; all 10 rows
+  stamped `readiness-authority-failed`.
+- Judgment provenance: one call, gpt-6-astra, 9 candidates, 37.7 s.
+- Real-call repro: 2 of 3 replies cross-cited a sibling's evidence (recorded in
+  `tests/fixtures/feedback-readiness-cross-cite-shapes.json`).
+- Unit, integration and e2e tests replay those recorded replies. The e2e runs the shipped job
+  script against the production AgentServer. All new tests fail on the pre-fix source.
+
+## What to Tell Your User
+
+The feedback sorter used to switch itself off over a single odd answer from its model, and
+then wait for you to approve it again. Now a bad answer is just set aside and asked again
+later. It only switches off if a different model answers, the daily spending cap is hit, or
+three runs in a row get no usable answer. When it does switch off, the dashboard says why.
+You do not need to approve it again for this update.
+
+## Summary of New Capabilities
+
+- `GET /feedback-factory/drain/status` → `lastReadinessFailure` (the exact check, a scrubbed excerpt, the candidates) and `authority.pausedBecause`.
+- The readiness-authority proposal → `pausedBecause`.

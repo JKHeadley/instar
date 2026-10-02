@@ -25,7 +25,8 @@ export function statusLine(p) {
   if (s === 'none') return 'Not set up yet — the feedback drain is waiting for your approval before it sorts anything.';
   if (s === 'revoked') return `Revoked (version ${cur ? cur.generation : '?'}). The drain is not sorting feedback.`;
   if (s === 'proposal-only') {
-    return `Paused by a safety brake (version ${cur ? cur.generation : '?'}) — for example the daily cap was reached or the model answer did not check out. Approve again to resume.`;
+    const why = (p && p.pausedBecause) || 'for example the daily cap was reached or a different model answered.';
+    return `Paused by a safety brake (version ${cur ? cur.generation : '?'}) — ${why} Approve again to resume.`;
   }
   if (cur && cur.matchesProposal === false) {
     return `Active (version ${cur.generation}), but out of date for this machine — approve to update it.`;
