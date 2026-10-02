@@ -175,7 +175,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
 import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
-import { buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
+import { brakePlainWords, buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
@@ -13595,8 +13595,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         engineClass: 'registered-frontier-model',
         generation: authority.generation,
         revoked: authority.revoked,
-        mode: ctx.feedbackDrain.store.authorityPosture(authority.authorityId, authority.generation).mode,
+        ...(() => {
+          const posture = ctx.feedbackDrain!.store.authorityPosture(authority.authorityId, authority.generation);
+          return { mode: posture.mode, pausedReason: posture.mode === 'proposal-only' ? posture.reason : null,
+            pausedBecause: posture.mode === 'proposal-only' ? brakePlainWords(posture.reason) : null };
+        })(),
       } : null,
+      // Why the last readiness call failed: the exact check, a scrubbed excerpt, the candidates.
+      lastReadinessFailure: ctx.feedbackDrain.store.lastReadinessDiagnosis(),
       consumerPromotion: (() => {
         const promotion = ctx.feedbackDrain!.promotion.read();
         return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
@@ -13713,6 +13719,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'],
       current,
       currentMode: current ? drain.store.authorityPosture(current.authorityId, current.generation).mode : undefined,
+      currentModeReason: current ? drain.store.authorityPosture(current.authorityId, current.generation).reason : undefined,
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope,
     });

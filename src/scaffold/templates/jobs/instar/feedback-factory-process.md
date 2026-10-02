@@ -99,7 +99,8 @@ nonce = 'feedback-drain-' + str(int(time.time())) + '-' + str(os.getpid())
 code, tick = call('POST', '/feedback-factory/drain/tick', {'X-Instar-Request': '1', 'X-Instar-Request-Nonce': nonce})
 if code != 202 or not isinstance(tick, dict) or not tick.get('runId'):
     detail = tick.get('error') if isinstance(tick, dict) else tick
-    fail('drain tick refused: HTTP ' + str(code) + ' ' + str(detail or ''))
+    paused = ((before.get('authority') or {}).get('pausedBecause') if isinstance(before, dict) else None)
+    fail('drain tick refused: HTTP ' + str(code) + ' ' + str(detail or '') + (' (authority paused: ' + str(paused) + ')' if paused else ''))
 run_id = tick['runId']
 if tick.get('proxied'):
     done('proxied to the owner machine, run ' + run_id + '; the owner records its outcome')
@@ -133,7 +134,7 @@ FEEDBACK_DRAIN_TICK
 
 The script prints one `FEEDBACK_DRAIN_RESULT` line. It records a failed run itself by writing the reason to `$INSTAR_JOB_FAILURE_FILE` (the scheduler reads that file when the run ends); saying "failed" in your output does NOT record a failure. Outcomes it enforces:
 - Posture `dark` → silent exit. `unavailable` → failed run. Unreadable status → failed run on a development agent, silent exit on the fleet.
-- A refused tick (any HTTP code other than 202, e.g. `current registered readiness agent required` after the authority was demoted) → failed run.
+- A refused tick (any HTTP code other than 202, e.g. `current registered readiness agent required` after the authority was demoted) → failed run, naming why the authority is paused when the status says.
 - A tick proxied to the owner machine → success here; its outcome lives in the owner's run history and status.
 - Terminal `succeeded` / `no-op` → success (a `succeeded` run may carry an informational reason such as `readiness-time-exhausted-rest-due`). Still in flight after 180 s → failed run. Terminal `degraded`, `failed` or `abandoned` → failed run carrying the drain's reason.
 - In simulation, claimed/completed work counts must not advance; if they do → failed run.

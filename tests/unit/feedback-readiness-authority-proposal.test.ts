@@ -52,7 +52,7 @@ describe('buildReadinessAuthorityProposal', () => {
       promptVersion: FEEDBACK_READINESS_PROMPT_ID, schemaVersion: FEEDBACK_READINESS_SCHEMA_ID,
       decisionPointId: FEEDBACK_READINESS_DECISION_POINT, maxBatch: 50, maxTokens: 1200, maxDailySpendUsd: 5,
     });
-    expect(p.summary).toBe('Let the sorting model decide which feedback reports become work items: up to 50 reports per batch, at most $5 per day. Anything outside that comes to you.');
+    expect(p.summary).toBe('Let the sorting model decide which feedback reports become work items: up to 50 reports per batch, at most $5 per day. Anything outside that comes to you. An answer that fails the checks is set aside and retried; it pauses itself only at the daily cap, if a different model answers, or after three runs in a row with no usable answer.');
   });
 
   it('no operated host configured → blocked, no action', () => {
@@ -97,8 +97,10 @@ describe('buildReadinessAuthorityProposal', () => {
   });
 
   it('demoted by a safety brake (proposal-only) → replace makes a fresh active generation', () => {
-    const p = buildReadinessAuthorityProposal({ ...BASE, current: record(), currentMode: 'proposal-only' });
+    const p = buildReadinessAuthorityProposal({ ...BASE, current: record(), currentMode: 'proposal-only', currentModeReason: 'readiness-authority-repeated-invocation-failure' });
     expect(p.status).toBe('proposal-only');
+    expect(p.pausedBecause).toBe('Three runs in a row produced no usable answer (timeouts, provider errors, or answers that failed the checks).');
+    expect(buildReadinessAuthorityProposal({ ...BASE, current: record() }).pausedBecause).toBeNull();
     expect(p.approveAction).toBe('replace');
   });
 

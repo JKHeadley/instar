@@ -6,6 +6,7 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from '../../core/SqliteRegistry.js';
 import type { CanonicalPipelineStageMetadata } from '../../core/canonicalPipelineRegistry.js';
 import { NativeModuleHealer } from '../../memory/NativeModuleHealer.js';
+import type { ReadinessCallDiagnosis } from './FeedbackReadinessArbiter.js';
 
 export const FEEDBACK_DRAIN_STORE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -217,6 +218,7 @@ CREATE TABLE IF NOT EXISTS drain_audit (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
   from_state TEXT, to_state TEXT, reason TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_drain_audit_kind ON drain_audit(kind, sequence);
 CREATE TABLE IF NOT EXISTS source_projection (
   ingest_sequence INTEGER PRIMARY KEY AUTOINCREMENT, source_record_id TEXT NOT NULL UNIQUE,
   generation_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
@@ -1141,6 +1143,21 @@ export class FeedbackDrainStore {
     this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_transient_failures:${authorityId}:${generation}`);
   }
 
+  /** Durably record why a readiness call failed (kind 'readiness-call', keyed by run id). */
+  recordReadinessDiagnosis(runId: string, outcome: 'contract-violation' | 'output-rejected' | 'call-failed', diagnosis: ReadinessCallDiagnosis): void {
+    this.audit('readiness-call', runId, null, outcome, JSON.stringify(diagnosis), 8_000);
+  }
+
+  /** The most recent readiness-call diagnosis, or null when none is retained. */
+  lastReadinessDiagnosis(): { runId: string; outcome: string; at: number; diagnosis: ReadinessCallDiagnosis | null; raw: string } | null {
+    const row = this.db.prepare(`SELECT entity_id,to_state,reason,created_at FROM drain_audit WHERE kind='readiness-call' ORDER BY sequence DESC LIMIT 1`)
+      .get() as { entity_id: string; to_state: string; reason: string; created_at: number } | undefined;
+    if (!row) return null;
+    let diagnosis: ReadinessCallDiagnosis | null = null;
+    try { diagnosis = JSON.parse(row.reason) as ReadinessCallDiagnosis; } catch { /* clamped or legacy text: the raw reason is still returned */ }
+    return { runId: row.entity_id, outcome: row.to_state, at: row.created_at, diagnosis, raw: diagnosis ? '' : row.reason };
+  }
+
   demoteAuthority(authorityId: string, generation: number, reason: string): void {
     const authority = this.getAuthority(authorityId, generation);
     if (!authority || authority.revoked || this.latestAuthority(authorityId)?.generation !== generation) throw new DrainConflictError('cannot demote inactive authority');
@@ -1287,9 +1304,9 @@ export class FeedbackDrainStore {
   private setMeta(key: string, value: string): void {
     this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, value);
   }
-  private audit(kind: string, entityId: string, from: string | null, to: string, reason: string): void {
+  private audit(kind: string, entityId: string, from: string | null, to: string, reason: string, maxReason = 500): void {
     this.db.prepare('INSERT INTO drain_audit(kind,entity_id,from_state,to_state,reason,created_at) VALUES (?,?,?,?,?,?)')
-      .run(kind, entityId, from, to, clamp(reason, 500), this.now());
+      .run(kind, entityId, from, to, clamp(reason, maxReason), this.now());
   }
 
   private readinessFromRow(row: Record<string, unknown>): ReadinessProjection {
