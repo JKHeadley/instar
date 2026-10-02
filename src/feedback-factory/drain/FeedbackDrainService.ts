@@ -213,13 +213,14 @@ export class FeedbackDrainService {
         const projection = this.opts.store.projectSourceGeneration({
           filePath: source.filePath, generationId: source.generationId, limit: projectionBudget,
         });
-        projectionBudget -= projection.projected + projection.replayed;
+        projectionBudget -= projection.projected + projection.replayed + projection.superseded + projection.quarantined;
         if (source.handoffToNext) {
           if (projection.lagBytes > 0) break;
           this.opts.store.acceptSourceHandoff({
             fromGenerationId: source.handoffToNext.fromGenerationId,
             finalOffset: source.handoffToNext.finalOffset,
             toGenerationId: source.handoffToNext.toGenerationId,
+            startOffset: source.handoffToNext.startOffset,
           });
         }
       }
@@ -362,8 +363,11 @@ export class FeedbackDrainService {
         const compactionStartedAt = this.now();
         const handoff = this.opts.processing.compactFeedbackSource(this.now());
         this.assertStageBudget(compactionStartedAt, 'source-compaction');
-        if (handoff) this.opts.store.recordSourceCompaction(handoff.publishedAt);
+        // No handoff means the source was already compact; the interval restarts either way.
+        this.opts.store.recordSourceCompaction(handoff?.publishedAt ?? this.now());
       }
+      // A quarantined source line never stops the run, but every run reports it until repaired.
+      if (this.opts.store.quarantinedSourceRecords() > 0) out.reason ??= 'source-record-quarantined';
       const progressed = out.processed + out.reviewed + out.enqueued + out.completed;
       out.result = out.reason ? 'degraded' : progressed > 0 ? 'succeeded' : 'no-op';
       stopIfCancelled();

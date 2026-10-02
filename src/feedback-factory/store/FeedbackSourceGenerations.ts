@@ -131,6 +131,9 @@ export class FeedbackSourceGenerations {
         latest.set(id, { row, raw });
       }
       const nextBytes = Buffer.from([...latest.values()].map(({ raw }) => raw).join('\n') + (latest.size ? '\n' : ''));
+      // A compacted generation with no superseded rows since: a new one would be a byte-identical
+      // copy (one more full file per interval). The legacy file always moves to a generation.
+      if (this.readManifest() && nextBytes.equals(bytes)) return null;
       const nextId = `feedback-${now}-${sha(nextBytes).slice(0, 12)}`;
       fs.mkdirSync(this.generationDir, { recursive: true });
       const relative = path.join('feedback-generations', `${nextId}.jsonl`);
