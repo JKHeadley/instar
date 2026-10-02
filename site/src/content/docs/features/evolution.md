@@ -50,6 +50,35 @@ curl localhost:4040/evolution/actions
 curl localhost:4040/evolution/actions/overdue
 ```
 
+### Fast-track lane (session start)
+
+A slipped commitment already reaches the 4-hourly `evolution-overdue-check` job, which can complete, cancel or escalate it. What that job cannot do is put the item in front of the session that could actually resolve it — it runs out of band, and anything it cancels on its own judgment leaves the queue without the working agent seeing it.
+
+The fast-track lane is the in-session half. The session-start hook reads it and prints the slipped work before any other work begins, every session, until the item is resolved or cancelled with a reason.
+
+```bash
+curl localhost:4040/evolution/session-brief
+```
+
+Two populations share the lane:
+
+- **Overdue** — auto-enrolled. Any pending or in-progress action whose `dueBy` has passed. No tag needed: a missed deadline earns the nag by itself, which is what keeps the lane from becoming a tag nobody writes.
+- **In-window** — opt-in. Create the action with the `fast-track` tag and it surfaces *before* the deadline too, which is the half the overdue job's `len(overdue) > 0` gate structurally cannot reach.
+
+Put the reason it cannot wait in `source.context` and the nag will say it:
+
+```bash
+curl -X POST localhost:4040/evolution/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Flip the shadow gate","description":"Soak window closed.",
+       "priority":"critical","dueBy":"2026-10-05T00:00:00.000Z","tags":["fast-track"],
+       "source":{"context":"the gate is observation-only in production"}}'
+```
+
+The brief also reports **deadline follow-through** — how many completed, dated actions actually met their deadline. It is `null` until something dated completes, rather than a 0% or 100% computed from an empty denominator. A rate that sits at 100% over many items usually means deadlines are being set to be trivially met, not that the lane is working.
+
+The brief is silent when the lane is empty. A block that prints "all clear" every session teaches you to skip it.
+
 ## Serendipity Integration
 
 The [Serendipity Protocol](/features/serendipity/) feeds directly into evolution. When sub-agents capture findings during focused tasks, the `/triage-findings` skill reviews them and promotes actionable ones to evolution proposals. This means every task — even a narrow sub-agent task — can contribute to the agent's growth.
