@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-02T03:57:03.997Z",
+  "slug": "feedback-arbiter-chunking",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 150,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/types.ts",
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 110,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

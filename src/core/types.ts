@@ -3581,6 +3581,8 @@ export interface InstarConfig {
       maxReadyScansPerTick?: number;
       maxClaimsPerTick?: number;
       maxWallClockMs?: number;
+      /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
+      readinessChunkSize?: number;
     };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
