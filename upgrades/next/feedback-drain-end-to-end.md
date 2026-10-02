@@ -32,6 +32,23 @@ and one conflict failed the whole run, so 742 clusters never left `collecting`.
 Existing stores heal on the next run. The job body reaches existing agents through the
 normal built-in job refresh on update. No operator action.
 
+## Evidence
+
+Reproduced on a read-only copy (`sqlite3 .backup`) of the Mac Studio's live store, taken
+2026-10-01 16:02 PDT, driving the real drain code:
+- Before (origin/main): 3 of 3 ticks threw `source record checksum conflicts with its
+  projection` at the first processing re-append (`feedback-source:7720c778-…`); 742 clusters
+  stayed `collecting`, 0 work rows.
+- After: 18 ticks, 0 failed or degraded; 1,004/1,004 reports processed, all 746 clusters
+  evaluated, 45 ready → queued → claimed → completed Initiative tasks (read back), the stale
+  conflict row cleared with an audit entry, 0 lines quarantined, 2 compacted generations
+  (6 before), projection lag 0.
+- Real arbiter (gpt-6-astra via codex-cli): 5 generic clusters → `collecting`, 5 specific
+  multi-report bugs → `ready` (0.86–0.94); both replies replayed in the e2e.
+- Job: the live 11:00 PDT run died on `read-only variable: status` and was recorded as a
+  success for a degraded drain run; the new script records that run as failed
+  (`drain run degraded: readiness-authority-failed`).
+
 ## What to Tell Your User
 
 The feedback sorter was stuck: it tripped over its own bookkeeping on every run, so no
