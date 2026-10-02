@@ -15,7 +15,7 @@ import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { FeedbackProcessingService } from '../../../src/feedback-factory/processing/FeedbackProcessingService.js';
 import { FeedbackDrainStore } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackReadinessArbiter } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService, READINESS_CHUNK_SIZE, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_CHUNK_SIZE, READINESS_TIME_EXHAUSTED, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
 import { CodexExecJsonTimeoutError } from '../../../src/providers/adapters/openai-codex/transport/codexSpawn.js';
 import type { FeedbackInitiativeConsumer } from '../../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 
@@ -37,12 +37,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'drain-readiness-chunking.test.ts' });
 });
 
-type CallFault = 'timeout' | 'wrong-model' | undefined;
+type CallFault = 'timeout' | 'wrong-model' | { latencyMs: number } | undefined;
 
 function setup(input: {
   clusters?: number; maxBatch?: number; maxDailySpendUsd?: number; chunkSize?: number; maxWallClockMs?: number;
   fault?: (call: number, size: number) => CallFault; beforeReadinessMs?: number;
   owner?: () => boolean; rawConfig?: { readinessChunkSize?: unknown; maxWallClockMs?: unknown };
+  /** Per-call start-up cost and per-candidate pace (default: purely linear, 3.1 s per candidate). */
+  fixedMs?: number; perCandidateMs?: number; readinessStageBudgetMs?: number;
 } = {}) {
   let now = Date.parse('2026-10-02T02:00:00Z');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-readiness-chunking-'));
@@ -66,7 +68,7 @@ function setup(input: {
       const packet = JSON.parse(prompt.slice(prompt.indexOf('Candidates: ') + 12)) as Array<{ clusterId: string }>;
       calls.push(packet.length);
       const fault = input.fault?.(calls.length, packet.length);
-      const latency = packet.length * PER_CANDIDATE_MS;
+      const latency = typeof fault === 'object' ? fault.latencyMs : (input.fixedMs ?? 0) + packet.length * (input.perCandidateMs ?? PER_CANDIDATE_MS);
       if (fault === 'timeout' || latency > CALL_TIMEOUT_MS) {
         now += CALL_TIMEOUT_MS;
         throw new CodexExecJsonTimeoutError(CALL_TIMEOUT_MS, '');
@@ -88,13 +90,16 @@ function setup(input: {
     isCanonicalOwner: input.owner ?? (() => true), isConsumerLive: () => false, clock: () => now,
     maxWallClockMs: (input.rawConfig ? input.rawConfig.maxWallClockMs : input.maxWallClockMs ?? 90_000) as number,
     readinessChunkSize: (input.rawConfig ? input.rawConfig.readinessChunkSize : input.chunkSize) as number,
+    readinessStageBudgetMs: input.readinessStageBudgetMs,
   });
   const readiness = (state: string) => (store as unknown as { db: import('better-sqlite3').Database }).db
     .prepare(`SELECT cluster_id, reason_code, last_evaluated_at, next_review_at FROM readiness WHERE state=? ORDER BY cluster_id`).all(state) as
     Array<{ cluster_id: string; reason_code: string | null; last_evaluated_at: number | null; next_review_at: number }>;
   const usage = () => (store as unknown as { db: import('better-sqlite3').Database }).db
     .prepare(`SELECT committed_usd usd, decisions FROM authority_daily_usage`).get() as { usd: number; decisions: number } | undefined;
-  return { service, store, calls, readiness, usage, now: () => now, advance: (ms: number) => { now += ms; } };
+  const runRow = (runId: string) => (store as unknown as { db: import('better-sqlite3').Database }).db
+    .prepare(`SELECT state, reason FROM drain_runs WHERE run_id=?`).get(runId) as { state: string; reason: string };
+  return { service, store, calls, readiness, usage, runRow, now: () => now, advance: (ms: number) => { now += ms; } };
 }
 
 describe('readiness review in chunks (live latency shape)', () => {
@@ -106,26 +111,27 @@ describe('readiness review in chunks (live latency shape)', () => {
     const chunked = setup();
     const startedAt = chunked.now();
     const result = await chunked.service.tick();
-    // 90 s tick, 20 s kept for the later stages: 10 (31 s) + 10 (31 s) + 2 (6.2 s), then the next would not fit.
-    expect(chunked.calls).toEqual([10, 10, 2]);
-    expect(result).toMatchObject({ result: 'succeeded', reviewed: 22, approved: 5 });
+    // 90 s tick, 20 s kept for the later stages: 10 (31 s) + 10 (31 s), then 8 s left is under
+    // the floor for a later call.
+    expect(chunked.calls).toEqual([10, 10]);
+    expect(result).toMatchObject({ result: 'succeeded', reviewed: 20, approved: 5, note: READINESS_TIME_EXHAUSTED });
     expect(result.reason).toBeUndefined();
     expect(chunked.now() - startedAt).toBeLessThanOrEqual(70_000);
     expect(chunked.readiness('queued')).toHaveLength(5);
-    // The 28 not reached stay due for the next tick, untouched.
+    // The 30 not reached stay due for the next tick, untouched.
     const untouched = chunked.readiness('collecting').filter((row) => row.last_evaluated_at === null);
-    expect(untouched).toHaveLength(28);
+    expect(untouched).toHaveLength(30);
     expect(untouched.every((row) => row.next_review_at <= chunked.now())).toBe(true);
     // Spend and daily usage are reserved per call, counted per decision.
-    expect(chunked.usage()).toEqual({ usd: 0.03, decisions: 22 });
+    expect(chunked.usage()).toEqual({ usd: 0.02, decisions: 20 });
   });
 
   it('a 115 s tick fits more calls, and the next tick picks up the rest', async () => {
     const ctx = setup({ maxWallClockMs: 115_000 });
-    expect((await ctx.service.tick()).reviewed).toBe(30);
-    expect(ctx.calls).toEqual([10, 10, 8, 2]);
+    expect((await ctx.service.tick()).reviewed).toBe(28);
+    expect(ctx.calls).toEqual([10, 10, 8]);
     ctx.advance(30 * 60 * 1000);
-    expect((await ctx.service.tick()).reviewed).toBe(20);
+    expect((await ctx.service.tick()).reviewed).toBe(22);
     expect(ctx.readiness('collecting').filter((row) => row.last_evaluated_at === null)).toHaveLength(0);
   });
 
@@ -193,7 +199,7 @@ describe('readiness review in chunks (live latency shape)', () => {
     const fields = ctx.service as unknown as { readinessChunkSize: number; maxWallClockMs: number };
     expect(fields.readinessChunkSize).toBe(READINESS_CHUNK_SIZE);
     expect(fields.maxWallClockMs).toBe(115_000);
-    expect(await ctx.service.tick()).toMatchObject({ result: 'succeeded', reviewed: 30 });
+    expect(await ctx.service.tick()).toMatchObject({ result: 'succeeded', reviewed: 28 });
   });
 
   it('fails the run on an ownership loss after a call, without counting a provider failure', async () => {
@@ -221,5 +227,67 @@ describe('readiness review in chunks (live latency shape)', () => {
     // The recorded "ready" decisions applied before the error are kept (and enqueued), not re-marked.
     expect(ctx.readiness('queued').length).toBeGreaterThan(0);
     expect(ctx.store.recordAuthorityTransientFailure('feedback-readiness-default', 1)).toBe(2);
+  });
+
+  describe('running out of tick time is a clean stop, not a failure (live 2026-10-01, gen 4 maxBatch 50)', () => {
+    // Live calls: 10 candidates 32.2 s, 9 candidates 30.2 s, 6 candidates 23.2 s, i.e. about
+    // 9 s of start-up per call plus ~2.3 s per candidate. Runs ef0f6cbf and 10674e04 each made
+    // two good calls, then started a one-candidate call with 7.6 s / 7.8 s left; our own clock
+    // cut it at 70.0 s and the run was labelled degraded/readiness-authority-failed with zero
+    // provider errors.
+    const live = { maxWallClockMs: 90_000, fixedMs: 9_000, perCandidateMs: 2_330 };
+
+    it('stops before a later call that cannot fit, records the run succeeded with a note, leaves the rest due', async () => {
+      const ctx = setup(live);
+      const result = await ctx.service.tick();
+      expect(ctx.calls).toEqual([10, 9]);
+      expect(result).toMatchObject({ result: 'succeeded', reviewed: 19, approved: 5, note: READINESS_TIME_EXHAUSTED });
+      expect(result.reason).toBeUndefined();
+      expect(ctx.runRow(result.runId)).toEqual({ state: 'succeeded', reason: READINESS_TIME_EXHAUSTED });
+      expect(ctx.readiness('collecting').filter((row) => row.reason_code === 'readiness-authority-failed')).toHaveLength(0);
+      const untouched = ctx.readiness('collecting').filter((row) => row.last_evaluated_at === null);
+      expect(untouched).toHaveLength(31);
+      expect(untouched.every((row) => row.next_review_at <= ctx.now())).toBe(true);
+      expect(ctx.store.recordAuthorityTransientFailure('feedback-readiness-default', 1)).toBe(1);
+      expect(ctx.store.authorityPosture('feedback-readiness-default', 1).mode).toBe('active');
+    });
+
+    it('a later call cut short by the tick clock leaves its rows due and the run succeeded', async () => {
+      // 1st call 31 s; the 2nd gets the 39 s left and needs 40 s.
+      const ctx = setup({ maxWallClockMs: 90_000, fault: (call) => call === 2 ? { latencyMs: 40_000 } : undefined });
+      const result = await ctx.service.tick();
+      expect(ctx.calls).toEqual([10, 10]);
+      expect(result).toMatchObject({ result: 'succeeded', reviewed: 10, note: READINESS_TIME_EXHAUSTED });
+      expect(ctx.readiness('collecting').filter((row) => row.reason_code === 'readiness-authority-failed')).toHaveLength(0);
+      expect(ctx.readiness('collecting').filter((row) => row.last_evaluated_at === null)).toHaveLength(40);
+      expect(ctx.store.recordAuthorityTransientFailure('feedback-readiness-default', 1)).toBe(1);
+    });
+
+    it('the same cut on the FIRST call (nothing reviewed) stays degraded', async () => {
+      // Earlier stages leave 30 s; the first 10-candidate call needs 31 s.
+      const ctx = setup({ maxWallClockMs: 90_000, beforeReadinessMs: 40_000 });
+      const result = await ctx.service.tick();
+      expect(ctx.calls).toEqual([10]);
+      expect(result).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed', reviewed: 0 });
+      expect(result.note).toBeUndefined();
+      expect(ctx.runRow(result.runId).state).toBe('degraded');
+    });
+
+    it('a provider timeout on a later call stays degraded, even with a budget shortened by the tick clock', async () => {
+      const ctx = setup({ maxWallClockMs: 115_000, fault: (call) => call === 2 ? 'timeout' : undefined });
+      const result = await ctx.service.tick();
+      expect(result).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed', reviewed: 10 });
+      expect(result.note).toBeUndefined();
+    });
+
+    it('our timer cutting a later call that had its FULL budget stays degraded', async () => {
+      // 30 s per call budget, plenty of tick left: the 2nd call overruns its own full budget.
+      const ctx = setup({ maxWallClockMs: 115_000, readinessStageBudgetMs: 30_000, chunkSize: 5, fault: (call) => call === 2 ? { latencyMs: 31_000 } : undefined });
+      const result = await ctx.service.tick();
+      expect(ctx.calls).toEqual([5, 5]);
+      expect(result).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed', reviewed: 5 });
+      expect(result.note).toBeUndefined();
+      expect(ctx.readiness('collecting').filter((row) => row.reason_code === 'readiness-authority-failed')).toHaveLength(5);
+    });
   });
 });

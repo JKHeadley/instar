@@ -3,7 +3,7 @@ name: Feedback-Factory Operating Drain
 description: "Cadenced end-to-end feedback drain. POST /feedback-factory/drain/tick clusters canonical input, runs registered frontier-model readiness judgment inside deterministic floors, enqueues one durable outbox row per readiness epoch, and—after separate consumer promotion—creates and reads back one Initiative task. Development-agent processing/drain is live; fleet remains dark; consumer ships simulation-first. Spec: docs/specs/feedback-factory-operating-drain.md."
 schedule: "*/30 * * * *"
 priority: low
-expectedDurationMinutes: 2
+expectedDurationMinutes: 5
 model: haiku
 supervision: tier1
 enabled: true
@@ -36,7 +36,8 @@ TOKEN = os.environ.get('INSTAR_AUTH_TOKEN') or (CONFIG.get('authToken') if isins
 AGENT_ID = os.environ.get('INSTAR_AGENT_ID') or str(CONFIG.get('projectName') or '')
 BASE = 'http://localhost:' + str(os.environ.get('INSTAR_PORT') or CONFIG.get('port') or 4042)
 DEVELOPMENT_AGENT = CONFIG.get('developmentAgent') is True
-POLL_SECONDS = float(os.environ.get('FEEDBACK_DRAIN_POLL_SECONDS') or 60)
+# A run is capped at 115 s of wall clock; poll past that so a slow run's outcome is still read here.
+POLL_SECONDS = float(os.environ.get('FEEDBACK_DRAIN_POLL_SECONDS') or 180)
 
 def fail(reason):
     path = os.environ.get('INSTAR_JOB_FAILURE_FILE')
@@ -103,7 +104,9 @@ run_id = tick['runId']
 if tick.get('proxied'):
     done('proxied to the owner machine, run ' + run_id + '; the owner records its outcome')
 
-# 3. Poll this run to a terminal state (60 s). Still running at the limit is not a failure.
+# 3. Poll this run to a terminal state. Still running past the drain's wall clock is a failed run:
+# no later cadence reads this run's outcome (live 2026-10-01: two degraded 70 s runs were recorded
+# as successes by a 60 s poll).
 deadline = time.time() + POLL_SECONDS
 last = None
 after = None
@@ -114,7 +117,8 @@ while time.time() < deadline:
         break
     time.sleep(3)
 else:
-    done('run ' + run_id + ' still in flight; the next cadence observes it')
+    seen = (str(last.get('runId')) + ' ' + str(last.get('state'))) if isinstance(last, dict) else 'no lastRun (HTTP ' + str(code) + ')'
+    fail('drain run ' + run_id + ' still in flight after ' + str(int(POLL_SECONDS)) + ' s, past the drain wall clock (last seen: ' + seen + ')')
 
 # 4. Tier-1 supervision of the terminal run.
 run_state = last.get('state')
@@ -131,7 +135,7 @@ The script prints one `FEEDBACK_DRAIN_RESULT` line. It records a failed run itse
 - Posture `dark` → silent exit. `unavailable` → failed run. Unreadable status → failed run on a development agent, silent exit on the fleet.
 - A refused tick (any HTTP code other than 202, e.g. `current registered readiness agent required` after the authority was demoted) → failed run.
 - A tick proxied to the owner machine → success here; its outcome lives in the owner's run history and status.
-- Terminal `succeeded` / `no-op` → success. Terminal `degraded`, `failed` or `abandoned` → failed run carrying the drain's reason.
+- Terminal `succeeded` / `no-op` → success (a `succeeded` run may carry an informational reason such as `readiness-time-exhausted-rest-due`). Still in flight after 180 s → failed run. Terminal `degraded`, `failed` or `abandoned` → failed run carrying the drain's reason.
 - In simulation, claimed/completed work counts must not advance; if they do → failed run.
 
 Never retry in the same run; the durable queue and the next cadence own retry. Then exit silently. Do NOT relay anything to Telegram and do NOT summarize. A failed run reaches the operator through the scheduler's consecutive-failure alert.

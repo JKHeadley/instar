@@ -14,6 +14,14 @@ export const FEEDBACK_DRAIN_SERVICE_STAGE = {
 /** Consecutive transient authority invocation failures before the authority is demoted. */
 export const READINESS_TRANSIENT_FAILURE_LIMIT = 3;
 /**
+ * Least time left for a readiness call after the first. Live 2026-10-01 a call cost ~9 s of
+ * start-up plus ~2.4 s per candidate, which the pace estimate (no start-up term) only covers
+ * with ~23 s or more left.
+ */
+export const MIN_LATER_READINESS_CALL_MS = 25_000;
+/** Run note when readiness stopped for lack of tick time after reviewing some candidates; the rest stays due. */
+export const READINESS_TIME_EXHAUSTED = 'readiness-time-exhausted-rest-due';
+/**
  * Candidates per readiness model call. Live 2026-10-01 (gpt-6-astra via codex-cli): about 3-4 s
  * per candidate, so 10 finished in ~31 s while 50 hit the 60 s call budget twice in a row.
  */
@@ -56,6 +64,8 @@ export interface FeedbackDrainTickResult {
   wouldCreate: number;
   result: 'succeeded' | 'no-op' | 'degraded';
   reason?: string;
+  /** Informational only, never degrades the run: e.g. readiness ran out of tick time and the rest stays due. */
+  note?: string;
 }
 
 export interface FeedbackBacklogAnalysis {
@@ -345,7 +355,7 @@ export class FeedbackDrainService {
       const progressed = out.processed + out.reviewed + out.enqueued + out.completed;
       out.result = out.reason ? 'degraded' : progressed > 0 ? 'succeeded' : 'no-op';
       stopIfCancelled();
-      this.opts.store.transitionRun(run.runId, 'running', out.result, out.reason ?? '', fence);
+      this.opts.store.transitionRun(run.runId, 'running', out.result, out.reason ?? out.note ?? '', fence);
       if (out.result !== 'degraded') {
         this.opts.store.pruneOperationalHistory({ ownerHost: fence.ownerHost, ownerAuthorityEpoch: fence.ownerEpoch, now: this.now(), limit: 500 });
       }
@@ -388,8 +398,11 @@ export class FeedbackDrainService {
       // chunk is sized from this tick's observed pace with a 25% margin.
       const fits = reviewedCandidates > 0 ? Math.floor(remaining / (1.25 * reviewedMs / reviewedCandidates)) : this.readinessChunkSize;
       const chunk = pending.slice(0, Math.min(this.readinessChunkSize, fits));
-      if (remaining <= 0 || chunk.length === 0) {
-        if (succeededCalls === 0 && !transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
+      // A later call also needs MIN_LATER_READINESS_CALL_MS: every call pays a fixed start-up
+      // cost the per-candidate pace does not show (live: one-candidate calls given 7.6 s timed out).
+      if (remaining <= 0 || chunk.length === 0 || (succeededCalls > 0 && remaining < MIN_LATER_READINESS_CALL_MS)) {
+        if (succeededCalls > 0) out.note = READINESS_TIME_EXHAUSTED;
+        else if (!transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
         break;
       }
       if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
@@ -416,10 +429,17 @@ export class FeedbackDrainService {
         }
       };
       let decisions: ReadinessDecision[];
+      const callBudgetMs = Math.min(this.readinessStageBudgetMs, remaining);
       try {
         decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, chunk.map((row) => candidate(byId.get(row.clusterId)!, now))),
-          Math.min(this.readinessStageBudgetMs, remaining));
+          callBudgetMs);
       } catch (error) {
+        // Our own tick clock cut a later call short: out of time, not a provider failure. Its
+        // rows stay due, untouched, for the next tick.
+        if (error instanceof StageBudgetExceeded && succeededCalls > 0 && callBudgetMs < this.readinessStageBudgetMs) {
+          out.note = READINESS_TIME_EXHAUSTED;
+          break;
+        }
         failed(error);
         break;
       }
@@ -466,14 +486,15 @@ export class FeedbackDrainService {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${stage} stage budget exceeded`)), budgetMs);
+        timer = setTimeout(() => reject(new StageBudgetExceeded(`${stage} stage budget exceeded`)), budgetMs);
         if (typeof timer.unref === 'function') timer.unref();
       });
       const result = await Promise.race([operation(), timeout]);
-      if (this.now() - startedAt > budgetMs) throw new Error(`${stage} stage budget exceeded`);
+      if (this.now() - startedAt > budgetMs) throw new StageBudgetExceeded(`${stage} stage budget exceeded`);
       return result;
     } finally { if (timer) clearTimeout(timer); }
   }
 }
 
 class FeedbackDrainCancellation extends Error {}
+class StageBudgetExceeded extends Error {}
