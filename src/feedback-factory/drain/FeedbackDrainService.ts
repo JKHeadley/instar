@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Cluster } from '../processor/types.js';
 import type { FeedbackProcessingService } from '../processing/FeedbackProcessingService.js';
-import { DrainConflictError, FeedbackDrainStore } from './FeedbackDrainStore.js';
+import { DrainConflictError, FeedbackDrainStore, type AuthorityRecord, type ReadinessProjection } from './FeedbackDrainStore.js';
 import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js';
-import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, type FeedbackReadinessArbiter, type ReadinessCandidate } from './FeedbackReadinessArbiter.js';
+import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, type FeedbackReadinessArbiter, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
@@ -13,6 +13,11 @@ export const FEEDBACK_DRAIN_SERVICE_STAGE = {
 
 /** Consecutive transient authority invocation failures before the authority is demoted. */
 export const READINESS_TRANSIENT_FAILURE_LIMIT = 3;
+/**
+ * Candidates per readiness model call. Live 2026-10-01 (gpt-6-astra via codex-cli): about 3-4 s
+ * per candidate, so 10 finished in ~31 s while 50 hit the 60 s call budget twice in a row.
+ */
+export const READINESS_CHUNK_SIZE = 10;
 
 export interface FeedbackDrainServiceOptions {
   store: FeedbackDrainStore;
@@ -31,6 +36,8 @@ export interface FeedbackDrainServiceOptions {
   stageBudgetMs?: number;
   /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
   readinessStageBudgetMs?: number;
+  /** Candidates per readiness model call; a tick runs several calls up to the authority's maxBatch. */
+  readinessChunkSize?: number;
   maxWallClockMs?: number;
   sourceCompactionIntervalMs?: number;
   onRecoverableStall?: (reason: string) => void;
@@ -89,6 +96,7 @@ export class FeedbackDrainService {
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
   private readonly readinessStageBudgetMs: number;
+  private readonly readinessChunkSize: number;
   private readonly maxWallClockMs: number;
   private readonly sourceCompactionIntervalMs: number;
 
@@ -98,7 +106,9 @@ export class FeedbackDrainService {
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
     this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, opts.maxWallClockMs ?? 115_000));
+    const chunkSize = Number(opts.readinessChunkSize ?? READINESS_CHUNK_SIZE);
+    this.readinessChunkSize = Number.isFinite(chunkSize) ? Math.min(50, Math.max(1, Math.trunc(chunkSize))) : READINESS_CHUNK_SIZE;
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -248,44 +258,8 @@ export class FeedbackDrainService {
         for (const stale of due.filter((row) => !byId.has(row.clusterId))) this.opts.store.holdReadiness(stale.clusterId, 'source-cluster-missing');
         if (liveDue.length === 0) {
           out.reason = 'readiness-source-missing';
-        } else if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, liveDue.length, now)) {
-          for (const row of liveDue) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
-          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
-          out.reason = 'readiness-spend-brake';
         } else {
-        try {
-          const decisionNonce = `decision:${randomUUID()}`;
-          const proposalSetHash = createHash('sha256').update(JSON.stringify(liveDue.map((row) => ({ clusterId: row.clusterId, epoch: row.epoch })).sort((a, b) => a.clusterId.localeCompare(b.clusterId)))).digest('hex');
-          const decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, liveDue.map((row) => candidate(byId.get(row.clusterId)!, now))), this.readinessStageBudgetMs);
-          stopIfCancelled();
-          this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
-          out.reviewed = decisions.length;
-          for (const decision of decisions) {
-            if (decision.outcome === 'ready') {
-              const approvalKey = createHash('sha256').update(`${authority.authorityId}:${authority.generation}:${decision.clusterId}:${decision.evidenceHash}:${decisionNonce}:${proposalSetHash}`).digest('hex');
-              this.opts.store.approveReady({ clusterId: decision.clusterId, approvalKey, authorityId: authority.authorityId, authorityGeneration: authority.generation, evidenceHash: decision.evidenceHash, decisionNonce, proposalSetHash });
-              out.approved++;
-            } else {
-              this.opts.store.recordCollectingEvaluation(decision.clusterId, {
-                reason: decision.outcome === 'escalate-human' ? 'readiness-escalation' : decision.reasonCodes[0] ?? 'collecting',
-                nextReviewAt: now + 24 * 60 * 60 * 1000,
-              });
-            }
-          }
-        } catch (error) {
-          if (error instanceof FeedbackDrainCancellation) throw error;
-          for (const row of liveDue) this.opts.store.recordCollectingEvaluation(row.clusterId, {
-            reason: 'readiness-authority-failed', nextReviewAt: now + 15 * 60 * 1000,
-          });
-          out.reason = 'readiness-authority-failed';
-          // Contract violations (and a refused promotion) demote at once. A timeout or provider
-          // error is retried on the next review; only a run of them in a row demotes.
-          if (error instanceof ReadinessContractViolation || error instanceof DrainConflictError) {
-            this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
-          } else if (this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation) >= READINESS_TRANSIENT_FAILURE_LIMIT) {
-            this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-authority-repeated-invocation-failure');
-          }
-        }
+          await this.reviewReadinessInChunks(authority, liveDue, byId, now, runStartedAt, stopIfCancelled, out);
         }
       } else if (due.length > 0) {
         for (const row of due) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-authority-unavailable', nextReviewAt: now + 15 * 60 * 1000 });
@@ -388,6 +362,98 @@ export class FeedbackDrainService {
       }
       this.opts.onRecoverableStall?.(reason);
       throw error;
+    }
+  }
+
+  /**
+   * Reviews the due candidates in sequential model calls of at most readinessChunkSize, applying
+   * each call's decisions as it returns. Stops before a call that would not fit the tick's
+   * wall clock (leaving the rest due for the next tick) and after any failed call. The
+   * transient-failure counter resets when any call in the tick succeeded and counts one
+   * failure only when none did; a contract violation still demotes at once.
+   */
+  private async reviewReadinessInChunks(authority: AuthorityRecord, liveDue: ReadinessProjection[], byId: Map<string, Cluster>, now: number,
+    runStartedAt: number, stopIfCancelled: () => void, out: FeedbackDrainTickResult): Promise<void> {
+    // The stages after readiness (enqueue, claims, reconcile, compaction) keep one stage budget.
+    const deadline = runStartedAt + this.maxWallClockMs - this.stageBudgetMs;
+    let pending = liveDue;
+    let succeededCalls = 0;
+    let reviewedMs = 0;
+    let reviewedCandidates = 0;
+    let transientFailure = false;
+    let contractViolation = false;
+    while (pending.length > 0) {
+      const remaining = deadline - this.now();
+      // Before the first call a full chunk is assumed to fit its call budget; after it, the
+      // chunk is sized from this tick's observed pace with a 25% margin.
+      const fits = reviewedCandidates > 0 ? Math.floor(remaining / (1.25 * reviewedMs / reviewedCandidates)) : this.readinessChunkSize;
+      const chunk = pending.slice(0, Math.min(this.readinessChunkSize, fits));
+      if (remaining <= 0 || chunk.length === 0) {
+        if (succeededCalls === 0 && !transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
+        break;
+      }
+      if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
+        for (const row of pending) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
+        this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
+        out.reason = 'readiness-spend-brake';
+        break;
+      }
+      pending = pending.slice(chunk.length);
+      const startedAt = this.now();
+      // Contract violations (and a refused promotion) demote at once. A timeout or provider
+      // error is retried on the next review; only a run of failed ticks in a row demotes.
+      const failed = (error: unknown): void => {
+        // Rows this call already approved before a store error keep their decision.
+        for (const row of chunk) if (this.opts.store.getReadiness(row.clusterId)?.state === 'collecting') this.opts.store.recordCollectingEvaluation(row.clusterId, {
+          reason: 'readiness-authority-failed', nextReviewAt: now + 15 * 60 * 1000,
+        });
+        out.reason = 'readiness-authority-failed';
+        if (error instanceof ReadinessContractViolation || error instanceof DrainConflictError) {
+          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
+          contractViolation = true;
+        } else {
+          transientFailure = true;
+        }
+      };
+      let decisions: ReadinessDecision[];
+      try {
+        decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, chunk.map((row) => candidate(byId.get(row.clusterId)!, now))),
+          Math.min(this.readinessStageBudgetMs, remaining));
+      } catch (error) {
+        failed(error);
+        break;
+      }
+      // Cancellation, ownership loss or the wall clock end the run like any later stage would.
+      stopIfCancelled();
+      const decisionNonce = `decision:${randomUUID()}`;
+      const proposalSetHash = createHash('sha256').update(JSON.stringify(chunk.map((row) => ({ clusterId: row.clusterId, epoch: row.epoch })).sort((a, b) => a.clusterId.localeCompare(b.clusterId)))).digest('hex');
+      try {
+        for (const decision of decisions) {
+          if (decision.outcome === 'ready') {
+            const approvalKey = createHash('sha256').update(`${authority.authorityId}:${authority.generation}:${decision.clusterId}:${decision.evidenceHash}:${decisionNonce}:${proposalSetHash}`).digest('hex');
+            this.opts.store.approveReady({ clusterId: decision.clusterId, approvalKey, authorityId: authority.authorityId, authorityGeneration: authority.generation, evidenceHash: decision.evidenceHash, decisionNonce, proposalSetHash });
+            out.approved++;
+          } else {
+            this.opts.store.recordCollectingEvaluation(decision.clusterId, {
+              reason: decision.outcome === 'escalate-human' ? 'readiness-escalation' : decision.reasonCodes[0] ?? 'collecting',
+              nextReviewAt: now + 24 * 60 * 60 * 1000,
+            });
+          }
+          out.reviewed++;
+        }
+      } catch (error) {
+        failed(error);
+        break;
+      }
+      succeededCalls++;
+      reviewedMs += this.now() - startedAt;
+      reviewedCandidates += chunk.length;
+    }
+    if (contractViolation) return;
+    if (succeededCalls > 0) {
+      this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
+    } else if (transientFailure && this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation) >= READINESS_TRANSIENT_FAILURE_LIMIT) {
+      this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-authority-repeated-invocation-failure');
     }
   }
 

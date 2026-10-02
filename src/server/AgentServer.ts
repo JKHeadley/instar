@@ -2615,6 +2615,8 @@ export class AgentServer {
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
+          maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
+          readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
         });
         const tickProxy = new FeedbackDrainTickProxy({
           selfMachineId,
