@@ -239,6 +239,18 @@ CREATE INDEX IF NOT EXISTS idx_request_replay_expiry ON request_replay(expires_a
 `;
 
 const clamp = (value: string, max: number): string => value.replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
+/** True when two source lines differ only in the fields a processing (LWW) update rewrites. */
+function sameExceptLwwFields(priorRaw: string, nextRaw: string): boolean {
+  try {
+    const strip = (raw: string) => {
+      const row = JSON.parse(raw) as Record<string, unknown>;
+      // The entity id is compared by the caller; processing re-keys it as feedbackId.
+      for (const key of ['status', 'clusterId', 'feedbackId', 'feedback_id', 'id']) delete row[key];
+      return JSON.stringify(row, Object.keys(row).sort());
+    };
+    return strip(priorRaw) === strip(nextRaw);
+  } catch { return false; }
+}
 const canonical = (value: unknown): string => JSON.stringify(value, Object.keys(value as object).sort());
 
 export class FeedbackDrainStore {
@@ -346,13 +358,23 @@ export class FeedbackDrainStore {
     }).immediate();
   }
 
-  projectSourceGeneration(input: { filePath: string; generationId: string; limit?: number; crashPoint?: 'after-read' | 'after-insert' | 'after-commit' }): { projected: number; replayed: number; byteOffset: number; lagBytes: number } {
+  /**
+   * Spec: a later last-write-wins update is a NEW source record (its own sourceRecordId), and a
+   * duplicate sourceRecordId with different bytes is corruption that holds. Before 2026-10-01
+   * the processing writer re-appended each processed report under its ORIGINAL sourceRecordId
+   * (live: 1,000 such lines), and the drain failed every run on the first one. Such a line is
+   * accepted as a superseded version only when it differs from the projected record in the LWW
+   * fields alone (status, clusterId). Any other difference, or the id bound to another report,
+   * is quarantined: that line alone is held in source_conflicts, the cursor moves on, and every
+   * run reports `source-record-quarantined` until an operator repairs it.
+   */
+  projectSourceGeneration(input: { filePath: string; generationId: string; limit?: number; crashPoint?: 'after-read' | 'after-insert' | 'after-commit' }): { projected: number; replayed: number; superseded: number; quarantined: number; byteOffset: number; lagBytes: number } {
     const limit = Math.max(0, Math.min(500, Math.trunc(input.limit ?? 500)));
     const generationId = clamp(input.generationId, 200);
     const cursor = this.db.prepare(`SELECT generation_id,byte_offset,last_record_checksum FROM source_cursors WHERE cursor_id='canonical-feedback'`).get() as { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined;
-    if (!generationId) return { projected: 0, replayed: 0, byteOffset: 0, lagBytes: 0 };
+    if (!generationId) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: 0, lagBytes: 0 };
     if (!fs.existsSync(input.filePath)) {
-      if (!cursor) return { projected: 0, replayed: 0, byteOffset: 0, lagBytes: 0 };
+      if (!cursor) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: 0, lagBytes: 0 };
       this.setMeta('source_integrity_hold', 'source-generation-missing');
       throw new DrainConflictError('durable source generation is missing');
     }
@@ -360,7 +382,7 @@ export class FeedbackDrainStore {
     const offset = cursor?.byte_offset ?? 0;
     const size = fs.statSync(input.filePath).size;
     if (size < offset) throw new DrainConflictError('source generation truncated before durable cursor');
-    if (size === offset || limit === 0) return { projected: 0, replayed: 0, byteOffset: offset, lagBytes: size - offset };
+    if (size === offset || limit === 0) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: offset, lagBytes: size - offset };
     const buffer = Buffer.allocUnsafe(Math.min(size - offset, 4 * 1024 * 1024));
     const fd = fs.openSync(input.filePath, 'r'); let bytesRead = 0;
     try { bytesRead = fs.readSync(fd, buffer, 0, buffer.length, offset); } finally { fs.closeSync(fd); }
@@ -381,42 +403,57 @@ export class FeedbackDrainStore {
       records.push({ sourceId: clamp(sourceId, 300), entityId: clamp(entityId, 300), checksum: createHash('sha256').update(raw).digest('hex'), raw, offset: recordOffset, length: newline - (recordOffset - offset) + 1 });
     }
     if (input.crashPoint === 'after-read') throw new Error('injected crash after source read');
-    let projected = 0; let replayed = 0;
-    const sourceConflict = this.db.transaction((): boolean => {
+    let projected = 0; let replayed = 0; let superseded = 0; let quarantined = 0;
+    this.db.transaction(() => {
+      const bySource = this.db.prepare('SELECT record_checksum,entity_id,record_json FROM source_projection WHERE source_record_id=?');
       for (const record of records) {
-        const prior = this.db.prepare('SELECT record_checksum FROM source_projection WHERE source_record_id=?').get(record.sourceId) as { record_checksum: string } | undefined;
-        if (prior && prior.record_checksum !== record.checksum) {
-          this.db.prepare(`INSERT INTO source_conflicts VALUES (?,?,?,?,?) ON CONFLICT(source_record_id) DO UPDATE SET observed_checksum=excluded.observed_checksum,reason=excluded.reason,created_at=excluded.created_at`)
-            .run(record.sourceId, prior.record_checksum, record.checksum, 'source-record-checksum-conflict', this.now());
-          this.setMeta('source_integrity_hold', 'source-record-checksum-conflict');
-          return true;
-        }
-        if (prior) replayed++;
-        else {
+        const prior = bySource.get(record.sourceId) as { record_checksum: string; entity_id: string; record_json: string } | undefined;
+        if (!prior) {
           this.db.prepare(`INSERT INTO source_projection(source_record_id,generation_id,byte_offset,byte_length,record_checksum,entity_id,record_json,created_at) VALUES (?,?,?,?,?,?,?,?)`)
             .run(record.sourceId, generationId, record.offset, record.length, record.checksum, record.entityId, record.raw, this.now());
           projected++;
+        } else if (prior.record_checksum === record.checksum) {
+          replayed++;
+        } else if (prior.entity_id === record.entityId && sameExceptLwwFields(prior.record_json, record.raw)) {
+          superseded++;
+          // Self-heal: the earlier build recorded this legacy LWW update as a conflict.
+          const cleared = this.db.prepare(`DELETE FROM source_conflicts WHERE source_record_id=? AND reason='source-record-checksum-conflict'`).run(record.sourceId);
+          if (cleared.changes > 0) this.audit('source-record', record.sourceId, 'source-record-checksum-conflict', 'superseded-version', 'cleared-misclassified-conflict');
+        } else {
+          const reason = prior.entity_id === record.entityId ? 'source-record-content-conflict' : 'source-record-identity-conflict';
+          this.db.prepare(`INSERT INTO source_conflicts VALUES (?,?,?,?,?) ON CONFLICT(source_record_id) DO UPDATE SET observed_checksum=excluded.observed_checksum,reason=excluded.reason,created_at=excluded.created_at`)
+            .run(record.sourceId, prior.record_checksum, record.checksum, reason, this.now());
+          this.setMeta('source_integrity_hold', reason);
+          this.audit('source-record', record.sourceId, prior.entity_id, record.entityId, `quarantined-${reason}`);
+          quarantined++;
         }
       }
+      // Lift only a hold this path owns, and only once no conflict of any kind remains.
+      const hold = this.db.prepare(`SELECT value FROM drain_meta WHERE key='source_integrity_hold'`).get() as { value: string } | undefined;
+      const remaining = this.db.prepare(`SELECT COUNT(*) n FROM source_conflicts`).get() as { n: number };
+      if (hold?.value.startsWith('source-record-') && remaining.n === 0) this.db.prepare(`DELETE FROM drain_meta WHERE key='source_integrity_hold'`).run();
       if (input.crashPoint === 'after-insert') throw new Error('injected crash after projection insert');
       const nextOffset = offset + consumed;
       const checksum = records.at(-1)?.checksum ?? cursor?.last_record_checksum ?? '';
       this.db.prepare(`INSERT INTO source_cursors(cursor_id,generation_id,byte_offset,last_record_checksum,updated_at) VALUES ('canonical-feedback',?,?,?,?)
         ON CONFLICT(cursor_id) DO UPDATE SET generation_id=excluded.generation_id,byte_offset=excluded.byte_offset,last_record_checksum=excluded.last_record_checksum,updated_at=excluded.updated_at`)
         .run(generationId, nextOffset, checksum, this.now());
-      return false;
     }).immediate();
-    if (sourceConflict) throw new DrainConflictError('source record checksum conflicts with its projection');
     const byteOffset = offset + consumed;
     this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES ('source_lag_bytes',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(Math.max(0, size - byteOffset)));
     if (input.crashPoint === 'after-commit') throw new Error('injected crash after projection commit');
-    return { projected, replayed, byteOffset, lagBytes: Math.max(0, size - byteOffset) };
+    return { projected, replayed, superseded, quarantined, byteOffset, lagBytes: Math.max(0, size - byteOffset) };
   }
 
   sourceCursor(): { generationId: string; byteOffset: number; lastRecordChecksum: string } | null {
     const row: { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined =
       this.db.prepare(`SELECT generation_id,byte_offset,last_record_checksum FROM source_cursors WHERE cursor_id='canonical-feedback'`).get() as { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined;
     return row ? { generationId: row.generation_id, byteOffset: row.byte_offset, lastRecordChecksum: row.last_record_checksum } : null;
+  }
+
+  /** Source lines held as corrupt and awaiting operator repair (spec: persistent attention). */
+  quarantinedSourceRecords(): number {
+    return Number((this.db.prepare(`SELECT COUNT(*) n FROM source_conflicts WHERE reason IN ('source-record-content-conflict','source-record-identity-conflict','reconciliation-checksum-conflict')`).get() as { n: number }).n);
   }
 
   pendingProjectedFeedback(limit = 500): Array<{ ingestSequence: number; record: Record<string, unknown> }> {
@@ -434,7 +471,14 @@ export class FeedbackDrainStore {
     this.setMeta('processing_ingest_sequence', String(ingestSequence));
   }
 
-  acceptSourceHandoff(input: { fromGenerationId: string; finalOffset: number; toGenerationId: string }): void {
+  /**
+   * Move the cursor across a validated compaction handoff. `startOffset` (the manifest's
+   * checksum-verified end of the copied prefix) skips rows the cursor already read in the old
+   * generation; without it a compaction re-reads the whole corpus at 500 rows per run.
+   */
+  acceptSourceHandoff(input: { fromGenerationId: string; finalOffset: number; toGenerationId: string; startOffset?: number }): void {
+    const startOffset = input.startOffset ?? 0;
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0) throw new DrainConflictError('source handoff start offset is invalid');
     this.db.transaction(() => {
       const cursor = this.sourceCursor();
       if (!cursor || cursor.generationId !== input.fromGenerationId || cursor.byteOffset !== input.finalOffset) {
@@ -442,8 +486,8 @@ export class FeedbackDrainStore {
       }
       const existing = this.db.prepare(`SELECT COUNT(*) n FROM source_projection WHERE generation_id=?`).get(input.toGenerationId) as { n: number };
       if (existing.n > 0) throw new DrainConflictError('target source generation was projected before handoff acceptance');
-      this.db.prepare(`UPDATE source_cursors SET generation_id=?,byte_offset=0,last_record_checksum='',updated_at=? WHERE cursor_id='canonical-feedback' AND generation_id=? AND byte_offset=?`)
-        .run(input.toGenerationId, this.now(), input.fromGenerationId, input.finalOffset);
+      this.db.prepare(`UPDATE source_cursors SET generation_id=?,byte_offset=?,last_record_checksum='',updated_at=? WHERE cursor_id='canonical-feedback' AND generation_id=? AND byte_offset=?`)
+        .run(input.toGenerationId, startOffset, this.now(), input.fromGenerationId, input.finalOffset);
       this.audit('source-generation', input.toGenerationId, input.fromGenerationId, input.toGenerationId, 'checksummed-handoff-accepted');
     }).immediate();
   }

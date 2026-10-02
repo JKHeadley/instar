@@ -16,29 +16,122 @@ toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
 ---
-Run one feedback-factory operating-drain tick. This is a near-silent operated cadence — do NOT message the user. The server owns every transition; this job only triggers and sanity-checks one bounded run.
+Run one feedback-factory operating-drain tick. This is a near-silent operated cadence — do NOT message the user. The server owns every transition; this job only triggers one bounded run and records an honest outcome.
 
-AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
-AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
-PORT="${INSTAR_PORT:-4042}"
-NONCE="feedback-drain-$(date +%s)-$$"
+Run the command below ONCE, exactly as written, in a single Bash call with `timeout: 300000`. Do not rewrite it, split it, or re-type it as shell code: the script carries every rule of this job, and an improvised shell loop has broken it before (zsh refuses a variable named `status`, and the run was recorded as a success).
 
-1. Read the operated drain's posture:
-   `curl -s -w '\nHTTP %{http_code}\n' -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/feedback-factory/drain/status`
-   Rule on the JSON body's `posture.state`, whatever the HTTP code (a 503 body carries `posture` too). Read `developmentAgent` from `.instar/config.json`.
-   - `live` → go to step 2.
-   - `dark` → exit silently. The drain is switched off on purpose (fleet default, or an operator switch-off).
-   - `unavailable` → FAIL THE RUN with reason `drain posture unavailable: <posture.reason>`.
-   - Anything else — no JSON, no `posture` field, connection refused, 401, 403, any other code → if `developmentAgent` is true, FAIL THE RUN with reason `drain status unreadable: HTTP <code or unreachable>`; otherwise exit silently.
+```bash
+python3 - <<'FEEDBACK_DRAIN_TICK'
+import json, os, sys, time, urllib.error, urllib.request
 
-   To FAIL THE RUN, run exactly this (with the reason filled in), then stop and finish normally — do not retry, do not tick:
-   `[ -n "$INSTAR_JOB_FAILURE_FILE" ] && printf '%s' "<reason>" > "$INSTAR_JOB_FAILURE_FILE"`
-   The scheduler reads that file when this run ends and records the run as failed with the reason. Saying "failed" in your output does NOT record a failure; only the file does.
+def config():
+    try:
+        with open('.instar/config.json') as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
 
-2. Trigger one bounded drain tick:
-   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H "X-Instar-Request: 1" -H "X-Instar-Request-Nonce: $NONCE" http://localhost:$PORT/feedback-factory/drain/tick`
-   A 202 response reports `{ runId, accepted, reason? }`. Concurrent triggers return the active run rather than starting a second writer. Poll the status route, bounded to 90 seconds, until `lastRun.runId` matches and `lastRun.state` is no longer `accepted` or `running`; never start a second tick while polling.
+CONFIG = config()
+TOKEN = os.environ.get('INSTAR_AUTH_TOKEN') or (CONFIG.get('authToken') if isinstance(CONFIG.get('authToken'), str) else '')
+AGENT_ID = os.environ.get('INSTAR_AGENT_ID') or str(CONFIG.get('projectName') or '')
+BASE = 'http://localhost:' + str(os.environ.get('INSTAR_PORT') or CONFIG.get('port') or 4042)
+DEVELOPMENT_AGENT = CONFIG.get('developmentAgent') is True
+POLL_SECONDS = float(os.environ.get('FEEDBACK_DRAIN_POLL_SECONDS') or 60)
 
-3. **Tier-1 supervision.** Accept terminal `succeeded` and `no-op`. A `degraded` run must carry a nonempty reason; a `degraded` run without one → FAIL THE RUN (step 1 command) with reason `degraded run without reason: <runId>`. Never retry in the same run; the durable queue and next cadence own retry. In simulation, canonical claimed/completed counts must not advance. In live mode, completed may never exceed the durable claimed/linked history or the configured batch bound. A broken invariant → FAIL THE RUN with reason `invariant broken: <which>`. A poll that ends at 90 seconds with the run still `accepted`/`running` is not a failure; the next cadence observes it.
+def fail(reason):
+    path = os.environ.get('INSTAR_JOB_FAILURE_FILE')
+    if path:
+        with open(path, 'w') as fh:
+            fh.write(reason[:480])
+    print('FEEDBACK_DRAIN_RESULT failed: ' + reason)
+    sys.exit(0)
 
-4. Exit silently. Do NOT relay anything to Telegram and do NOT summarize. The drain's durable run row, metrics, and bounded self-heal/attention path own observability; a declared failure reaches the operator through the scheduler's consecutive-failure alert.
+def done(message):
+    print('FEEDBACK_DRAIN_RESULT ' + message)
+    sys.exit(0)
+
+def call(method, route, extra=None):
+    headers = {'Authorization': 'Bearer ' + TOKEN, 'X-Instar-AgentId': AGENT_ID}
+    headers.update(extra or {})
+    request = urllib.request.Request(BASE + route, method=method, headers=headers, data=b'' if method == 'POST' else None)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            code, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        code, raw = error.code, error.read()
+    except Exception as error:
+        return None, 'unreachable (' + type(error).__name__ + ')'
+    try:
+        return code, json.loads(raw.decode('utf8') or 'null')
+    except Exception:
+        return code, None
+
+def drain_status():
+    code, body = call('GET', '/feedback-factory/drain/status')
+    posture = body.get('posture') if isinstance(body, dict) else None
+    state = posture.get('state') if isinstance(posture, dict) else None
+    return code, body, posture, state
+
+def count(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+def work_counts(body):
+    work = ((body or {}).get('drain') or {}).get('work') or {}
+    return count(work.get('claimed')) + count(work.get('completed'))
+
+# 1. Posture: the JSON posture decides, whatever the HTTP code.
+code, before, posture, state = drain_status()
+if state == 'dark':
+    done('dark')
+if state == 'unavailable':
+    fail('drain posture unavailable: ' + str(posture.get('reason') or 'unknown'))
+if state != 'live':
+    if DEVELOPMENT_AGENT:
+        fail('drain status unreadable: HTTP ' + (str(code) if isinstance(code, int) else str(before)))
+    done('status unreadable on a fleet agent')
+
+# 2. One bounded tick. A refused tick is a failed run (for example a demoted authority).
+nonce = 'feedback-drain-' + str(int(time.time())) + '-' + str(os.getpid())
+code, tick = call('POST', '/feedback-factory/drain/tick', {'X-Instar-Request': '1', 'X-Instar-Request-Nonce': nonce})
+if code != 202 or not isinstance(tick, dict) or not tick.get('runId'):
+    detail = tick.get('error') if isinstance(tick, dict) else tick
+    fail('drain tick refused: HTTP ' + str(code) + ' ' + str(detail or ''))
+run_id = tick['runId']
+if tick.get('proxied'):
+    done('proxied to the owner machine, run ' + run_id + '; the owner records its outcome')
+
+# 3. Poll this run to a terminal state (60 s). Still running at the limit is not a failure.
+deadline = time.time() + POLL_SECONDS
+last = None
+after = None
+while time.time() < deadline:
+    code, after, _, _ = drain_status()
+    last = (after or {}).get('lastRun') if isinstance(after, dict) else None
+    if isinstance(last, dict) and last.get('runId') == run_id and last.get('state') not in ('accepted', 'running'):
+        break
+    time.sleep(3)
+else:
+    done('run ' + run_id + ' still in flight; the next cadence observes it')
+
+# 4. Tier-1 supervision of the terminal run.
+run_state = last.get('state')
+reason = str(last.get('reason') or '').strip()
+if run_state in ('succeeded', 'no-op'):
+    if isinstance(after, dict) and after.get('consumerLive') is False and work_counts(after) > work_counts(before):
+        fail('invariant broken: claimed/completed work advanced while the consumer is in simulation (run ' + run_id + ')')
+    done(run_state + ' ' + run_id)
+fail('drain run ' + str(run_state) + ': ' + (reason or 'no reason given') + ' (run ' + run_id + ')')
+FEEDBACK_DRAIN_TICK
+```
+
+The script prints one `FEEDBACK_DRAIN_RESULT` line. It records a failed run itself by writing the reason to `$INSTAR_JOB_FAILURE_FILE` (the scheduler reads that file when the run ends); saying "failed" in your output does NOT record a failure. Outcomes it enforces:
+- Posture `dark` → silent exit. `unavailable` → failed run. Unreadable status → failed run on a development agent, silent exit on the fleet.
+- A refused tick (any HTTP code other than 202, e.g. `current registered readiness agent required` after the authority was demoted) → failed run.
+- A tick proxied to the owner machine → success here; its outcome lives in the owner's run history and status.
+- Terminal `succeeded` / `no-op` → success. Terminal `degraded`, `failed` or `abandoned` → failed run carrying the drain's reason.
+- In simulation, claimed/completed work counts must not advance; if they do → failed run.
+
+Never retry in the same run; the durable queue and the next cadence own retry. Then exit silently. Do NOT relay anything to Telegram and do NOT summarize. A failed run reaches the operator through the scheduler's consecutive-failure alert.

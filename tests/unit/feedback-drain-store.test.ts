@@ -245,7 +245,8 @@ describe('FeedbackDrainStore', () => {
       expect(() => store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1, crashPoint: 'after-commit' })).toThrow(/injected/);
       expect(store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toMatchObject({ projected: 0, lagBytes: 0 });
       fs.appendFileSync(source, `${JSON.stringify({ feedbackId: 'changed', sourceRecordId: 's1' })}\n`);
-      expect(() => store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toThrow(/checksum conflicts/);
+      // The same sourceRecordId bound to another report: that line is quarantined, the cursor moves on.
+      expect(store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toMatchObject({ projected: 0, quarantined: 1, lagBytes: 0 });
       expect(store.metrics().sourceChecksumConflicts).toBe(1);
       const bytes = fs.readFileSync(source, 'utf8').replace('"f1"', '"x1"');
       fs.writeFileSync(source, bytes);

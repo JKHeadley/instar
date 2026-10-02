@@ -45,13 +45,14 @@ function setup(consumerLive = true, consumerBatchBound = 50, failAfterFirstArtif
     maxBatch: 50, maxTokens: 900, maxDailySpendUsd: 5,
   });
   const arbiter = new FeedbackReadinessArbiter({
-    evaluate: async (_prompt, evalOptions) => {
+    evaluate: async (prompt, evalOptions) => {
       if (settings.arbiterNever) return await new Promise<string>(() => undefined);
       if (settings.arbiterThrows) throw new Error('provider unavailable');
       const injected = settings.arbiterError?.();
       if (injected) throw injected;
       evalOptions?.onModel?.({ model: settings.resolvedModel ?? 'claude-fable-5', framework: 'claude-code' });
-      return JSON.stringify({ decisions: [{ clusterId: 'cluster-1', outcome: 'ready', confidence: 0.95, reasonCodes: ['coherent-recurrence'], evidenceIds: ['cluster:cluster-1'] }] });
+      const packet = JSON.parse(prompt.slice(prompt.indexOf('Candidates: ') + 12)) as Array<{ clusterId: string }>;
+      return JSON.stringify({ decisions: packet.map(({ clusterId }) => ({ clusterId, outcome: clusterId === 'cluster-1' ? 'ready' : 'collecting', confidence: 0.95, reasonCodes: ['coherent-recurrence'], evidenceIds: [`cluster:${clusterId}`] })) });
     },
   });
   const tracker = new InitiativeTracker(path.join(dir, 'state'));
@@ -213,6 +214,36 @@ describe('FeedbackDrainService lifecycle', () => {
     });
     expect(JSON.stringify(packet)).not.toContain('Recurring scheduler crash');
     expect(JSON.stringify(packet)).not.toContain('not persisted to work');
+  });
+
+  it('reads the drain\'s own processing re-append as a version and keeps every later run green', async () => {
+    const { service, store, canonical } = setup(false);
+    fs.writeFileSync(path.join(canonical, 'feedback.jsonl'), `${JSON.stringify({ feedbackId: 'f-a', sourceRecordId: 'src-a', status: 'unprocessed',
+      title: 'Scheduler crash on boot', description: 'a', type: 'bug', receivedAt: '2026-07-01T00:00:00Z' })}\n`);
+    expect(await service.tick()).toMatchObject({ processed: 1, result: 'succeeded' });
+    // processing appended f-a again (status processing, same sourceRecordId); the next run reads it.
+    expect(fs.readFileSync(path.join(canonical, 'feedback.jsonl'), 'utf8').trim().split('\n')).toHaveLength(2);
+    expect(await service.tick()).not.toMatchObject({ result: 'degraded' });
+    expect(store.metrics().sourceChecksumConflicts).toBe(0);
+    expect(store.lastRun()?.state).not.toBe('failed');
+  });
+
+  it('quarantines one conflicting source record, keeps runs degraded until repaired, and still processes the rest', async () => {
+    const { service, store, canonical } = setup(false);
+    const report = (feedbackId: string, sourceRecordId: string) => `${JSON.stringify({ feedbackId, sourceRecordId, status: 'unprocessed',
+      title: `Distinct failure ${feedbackId}`, description: 'd', type: 'bug', receivedAt: '2026-07-01T00:00:00Z' })}\n`;
+    fs.writeFileSync(path.join(canonical, 'feedback.jsonl'), report('f-1', 'src-1') + report('f-2', 'src-1') + report('f-3', 'src-3'));
+    const stalls: string[] = [];
+    (service as unknown as { opts: { onRecoverableStall?: (reason: string) => void } }).opts.onRecoverableStall = (reason) => { stalls.push(reason); };
+    const first = await service.tick();
+    expect(first).toMatchObject({ processed: 2, result: 'degraded', reason: 'source-record-quarantined' });
+    expect(store.lastRun()).toMatchObject({ state: 'degraded', reason: 'source-record-quarantined' });
+    expect(stalls).toEqual(['source-record-quarantined']);
+    expect(store.metrics().sourceChecksumConflicts).toBe(1);
+    // Every later run keeps reporting it until an operator repairs the held line (spec: persistent attention),
+    // while the rest of the pipeline keeps moving.
+    expect(await service.tick()).toMatchObject({ result: 'degraded', reason: 'source-record-quarantined' });
+    expect(store.lastRun()?.state).toBe('degraded');
   });
 
   it('compacts on the production tick cadence and accepts the checksummed handoff on the next tick', async () => {
