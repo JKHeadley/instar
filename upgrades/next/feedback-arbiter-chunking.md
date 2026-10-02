@@ -1,4 +1,3 @@
-<!-- internal-only -->
 # Feedback drain: readiness reviewed in chunks that fit the call budget
 
 ## What Changed
@@ -38,3 +37,13 @@ Tests replay the recorded gpt-6-astra replies with that latency shape:
 
 Unit (11), integration (2) and e2e (1) cover this. Of the original 11, 10 fail on the pre-fix
 source; the 11th guards the unchanged demotion rule.
+
+## What to Tell Your User
+
+The feedback sorter was asking its model about too many feedback groups at once, and the
+model ran out of time every time. It now asks about ten at a time and keeps going while time
+allows. Earlier answers are kept even if a later question fails. Nothing for you to do.
+
+## Summary of New Capabilities
+
+- The feedback drain reviews readiness in time-bounded chunks (`feedbackFactory.drain.readinessChunkSize`, default 10).
