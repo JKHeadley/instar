@@ -102,3 +102,42 @@ src/data/standards-registry.md
 src/data/standards-registry.meta.json
 src/data/standards-guard-index.json
 src/data/standards-guard-index.meta.json
+
+# ── Machine-local agent state (EVO-027) ───────────────────────────────────
+# An agent home is itself a clone of this repo, so this file is what protects
+# that agent's runtime state from being committed. These paths were guarded
+# only by per-clone `.git/info/exclude` entries and by PostUpdateMigrator
+# writing rules into the working-tree copy of this file at update time — so a
+# fresh clone had no guard at all, and the agent-home checkout reset that
+# auto-update performs can roll the working-tree rules back. The git-sync
+# skill runs `git add -A`, which is the step that would stage them.
+#
+# Measured on one agent home 2026-10-03: 3,056 Jev evidence packs (12MB of
+# scrubbed job output, documented machine-local and never exported) and
+# 4.3M files / 72GB of foreign-repo worktree contents sat one `git add -A`
+# away from being staged. Nothing had been committed yet.
+
+# Jev job-completion audit evidence packs — scrubbed job output, machine-local,
+# never exported. (EVO-027 also moves the writer under .instar/state/, which is
+# already ignored above; this rule covers the current path until that lands.)
+.instar/jev-supervision-evidence/
+
+# Credentials and credential-gate material (covers .instar/secrets/pr-gate/).
+.instar/secrets/
+
+# Pasted content — may be sensitive.
+.instar/paste/
+
+# Judgment-call provenance rows — machine-local decision context.
+state/judgment-provenance/
+
+# Sandbox-safe worktrees — per-machine, multi-GB foreign-repo contents.
+.worktrees/
+
+# Telegram origin runtime sockets and session files (per-machine).
+.instar/origin-sessions-*
+.instar/origin-notice.sock*
+
+# Jev harness sample sets contain real message text — regenerable, never committed.
+docs/research/jev/harness/**/sample-*.json
+docs/research/jev/harness/**/corpus-*.json
