@@ -5,7 +5,9 @@ author: "luna (sagemind)"
 created: 2026-10-03
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 eli16-overview: "lease-unconfirmed-candidate-flap.eli16.md"
-status: "draft"
+status: "approved"
+approved: true
+approved-basis: "Justin (verified operator, uid 7812716706, topic 47547) replied 'Approved' on 2026-10-04 01:55 PDT after reading the plain-language overview of v40, which asks for the fix plus two sign-offs. v41-v45 changed no behaviour the overview describes: a coordinator getter, corrected claims about forged receipts, wording, and the maturation plan. He is told of these with the build notice."
 principal-deferral-approval:
   - item: "never-accepted lease detector (Out of scope)"
     status: "approved"
@@ -50,7 +52,16 @@ lessons-engaged:
   - "P20 Verify the State, Not Its Symbol: lastSeen and coarse git heartbeats are demoted to symbols; the router's own live pull receipt and the holder's verified, nonce-advancing signed renewals are the corroborating state."
   - "P20 (an uninitialized liveness state cannot authorize recovery): applied without exception. A peer neither liveness source has ever observed is never dead and never gone, for every callback."
   - "B4 multimachine-lease-poll-robustness (skew-immune liveness): reused and extended."
-  - "Live-User-Channel Proof Before Done: proven on throwaway agents over a demo Telegram group and a demo Slack channel before merge."
+  - "Live-User-Channel Proof Before Done: to be proven on throwaway agents over a demo Telegram group and a demo Slack channel before merge; the artifact names the tested revision, configuration and measured outcomes."
+review-convergence: "2026-10-04T09:11:35.529Z"
+review-iterations: 5
+review-completed-at: "2026-10-04T09:11:35.529Z"
+review-report: "docs/specs/reports/lease-unconfirmed-candidate-flap-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 6
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # Lease flap fix
@@ -538,13 +549,33 @@ not specified here; working notes on each are in
      HTTP faults, channel delivery); they share a clock and do not exercise
      laptop sleep or machine-level network recovery.
    - The run ends at merge and release. Re-pairing the Mac Studio and a 30-minute
-     cross-machine watch follow: both `/health` sampled every 30 s, with the
-     laptop lid closed and reopened once; counted from the Studio's first pull
+     cross-machine watch follow, with the laptop lid closed and reopened once.
+     A watch script polls both `/health` once a second and records each
+     `holdsLease` change with its time; overlaps and gaps are measured at that
+     1 s granularity and stated as such. The coordinator's existing lease log
+     lines (acquired, CAS lost and yielding, self-suspended, relinquished,
+     `LeaseCoordinator.ts:439-902`) corroborate the transitions; counted from the Studio's first pull
      after re-pairing (window (b) precedes it) and excluding the minute after the
      lid reopens (windows (b) and (c)), pass means one holder whenever both
      machines are up, no epoch churn while both are up, and every message sent
      while both are up answered once; moving the Roblox topic waits for the window (d) change
      (operator decision 3 Oct 16:05 PDT).
+
+## Maturation plan
+
+- **test-agent-live:** live from the first build. The live proof runs on two
+  throwaway agents over a demo Telegram group and a demo Slack channel before
+  merge (Frontloaded 6).
+- **dev-agent-live:** all three switches are on when absent, so the fix is live
+  on this agent at release. A dark fix would leave the incident's trigger and
+  amplifier in place.
+- **fleet:** with the release, same defaults. Each switch is its own rollback,
+  with the steps in Rollback.
+- **graduation criterion:** after re-pairing the Mac Studio, the 30-minute
+  cross-machine watch passes: one holder whenever both machines are up, no
+  epoch churn, and every message answered once (Frontloaded 6).
+- **dark-window:** none. The changes ship on, and the only dark piece they touch
+  is the existing solo-captain hold, which stays off until the window (d) change.
 
 ## Open questions
 
@@ -646,8 +677,8 @@ not specified here; working notes on each are in
     after the holder's last git-carried acquisition: with the tunnel wired,
     renewals do not write the store, and an unconfirmed holder self-suspends after
     `leaseTtlMs`, `LeaseCoordinator.ts:861-872`, `:894-903`), and a backward wall-clock
-    step during acquisition and holding (liveness is monotonic, expiry is wall
-    time). The
+    step during acquisition and holding, and a forward step on the non-holder
+    (liveness is monotonic, expiry is wall time). The
     upgrade store transition and the `mediumCheck` rollback have no distinct
     switches-off counterpart, so their behaviour is recorded only. (Duplicate
     replies against the real legacy build are the live runner's regression row.)
@@ -794,6 +825,10 @@ at the next restart.
   protection, the unobserved-peer report). GPT: the clock-skew overlap is
   qualified to a fixed offset, and the summaries name the write alert's actual
   scope.
+- **Cycle 5, round 5 (v45)**: internal and GPT zero DESIGN; converged (rounds
+  4 and 5). Precision: the watch reconstructs holder intervals from lease
+  transition logs rather than 30 s samples; a forward clock step is added to
+  the recorded scenarios; the live proof is labelled as still to run.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
