@@ -156,11 +156,15 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   `wallNow`, give `MachinePoolRegistry` the same `wallNow` as its `now` and the
   same `failoverThresholdMs` (`server.ts:21218`), so the switches-off baseline reproduces today's decisions
   deterministically.
-- `LeaseCoordinatorDeps` gains live getters for `unconfirmedWriteAlert` and
-  `liveness`. `acquireIfEligible` reads `liveness` once at the start of each call
-  and passes it to `presumedDeadHolders({ liveness })`, so one call uses one rule
-  throughout; other callers pass nothing and the builder reads the switch itself.
-  A flip takes effect from the next call.
+- `LeaseCoordinatorDeps` gains two optional live getters, for
+  `unconfirmedWriteAlert` and `liveness`; an absent getter counts as on (the
+  switches' own default). `acquireIfEligible` resolves `liveness` once at the
+  start of each call and passes the resolved value to
+  `presumedDeadHolders({ liveness })`, so every `presumedDeadHolders` read in that
+  call uses one rule; other callers pass nothing and the builder reads the switch
+  itself. The solo-hold path reached through `renew()` reads the switch live (it
+  is dark by default). A flip takes effect from the next call. The E2E harnesses
+  wire both getters.
 
 - `getRouter` and `getFreshness` are getters read on every call: the router is
   constructed later in boot than the lease, and the freshness reads live on the
@@ -321,7 +325,10 @@ Attention item, none escalating. None feeds `canAcquire`, `holdsLease` or
   an unbroken streak counts. At 5 it reports "lease writes remain
   unconfirmed by the medium" once per streak: the report fires when the count
   reaches 5, not again while the streak continues, and again only after a reset
-  and a new streak of 5 (a unit test covers two streaks separated by a success). Renewals are
+  and a new streak of 5 (a unit test covers two streaks separated by a success).
+  While `unconfirmedWriteAlert` is off the counter is not maintained: switching it
+  off clears the count and the reported flag, and switching it on starts a fresh
+  streak (tested: off at 4, failures while off, on again). Renewals are
   not counted. This does **not** detect a machine holding a lease the medium
   never accepted, which renews without further `casWrite` calls; that detector
   is deferred with item (i).
@@ -397,9 +404,19 @@ not specified here; working notes on each are in
   peer process is alive. CORROBORATION: this machine's own live pull receipt,
   and a verified signed renewal with an advancing nonce. The renewal is
   authenticated; the receipt is not (`MeshRpcClient` does not verify who
-  answered, `MeshRpcClient.ts:90`), so a spoofed receipt can keep a peer "alive"
-  and delay a takeover, but cannot cause one or create a second holder. Each
-  counts for at most `failoverThresholdMs`. UNMEASURABLE (neither observed):
+  answered, `MeshRpcClient.ts:90`). Something able to answer at a peer's address
+  can therefore forge a receipt. A forged receipt keeps that peer "alive" for up
+  to `failoverThresholdMs`, delaying a takeover. It also gives a never-observed
+  peer a history: once that receipt is stale and no renewal is fresh, the peer
+  is dead, exactly as a peer genuinely seen once and then silent would be. So a
+  forgery can turn "not dead" into "dead" earlier than lease expiry alone would.
+  Because `canAcquire` checks expiry first (`FencedLease.ts:313`), this changes a
+  decision only while an unexpired lease of that peer reaches this machine
+  without stamping renewal freshness, which is the git-carried case, bounded to
+  `leaseTtlMs` after its acquisition (Tests, E2E). A unit test compares a
+  never-observed peer with a forged-once-then-stale one against an unexpired,
+  store-carried lease and records the difference. Each source counts for at most
+  `failoverThresholdMs`. UNMEASURABLE (neither observed):
   not dead, not gone; lease expiry remains the takeover path, and Change 4
   reports the blind feeder.
 - **Lease medium eligibility.** SYMBOL: a git-sync manager exists. STATE claimed:
@@ -739,6 +756,12 @@ at the next restart.
   and passed to the callback. GPT: a recorded regression needs an explicit
   accept or reject, and an unresolved one blocks release. The operator's approval
   and ratification are recorded.
+- **Cycle 5, round 2 (v42)**: internal zero DESIGN. GPT found a false statement,
+  counted as DESIGN: a forged receipt was said to only delay a takeover, but it
+  can also give a never-observed peer a history that later reads as dead. The
+  evidence declaration now states that and its bound, with a test. Precision:
+  the getters are optional and default on; "one rule per call" is scoped to
+  `presumedDeadHolders`; the write counter across switch flips is defined.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
