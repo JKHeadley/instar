@@ -44,7 +44,7 @@ principal-ratification:
     at: "2026-10-04T01:55:00-07:00"
 lessons-engaged:
   - "P2 Signal vs Authority: every change is a deterministic input to the existing FencedLease authority; no new authority is added."
-  - "No Silent Degradation: a git medium that cannot carry the registry, sustained unconfirmed lease writes, and a liveness feeder that never observes a registered peer each raise one DegradationReporter event."
+  - "No Silent Degradation: a git medium that cannot carry the registry, an unbroken streak of unconfirmed acquisition writes (not a lease the medium never accepted that only renews), and a liveness feeder that never observes a registered peer each raise one DegradationReporter event."
   - "P10 / Phase 4.5 no-deferrals: the incident's trigger and amplifier are removed; each deferred item is classified individually and carries a principal-deferral-approval entry."
   - "P19 bounded loops: the git-ignored-registry path no longer runs synchronous git pulls every lease tick."
   - "P20 Verify the State, Not Its Symbol: lastSeen and coarse git heartbeats are demoted to symbols; the router's own live pull receipt and the holder's verified, nonce-advancing signed renewals are the corroborating state."
@@ -117,8 +117,10 @@ the first pull. Closing it is deferred (Out of scope).
 
 ## Design
 
-Change 1 removes the trigger. Change 3 removes the amplifier. Change 4 makes the
-remaining failure modes visible. Each has a live-read switch (absent ⇒ on) under
+Change 1 removes the trigger. Change 3 removes the amplifier. Change 4 makes two
+remaining failure modes visible (an unconfirmed acquisition-write streak and a
+blind liveness feeder); a never-accepted lease that only renews is not detected
+(Out of scope). Each has a live-read switch (absent ⇒ on) under
 `multiMachine.leaseFlapFix`; `mediumCheck` acts at boot, so a flip takes effect on
 the next restart. Each flip is logged once when detected (Frontloaded 3).
 
@@ -386,8 +388,9 @@ not specified here; working notes on each are in
   `GitLeaseStore` read-back can
   still leave a machine holding a lease git never accepted (deferred item (i)),
   unreported by this spec.
-- **Clock skew.** Expiry compares wall clocks, so connected machines overlap by
-  up to the skew.
+- **Clock skew.** Expiry compares wall clocks, so with a fixed offset between
+  two connected machines a takeover at expiry can overlap the old holder by up
+  to that offset; clock steps are characterised separately (Tests, E2E).
 
 ## Decision points touched
 
@@ -417,19 +420,24 @@ not specified here; working notes on each are in
     higher-epoch lease whose nonce is below this machine's high-water for it
     (window (c), `LeaseCoordinator.ts:291-293`, `HttpLeaseTransport.ts:492-498`);
     and a freshness window shorter than the TTL (reported by the ordering check).
+    A takeover this way also authorises an enabled solo hold for that epoch,
+    independent of `allPeersPresumedGone` (`:397`, `:705`).
   - `allPeersPresumedGone`, through `soloCaptainHoldEligible` (`:398`), which has
-    no expiry condition: a never-gone peer becomes gone for the rest of the
-    process, so an enabled solo-captain hold can engage on forged evidence, with
+    no expiry condition: the peer loses its never-observed protection for the
+    rest of the process (thereafter it is gone whenever its receipt is stale and
+    no renewal is fresh), so an enabled solo-captain hold can engage on forged evidence, with
     no time bound. The hold is off by default and on sagemind.
   - `checkForUnresolvableSplit` (`:966-967`): its escalation, but it has no
     production caller.
+  - `sample()`: the peer is no longer reported as unobserved by Change 4.
   These are not asserted bounds; unit tests record each one (never-observed
   against forged-once-then-stale, with an unexpired store-carried lease, a
-  restarted holder's below-watermark lease, and the enabled hold). Authenticating
+  restarted holder's below-watermark lease, the enabled hold including the
+  takeover-authorised epoch, and the unobserved-peer report). Authenticating
   the receipt is outside this change; the window (d) change must not rest the
   hold gate on it. UNMEASURABLE (neither observed):
   not dead, not gone; lease expiry remains the takeover path, and Change 4
-  reports the blind feeder.
+  reports the blind feeder unless a receipt, genuine or forged, has been seen.
 - **Lease medium eligibility.** SYMBOL: a git-sync manager exists. STATE claimed:
   the registry is a file git can carry (tracked, or untracked and not ignored).
   CORROBORATION: `ls-files --error-unmatch`, then `ls-files --others --ignored
@@ -780,6 +788,12 @@ at the next restart.
   watermark. GPT raised the same scope and the clock assumption. The declaration
   now lists the effect per reader, asserts no bound, records each by test, and
   passes the constraint to the window (d) change.
+- **Cycle 5, round 4 (v44)**: internal zero DESIGN (36 absolute claims checked
+  against code, none wrong); three omissions in the forged-receipt list added
+  (the takeover-authorised solo hold, the lasting loss of never-observed
+  protection, the unobserved-peer report). GPT: the clock-skew overlap is
+  qualified to a fixed offset, and the summaries name the write alert's actual
+  scope.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
