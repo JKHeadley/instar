@@ -120,6 +120,7 @@ export class HttpLeaseTransport implements LeaseTransport {
   private readonly d: HttpLeaseTransportDeps;
   private lastObserved: LeaseRecord | null = null;
   private lastNonceByHolder: Record<string, number> = {};
+  private lastEpochByHolder: Record<string, number> = {};
   /**
    * Per-peer lease observations (machine-coherence-guard §5b — NEW retained
    * state): the pull loop's single `lastObserved` slot keeps only the most
@@ -488,12 +489,15 @@ export class HttpLeaseTransport implements LeaseTransport {
    */
   recordObserved(lease: LeaseRecord): number | undefined {
     if (!lease || typeof lease.epoch !== 'number') return undefined;
+    const prevEpoch = this.lastEpochByHolder[lease.holder] ?? -1;
     const prevNonce = this.lastNonceByHolder[lease.holder] ?? -1;
-    // Only accept a strictly-newer nonce for this holder (drop replays here too).
-    if (lease.nonce <= prevNonce && this.lastObserved && this.lastObserved.epoch >= lease.epoch) {
+    // An older epoch cannot move either watermark. A higher epoch starts a new
+    // nonce sequence for this holder; within an epoch, nonces must advance.
+    if (lease.epoch < prevEpoch || (lease.epoch === prevEpoch && lease.nonce <= prevNonce)) {
       return this.lastObserved?.epoch;
     }
-    if (lease.nonce > prevNonce) this.lastNonceByHolder[lease.holder] = lease.nonce;
+    this.lastEpochByHolder[lease.holder] = lease.epoch;
+    this.lastNonceByHolder[lease.holder] = lease.nonce;
     if (!this.lastObserved || lease.epoch >= this.lastObserved.epoch) {
       this.lastObserved = lease;
     }

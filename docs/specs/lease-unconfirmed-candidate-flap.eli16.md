@@ -38,6 +38,12 @@ Two faults fed each other.
 - **Both machines keep the lease the same way.** If the shared file is kept out
   of git, every machine uses a local file plus the network, exactly as the laptop
   already does. Instar reports this once, instead of failing silently.
+- **A restart no longer hands the lease away.** After a restart the machine in
+  charge used to start counting its "I'm still in charge" messages from zero
+  again. The other machine remembered the old, higher count and ignored them,
+  so about a minute later it took over from a perfectly healthy machine. The
+  count now starts from the clock, so it is always higher than before the
+  restart. The live test caught this; it happened on every restart.
 - **Quiet warnings** appear in Instar's internal log when lease writes keep
   failing, or when a paired machine has never been heard from.
 
@@ -49,9 +55,6 @@ Two faults fed each other.
   seconds before it hears from the other machine and steps back. Both could reply
   to the same message once in that window. This already happens today. It is
   what the Mac Studio did when it first started on 3 October, and it fixed itself.
-- When the machine in charge restarts, the other one can take over and stay in
-  charge. This is an existing bug, not a new one. It
-  settles on its own, but it means a restart moves the work to the other machine.
 - When the machine in charge cannot reach its partner (for example the laptop
   lid is closed), it only stays in charge about half the time, dropping out and
   back in repeatedly. Replies are held in the gaps. This already
@@ -83,7 +86,6 @@ These are written up and passed to Echo, Instar's maintainer, to design properly
   few-second window above. A first attempt here turned out to need careful
   design: in one version, a restart could leave nobody in charge for a few
   minutes.
-- The restart bug above, with its exact cause.
 - A warning for one rare git failure that can leave a machine in charge on a lease
   git never accepted. In normal running it can only happen when the shared file
   is tracked in git and a write fails, or when the check that picks the lease

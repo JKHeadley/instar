@@ -7,7 +7,7 @@ parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded 
 eli16-overview: "lease-unconfirmed-candidate-flap.eli16.md"
 status: "approved"
 approved: true
-approved-basis: "Justin (verified operator, uid 7812716706, topic 47547) replied 'Approved' on 2026-10-04 01:55 PDT after reading the plain-language overview of v40, which asks for the fix plus two sign-offs. v41-v45 changed no behaviour the overview describes: a coordinator getter, corrected claims about forged receipts, wording, and the maturation plan. He is told of these with the build notice."
+approved-basis: "Justin (verified operator, uid 7812716706, topic 47547) replied 'Approved' on 2026-10-04 01:55 PDT after reading the plain-language overview of v40, which asks for the fix plus two sign-offs. v41-v45 changed no behaviour the overview describes: a coordinator getter, corrected claims about forged receipts, wording, and the maturation plan. He is told of these with the build notice. Change 2 (restart-safe renewal nonce) was brought into scope on his reply 'Yes, please proceed as you recommend' on 2026-10-04 13:23 PDT, after the live proof showed a restarted holder losing the lease to a live peer."
 principal-deferral-approval: # <!-- tracked: CMT-1226 -->
   - item: "never-accepted lease detector (Out of scope)"
     status: "approved"
@@ -16,12 +16,6 @@ principal-deferral-approval: # <!-- tracked: CMT-1226 -->
     owner: "Echo (instar maintainer)"
     eta: "with deferred item (i): reported back within 14 days of merge" # <!-- tracked: CMT-1226 -->
   - item: "boot pull: learn the lease before contending at boot (Out of scope)"
-    status: "approved"
-    by: "Justin Headley (operator), Telegram topic 47547"
-    at: "2026-10-03T15:41:00-07:00"
-    owner: "Echo (instar maintainer)"
-    eta: "reported back within 14 days of merge"
-  - item: "restart nonce watermark (window (c), Out of scope)"
     status: "approved"
     by: "Justin Headley (operator), Telegram topic 47547"
     at: "2026-10-03T15:41:00-07:00"
@@ -53,8 +47,8 @@ lessons-engaged:
   - "P20 (an uninitialized liveness state cannot authorize recovery): applied without exception. A peer neither liveness source has ever observed is never dead and never gone, for every callback."
   - "B4 multimachine-lease-poll-robustness (skew-immune liveness): reused and extended."
   - "Live-User-Channel Proof Before Done: to be proven on throwaway agents over a demo Telegram group and a demo Slack channel before merge; the artifact names the tested revision, configuration and measured outcomes."
-review-convergence: "2026-10-04T09:11:35.529Z"
-review-iterations: 5
+review-convergence: "2026-10-04T21:17:24.000Z"
+review-iterations: 6
 review-completed-at: "2026-10-04T09:11:35.529Z"
 review-report: "docs/specs/reports/lease-unconfirmed-candidate-flap-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
@@ -128,10 +122,12 @@ the first pull. Closing it is deferred (Out of scope). <!-- tracked: CMT-1226 --
 
 ## Design
 
-Change 1 removes the trigger. Change 3 removes the amplifier. Change 4 makes two
+Change 1 removes the trigger. Change 2 lets a restarted holder keep renewing
+when its own high nonce is known at boot, and lets receivers credit its next
+verified epoch when it is not. Change 3 removes the amplifier. Change 4 makes two
 remaining failure modes visible (an unconfirmed acquisition-write streak and a
 blind liveness feeder); a never-accepted lease that only renews is not detected
-(Out of scope). Each has a live-read switch (absent ⇒ on) under
+(Out of scope). Changes 1, 3, and 4 have live-read switches (absent ⇒ on) under
 `multiMachine.leaseFlapFix`; `mediumCheck` acts at boot, so a flip takes effect on
 the next restart. Each flip is logged once when detected (Frontloaded 3).
 
@@ -264,6 +260,59 @@ nothing changes in production; designing reliable holding is the separate
 window (d) change, and its working notes are in
 `docs/specs/notes/lease-existing-behaviour-notes.md`.
 
+### Change 2 — a restarted holder's renewals are not dropped as replays
+
+A peer folds a holder's lease into its view only when the lease's nonce exceeds
+the last nonce it recorded for that holder at the same or a higher epoch
+(`HttpLeaseTransport.recordObserved`, `HttpLeaseTransport.ts:489-502`). The
+holder's nonce came from a counter that started at 0 in every process
+(`LeaseCoordinator.nextNonce`). A holder that restarted and re-adopted its own
+unexpired lease kept the same epoch, so every renewal it sent was at or below
+the peer's watermark and was dropped. The peer's copy expired one TTL after the
+last pre-restart renewal and it took the lease from a live holder. The live
+proof measured this (`lifecycle-holder-restart-peer-up`, epoch 97 → 98 about 55 s
+after the restart, with both machines up and the restarted holder renewing).
+
+`nextNonce` now returns the maximum of the process counter plus one and the
+wall clock in milliseconds. On its first call in a process it also raises the
+counter to the nonce of this machine's own durable lease, read once, and only
+when that read succeeds, the lease's signature verifies, and its nonce is a safe
+integer no more than one year ahead of the wall clock. A network observation
+never seeds the counter, so a forged lease cannot push it out of range, and the
+one-year bound keeps a verified but absurd nonce from exhausting it. When those
+conditions hold, an unexpired durable own lease keeps the first renewal after
+restart above that lease's nonce even if the wall clock was corrected backward;
+when the first read fails, the process runs on the wall clock alone.
+Renewals confirmed over the tunnel are not written back to the durable store,
+so beyond that floor the wall clock alone exceeds the former process's high
+watermark only when its current value exceeds the highest nonce that process
+emitted. Multiple allocations in one millisecond can put that watermark ahead
+of the old wall clock value.
+
+Receivers keep a nonce watermark per holder and epoch. A lease at a strictly
+higher epoch resets that holder's watermark to the new nonce. A same-epoch
+nonce must still advance, and an older epoch cannot reset either watermark.
+`HttpLeaseTransport.recordObserved` applies this on machine-authenticated
+receipt; `LeaseCoordinator` verifies the lease signature before applying it to
+its freshness stamp or authority view. The coordinator
+excludes the current observation's holder from `acceptTunnelLease`'s supplied
+nonce floor, so that check does not retain the old epoch's floor on this path.
+The replay predicate changes from per holder to per holder and epoch. The
+acquisition and fencing rules are unchanged, but these inputs change replay
+acceptance, freshness stamping, and takeover outcomes. The generator also supplies
+acquisitions, relinquish tombstones, and hand-back consent tokens. The lease
+record and signature format are unchanged, and there is no switch.
+
+Residual: if a peer retains a higher same-epoch watermark than any own lease
+available at boot, and the corrected clock is below it, the peer drops that
+holder's same-epoch renewals until the nonce catches up or the epoch advances.
+The peer can then take over once its observed lease expires or the configured
+stale-renewal rule fires. A later verified higher-epoch lease from that holder
+resets the watermark, so its subsequent renewals are credited. A mixed-version
+receiver without the epoch reset can continue rejecting those renewals until
+its old watermark is exceeded or that receiver restarts. Rollback is reverting
+the release, with this mixed-version condition considered before re-pairing.
+
 ### Change 3 — do not build a git lease store over a registry git cannot carry
 
 At the top of the git-sync block in `server.ts`, before the registry-sync
@@ -387,8 +436,10 @@ not specified here; working notes on each are in
   for a few seconds before its first pull (the incident's first-boot blip); a
   simultaneous boot is settled by the tie-break. Both machines may send in the
   window.
-- **(c) Restart hand-over.** After a holder restarts, the peer can take over,
-  because a restarted process restarts its renewal nonce (deferred fix). <!-- tracked: CMT-1226 -->
+- **(c) Restart hand-over.** If the holder cannot recover its prior high nonce
+  and its clock is below that value, same-epoch renewals are dropped until
+  catch-up or epoch advance. A peer can take over after freshness expires.
+  Higher-epoch verified leases reset the receiver's floor. <!-- tracked: CMT-1226 -->
 - **(d) Intermittent holding.** A holder whose only dialable peer is unreachable
   holds about half the time and replies are held in the gaps (the operator's
   Mac Studio case). This is the separate window (d) change; the Roblox topic
@@ -427,9 +478,8 @@ not specified here; working notes on each are in
   - `presumedDeadHolders`, through `canAcquire` (which checks expiry first,
     `FencedLease.ts:313`): a takeover before expiry, possible while an
     unexpired lease of that peer is visible here without a fresh renewal stamp.
-    Known ways that happens: a git-carried lease; a restarted holder's
-    higher-epoch lease whose nonce is below this machine's high-water for it
-    (window (c), `LeaseCoordinator.ts:291-293`, `HttpLeaseTransport.ts:492-498`);
+    Known ways that happens: a git-carried lease; a restarted holder with no
+    recoverable own nonce above this machine's same-epoch high watermark;
     and a freshness window shorter than the TTL (reported by the ordering check).
     A takeover this way also authorises an enabled solo hold for that epoch,
     independent of `allPeersPresumedGone` (`:397`, `:705`).
@@ -592,6 +642,19 @@ not specified here; working notes on each are in
   including with the B4 skew-immune gate on (matching `isPeerPresumedDead`'s
   router branch);
   both routes (A: no git manager; B: git manager, git-ignored registry).
+- **Unit, restart nonce (Change 2).** A holder persists an unexpired own lease,
+  then a new coordinator runs `primeFromDurable` and `acquireIfEligible` before
+  renewing. The receiver's transport accepts each nonce and its coordinator
+  advances the verified freshness stamp without becoming takeover-eligible.
+  A corrected clock stays below a durable high nonce, which still seeds the
+  restart. After a corrected-clock gap, the receiver takes over once; a later
+  higher epoch resets the holder's future nonce watermark and its next renewal
+  advances freshness. Same-epoch and old-epoch replays do not.
+  A forged own-holder lease observed over the network (bad signature, nonce
+  1e20) and an unverified or unsafe durable own nonce leave the generator on
+  the wall clock, strictly increasing and safe.
+  A correctly signed durable nonce one hour ahead seeds the counter; one near
+  `MAX_SAFE_INTEGER` is ignored.
 - **Unit, coordinator.** With injected clocks: a holder silent past
   `failoverThresholdMs` (receipt stale, no renewal stamp) whose verified renewal
   is waiting in the tunnel is not taken over by `acquireIfEligible` on that tick.
@@ -702,7 +765,11 @@ Each lease switch, and reverting the release, restores prior behaviour, which
 includes the incident: `liveness:false` restores the trigger, `mediumCheck:false`
 the amplifier on a git-ignored registry (it has no effect on an
 `untracked-addable` one, which stays on git either way).
-`unconfirmedWriteAlert:false` has no lease effect. On a paired agent whose
+`unconfirmedWriteAlert:false` has no lease effect. Change 2 has no switch; reverting
+the release restores a nonce counter starting at 0 and removes the per-epoch
+watermark reset. A still-running receiver that saw a future nonce may continue
+dropping lower renewals even after that holder acquires a higher epoch, until
+the nonce catches up or the receiver restarts. On a paired agent whose
 registry is git-ignored, roll back by first
 returning to a single machine: stop the standby and keep it stopped, then revoke
 it on the remaining machine (`instar machines remove <name-or-id>`,
@@ -835,11 +902,20 @@ at the next restart.
   operator direction (3 Oct 14:24 PDT) review proceeds on GPT only. Internal
   review: one all-lens agent per round from cycle 1 round 5.
 
+- **Cycle 6 (Change 2, 4 Oct)** added the restart-safe renewal nonce after the
+  live proof showed a restarted holder losing the lease to a live peer. Four
+  rounds on `gpt-6-astra`: round 1 found a persistent future watermark and a test
+  that bypassed the restart path; round 2 found that a forged network lease could
+  seed the counter; round 3 found only wording and a numeric bound; round 4 found
+  no defects.
+
 ## Out of scope, tracked
 
 Every deferral in this spec is carried by one commitment, checked against `docs/specs/carriers/lease-unconfirmed-candidate-flap.json`: <!-- tracked: CMT-1226 -->
 
 > **CMT-1226** — "Hand Echo the deferred <!-- tracked: CMT-1226 --> lease items with their notes: boot pull (window b), restart nonce watermark (window c), never-accepted lease detector, GitLeaseStore items (i), (ii), (v) and the rarer (iii),(iv),(vi),(vii), persist(), _staleOwnerSelfProof, join/pair issues; and spec + build window (d) reliable holding myself before moving topic 46908. Report status back in topic 47547 within 14 days of merg"
+
+The restart nonce watermark (window (c)) named in that commitment is built here as Change 2, and the Echo handoff omits it.
 
 
 - **Window (d): reliable holding with the only peer unreachable** (operator
@@ -852,9 +928,6 @@ Every deferral in this spec is carried by one commitment, checked against `docs/
   draft and a cheaper alternative (the `/api/lease` ack reporting
   `max(observed, own currentEpoch())`) are the starting points.
   <!-- tracked: sagemind topic 47547 -->
-- **Restart nonce watermark** (window (c); owner Echo). `nonceCounter` restarts
-  at 0 per process (`LeaseCoordinator.ts:171`, `:255`) while peers keep the old
-  watermark (`HttpLeaseTransport.ts:492-494`). <!-- tracked: sagemind topic 47547 -->
 - **`GitLeaseStore` write hardening** (items i to vii) and its **never-accepted
   detector** (deferred 3 Oct 14:46 PDT; owner Echo). <!-- tracked: CMT-1226 -->
   <!-- tracked: sagemind topic 47547; sent to Echo msg-1791058165363-gmjui2 -->

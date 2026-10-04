@@ -30,6 +30,19 @@ The first draft tried to fix every lease weakness it found, and also described I
 
 Earlier cycles: cycle 1 (10 rounds), the fresh set (9 rounds) and cycle 3 (9 rounds) ran on the untrimmed spec. Cycle 4 (10 rounds) ran on the trimmed spec and stopped at its cap. The full round log is kept in the agent's repository at `docs/instar/lease-flap-review-rounds-1-6.md`.
 
+## Iteration summary (cycle 6, Change 2)
+
+The live proof showed a restarted holder losing the lease to its live peer
+because the renewal nonce restarted at 0. Change 2 makes the nonce restart-safe
+and the peer's replay watermark per epoch. Four rounds on `gpt-6-astra`:
+
+| Round | Findings | Resolution |
+|---|---|---|
+| 1 | 2 DESIGN, 2 NIT: a future watermark persisted across takeovers; the test bypassed the restart path | Epoch-scoped watermarks on transport and coordinator; test rewritten through the boot path and receiver |
+| 2 | 1 DESIGN, 2 NIT: a forged network lease could seed the counter | Seed only once, from a signature-verified durable own lease; regression test |
+| 3 | 0 DESIGN, 3 NIT: wording; a verified absurd nonce could exhaust the counter | One-year seed bound; signed boundary tests; wording |
+| 4 | 0 DESIGN, 0 NIT | Converged |
+
 ## Decision-completeness
 
 Three decision points, all `invariant` (deterministic, no arbiter): presumed dead/gone, store medium, degradation thresholds. One cheap-to-change-after tag: the unconfirmed-write alert threshold of 5, which drives a signal only; it was contested and survived. The deferrals all carry principal approval in the frontmatter: boot pull, never-accepted detector, restart nonce watermark, window (d), and GitLeaseStore items (i), (ii) and (v).

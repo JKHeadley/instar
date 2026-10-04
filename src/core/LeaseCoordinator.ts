@@ -228,6 +228,7 @@ export class LeaseCoordinator {
    */
   private freshObservedMonoMs = new Map<string, number>();
   private lastObservedNonce = new Map<string, number>();
+  private lastObservedNonceEpoch = new Map<string, number>();
   private unconfirmedWriteCount = 0;
   private unconfirmedWriteReported = false;
 
@@ -260,8 +261,31 @@ export class LeaseCoordinator {
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
   }
+  private static readonly NONCE_SEED_MAX_AHEAD_MS = 365 * 24 * 3600 * 1000;
+  private nonceFloorPrimed = false;
+  /** Strictly increasing, at least the wall-clock milliseconds, and above this
+   * machine's own durable lease nonce. The floor is read once, only from a
+   * signature-verified own lease with a safe-integer nonce: a network
+   * observation can never seed it, so a forged lease cannot poison the counter. */
   private nextNonce(): number {
-    return ++this.nonceCounter;
+    if (!this.nonceFloorPrimed) {
+      this.nonceFloorPrimed = true;
+      try {
+        const durable = this.d.store.read().lease;
+        // The seed must also sit within a year of the wall clock: a verified but
+        // absurd nonce near MAX_SAFE_INTEGER would otherwise exhaust the counter.
+        if (durable && durable.holder === this.selfMachineId && Number.isSafeInteger(durable.nonce)
+            && durable.nonce <= Math.floor(this.now()) + LeaseCoordinator.NONCE_SEED_MAX_AHEAD_MS
+            && this.fl.verifyLease(durable)) {
+          this.nonceCounter = Math.max(this.nonceCounter, durable.nonce);
+        }
+      } catch {
+        // @silent-fallback-ok — the wall-clock seed below still applies; a
+        // failed read only loses the extra floor, never monotonicity.
+      }
+    }
+    this.nonceCounter = Math.max(this.nonceCounter + 1, Math.floor(this.now()));
+    return this.nonceCounter;
   }
 
   get selfMachineId(): string {
@@ -366,7 +390,10 @@ export class LeaseCoordinator {
           // advances; a non-renewing holder's stops. Stamp the OBSERVER's own
           // monotonic time when a peer holder's nonce watermark strictly advances.
           const prevNonce = this.lastObservedNonce.get(obs.lease.holder) ?? -1;
-          if (obs.lease.holder !== this.selfMachineId && obs.lease.nonce > prevNonce) {
+          const prevEpoch = this.lastObservedNonceEpoch.get(obs.lease.holder) ?? -1;
+          if (obs.lease.holder !== this.selfMachineId &&
+              (obs.lease.epoch > prevEpoch || (obs.lease.epoch === prevEpoch && obs.lease.nonce > prevNonce))) {
+            this.lastObservedNonceEpoch.set(obs.lease.holder, obs.lease.epoch);
             this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
             this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
           }
