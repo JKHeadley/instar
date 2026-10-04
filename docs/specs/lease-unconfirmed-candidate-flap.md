@@ -145,8 +145,9 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   (`resolveDevAgentGate(skewImmuneLiveness.enabled, config)`) and `wallNow`
   today's wall clock: with `liveness:false` the builder calls today's
   `isPeerPresumedDead` with exactly those inputs (`server.ts:5599-5620`,
-  `:5641-5660`). Harnesses pass their injected clocks as `monoNow` and
-  `wallNow`, so the switches-off baseline reproduces today's decisions
+  `:5643-5662`). Harnesses pass their injected clocks as `monoNow` and
+  `wallNow`, give `MachinePoolRegistry` the same `wallNow` as its `now` and the
+  same `failoverThresholdMs` (`server.ts:21218`), so the switches-off baseline reproduces today's decisions
   deterministically.
 - `LeaseCoordinatorDeps` gains a live getter for `unconfirmedWriteAlert`.
 
@@ -307,7 +308,10 @@ Attention item, none escalating. None feeds `canAcquire`, `holdsLease` or
   only `active` peers, `MachineIdentity.ts:781-786`). A peer that becomes
   eligible later gets one further event. A dialable peer is one the transport's
   `peers()` returns: `revokedAt` unset and an address known
-  (`server.ts:5553-5556`).
+  (`server.ts:5553-5556`). A peer that first becomes dialable restarts its
+  window from that moment, deliberately: it is given a full window to be pulled
+  before it is reported. Tests cover never-dialable → dialable → unreachable,
+  with one report per eligibility.
 - **Ordering check.** One degradation at boot when `failoverThresholdMs <=
   leaseTtlMs`, naming both values. Change 1's liveness rule narrows takeover only
   while the lease expires before the liveness window closes.
@@ -557,11 +561,19 @@ not specified here; working notes on each are in
     default), driven by the same deterministic event schedule with injected
     clocks. Metrics, over the fault interval: **both-holding time** (`holdsLease()`
     true on both coordinators), **no-holder time** (false on both), and **epoch
-    changes**. The fix must be ≤ the baseline on both-holding time, given
-    `failoverThresholdMs > leaseTtlMs` (the fix calls a peer dead only after its
-    lease has expired, which `canAcquire` checks first). No-holder time and epoch
-    changes are recorded against the baseline; any scenario where the fix is
-    higher is named in the artifact and reviewed, not counted as a failure. The
+    changes**. In these harnesses (both stores `LocalLeaseStore`, every peer lease
+    seen through the tunnel) the fix is asserted ≤ the baseline on both-holding
+    time. That is an acceptance check measured in this harness, not a property
+    proved for every deployment. No-holder time and epoch changes are recorded
+    against the baseline; any scenario where the fix is higher on any metric is
+    named in the artifact and reviewed, not counted as a failure. Two scenarios
+    are recorded only, because the reasoning behind the check does not cover
+    them: a tracked-registry pair with git pushes working and HTTP partitioned
+    past `failoverThresholdMs` (a lease that arrives only through `store.read()`
+    stamps no renewal freshness, `LeaseCoordinator.ts:271-273`, `:286-297`, so a
+    peer can be called dead before its lease expires), and a backward wall-clock
+    step during acquisition and holding (liveness is monotonic, expiry is wall
+    time). The
     upgrade store transition and the `mediumCheck` rollback have no distinct
     switches-off counterpart, so their behaviour is recorded only. (Duplicate
     replies against the real legacy build are the live runner's regression row.)
@@ -659,6 +671,12 @@ at the next restart.
   exact (holder, epoch, nonce), metrics share one event schedule, and an
   enabled-hold scenario is characterised. B's store in the incident test comes
   from the selection function.
+- **Cycle 4, round 7 (v37)**: one DESIGN finding (internal and GPT agreeing):
+  the ≤ justification was false for leases carried by git (no renewal stamp) and
+  under wall-clock steps. ≤ is now a measured check in the local-store harness
+  only, and both cases are recorded-only scenarios. GPT: the unobserved-peer
+  window restarting on first dialability is now stated as intended and tested.
+  Precision: line citations; the router shares the harness wall clock.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
