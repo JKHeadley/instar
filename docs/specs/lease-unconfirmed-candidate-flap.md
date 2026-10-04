@@ -191,7 +191,12 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   and taken over. So `acquireIfEligible` moves the read inside the loop, after
   `effectiveView()`, on every iteration. The other readers (`peerTakeoverEligible`
   `:642-647`, `acquireOnHandbackConsent` `:799-802`, `checkForUnresolvableSplit`
-  `:966-967`) already call `effectiveView()` first.
+  `:966-967`) already call `effectiveView()` first; `soloCaptainHoldEligible`
+  (`:398`) reads before its own `effectiveView()` (`:400`), but its only caller,
+  `renew()`, calls `effectiveView()` first (`:843`). The move applies under both
+  liveness rules and is not switched: today's rule never reads
+  `freshObservedMonoMs`, so with `liveness:false` it gives the same verdicts, which
+  a unit test asserts.
 - **Retention.** The receipt map is never pruned while the process runs (the
   registry has no eviction; it is built once, `server.ts:21221`); a restart is
   the only way it starts empty. While no router is available, or after a
@@ -314,7 +319,10 @@ Attention item, none escalating. None feeds `canAcquire`, `holdsLease` or
   only `active` peers, `MachineIdentity.ts:781-786`). A peer that becomes
   eligible later gets one further event. A dialable peer is one the transport's
   `peers()` returns: `revokedAt` unset and an address known
-  (`server.ts:5553-5556`). A peer that first becomes dialable restarts its
+  (`server.ts:5553-5556`). `sample()` computes this from `loadDiskRegistry` with
+  the same predicate, moved into one shared helper that both the transport and the
+  builder call, so the two views cannot drift; a test changes a peer's endpoints
+  before any receipt and checks both. A peer that first becomes dialable restarts its
   window from that moment, deliberately: it is given a full window to be pulled
   before it is reported. Tests cover never-dialable → dialable → unreachable,
   with one report per eligibility.
@@ -698,6 +706,10 @@ at the next restart.
   unit test. Precision: the review exception covers only no-holder time and epoch
   changes; report deduplication is by (peer, window); the git-carried scenario is
   bounded to one `leaseTtlMs`.
+- **Cycle 4, round 9 (v39)**: internal and GPT zero DESIGN. Precision: the
+  ordering move is stated as unswitched, with an equivalence test under
+  `liveness:false`; `soloCaptainHoldEligible` is listed; dialability comes from
+  one shared predicate used by the transport and the builder.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
