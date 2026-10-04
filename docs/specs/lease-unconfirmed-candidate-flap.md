@@ -188,15 +188,17 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   once before its loop calls `effectiveView()` (`:678`, `:682`). Under the fix
   that order would let a holder whose verified renewal arrives after a gap longer
   than `failoverThresholdMs` be judged dead against its own fresh, unexpired lease,
-  and taken over. So `acquireIfEligible` moves the read inside the loop, after
-  `effectiveView()`, on every iteration. The other readers (`peerTakeoverEligible`
+  and taken over. So, with `liveness` on, `acquireIfEligible` reads inside the loop,
+  after `effectiveView()`, on every iteration; with `liveness:false` it keeps
+  today's single read before the loop, so a retry after a lost git write still
+  uses today's verdict rather than one re-read from the registry that write
+  pulled (`GitLeaseStore.ts:64`, `:96`). The other readers (`peerTakeoverEligible`
   `:642-647`, `acquireOnHandbackConsent` `:799-802`, `checkForUnresolvableSplit`
   `:966-967`) already call `effectiveView()` first; `soloCaptainHoldEligible`
   (`:398`) reads before its own `effectiveView()` (`:400`), but its only caller,
-  `renew()`, calls `effectiveView()` first (`:843`). The move applies under both
-  liveness rules and is not switched: today's rule never reads
-  `freshObservedMonoMs`, so with `liveness:false` it gives the same verdicts, which
-  a unit test asserts.
+  `renew()`, calls `effectiveView()` first (`:843`). A unit test on a `GitLeaseStore`
+  whose lost write pulls a fresher peer `lastSeen` asserts that `liveness:false`
+  keeps today's verdict on the retry.
 - **Retention.** The receipt map is never pruned while the process runs (the
   registry has no eviction; it is built once, `server.ts:21221`); a restart is
   the only way it starts empty. While no router is available, or after a
@@ -271,8 +273,8 @@ the error, never from "did it throw":
   numeric `err.status` other than 1 ⇒ `git-exit-<status>`; a non-null
   `err.signal` ⇒ `signal-<name>`; any other `err.code` ⇒ `spawn-error`.
 
-On `local`, a new `leaseGitRef` (set to `gitSyncRef` only when the medium is
-`git`) replaces `gitSyncRef` for the three lease consumers: the store choice,
+On `local`, a new `leaseGitRef` (equal to `gitSyncRef` when the medium is `git`
+or `unchecked`, null on `local`) replaces `gitSyncRef` for the three lease consumers: the store choice,
 `_hasDurableLeaseAuthority` (`server.ts:5711`) and the git branch of
 `_staleOwnerSelfProof` (`:5737-5740`). Durable lease authority is then false, so
 U4.2 refuses a 2-machine claim as it does on a git-less install. The backup
@@ -305,7 +307,9 @@ Attention item, none escalating. None feeds `canAcquire`, `holdsLease` or
   resets the count to zero: `ok: true` (a local commit or a pushed git write)
   or `ok: false` with a competing winner's lease (a normal lost race), so only
   an unbroken streak counts. At 5 it reports "lease writes remain
-  unconfirmed by the medium". Renewals are
+  unconfirmed by the medium" once per streak: the report fires when the count
+  reaches 5, not again while the streak continues, and again only after a reset
+  and a new streak of 5 (a unit test covers two streaks separated by a success). Renewals are
   not counted. This does **not** detect a machine holding a lease the medium
   never accepted, which renews without further `casWrite` calls; that detector
   is deferred with item (i).
@@ -710,6 +714,13 @@ at the next restart.
   ordering move is stated as unswitched, with an equivalence test under
   `liveness:false`; `soloCaptainHoldEligible` is listed; dialability comes from
   one shared predicate used by the transport and the builder.
+- **Cycle 4, round 10 (v40)**: one DESIGN finding: the unswitched ordering
+  move would change today's verdicts on a git store, since a lost write pulls a
+  fresher `lastSeen` that a retry would re-read. The move is now switched with
+  `liveness`. GPT: `leaseGitRef` covers `unchecked` explicitly (rollback keeps all
+  three git consumers), and the write alert fires once per streak. Cycle 4 hit
+  its 10-round cap without two consecutive zero-DESIGN rounds:
+  `convergence-failed`, retry pending the principal.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
