@@ -32,9 +32,16 @@ principal-deferral-approval:
     owner: "Luna (sagemind), with Echo reviewing"
     eta: "specified and reviewed after this fix merges"
   - item: "GitLeaseStore deferred items (i), (ii), (v)"
-    status: "pending (requested with spec approval)"
+    status: "approved"
+    by: "Justin Headley (operator), Telegram topic 47547"
+    at: "2026-10-04T01:55:00-07:00"
     owner: "Echo (instar maintainer)"
     eta: "reported back within 14 days of merge"
+principal-ratification:
+  - item: "reachability over strict single-holder, and the windows in the Safety posture"
+    status: "ratified"
+    by: "Justin Headley (operator), Telegram topic 47547, after reading the ELI16 snapshot of v40"
+    at: "2026-10-04T01:55:00-07:00"
 lessons-engaged:
   - "P2 Signal vs Authority: every change is a deterministic input to the existing FencedLease authority; no new authority is added."
   - "No Silent Degradation: a git medium that cannot carry the registry, sustained unconfirmed lease writes, and a liveness feeder that never observes a registered peer each raise one DegradationReporter event."
@@ -117,7 +124,7 @@ the next restart. Each flip is logged once when detected (Frontloaded 3).
 
 | Switch | Off restores | Also governs |
 |---|---|---|
-| `liveness` | today's liveness rule (`isPeerPresumedDead`) | `sample()` and the unobserved-peer report |
+| `liveness` | today's liveness rule (`isPeerPresumedDead`) | `sample()`, the unobserved-peer report, and where `acquireIfEligible` reads liveness |
 | `mediumCheck` | today's store choice (git whenever a git-sync manager exists), the debouncer, and `gitSyncRef` for every consumer | the medium degradations; `/health` → `leaseMedium` reads `unchecked` where a git-sync manager exists |
 | `unconfirmedWriteAlert` | no unconfirmed-write report | the `failoverThresholdMs <= leaseTtlMs` ordering check |
 
@@ -149,7 +156,11 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   `wallNow`, give `MachinePoolRegistry` the same `wallNow` as its `now` and the
   same `failoverThresholdMs` (`server.ts:21218`), so the switches-off baseline reproduces today's decisions
   deterministically.
-- `LeaseCoordinatorDeps` gains a live getter for `unconfirmedWriteAlert`.
+- `LeaseCoordinatorDeps` gains live getters for `unconfirmedWriteAlert` and
+  `liveness`. `acquireIfEligible` reads `liveness` once at the start of each call
+  and passes it to `presumedDeadHolders({ liveness })`, so one call uses one rule
+  throughout; other callers pass nothing and the builder reads the switch itself.
+  A flip takes effect from the next call.
 
 - `getRouter` and `getFreshness` are getters read on every call: the router is
   constructed later in boot than the lease, and the freshness reads live on the
@@ -189,7 +200,8 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   that order would let a holder whose verified renewal arrives after a gap longer
   than `failoverThresholdMs` be judged dead against its own fresh, unexpired lease,
   and taken over. So, with `liveness` on, `acquireIfEligible` reads inside the loop,
-  after `effectiveView()`, on every iteration; with `liveness:false` it keeps
+  after `effectiveView()`, on every iteration, and the re-check after a lost write
+  (`:717`) uses that iteration's set; with `liveness:false` it keeps
   today's single read before the loop, so a retry after a lost git write still
   uses today's verdict rather than one re-read from the registry that write
   pulled (`GitLeaseStore.ts:64`, `:96`). The other readers (`peerTakeoverEligible`
@@ -198,7 +210,7 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   (`:398`) reads before its own `effectiveView()` (`:400`), but its only caller,
   `renew()`, calls `effectiveView()` first (`:843`). A unit test on a `GitLeaseStore`
   whose lost write pulls a fresher peer `lastSeen` asserts that `liveness:false`
-  keeps today's verdict on the retry.
+  keeps today's verdict on the retry, and flips the switch between two calls.
 - **Retention.** The receipt map is never pruned while the process runs (the
   registry has no eviction; it is built once, `server.ts:21221`); a restart is
   the only way it starts empty. While no router is available, or after a
@@ -417,10 +429,9 @@ not specified here; working notes on each are in
    Changing (i) and (ii) alone was shown in review to risk leaving no holder, so
    they need a maintainer design pass. **Principal deferral approval for (i),
    (ii) and (v), and ratification of the reachability-over-strict ranking and
-   the windows listed in the Safety posture, are requested from the operator
-   with the spec approval** (owner: Echo; reported back in topic 47547 within 14
-   days of merge). Implementation and merge wait until that approval is recorded
-   in the frontmatter.
+   the windows listed in the Safety posture, were given by the operator
+   with the spec approval on 4 October** (owner: Echo; reported back in topic
+   47547 within 14 days of merge), as recorded in the frontmatter.
 2. **Unconfirmed-write alert threshold:** 5 (cheap-to-change-after: signal
    only). **Freshness window:** `failoverThresholdMs`.
 3. **Switches:** `multiMachine.leaseFlapFix.{liveness, mediumCheck,
@@ -589,7 +600,8 @@ not specified here; working notes on each are in
     time. That is an acceptance check measured in this harness, not a property
     proved for every deployment. No-holder time and epoch changes are recorded
     against the baseline; any scenario where the fix is higher on either is
-    named in the artifact and reviewed, not counted as a failure. Two scenarios
+    named in the artifact with its magnitude and an explicit accept or reject by
+    the principal; an unresolved or rejected one blocks release. Two scenarios
     are recorded only, because the reasoning behind the check does not cover
     them: a tracked-registry pair with git pushes working and HTTP partitioned
     past `failoverThresholdMs` (a lease that arrives only through `store.read()`
@@ -721,6 +733,12 @@ at the next restart.
   three git consumers), and the write alert fires once per streak. Cycle 4 hit
   its 10-round cap without two consecutive zero-DESIGN rounds:
   `convergence-failed`, retry pending the principal.
+- **Cycle 5, round 1 (v41)**: one DESIGN finding (internal and GPT agreeing):
+  the coordinator had no input for the `liveness` switch that now picks where
+  `acquireIfEligible` reads liveness. It gains a live getter read once per call
+  and passed to the callback. GPT: a recorded regression needs an explicit
+  accept or reject, and an unresolved one blocks release. The operator's approval
+  and ratification are recorded.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
