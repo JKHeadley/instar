@@ -408,15 +408,26 @@ not specified here; working notes on each are in
   can therefore forge a receipt. A forged receipt keeps that peer "alive" for up
   to `failoverThresholdMs`, delaying a takeover. It also gives a never-observed
   peer a history: once that receipt is stale and no renewal is fresh, the peer
-  is dead, exactly as a peer genuinely seen once and then silent would be. So a
-  forgery can turn "not dead" into "dead" earlier than lease expiry alone would.
-  Because `canAcquire` checks expiry first (`FencedLease.ts:313`), this changes a
-  decision only while an unexpired lease of that peer reaches this machine
-  without stamping renewal freshness, which is the git-carried case, bounded to
-  `leaseTtlMs` after its acquisition (Tests, E2E). A unit test compares a
-  never-observed peer with a forged-once-then-stale one against an unexpired,
-  store-carried lease and records the difference. Each source counts for at most
-  `failoverThresholdMs`. UNMEASURABLE (neither observed):
+  is dead and gone, exactly as a peer genuinely seen once and then silent would
+  be. What that changes, by reader:
+  - `presumedDeadHolders`, through `canAcquire` (which checks expiry first,
+    `FencedLease.ts:313`): a takeover before expiry, possible while an
+    unexpired lease of that peer is visible here without a fresh renewal stamp.
+    Known ways that happens: a git-carried lease; a restarted holder's
+    higher-epoch lease whose nonce is below this machine's high-water for it
+    (window (c), `LeaseCoordinator.ts:291-293`, `HttpLeaseTransport.ts:492-498`);
+    and a freshness window shorter than the TTL (reported by the ordering check).
+  - `allPeersPresumedGone`, through `soloCaptainHoldEligible` (`:398`), which has
+    no expiry condition: a never-gone peer becomes gone for the rest of the
+    process, so an enabled solo-captain hold can engage on forged evidence, with
+    no time bound. The hold is off by default and on sagemind.
+  - `checkForUnresolvableSplit` (`:966-967`): its escalation, but it has no
+    production caller.
+  These are not asserted bounds; unit tests record each one (never-observed
+  against forged-once-then-stale, with an unexpired store-carried lease, a
+  restarted holder's below-watermark lease, and the enabled hold). Authenticating
+  the receipt is outside this change; the window (d) change must not rest the
+  hold gate on it. UNMEASURABLE (neither observed):
   not dead, not gone; lease expiry remains the takeover path, and Change 4
   reports the blind feeder.
 - **Lease medium eligibility.** SYMBOL: a git-sync manager exists. STATE claimed:
@@ -762,6 +773,13 @@ at the next restart.
   evidence declaration now states that and its bound, with a test. Precision:
   the getters are optional and default on; "one rule per call" is scoped to
   `presumedDeadHolders`; the write counter across switch flips is defined.
+- **Cycle 5, round 3 (v43)**: two DESIGN findings, both false or over-wide
+  safety claims about the forged receipt: it can also engage an enabled solo
+  hold, which has no expiry condition, so no lease bound applies; and the
+  unstamped-lease case also arises from a restarted holder below its nonce
+  watermark. GPT raised the same scope and the clock assumption. The declaration
+  now lists the effect per reader, asserts no bound, records each by test, and
+  passes the constraint to the window (d) change.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
@@ -773,7 +791,9 @@ at the next restart.
 - **Window (d): reliable holding with the only peer unreachable** (operator
   decision 3 Oct 16:05 PDT; its own spec and review, before the Roblox topic
   moves). Starting point: the solo-captain hold with the always-on machine as
-  `preferredAwakeMachineId`, and the working notes. <!-- tracked: sagemind topic 47547 -->
+  `preferredAwakeMachineId`, and the working notes. Constraint carried from this
+  spec: its hold gate must not rest on the unauthenticated live receipt (Evidence
+  declarations, Peer liveness). <!-- tracked: sagemind topic 47547 -->
 - **Boot pull** (window (b); deferred 3 Oct 15:41 PDT; owner Echo). The v19
   draft and a cheaper alternative (the `/api/lease` ack reporting
   `max(observed, own currentEpoch())`) are the starting points.
