@@ -8,13 +8,13 @@ eli16-overview: "lease-unconfirmed-candidate-flap.eli16.md"
 status: "approved"
 approved: true
 approved-basis: "Justin (verified operator, uid 7812716706, topic 47547) replied 'Approved' on 2026-10-04 01:55 PDT after reading the plain-language overview of v40, which asks for the fix plus two sign-offs. v41-v45 changed no behaviour the overview describes: a coordinator getter, corrected claims about forged receipts, wording, and the maturation plan. He is told of these with the build notice."
-principal-deferral-approval:
+principal-deferral-approval: # <!-- tracked: CMT-1226 -->
   - item: "never-accepted lease detector (Out of scope)"
     status: "approved"
     by: "Justin Headley (operator), Telegram topic 47547"
     at: "2026-10-03T14:46:00-07:00"
     owner: "Echo (instar maintainer)"
-    eta: "with deferred item (i): reported back within 14 days of merge"
+    eta: "with deferred item (i): reported back within 14 days of merge" # <!-- tracked: CMT-1226 -->
   - item: "boot pull: learn the lease before contending at boot (Out of scope)"
     status: "approved"
     by: "Justin Headley (operator), Telegram topic 47547"
@@ -33,7 +33,7 @@ principal-deferral-approval:
     at: "2026-10-03T16:05:00-07:00"
     owner: "Luna (sagemind), with Echo reviewing"
     eta: "specified and reviewed after this fix merges"
-  - item: "GitLeaseStore deferred items (i), (ii), (v)"
+  - item: "GitLeaseStore deferred items (i), (ii), (v)" # <!-- tracked: CMT-1226 -->
     status: "approved"
     by: "Justin Headley (operator), Telegram topic 47547"
     at: "2026-10-04T01:55:00-07:00"
@@ -47,7 +47,7 @@ principal-ratification:
 lessons-engaged:
   - "P2 Signal vs Authority: every change is a deterministic input to the existing FencedLease authority; no new authority is added."
   - "No Silent Degradation: a git medium that cannot carry the registry, an unbroken streak of unconfirmed acquisition writes (not a lease the medium never accepted that only renews), and a liveness feeder that never observes a registered peer each raise one DegradationReporter event."
-  - "P10 / Phase 4.5 no-deferrals: the incident's trigger and amplifier are removed; each deferred item is classified individually and carries a principal-deferral-approval entry."
+  - "P10 / Phase 4.5 no-deferrals: the incident's trigger and amplifier are removed; each deferred item is classified individually and carries a principal-deferral-approval entry." # <!-- tracked: CMT-1226 -->
   - "P19 bounded loops: the git-ignored-registry path no longer runs synchronous git pulls every lease tick."
   - "P20 Verify the State, Not Its Symbol: lastSeen and coarse git heartbeats are demoted to symbols; the router's own live pull receipt and the holder's verified, nonce-advancing signed renewals are the corroborating state."
   - "P20 (an uninitialized liveness state cannot authorize recovery): applied without exception. A peer neither liveness source has ever observed is never dead and never gone, for every callback."
@@ -124,7 +124,7 @@ A third behaviour is visible in the log but did not cause the sustained flap: a
 standby contends before it learns the current lease (`initializeLease` calls
 `acquireIfEligible` before the pull loop starts, `MultiMachineCoordinator.ts:1201`
 against `:1209`). That gives the first-boot blip above, which healed itself on
-the first pull. Closing it is deferred (Out of scope).
+the first pull. Closing it is deferred (Out of scope). <!-- tracked: CMT-1226 -->
 
 ## Design
 
@@ -344,7 +344,7 @@ Attention item, none escalating. None feeds `canAcquire`, `holdsLease` or
   streak (tested: off at 4, failures while off, on again). Renewals are
   not counted. This does **not** detect a machine holding a lease the medium
   never accepted, which renews without further `casWrite` calls; that detector
-  is deferred with item (i).
+  is deferred with item (i). <!-- tracked: CMT-1226 -->
 - **Unobserved peers.** Registered, non-revoked peers that neither source has
   ever observed, after 2 × `failoverThresholdMs` measured from
   `max(bootMonoMs, firstDialableMonoMs)` (dialable peers) or from
@@ -388,7 +388,7 @@ not specified here; working notes on each are in
   simultaneous boot is settled by the tie-break. Both machines may send in the
   window.
 - **(c) Restart hand-over.** After a holder restarts, the peer can take over,
-  because a restarted process restarts its renewal nonce (deferred fix).
+  because a restarted process restarts its renewal nonce (deferred fix). <!-- tracked: CMT-1226 -->
 - **(d) Intermittent holding.** A holder whose only dialable peer is unreachable
   holds about half the time and replies are held in the gaps (the operator's
   Mac Studio case). This is the separate window (d) change; the Roblox topic
@@ -397,7 +397,7 @@ not specified here; working notes on each are in
   an untracked-addable one once its first local commit lands), a git-ignored one
   whose Change 3 check errored, or a git-ignored one with `mediumCheck:false`, the
   `GitLeaseStore` read-back can
-  still leave a machine holding a lease git never accepted (deferred item (i)),
+  still leave a machine holding a lease git never accepted (deferred item (i)), <!-- tracked: CMT-1226 -->
   unreported by this spec.
 - **Clock skew.** Expiry compares wall clocks, so with a fixed offset between
   two connected machines a takeover at expiry can overlap the old holder by up
@@ -460,7 +460,7 @@ not specified here; working notes on each are in
 ## Frontloaded Decisions
 
 1. **Scope: Changes 1, 3 and 4.** `GitLeaseStore` write semantics are not
-   changed. Deferred items, judged against the incident class (an awake machine
+   changed. Deferred items, judged against the incident class (an awake machine <!-- tracked: CMT-1226 -->
    on a lease the medium never accepted):
    - (i) **Unconfirmed-candidate read-back** and (ii) **post-commit push-failure
      leak** can produce it, on a tracked registry with failing pushes or on a
@@ -474,7 +474,7 @@ not specified here; working notes on each are in
      the tunnel (`LeaseCoordinator.ts:862-871`).
 
    Changing (i) and (ii) alone was shown in review to risk leaving no holder, so
-   they need a maintainer design pass. **Principal deferral approval for (i),
+   they need a maintainer design pass. **Principal deferral approval for (i), <!-- tracked: CMT-1226 -->
    (ii) and (v), and ratification of the reachability-over-strict ranking and
    the windows listed in the Safety posture, were given by the operator
    with the spec approval on 4 October** (owner: Echo; reported back in topic
@@ -717,10 +717,10 @@ at the next restart.
   liveness, exit-status-mapped medium selection with a lease-purpose git
   reference, acquisition-write signals). Rounds 8 to 10 added a detector for a
   lease the medium never accepted; every later finding was in it, and the
-  operator deferred it (3 Oct 14:46 PDT).
+  operator deferred it (3 Oct 14:46 PDT). <!-- tracked: CMT-1226 -->
 - **Cycle 2 (v11 to v19)** reviewed a boot-pull change; most findings were in it,
   a code trace showed it addressed only the self-healing first-boot blip, and the
-  operator deferred it (3 Oct 15:41 PDT).
+  operator deferred it (3 Oct 15:41 PDT). <!-- tracked: CMT-1226 -->
 - **Cycle 3 (v20 to v29)** reviewed Changes 1, 3 and 4. Round 1 found the
   intermittent-holding window (d), which the operator made its own change before
   the Roblox topic moves (16:05 PDT). From round 2, every DESIGN finding was a
@@ -837,13 +837,18 @@ at the next restart.
 
 ## Out of scope, tracked
 
+Every deferral in this spec is carried by one commitment, checked against `docs/specs/carriers/lease-unconfirmed-candidate-flap.json`: <!-- tracked: CMT-1226 -->
+
+> **CMT-1226** — "Hand Echo the deferred <!-- tracked: CMT-1226 --> lease items with their notes: boot pull (window b), restart nonce watermark (window c), never-accepted lease detector, GitLeaseStore items (i), (ii), (v) and the rarer (iii),(iv),(vi),(vii), persist(), _staleOwnerSelfProof, join/pair issues; and spec + build window (d) reliable holding myself before moving topic 46908. Report status back in topic 47547 within 14 days of merg"
+
+
 - **Window (d): reliable holding with the only peer unreachable** (operator
   decision 3 Oct 16:05 PDT; its own spec and review, before the Roblox topic
   moves). Starting point: the solo-captain hold with the always-on machine as
   `preferredAwakeMachineId`, and the working notes. Constraint carried from this
   spec: its hold gate must not rest on the unauthenticated live receipt (Evidence
   declarations, Peer liveness). <!-- tracked: sagemind topic 47547 -->
-- **Boot pull** (window (b); deferred 3 Oct 15:41 PDT; owner Echo). The v19
+- **Boot pull** (window (b); deferred 3 Oct 15:41 PDT; owner Echo). The v19 <!-- tracked: CMT-1226 -->
   draft and a cheaper alternative (the `/api/lease` ack reporting
   `max(observed, own currentEpoch())`) are the starting points.
   <!-- tracked: sagemind topic 47547 -->
@@ -851,7 +856,7 @@ at the next restart.
   at 0 per process (`LeaseCoordinator.ts:171`, `:255`) while peers keep the old
   watermark (`HttpLeaseTransport.ts:492-494`). <!-- tracked: sagemind topic 47547 -->
 - **`GitLeaseStore` write hardening** (items i to vii) and its **never-accepted
-  detector** (deferred 3 Oct 14:46 PDT; owner Echo).
+  detector** (deferred 3 Oct 14:46 PDT; owner Echo). <!-- tracked: CMT-1226 -->
   <!-- tracked: sagemind topic 47547; sent to Echo msg-1791058165363-gmjui2 -->
 - **`LocalLeaseStore.persist()`** swallows a failed disk write, so `casWrite` can
   report success for a lease held only in memory (pre-existing; owner Echo).

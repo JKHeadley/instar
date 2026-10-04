@@ -172,6 +172,8 @@ export interface MachinePoolRegistryDeps {
   failoverThresholdMs: number;
   /** Wall clock (injectable for tests). */
   now?: () => number;
+  /** Monotonic clock used only for live peer-receipt freshness. */
+  monoNow?: () => number;
   /** Fired when a machine is removed from placement for clock skew (Attention item). */
   onClockQuarantine?: (machineId: string, reason: string) => void;
   logger?: (msg: string) => void;
@@ -213,6 +215,7 @@ export class MachinePoolRegistry {
       coherenceRejected?: { atMs: number; reason: string };
     }
   >();
+  private readonly liveReceivedMonoMs = new Map<string, number>();
 
   constructor(deps: MachinePoolRegistryDeps) {
     this.d = deps;
@@ -222,9 +225,19 @@ export class MachinePoolRegistry {
     return (this.d.now ?? Date.now)();
   }
 
+  private monoNow(): number {
+    return this.d.monoNow?.() ?? Number(process.hrtime.bigint() / 1_000_000n);
+  }
+
+  /** Last direct PeerPresencePuller receipt in this process incarnation. */
+  lastLiveReceiptMono(machineId: string): number | undefined {
+    return this.liveReceivedMonoMs.get(machineId);
+  }
+
   /** Record a heartbeat arrival: stamp router-clock receipt + run the clock-skew FSM. */
   recordHeartbeat(obs: HeartbeatObservation): ClockSkewSideEffect {
     const nowMs = this.now();
+    if (!obs.coarseHeartbeat) this.liveReceivedMonoMs.set(obs.machineId, this.monoNow());
     const prev = this.observed.get(obs.machineId);
     // COARSE beats (the git-synced file MachineHeartbeat) NEVER drive the clock-skew
     // FSM: their `selfReportedLastSeen` is a coarse, possibly-30-min-old file timestamp,

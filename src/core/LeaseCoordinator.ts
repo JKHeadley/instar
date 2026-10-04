@@ -104,7 +104,14 @@ export interface LeaseCoordinatorDeps {
   store: LeaseStore;
   tunnel?: LeaseTransport;
   /** Machines presumed dead (lastSeen older than failoverThresholdMs). */
-  presumedDeadHolders: () => ReadonlySet<string>;
+  presumedDeadHolders: (opts?: { liveness?: boolean }) => ReadonlySet<string>;
+  /** Live switch getters; absent means enabled. */
+  getLivenessEnabled?: () => boolean;
+  getUnconfirmedWriteAlertEnabled?: () => boolean;
+  /** Samples liveness feeder health before each lease decision cycle. */
+  sampleLiveness?: () => void;
+  /** Reporting-only sink for sustained unconfirmed acquisition writes. */
+  reportDegradation?: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string; internalOnly?: boolean }) => void;
   /**
    * Wall clock (injectable for tests). Used ONLY to stamp human-readable
    * `acquiredAt`/`expiresAt` ISO fields on lease records (display + the
@@ -221,6 +228,8 @@ export class LeaseCoordinator {
    */
   private freshObservedMonoMs = new Map<string, number>();
   private lastObservedNonce = new Map<string, number>();
+  private unconfirmedWriteCount = 0;
+  private unconfirmedWriteReported = false;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -260,6 +269,71 @@ export class LeaseCoordinator {
   }
   get isSuspended(): boolean {
     return this.suspended;
+  }
+
+  freshRenewalWithin(machineId: string, ms: number): boolean {
+    const observed = this.freshObservedMonoMs.get(machineId);
+    return observed !== undefined && this.monotonicNow() - observed <= ms;
+  }
+
+  lastRenewalObservedMono(machineId: string): number | undefined {
+    return this.freshObservedMonoMs.get(machineId);
+  }
+
+  sampleLiveness(): void {
+    this.syncUnconfirmedWriteAlertState();
+    try {
+      this.d.sampleLiveness?.();
+    } catch (err) {
+      // @silent-fallback-ok — sampling is diagnostic-only and must never stop lease work.
+      this.log(`liveness sampling failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private syncUnconfirmedWriteAlertState(): boolean {
+    const enabled = this.d.getUnconfirmedWriteAlertEnabled?.() ?? true;
+    if (!enabled) {
+      this.unconfirmedWriteCount = 0;
+      this.unconfirmedWriteReported = false;
+    }
+    return enabled;
+  }
+
+  private recordCasWrite(candidate: LeaseRecord, result: ReturnType<LeaseStore['casWrite']>): void {
+    if (!this.syncUnconfirmedWriteAlertState()) return;
+    const observed = result.observed.lease;
+    const ownCandidateFailure = !result.ok && !!observed &&
+      observed.holder === this.selfMachineId &&
+      observed.epoch === candidate.epoch &&
+      observed.nonce === candidate.nonce;
+    if (!ownCandidateFailure) {
+      this.unconfirmedWriteCount = 0;
+      this.unconfirmedWriteReported = false;
+      return;
+    }
+    this.unconfirmedWriteCount++;
+    if (this.unconfirmedWriteCount === 5 && !this.unconfirmedWriteReported) {
+      this.unconfirmedWriteReported = true;
+      try {
+        this.d.reportDegradation?.({
+          feature: 'lease.unconfirmed-acquisition-write',
+          primary: 'Lease acquisition writes confirmed by the shared medium',
+          fallback: 'Continue fenced lease reconciliation with the observed read-back',
+          reason: 'lease writes remain unconfirmed by the medium',
+          impact: 'Repeated acquisition candidates may not be reaching the shared lease medium.',
+          internalOnly: true,
+        });
+      } catch (err) {
+        // @silent-fallback-ok — reporting is diagnostic-only and cannot abort lease authority.
+        this.log(`unconfirmed-write reporting failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  private casWrite(candidate: LeaseRecord): ReturnType<LeaseStore['casWrite']> {
+    const result = this.d.store.casWrite(candidate);
+    this.recordCasWrite(candidate, result);
+    return result;
   }
 
   /**
@@ -501,7 +575,7 @@ export class LeaseCoordinator {
     const view = this.effectiveView();
     // buildAcquisition writes currentEpoch+1; currentEpoch is max(self@N, peer@N)=N.
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
@@ -675,11 +749,13 @@ export class LeaseCoordinator {
       this.suspended = false;
       this.suspendedByRenewal = null;
     }
-    const dead = this.d.presumedDeadHolders();
+    const liveness = this.d.getLivenessEnabled?.() ?? true;
+    const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
+      const dead = legacyDead ?? this.d.presumedDeadHolders({ liveness });
       // Already hold it at the current epoch → just renew.
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
         return this.renew();
@@ -690,7 +766,7 @@ export class LeaseCoordinator {
         return false;
       }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-      const res = this.d.store.casWrite(candidate);
+      const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
         if (
@@ -750,7 +826,7 @@ export class LeaseCoordinator {
       return false;
     }
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
@@ -819,7 +895,7 @@ export class LeaseCoordinator {
       return { ok: false, reason: decision.can ? `non-consent-grant-refused (${decision.reason})` : decision.reason };
     }
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);

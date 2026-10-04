@@ -77,7 +77,7 @@ Two faults fed each other.
 
 ## What is left for later, with Echo
 
-These are written up and passed to Echo, Instar's maintainer, to design properly:
+These are written up and passed to Echo, Instar's maintainer, to design properly. They are tracked together as one commitment (CMT-1226), with a report back within two weeks of the fix landing:
 
 - Making a newly started machine ask before it claims, which closes the
   few-second window above. A first attempt here turned out to need careful

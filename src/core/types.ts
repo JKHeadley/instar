@@ -2573,6 +2573,12 @@ export interface MultiMachineConfig {
   autoFailover: boolean;
   /** Minutes of silence before auto-failover (default: 15) */
   failoverTimeoutMinutes: number;
+  /** Live rollback switches for the lease-flap incident fix. Absent means on. */
+  leaseFlapFix?: {
+    liveness?: boolean;
+    mediumCheck?: boolean;
+    unconfirmedWriteAlert?: boolean;
+  };
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
   /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
