@@ -183,9 +183,15 @@ buildLeaseLivenessCallbacks({ loadDiskRegistry, getRouter, getFreshness,
   `failoverThresholdMs`.
 - (b) **Fresh renewal.** `freshRenewalWithin(id, failoverThresholdMs)` reads the
   existing `freshObservedMonoMs` map, stamped when a signature-verified holder
-  nonce advance is first seen (`LeaseCoordinator.ts:291-297`); it can lag by one
-  evaluation, since `acquireIfEligible` reads liveness before `effectiveView()`
-  (`:678`, `:682`), which is negligible against a 15-minute window.
+  nonce advance is first seen (`LeaseCoordinator.ts:291-297`), which happens
+  inside `effectiveView()`. Today `acquireIfEligible` reads `presumedDeadHolders()`
+  once before its loop calls `effectiveView()` (`:678`, `:682`). Under the fix
+  that order would let a holder whose verified renewal arrives after a gap longer
+  than `failoverThresholdMs` be judged dead against its own fresh, unexpired lease,
+  and taken over. So `acquireIfEligible` moves the read inside the loop, after
+  `effectiveView()`, on every iteration. The other readers (`peerTakeoverEligible`
+  `:642-647`, `acquireOnHandbackConsent` `:799-802`, `checkForUnresolvableSplit`
+  `:966-967`) already call `effectiveView()` first.
 - **Retention.** The receipt map is never pruned while the process runs (the
   registry has no eviction; it is built once, `server.ts:21221`); a restart is
   the only way it starts empty. While no router is available, or after a
@@ -496,13 +502,18 @@ not specified here; working notes on each are in
   including with the B4 skew-immune gate on (matching `isPeerPresumedDead`'s
   router branch);
   both routes (A: no git manager; B: git manager, git-ignored registry).
-- **Unit, coordinator.** The write counter for the sequence own-candidate
+- **Unit, coordinator.** With injected clocks: a holder silent past
+  `failoverThresholdMs` (receipt stale, no renewal stamp) whose verified renewal
+  is waiting in the tunnel is not taken over by `acquireIfEligible` on that tick.
+  The write counter for the sequence own-candidate
   failure, competing winner, own-candidate failure ends at 1; a counted write
   through a non-`acquireIfEligible` path (`acquireOnConsent`); all peers revoked
   ⇒ `allPeersPresumedGone()` false. `sample()` stamps first-dialable and first-registered
   times and reports a never-observed peer after the window, on a holder whose
   renewals confirm through another peer and with no callback invoked; each tag
-  and the `not-pulled` qualifier; one report per peer per incarnation; the write
+  and the `not-pulled` qualifier; reports deduplicated by (peer, window), so a
+  peer reported as never-dialable that later becomes dialable and stays unobserved
+  is reported once more, and no other repeats; the write
   counter reaches 5 and resets on success, and ignores broadcast-only renewal
   failures; the ordering-check degradation at `failoverThresholdMs <=
   leaseTtlMs` and not at the defaults.
@@ -565,13 +576,16 @@ not specified here; working notes on each are in
     seen through the tunnel) the fix is asserted ≤ the baseline on both-holding
     time. That is an acceptance check measured in this harness, not a property
     proved for every deployment. No-holder time and epoch changes are recorded
-    against the baseline; any scenario where the fix is higher on any metric is
+    against the baseline; any scenario where the fix is higher on either is
     named in the artifact and reviewed, not counted as a failure. Two scenarios
     are recorded only, because the reasoning behind the check does not cover
     them: a tracked-registry pair with git pushes working and HTTP partitioned
     past `failoverThresholdMs` (a lease that arrives only through `store.read()`
     stamps no renewal freshness, `LeaseCoordinator.ts:271-273`, `:286-297`, so a
-    peer can be called dead before its lease expires), and a backward wall-clock
+    peer can be called dead before its lease expires, bounded to the `leaseTtlMs`
+    after the holder's last git-carried acquisition: with the tunnel wired,
+    renewals do not write the store, and an unconfirmed holder self-suspends after
+    `leaseTtlMs`, `LeaseCoordinator.ts:861-872`, `:894-903`), and a backward wall-clock
     step during acquisition and holding (liveness is monotonic, expiry is wall
     time). The
     upgrade store transition and the `mediumCheck` rollback have no distinct
@@ -677,6 +691,13 @@ at the next restart.
   only, and both cases are recorded-only scenarios. GPT: the unobserved-peer
   window restarting on first dialability is now stated as intended and tested.
   Precision: line citations; the router shares the harness wall clock.
+- **Cycle 4, round 8 (v38)**: internal zero DESIGN; GPT's ordering point was
+  confirmed in code and is DESIGN: `acquireIfEligible` read liveness before
+  folding in tunnel renewals, which under the fix could judge a returning holder
+  dead against its own fresh lease. The read moves after `effectiveView()`, with a
+  unit test. Precision: the review exception covers only no-holder time and epoch
+  changes; report deduplication is by (peer, window); the git-carried scenario is
+  bounded to one `leaseTtlMs`.
 - Cross-model review: GPT (`codex-cli`, gpt-6-astra, verified from the Codex
   session log) from cycle 1 round 2 on. Gemini never produced a review (its CLI
   refuses to start; the signed-in account needs a Google Cloud project); by
