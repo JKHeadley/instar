@@ -59,6 +59,12 @@ export interface MultiMachineSyncStatus {
   awakeMachineCount: number | null;
   /** Which basis produced `awakeMachineCount` (machine-coherence-guard §5b, D5). */
   awakeMachineCountSource: 'lease-live' | 'registry-roles' | 'unavailable';
+  /** Once-per-process lease backing-store decision made during server boot. */
+  leaseMedium?: {
+    medium: 'git' | 'local' | 'unchecked';
+    reason: string;
+    store: 'GitLeaseStore' | 'LocalLeaseStore';
+  };
   /**
    * multi-machine-lease-self-heal observability (Agent Awareness). F1 tick-watchdog
    * health — answers "did the watchdog fire?" / "is it disarmed?". `lastTickAgeMs`
@@ -279,6 +285,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * not wired (dev-gate dark) → the field is simply absent.
    */
   private ropeHealthProvider: (() => NonNullable<MultiMachineSyncStatus['ropeHealth']>) | null = null;
+  private leaseMediumProvider: (() => NonNullable<MultiMachineSyncStatus['leaseMedium']>) | null = null;
   /**
    * U4.3 — lease-pull tick listeners (the probe CARRIER: "no new scheduler, no
    * new loop" — the prober attaches here and rides the existing ~5s pull tick).
@@ -1113,6 +1120,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
       awakeMachineCount,
       awakeMachineCountSource,
+      ...(this.leaseMediumProvider ? { leaseMedium: this.leaseMediumSafe() } : {}),
       leaseTickWatchdog: this.leaseCoordinator
         ? {
             lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,
@@ -1124,6 +1132,19 @@ export class MultiMachineCoordinator extends EventEmitter {
       meshEndpoints: this.selfMeshEndpointKinds(),
       ...(this.ropeHealthProvider ? { ropeHealth: this.ropeHealthSafe() } : {}),
     };
+  }
+
+  attachLeaseMediumProvider(provider: () => NonNullable<MultiMachineSyncStatus['leaseMedium']>): void {
+    this.leaseMediumProvider = provider;
+  }
+
+  private leaseMediumSafe(): NonNullable<MultiMachineSyncStatus['leaseMedium']> {
+    try {
+      return this.leaseMediumProvider?.() ?? { medium: 'local', reason: 'no-git-sync-manager', store: 'LocalLeaseStore' };
+    } catch {
+      // @silent-fallback-ok — passive health metadata must never break /health.
+      return { medium: 'local', reason: 'no-git-sync-manager', store: 'LocalLeaseStore' };
+    }
   }
 
   /**
@@ -1178,6 +1199,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+    this.leaseCoordinator.sampleLiveness?.();
       // Prime from the durable medium FIRST so this boot's failover-eligibility check sees the
       // holder's CURRENT heartbeat — not a stale seed `lastSeen` that a freshly-joined standby
       // would misread as "holder dead" and use to grab a live holder's lease (verified live on a
@@ -1263,6 +1285,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     // after a calm window (no-op when the churnDetector gate is off).
     this.getChurnBreaker()?.tick();
     try {
+      this.leaseCoordinator.sampleLiveness?.();
       if (this.isLeaseObserveOnly) {
         // F3 (silentStandbyRelinquish, DARK) — LEVEL-TRIGGERED: a silent standby
         // that is STILL the named holder (the 2026-06-19 zombie: muted while

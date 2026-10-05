@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-04T21:23:08.315Z",
+  "slug": "lease-unconfirmed-candidate-flap",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/HttpLeaseTransport.ts",
+      "src/core/LeaseCoordinator.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

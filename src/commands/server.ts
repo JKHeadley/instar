@@ -187,7 +187,7 @@ import { FencedLease, type LeaseCrypto } from '../core/FencedLease.js';
 import { GitLeaseStore } from '../core/GitLeaseStore.js';
 import { LocalLeaseStore } from '../core/LocalLeaseStore.js';
 import { LeaseCoordinator, type LeaseStore } from '../core/LeaseCoordinator.js';
-import { isPeerPresumedDead } from '../core/leaseLiveness.js';
+import { buildLeaseLivenessCallbacks, createLeaseFlapSwitchGetter, isDialableLeasePeer, reportLeaseOrderingDegradation } from '../core/leaseLiveness.js';
 import { readPollActive, pidAlive as pollPidAlive } from '../core/pollIntent.js';
 import { checkMultiMachineConfigCoherence, checkMeshLiveStateCoherence, MESH_WARMUP_GRACE_MS, type MeshLiveState } from '../core/configCoherence.js';
 import { HttpLeaseTransport } from '../core/HttpLeaseTransport.js';
@@ -223,6 +223,7 @@ import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
 import { TrustRecovery } from '../core/TrustRecovery.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -5375,9 +5376,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // registry lastSeen. undefined until the registry is built below — during that
     // window the closures fall back to lastSeen (safe). Function-body scope so it
     // is visible to BOTH the lease closures (deeper) and the registry assignment.
-    let leaseLivenessRegistry:
-      | { getCapacity(id: string): { online: boolean; routerReceivedAt?: string } | null }
-      | undefined;
+    let leaseLivenessRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
+    const leaseMonoNow = () => Number(process.hrtime.bigint() / 1_000_000n);
+    const leaseBootMonoMs = leaseMonoNow();
+    const leaseFlapSwitch = createLeaseFlapSwitchGetter(
+      (configPath, fallback) => liveConfig.get<boolean>(configPath, fallback),
+      (message) => console.log(pc.dim(`  [lease] ${message}`)),
+    );
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
     // a standby needs it to pull, and a standby that later self-elects to awake
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
@@ -5396,6 +5401,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       // lease block was nested in the git-gated try, so a gitSync throw left the
       // standby with leaseHolder=null → MeshRpc 'not-router' → transfer dead.)
       let gitSyncRef: GitSyncManager | undefined;
+      let leaseMedium = selectLeaseMedium({
+        projectDir: config.projectDir,
+        registryAbsPath: idMgr.registryPath,
+        hasGitSyncManager: false,
+      });
       if (isGitRepo && gitBackupEnabled) {
         try {
           gitSync = new GitSyncManager({
@@ -5418,19 +5428,40 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }
           gitSyncRef = gitSync;
+          leaseMedium = selectLeaseMedium({
+            projectDir: config.projectDir,
+            registryAbsPath: idMgr.registryPath,
+            hasGitSyncManager: true,
+            mediumCheckEnabled: config.multiMachine?.leaseFlapFix?.mediumCheck,
+          });
+          let peerCount = 0;
+          try {
+            peerCount = Object.entries(idMgr.loadRegistry().machines ?? {})
+              .filter(([id, entry]) => id !== selfMachineId && !entry.revokedAt).length;
+          } catch { /* @silent-fallback-ok — peer count only controls diagnostic wording. */ }
+          try {
+            reportLeaseMediumSelection(
+              leaseMedium,
+              peerCount,
+              DegradationReporter.getInstance(),
+              (message) => console.log(pc.dim(`  Lease medium: ${message}`)),
+            );
+          } catch { /* @silent-fallback-ok — reporting cannot discard an established git substrate. */ }
           // ── G2 wiring (spec §8 G2) — roleChange/leaseEpoch → debounced push ──
           // Without a subscriber the durable registry push never fires; a
           // wiring-integrity test asserts this subscription exists.
-          const gitSyncForDebounce = gitSyncRef;
-          registrySyncDebouncer = new RegistrySyncDebouncer({
-            commitAndPush: (msg, paths) => gitSyncForDebounce.commitAndPush(msg, paths),
-            registryAbsPath: coordinator.managers.identityManager.registryPath,
-            isAuthoritative: () => coordinator.isAwake,
-            debounceMs: seamlessness.registrySyncDebounceMs,
-            logger: (m) => console.log(pc.dim(m)),
-          });
-          wireRegistrySync(coordinator, registrySyncDebouncer);
-          console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
+          if (leaseMedium.medium !== 'local') {
+            const gitSyncForDebounce = gitSyncRef;
+            registrySyncDebouncer = new RegistrySyncDebouncer({
+              commitAndPush: (msg, paths) => gitSyncForDebounce.commitAndPush(msg, paths),
+              registryAbsPath: coordinator.managers.identityManager.registryPath,
+              isAuthoritative: () => coordinator.isAwake,
+              debounceMs: seamlessness.registrySyncDebounceMs,
+              logger: (m) => console.log(pc.dim(m)),
+            });
+            wireRegistrySync(coordinator, registrySyncDebouncer);
+            console.log(pc.dim('  Registry sync wired (roleChange/leaseEpoch → durable push)'));
+          }
         } catch (err) {
           // @silent-fallback-ok — git medium unavailable (SourceTreeGuard, no
           // remote, etc). The lease falls back to LocalLeaseStore + the HTTP
@@ -5439,6 +5470,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           gitSyncRef = undefined;
         }
       }
+
+      const leaseGitRef = leaseMedium.medium === 'local' ? undefined : gitSyncRef;
+      const leaseStoreName = leaseGitRef ? 'GitLeaseStore' as const : 'LocalLeaseStore' as const;
+      coordinator.attachLeaseMediumProvider(() => ({ ...leaseMedium, store: leaseStoreName }));
 
       try {
         // ── G1 fenced-lease integration (spec §6) ──────────────────
@@ -5463,8 +5498,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           failoverThresholdMs: seamlessness.failoverThresholdMs,
         });
         let leaseStore: LeaseStore;
-        if (gitSyncRef) {
-          const gs = gitSyncRef;
+        if (leaseGitRef) {
+          const gs = leaseGitRef;
           leaseStore = new GitLeaseStore({
             machineId: selfMachineId,
             loadRegistry: () => idMgr.loadRegistry(),
@@ -5479,7 +5514,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             filePath: path.join(config.stateDir, 'lease-local.json'),
             logger: (m) => console.log(pc.dim(m)),
           });
-          console.log(pc.dim('  Lease store: LocalLeaseStore (no git medium — HTTP transport carries cross-machine lease)'));
+          const why = leaseMedium.reason === 'ignored' ? 'registry is git-ignored' : 'no git medium';
+          console.log(pc.dim(`  Lease store: LocalLeaseStore (${why} — HTTP transport carries cross-machine lease)`));
         }
         // Lease wire transport (spec §6) — the low-latency authoritative copy
         // travels over the existing authenticated machine channel. For a
@@ -5553,7 +5589,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           peers: () => {
             const reg = idMgr.loadRegistry();
             return Object.entries(reg.machines ?? {})
-              .filter(([id, e]) => id !== selfMachineId && (!!e.lastKnownUrl || (e.endpoints?.length ?? 0) > 0) && !e.revokedAt)
+              .filter(([id, e]) => id !== selfMachineId && isDialableLeasePeer(e))
               .map(([id, e]) => ({
                 machineId: id,
                 url: (e.lastKnownUrl ?? '') as string,
@@ -5592,32 +5628,39 @@ export async function startServer(options: StartOptions): Promise<void> {
           peerEndpointRecorder,
           logger: (m) => console.log(pc.dim(m)),
         });
+        const leaseLiveness = buildLeaseLivenessCallbacks({
+          selfMachineId,
+          loadDiskRegistry: () => idMgr.loadRegistry(),
+          getRouter: () => leaseLivenessRegistry,
+          getFreshness: () => leaseCoordinatorRef,
+          getLeaseFlapFixConfig: () => ({
+            ...config.multiMachine?.leaseFlapFix,
+            liveness: leaseFlapSwitch('liveness'),
+            unconfirmedWriteAlert: leaseFlapSwitch('unconfirmedWriteAlert'),
+          }),
+          getSkewImmune: () => resolveDevAgentGate(config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled, config),
+          failoverThresholdMs: seamlessness.failoverThresholdMs,
+          bootMonoMs: leaseBootMonoMs,
+          monoNow: leaseMonoNow,
+          wallNow: Date.now,
+        });
+        try {
+          reportLeaseOrderingDegradation(
+            seamlessness.failoverThresholdMs,
+            seamlessness.leaseTtlMs,
+            leaseFlapSwitch('unconfirmedWriteAlert'),
+          );
+        } catch { /* @silent-fallback-ok — boot diagnostics cannot abort lease initialization. */ }
         const leaseCoordinator = new LeaseCoordinator({
           lease: fencedLease,
           store: leaseStore,
           tunnel: leaseTransport,
-          presumedDeadHolders: () => {
-            const reg = idMgr.loadRegistry();
-            const nowMs = Date.now();
-            // B4 Decision 10 — skew-immune liveness when the flag resolves on AND
-            // the in-process registry has actually observed the peer; else legacy
-            // lastSeen. enabled OMITTED ⇒ developmentAgent gate.
-            const skewImmune = resolveDevAgentGate(config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled, config);
-            const dead = new Set<string>();
-            for (const [id, e] of Object.entries(reg.machines ?? {})) {
-              if (id === selfMachineId) continue;
-              const cap = leaseLivenessRegistry?.getCapacity(id);
-              if (isPeerPresumedDead({
-                lastSeenMs: Date.parse(e.lastSeen),
-                routerObserved: !!cap?.routerReceivedAt,
-                routerOnline: !!cap?.online,
-                nowMs,
-                failoverThresholdMs: seamlessness.failoverThresholdMs,
-                skewImmune,
-              })) dead.add(id);
-            }
-            return dead;
-          },
+          presumedDeadHolders: leaseLiveness.presumedDeadHolders,
+          getLivenessEnabled: () => leaseFlapSwitch('liveness'),
+          getUnconfirmedWriteAlertEnabled: () => leaseFlapSwitch('unconfirmedWriteAlert'),
+          sampleLiveness: leaseLiveness.sample,
+          reportDegradation: (event) => DegradationReporter.getInstance().report(event),
+          monotonicNow: leaseMonoNow,
           onEpochAdvance: (epoch) => coordinator.emit('leaseEpochChange', epoch),
           // F2 (multi-machine-lease-self-heal staleHolderTakeover) — DARK by default.
           // Resolved LIVE each call so a config flip needs no restart; off ⇒ canAcquire
@@ -5640,25 +5683,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const pref = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
             return !!pref && pref === selfMachineId;
           },
-          allPeersPresumedGone: () => {
-            const reg = idMgr.loadRegistry();
-            const nowMs = Date.now();
-            const peerIds = Object.keys(reg.machines ?? {}).filter((id) => id !== selfMachineId && !reg.machines![id].revokedAt);
-            if (peerIds.length === 0) return false; // a solo machine never "holds against" a peer
-            // B4 Decision 10 — same skew-immune liveness as presumedDeadHolders.
-            const skewImmune = resolveDevAgentGate(config.multiMachine?.leaseSelfHeal?.skewImmuneLiveness?.enabled, config);
-            return peerIds.every((id) => {
-              const cap = leaseLivenessRegistry?.getCapacity(id);
-              return isPeerPresumedDead({
-                lastSeenMs: Date.parse(reg.machines![id].lastSeen),
-                routerObserved: !!cap?.routerReceivedAt,
-                routerOnline: !!cap?.online,
-                nowMs,
-                failoverThresholdMs: seamlessness.failoverThresholdMs,
-                skewImmune,
-              });
-            });
-          },
+          allPeersPresumedGone: leaseLiveness.allPeersPresumedGone,
           onSelfSuspend: (reason) => console.log(pc.yellow(`  [lease] self-suspend: ${reason}`)),
           onEscalate: (info) => console.log(pc.yellow(`  [lease] split-brain escalation: ${info.reason} (holder ${info.holder})`)),
           logger: (m) => console.log(pc.dim(m)),
@@ -5708,7 +5733,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Claimant self-connectivity proof (evidence 4): an authenticated probe
         // of a THIRD peer; 2-machine case → verified reach of the durable lease
         // authority (git). A claimer with a broken NIC must never claim.
-        _hasDurableLeaseAuthority = () => !!gitSyncRef;
+        _hasDurableLeaseAuthority = () => !!leaseGitRef;
         _staleOwnerSelfProof = async () => {
           try {
             const reg = idMgr.loadRegistry();
@@ -5734,7 +5759,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return false;
             }
             // 2-machine mesh: verified reach of the durable lease authority.
-            if (gitSyncRef) {
+            if (leaseGitRef) {
               const read = leaseStore.read();
               return read !== null && read !== undefined;
             }
@@ -21230,6 +21255,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             })),
           clockSkewToleranceMs,
           failoverThresholdMs,
+          monoNow: leaseMonoNow,
           logger: (m: string) => console.log(pc.dim(`  [pool] ${m}`)),
         });
         // B4 Decision 10 — hand the skew-immune registry to the lease-liveness
@@ -28649,4 +28675,3 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
   await new Promise(r => setTimeout(r, 500));
   await startServer({ dir: options.dir });
 }
-

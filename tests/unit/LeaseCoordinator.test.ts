@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
 import { LeaseCoordinator, type LeaseStore, type LeaseTransport } from '../../src/core/LeaseCoordinator.js';
+import { GitLeaseStore } from '../../src/core/GitLeaseStore.js';
 import type { LeaseRecord } from '../../src/core/types.js';
 
 function genKey() {
@@ -65,6 +66,120 @@ function makeFlA() { return new FencedLease(crypt('A'), { leaseTtlMs: TTL, failo
 function makeFlB() { return new FencedLease(crypt('B'), { leaseTtlMs: TTL, failoverThresholdMs: FAILOVER }); }
 
 describe('LeaseCoordinator', () => {
+  it('reports once at five consecutive own-candidate write read-backs and resets on success', async () => {
+    let fail = true;
+    const store: LeaseStore = {
+      read: () => ({ lease: null, epoch: 0 }),
+      refresh: () => true,
+      casWrite: (candidate) => fail
+        ? { ok: false, observed: { lease: candidate, epoch: candidate.epoch } }
+        : { ok: true, observed: { lease: candidate, epoch: candidate.epoch } },
+    };
+    const report = vi.fn();
+    const lc = new LeaseCoordinator({
+      lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000,
+      reportDegradation: report,
+    });
+    for (let i = 0; i < 7; i++) await lc.advanceEpochForContestedWin();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls[0][0].reason).toContain('remain unconfirmed');
+    fail = false;
+    await lc.advanceEpochForContestedWin();
+    fail = true;
+    for (let i = 0; i < 5; i++) await lc.advanceEpochForContestedWin();
+    expect(report).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the unconfirmed-write streak while its live switch is off', async () => {
+    let enabled = true;
+    const store: LeaseStore = {
+      read: () => ({ lease: null, epoch: 0 }), refresh: () => true,
+      casWrite: (candidate) => ({ ok: false, observed: { lease: candidate, epoch: candidate.epoch } }),
+    };
+    const report = vi.fn();
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+      now: () => 1_000, getUnconfirmedWriteAlertEnabled: () => enabled, reportDegradation: report });
+    for (let i = 0; i < 4; i++) await lc.advanceEpochForContestedWin();
+    enabled = false;
+    await lc.advanceEpochForContestedWin();
+    enabled = true;
+    for (let i = 0; i < 4; i++) await lc.advanceEpochForContestedWin();
+    expect(report).not.toHaveBeenCalled();
+    await lc.advanceEpochForContestedWin();
+    expect(report).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the streak on an off/on lease cycle with no CAS write', async () => {
+    let enabled = true;
+    const store: LeaseStore = { read: () => ({ lease: null, epoch: 0 }), refresh: () => true,
+      casWrite: (candidate) => ({ ok: false, observed: { lease: candidate, epoch: candidate.epoch } }) };
+    const report = vi.fn();
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(),
+      getUnconfirmedWriteAlertEnabled: () => enabled, reportDegradation: report, now: () => 1_000 });
+    for (let i = 0; i < 4; i++) await lc.advanceEpochForContestedWin();
+    enabled = false;
+    lc.sampleLiveness(); // ordinary cycle, no acquisition write
+    enabled = true;
+    lc.sampleLiveness();
+    await lc.advanceEpochForContestedWin();
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it('isolates throwing sampling and reporting from lease work', async () => {
+    const store = new FakeStore();
+    const tunnel: LeaseTransport = { broadcast: async () => true,
+      observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => true };
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(),
+      sampleLiveness: () => { throw new Error('bad registry'); }, reportDegradation: () => { throw new Error('bad reporter'); },
+      now: () => 1_000 });
+    lc.sampleLiveness();
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(await lc.renew()).toBe(true);
+
+    const failingStore: LeaseStore = { read: () => ({ lease: null, epoch: 0 }), refresh: () => true,
+      casWrite: (candidate) => ({ ok: false, observed: { lease: candidate, epoch: candidate.epoch } }) };
+    const reporting = new LeaseCoordinator({ lease: makeFlA(), store: failingStore, presumedDeadHolders: () => new Set(),
+      reportDegradation: () => { throw new Error('bad reporter'); }, now: () => 1_000 });
+    for (let i = 0; i < 5; i++) await expect(reporting.advanceEpochForContestedWin()).resolves.toEqual(expect.any(Boolean));
+  });
+
+  it('counts an own-candidate failure through acquireOnConsent', async () => {
+    const store = new FakeStore();
+    store.lease = makeFlB().buildAcquisition(undefined, 500, 1);
+    store.epoch = 1;
+    store.casWrite = (candidate) => ({ ok: false, observed: { lease: candidate, epoch: candidate.epoch } });
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+    await lc.acquireOnConsent('B');
+    expect((lc as unknown as { unconfirmedWriteCount: number }).unconfirmedWriteCount).toBe(1);
+  });
+
+  it('resets own-candidate, competing-winner, own-candidate to a streak of one', async () => {
+    let call = 0;
+    const store: LeaseStore = { read: () => ({ lease: null, epoch: 0 }), refresh: () => true,
+      casWrite: (candidate) => {
+        call++;
+        if (call === 2) return { ok: false, observed: { lease: makeFlB().buildAcquisition(undefined, 1_000, 1), epoch: 1 } };
+        return { ok: false, observed: { lease: candidate, epoch: candidate.epoch } };
+      } };
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+    await lc.advanceEpochForContestedWin();
+    await lc.advanceEpochForContestedWin();
+    await lc.advanceEpochForContestedWin();
+    expect((lc as unknown as { unconfirmedWriteCount: number }).unconfirmedWriteCount).toBe(1);
+  });
+
+  it('does not count broadcast-only renewal failures', async () => {
+    const store = new FakeStore();
+    let broadcastOk = true;
+    const tunnel: LeaseTransport = { broadcast: async () => broadcastOk,
+      observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => broadcastOk };
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+    await lc.acquireIfEligible();
+    broadcastOk = false;
+    await lc.renew();
+    expect((lc as unknown as { unconfirmedWriteCount: number }).unconfirmedWriteCount).toBe(0);
+  });
+
   it('acquires from empty and reports holding', async () => {
     const store = new FakeStore();
     const lc = new LeaseCoordinator({
@@ -89,6 +204,86 @@ describe('LeaseCoordinator', () => {
     dead = new Set(['B']);
     expect(await lc.acquireIfEligible()).toBe(true); // B presumed dead → A takes over
     expect(lc.currentEpoch()).toBe(2);
+    expect(lc.currentHolder()).toBe('A');
+  });
+
+  it('folds a verified renewal waiting in the tunnel before reading live liveness', async () => {
+    const store = new FakeStore();
+    const peerLease = makeFlB().buildAcquisition(undefined, 500, 1);
+    const renewed = makeFlB().signLease(peerLease.epoch, peerLease.acquiredAt, peerLease.expiresAt, 2);
+    store.lease = peerLease;
+    store.epoch = 1;
+    const tunnel: LeaseTransport = { broadcast: async () => true,
+      observed: () => ({ lease: renewed, lastNonceByHolder: { B: 2 } }), isReachable: () => true };
+    let lc!: LeaseCoordinator;
+    const presumedDeadHolders = vi.fn(() => lc.freshRenewalWithin('B', FAILOVER) ? new Set<string>() : new Set(['B']));
+    lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders,
+      getLivenessEnabled: () => true, now: () => 2_000, monotonicNow: () => 2_000 });
+    expect(await lc.acquireIfEligible()).toBe(false);
+    expect(presumedDeadHolders).toHaveBeenCalled();
+    expect(store.epoch).toBe(1);
+  });
+
+  it('liveness:false keeps the pre-pull verdict across a real GitLeaseStore lost-write retry', async () => {
+    let registry: any = { machines: { A: { lastSeen: new Date(0).toISOString() }, B: { lastSeen: new Date(0).toISOString() } } };
+    let pulls = 0;
+    const peer = makeFlB().buildAcquisition(undefined, 500, 1);
+    const git = new GitLeaseStore({ machineId: 'A', registryAbsPath: '/tmp/registry.json',
+      loadRegistry: () => registry, saveRegistry: (r) => { registry = r; },
+      pullRebase: () => { pulls++; if (pulls === 2) registry = { ...registry, lease: peer,
+        machines: { ...registry.machines, B: { ...registry.machines.B, lastSeen: new Date(2_000).toISOString() } } }; return true; },
+      commitAndPush: () => pulls >= 3 });
+    const deadReads: boolean[] = [];
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store: git, getLivenessEnabled: () => false, now: () => 2_000,
+      presumedDeadHolders: () => { const dead = Date.parse(registry.machines.B.lastSeen) < 1_000; deadReads.push(dead); return dead ? new Set(['B']) : new Set(); } });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(deadReads).toEqual([true]);
+    expect(registry.lease.holder).toBe('A');
+    expect(registry.lease.epoch).toBe(2);
+  });
+
+  it('reads the liveness switch once per call and applies a flip on the next call', async () => {
+    const store = new FakeStore();
+    store.lease = makeFlB().buildAcquisition(undefined, 500, 1);
+    store.epoch = 1;
+    let enabled = false;
+    const seen: Array<boolean | undefined> = [];
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, getLivenessEnabled: () => enabled, now: () => 2_000,
+      presumedDeadHolders: (opts) => { seen.push(opts?.liveness); return opts?.liveness ? new Set(['B']) : new Set(); } });
+    expect(await lc.acquireIfEligible()).toBe(false);
+    enabled = true;
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(seen).toEqual([false, true]);
+  });
+
+  it('characterises a forged-once-then-stale receipt authorising takeover of an unexpired store lease', async () => {
+    const store = new FakeStore();
+    store.lease = makeFlB().buildAcquisition(undefined, 500, 1);
+    store.epoch = 1;
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(['B']),
+      getLivenessEnabled: () => true, now: () => 2_000 });
+    expect(store.lease.expiresAt > new Date(2_000).toISOString()).toBe(true);
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(lc.currentEpoch()).toBe(2);
+  });
+
+  it('characterises a restarted holder below its prior nonce watermark as not fresh and takeable after stale receipt', async () => {
+    const store = new FakeStore();
+    let mono = 0;
+    let observed = makeFlB().buildAcquisition(undefined, 500, 10);
+    const tunnel: LeaseTransport = { broadcast: async () => true,
+      observed: () => ({ lease: observed, lastNonceByHolder: { B: 10 } }), isReachable: () => true };
+    store.lease = observed;
+    store.epoch = 1;
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(['B']),
+      getLivenessEnabled: () => true, now: () => 2_000, monotonicNow: () => mono });
+    lc.currentLease(); // establish nonce-10 freshness watermark
+    mono = FAILOVER + 1;
+    observed = makeFlB().buildAcquisition(store.lease, 1_000, 1); // restarted process, higher epoch but lower nonce
+    store.lease = observed;
+    store.epoch = observed.epoch;
+    expect(lc.freshRenewalWithin('B', FAILOVER)).toBe(false);
+    expect(await lc.acquireIfEligible()).toBe(true);
     expect(lc.currentHolder()).toBe('A');
   });
 

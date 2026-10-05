@@ -385,6 +385,14 @@ On a multi-machine setup, writes are classified by DOMAIN (machine-local / sessi
 - **When to use** (PROACTIVE): a write of mine (or a route like \`POST /evolution/actions\` / \`POST /attention\`) answers 409 \`write-refused\` naming another machine → that state belongs to the named owner; re-send it there — do NOT auto-move the topic (moving is a consent-gated operator decision, the refusal hint is advisory prose). "Are writes hanging or being refused?" → read \`GET /write-admission\` (the eventLoop block attributes hang windows to loop starvation) instead of guessing. A refusal storm surfaces as ONE deduped attention item, never a flood.\n`;
 }
 
+export function LEASE_MEDIUM_CLAUDEMD_SECTION(port: number): string {
+  return `
+### Multi-machine lease medium
+
+At startup, Instar checks whether git can actually carry \`.instar/machines/registry.json\`. A tracked or untracked-addable registry uses \`GitLeaseStore\`; a git-ignored registry uses the supported \`LocalLeaseStore\` plus authenticated network transport. Check \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`multiMachine.syncStatus.leaseMedium\` for \`medium\`, \`reason\`, and the store actually built. Tracking or ignoring the registry only changes the lease medium after a restart. Rolling back (\`multiMachine.leaseFlapFix.mediumCheck:false\` or \`liveness:false\`, or reverting the release) restores the original lease flap on a paired agent with a git-ignored registry, so first return to one machine: stop the standby and keep it stopped, then run \`instar machines remove <name-or-id>\` on the remaining machine, then flip the switch and restart. With \`mediumCheck:false\`, \`leaseMedium.medium\` reads \`unchecked\`. Peer liveness for the lease comes from live evidence only (this machine's own recent pull from the peer, or its signed lease renewals), never the registry's \`lastSeen\`; a paired machine never heard from is treated as unknown, not dead. Two internal degradation reports belong to this: \`lease writes remain unconfirmed by the medium\` (five acquisition writes in a row read back as our own unaccepted candidate) and a registered peer the liveness feeder has never observed. Both are signals only; they never change who holds the lease.
+`;
+}
+
 export function CONTEXT_AWARE_REVIEW_CLAUDEMD_SECTION(port: number): string {
   return `\n### Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)
 
@@ -6974,6 +6982,12 @@ setTimeout(() => process.exit(0), 2000);
       content += MESH_SELF_HEALING_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mesh Self-Healing (U4.2/U4.4) section');
+    }
+
+    if (!content.includes('### Multi-machine lease medium')) {
+      content += LEASE_MEDIUM_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added multi-machine lease medium awareness');
     }
 
     // Write Admission (standby-write-reconciliation §7 migration parity) —
