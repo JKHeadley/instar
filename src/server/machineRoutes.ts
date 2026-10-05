@@ -476,6 +476,22 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       res.status(400).json({ error: 'Malformed machineIdentity' });
       return;
     }
+    // A joiner presenting THIS machine's id carries a copy of our identity file
+    // (a cloned or copied agent home), not an identity of its own. Accepting it
+    // made two machines one principal (sagemind Studio booted as the laptop,
+    // ACT-1302). Refused before the code is checked, so no attempt is spent; the
+    // joiner sets the copy aside, mints its own identity, and retries.
+    if (machineIdentity.machineId === ctx.localMachineId) {
+      ctx.securityLog.append({
+        event: 'pairing_rejected',
+        machineId: machineIdentity.machineId,
+        machineName: machineIdentity.name,
+        reason: 'joiner-identity-is-inviter',
+        ip,
+      });
+      res.status(409).json({ error: 'joiner-identity-is-inviter' });
+      return;
+    }
 
     // ── Code-authenticated, non-interactive pool join ────────────────
     // The pairing code (a short-lived, single-use, attempt-capped shared secret
