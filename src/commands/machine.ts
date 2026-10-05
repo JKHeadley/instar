@@ -631,6 +631,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   const { ensureGitignore } = await import('../core/MachineIdentity.js');
   ensureGitignore(config.projectDir);
 
+  let autoStarted = false;
   // Step 6: Install auto-start for THIS (the joined) home.
   // Without this, a joined agent has no LaunchAgent/systemd unit — the operator
   // must hand-start it, and worse: a stale `ai.instar.<projectName>` plist left
@@ -651,6 +652,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     ) ?? false;
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
+      autoStarted = true;
       console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
     }
   } catch (err) {
@@ -662,7 +664,14 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
   console.log();
   console.log(`  Next steps:`);
-  console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  if (autoStarted) {
+    // Auto-start already launched the server under its supervisor. Telling the
+    // operator to `instar server start` here produced a second, unsupervised
+    // server fighting the first for the port (instar#2122).
+    console.log(`  1. The server is already starting under auto-start — do not start another one.`);
+  } else {
+    console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  }
   console.log(`  2. Check health:     ${pc.cyan('instar doctor')}`);
   console.log(`  3. Wake up agent:    ${pc.cyan('instar wakeup')} (when ready)`);
   console.log();
