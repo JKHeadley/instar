@@ -88,6 +88,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       timeoutMs: 1500,
       maxChecksPerDay: 2000,
     },
+    // Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md) — log-only,
+    // dev-gated: `enabled` DELIBERATELY OMITTED (live on a dev agent, dark on the fleet).
+    jevReviewFlagShadow: {
+      timeoutMs: 1500,
+      maxChecksPerDay: 3000,
+    },
     spawnCap: {
       maxConcurrent: 8,
       acquireMs: 5000,
