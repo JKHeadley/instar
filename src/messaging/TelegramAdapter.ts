@@ -4251,7 +4251,16 @@ export class TelegramAdapter implements MessagingAdapter {
       this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
       '<i>This condition returned after recovery; the existing item was reopened.</i>',
     ].join('\n');
-    await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    try {
+      await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    } catch (err) {
+      // A duplicate-content hold means this exact notice was already accepted
+      // in this topic within the dedup window: the operator has it. Treating
+      // that as a failure made callers retry the same notice every 30 s for
+      // as long as the window lasted (sagemind log, 2026-10-04). Other holds
+      // are still failures the caller retries.
+      if (!(err instanceof TelegramOriginHoldError && err.reason === 'duplicate-content')) throw err;
+    }
     existing.coalesced = true;
     existing.topicId = topicId;
     this.saveAttentionItems();
