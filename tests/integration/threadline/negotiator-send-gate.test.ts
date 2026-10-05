@@ -61,7 +61,7 @@ describe('Threadline negotiator send-gate (integration)', () => {
       threadlineRelayClient: {
         connectionState: 'connected',
         resolveAgent: async () => 'targetfp00112233445566778899aabbcc',
-        sendAuto: (rid: string, text: string, threadId?: string) => { sentAuto.push({ rid, text, threadId }); return `msg-${sentAuto.length}`; },
+        sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: (rid: string, text: string, threadId?: string) => { sentAuto.push({ rid, text, threadId }); return `msg-${sentAuto.length}`; },
       },
       startTime: new Date(),
     };
