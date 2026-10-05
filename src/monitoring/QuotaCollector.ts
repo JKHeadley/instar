@@ -36,6 +36,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
+import readline from 'node:readline';
+import { setImmediate as yieldToEventLoop } from 'node:timers';
 import type { QuotaState } from '../core/types.js';
 import type { CredentialProvider, ClaudeCredentials } from './CredentialProvider.js';
 import { redactToken, redactEmail } from './CredentialProvider.js';
@@ -487,32 +489,8 @@ export class JsonlParser {
 
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry.type !== 'assistant') continue;
-          const message = entry.message;
-          if (!message || message.role !== 'assistant') continue;
-          const usage = message.usage;
-          if (!usage) continue;
-
-          // Check timestamp window
-          if (entry.timestamp) {
-            const ts = new Date(entry.timestamp);
-            if (ts < windowStart || ts >= windowEnd) continue;
-          }
-
-          result.inputTokens += usage.input_tokens || 0;
-          result.outputTokens += usage.output_tokens || 0;
-          result.cacheCreationTokens += usage.cache_creation_input_tokens || 0;
-          result.cacheReadTokens += usage.cache_read_input_tokens || 0;
-        } catch {
-          // @silent-fallback-ok — individual JSONL line may be malformed
-          continue;
-        }
+      for (const line of content.split('\n')) {
+        JsonlParser.accumulateLine(line, windowStart, windowEnd, result);
       }
     } catch {
       // @silent-fallback-ok — file may be inaccessible or corrupt
@@ -521,6 +499,68 @@ export class JsonlParser {
     result.totalBilled = result.inputTokens + result.outputTokens +
       result.cacheCreationTokens + result.cacheReadTokens;
     return result;
+  }
+
+  /**
+   * Same counts as `parseFile`, read as a stream so the event loop is never
+   * held for a whole file (instar#2120: 1.8 GB of JSONL read and parsed
+   * synchronously stalled the server for 3-20 s at a time).
+   */
+  static async parseFileAsync(
+    filePath: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<JsonlTokenCounts> {
+    const result: JsonlTokenCounts = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalBilled: 0,
+    };
+    let stream: fs.ReadStream | null = null;
+    try {
+      stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+      const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+      for await (const line of lines) {
+        JsonlParser.accumulateLine(line, windowStart, windowEnd, result);
+      }
+    } catch {
+      // @silent-fallback-ok — file may be inaccessible or corrupt
+    } finally {
+      stream?.destroy();
+    }
+    result.totalBilled = result.inputTokens + result.outputTokens +
+      result.cacheCreationTokens + result.cacheReadTokens;
+    return result;
+  }
+
+  /** Add one JSONL line's assistant usage to `result` when it falls in the window. */
+  static accumulateLine(line: string, windowStart: Date, windowEnd: Date, result: JsonlTokenCounts): void {
+    // Cheap pre-check: a line without "assistant" cannot be an assistant
+    // entry, so it is skipped without a JSON.parse.
+    if (!line.includes('assistant') || !line.trim()) return;
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type !== 'assistant') return;
+      const message = entry.message;
+      if (!message || message.role !== 'assistant') return;
+      const usage = message.usage;
+      if (!usage) return;
+
+      // Check timestamp window
+      if (entry.timestamp) {
+        const ts = new Date(entry.timestamp);
+        if (ts < windowStart || ts >= windowEnd) return;
+      }
+
+      result.inputTokens += usage.input_tokens || 0;
+      result.outputTokens += usage.output_tokens || 0;
+      result.cacheCreationTokens += usage.cache_creation_input_tokens || 0;
+      result.cacheReadTokens += usage.cache_read_input_tokens || 0;
+    } catch {
+      // @silent-fallback-ok — individual JSONL line may be malformed
+    }
   }
 
   /**
@@ -754,7 +794,7 @@ export class QuotaCollector extends EventEmitter {
       // Step 3: JSONL fallback if OAuth failed/disabled
       if (!result.success && this.config.jsonlFallback?.enabled !== false) {
         try {
-          const jsonlResult = this.collectFromJsonl();
+          const jsonlResult = await this.collectFromJsonl();
           if (jsonlResult) {
             result = {
               ...result,
@@ -960,7 +1000,7 @@ export class QuotaCollector extends EventEmitter {
 
   // ── Private: JSONL Fallback ──────────────────────────────────────
 
-  private collectFromJsonl(): QuotaState | null {
+  private async collectFromJsonl(): Promise<QuotaState | null> {
     const projectsDir = this.getJsonlDir();
     if (!fs.existsSync(projectsDir)) return null;
 
@@ -980,7 +1020,11 @@ export class QuotaCollector extends EventEmitter {
     };
 
     for (const file of files) {
-      const counts = JsonlParser.parseFile(file, windowStart, windowEnd);
+      const counts = await JsonlParser.parseFileAsync(file, windowStart, windowEnd);
+      // Yield between files so other work (lease pulls, health probes) runs.
+      // The `node:timers` import is deliberate: a test's fake timers replace
+      // the global setImmediate, and this yield must not depend on them.
+      await new Promise<void>((resolve) => yieldToEventLoop(resolve));
       totalCounts.inputTokens += counts.inputTokens;
       totalCounts.outputTokens += counts.outputTokens;
       totalCounts.cacheCreationTokens += counts.cacheCreationTokens;

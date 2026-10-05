@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-05T23:09:00.160Z",
+  "slug": "quota-jsonl-off-event-loop",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 97,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/QuotaCollector.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
