@@ -21,7 +21,7 @@ import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { GitSyncManager } from '../core/GitSync.js';
@@ -167,7 +167,7 @@ export async function listMachines(options: MachinesOptions): Promise<void> {
   for (const [machineId, entry] of machines) {
     const isLocal = machineId === localIdentity.machineId;
     const roleIcon = entry.role === 'awake' ? pc.green('▶') : pc.dim('○');
-    const statusIcon = entry.status === 'active' ? '' : pc.red(' [revoked]');
+    const statusIcon = isRegistryEntryActive(entry) ? '' : pc.red(' [revoked]');
     const localTag = isLocal ? pc.cyan(' (this machine)') : '';
 
     console.log(`  ${roleIcon} ${pc.bold(entry.name)}${localTag}${statusIcon}`);
@@ -928,7 +928,7 @@ export async function doctor(options: DoctorOptions): Promise<void> {
   let registryAwakeCount: number | null = null;
   try {
     const registry = mgr.loadRegistry();
-    const active = Object.entries(registry.machines).filter(([, e]) => e.status === 'active');
+    const active = Object.entries(registry.machines).filter(([, e]) => isRegistryEntryActive(e));
     const awake = active.filter(([, e]) => e.role === 'awake');
     registryAwakeCount = awake.length;
 

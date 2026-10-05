@@ -33,7 +33,11 @@ describe('Config', () => {
       const stateDir = path.join(tmpDir, '.instar');
       fs.mkdirSync(stateDir, { recursive: true });
 
-      const customClaudePath = '/usr/local/bin/my-claude-wrapper';
+      // The configured path must exist on this machine to be honoured; a path
+      // copied from another machine that is absent here falls back to
+      // detection (instar#2122, tests/unit/second-machine-copied-config.test.ts).
+      const customClaudePath = path.join(tmpDir, 'my-claude-wrapper');
+      fs.writeFileSync(customClaudePath, '#!/bin/sh\n', { mode: 0o755 });
       fs.writeFileSync(
         path.join(stateDir, 'config.json'),
         JSON.stringify({

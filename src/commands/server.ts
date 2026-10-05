@@ -23693,7 +23693,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               } };
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
-              shardIds: () => [meshSelfId, ...Object.keys(meshIdMgr.loadRegistry().machines)],
+              shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],
               readShardMetrics: async machineId => {
                 if (machineId === meshSelfId) return originRuntime.store.getFederatedMetrics(machineId);
                 const url = peerUrl(machineId);

@@ -140,6 +140,47 @@ export function detectTmuxPath(): string | null {
  * entry is reported rather than silently discarded — the original bug was
  * silence.
  */
+/**
+ * `sessions.claudePath` was used verbatim, so a config copied from another
+ * machine kept a path that does not exist here. Every Claude session then
+ * died the instant it spawned, and with it the session's Telegram sending
+ * credential (instar#2122). Same rule as `mergeOperatorBinaryPaths`: a path
+ * we can positively show is absent is ignored in favour of detection, loudly.
+ * A bare command name, or a probe that fails, is kept as configured.
+ */
+export function resolveConfiguredClaudePath(
+  configured: string | undefined,
+  detect: () => string | null,
+  deps: { exists?: (p: string) => boolean; warn?: (msg: string) => void } = {},
+): string | null {
+  if (typeof configured !== 'string' || configured.trim() === '') return detect();
+  const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+  const warn = deps.warn ?? ((msg: string) => console.warn(msg));
+  let provablyAbsent = false;
+  if (configured.includes('/')) {
+    try {
+      provablyAbsent = !exists(configured);
+    } catch {
+      // @silent-fallback-ok — a failed probe is not evidence of absence.
+      provablyAbsent = false;
+    }
+  }
+  if (!provablyAbsent) return configured;
+  const detected = detect();
+  if (!detected) {
+    // Nothing to replace it with: keep the configured value (unchanged
+    // behaviour, and the hermetic-test convention of a placeholder path on a
+    // host without claude still satisfies the prerequisite check).
+    warn(`[config] sessions.claudePath points at ${configured}, which does not exist on this machine, and no claude binary was detected. Fix or remove sessions.claudePath.`);
+    return configured;
+  }
+  warn(
+    `[config] sessions.claudePath points at ${configured}, which does not exist on this machine — `
+      + `using the detected ${detected} instead. Fix or remove sessions.claudePath to silence this.`,
+  );
+  return detected;
+}
+
 export function mergeOperatorBinaryPaths(
   detected: Record<string, string>,
   configured: Record<string, string> | undefined,
@@ -934,7 +975,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // message — the framework-portability bug.
     fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[] | undefined,
   );
-  const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
+  const claudePathDetected = resolveConfiguredClaudePath(fileConfig.sessions?.claudePath, detectClaudePath);
   const codexPathDetected = detectCodexPath();
   const geminiPathDetected = detectGeminiPath();
   const piPathDetected = detectPiPath();

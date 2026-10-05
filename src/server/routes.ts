@@ -26710,7 +26710,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const entry = idm.loadRegistry().machines[machineId];
       if (!entry) return 'missing';
-      return entry.status === 'active' ? 'active' : entry.status === 'revoked' ? 'revoked' : 'pending';
+      return entry.status === 'revoked' || entry.revokedAt ? 'revoked' : entry.status === 'active' ? 'active' : 'pending';
     } catch {
       // @silent-fallback-ok — a corrupt registry is reported as UNREADABLE, which the issuer set refuses (fail closed, not removed)
       return 'unreadable';
