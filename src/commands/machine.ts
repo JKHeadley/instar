@@ -727,6 +727,53 @@ interface WakeupOptions {
   force?: boolean;
 }
 
+/**
+ * The machine currently in charge: the live lease holder when this machine's
+ * own server answers, else the registry's awake role (which can lag).
+ */
+export async function resolveAwakeMachine(
+  mgr: MachineIdentityManager,
+  port: number,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ machineId: string; entry: import('../core/types.js').MachineRegistryEntry } | null> {
+  try {
+    const resp = await fetchFn(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(3000) });
+    if (resp.ok) {
+      const health = await resp.json() as { multiMachine?: { syncStatus?: { leaseHolder?: string | null } } };
+      const holder = health.multiMachine?.syncStatus?.leaseHolder;
+      if (holder) {
+        const entry = mgr.loadRegistry().machines[holder];
+        if (entry && entry.status === 'active' && !entry.revokedAt) return { machineId: holder, entry };
+      }
+    }
+  } catch { /* @silent-fallback-ok — no local server; the registry answers below */ }
+  return mgr.getAwakeMachine();
+}
+
+/**
+ * A reachable base URL for `machineId`'s server: every advertised endpoint
+ * (tailscale, lan, cloudflare) and the last-known URL are probed with /health;
+ * the first that answers wins. Never this machine's own server.
+ */
+export async function resolveAwakeServerUrl(
+  mgr: MachineIdentityManager,
+  machineId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<string | null> {
+  const entry = mgr.loadRegistry().machines[machineId];
+  const candidates = [
+    ...(entry?.endpoints ?? []).map((e) => e.url),
+    ...(entry?.lastKnownUrl ? [entry.lastKnownUrl] : []),
+  ].map((u) => u.replace(/\/+$/, ''));
+  for (const url of [...new Set(candidates)]) {
+    try {
+      const resp = await fetchFn(`${url}/health`, { signal: AbortSignal.timeout(3000) });
+      if (resp.ok) return url;
+    } catch { /* try the next rope */ }
+  }
+  return null;
+}
+
 export async function wakeup(options: WakeupOptions): Promise<void> {
   let config;
   try {
@@ -752,8 +799,11 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     return;
   }
 
-  // Find the currently awake machine
-  const awake = mgr.getAwakeMachine();
+  // Find the currently awake machine. The LIVE lease is the authority; the
+  // registry's role field can lag (and once held a removed identity — Luna's
+  // Studio reported "Current location: mac-studio" while the laptop held the
+  // lease, instar#2122). Ask the local server first; fall back to the registry.
+  const awake = await resolveAwakeMachine(mgr, config.port);
 
   // Signing key for claiming the lease (canonical MachineIdentity name).
   const wakeupSigningKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
@@ -802,23 +852,17 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   console.log(`  Current location: ${pc.bold(awake.entry.name)}`);
   console.log('  Contacting for handoff...');
 
-  // Determine server URL — try tunnel first, fall back to localhost
-  let serverUrl = '';
-  try {
-    const healthResp = await fetch(`http://localhost:${config.port}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (healthResp.ok) {
-      const health = await healthResp.json() as { tunnelUrl?: string };
-      serverUrl = health.tunnelUrl || `http://localhost:${config.port}`;
-    }
-  } catch { /* server not reachable locally */ }
-
+  // The handoff challenge is signed for a RECEIVER machine id, so it must go to
+  // the AWAKE machine's server — not to this machine's own server (which used
+  // to happen, and answered "Invalid challenge signature" because it computed
+  // the message with itself as receiver; instar#2122).
+  const serverUrl = await resolveAwakeServerUrl(mgr, awake.machineId);
   if (!serverUrl) {
-    console.log(pc.red(`  Can't reach the server on port ${config.port}.`));
+    console.log(pc.red(`  Can't reach ${awake.entry.name} on any of its known addresses.`));
     console.log(pc.dim(`  The awake machine may be offline. Use --force to take over.`));
     process.exit(1);
   }
+  console.log(pc.dim(`  Reaching ${awake.entry.name} at ${redactUrl(serverUrl)}`));
 
   // Load signing key for challenge-response (canonical MachineIdentity name).
   const signingKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
