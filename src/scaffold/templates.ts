@@ -370,10 +370,11 @@ This project uses instar for persistent agent capabilities. I am not a vanilla C
 
 ### API Authentication
 
-Most server endpoints require an auth token when \`authToken\` is configured in \`.instar/config.json\`. Read it once per session:
+Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 
 Then include in ALL API calls (except \`/health\`, which is public):
@@ -2229,10 +2230,11 @@ This project uses instar for persistent agent capabilities.
 
 ### API Authentication
 
-Most server endpoints require an auth token. Read it once per session:
+Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 
 Then include in ALL API calls (except \`/health\`, which is public):
