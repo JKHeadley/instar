@@ -297,7 +297,144 @@ export class SubscriptionPoolAuthorityStore<T extends { id: string }> {
     }
   }
 
+  /**
+   * Legacy single-file migration (spec "Authority publication and loss witness",
+   * operation `legacy-migrate`): publish the per-machine authority from the
+   * validated, UNTOUCHED legacy `<stateDir>/subscription-pool.json`, binding the
+   * witness to the source's SHA-256 + size. The caller supplies the accounts
+   * root to publish (it may drop rows whose configHome is not on this machine —
+   * instar#2122: a copied legacy file carried another machine's homes) while
+   * the witness still binds the ORIGINAL source bytes, so recovery can tell a
+   * mutated source from the one it migrated.
+   *
+   * `removeLegacy` controls whether the source file is unlinked after commit.
+   * The spec removes it; a caller passes false when the file is still shared
+   * through the agent home's git repo, because a deletion there propagates to
+   * every peer on its next pull (a peer that has not migrated yet would lose
+   * its only copy). The published authority wins on load either way.
+   */
+  migrateLegacy(accountsRoot: unknown, opts: { removeLegacy: boolean }): SubscriptionPoolAuthoritySnapshot<T> {
+    if (fs.existsSync(this.authorityDir) || fs.existsSync(this.witnessPath)) {
+      throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+    }
+    const source = readAuthorityFileBounded(this.legacyPath);
+    parseAccountsAuthority(source, this.validateRow); // the source must itself be a valid store
+    fs.mkdirSync(this.parentDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(this.parentDir, 0o700);
+    const generation = newSubscriptionPoolGeneration();
+    const candidate = this.legacyCandidatePath(generation);
+    const initializing: SubscriptionPoolWitness = {
+      generation, nextGeneration: null, machineId: this.machineId,
+      operation: 'legacy-migrate', legacyDigest: source.sha256, legacySize: source.size,
+      state: 'initializing', cleanupPending: false,
+    };
+    this.atomicJson(this.witnessPath, initializing);
+    try {
+      this.buildGeneration(candidate, accountsRoot, generation, null);
+      fs.renameSync(candidate, this.authorityDir);
+      this.fsyncDir(this.parentDir);
+      this.atomicJson(this.witnessPath, { ...initializing, state: 'initialized' });
+      this.fsyncDir(this.parentDir);
+      if (opts.removeLegacy) this.removeMatchingLegacy(initializing);
+      const loaded = this.loadGenerationDirectory(this.authorityDir);
+      return { accounts: loaded.accounts, generation, cleanupPending: false };
+    } catch (error) {
+      try {
+        if (fs.existsSync(candidate)) SafeFsExecutor.safeRmSync(candidate, {
+          recursive: true, force: true, operation: 'SubscriptionPoolAuthorityStore:legacy-candidate-cleanup',
+        });
+        if (!fs.existsSync(this.authorityDir) && fs.existsSync(this.witnessPath)) {
+          SafeFsExecutor.safeUnlinkSync(this.witnessPath, {
+            operation: 'SubscriptionPoolAuthorityStore:legacy-witness-cleanup',
+          });
+        }
+        this.fsyncDir(this.parentDir);
+      } catch { /* original error remains authoritative */ }
+      throw error;
+    }
+  }
+
+  /** The operation recorded by the current witness, or null when none is readable. */
+  witnessOperation(): SubscriptionPoolWitness['operation'] | null {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.witnessPath, 'utf8')) as unknown;
+      return validateSubscriptionPoolWitness(raw).operation;
+    } catch { return null; }
+  }
+
+  /** The legacy source still on disk with exactly the digest+size the witness bound? */
+  legacySourceMatches(witness: SubscriptionPoolWitness): boolean {
+    if (!fs.existsSync(this.legacyPath)) return false;
+    try {
+      const current = readAuthorityFileBounded(this.legacyPath);
+      return current.sha256 === witness.legacyDigest && current.size === witness.legacySize;
+    } catch { return false; }
+  }
+
+  /** Spec: "finalize witness, then remove matching legacy" — never an unmatched one. */
+  private removeMatchingLegacy(witness: SubscriptionPoolWitness): void {
+    if (!this.legacySourceMatches(witness)) return;
+    SafeFsExecutor.safeUnlinkSync(this.legacyPath, { operation: 'SubscriptionPoolAuthorityStore:remove-migrated-legacy' });
+    this.fsyncDir(path.dirname(this.legacyPath));
+  }
+
+  private legacyCandidatePath(generation: string): string {
+    return `${this.authorityDir}.candidate-legacy-${generation}`;
+  }
+
+  /**
+   * Recovery for an interrupted legacy migration (spec table): a committed
+   * directory is finalized; a complete staging directory is renamed in; a
+   * missing directory with the matching source still present is rebuilt from
+   * that source; a mutated/missing source with nothing published fails closed.
+   */
+  private recoverLegacyMigrate(witness: SubscriptionPoolWitness): SubscriptionPoolAuthoritySnapshot<T> {
+    const candidate = this.legacyCandidatePath(witness.generation);
+    const siblings = this.recoverySiblings();
+    if (siblings.some((entry) => entry !== path.basename(candidate))) {
+      throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+    }
+    const finalize = (accounts: T[]): SubscriptionPoolAuthoritySnapshot<T> => {
+      this.atomicJson(this.witnessPath, { ...witness, state: 'initialized' });
+      this.fsyncDir(this.parentDir);
+      return { accounts, generation: witness.generation, cleanupPending: false };
+    };
+    if (fs.existsSync(this.authorityDir)) {
+      if (fs.existsSync(candidate)) throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+      const active = this.loadGenerationDirectory(this.authorityDir);
+      if (active.generation.generation !== witness.generation || active.generation.baseGeneration !== null) {
+        throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+      }
+      return finalize(active.accounts);
+    }
+    if (fs.existsSync(candidate)) {
+      const staged = this.loadCandidateOrAbortIncomplete(candidate);
+      if (staged) {
+        if (staged.generation.generation !== witness.generation || staged.generation.baseGeneration !== null) {
+          throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+        }
+        fs.renameSync(candidate, this.authorityDir);
+        this.fsyncDir(this.parentDir);
+        return finalize(staged.accounts);
+      }
+    }
+    // No directory, no usable staging: rebuild from the source only if it is the
+    // exact bytes the witness bound. (The rebuild publishes the whole source; a
+    // row-filtered first attempt is re-applied by the caller's next migration
+    // pass against the published authority, never silently guessed here.)
+    if (!this.legacySourceMatches(witness)) throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
+    const source = readAuthorityFileBounded(this.legacyPath);
+    const root = JSON.parse(source.bytes.toString('utf8')) as unknown;
+    parseAccountsAuthority(source, this.validateRow);
+    this.buildGeneration(candidate, root, witness.generation, null);
+    fs.renameSync(candidate, this.authorityDir);
+    this.fsyncDir(this.parentDir);
+    const loaded = this.loadGenerationDirectory(this.authorityDir);
+    return finalize(loaded.accounts);
+  }
+
   private recoverInitializing(witness: SubscriptionPoolWitness): SubscriptionPoolAuthoritySnapshot<T> {
+    if (witness.operation === 'legacy-migrate') return this.recoverLegacyMigrate(witness);
     if (witness.operation !== 'first-create') {
       throw new SubscriptionPoolAuthorityReadError('recovery-conflict');
     }

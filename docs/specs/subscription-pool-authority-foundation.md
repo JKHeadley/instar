@@ -3,6 +3,7 @@ title: "Subscription Pool Authority Foundation"
 slug: "subscription-pool-authority-foundation"
 author: "Echo"
 eli16-overview: "docs/specs/subscription-pool-authority-foundation.eli16.md"
+parent-principle: "Migration Parity"
 lessons-engaged:
   - "P20 Verify the State, Not Its Symbol — an unreadable or invalid durable pool never becomes an authoritative empty pool."
   - "Expected Capacity Enforcement — load, scan, index, and serialized responses have explicit hard bounds."

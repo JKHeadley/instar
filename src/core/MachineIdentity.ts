@@ -920,6 +920,8 @@ const GITIGNORE_ENTRIES = [
   '.worktrees/',
   '# Judgment-call provenance rows (machine-local decision context — never commit)',
   'state/judgment-provenance/',
+  '# Subscription pool login locations (machine-local — never commit)',
+  '.instar/subscription-pool.json',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

@@ -21,3 +21,7 @@ This does not sign users in, select different accounts, or send notices. It is a
 lets the separate sign-in ledger observe a bounded, honest pool without silently changing account
 authority. The ledger stays off until this prerequisite is live and tested at unit, integration,
 and production-lifecycle levels.
+
+## Update, 2026-10-06 — the migration step is now built
+
+The move from the old single shared file to the per-machine store, which this spec called for, was built in October 2026 after a second machine inherited the first machine's login locations (instar#2122). On update, each machine publishes its own store from the old file, keeping only logins whose folders exist on that machine. One deliberate difference from the text above: an old file that is still shared through the agent's repository is left in place, never deleted, because deleting it would also delete it on the other machine at its next sync.
