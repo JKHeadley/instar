@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCirclesShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6718,6 +6718,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev circles-shadow awareness card');
     }
 
+    if (!content.includes('### Jev Review-Flag Shadow')) {
+      content += jevReviewFlagShadowAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev review-flag-shadow awareness card');
+    }
+
     if (!content.includes('Queued-message review pacing:')) {
       content += '\n' + telegramOriginRecoveryAwareness();
       patched = true;
@@ -11160,6 +11166,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Jev circles shadow: a server-side log-only instrument whose summary any
       // framework's agent can read; the card says it measures Claude Code sessions.
       '### Jev Circles Shadow',
+      // Jev review-flag shadow: a server-side log-only instrument over the
+      // Telegram history, framework-agnostic; any agent can read its summary.
+      '### Jev Review-Flag Shadow',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by

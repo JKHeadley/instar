@@ -18459,6 +18459,28 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow(`  Jev circles shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
     }
 
+    // Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md) — log-only,
+    // delivers nothing. A 60 s unref'd timer tails the Telegram history; dev-gated
+    // (live on a development agent, dark on the fleet), read live per tick, inert
+    // without the vault typesafe_api_key.
+    try {
+      const { buildJevReviewFlagShadow, installJevReviewFlagShadow } = await import('../core/JevReviewFlagShadow.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      const shadow = buildJevReviewFlagShadow({
+        readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+        bootBlock: config.intelligence?.jevReviewFlagShadow,
+        developmentAgent: config.developmentAgent === true,
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        stateDir: config.stateDir,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      });
+      installJevReviewFlagShadow(shadow);
+      shadow.start();
+    } catch (err) {
+      console.log(pc.yellow(`  Jev review-flag shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+    }
+
     // Outbound dedup gate — deterministic near-duplicate detection on every
     // outbound agent message. Catches respawn races and idempotency gaps.
     const { OutboundDedupGate } = await import('../core/OutboundDedupGate.js');
