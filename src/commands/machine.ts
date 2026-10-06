@@ -48,6 +48,53 @@ export async function establishPairingRecoveryRoot(
   recovery.rememberIdentity(mgr.establishLocalRecoveryKey(material));
 }
 
+/** True when this machine holds the identity's private signing key (current or legacy file name). */
+function hasLocalSigningKey(mgr: MachineIdentityManager): boolean {
+  try {
+    return mgr.loadSigningKey().length > 0;
+  } catch {
+    // @silent-fallback-ok — a missing or unreadable key is exactly the "not made here" signal.
+    return false;
+  }
+}
+
+/**
+ * Give this machine's own keychain the chance to rebuild missing key files
+ * for its identity (the boot-time identity recovery path). True only when it
+ * did, which proves the identity belongs to this machine.
+ */
+async function recoversOwnKeys(config: ReturnType<typeof loadConfig>, mgr: MachineIdentityManager): Promise<boolean> {
+  try {
+    const { runMachineIdentityBootRecovery } = await import('../core/MachineIdentityBootRecovery.js');
+    const outcome = await runMachineIdentityBootRecovery({ config, manager: mgr });
+    return outcome === 'keys-recovered' && hasLocalSigningKey(mgr);
+  } catch {
+    // @silent-fallback-ok — recovery unavailable means it cannot vouch for the identity;
+    // the caller sets the copy aside (renamed, never deleted), which is reversible.
+    return false;
+  }
+}
+
+/**
+ * Move a copied machine identity (identity.json and any key files beside it)
+ * out of the way, never deleting it, so a fresh identity can be minted for
+ * this machine. Exported for tests.
+ */
+export function setAsideCopiedIdentity(mgr: MachineIdentityManager, why: string): string[] {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const moved: string[] = [];
+  const machineDir = path.dirname(mgr.identityPath);
+  for (const file of [mgr.identityPath, mgr.signingKeyPath, mgr.encryptionKeyPath,
+    path.join(machineDir, 'signing-private.pem'), path.join(machineDir, 'encryption-private.pem')]) {
+    if (!fs.existsSync(file)) continue;
+    const target = `${file}.copied-${stamp}`;
+    fs.renameSync(file, target);
+    moved.push(target);
+  }
+  console.log(pc.yellow(`  The machine identity here was copied from another machine (${why}). Set it aside and creating this machine's own.`));
+  return moved;
+}
+
 async function prepareFreshRevokedPairingIdentity(
   config: ReturnType<typeof loadConfig>,
   mgr: MachineIdentityManager,
@@ -495,7 +542,16 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // the name happened to line up) enabling broken commit-signing. Verified live
   // on a real two-machine mesh, 2026-05-28. generateIdentity writes the
   // canonical filenames, the identity, and self-registers as standby.
-  if (mgr.hasIdentity()) {
+  if (mgr.hasIdentity() && !hasLocalSigningKey(mgr) && !(await recoversOwnKeys(config, mgr))) {
+    // An identity file whose private signing key is absent AND which this
+    // machine's keychain cannot rebuild was not made here: it came with a
+    // copied or cloned agent home. Using it would make this machine claim
+    // another machine's id (ACT-1302). A genuine identity that lost only its
+    // key files is rebuilt by recoversOwnKeys and keeps its id.
+    setAsideCopiedIdentity(mgr, 'its private signing key is not on this machine');
+    const identity = await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+    console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+  } else if (mgr.hasIdentity()) {
     console.log(pc.yellow('  This machine already has an identity. Using existing.'));
   } else {
     const identity = await mgr.generateIdentity({ name: options.name, role: 'standby' });
@@ -530,7 +586,15 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       if (resp.status === 409) {
         const refusal = await resp.clone().json().catch(() => ({})) as { error?: string };
-        if (refusal.error === 'fresh-pairing-identity-required') {
+        if (refusal.error === 'joiner-identity-is-inviter') {
+          // The inviter recognised its own id: this home's identity file is a copy.
+          setAsideCopiedIdentity(mgr, 'the machine being joined reports it as its own');
+          await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+          await establishPairingRecoveryRoot(config, mgr);
+          identity = mgr.loadIdentity();
+          console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+          resp = await sendPairingRequest();
+        } else if (refusal.error === 'fresh-pairing-identity-required') {
           await prepareFreshRevokedPairingIdentity(config, mgr);
           identity = mgr.loadIdentity();
           console.log(pc.yellow('  Revoked prior identity detected — generated fresh signing, encryption, and recovery keys for this pairing code.'));
