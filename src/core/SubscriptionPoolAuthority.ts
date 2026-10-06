@@ -359,7 +359,11 @@ export class SubscriptionPoolAuthorityStore<T extends { id: string }> {
     try {
       const raw = JSON.parse(fs.readFileSync(this.witnessPath, 'utf8')) as unknown;
       return validateSubscriptionPoolWitness(raw).operation;
-    } catch { return null; }
+    } catch {
+      // @silent-fallback-ok: an absent or unreadable witness means no migration is
+      // in flight; callers treat null as "nothing to resume", the documented contract.
+      return null;
+    }
   }
 
   /** The legacy source still on disk with exactly the digest+size the witness bound? */
@@ -368,7 +372,11 @@ export class SubscriptionPoolAuthorityStore<T extends { id: string }> {
     try {
       const current = readAuthorityFileBounded(this.legacyPath);
       return current.sha256 === witness.legacyDigest && current.size === witness.legacySize;
-    } catch { return false; }
+    } catch {
+      // @silent-fallback-ok: an unreadable legacy file never matches, so it is
+      // left in place (the safe direction: removal only on a proven match).
+      return false;
+    }
   }
 
   /** Spec: "finalize witness, then remove matching legacy" — never an unmatched one. */

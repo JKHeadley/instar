@@ -3024,7 +3024,11 @@ export class PostUpdateMigrator {
       // The per-machine authority (when published) is only readable with this
       // machine's persisted id; without one the legacy file is read as before.
       let machineId: string | undefined;
-      try { machineId = new MachineIdentityManager(this.config.stateDir).loadIdentity().machineId; } catch { machineId = undefined; }
+      try { machineId = new MachineIdentityManager(this.config.stateDir).loadIdentity().machineId; } catch {
+        // @silent-fallback-ok: no machine identity yet is a normal pre-pairing state;
+        // the pool then reads the legacy file exactly as it did before this change.
+        machineId = undefined;
+      }
       const pool = new SubscriptionPool({ stateDir: this.config.stateDir, ...(machineId ? { machineId } : {}) });
       const claudeAccounts = pool.list().filter((a) => a.framework === 'claude-code');
       if (claudeAccounts.length === 0) {
