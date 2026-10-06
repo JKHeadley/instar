@@ -955,7 +955,11 @@ export class TokenLedger {
           // rollout must not fail every file in the scan.
           execArgv: [],
         });
-      } catch (error) { reject(error); return; }
+      } catch (error) {
+        // @silent-fallback-ok — not silent: the launch failure rejects the scan,
+        // which the poller logs through its onError path.
+        reject(error); return;
+      }
       this.codexWorker = worker;
       let settled = false;
       const finish = (error?: Error, output?: ScanOutput) => {
