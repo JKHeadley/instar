@@ -789,6 +789,15 @@ export function macOSAutoStartLoadCommands(
   ];
 }
 
+/**
+ * True when a LaunchAgent plist should be regenerated to run the lifeline
+ * supervisor: Telegram is configured but the plist starts the bare server
+ * (how `instar join` installs a standby that had no Telegram config yet).
+ */
+export function autoStartNeedsLifeline(plistContent: string, hasTelegramConfigured: boolean): boolean {
+  return hasTelegramConfigured && !plistContent.includes('<string>lifeline</string>');
+}
+
 export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const platform = process.platform;
 

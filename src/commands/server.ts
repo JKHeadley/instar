@@ -28270,7 +28270,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // If autostart isn't installed, install it silently. If it uses the old /bin/bash entry point
     // (vulnerable to macOS TCC/FDA restrictions), regenerate it with the node + JS wrapper.
     try {
-      const hasTelegram = !!telegram;
+      const hasTelegramConfigured = (config.messaging ?? []).some(
+        (m) => m.type === 'telegram' && (m as { enabled?: boolean }).enabled !== false,
+      );
+      let hasTelegramForInstall = false;
       const autostartInstalled = isAutostartInstalled(config.projectName);
       let needsReinstall = !autostartInstalled;
 
@@ -28283,6 +28286,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch { /* non-critical */ }
 
         if (!needsReinstall) {
+          const { autoStartNeedsLifeline } = await import('./setup.js');
           const label = `ai.instar.${config.projectName}`;
           const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
           try {
@@ -28296,6 +28300,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!hasNodeWrapper) {
               needsReinstall = true;
               console.log(pc.yellow(`  Auto-start uses legacy format — upgrading to TCC-safe node entry point`));
+            } else if (autoStartNeedsLifeline(plistContent, hasTelegramConfigured)) {
+              // A joined standby is installed with `server start` (it has no
+              // Telegram config at join time, and the lifeline needs one).
+              // Once Telegram is configured, the lifeline must supervise the
+              // server as it does on the first machine (instar#2122).
+              needsReinstall = true;
+              hasTelegramForInstall = true;
+              console.log(pc.yellow(`  Auto-start runs the bare server although Telegram is configured — switching to the lifeline supervisor`));
             } else if (!plistContent.includes('.instar/bin/node')) {
               needsReinstall = true;
               console.log(pc.yellow(`  Auto-start uses direct node path — upgrading to stable symlink`));
@@ -28313,7 +28325,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       if (needsReinstall) {
         const { installAutoStart } = await import('./setup.js');
-        const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+        const installed = installAutoStart(config.projectName, config.projectDir, !!telegram || hasTelegramForInstall);
         if (installed) {
           console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent (node + JS wrapper)' : 'systemd service'}`));
         } else {
