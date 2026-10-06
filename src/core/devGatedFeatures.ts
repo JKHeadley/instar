@@ -674,6 +674,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
   },
   {
+    name: 'jevReviewFlagShadow',
+    configPath: 'intelligence.jevReviewFlagShadow.enabled',
+    description: 'Jev review-flag shadow (jev-review-flag-shadow.md): once a minute, asks Jev whether each new agent Telegram reply needs the operator\'s review and logs a content-free would-flag row.',
+    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the agent\'s own Telegram history tail (512 KB), secret-scrubs reply and request before egress, one call at a time under a fetch timeout and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
