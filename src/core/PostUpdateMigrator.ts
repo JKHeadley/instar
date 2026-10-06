@@ -8251,6 +8251,18 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
       result.upgraded.push('CLAUDE.md: added A2A delivery-health section');
     }
 
+    // Own relay state (displaced vs retrying). Existing agents need to check their
+    // OWN relay before blaming a quiet peer, and to know a displaced machine now
+    // reclaims the connection. Content-sniffed for idempotency.
+    if (!content.includes('Is my own relay connection up? (displaced vs retrying)')) {
+      content += '\n\n' + `### Is my own relay connection up? (displaced vs retrying)
+
+Before blaming a quiet peer, check MY side: \`GET /threadline/health\` → \`relay.state\`. \`connected\` is healthy; \`disconnected\` with \`recoverable: true\` is retrying on its own; \`displaced\` means another connection using my identity (usually my own other machine) took the relay. A displaced machine raises a \`Threadline.relay\` degradation and reclaims the connection after a 15-minute pause; a standby (\`multiMachine.telegramPolling: false\`) never connects at all. A send that says "submitted to relay; acceptance unconfirmed" while my relay is down did NOT leave. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → read my own relay state first.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added own-relay-state section');
+    }
+
     // Cross-Machine Seamlessness (spec §11 Agent Awareness). Existing
     // multi-machine agents need to know about lease-based authority, the
     // honest machine-provenance disclosure, and where to read mesh/sync status.
