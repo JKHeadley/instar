@@ -36363,8 +36363,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // routes already have E2E coverage in tests/e2e/threadline-verified-pairing-alive.test.ts.
       if (refuseCredentialShareIfBlocked(resolvedId)) return;
 
-      const relayMsgId = relayClient.sendAuto(resolvedId, message, threadId);
-      const effectiveRelayThreadId = threadId ?? relayMsgId;
+      // The peer replies on the thread that went on the wire, so record, return
+      // and wait on THAT id — never the messageId (ACT-1304 fault 3).
+      const { messageId: relayMsgId, threadId: effectiveRelayThreadId } =
+        relayClient.sendAutoWithThread(resolvedId, message, threadId);
 
       // Canonical outbox write for the relay-delivery path — same shape as the
       // local-delivery path above, so the observability tab sees both paths.

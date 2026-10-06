@@ -115,7 +115,7 @@ describe('/threadline/relay-send caller-supplied priority', () => {
     const stubRelayClient = {
       connectionState: 'connected',
       resolveAgent: async () => null,
-      sendAuto: () => 'msg-stub',
+      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: () => 'msg-stub',
     };
 
     const app = express();
