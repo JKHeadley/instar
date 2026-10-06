@@ -48,6 +48,15 @@ export interface ThreadlineBootstrapConfig {
   port: number;
   /** Enable cloud relay connection (opt-in, default: false) */
   relayEnabled?: boolean;
+  /**
+   * This machine is a quiet standby of a multi-machine agent (the operator set
+   * `multiMachine.telegramPolling: false`, the same per-machine flag that keeps
+   * it off the Telegram poll). The relay admits ONE connection per agent
+   * identity and displaces the previous one, so a standby that connects knocks
+   * the awake machine off the relay and vice versa (instar#2122). A standby
+   * keeps its MCP tools and local discovery but does not connect to the relay.
+   */
+  relayStandby?: boolean;
   /** Cloud relay URL */
   relayUrl?: string;
   /** Agent visibility on relay */
@@ -147,8 +156,12 @@ export async function bootstrapThreadline(
   await registerThreadlineMcp(config.projectDir, config.agentName, config.stateDir);
 
   // ── 5. Cloud Relay Connection (opt-in) ─────────────────────────
-  const relayEnabled = config.relayEnabled === true
+  const relayWanted = config.relayEnabled === true
     || process.env.THREADLINE_RELAY_ENABLED === 'true';
+  if (relayWanted && config.relayStandby) {
+    console.log('Threadline: relay connection SUPPRESSED (standby: multiMachine.telegramPolling=false) — the awake machine holds the agent\'s single relay connection');
+  }
+  const relayEnabled = relayWanted && !config.relayStandby;
 
   // Check if the standalone listener daemon should handle the relay connection.
   // Three checks, in order:

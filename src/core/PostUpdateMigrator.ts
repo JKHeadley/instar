@@ -7582,6 +7582,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Threadline Conversation Coherence holder-view section');
     }
 
+    // Threadline relay on a standby (instar#2122): one relay connection per
+    // agent identity; the standby stays off it. Content-sniffed, idempotent.
+    if (content.includes('Threadline Conversation Coherence (which machine holds') && !content.includes('A quiet standby does not connect to the relay')) {
+      const anchorLine = content.split('\n').find((l) => l.startsWith('- **When to use** (PROACTIVE — this is the trigger): the user references an A2A thread that is NOT held on this machine'));
+      if (anchorLine) {
+        content = content.replace(anchorLine, anchorLine + '\n' + '- **A quiet standby does not connect to the relay.** The relay admits ONE connection per agent identity, so on a multi-machine agent only the awake machine (the one owning the Telegram poll) connects; a machine with `multiMachine.telegramPolling: false` logs `relay connection SUPPRESSED (standby)` and keeps its local Threadline tools. If a peer says I am unreachable while I am the standby, that is this rule, not an outage — the awake machine answers for me.');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Threadline relay standby rule');
+      }
+    }
+
     // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10) — agent-facing
     // awareness in the proactive-trigger form, tagged EXPERIMENTAL per
     // maturity-honesty (dark on the fleet; never announced as a finished user

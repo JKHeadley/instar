@@ -281,6 +281,7 @@ import { formatUserContextForSession, hasUserContext } from '../users/UserContex
 import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -17980,6 +17981,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         projectDir: config.projectDir,
         port: config.port,
         relayEnabled: config.threadline?.relayEnabled,
+        // A quiet standby never connects to the relay: the relay admits one
+        // connection per agent identity, and two machines displaced each other
+        // (instar#2122). Same per-machine flag the lifeline uses for the poll.
+        relayStandby: !shouldOwnTelegramPoll(config),
         relayUrl: config.threadline?.relayUrl,
         visibility: config.threadline?.visibility,
         capabilities: config.threadline?.capabilities,
