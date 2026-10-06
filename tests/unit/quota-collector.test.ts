@@ -461,6 +461,61 @@ describe('JsonlParser', () => {
     });
   });
 
+  describe('parseFileAsync (instar#2120 — streamed, never holds the event loop)', () => {
+    const line = (o: Record<string, unknown>) => JSON.stringify(o);
+    function mixedFixture(now: number): string {
+      return [
+        line({ type: 'assistant', timestamp: new Date(now - 1000).toISOString(),
+          message: { role: 'assistant', usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 20, cache_read_input_tokens: 10 } } }),
+        line({ type: 'assistant', timestamp: new Date(now - 86400000 * 10).toISOString(),
+          message: { role: 'assistant', usage: { input_tokens: 999 } } }),
+        line({ type: 'user', message: { role: 'user', content: 'mentions assistant', usage: { input_tokens: 777 } } }),
+        line({ type: 'assistant', message: { role: 'assistant', usage: { input_tokens: 7 } } }), // no timestamp: counted
+        'not json at all',
+        '{"broken": "assistant"',
+        '',
+        line({ type: 'assistant', timestamp: new Date(now - 2000).toISOString(),
+          message: { role: 'assistant', usage: { input_tokens: 200, output_tokens: 100 } } }),
+      ].join('\r\n');
+    }
+
+    it('returns exactly what parseFile returns on mixed input (CRLF, malformed, out-of-window, non-assistant)', async () => {
+      const now = Date.now();
+      const filePath = path.join(tmpDir, 'mixed.jsonl');
+      fs.writeFileSync(filePath, mixedFixture(now));
+      const start = new Date(now - 86400000);
+      const end = new Date(now + 86400000);
+      const sync = JsonlParser.parseFile(filePath, start, end);
+      const streamed = await JsonlParser.parseFileAsync(filePath, start, end);
+      expect(streamed).toEqual(sync);
+      expect(streamed.inputTokens).toBe(307);
+      expect(streamed.totalBilled).toBe(307 + 150 + 20 + 10);
+    });
+
+    it('returns zeros for a non-existent file', async () => {
+      const counts = await JsonlParser.parseFileAsync('/nonexistent', new Date(0), new Date());
+      expect(counts.totalBilled).toBe(0);
+    });
+
+    it('lets timers run while a large file is being read', async () => {
+      const now = Date.now();
+      const entry = line({ type: 'assistant', timestamp: new Date(now - 1000).toISOString(),
+        message: { role: 'assistant', usage: { input_tokens: 1, output_tokens: 1 } } });
+      const filePath = path.join(tmpDir, 'large.jsonl');
+      // ~20 MB: many read chunks, so a streamed read must yield between them.
+      fs.writeFileSync(filePath, Array.from({ length: 100_000 }, () => entry).join('\n'));
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 1);
+      try {
+        const counts = await JsonlParser.parseFileAsync(filePath, new Date(now - 86400000), new Date(now + 86400000));
+        expect(counts.inputTokens).toBe(100_000);
+      } finally {
+        clearInterval(timer);
+      }
+      expect(ticks).toBeGreaterThan(0);
+    });
+  });
+
   describe('estimateUtilization', () => {
     it('calculates percentage from token counts', () => {
       const percent = JsonlParser.estimateUtilization(
