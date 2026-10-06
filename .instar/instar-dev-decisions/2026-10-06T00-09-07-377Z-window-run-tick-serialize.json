@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-06T00:09:07.377Z",
+  "slug": "window-run-tick-serialize",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TickSerializer.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
