@@ -511,6 +511,55 @@ export class SubscriptionPool {
   // ── Reads ────────────────────────────────────────────────────────
 
   /** All accounts (a shallow copy — callers can't mutate the store). */
+  /**
+   * One-time migration of the legacy single file `<stateDir>/subscription-pool.json`
+   * into this machine's authority store (spec subscription-pool-authority-foundation,
+   * `legacy-migrate`). Rows whose configHome does not exist on THIS machine are
+   * dropped and reported: the legacy file was shared between machines through the
+   * agent home's git repo, so a joined machine inherited another machine's login
+   * locations (instar#2122). The witness binds the untouched source bytes.
+   *
+   * `removeLegacy:false` keeps the source on disk (the caller passes it when the
+   * file is git-tracked, since a deletion would propagate to peers that have not
+   * migrated). Idempotent: an existing authority or a missing legacy is a no-op.
+   */
+  migrateLegacyToMachineLocal(opts: { removeLegacy: boolean; homeExists?: (configHome: string) => boolean }):
+    | { status: 'already-machine-local' }
+    | { status: 'no-legacy' }
+    | { status: 'machine-identity-unavailable' }
+    | { status: 'migrated'; kept: string[]; dropped: Array<{ id: string; configHome: string }>; legacyRemoved: boolean } {
+    if (!this.authorityStore) return { status: 'machine-identity-unavailable' };
+    const homeExists = opts.homeExists ?? ((configHome: string) => fs.existsSync(configHome));
+    if (this.authorityGeneration !== null) {
+      // A crash-recovery rebuild republishes the WHOLE legacy source (the
+      // store cannot know the caller's row filter). While the authority still
+      // carries the legacy-migrate witness, re-apply the filter here so another
+      // machine's homes never stay published under this machine's id.
+      if (this.authorityStore.witnessOperation() === 'legacy-migrate') {
+        const foreign = this.store.accounts.filter((a) => !homeExists(a.configHome));
+        if (foreign.length > 0) {
+          const next = this.cloneStore();
+          next.accounts = next.accounts.filter((a) => homeExists(a.configHome));
+          this.persist(next);
+          this.publish(next);
+          return { status: 'migrated', kept: next.accounts.map((a) => a.id), dropped: foreign.map((a) => ({ id: a.id, configHome: a.configHome })), legacyRemoved: false };
+        }
+      }
+      return { status: 'already-machine-local' };
+    }
+    if (!fs.existsSync(this.storePath)) return { status: 'no-legacy' };
+    const captured = readAuthorityFileBounded(this.storePath);
+    const accounts = parseAccountsAuthority<StoredSubscriptionAccount>(captured, (value): value is StoredSubscriptionAccount => this.isStoredAccount(value));
+    const kept = accounts.filter((a) => homeExists(a.configHome));
+    const dropped = accounts.filter((a) => !homeExists(a.configHome)).map((a) => ({ id: a.id, configHome: a.configHome }));
+    const root: SubscriptionPoolStore = { version: 1, accounts: kept, lastModified: new Date().toISOString() };
+    const snapshot = this.authorityStore.migrateLegacy(root, { removeLegacy: opts.removeLegacy });
+    this.authorityGeneration = snapshot.generation;
+    this.pendingMaintenance = null;
+    this.publish({ version: 1, accounts: snapshot.accounts, lastModified: root.lastModified });
+    return { status: 'migrated', kept: kept.map((a) => a.id), dropped, legacyRemoved: opts.removeLegacy && !fs.existsSync(this.storePath) };
+  }
+
   list(): SubscriptionAccount[] {
     this.assertReadable();
     return this.store.accounts
@@ -877,7 +926,12 @@ export class SubscriptionPool {
 
   private persist(next: SubscriptionPoolStore): void {
     next.lastModified = new Date().toISOString();
-    if (this.authorityStore && !fs.existsSync(this.storePath)) {
+    // The per-machine authority is the store once it exists (a published
+    // generation was loaded), even while a legacy file is still on disk — a
+    // legacy copy shared through the agent home's git repo is left in place by
+    // the migration, and writing to it again would re-share this machine's
+    // homes and diverge from what load() reads (instar#2122).
+    if (this.authorityStore && (this.authorityGeneration !== null || !fs.existsSync(this.storePath))) {
       const snapshot = this.authorityGeneration
         ? this.authorityStore.update(this.authorityGeneration, next)
         : this.authorityStore.create(next);
