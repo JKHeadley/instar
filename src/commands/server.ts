@@ -28359,12 +28359,38 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Graceful shutdown
     let _shuttingDown = false;
+    let shutdownStep = 'start';
     const shutdown = async () => {
       // Re-entrancy guard: SIGINT+SIGTERM (or a restartDetected racing a signal)
       // must not run the teardown twice. closeAllSqlite() is itself idempotent,
       // but the resume-UUID save + sidecar flush should run once.
-      if (_shuttingDown) return;
+      if (_shuttingDown) {
+        // A second signal while teardown is in flight means the operator (or
+        // launchd) wants the process gone now: exit at once rather than wait on
+        // whichever step is hanging (instar#2122: a standby that ignored SIGTERM).
+        console.error(`[shutdown] second signal during step "${shutdownStep}" — exiting now`);
+        try { closeAllSqlite(); } catch { /* best effort */ }
+        try { singleInstanceLock.release(); } catch { /* best effort */ }
+        process.exit(1);
+      }
       _shuttingDown = true;
+      // Hard deadline: the teardown below awaits many subsystems in sequence and
+      // any one of them (an origin worker, a tunnel, a Threadline relay, a server
+      // with an open long-poll) can hang; without a bound the process never
+      // exits and only SIGKILL stops it. launchd/the lifeline expect SIGTERM to
+      // work. The timer is unref'd so a fast teardown is never delayed by it.
+      const { armShutdownDeadline, resolveShutdownDeadlineMs } = await import('../core/shutdownDeadline.js');
+      armShutdownDeadline({
+        deadlineMs: resolveShutdownDeadlineMs(process.env.INSTAR_SHUTDOWN_DEADLINE_MS),
+        currentStep: () => shutdownStep,
+        onExpire: (step, deadlineMs) => {
+          console.error(`[shutdown] teardown exceeded ${deadlineMs}ms during step "${step}" — exiting now`);
+          try { closeAllSqlite(); } catch { /* best effort */ }
+          try { singleInstanceLock.release(); } catch { /* best effort */ }
+          process.exit(1);
+        },
+      });
+      shutdownStep = 'telegram-origin';
       try { await telegramOriginBoot?.close(); }
       catch (error) { console.error('[telegram-origin] shutdown cleanup incomplete', error); }
       console.log('\nShutting down...');
@@ -28442,6 +28468,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       coherenceMonitor.stop();
       commitmentTracker.stop();
       commitmentSentinel?.stop();
+      shutdownStep = 'notification-flush';
       await notificationBatcher.flushAll(); // Drain pending notifications before exit
       notificationBatcher.stop();
       retryManager.stop();
@@ -28455,7 +28482,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       autoUpdater.stop();
       autoDispatcher?.stop();
       sessionMonitor?.stop();
+      shutdownStep = 'tunnel';
       if (tunnel) await tunnel.stop();
+      shutdownStep = 'threadline';
       if (threadlineShutdown) await threadlineShutdown();
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
@@ -28468,13 +28497,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       // race) — the agent then vanishes from the registry until restart.
       try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
+      shutdownStep = 'telegram';
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();
       stuckInputSentinel.stop();
       // Integrated-Being v1 — flush stats sidecar (coalesces pending writes)
       // BEFORE closing SQLite, so no unflushed write is lost.
       try { sharedStateLedger?.shutdown(); } catch { /* best effort */ }
+      shutdownStep = 'http-server';
       await server.stop();
+      shutdownStep = 'sqlite';
       // Close EVERY registered SQLite handle LAST — after all writers (server,
       // scheduler, sentinels, telegram) have stopped — to prevent the
       // "mutex lock failed" SIGABRT when better-sqlite3 static destructors fire
