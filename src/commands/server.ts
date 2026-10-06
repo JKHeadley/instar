@@ -281,6 +281,7 @@ import { formatUserContextForSession, hasUserContext } from '../users/UserContex
 import type { OrphanProcessReaper } from '../monitoring/OrphanProcessReaper.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -17980,6 +17981,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         projectDir: config.projectDir,
         port: config.port,
         relayEnabled: config.threadline?.relayEnabled,
+        // A quiet standby never connects to the relay: the relay admits one
+        // connection per agent identity, and two machines displaced each other
+        // (instar#2122). Same per-machine flag the lifeline uses for the poll.
+        relayStandby: !shouldOwnTelegramPoll(config),
         relayUrl: config.threadline?.relayUrl,
         visibility: config.threadline?.visibility,
         capabilities: config.threadline?.capabilities,
@@ -23715,7 +23720,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               } };
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
-              shardIds: () => [meshSelfId, ...Object.keys(meshIdMgr.loadRegistry().machines)],
+              shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],
               readShardMetrics: async machineId => {
                 if (machineId === meshSelfId) return originRuntime.store.getFederatedMetrics(machineId);
                 const url = peerUrl(machineId);
@@ -28292,7 +28297,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // If autostart isn't installed, install it silently. If it uses the old /bin/bash entry point
     // (vulnerable to macOS TCC/FDA restrictions), regenerate it with the node + JS wrapper.
     try {
-      const hasTelegram = !!telegram;
+      const hasTelegramConfigured = (config.messaging ?? []).some(
+        (m) => m.type === 'telegram' && (m as { enabled?: boolean }).enabled !== false,
+      );
+      let hasTelegramForInstall = false;
       const autostartInstalled = isAutostartInstalled(config.projectName);
       let needsReinstall = !autostartInstalled;
 
@@ -28305,6 +28313,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch { /* non-critical */ }
 
         if (!needsReinstall) {
+          const { autoStartNeedsLifeline } = await import('./setup.js');
           const label = `ai.instar.${config.projectName}`;
           const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
           try {
@@ -28318,6 +28327,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!hasNodeWrapper) {
               needsReinstall = true;
               console.log(pc.yellow(`  Auto-start uses legacy format — upgrading to TCC-safe node entry point`));
+            } else if (autoStartNeedsLifeline(plistContent, hasTelegramConfigured)) {
+              // A joined standby is installed with `server start` (it has no
+              // Telegram config at join time, and the lifeline needs one).
+              // Once Telegram is configured, the lifeline must supervise the
+              // server as it does on the first machine (instar#2122).
+              needsReinstall = true;
+              hasTelegramForInstall = true;
+              console.log(pc.yellow(`  Auto-start runs the bare server although Telegram is configured — switching to the lifeline supervisor`));
             } else if (!plistContent.includes('.instar/bin/node')) {
               needsReinstall = true;
               console.log(pc.yellow(`  Auto-start uses direct node path — upgrading to stable symlink`));
@@ -28335,7 +28352,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       if (needsReinstall) {
         const { installAutoStart } = await import('./setup.js');
-        const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+        const installed = installAutoStart(config.projectName, config.projectDir, !!telegram || hasTelegramForInstall);
         if (installed) {
           console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent (node + JS wrapper)' : 'systemd service'}`));
         } else {
@@ -28369,12 +28386,38 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Graceful shutdown
     let _shuttingDown = false;
+    let shutdownStep = 'start';
     const shutdown = async () => {
       // Re-entrancy guard: SIGINT+SIGTERM (or a restartDetected racing a signal)
       // must not run the teardown twice. closeAllSqlite() is itself idempotent,
       // but the resume-UUID save + sidecar flush should run once.
-      if (_shuttingDown) return;
+      if (_shuttingDown) {
+        // A second signal while teardown is in flight means the operator (or
+        // launchd) wants the process gone now: exit at once rather than wait on
+        // whichever step is hanging (instar#2122: a standby that ignored SIGTERM).
+        console.error(`[shutdown] second signal during step "${shutdownStep}" — exiting now`);
+        try { closeAllSqlite(); } catch { /* best effort */ }
+        try { singleInstanceLock.release(); } catch { /* best effort */ }
+        process.exit(1);
+      }
       _shuttingDown = true;
+      // Hard deadline: the teardown below awaits many subsystems in sequence and
+      // any one of them (an origin worker, a tunnel, a Threadline relay, a server
+      // with an open long-poll) can hang; without a bound the process never
+      // exits and only SIGKILL stops it. launchd/the lifeline expect SIGTERM to
+      // work. The timer is unref'd so a fast teardown is never delayed by it.
+      const { armShutdownDeadline, resolveShutdownDeadlineMs } = await import('../core/shutdownDeadline.js');
+      armShutdownDeadline({
+        deadlineMs: resolveShutdownDeadlineMs(process.env.INSTAR_SHUTDOWN_DEADLINE_MS),
+        currentStep: () => shutdownStep,
+        onExpire: (step, deadlineMs) => {
+          console.error(`[shutdown] teardown exceeded ${deadlineMs}ms during step "${step}" — exiting now`);
+          try { closeAllSqlite(); } catch { /* best effort */ }
+          try { singleInstanceLock.release(); } catch { /* best effort */ }
+          process.exit(1);
+        },
+      });
+      shutdownStep = 'telegram-origin';
       try { await telegramOriginBoot?.close(); }
       catch (error) { console.error('[telegram-origin] shutdown cleanup incomplete', error); }
       console.log('\nShutting down...');
@@ -28452,6 +28495,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       coherenceMonitor.stop();
       commitmentTracker.stop();
       commitmentSentinel?.stop();
+      shutdownStep = 'notification-flush';
       await notificationBatcher.flushAll(); // Drain pending notifications before exit
       notificationBatcher.stop();
       retryManager.stop();
@@ -28465,7 +28509,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       autoUpdater.stop();
       autoDispatcher?.stop();
       sessionMonitor?.stop();
+      shutdownStep = 'tunnel';
       if (tunnel) await tunnel.stop();
+      shutdownStep = 'threadline';
       if (threadlineShutdown) await threadlineShutdown();
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
@@ -28478,13 +28524,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       // race) — the agent then vanishes from the registry until restart.
       try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
+      shutdownStep = 'telegram';
       if (telegram) await telegram.stop();
       sessionManager.stopMonitoring();
       stuckInputSentinel.stop();
       // Integrated-Being v1 — flush stats sidecar (coalesces pending writes)
       // BEFORE closing SQLite, so no unflushed write is lost.
       try { sharedStateLedger?.shutdown(); } catch { /* best effort */ }
+      shutdownStep = 'http-server';
       await server.stop();
+      shutdownStep = 'sqlite';
       // Close EVERY registered SQLite handle LAST — after all writers (server,
       // scheduler, sentinels, telegram) have stopped — to prevent the
       // "mutex lock failed" SIGABRT when better-sqlite3 static destructors fire

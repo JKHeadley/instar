@@ -87,6 +87,8 @@ export class ThreadlineClient extends EventEmitter {
   private relayClient: RelayClient | null = null;
   private identity: IdentityInfo | null = null;
   private readonly knownAgents = new Map<AgentFingerprint, KnownAgent>();
+  /** threadId of the most recent send()/sendPlaintext() envelope (synchronous; read by sendAutoWithThread). */
+  private lastWireThreadId: string | null = null;
 
   /**
    * E2E-path session affinity (§4.1 client side).
@@ -267,6 +269,7 @@ export class ThreadlineClient extends EventEmitter {
     const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message);
     this.relayClient.sendMessage(envelope);
     this.recordClientAffinity(recipientId, tId);
+    this.lastWireThreadId = tId;
 
     return envelope.messageId;
   }
@@ -307,6 +310,7 @@ export class ThreadlineClient extends EventEmitter {
     };
 
     this.relayClient.sendMessage(envelope as any);
+    this.lastWireThreadId = tId;
     return messageId;
   }
 
@@ -327,6 +331,25 @@ export class ThreadlineClient extends EventEmitter {
 
     // Otherwise, use plaintext relay send
     return this.sendPlaintext(recipientId, content, threadId);
+  }
+
+  /**
+   * `sendAuto`, also returning the threadId that actually went on the wire.
+   * When the caller passes no threadId, the client picks one (affinity or a
+   * fresh `thread-…` id); callers that record or wait on the thread must use
+   * THIS id, never the messageId — the peer replies on the wire thread
+   * (instar ACT-1304 fault 3: a `msg-…` id stored as the threadId matched no
+   * reply, so the sending session never saw the answer).
+   */
+  sendAutoWithThread(
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+  ): { messageId: string; threadId: string } {
+    this.lastWireThreadId = null;
+    const messageId = this.sendAuto(recipientId, content, threadId);
+    const wireThreadId = this.lastWireThreadId as string | null;
+    return { messageId, threadId: wireThreadId ?? threadId ?? messageId };
   }
 
   /**

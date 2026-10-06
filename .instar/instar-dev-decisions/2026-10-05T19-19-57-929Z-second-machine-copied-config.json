@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-05T19:19:57.929Z",
+  "slug": "second-machine-copied-config",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/machine.ts",
+      "src/commands/server.ts",
+      "src/core/Config.ts",
+      "src/core/MachineIdentity.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 55,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

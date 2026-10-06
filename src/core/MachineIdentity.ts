@@ -138,6 +138,16 @@ export function verify(data: Buffer | string, signature: string, publicKeyPem: s
 
 // ── Identity Manager ─────────────────────────────────────────────────
 
+/**
+ * An entry is active only when it is marked active AND carries no revocation
+ * stamp. A hand-copied or partially merged registry can hold `revokedAt` with
+ * `status: 'active'`; trusting `status` alone kept a removed identity in the
+ * peer list, and its endpoints pointed back at this machine (instar#2122).
+ */
+export function isRegistryEntryActive(entry: { status?: string; revokedAt?: string | null }): boolean {
+  return entry.status === 'active' && !entry.revokedAt;
+}
+
 export class MachineIdentityManager {
   private instarDir: string;
 
@@ -611,7 +621,7 @@ export class MachineIdentityManager {
     if (!target) return null;
     const registry = this.loadRegistry();
     for (const [machineId, entry] of Object.entries(registry.machines)) {
-      if (entry.status === 'active' && (entry.nickname || '').trim().toLowerCase() === target) {
+      if (isRegistryEntryActive(entry) && (entry.nickname || '').trim().toLowerCase() === target) {
         return machineId;
       }
     }
@@ -768,7 +778,7 @@ export class MachineIdentityManager {
   getAwakeMachine(): { machineId: string; entry: MachineRegistryEntry } | null {
     const registry = this.loadRegistry();
     for (const [machineId, entry] of Object.entries(registry.machines)) {
-      if (entry.status === 'active' && entry.role === 'awake') {
+      if (isRegistryEntryActive(entry) && entry.role === 'awake') {
         return { machineId, entry };
       }
     }
@@ -781,7 +791,7 @@ export class MachineIdentityManager {
   getActiveMachines(): Array<{ machineId: string; entry: MachineRegistryEntry }> {
     const registry = this.loadRegistry();
     return Object.entries(registry.machines)
-      .filter(([, entry]) => entry.status === 'active')
+      .filter(([, entry]) => isRegistryEntryActive(entry))
       .map(([machineId, entry]) => ({ machineId, entry }));
   }
 
@@ -791,7 +801,7 @@ export class MachineIdentityManager {
   isMachineActive(machineId: string): boolean {
     const registry = this.loadRegistry();
     const entry = registry.machines[machineId];
-    return (entry?.status === 'active') || false;
+    return entry ? isRegistryEntryActive(entry) : false;
   }
 
   // ── Remote Machine Identity ─────────────────────────────────────
@@ -910,6 +920,8 @@ const GITIGNORE_ENTRIES = [
   '.worktrees/',
   '# Judgment-call provenance rows (machine-local decision context — never commit)',
   'state/judgment-provenance/',
+  '# Subscription pool login locations (machine-local — never commit)',
+  '.instar/subscription-pool.json',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

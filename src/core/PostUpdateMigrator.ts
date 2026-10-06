@@ -64,6 +64,8 @@ import {
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
+import { MachineIdentityManager } from './MachineIdentity.js';
+import { SourceTreeGuardError } from './SourceTreeGuard.js';
 import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { installCodexHooks } from './installCodexHooks.js';
@@ -1593,6 +1595,7 @@ export class PostUpdateMigrator {
     this.migrateConvergeDesignClassCriterion(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
+    this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
@@ -2375,6 +2378,83 @@ export class PostUpdateMigrator {
     }
   }
 
+  // ── Subscription pool: legacy single file → per-machine authority ──
+  //
+  // Spec subscription-pool-authority-foundation ("PostUpdateMigrator (legacy
+  // single-file staged migration)"), built after instar#2122: the legacy
+  // `.instar/subscription-pool.json` was shared between a paired agent's
+  // machines through the agent home's git repo, so a joined machine inherited
+  // the first machine's login locations and its sessions used paths that did
+  // not exist there. The per-machine authority store (machineId-witnessed)
+  // already wins on load; this is the one-time publication from the legacy
+  // file, dropping rows whose configHome is not on this machine.
+  //
+  // The legacy file is removed only when it is NOT git-tracked. A tracked copy
+  // is left in place (and `.gitignore` gains the entry so a fresh home never
+  // tracks it): deleting a tracked file propagates to every peer on its next
+  // pull, and a peer that has not migrated yet would lose its only copy. The
+  // authority wins on load and persist, so the stale shared copy is inert.
+  // Idempotent: an existing authority is a no-op.
+  private migrateSubscriptionPoolToMachineLocal(result: MigrationResult): void {
+    const legacyPath = path.join(this.config.stateDir, 'subscription-pool.json');
+    try {
+      const gitignorePath = path.join(this.config.projectDir, '.gitignore');
+      if (fs.existsSync(gitignorePath)) {
+        const content = fs.readFileSync(gitignorePath, 'utf8');
+        if (!/^\s*\.instar\/subscription-pool\.json\s*$/m.test(content)) {
+          fs.writeFileSync(gitignorePath, content + (content.endsWith('\n') ? '' : '\n')
+            + '\n# Subscription pool login locations (machine-local — never commit)\n.instar/subscription-pool.json\n');
+          result.upgraded.push('gitignore: .instar/subscription-pool.json (machine-local login locations)');
+        }
+      }
+      if (!fs.existsSync(legacyPath)) return;
+      let machineId: string;
+      try { machineId = new MachineIdentityManager(this.config.stateDir).loadIdentity().machineId; }
+      catch { result.skipped.push('subscription-pool machine-local: no machine identity yet'); return; }
+      const tracking = this.gitTracking(legacyPath);
+      const tracked = tracking !== 'untracked';
+      // Only a POSITIVE "untracked" answer permits removal; "unknown" (not a
+      // repo, guard refused, git missing) keeps the file — the safe direction
+      // for a deletion decision.
+      const pool = new SubscriptionPool({ stateDir: this.config.stateDir, machineId });
+      const outcome = pool.migrateLegacyToMachineLocal({ removeLegacy: tracking === 'untracked' });
+      if (outcome.status !== 'migrated') {
+        if (outcome.status !== 'already-machine-local') result.skipped.push(`subscription-pool machine-local: ${outcome.status}`);
+        return;
+      }
+      result.upgraded.push(
+        `subscription-pool machine-local: published ${outcome.kept.length} account(s) to the per-machine authority`
+        + (outcome.dropped.length ? `; dropped ${outcome.dropped.length} whose login home is not on this machine (${outcome.dropped.map(d => d.id).join(', ')})` : '')
+        + (outcome.legacyRemoved ? '; legacy file removed' : tracked ? `; legacy file left in place (${tracking === 'tracked' ? 'git-tracked — a deletion would propagate to peers' : 'tracking unknown'})` : ''),
+      );
+    } catch (err) {
+      result.errors.push(`subscription-pool machine-local: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Is `file` tracked by the agent home's git repo? Tri-state on purpose: only
+   * git's own "not tracked" answer (exit 1 with the pathspec error) is
+   * `untracked`; a missing repo, a refused guard or any other failure is
+   * `unknown`, which callers must treat as "do not delete".
+   */
+  private gitTracking(file: string): 'tracked' | 'untracked' | 'unknown' {
+    try {
+      const out = SafeGitExecutor.readSync(['ls-files', '--error-unmatch', '--', file], {
+        cwd: this.config.projectDir, operation: 'PostUpdateMigrator.gitTracking', timeout: 10_000,
+      });
+      return out.trim().length > 0 ? 'tracked' : 'unknown';
+    } catch (err) {
+      // On an agent home that IS the instar checkout the source-tree guard
+      // refuses even this read; that is "unknown", which keeps the file.
+      if (err instanceof SourceTreeGuardError) return 'unknown';
+      const text = err instanceof Error ? `${err.message}\n${(err as { stderr?: unknown }).stderr ?? ''}` : String(err);
+      if (/did not match any file\(s\) known to git/.test(text)) return 'untracked';
+      if (/not a git repository/i.test(text)) return 'unknown';
+      return 'unknown';
+    }
+  }
+
   // ── Three-standards review-checks (Standards A + B enforcement,
   // three-standards-enforcement spec, 2026-07-03) ──
   //
@@ -2935,12 +3015,21 @@ export class PostUpdateMigrator {
    */
   private migrateSubscriptionPoolInteractiveReady(result: MigrationResult): void {
     const poolPath = path.join(this.config.stateDir, 'subscription-pool.json');
-    if (!fs.existsSync(poolPath)) {
+    const authorityWitness = path.join(this.config.stateDir, 'state', 'subscription-pool.initialized.json');
+    if (!fs.existsSync(poolPath) && !fs.existsSync(authorityWitness)) {
       result.skipped.push('subscription-pool interactive-ready: no pool store');
       return;
     }
     try {
-      const pool = new SubscriptionPool({ stateDir: this.config.stateDir });
+      // The per-machine authority (when published) is only readable with this
+      // machine's persisted id; without one the legacy file is read as before.
+      let machineId: string | undefined;
+      try { machineId = new MachineIdentityManager(this.config.stateDir).loadIdentity().machineId; } catch {
+        // @silent-fallback-ok: no machine identity yet is a normal pre-pairing state;
+        // the pool then reads the legacy file exactly as it did before this change.
+        machineId = undefined;
+      }
+      const pool = new SubscriptionPool({ stateDir: this.config.stateDir, ...(machineId ? { machineId } : {}) });
       const claudeAccounts = pool.list().filter((a) => a.framework === 'claude-code');
       if (claudeAccounts.length === 0) {
         result.skipped.push('subscription-pool interactive-ready: no claude-code accounts');
@@ -7267,6 +7356,23 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat live-config status');
     }
+    // Auth read after secret externalization (ACT-1303, 2026-10-05): once
+    // `instar pair` moves authToken into the secret store, config.json holds
+    // only `{ "secret": true }`, and the old one-liner turned that into a bogus
+    // Bearer value. Env first, then the secret store, then a string-only read.
+    // Assembled in pieces: this is the unguarded read being REMOVED, and the
+    // secret-externalization lint rightly refuses it as a contiguous literal.
+    const oldAuthRead = [
+      `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json'))`,
+      `.get('authToken',''))" 2>/dev/null)`,
+    ].join('');
+    if (content.includes(oldAuthRead)) {
+      const newAuthRead = 'AUTH="${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"\n'
+        + `AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"`;
+      content = content.split(oldAuthRead).join(newAuthRead);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: API auth read survives secret externalization');
+    }
     // Agent-owned memory (2026-09-25): the auto-memory folder is linked to the agent, not a login.
     const oldAutoMemoryLine = "It's per-machine, not synced by Instar, and you don't control what goes in it.";
     const agentOwnedAutoMemoryLine = 'Instar makes this folder (in every login\'s config home) a link to `.instar/agent-memory/`, so it belongs to you, not to whichever subscription login a session runs under — switching logins never loses it. Any memory a login held before is merged in; the old folder is kept as `memory.pre-shared`.';
@@ -7586,6 +7692,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
       content += '\n' + tlConvSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Threadline Conversation Coherence holder-view section');
+    }
+
+    // Threadline relay on a standby (instar#2122): one relay connection per
+    // agent identity; the standby stays off it. Content-sniffed, idempotent.
+    if (content.includes('Threadline Conversation Coherence (which machine holds') && !content.includes('A quiet standby does not connect to the relay')) {
+      const anchorLine = content.split('\n').find((l) => l.startsWith('- **When to use** (PROACTIVE — this is the trigger): the user references an A2A thread that is NOT held on this machine'));
+      if (anchorLine) {
+        content = content.replace(anchorLine, anchorLine + '\n' + '- **A quiet standby does not connect to the relay.** The relay admits ONE connection per agent identity, so on a multi-machine agent only the awake machine (the one owning the Telegram poll) connects; a machine with `multiMachine.telegramPolling: false` logs `relay connection SUPPRESSED (standby)` and keeps its local Threadline tools. If a peer says I am unreachable while I am the standby, that is this rule, not an outage — the awake machine answers for me.');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: Threadline relay standby rule');
+      }
     }
 
     // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §10) — agent-facing

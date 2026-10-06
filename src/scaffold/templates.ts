@@ -370,10 +370,11 @@ This project uses instar for persistent agent capabilities. I am not a vanilla C
 
 ### API Authentication
 
-Most server endpoints require an auth token when \`authToken\` is configured in \`.instar/config.json\`. Read it once per session:
+Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 
 Then include in ALL API calls (except \`/health\`, which is public):
@@ -494,6 +495,7 @@ If one of my machines loses its local signing/encryption files, it can prove con
 **Threadline Conversation Coherence (which machine holds each agent-to-agent thread)** — Every A2A conversation's lifecycle (started / tied to a topic / closed) is recorded content-free in the coherence journal and replicated, so ANY machine can answer "which machine holds the Dawn thread?" from local disk. When a topic moves machines, its conversation deliberately does NOT move (the relay address is part of that machine's identity) — the merged view names the holder honestly instead.
 - The view: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/threadline/conversations?scope=mesh"\` → \`{ conversations: [{ conversationId, peerFingerprint, holderMachineId, boundTopicId, status, stalenessMs }] }\` (own rows live; replica rows staleness-tagged; \`scope\` omitted = local only).
 - **When to use** (PROACTIVE — this is the trigger): the user references an A2A thread that is NOT held on this machine ("what did Dawn and I agree?") → consult the mesh view and NAME THE HOLDER ("that conversation lives on <machine>, as of <staleness> ago") — never claim the thread doesn't exist. If the holder is offline, quote the relay's REAL bound: peers' messages queue in memory for ~24h and may then drop.
+- **A quiet standby does not connect to the relay.** The relay admits ONE connection per agent identity, so on a multi-machine agent only the awake machine (the one owning the Telegram poll) connects; a machine with \`multiMachine.telegramPolling: false\` logs \`relay connection SUPPRESSED (standby)\` and keeps its local Threadline tools. If a peer says I am unreachable while I am the standby, that is this rule, not an outage — the awake machine answers for me.
 
 **🩺 Agent Health lane (calm self-health notices)** — Routine notices about MY OWN internal state (a session that looks stuck, a peer I can't reach) land in ONE calm, named "🩺 Agent Health" Telegram topic — never topic-after-topic. Each is normal-priority (not a user-critical alert), names the topic in plain language (e.g. "the 'EXO 3.0' session", never \`topic-19077\`), ends with a next step you can just reply to, and same-session re-escalations are de-duped so the lane stays quiet. Ships **default-on, no config** (it's a delivery-shaper in code — it never gates or drops anything; every notice is still in the attention store). Tune via \`messaging[].config.agentHealthLane\` = \`{ "enabled": true, "topicName": "🩺 Agent Health", "dedupWindowMs": 1800000 }\` (set \`enabled:false\` for the old per-item-topic behavior). Proactive: user asks "what's this Agent Health topic?" / "why are my stale-session notices grouped?" → explain the calm lane (the StaleSessionBackstop now routes its "looks stuck" heads-up here at normal priority instead of spawning a topic each time).
 
@@ -2233,10 +2235,11 @@ This project uses instar for persistent agent capabilities.
 
 ### API Authentication
 
-Most server endpoints require an auth token. Read it once per session:
+Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 
 Then include in ALL API calls (except \`/health\`, which is public):

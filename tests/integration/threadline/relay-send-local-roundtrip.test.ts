@@ -82,7 +82,7 @@ describe('Threadline send — full-stack local delivery round-trip', () => {
     const router = createRoutes({
       config,
       state: new StateManager(stateDir),
-      threadlineRelayClient: { connectionState: 'connected', resolveAgent: async () => null, sendAuto: () => 'msg-stub' } as any,
+      threadlineRelayClient: { connectionState: 'connected', resolveAgent: async () => null, sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: () => 'msg-stub' } as any,
       startTime: new Date(),
     } as any);
 

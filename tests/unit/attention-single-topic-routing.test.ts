@@ -350,6 +350,28 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(sends.some(text => text.includes('returned after recovery'))).toBe(true);
   });
 
+  it('a reopen whose notice is held as duplicate-content counts as delivered (no endless caller retry)', async () => {
+    // sagemind 2026-10-04: the spawn-drain give-up reopen was retried every 30 s
+    // for 13+ minutes because each retry was held as a duplicate of the copy the
+    // operator already had, and the hold was treated as a failure.
+    makeAdapter({ getAttentionHubTopicId: () => 782 });
+    installApiStub(adapter);
+    const base = {
+      id: 'spawn-drain-refusal-giveup:peer', healthKey: 'spawn-drain-refusal:peer', lane: 'agent-health' as const,
+      title: 'Spawn drain gave up for peer', summary: 's', description: 'd', category: 'agent-health',
+      priority: 'HIGH' as const, sourceContext: 'spawn-drain-refusal:peer',
+    };
+    await adapter.createOrReopenAgentHealthAttentionItem(base);
+    const send = vi.spyOn(adapter, 'sendToTopic');
+    send.mockRejectedValueOnce(new TelegramOriginHoldError('duplicate-content'));
+    const reopened = await adapter.createOrReopenAgentHealthAttentionItem(base);
+    expect(reopened.status).toBe('OPEN');
+    expect(reopened.coalesced).toBe(true);
+
+    send.mockRejectedValueOnce(new TelegramOriginHoldError('origin-display-authority-unavailable'));
+    await expect(adapter.createOrReopenAgentHealthAttentionItem(base)).rejects.toThrow('origin-display-authority-unavailable');
+  });
+
   it("LEGACY 'per-item' mode preserves the pre-flip behavior: own topic, registered maps, /done closes it", async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' } });
     const rec = installApiStub(adapter);

@@ -299,6 +299,33 @@ describe('Multi-Machine HTTP E2E', () => {
     expect(envA.mgr.getMachineUrl(envB.machineId)).toBe('https://machine-b.example.dev');
   });
 
+  it('pairing refuses a joiner that presents the inviter\'s own identity, without spending the code (ACT-1302)', async () => {
+    // A copied agent home carries the inviter's identity.json; `instar join`
+    // on such a home used to pair "as" the inviter (sagemind Studio booted as
+    // the laptop). The real server path must refuse before validating the code.
+    const { PairingSessionStore } = await import('../../src/core/PairingSessionStore.js');
+    const { createPairingSession } = await import('../../src/core/PairingProtocol.js');
+    const store = new PairingSessionStore(envA.stateDir);
+    store.save(createPairingSession({ code: 'CLONE-CODE-0002', expiryMs: 600_000 }));
+
+    const resp = await fetch(`${baseA}/api/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pairingCode: 'CLONE-CODE-0002',
+        machineIdentity: envA.identity,
+        ephemeralPublicKey: 'test-ephemeral-key',
+      }),
+    });
+
+    expect(resp.status).toBe(409);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toBe('joiner-identity-is-inviter');
+    const session = store.load()!;
+    expect(session.consumed).toBeFalsy();
+    expect(session.failedAttempts ?? 0).toBe(0);
+  });
+
   // ── Full Handoff Flow ──────────────────────────────────────────
 
   it('full challenge-response handoff: B takes over from A', async () => {

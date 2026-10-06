@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-05T23:07:37.427Z",
+  "slug": "codex-rollout-scan-yield",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 159,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/CodexRolloutScan.worker.ts",
+      "src/monitoring/TokenLedger.ts"
+    ],
+    "addedLines": 124,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
