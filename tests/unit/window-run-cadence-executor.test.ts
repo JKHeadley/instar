@@ -343,4 +343,47 @@ describe('WindowRunCadenceExecutor', () => {
     expect((await executor.tick())?.status).toBe('closed');
     expect(sends).toBe(0);
   });
+  it('an overlapping tick waits for a fresh evaluation instead of returning the stale pre-save snapshot', async () => {
+    // Reproduces the e2e flake: the server's initial background tick is still
+    // in flight when the HTTP tick arrives. The old skip-guard returned
+    // store.load() — null before the first save — which the route turned into
+    // a false 404 "not registered".
+    project = createTempProject();
+    const nowMs = BASE + 25 * 60_000;
+    const state = liveness();
+    let firstEntered!: () => void;
+    const entered = new Promise<void>(resolve => { firstEntered = resolve; });
+    let releaseFirst!: () => void;
+    const released = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let livenessReads = 0;
+    const requested: string[] = [];
+    const executor = new WindowRunCadenceExecutor(new WindowRunCadenceStore(project.stateDir), {
+      now: () => new Date(nowMs).toISOString(),
+      getLiveness: () => {
+        livenessReads++;
+        if (livenessReads === 1) firstEntered();
+        return state;
+      },
+      canAct: () => true,
+      resolveFirstUnreceiptedTask: () => 'autonomous:run-w32:1',
+      requestCheckpoint: async ({ taskRef }) => { requested.push(taskRef); await released; return { delivered: true, receipt: 'tmux-delivery-1' }; },
+    }, { enabled: true, dryRun: false });
+
+    const background = executor.tick();
+    await entered;
+    const explicit = executor.tick();
+    const coalesced = executor.tick();
+    let explicitSettled = false;
+    void explicit.then(() => { explicitSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(explicitSettled).toBe(false);
+    releaseFirst();
+    const [first, second, third] = await Promise.all([background, explicit, coalesced]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second?.checkpoints).toMatchObject([{ outcome: 'delivered', attemptCount: 1 }]);
+    expect(third).toEqual(second);
+    expect(livenessReads).toBe(2);
+    expect(requested).toEqual(['autonomous:run-w32:1']);
+  });
 });

@@ -1,0 +1,37 @@
+# Window-run liveness and cadence ticks wait for each other instead of answering "not registered"
+
+## What Changed
+
+`WindowRunLivenessAuthority.tick()` and `WindowRunCadenceExecutor.tick()` each had an
+in-process "already ticking" flag. A tick that arrived while another was running skipped
+the work and returned the last saved state. The server starts a background tick of both at
+boot and every 60 seconds, so an HTTP `POST /window-run-liveness/cadence/tick` (or
+`/window-run-liveness/tick`) that landed during one got a mid-flight read. Before the
+cadence's first save that read is `null`, which the route reported as `404 window run
+cadence is not registered`, although the cadence was being created at that moment.
+
+Both classes now go through a small `TickSerializer` (`src/core/TickSerializer.ts`): an
+overlapping caller waits and gets an evaluation that started after its call. At most one
+tick runs and one more is queued; callers arriving while one is queued share it. A failed
+running tick does not fail the queued caller. The cross-process file lock is unchanged.
+
+## What to Tell Your User
+
+Nothing changes in normal use. A manual "tick now" on a window run could, by bad timing,
+report that the run was not registered while it was being set up; it now waits a moment
+and returns the real state.
+
+## Summary of New Capabilities
+
+- A window-run tick requested while a background tick is running returns the fresh
+  result instead of a stale or empty one.
+
+## Evidence
+
+- Reproduced the e2e failure ("identity keypair is mismatched" case, 404 instead of 200)
+  in 1 of 8 runs of `tests/e2e/window-run-liveness-production-wiring.test.ts` under a
+  24-process CPU burn on a 16-core machine. With the fix: 25 of 25 runs passed under the
+  same burn plus a parallel e2e run.
+- New unit tests reproduce the overlap deterministically for both classes (they fail on
+  the old code and pass on the new) and cover the serializer's ordering, coalescing and
+  failure isolation.

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { TickSerializer } from './TickSerializer.js';
 
 export const WINDOW_RUN_LIVENESS_VERSION = 1 as const;
 export const WINDOW_RUN_LIVENESS_DEFAULTS = {
@@ -313,7 +314,7 @@ export class WindowRunLivenessStore {
 
 export class WindowRunLivenessAuthority {
   private readonly cfg: Required<WindowRunLivenessConfig>;
-  private ticking = false;
+  private readonly ticks = new TickSerializer<WindowRunLivenessDocument | null>();
 
   constructor(
     private readonly store: WindowRunLivenessStore,
@@ -412,24 +413,21 @@ export class WindowRunLivenessAuthority {
   }
 
   async tick(): Promise<WindowRunLivenessDocument | null> {
-    if (!this.cfg.enabled || this.ticking) return this.store.load();
-    this.ticking = true;
-    try {
-      return await this.store.withMutationAsync(async () => {
-        const state = this.store.load();
-        if (!state) return state;
-        if (isTerminal(state.status)) {
-          if (state.status === 'failed' || state.status === 'stalled') {
-            const reason = state.finalSnapshot?.reason ?? state.transitions.at(-1)?.reason ?? state.status;
-            await this.notifyOnce(state, `Window ${state.windowId} ${state.status}: ${reason}. Active has been revoked.`);
-          }
-          return state;
+    if (!this.cfg.enabled) return this.store.load();
+    // An overlapping tick (HTTP vs. the server's background tick) waits for a
+    // fresh evaluation rather than returning a stale mid-flight snapshot.
+    return this.ticks.run(() => this.store.withMutationAsync(async () => {
+      const state = this.store.load();
+      if (!state) return state;
+      if (isTerminal(state.status)) {
+        if (state.status === 'failed' || state.status === 'stalled') {
+          const reason = state.finalSnapshot?.reason ?? state.transitions.at(-1)?.reason ?? state.status;
+          await this.notifyOnce(state, `Window ${state.windowId} ${state.status}: ${reason}. Active has been revoked.`);
         }
-        return await this.evaluateAndMaybeRecover(state);
-      });
-    } finally {
-      this.ticking = false;
-    }
+        return state;
+      }
+      return await this.evaluateAndMaybeRecover(state);
+    }));
   }
 
   freeze(reason: string, terminalStatus: 'closed' | 'failed' = 'closed'): WindowRunLivenessDocument {
