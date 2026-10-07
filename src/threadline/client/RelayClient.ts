@@ -206,6 +206,10 @@ export class RelayClient extends EventEmitter {
               this.reconnectAttempt = Math.max(this.reconnectAttempt, 5); // Start at ~32s backoff
             }
             reject(new Error(`Auth failed: ${frame.message}`));
+            // Some relay paths send auth_error WITHOUT closing the socket. Close it
+            // ourselves so the close handler schedules the retry; otherwise the
+            // client waits on an open, unauthenticated socket forever.
+            this.socket?.close(4000, 'auth_error');
             break;
 
           case 'message':
@@ -244,6 +248,11 @@ export class RelayClient extends EventEmitter {
 
           case 'displaced':
             this.shouldReconnect = false;
+            // Mark the state BEFORE the relay's follow-up 4001 close arrives, so the
+            // close handler does not emit a non-terminal 'disconnected' that would
+            // overwrite this terminal event and make health report "recoverable".
+            this.state = 'disconnected';
+            this.sessionId = null;
             this.emit('displaced', frame.reason);
             break;
         }

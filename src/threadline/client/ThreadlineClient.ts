@@ -198,6 +198,16 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Re-arm the existing relay connection after it was displaced (or otherwise
+   * stopped retrying). Reuses the same RelayClient so every event listener stays
+   * wired. A no-op when already connected; throws when no relay client exists.
+   */
+  async reconnectRelay(): Promise<string> {
+    if (!this.relayClient) throw new Error('relay client not created');
+    return this.relayClient.connect();
+  }
+
+  /**
    * Connect to the relay and start communicating.
    */
   async connect(): Promise<string> {

@@ -30,6 +30,7 @@ import { InboundMessageGate } from './InboundMessageGate.js';
 import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { detectMachineName } from '../core/MachineIdentity.js';
 
@@ -57,6 +58,15 @@ export interface ThreadlineBootstrapConfig {
    * keeps its MCP tools and local discovery but does not connect to the relay.
    */
   relayStandby?: boolean;
+  /**
+   * After this machine is displaced from the relay by another connection using
+   * the same identity, wait this long, then reclaim the connection. This machine
+   * is the configured relay owner (a standby never connects), so reclaiming is
+   * the correct outcome; without it a displaced agent stayed off the relay until
+   * a restart (the 2026-10-05 sagemind laptop: 40 h unreachable). Default 15 min;
+   * 0 disables the reclaim (the pre-fix behaviour).
+   */
+  relayRearmAfterDisplacedMs?: number;
   /** Cloud relay URL */
   relayUrl?: string;
   /** Agent visibility on relay */
@@ -227,6 +237,7 @@ export async function bootstrapThreadline(
   }
 
   let relayClient: ThreadlineClient | undefined;
+  let relayRearmTimer: NodeJS.Timeout | null = null;
   let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
@@ -348,13 +359,40 @@ export async function bootstrapThreadline(
       logDir: path.join(config.stateDir, '..', 'logs'),
     });
 
+    // Displacement: alert, then reclaim after a pause. Bounded (one pending timer,
+    // at most one reclaim per window) so two misconfigured owners trade the
+    // connection at most every few minutes instead of every tick.
+    const rearmMs = config.relayRearmAfterDisplacedMs ?? 15 * 60_000;
+    const displacedClient = relayClient;
+    displacedClient.on('displaced', (reason: unknown) => {
+      DegradationReporter.getInstance().report({
+        feature: 'Threadline.relay',
+        primary: 'agent-to-agent messaging over the shared relay',
+        fallback: rearmMs > 0
+          ? `off the relay; reclaiming the connection in ${Math.round(rearmMs / 60_000)} min`
+          : 'off the relay until the server restarts (reclaim disabled)',
+        reason: `displaced by another connection using this identity: ${String(reason ?? 'unknown')}`,
+        impact: 'other agents cannot reach this agent over Threadline, and its sends do not leave',
+      });
+      if (rearmMs <= 0 || relayRearmTimer) return;
+      relayRearmTimer = setTimeout(() => {
+        relayRearmTimer = null;
+        displacedClient.reconnectRelay().then(
+          () => console.log('Threadline: relay connection reclaimed after displacement'),
+          (err: unknown) => console.error(`Threadline: relay reclaim failed — ${err instanceof Error ? err.message : err}; the client keeps retrying with backoff`),
+        );
+      }, rearmMs);
+      relayRearmTimer.unref?.();
+    });
+
     try {
       await relayClient.connect();
       console.log(`Threadline: relay connected (fingerprint: ${relayClient.fingerprint})`);
     } catch (err) {
-      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}`);
-      console.log('Threadline: agent will operate in local-only mode');
-      relayClient = undefined;
+      // Keep the client: a failed first connect still schedules reconnects with
+      // backoff, and dropping the reference left the agent local-only for the
+      // life of the process even after the relay came back.
+      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; retrying in the background with backoff`);
     }
     } else {
       // Daemon handles the relay connection (both inbound and outbound).
@@ -378,6 +416,10 @@ export async function bootstrapThreadline(
     inboundGate,
     shutdown: async () => {
       stopHeartbeat();
+      if (relayRearmTimer) {
+        clearTimeout(relayRearmTimer);
+        relayRearmTimer = null;
+      }
       if (relayClient) {
         relayClient.disconnect();
       }
