@@ -115,7 +115,7 @@ describe('/threadline/relay-send caller-supplied priority', () => {
     const stubRelayClient = {
       connectionState: 'connected',
       resolveAgent: async () => null,
-      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: () => 'msg-stub',
+      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, awaitRelayAck: async (_id: string, _ms: number) => null, banSuspected: false, noteUnconfirmedSettled() {}, sendAuto: () => 'msg-stub',
     };
 
     const app = express();

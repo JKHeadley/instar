@@ -139,8 +139,8 @@ once).
 - **Counters.** The dispatcher keeps `cacheEvictions`, `waiterOverCap`,
   `disconnectResolved`, `unmappedReason` (a relay string that matched no prefix —
   the drift signal if the hosted relay's wording changes; a structured relay-side
-  code — and the refused `messageId` on BANNED frames — is the committed
-  follow-up ACT-017, due 2026-10-20 (same repo, but the hosted relay is
+  code — and the refused `messageId` on BANNED frames — is owned by the dated action
+  ACT-017, due 2026-10-20 (same repo, but the hosted relay is
   deployed on its own cadence behind client npm releases, so a client cannot
   assume the code field is present yet — that lag is the only reason the bridge
   exists); until then an unmapped `rejected` has

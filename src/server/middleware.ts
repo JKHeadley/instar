@@ -127,6 +127,26 @@ export function _resetDeprecationLogCache(): void {
  *   the backward-compatibility deprecation window with a deduped log
  *   line. See spec docs/specs/telegram-delivery-robustness.md § Layer 1b.
  */
+/**
+ * Token-only Bearer compare, extracted from the authenticated branch of
+ * `GET /health` so both it and the `/threadline/peers/health?scope=pool` read
+ * use ONE comparison (copying auth logic is how comparisons drift). Reads ONLY
+ * the `Authorization` header — never a query-string token, which would land in
+ * fan-out URLs and logs. No `authToken` configured ⇒ true (an install with no
+ * token has no secret to guard — the same posture `/health` has always had).
+ * The `X-Instar-AgentId` mismatch rule is NOT part of this helper; callers that
+ * need it apply it separately (`/health` never did).
+ */
+export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
+  if (!authToken) return true;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const token = header.slice(7);
+  const ha = createHash('sha256').update(token).digest();
+  const hb = createHash('sha256').update(authToken).digest();
+  return timingSafeEqual(ha, hb);
+}
+
 export function authMiddleware(authToken?: string | (() => string | undefined), agentId?: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Resolve the token per-request so runtime rotation takes effect

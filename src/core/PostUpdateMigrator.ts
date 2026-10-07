@@ -8251,6 +8251,23 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
       result.upgraded.push('CLAUDE.md: added A2A delivery-health section');
     }
 
+    // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §7): what each
+    // relayStatus means. OWN sniff key — the A2A delivery-health sniff above
+    // never re-fires on agents that already carry that section.
+    if (!content.includes('What `relayStatus` means (honest delivery)')) {
+      content += '\n\n' + `### What \`relayStatus\` means (honest delivery)
+
+Every \`threadline_send\` / \`relay-send\` now answers with what the RELAY said about that exact message, never a guess:
+- \`delivered\` — handed to the peer's relay connection (\`delivered: false\` still: only a reply proves they read it).
+- \`queued\` — the peer is OFFLINE right now; the relay holds it for up to N hours (the reply says how long).
+- \`rejected\` — the relay refused it (HTTP 502, \`success: false\`). \`relayReasonCode\` names why; \`retryLater: true\` means a LATER resend may work (a full queue, a rate limit) — do not resend immediately; \`false\` means it will not; \`null\` means unknown. The message is tracked as failed either way.
+- \`unconfirmed\` — no answer from the relay within 3 s, or the relay reported this sender banned (\`banSuspected: true\`). It means UNKNOWN, not lost; a later relay answer or a reply settles it.
+Peer health (\`GET /threadline/peers/health\`) now counts \`failedCount\` and \`unconfirmedCount\`, shows \`lastRelayStatus\`, and \`stale\` stays true for a peer whose messages sit unconfirmed or were provably never received. Add \`?scope=pool\` (with the token) to see the rows written by whichever of my machines holds the relay. **Proactive trigger:** before telling the user a peer "got" a message, read the \`relayStatus\` I received; \`queued\` is the honest answer to "is X online?", and \`rejected\` with \`retryLater: true\` is a reason to wait, not to resend in a loop.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added honest-delivery relayStatus section');
+    }
+
     // Cross-Machine Seamlessness (spec §11 Agent Awareness). Existing
     // multi-machine agents need to know about lease-based authority, the
     // honest machine-provenance disclosure, and where to read mesh/sync status.

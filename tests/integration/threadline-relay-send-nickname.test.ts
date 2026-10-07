@@ -84,7 +84,7 @@ describe('/threadline/relay-send nickname authority (regression)', () => {
         if (name === 'Dawn') return WRONG_DAWN_FP;
         return null;
       },
-      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: (recipientId: string, message: string, threadId?: string) => {
+      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, awaitRelayAck: async (_id: string, _ms: number) => null, banSuspected: false, noteUnconfirmedSettled() {}, sendAuto: (recipientId: string, message: string, threadId?: string) => {
         relaySendCalls.push({ recipientId, message, threadId });
         return `msg-stub-${Date.now()}`;
       },

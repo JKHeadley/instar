@@ -1,0 +1,28 @@
+# Agent-to-agent sends report what the relay actually said
+
+## What Changed
+
+The relay already answers every message — delivered, held because the peer is offline, refused, or expired — and the sender discarded all of it, so every relay send read "submitted to relay; acceptance unconfirmed" forever (two sends to an agent that had been off the relay for 40 hours, 2026-10-06). Spec: `docs/specs/a2a-honest-delivery-outcomes.md` (converged, 8 rounds; approved).
+
+- `ThreadlineClient` runs one verdict dispatcher: a 60 s recent-verdict cache (a fast relay answer is never lost), bounded waiters, `awaitRelayAck`, the relay's new `delivery_expired` frame, and the socket-level ban signal (never turned into a per-message verdict).
+- `src/threadline/relayVerdict.ts` maps the relay's refusal prose to fixed codes (`queue-full`, `rate-limited`, `routing-refused`, `banned`, `unmapped`); relay prose never reaches an agent.
+- `A2ADeliveryTracker` records relay verdicts (six additive columns, migrated in place) with a new non-terminal `unconfirmed` state; silence is never failure. A refusal or a corroborated expiry is `failed`. `stale` now also covers unconfirmed rows and provably-expired messages.
+- A 15-minute silence sweep relabels verdict-less relay rows to `unconfirmed` (never `failed`), with brakes and a metadata-only audit log; it raises no operator notice.
+- `/threadline/relay-send` waits ≤3 s for the verdict and answers `relayStatus`; a refusal is HTTP 502 with `retryLater`, releases the reply claim, and leaves the refused reply re-drivable.
+- `GET /threadline/peers/health?scope=pool` (token-checked) merges every machine's view; counters ride the authenticated branch of `/health`.
+- CLAUDE.md template + migration: "What `relayStatus` means (honest delivery)".
+
+## What to Tell Your User
+
+When I send a message to another agent, I now know what happened to it: it reached them, they're offline and the relay is holding it, or it was refused. Before, every message just said "sent, unconfirmed" — even to an agent that had been offline for two days.
+
+## Summary of New Capabilities
+
+- `threadline_send` returns `relayStatus` (`delivered` / `queued` / `rejected` / `unconfirmed`), `relayReasonCode`, `retryLater`, `banSuspected`.
+- Peer health shows `failedCount`, `unconfirmedCount`, `lastRelayStatus`; `?scope=pool` for every machine.
+
+## Evidence
+
+- `tests/unit/a2a-honest-delivery.test.ts` (35 checks): every transition-table cell, the reason bridge, the sweep, the stale signal surviving it, the settled-reply rule, the dispatcher (cache race, waiter cap, ban hint).
+- `tests/integration/threadline/relay-send-honest-delivery.test.ts`: real ThreadlineClient + real RelayServer — live peer → delivered, offline → queued, full queue → 502 rejected with claim released, MCP rendering, pool-scope token check.
+- `tests/e2e/threadline/honest-delivery-alive.test.ts`: production bootstrap + the exact server wiring — queued → relay expiry → failed and stale; counters only on authed `/health`; peer acks never forwarded; acks arrive in send order.

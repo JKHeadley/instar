@@ -14,6 +14,26 @@ import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { RelayClient } from './RelayClient.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
+import {
+  clampRelayReason, mapRelayReason, RELAY_BANNED_CODE,
+  type RelayVerdict, type RelayVerdictStatus,
+} from '../relayVerdict.js';
+
+/** Verdict dispatcher bounds (docs/specs/a2a-honest-delivery-outcomes.md §1, Frontloaded #5/#10). */
+const VERDICT_CACHE_TTL_MS = 60_000;
+const VERDICT_CACHE_MAX = 2000;
+const VERDICT_WAITERS_MAX = 1000;
+const SEND_SEQ_MAX = 2000;
+
+interface VerdictWaiter { resolve: (v: RelayVerdict | null) => void; timer: NodeJS.Timeout }
+
+export interface RelayVerdictCounters {
+  cacheEvictions: number;
+  waiterOverCap: number;
+  disconnectResolved: number;
+  unmappedReason: number;
+  unconfirmedSettled: number;
+}
 
 /**
  * Cooldown for the offline-triggered re-discovery in resolveAgent (§C of
@@ -108,6 +128,21 @@ export class ThreadlineClient extends EventEmitter {
   /** Test seam: override `Date.now()` for deterministic TTL tests. */
   private readonly nowFn: () => number;
 
+  // ── Relay verdict dispatcher (honest delivery, spec §1) ────────────────
+  /** Recent verdicts by messageId — closes the "relay answered before anyone waited" race. */
+  private readonly verdictCache = new Map<string, { verdict: RelayVerdict; at: number }>();
+  /** One pending wait per messageId. */
+  private readonly verdictWaiters = new Map<string, VerdictWaiter>();
+  /** messageId → process-local monotone send sequence (never reset). */
+  private readonly sendSeqById = new Map<string, number>();
+  private lastSendSeq = 0;
+  /** Set by a BANNED frame; a HINT only — never fed to the tracker as a verdict. */
+  private banActive = false;
+  private banSeq = 0;
+  readonly relayVerdictCounters: RelayVerdictCounters = {
+    cacheEvictions: 0, waiterOverCap: 0, disconnectResolved: 0, unmappedReason: 0, unconfirmedSettled: 0,
+  };
+
   constructor(config: ThreadlineClientConfig, nowFn?: () => number) {
     super();
     this.config = config;
@@ -189,19 +224,35 @@ export class ThreadlineClient extends EventEmitter {
     });
 
     this.relayClient.on('connected', (sessionId: string) => {
+      // Covers RelayClient's internal auto-reconnect as well as connect().
+      this.banActive = false;
       this.emit('connected', sessionId);
     });
 
     this.relayClient.on('disconnected', (reason: string) => {
+      this.resolveAllWaiters(null, 'disconnect');
       this.emit('disconnected', reason);
     });
 
     this.relayClient.on('displaced', (reason: string) => {
+      this.resolveAllWaiters(null, 'disconnect');
       this.emit('displaced', reason);
     });
 
     this.relayClient.on('error', (err: unknown) => {
+      this.handleRelayErrorFrame(err);
       this.emit('error', err);
+    });
+
+    // Honest delivery (spec §1): the relay's per-message verdicts. ONE
+    // subscription per inner client; consumers subscribe to THIS object's
+    // 'relay-verdict' once and survive reconnects.
+    this.relayClient.on('ack', (frame: { messageId?: string; status?: string; reason?: string; ttl?: number }) => {
+      this.handleRelayAckFrame(frame);
+    });
+    this.relayClient.on('delivery-expired', (frame: { messageId?: string; recipientId?: string }) => {
+      if (typeof frame?.messageId !== 'string') return;
+      this.dispatchVerdict({ messageId: frame.messageId, status: 'expired', recipientId: frame.recipientId });
     });
 
     this.relayClient.on('discover-result', (result: { agents: Array<KnownAgent & { status?: 'online' | 'offline' }> }) => {
@@ -268,6 +319,7 @@ export class ThreadlineClient extends EventEmitter {
       ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
     const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message);
     this.relayClient.sendMessage(envelope);
+    this.noteSent(envelope.messageId);
     this.recordClientAffinity(recipientId, tId);
     this.lastWireThreadId = tId;
 
@@ -310,6 +362,7 @@ export class ThreadlineClient extends EventEmitter {
     };
 
     this.relayClient.sendMessage(envelope as any);
+    this.noteSent(messageId);
     this.lastWireThreadId = tId;
     return messageId;
   }
@@ -677,6 +730,126 @@ export class ThreadlineClient extends EventEmitter {
   /**
    * Get connection state.
    */
+  // ── Relay verdict dispatcher (docs/specs/a2a-honest-delivery-outcomes.md §1) ──
+
+  /** Stamp a send with the process-local monotone sequence (bounded map, oldest evicted). */
+  private noteSent(messageId: string): void {
+    this.lastSendSeq += 1;
+    this.sendSeqById.set(messageId, this.lastSendSeq);
+    if (this.sendSeqById.size > SEND_SEQ_MAX) {
+      const oldest = this.sendSeqById.keys().next().value;
+      if (oldest !== undefined) this.sendSeqById.delete(oldest);
+    }
+  }
+
+  private handleRelayAckFrame(frame: { messageId?: string; status?: string; reason?: string; ttl?: number }): void {
+    if (!frame || typeof frame.messageId !== 'string') return;
+    const status = frame.status;
+    if (status !== 'delivered' && status !== 'queued' && status !== 'rejected') return;
+    // Any ack for a message sent AFTER the ban frame proves the gate passed.
+    // A flushed-queue `delivered` for an OLDER message does not consult the ban
+    // and must not clear the label; an unknown id never clears (conservative).
+    if (this.banActive) {
+      const seq = this.sendSeqById.get(frame.messageId);
+      if (seq !== undefined && seq > this.banSeq) this.banActive = false;
+    }
+    const verdict: RelayVerdict = { messageId: frame.messageId, status };
+    if (status === 'queued') verdict.ttlSec = typeof frame.ttl === 'number' ? frame.ttl : undefined;
+    if (status === 'rejected') {
+      const mapped = mapRelayReason(frame.reason);
+      verdict.reasonCode = mapped.code;
+      verdict.retryLater = mapped.retryLater;
+      verdict.reason = clampRelayReason(frame.reason);
+      if (mapped.unmapped) {
+        this.relayVerdictCounters.unmappedReason += 1;
+        this.emit('relay-unmapped-reason', { reason: verdict.reason ?? '' });
+      }
+    }
+    this.dispatchVerdict(verdict);
+  }
+
+  /**
+   * A relay `error` frame with code `banned` (lowercase wire value) says the
+   * SOCKET is banned — never which message. Every LIVE waiter resolves
+   * `unconfirmed` (reason `banned`, non-terminal); a send with no waiter yet
+   * reports the same on timeout via the `banActive` hint. Nothing here is a
+   * per-message verdict, so nothing terminal is ever recorded from it.
+   */
+  private handleRelayErrorFrame(frame: unknown): void {
+    const f = frame as { code?: string } | null;
+    if (!f || f.code !== RELAY_BANNED_CODE) return;
+    this.banActive = true;
+    this.banSeq = this.lastSendSeq;
+    for (const [messageId] of this.verdictWaiters) {
+      this.dispatchVerdict({ messageId, status: 'unconfirmed', reasonCode: 'banned', retryLater: null });
+    }
+  }
+
+  private dispatchVerdict(verdict: RelayVerdict): void {
+    const now = this.nowFn();
+    this.verdictCache.set(verdict.messageId, { verdict, at: now });
+    // Lazy TTL expiry on insert; cap by evicting oldest.
+    if (this.verdictCache.size > VERDICT_CACHE_MAX) {
+      for (const [id, entry] of this.verdictCache) {
+        if (now - entry.at > VERDICT_CACHE_TTL_MS || this.verdictCache.size > VERDICT_CACHE_MAX) {
+          this.verdictCache.delete(id);
+          this.relayVerdictCounters.cacheEvictions += 1;
+        }
+        if (this.verdictCache.size <= VERDICT_CACHE_MAX) break;
+      }
+    }
+    const waiter = this.verdictWaiters.get(verdict.messageId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      this.verdictWaiters.delete(verdict.messageId);
+      waiter.resolve(verdict);
+    }
+    this.emit('relay-verdict', verdict);
+  }
+
+  private resolveAllWaiters(value: RelayVerdict | null, cause: 'disconnect'): void {
+    for (const [id, w] of this.verdictWaiters) {
+      clearTimeout(w.timer);
+      this.verdictWaiters.delete(id);
+      if (cause === 'disconnect') this.relayVerdictCounters.disconnectResolved += 1;
+      w.resolve(value);
+    }
+  }
+
+  /**
+   * Wait for the relay's first verdict on `messageId`: cache first (a fast
+   * relay may have answered before anyone waited), then one bounded waiter.
+   * Resolves `null` on timeout, on disconnect/displacement, or when the waiter
+   * cap is reached (over-cap counts). Never throws.
+   */
+  awaitRelayAck(messageId: string, timeoutMs: number): Promise<RelayVerdict | null> {
+    const cached = this.verdictCache.get(messageId);
+    if (cached && this.nowFn() - cached.at <= VERDICT_CACHE_TTL_MS) return Promise.resolve(cached.verdict);
+    if (this.verdictWaiters.has(messageId)) return Promise.resolve(null);
+    if (this.verdictWaiters.size >= VERDICT_WAITERS_MAX) {
+      this.relayVerdictCounters.waiterOverCap += 1;
+      return Promise.resolve(null);
+    }
+    return new Promise<RelayVerdict | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.verdictWaiters.delete(messageId);
+        resolve(null);
+      }, Math.max(0, timeoutMs));
+      timer.unref?.();
+      this.verdictWaiters.set(messageId, { resolve, timer });
+    });
+  }
+
+  /** The hint for a route answer: a BANNED frame was seen and no later send has been acked. */
+  get banSuspected(): boolean {
+    return this.banActive;
+  }
+
+  /** Count a `relay-unconfirmed` outbox entry treated as settled (Frontloaded #9). */
+  noteUnconfirmedSettled(): void {
+    this.relayVerdictCounters.unconfirmedSettled += 1;
+  }
+
   get connectionState(): string {
     return this.relayClient?.connectionState ?? 'disconnected';
   }
