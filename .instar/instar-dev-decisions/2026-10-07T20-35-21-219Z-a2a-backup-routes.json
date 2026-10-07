@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-07T20:35:21.219Z",
+  "slug": "a2a-backup-routes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 340,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/backupRoutes.ts"
+    ],
+    "addedLines": 328,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

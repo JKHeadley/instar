@@ -9,7 +9,8 @@ parent-principle: "Verify the State, Not Its Symbol"
 parent-principle-fit: "When a direct hand-over may already have reached the receiver, the relay copy that follows is a repeat the receiver cannot recognise. Marking it, on the same thread, lets a receiver that remembers ids label it. Nothing new is sent."
 binding-standards: ["Capacity Safety — No Unbounded Self-Action", "A Refusal Stays a Refusal — conservation of negative outcomes", "Ownership-Gated Side Effects"]
 eli16-overview: a2a-backup-routes.eli16.md
-approved: false
+approved: true
+approved-by: "operator standing approval for the agent-comms track — 2026-10-06 18:57, Telegram topic 122413 (“Yes, I approve. Please don’t let me be the bottleneck here.”)"
 review-convergence: "2026-10-07T19:03:15.181Z"
 review-iterations: 6
 review-completed-at: "2026-10-07T19:03:15.181Z"

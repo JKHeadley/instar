@@ -500,6 +500,17 @@ import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
+import {
+  backupLogLine,
+  checkFingerprintHealth,
+  classifyFallthrough,
+  createBackupRouteCounters,
+  isExactFingerprintTarget,
+  outcomeFromFetchError,
+  resolveBackupRoutesEnabled,
+  selectFingerprintTarget,
+  type LocalPostOutcome,
+} from '../threadline/backupRoutes.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
 import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
 import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
@@ -3124,6 +3135,10 @@ export function createRoutes(ctx: RouteContext): Router {
   // relay dedup. One instance per server (process-wide across relay-agent calls).
   const relayContentDedup = new RelayContentDedup();
 
+  // A2A backup routes (docs/specs/a2a-backup-routes.md): in-memory counters for
+  // the authed /health — the graduation evidence, never an input.
+  const backupRouteCounters = createBackupRouteCounters();
+
   // ── PR-REVIEW-HARDENING kill-switch (Phase A) ─────────────────────
   //
   // Spec §"Runtime kill-switch": `prGate.phase = 'off'` returns 404 for
@@ -4808,6 +4823,9 @@ export function createRoutes(ctx: RouteContext): Router {
         try { base.threadline = { ...(base.threadline as object ?? {}), relayVerdicts: ctx.relayVerdictCounters() }; }
         catch { /* counters are best-effort observability */ }
       }
+      // A2A backup routes counters (docs/specs/a2a-backup-routes.md "Migration
+      // parity"): beside the relay-verdict counters, AUTHED branch only.
+      base.threadline = { ...(base.threadline as object ?? {}), backupRoutes: { ...backupRouteCounters } };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.
       {
@@ -36273,6 +36291,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Read known-agents.json for local agent info. If the target is local,
     // deliver directly via their /messages/relay-agent endpoint, bypassing
     // the relay entirely. This avoids stale relay WebSocket issues.
+    //
+    // A2A backup routes (docs/specs/a2a-backup-routes.md), read live per send:
+    //  §1 after a local POST the relay fall-through carries the local attempt's
+    //     thread and `resend: true` unless non-admission is proven;
+    //  §2 an exact 32-hex target takes an exclusive fingerprint branch.
+    const backupRoutesOn = resolveBackupRoutesEnabled(
+      ctx.liveConfig?.get<boolean | undefined>('threadline.backupRoutes.enabled', undefined),
+      ctx.config as { developmentAgent?: boolean; threadline?: { backupRoutes?: { enabled?: boolean } } },
+    );
+    // Declared before the name path's `try`; set immediately before the POST.
+    let localPostOutcome: LocalPostOutcome = { kind: 'no-post' };
+    let localPostPeerFp = '';
     try {
       const knownAgentsPath = path.join(ctx.config.stateDir, 'threadline', 'known-agents.json');
       if (fs.existsSync(knownAgentsPath)) {
@@ -36291,6 +36321,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         }
 
+        // §2 — the fingerprint branch, classified FIRST and exclusive: an exact
+        // 32-hex target never feeds the name / nickname match below, never
+        // reaches the "Ambiguous target" 409, and is never taken for a
+        // credential (that goes to the relay's encrypted path).
+        const fingerprintBranch = backupRoutesOn && isExactFingerprintTarget(targetAgent);
+        let localTarget: typeof agents[number] | undefined;
+        if (fingerprintBranch) {
+          if (!isCredentialShareSend) {
+            const sel = selectFingerprintTarget(agents, targetAgent);
+            if (sel.kind === 'one') localTarget = sel.entry;
+            else backupRouteCounters.fingerprintToRelay++;
+          } else {
+            backupRouteCounters.fingerprintToRelay++;
+          }
+        } else {
         // If a nickname resolved upstream, prefer fingerprint match over
         // name match — the user-curated mapping is authoritative.
         const nameMatches = nicknameResolvedFp
@@ -36306,7 +36351,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // share a name, require a `name:fpPrefix` qualifier to pick one.
         // Previously this silently fell through to the relay, which then
         // also usually failed — masking the root cause.
-        let localTarget = nameMatches.length === 1 ? nameMatches[0] : undefined;
+        localTarget = nameMatches.length === 1 ? nameMatches[0] : undefined;
         if (nameMatches.length > 1 && targetFpPrefix) {
           localTarget = nameMatches.find(a => {
             const fp = a.fingerprint || a.publicKey?.substring(0, 32);
@@ -36329,6 +36374,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             error: `Ambiguous target: ${nameMatches.length} known agents named "${targetName}". Use one of: ${hints}`,
           });
           return;
+        }
         }
 
         // PR-3: Self-guard by fingerprint when available, falling back to
@@ -36360,7 +36406,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               signal: AbortSignal.timeout(3000),
             });
 
-            if (healthResp.ok) {
+            // §2: a fingerprint-addressed send needs the live answer to show the
+            // same fingerprint AND a connected relay; anything else → the relay,
+            // unmarked (no POST). Name-addressed sends keep the `res.ok` probe.
+            let probeOk = healthResp.ok;
+            if (fingerprintBranch) {
+              let healthBody: unknown = null;
+              try { healthBody = await healthResp.json(); } catch { /* @silent-fallback-ok — no body ⇒ fingerprint absent ⇒ relay */ }
+              const fpVerdict = checkFingerprintHealth(healthResp.ok, healthBody, targetAgent);
+              probeOk = fpVerdict.ok;
+              if (!fpVerdict.ok) {
+                backupRouteCounters.fingerprintToRelay++;
+                console.log(`[relay-send] Fingerprint-addressed local route skipped for ${targetAgent.slice(0, 8)}… (${fpVerdict.reason}); using the relay`);
+              }
+            }
+            if (probeOk) {
               // Agent is alive — deliver locally via relay-agent endpoint
               const targetToken = getAgentToken(localTarget.name);
               if (targetToken) {
@@ -36428,15 +36488,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   },
                 };
 
-                const localResp = await fetch(`http://localhost:${localTarget.port}/messages/relay-agent`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${targetToken}`,
-                  },
-                  body: JSON.stringify(envelope),
-                  signal: AbortSignal.timeout(10000),
-                });
+                // §1: the POST is issued from here on; its own fetch is wrapped so
+                // only ITS error code can prove non-admission (an error from anywhere
+                // else in the shared catch below never counts).
+                const postBody = JSON.stringify(envelope);
+                localPostPeerFp = resolvePeerFingerprint(localTarget) ?? '';
+                localPostOutcome = { kind: 'issued' };
+                let localResp: Response;
+                try {
+                  localResp = await fetch(`http://localhost:${localTarget.port}/messages/relay-agent`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${targetToken}`,
+                    },
+                    body: postBody,
+                    signal: AbortSignal.timeout(10000),
+                  });
+                } catch (postErr) {
+                  localPostOutcome = outcomeFromFetchError(postErr);
+                  throw postErr;
+                }
+                localPostOutcome = { kind: 'status', status: localResp.status };
 
                 if (localResp.ok) {
                   let localRespBody: {
@@ -36472,6 +36545,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     : accepted ? 'accepted'
                     : 'refused';
                   console.log(`[relay-send] Local delivery to ${localTarget.name}:${localTarget.port} (thread: ${effectiveThreadId}) — ${outcome}`);
+                  if (fingerprintBranch) {
+                    backupRouteCounters.fingerprintLocal++;
+                    console.log(backupLogLine('fingerprint-local', msgId, localPostPeerFp, outcome));
+                  }
 
                   // Persist our OWN outbound leg into the thread history so
                   // getThread()/threadline_history return BOTH halves of the
@@ -36576,6 +36653,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   return;
                 }
                 // Local delivery failed — fall through to relay
+                if (backupRoutesOn && localResp.status === 503) {
+                  // §1: only the STRUCTURED ledger 503 proves non-admission; the
+                  // no-router 503 (prose body) does not.
+                  try {
+                    const failBody = await localResp.json() as { error?: unknown };
+                    if (failBody?.error === 'ledger-unavailable') localPostOutcome = { kind: 'status', status: 503, ledgerUnavailable: true };
+                  } catch { /* @silent-fallback-ok — unparseable body ⇒ not the structured answer ⇒ marked */ }
+                }
                 console.warn(`[relay-send] Local delivery to ${localTarget.name} failed (${localResp.status}), falling back to relay`);
               }
             }
@@ -36640,8 +36725,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // and wait on THAT id — never the messageId (ACT-1304 fault 3).
       // inbound-id ledger §5: ONE id on every route — the relay route carries the
       // same id the local route used, so a receiver's ledger can recognise it.
+      // A2A backup routes §1: after a local POST, the fall-through carries the
+      // local attempt's thread, and `resend: true` unless non-admission is
+      // proven. Exempt from the ledger's 5-minute replay wait: the relay has
+      // never seen this id. The relay leg's verdict stays the row's verdict.
+      const fallthrough = backupRoutesOn ? classifyFallthrough(localPostOutcome) : null;
+      const relayLegThreadId = fallthrough?.postIssued ? effectiveThreadId : threadId;
+      if (fallthrough?.postIssued) {
+        if (fallthrough.marked) {
+          backupRouteCounters.markedFallthrough++;
+          console.log(backupLogLine('marked-fallthrough', msgId, localPostPeerFp || resolvedId, fallthrough.outcome));
+        } else {
+          backupRouteCounters.unmarkedFallthroughAfterPost++;
+        }
+      }
       const { messageId: relayMsgId, threadId: effectiveRelayThreadId } =
-        relayClient.sendAutoWithThread(resolvedId, message, threadId, msgId);
+        fallthrough?.marked
+          ? relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId, true)
+          : relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId);
       // waitForReply: the reply listener is registered NOW, before any await, so
       // it runs concurrently with the verdict wait (no time comes off the reply
       // budget, and a fast reply can never land in a gap with no listener).

@@ -1,0 +1,27 @@
+# Agent-to-agent backup routes: a marked relay fall-through, and local delivery by fingerprint
+
+## What Changed
+
+Two small changes to `POST /threadline/relay-send` (spec: `docs/specs/a2a-backup-routes.md`, converged in 6 iterations; approved under the operator's standing approval for the agent-comms track). Nothing new is sent, stored or timed.
+
+- **Marked fall-through on the same thread.** When the name path's direct hand-over to a same-machine agent was attempted and then fell back to the relay, the relay copy now carries the local attempt's thread (not the caller's raw thread, which could mint a new one) and `resend: true` inside the signed body — unless the local answer proves the message was never admitted (connection refused on the POST itself; HTTP 400, 401 or 404; or the structured `ledger-unavailable` 503). The id was already the same. A receiver running the inbound-id ledger then labels the copy as a resent copy.
+- **Fingerprint-addressed sends try the local route first.** A target that is exactly 32 hex characters takes an exclusive branch: the single `known-agents.json` entry with that fingerprint (de-duplicated by fingerprint and port) gets the message directly, but only when its live `/threadline/health` shows the same fingerprint and `relay.state: connected`. No match, two ports, a credential send, or any other health answer goes to the relay as today — never the "Ambiguous target" error.
+- One server-log line per marked fall-through and per fingerprint-local delivery: `[a2a-backup] id=… peer=… kind=marked-fallthrough|fingerprint-local outcome=…`; counters under `threadline.backupRoutes` on the authed `/health`.
+- Dev-gated: `threadline.backupRoutes.enabled` is omitted (live on a development agent, dark on the fleet), read live per send; `false` restores today's behaviour. CLAUDE.md template + migration section "A2A backup routes".
+
+## What to Tell Your User
+
+When I message another agent on this same computer and the direct hand-over fails part-way, the backup copy I send through the relay is now marked as a possible repeat and stays in the same conversation, so the other agent can tell it may have seen it already instead of answering twice. And when I address an agent here by its ID rather than its name, I now hand it over directly if that agent is the connected one, so it still arrives when my own relay connection is down. This is switched on for development agents only while it proves itself.
+
+## Summary of New Capabilities
+
+- Relay fall-through after a local attempt: same id, same thread, `resend: true` unless non-admission is proven.
+- Fingerprint-addressed same-machine delivery, gated on a live fingerprint match and a connected relay.
+- Authed `/health` → `threadline.backupRoutes` counters (`markedFallthrough`, `unmarkedFallthroughAfterPost`, `fingerprintLocal`, `fingerprintToRelay`).
+
+## Evidence
+
+- `tests/unit/a2a-backup-routes.test.ts` (56): the marking set, error mapping, fingerprint rules, and the real route with loopback targets.
+- `tests/unit/PostUpdateMigrator-a2aBackupRoutes.test.ts` (3): migration parity, template, dev gate.
+- `tests/integration/threadline/a2a-backup-routes.test.ts` (7): a real RelayServer and a receiver running the real inbound-id ledger.
+- `tests/e2e/threadline/a2a-backup-routes-alive.test.ts` (2): two real AgentServers with real relay clients, gate on and off.
