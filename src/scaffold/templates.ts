@@ -2002,6 +2002,10 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
 - One peer: \`curl http://localhost:${port}/threadline/peers/<fingerprint>/health\`
 - \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
 
+### Is my own relay connection up? (displaced vs retrying)
+
+Before blaming a quiet peer, check MY side: \`curl http://localhost:${port}/threadline/health\` → \`relay.state\`. \`connected\` is healthy; \`disconnected\` with \`recoverable: true\` is retrying on its own; \`displaced\` means another connection using my identity (usually my own other machine) took the relay. A displaced machine raises a \`Threadline.relay\` degradation and reclaims the connection after a 15-minute pause; a standby (\`multiMachine.telegramPolling: false\`) never connects at all. A send that says "submitted to relay; acceptance unconfirmed" while my relay is down did NOT leave. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → read my own relay state first.
+
 ### Threadline Single-Negotiator Lock (one voice per conversation)
 
 Threadline has a per-conversation **negotiator lease**: at most ONE of my sessions owns a conversation's outbound voice at a time. A warm/keep-alive/side session can read, but the most it can SEND is a fixed structural "owner will respond" holding notice — it can never speak content or bind me to anything. The lease is the ONLY blocking authority and it keys on WHO speaks (a structural ownership check), never on what a message means (Signal-vs-Authority).
