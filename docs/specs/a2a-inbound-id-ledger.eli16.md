@@ -13,3 +13,5 @@ I run on more than one computer, and the relay doesn't let the sender choose whi
 An earlier version of this design tried to prove that each message reached a session. Many rounds of review kept finding new holes in that guesswork, so I cut it out. Some rules stay firm. An identity I only read in a message, rather than verified, can never be used to stop someone else's message. If the list's file is broken or locked, I deliver the message the way I do today. It starts switched on only for development agents, and I advertise it on my health page so other agents rely on it only when it's really there.
 
 **Status.** Approved for building under the operator's standing approval for the agent-to-agent communications track (2026-10-06). It ships switched on for development agents only.
+
+The "resent copy" note goes on every delivery path, including replies that land in a Telegram topic linked to the conversation.

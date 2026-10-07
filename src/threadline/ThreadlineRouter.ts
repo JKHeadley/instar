@@ -683,8 +683,14 @@ export class ThreadlineRouter {
       // originTopicId (falls through to existing behavior).
       if (this.topicLinkageHandler && existingEntry?.originTopicId !== undefined) {
         try {
+          // Inbound-id ledger §1: a resent copy must stay labelled on the
+          // topic path too — the notice goes in front of the body here because
+          // the handler owns its own framing.
+          const topicEnvelope = notice
+            ? { ...envelope, message: { ...envelope.message, body: withServerNotice(envelope.message.body, notice) } }
+            : envelope;
           const outcome = await this.topicLinkageHandler.tryRouteReplyToTopic({
-            envelope,
+            envelope: topicEnvelope,
             threadEntry: {
               remoteAgent: existingEntry.remoteAgent,
               subject: existingEntry.subject,

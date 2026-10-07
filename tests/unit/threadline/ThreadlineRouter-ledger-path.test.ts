@@ -103,4 +103,18 @@ describe('ThreadlineRouter — ledger path discriminator', () => {
       SafeFsExecutor.safeRmSync(pdir, { recursive: true, force: true, operation: 'tests/unit/threadline/ThreadlineRouter-ledger-path.test.ts' });
     }
   });
+  it('a topic-linkage live inject is path topic and the resent copy stays labelled', async () => {
+    const threadId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    resumeMap.save(threadId, { uuid: crypto.randomUUID(), sessionName: 'topic-sess', createdAt: now, savedAt: now, lastAccessedAt: now, remoteAgent: 'remote-agent', subject: 'S', state: 'idle', pinned: false, messageCount: 1, originTopicId: 42 } as never);
+    const handler = { tryRouteReplyToTopic: vi.fn().mockResolvedValue({ kind: 'routed', deliveryMode: 'live-inject' }) };
+    const router = make();
+    router.setTopicLinkageHandler(handler as never);
+    const ownerCtx = { ...relayCtx, senderFingerprint: 'remote-agent', trust: { kind: 'plaintext-tofu' as const, senderFingerprint: 'remote-agent' } };
+    const r = await router.handleInboundMessage(makeEnvelope(threadId), ownerCtx, { resentNotice: RESENT_COPY_NOTICE });
+    expect(r.path).toBe('topic');
+    const body = handler.tryRouteReplyToTopic.mock.calls[0][0].envelope.message.body as string;
+    expect(body.startsWith(`[server notice: ${RESENT_COPY_NOTICE}]`)).toBe(true);
+    expect(body.endsWith('peer body text')).toBe(true);
+  });
 });
