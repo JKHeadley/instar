@@ -440,15 +440,26 @@ export class A2ADeliveryTracker {
    * be answering the newest, but acking the oldest never OVER-acks — the genuinely
    * unanswered tail stays pending and can still go stale/escalate).
    */
-  recordAckByThread(threadId: string, ackedAt?: string): string | null {
+  recordAckByThread(threadId: string, ackedAt?: string, opts?: { notAfter?: string }): string | null {
     if (!threadId) return null;
-    const row = this.db
-      .prepare(
-        `SELECT message_id FROM a2a_delivery
-         WHERE thread_id = ? AND state IN ('awaiting-ack','escalated','unconfirmed')
-         ORDER BY sent_at ASC LIMIT 1`,
-      )
-      .get(threadId) as { message_id: string } | undefined;
+    // `notAfter` (inbound-id ledger §2): a DUPLICATE's implicit ack only covers
+    // rows sent before the original's immutable admitted_at — a resend never
+    // acks a message we sent after the original arrived.
+    const row = (opts?.notAfter
+      ? this.db
+          .prepare(
+            `SELECT message_id FROM a2a_delivery
+             WHERE thread_id = ? AND state IN ('awaiting-ack','escalated','unconfirmed') AND sent_at <= ?
+             ORDER BY sent_at ASC LIMIT 1`,
+          )
+          .get(threadId, opts.notAfter)
+      : this.db
+          .prepare(
+            `SELECT message_id FROM a2a_delivery
+             WHERE thread_id = ? AND state IN ('awaiting-ack','escalated','unconfirmed')
+             ORDER BY sent_at ASC LIMIT 1`,
+          )
+          .get(threadId)) as { message_id: string } | undefined;
     if (!row) return null;
     return this.recordAck(row.message_id, ackedAt) ? row.message_id : null;
   }

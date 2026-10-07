@@ -204,6 +204,7 @@ import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
 import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
+import { buildInboundIdLedgerController } from '../threadline/InboundIdLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { DecisionQualityRecorderImpl, installDecisionQualityRecorder } from '../core/DecisionQualityRecorderImpl.js';
 import { setDecisionQualityMachineId } from '../core/decisionQualityTypes.js';
@@ -409,6 +410,9 @@ export class AgentServer {
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private relayVerdictCounters: (() => Record<string, number>) | null = null;
+  /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md). */
+  private inboundIdLedger: import('../threadline/InboundIdLedger.js').InboundIdLedgerController | null = null;
+  private ownsInboundIdLedger = false;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
@@ -1009,6 +1013,10 @@ export class AgentServer {
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
     relayVerdictCounters?: () => Record<string, number>;
+    /** A2A inbound message-id ledger controller, shared with the relay consumer (server.ts). */
+    inboundIdLedger?: import('../threadline/InboundIdLedger.js').InboundIdLedgerController;
+    /** True while the listener daemon owns inbound relay handling. */
+    inboundIdLedgerDaemonDeferred?: () => boolean;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     /** §D9.4b canary-battery driver (context-aware-outbound-review) — wired
      *  by server.ts alongside the response-review gate; the trigger route
@@ -2124,6 +2132,32 @@ export class AgentServer {
         // the server (mirrors the FeatureMetricsLedger block above). Logged; routes 503 cleanly.
         console.warn('[instar] a2a-delivery-tracker init failed (non-fatal):', err);
         this.a2aDeliveryTracker = null;
+      }
+    }
+    // Inbound-id ledger: production injects the controller it shares with the
+    // relay consumer; an AgentServer booted directly (e2e) builds its own so the
+    // HTTP ingress, read route and capability are ALIVE on every entry path.
+    if (options.inboundIdLedger) {
+      this.inboundIdLedger = options.inboundIdLedger;
+    } else if (options.config.stateDir) {
+      try {
+        const lc = options.liveConfig;
+        this.inboundIdLedger = buildInboundIdLedgerController({
+          stateDir: options.config.stateDir,
+          agentId: options.config.projectName,
+          developmentAgent: (options.config as { developmentAgent?: boolean }).developmentAgent,
+          readBlock: () => {
+            const live = typeof lc?.get === 'function' ? lc.get<Record<string, unknown> | undefined>('threadline', undefined) : undefined;
+            const block = (live as { inboundIdLedger?: unknown } | undefined)?.inboundIdLedger
+              ?? (options.config as { threadline?: { inboundIdLedger?: unknown } }).threadline?.inboundIdLedger;
+            return block as import('../threadline/InboundIdLedger.js').InboundIdLedgerConfigBlock | undefined;
+          },
+        });
+        this.ownsInboundIdLedger = true;
+      } catch (err) {
+        // @silent-fallback-ok: cascade-isolation — the ledger stays dark (today's behaviour).
+        console.warn('[instar] inbound-id ledger init failed (non-fatal):', err);
+        this.inboundIdLedger = null;
       }
     }
 
@@ -4388,6 +4422,8 @@ export class AgentServer {
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       relayVerdictCounters: this.relayVerdictCounters,
+      inboundIdLedger: this.inboundIdLedger,
+      inboundIdLedgerDaemonDeferred: options.inboundIdLedgerDaemonDeferred ?? null,
       responseReviewGate: options.responseReviewGate ?? null,
       reviewCanaryBattery: options.reviewCanaryBattery ?? null,
       messagingToneGate: options.messagingToneGate ?? null,
@@ -6572,6 +6608,9 @@ export class AgentServer {
     }
     this.blockerLifecycleService?.close();
     this.blockerLifecycleService = null;
+    // Inbound-id ledger: close only the instance this server built (production
+    // owns its shared controller and closes it via the SqliteRegistry on exit).
+    if (this.ownsInboundIdLedger) { try { this.inboundIdLedger?.close(); } catch { /* @silent-fallback-ok — best-effort close at shutdown */ } }
     // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
     // synchronous so there is no in-flight write to wait on).
     if (this.inboxDrainer) {

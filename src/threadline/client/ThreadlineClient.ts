@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import crypto from 'node:crypto';
 import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../relay/types.js';
 import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
@@ -308,6 +309,10 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string | PlaintextMessage,
     threadId?: string,
+    /** inbound-id ledger §5: one id on every route (echoed, minted only when absent). */
+    messageId?: string,
+    /** inbound-id ledger §5: mark a same-id resend inside the signed body. */
+    resend?: boolean,
   ): string {
     if (!this.encryptor || !this.relayClient) {
       throw new Error('Not connected');
@@ -319,15 +324,16 @@ export class ThreadlineClient extends EventEmitter {
       throw new Error(`Unknown agent: ${recipientId}. Run discover() first.`);
     }
 
-    const message: PlaintextMessage = typeof content === 'string'
+    const baseMessage: PlaintextMessage = typeof content === 'string'
       ? { content }
       : content;
+    const message: PlaintextMessage = resend ? { ...baseMessage, resend: true } : baseMessage;
 
     // Authority precedence (§4.1): explicit caller threadId > client affinity > mint.
     const tId = threadId
       ?? this.peekClientAffinity(recipientId)
       ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
-    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message);
+    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message, messageId);
     this.relayClient.sendMessage(envelope);
     this.noteSent(envelope.messageId);
     this.recordClientAffinity(recipientId, tId);
@@ -347,18 +353,22 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string,
     threadId?: string,
+    /** inbound-id ledger §5: echo the caller's id; mint a UUID only when absent. */
+    callerMessageId?: string,
+    resend?: boolean,
   ): string {
     if (!this.relayClient || !this.identity) {
       throw new Error('Not connected');
     }
 
     const tId = threadId ?? `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = callerMessageId || crypto.randomUUID();
 
     // Encode as base64 JSON payload (same format as inbound unknown-sender messages)
     const payload = Buffer.from(JSON.stringify({
       text: content,
       type: 'chat',
+      ...(resend ? { resend: true } : {}),
     })).toString('base64');
 
     // Send as a raw envelope through the relay
@@ -385,15 +395,17 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string,
     threadId?: string,
+    messageId?: string,
+    resend?: boolean,
   ): string {
     // If we know the agent's keys, use encrypted send
     const known = this.knownAgents.get(recipientId);
     if (known?.publicKey && known?.x25519PublicKey) {
-      return this.send(recipientId, content, threadId);
+      return this.send(recipientId, content, threadId, messageId, resend);
     }
 
     // Otherwise, use plaintext relay send
-    return this.sendPlaintext(recipientId, content, threadId);
+    return this.sendPlaintext(recipientId, content, threadId, messageId, resend);
   }
 
   /**
@@ -408,9 +420,11 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string,
     threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
   ): { messageId: string; threadId: string } {
     this.lastWireThreadId = null;
-    const messageId = this.sendAuto(recipientId, content, threadId);
+    const messageId = this.sendAuto(recipientId, content, threadId, callerMessageId, resend);
     const wireThreadId = this.lastWireThreadId as string | null;
     return { messageId, threadId: wireThreadId ?? threadId ?? messageId };
   }

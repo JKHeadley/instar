@@ -47,15 +47,20 @@ export interface InboundAckMessage {
  * liveness by the thread owner's canonical fingerprint when resolvable, falling
  * back to the supplied sender fingerprint.
  */
-export function recordInboundAck(deps: InboundAckDeps, msg: InboundAckMessage): void {
+export function recordInboundAck(
+  deps: InboundAckDeps,
+  msg: InboundAckMessage,
+  opts?: { livenessBump?: boolean; notAfter?: string },
+): void {
   const tracker = deps.a2aDeliveryTracker;
   if (!tracker) return;
   try {
     const ackThread = msg.threadId;
     const ownerFp = ackThread ? deps.threadResumeMap?.get(ackThread)?.remoteAgent : undefined;
     const livenessFp = ownerFp || msg.senderFingerprint;
-    if (livenessFp) tracker.recordInboundFrom(livenessFp, msg.senderName ?? null);
-    if (ackThread) tracker.recordAckByThread(ackThread);
+    // A duplicate (inbound-id ledger §2) never bumps peer liveness.
+    if (livenessFp && opts?.livenessBump !== false) tracker.recordInboundFrom(livenessFp, msg.senderName ?? null);
+    if (ackThread) tracker.recordAckByThread(ackThread, undefined, opts?.notAfter ? { notAfter: opts.notAfter } : undefined);
   } catch (err) {
     // @silent-fallback-ok: recording-only — A2A delivery/liveness tracking must
     // never break inbound routing (the message was already accepted). Logged.

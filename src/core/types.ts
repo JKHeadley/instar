@@ -5368,6 +5368,12 @@ export interface ThreadlineConfig {
   warmSessionA2A?: ThreadlineWarmSessionConfig;
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
+  /**
+   * A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md). Read
+   * live. `enabled` omitted ⇒ the developmentAgent gate (live on a dev agent,
+   * dark on the fleet). `retentionDays` default 14, floor 2.
+   */
+  inboundIdLedger?: { enabled?: boolean; retentionDays?: number };
 }
 
 /**

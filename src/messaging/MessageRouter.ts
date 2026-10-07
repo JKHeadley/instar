@@ -70,6 +70,16 @@ export interface CrossMachineDeps {
   securityLog: SecurityLog;
 }
 
+/**
+ * The ONE relay-chain-loop predicate (inbound-id ledger §1): `relay()` uses it,
+ * and `/messages/relay-agent` calls it BEFORE the ledger commit so a loop
+ * envelope writes no row.
+ */
+export function isRelayChainLoop(envelope: Pick<MessageEnvelope, 'transport'>, localMachine: string): boolean {
+  const chain = (envelope?.transport as { relayChain?: unknown } | undefined)?.relayChain;
+  return Array.isArray(chain) && chain.includes(localMachine);
+}
+
 export class MessageRouter implements IMessageRouter {
   private readonly store: MessageStore;
   private readonly delivery: MessageDelivery;
@@ -223,9 +233,14 @@ export class MessageRouter implements IMessageRouter {
     await this.store.updateDelivery(messageId, delivery);
   }
 
+  /** This machine's id as the relay chain records it (for isRelayChainLoop). */
+  get localMachine(): string {
+    return this.config.localMachine;
+  }
+
   async relay(envelope: MessageEnvelope, source: 'agent' | 'machine'): Promise<boolean> {
     // Loop prevention: check if our machine is already in the relay chain
-    if (envelope.transport.relayChain.includes(this.config.localMachine)) {
+    if (isRelayChainLoop(envelope, this.config.localMachine)) {
       return false;
     }
 

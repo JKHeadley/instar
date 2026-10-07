@@ -25,6 +25,12 @@ export interface PlaintextMessage {
   content: string;
   type?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * inbound-id ledger §5: a same-id resend is MARKED inside the encrypted,
+   * signed body (never a relay-visible outer field). Older receivers ignore it;
+   * a receiver uses it only to word a "resent copy" notice.
+   */
+  resend?: boolean;
 }
 
 /**
@@ -137,6 +143,8 @@ export class MessageEncryptor {
     recipientX25519PubKey: Buffer,
     threadId: string,
     message: PlaintextMessage,
+    /** inbound-id ledger §5: echo the caller's id; mint a UUID only when absent. */
+    messageId?: string,
   ): MessageEnvelope {
     // 1. Generate ephemeral X25519 keypair for forward secrecy
     const ephemeral = generateEphemeralKeyPair();
@@ -159,7 +167,7 @@ export class MessageEncryptor {
     const plaintext = Buffer.from(JSON.stringify(message), 'utf-8');
     const nonce = crypto.randomBytes(24); // 192-bit nonce
 
-    const messageId = crypto.randomUUID();
+    const effectiveMessageId = messageId || crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
     // Build envelope fields for AAD
@@ -167,7 +175,7 @@ export class MessageEncryptor {
       from: this.fingerprint,
       to: computeFingerprint(recipientEdPubKey),
       threadId,
-      messageId,
+      messageId: effectiveMessageId,
       timestamp,
       nonce: Buffer.from(nonce).toString('base64'),
       ephemeralPubKey: ephemeral.publicKey.toString('base64'),

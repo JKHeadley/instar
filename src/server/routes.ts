@@ -500,6 +500,9 @@ import type { UnifiedTrustSystem } from '../threadline/UnifiedTrustWiring.js';
 import { DEFAULT_RELAY_URL } from '../threadline/constants.js';
 import { ThreadlineNicknames } from '../threadline/ThreadlineNicknames.js';
 import { resolvePeerFingerprint, resolvePeerFingerprintByName } from '../threadline/peerFingerprint.js';
+import { isRelayChainLoop } from '../messaging/MessageRouter.js';
+import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
+import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
@@ -1195,6 +1198,13 @@ export interface RouteContext {
   a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
   /** Honest-delivery verdict counters (spec §1); read in the AUTHED branch of /health. Null when no relay client. */
   relayVerdictCounters?: (() => Record<string, number>) | null;
+  /**
+   * A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md).
+   * `current()` resolves the live enabled flag (lazy open / clean close). Null ⇒ dark.
+   */
+  inboundIdLedger?: { current(): import('../threadline/InboundIdLedger.js').InboundIdLedger | null } | null;
+  /** True while the listener daemon owns inbound relay handling (no capability advertised). */
+  inboundIdLedgerDaemonDeferred?: (() => boolean) | null;
   responseReviewGate: CoherenceGate | null;
   /** The §D9.4b daily adversarial canary battery driver (context-aware-
    *  outbound-review). Bearer-gated trigger route POST /review/canary-battery/run;
@@ -4797,6 +4807,15 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.relayVerdictCounters) {
         try { base.threadline = { ...(base.threadline as object ?? {}), relayVerdicts: ctx.relayVerdictCounters() }; }
         catch { /* counters are best-effort observability */ }
+      }
+      // Inbound-id ledger counters (spec "Migration parity" → counters): in
+      // memory, surfaced on the AUTHED /health beside the relay verdicts.
+      {
+        const ledger = ctx.inboundIdLedger?.current() ?? null;
+        if (ledger) {
+          try { base.threadline = { ...(base.threadline as object ?? {}), inboundIdLedger: ledger.counters() }; }
+          catch { /* @silent-fallback-ok — counters are best-effort observability */ }
+        }
       }
       base.project = ctx.config.projectName;
       base.node = process.version;
@@ -17747,6 +17766,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       staleCount: all.filter((p) => (p as { stale?: boolean }).stale).length,
       mixedVersion,
       pool: { selfMachineId: selfId, peersQueried, peersOk: pool.length, failed },
+    });
+  });
+
+  // ── A2A inbound message-id ledger: Registry-First read (spec §2) ──────
+  // GET /a2a/inbound-ids?sender=<key>&id=<id>[&scope=pool] — under the global
+  // Bearer. Bounded inputs; an unknown key answers 200 { rows: [], disposition:
+  // null }; a dark ledger answers 503. `thread_id` is untrusted sender text.
+  // `?scope=pool` merges every online peer's PLAIN-scope answer (no recursion),
+  // rate-limited like the reaper pool route; a dark peer is a pool.failed entry.
+  const isInboundIdsBody = (b: Record<string, unknown>): boolean => Array.isArray(b.rows);
+  router.get('/a2a/inbound-ids', async (req, res) => {
+    const id = typeof req.query.id === 'string' ? req.query.id : '';
+    const senderRaw = typeof req.query.sender === 'string' ? req.query.sender : '';
+    if (!isValidMessageId(id)) {
+      res.status(400).json({ error: 'id must be 1-128 printable ASCII characters' });
+      return;
+    }
+    if (senderRaw && (senderRaw.length > 200 || !/^[\x20-\x7e]+$/.test(senderRaw))) {
+      res.status(400).json({ error: 'sender must be at most 200 printable ASCII characters' });
+      return;
+    }
+    const ledger = ctx.inboundIdLedger?.current() ?? null;
+    const localRows = ledger ? ledger.read(senderRaw || null, id).map((r) => projectInboundRow(r)) : null;
+    if (req.query.scope !== 'pool') {
+      if (!localRows) { res.status(503).json({ error: 'inbound-id ledger is dark on this machine' }); return; }
+      res.json({ rows: localRows, disposition: localRows[0]?.disposition ?? null });
+      return;
+    }
+    reaperPoolLimiter(req, res, async () => {
+      const qs = `?id=${encodeURIComponent(id)}${senderRaw ? `&sender=${encodeURIComponent(senderRaw)}` : ''}`;
+      const { peers, failed, peersQueried } = await readReaperPoolPeers(`/a2a/inbound-ids${qs}`, isInboundIdsBody);
+      const selfId = ctx.meshSelfId ?? 'local';
+      const rows: Array<Record<string, unknown>> = (localRows ?? []).map((r) => ({ ...r, machineId: selfId }));
+      for (const p of peers) {
+        for (const r of (p.body.rows as unknown[])) {
+          if (r && typeof r === 'object') rows.push({ ...(r as Record<string, unknown>), machineId: p.machineId });
+        }
+      }
+      res.json({
+        scope: 'pool',
+        rows,
+        disposition: (rows[0]?.disposition as string | undefined) ?? null,
+        localDark: localRows === null,
+        pool: { selfMachineId: selfId, peersQueried, peersOk: peers.length, failed },
+      });
     });
   });
 
@@ -34531,6 +34595,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       threadId: string;
       content: string;
     } | null = null;
+    // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md): the attempt-owned
+    // ticket. The route's `finally` clears it until the background chain starts.
+    let ledgerTicket: import('../threadline/InboundIdLedger.js').AdmissionTicket | null = null;
+    let ledgerChainStarted = false;
+    let ledgerNotice: string | null = null;
     try {
       // Verify bearer token — the sender must present our agent's token
       const authHeader = req.headers.authorization;
@@ -34545,6 +34614,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(400).json({ error: 'Invalid envelope' });
         return;
       }
+
+      // One relay-chain-loop predicate (inbound-id ledger §1): a loop envelope is
+      // refused through the existing refusal answer and writes no ledger row.
+      {
+        const lm = (ctx.messageRouter as { localMachine?: string }).localMachine;
+        if (typeof lm === 'string' && lm && Array.isArray(envelope?.transport?.relayChain) && isRelayChainLoop(envelope, lm)) {
+          res.status(409).json({ error: 'Relay rejected (loop or duplicate)' });
+          return;
+        }
+      }
+
+      // Inbound-id ledger keying on this route (§1 "Keyed by sender"): the
+      // AgentRegistry token proves possession of THIS agent's token, not who the
+      // sender is — so every row here lives in a LOCAL namespace that never
+      // suppresses. Only a TERMINAL VERIFIED row for the registry-resolved
+      // fingerprint suppresses, answered bare.
+      const relayLedger = ctx.inboundIdLedger?.current() ?? null;
+      const relayFromAgent: string = typeof envelope.message?.from?.agent === 'string' ? envelope.message.from.agent : 'unknown';
+      const relayRegistryFp = relayLedger ? (resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null) : null;
+      const relayAssertedFp = typeof envelope.message?.from?.fingerprint === 'string' && /^[0-9a-f]{6,64}$/i.test(envelope.message.from.fingerprint)
+        ? envelope.message.from.fingerprint as string
+        : null;
+      const relaySenderKey = relayRegistryFp
+        ? `registry:${relayRegistryFp}`
+        : relayAssertedFp ? `asserted:${relayAssertedFp}` : `local:relay-agent:${relayFromAgent}`;
+      const relayMsgIdKey = typeof envelope.message.id === 'string' ? envelope.message.id : null;
+      // A request whose id already has a row skips the content window: the ledger
+      // answers it (or re-admits it), so a retry of a known id is never stopped there.
+      const relayKnownId = !!relayLedger && !!relayMsgIdKey && (
+        relayLedger.getRow(relaySenderKey, relayMsgIdKey) !== null
+        || (relayRegistryFp ? relayLedger.getRow(relayRegistryFp, relayMsgIdKey) !== null : false)
+      );
 
       // Content-hash dedup (duplicate-reply fix): a sender that timed out on the
       // receiver's session spawn and retried with a FRESH message.id would
@@ -34561,11 +34662,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           : (typeof dBody === 'object' && dBody !== null
               ? String((dBody as Record<string, unknown>).content ?? (dBody as Record<string, unknown>).text ?? '')
               : '');
-        if (dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
+        if (!relayKnownId && dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
           console.log(`[relay-agent] Deduped retried message from ${dSender} (thread: ${dThread.slice(0, 8)}, id: ${envelope.message?.id ?? 'none'}) — identical content within window`);
           res.json({
             ok: true,
             deduped: true,
+            dedupBy: 'content',
             accepted: false,
             delivered: false,
             deliveryOutcome: 'duplicate suppressed; prior attempt state unknown',
@@ -34573,13 +34675,58 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           });
           return;
         }
-        if (dThread && dText) {
+        if (dThread && dText && !relayKnownId) {
           dedupReservation = {
             senderAgent: dSender,
             threadId: dThread,
             content: dText,
           };
         }
+
+        // The commit point (immediately before messageRouter.relay).
+        if (relayLedger) {
+          const releaseReservation = () => {
+            if (dedupReservation) {
+              relayContentDedup.forget(dedupReservation.senderAgent, dedupReservation.threadId, dedupReservation.content);
+              dedupReservation = null;
+            }
+          };
+          const r = relayLedger.admit({
+            senderKey: relaySenderKey,
+            messageId: relayMsgIdKey,
+            ingress: 'relay-agent',
+            threadId: dThread,
+            verifiedKeyToConsult: relayRegistryFp,
+          });
+          if (r.kind === 'error') {
+            releaseReservation();
+            res.status(503).json({ error: 'ledger-unavailable', retryable: true });
+            return;
+          }
+          if (r.kind === 'duplicate') {
+            releaseReservation();
+            relayLedger.bump('dedupById');
+            recordDuplicateAck(ctx.a2aDeliveryTracker, r.row);
+            // Bare form only (no disposition/path/time — no probe of verified senders' history).
+            res.json({ accepted: false, deduped: true, dedupBy: 'id' });
+            return;
+          }
+          if (r.kind === 'in-flight') {
+            releaseReservation();
+            res.status(409).json({ deduped: true, disposition: 'admitted', retryable: true });
+            return;
+          }
+          ledgerTicket = r.ticket;
+          if (r.kind === 'admitted' && r.ticket.readmissions > 0) ledgerNotice = buildResentNotice(false);
+          // Capture the content triple now; `forget` runs only after the ticket's
+          // conditional handoff-failed/refused write succeeds (a superseded
+          // attempt never releases the window).
+          if (dThread && dText) {
+            const triple = { senderAgent: dSender, threadId: dThread, content: dText };
+            r.ticket.onReleased(() => relayContentDedup.forget(triple.senderAgent, triple.threadId, triple.content));
+          }
+        }
+        if (envelope.message?.resend === true) ledgerNotice = buildResentNotice(false);
       }
 
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
@@ -34711,6 +34858,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 humanInLoop: false,
               });
               if (decision.suppress) {
+                // Inbound-id ledger: a pure no-reply verdict is `no-reply`; a
+                // loop-budget suppression depends on loop state → `refused`.
+                if ((decision.verdict as { budgetExhausted?: boolean }).budgetExhausted) ledgerTicket?.recordRefused('loop-budget');
+                else ledgerTicket?.recordNoReply();
                 console.log(`[relay-agent] warrants-reply gate suppressed reply (${decision.verdict.signal}) from ${senderAgentName} thread ${gThreadId.slice(0, 8)}`);
                 res.json({
                   ok: true,
@@ -34781,14 +34932,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // fallback (fail-safe). See threadline-local-delivery-fingerprint-attribution.
           const inboundSenderFingerprint =
             resolvePeerFingerprintByName(ctx.config.stateDir, envelope.message?.from?.agent) ?? undefined;
+          const chainTicket = ledgerTicket;
+          ledgerChainStarted = true;
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint })
+            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint, resentNotice: ledgerNotice })
             .then((threadlineResult) => {
+              chainTicket?.recordRouterResult(threadlineResult);
               console.log(
                 `[relay-agent] async handleInboundMessage complete (thread ${envelope.message?.threadId ?? 'none'}): ${JSON.stringify(threadlineResult)}`,
               );
             })
             .catch((err) => {
+              chainTicket?.recordHandoffFailed();
               console.error('[routes] ThreadlineRouter async handling error:', err);
               DegradationReporter.getInstance().report({
                 feature: 'routes.relayAgentAsyncHandling',
@@ -34797,9 +34952,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 reason: `Async Threadline handling failed: ${err instanceof Error ? err.message : String(err)}`,
                 impact: 'The sender received acceptance, but this attempt did not reach a live agent session.',
               });
-            });
+            })
+            .finally(() => chainTicket?.finish());
           return;
         }
+        // No router wired: relay() returned true → the `store` hand-off (written
+        // only in local namespaces, which never suppress).
+        ledgerTicket?.recordHandoff('store');
         res.json({
           ok: true,
           accepted: true,
@@ -34807,6 +34966,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           threadline: { accepted: true, delivered: false, async: false },
         });
       } else {
+        ledgerTicket?.recordHandoffFailed();
         if (dedupReservation) {
           relayContentDedup.forget(
             dedupReservation.senderAgent,
@@ -34826,6 +34986,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         );
       }
       res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+    } finally {
+      // A synchronous exit (warrants suppress, a relay() throw into the 500
+      // handler, an early return) never leaves a key in flight.
+      if (!ledgerChainStarted) ledgerTicket?.finish();
     }
   });
 
@@ -35407,6 +35571,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             lastEvent: ctx.getLastRelayEvent?.() ?? null,
           };
         },
+        // Inbound-id ledger (late-bound; live flips handled by the controller).
+        inboundIdLedger: () => ctx.inboundIdLedger?.current() ?? null,
+        inboundIdLedgerDaemonDeferred: () => ctx.inboundIdLedgerDaemonDeferred?.() ?? false,
       },
       // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
       // relay inbound path records the implicit ack (the one path that lacked it).
@@ -36227,7 +36394,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   schemaVersion: 1,
                   message: {
                     id: msgId,
-                    from: { agent: ctx.config.projectName, session: 'threadline', machine: 'local' },
+                    // inbound-id ledger §5: the local envelope carries the sender's
+                    // fingerprint (keyed `asserted:<fp>` when the registry can't resolve).
+                    from: { agent: ctx.config.projectName, session: 'threadline', machine: 'local', fingerprint: senderFingerprint },
                     to: { agent: localTarget.name, session: 'best', machine: 'local' },
                     type: 'request' as const,
                     priority: resolvedPriority,
@@ -36469,8 +36638,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       // The peer replies on the thread that went on the wire, so record, return
       // and wait on THAT id — never the messageId (ACT-1304 fault 3).
+      // inbound-id ledger §5: ONE id on every route — the relay route carries the
+      // same id the local route used, so a receiver's ledger can recognise it.
       const { messageId: relayMsgId, threadId: effectiveRelayThreadId } =
-        relayClient.sendAutoWithThread(resolvedId, message, threadId);
+        relayClient.sendAutoWithThread(resolvedId, message, threadId, msgId);
       // waitForReply: the reply listener is registered NOW, before any await, so
       // it runs concurrently with the verdict wait (no time comes off the reply
       // budget, and a fast reply can never land in a gap with no listener).

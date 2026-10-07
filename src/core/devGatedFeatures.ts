@@ -751,6 +751,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: dev agents exercise record serialization and merge decisions without applying peer state. Replicates only scrubbed closed-enum lifecycle fields and observations, never raw correction learning; no external egress beyond the operator-owned encrypted mesh.',
   },
   {
+    name: 'a2aInboundIdLedger',
+    configPath: 'threadline.inboundIdLedger.enabled',
+    description: 'Durable A2A inbound message-id ledger: records receipt + hand-off per (sender, id); a verified no-reply row suppresses a resend, every other resend is delivered with a resent-copy notice.',
+    justification: 'Fails toward a labelled duplicate, never a loss: a database error, cooldown, full unverified namespace or unkeyed message delivers with no row; only a verified no-reply row suppresses; peer answers only word a notice. Machine-local SQLite with bounded retention, no LLM, no spend, no outbound messages.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

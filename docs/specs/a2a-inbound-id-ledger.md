@@ -7,7 +7,8 @@ parent-principle: "Verify the State, Not Its Symbol"
 parent-principle-fit: "A sender deciding whether to resend has been inferring 'does the peer already have this?' from symbols — a content window, an absent field, the timing of a relay frame. This spec gives the receiver one piece of state it can actually know, durably: which message ids it accepted, and whether one of an explicit list of delivery outcomes happened for each. It claims nothing it cannot observe, it never says a message reached a model, and anything it cannot classify is treated as not handed off."
 binding-standards: ["A Refusal Stays a Refusal — conservation of negative outcomes", "Capacity Safety — No Unbounded Self-Action", "An Instar Agent Is Always a Multi-Machine Entity", "Know Your Principal — An Unverified Identity Is a Guess"]
 eli16-overview: a2a-inbound-id-ledger.eli16.md
-approved: false
+approved: true
+approved-by: "operator standing approval for the agent-comms track — 2026-10-06 18:57, Telegram topic 122413 (build converged comms specs at once)"
 review-convergence: "2026-10-07T16:08:36.286Z"
 review-iterations: 17
 review-completed-at: "2026-10-07T16:08:36.286Z"
@@ -455,7 +456,7 @@ classified `pool.failed` entry.
 ledger getter) gains `capabilities: ['inbound-id-ledger']` and
 `protocolVersion: 2`, evaluated per probe: present only while the lookup
 is operational — the table open, no database-error cooldown or breaker in
-force — and the relay is not daemon-deferred. `protocol` and `version` are
+force — and inbound relay handling is not owned by the listener daemon. `protocol` and `version` are
 unchanged. The page is unauthenticated and, in mesh mode, reachable on every
 rope; it discloses dev-gate state beside the already-public fingerprint —
 accepted. A sender treats the claim as a hint and the per-message answer as

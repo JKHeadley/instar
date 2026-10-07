@@ -972,6 +972,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       contextWindowTurns: 6,
       modelTier: 'fast',
     },
+    // A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md). The
+    // receiver durably remembers which A2A message ids it accepted and whether a
+    // listed hand-off happened; only a verified `no-reply` suppresses a resend
+    // today. `enabled` is OMITTED on purpose — the developmentAgent gate decides
+    // (registered in DEV_GATED_FEATURES as threadline.inboundIdLedger.enabled).
+    // applyDefaults deep-merges this under `threadline` on update (Migration Parity).
+    inboundIdLedger: {
+      retentionDays: 14,
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap
