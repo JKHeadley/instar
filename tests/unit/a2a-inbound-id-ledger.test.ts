@@ -327,6 +327,17 @@ describe('unverified namespace', () => {
     expect(fs.readFileSync(p, 'utf-8').trim().split('\n')).toHaveLength(1);
   });
 
+  it('age-prunes the refusal log files at retentionDays', () => {
+    const p = path.join(logDir, 'a2a-inbound-refusals.jsonl');
+    fs.writeFileSync(p, '{}\n');
+    fs.writeFileSync(`${p}.1`, '{}\n');
+    const old = new Date(Date.now() - 20 * 24 * 60 * 60_000);
+    fs.utimesSync(`${p}.1`, old, old);
+    l.pruneOnce();
+    expect(fs.existsSync(`${p}.1`)).toBe(false);
+    expect(fs.existsSync(p)).toBe(true);
+  });
+
   it('caps 50 per sender with eviction order handoff-failed → admitted not in flight → oldest terminal', () => {
     const key = `unverified:${FP}`;
     const tickets = [];
