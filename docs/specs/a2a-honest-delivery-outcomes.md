@@ -6,6 +6,9 @@ parent-spec: A2A-DURABLE-DELIVERY-SPEC.md
 parent-principle: "Close the Loop"
 parent-principle-fit: "Every relay send already gets a delivered / queued / rejected / expired verdict from the relay; the sender discards all of them, so a send can only ever end as 'sent, unconfirmed'. Consuming the verdicts closes the loop the durable-delivery tracker opened."
 eli16-overview: a2a-honest-delivery-outcomes.eli16.md
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 122413, 2026-10-06 18:57 PDT: \"Yes, I approve. Please don't let me be the bottleneck here.\" (verified operator)"
 review-convergence: "2026-10-07T01:39:21.974Z"
 review-iterations: 8
 review-completed-at: "2026-10-07T01:39:21.974Z"
