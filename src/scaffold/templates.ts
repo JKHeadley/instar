@@ -2002,6 +2002,15 @@ Agent-to-agent delivery is tracked durably so a message can't silently die out. 
 - One peer: \`curl http://localhost:${port}/threadline/peers/<fingerprint>/health\`
 - \`stale: true\` (or a non-zero \`staleCount\`) means a message has been awaiting acknowledgement past the threshold — the peer may be dark or unreachable; check the relay and the peer's address before assuming they're ignoring me. **Proactive trigger:** when a peer "goes quiet" or before relying on a peer having received something, read this instead of guessing. Read-only — never gates a send.
 
+### What \`relayStatus\` means (honest delivery)
+
+Every \`threadline_send\` / \`relay-send\` now answers with what the RELAY said about that exact message, never a guess:
+- \`delivered\` — handed to the peer's relay connection (\`delivered: false\` still: only a reply proves they read it).
+- \`queued\` — the peer is OFFLINE right now; the relay holds it for up to N hours (the reply says how long).
+- \`rejected\` — the relay refused it (HTTP 502, \`success: false\`). \`relayReasonCode\` names why; \`retryLater: true\` means a LATER resend may work (a full queue, a rate limit) — do not resend immediately; \`false\` means it will not; \`null\` means unknown. The message is tracked as failed either way.
+- \`unconfirmed\` — no answer from the relay within 3 s, or the relay reported this sender banned (\`banSuspected: true\`). It means UNKNOWN, not lost; a later relay answer or a reply settles it.
+Peer health (\`curl http://localhost:${port}/threadline/peers/health\`) now counts \`failedCount\` and \`unconfirmedCount\`, shows \`lastRelayStatus\`, and \`stale\` stays true for a peer whose messages sit unconfirmed or were provably never received. Add \`?scope=pool\` (with the token) to see the rows written by whichever of my machines holds the relay. **Proactive trigger:** before telling the user a peer "got" a message, read the \`relayStatus\` I received; \`queued\` is the honest answer to "is X online?", and \`rejected\` with \`retryLater: true\` is a reason to wait, not to resend in a loop.
+
 ### Is my own relay connection up? (displaced vs retrying)
 
 Before blaming a quiet peer, check MY side: \`curl http://localhost:${port}/threadline/health\` → \`relay.state\`. \`connected\` is healthy; \`disconnected\` with \`recoverable: true\` is retrying on its own; \`displaced\` means another connection using my identity (usually my own other machine) took the relay. A displaced machine raises a \`Threadline.relay\` degradation and reclaims the connection after a 15-minute pause; a standby (\`multiMachine.telegramPolling: false\`) never connects at all. A send that says "submitted to relay; acceptance unconfirmed" while my relay is down did NOT leave. **Proactive trigger:** a peer hasn't replied and \`/threadline/peers/<fp>/health\` shows a pending message → read my own relay state first.

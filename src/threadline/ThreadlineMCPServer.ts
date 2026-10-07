@@ -145,6 +145,14 @@ export interface SendMessageResult {
   accepted?: boolean;
   /** Whether processing is proven, rather than merely transport-accepted. */
   delivered?: boolean;
+  /** Honest delivery (spec §4): what the RELAY said — delivered | queued | rejected | unconfirmed. */
+  relayStatus?: string;
+  /** Fixed reason code (never relay prose). */
+  relayReasonCode?: string;
+  /** true = a LATER resend may succeed; false = it will not; null = unknown. Never "retry now". */
+  retryLater?: boolean | null;
+  /** A ban frame was seen and no later send has been acked — a hint, not a verdict. */
+  banSuspected?: boolean;
   /** True when the single-negotiator lease withheld this content send (G1 holding). */
   held?: boolean;
   /** Human-readable note (e.g. why content was withheld by the lease). */
@@ -670,6 +678,10 @@ export class ThreadlineMCPServer {
             threadId: result.threadId,
             messageId: result.messageId,
           };
+          if (result.relayStatus !== undefined) response.relayStatus = result.relayStatus;
+          if (result.relayReasonCode !== undefined) response.relayReasonCode = result.relayReasonCode;
+          if (result.retryLater !== undefined) response.retryLater = result.retryLater;
+          if (result.banSuspected) response.banSuspected = true;
           // Surface the negotiator lease's holding note + the commitment-class
           // advisory nudge so the sending session learns it is not the voice /
           // is pointed at the anchored binding path (Robustness Phase 1).

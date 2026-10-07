@@ -282,10 +282,17 @@ export class ListenerSessionManager {
    */
   hasCanonicalReplyFor(threadId: string, inboundMessageId: string): boolean {
     if (!threadId || !inboundMessageId) return false;
+    // Settled iff ANY verified entry for (thread, inReplyTo) has an outcome other
+    // than `relay-rejected` (absent / legacy `accepted` / `relay-unconfirmed`
+    // all count as settled — no-duplicate over no-loss). The filter lives in the
+    // predicate, so a later REFUSED retry never un-settles an earlier success,
+    // while a lone refused entry leaves the reply re-drivable
+    // (docs/specs/a2a-honest-delivery-outcomes.md §4).
     return this.readNewestJsonlMatch<InboxEntry>(
       this.canonicalOutboxPath,
       (entry) => entry.threadId === threadId
         && (entry as InboxEntry & { inReplyTo?: string }).inReplyTo === inboundMessageId
+        && (entry as InboxEntry & { outcome?: string }).outcome !== 'relay-rejected'
         && this.verifyEntry(entry),
     ) !== null;
   }

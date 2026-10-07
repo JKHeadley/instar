@@ -61,7 +61,7 @@ describe('Threadline negotiator send-gate (integration)', () => {
       threadlineRelayClient: {
         connectionState: 'connected',
         resolveAgent: async () => 'targetfp00112233445566778899aabbcc',
-        sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: (rid: string, text: string, threadId?: string) => { sentAuto.push({ rid, text, threadId }); return `msg-${sentAuto.length}`; },
+        sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, awaitRelayAck: async (_id: string, _ms: number) => null, banSuspected: false, noteUnconfirmedSettled() {}, sendAuto: (rid: string, text: string, threadId?: string) => { sentAuto.push({ rid, text, threadId }); return `msg-${sentAuto.length}`; },
       },
       startTime: new Date(),
     };
@@ -141,7 +141,8 @@ describe('Threadline negotiator send-gate (integration)', () => {
     expect(json.accepted).toBe(false);
     expect(json.delivered).toBe(false);
     expect(json.deliveryPath).toBe('relay');
-    expect(json.deliveryOutcome).toBe('submitted to relay; acceptance unconfirmed');
+    expect(json.deliveryOutcome).toBe('submitted to relay; no relay acknowledgement within 3s');
+    expect(json.relayStatus).toBe('unconfirmed');
     expect(sentAuto.length).toBe(1);
     expect(sentAuto[0].text).toBe('real owner content'); // real content was submitted, not a notice
   });

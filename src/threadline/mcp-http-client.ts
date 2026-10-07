@@ -84,6 +84,10 @@ export async function sendMessageViaHttp(
       deliveryPath?: string;
       accepted?: boolean;
       delivered?: boolean;
+      relayStatus?: string;
+      relayReasonCode?: string;
+      retryLater?: boolean | null;
+      banSuspected?: boolean;
       held?: boolean;
       note?: string;
       advisory?: string;
@@ -109,6 +113,10 @@ export async function sendMessageViaHttp(
         // Negotiator lease (Robustness Phase 1): surface withheld/held + the
         // holding note + the commitment-class advisory back to the session.
         delivered: parsed.delivered,
+        relayStatus: parsed.relayStatus,
+        relayReasonCode: parsed.relayReasonCode,
+        retryLater: parsed.retryLater,
+        banSuspected: parsed.banSuspected,
         held: parsed.held,
         note: parsed.note,
         advisory: parsed.advisory,
@@ -119,11 +127,17 @@ export async function sendMessageViaHttp(
     const errMsg =
       parsed.error ||
       (raw ? raw.slice(0, 300) : `relay-send returned HTTP ${response.status}`);
+    // A refused send (502 WITH a JSON body) keeps its ids + contract fields so
+    // the caller can track it; a bodyless 502 (proxy/tunnel) carries none and
+    // is therefore reported as unconfirmed by absence, never as rejected.
     return {
       success: false,
-      threadId: params.threadId ?? '',
-      messageId: '',
+      threadId: parsed.threadId ?? params.threadId ?? '',
+      messageId: parsed.messageId ?? '',
       error: errMsg,
+      ...(parsed.relayStatus ? { relayStatus: parsed.relayStatus } : {}),
+      ...(parsed.relayReasonCode ? { relayReasonCode: parsed.relayReasonCode } : {}),
+      ...(parsed.retryLater !== undefined ? { retryLater: parsed.retryLater } : {}),
     };
   } catch (err) {
     // The agent server itself is unreachable (not running / wrong port).

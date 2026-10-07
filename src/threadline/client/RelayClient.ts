@@ -231,6 +231,13 @@ export class RelayClient extends EventEmitter {
             this.emit('error', frame);
             break;
 
+          case 'delivery_expired':
+            // A queued message's TTL elapsed on the relay (sent only while this
+            // identity holds a live socket). Surfaced so the sender can record
+            // "the peer provably never received it" instead of inferring it.
+            this.emit('delivery-expired', frame);
+            break;
+
           case 'discover_result':
             this.emit('discover-result', frame);
             break;

@@ -190,7 +190,8 @@ import {
 } from '../core/PlaywrightProfileRegistry.js';
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS } from './middleware.js';
+import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { relayHoldHours } from '../threadline/relayVerdict.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
@@ -1192,6 +1193,8 @@ export interface RouteContext {
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
   a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null;
+  /** Honest-delivery verdict counters (spec §1); read in the AUTHED branch of /health. Null when no relay client. */
+  relayVerdictCounters?: (() => Record<string, number>) | null;
   responseReviewGate: CoherenceGate | null;
   /** The §D9.4b daily adversarial canary battery driver (context-aware-
    *  outbound-review). Bearer-gated trigger route POST /review/canary-battery/run;
@@ -4750,16 +4753,9 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // Include detailed info only for authenticated callers.
     // Must actually validate the token here since authMiddleware skips /health.
-    let isAuthed = !ctx.config.authToken;
-    if (!isAuthed && ctx.config.authToken) {
-      const header = req.headers.authorization;
-      if (header?.startsWith('Bearer ')) {
-        const token = header.slice(7);
-        const ha = createHash('sha256').update(token).digest();
-        const hb = createHash('sha256').update(ctx.config.authToken).digest();
-        isAuthed = timingSafeEqual(ha, hb);
-      }
-    }
+    // Token-only compare, shared with the pool-scope peer-health read
+    // (`bearerMatches`): byte-identical to the inline check it replaced.
+    const isAuthed = bearerMatches(req, ctx.config.authToken);
     if (isAuthed) {
       const mem = process.memoryUsage();
       // Use ProcessIntegrity for truthful version reporting
@@ -4795,6 +4791,12 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.telegramOrigin) {
         try { base.telegramOriginStorage = ctx.telegramOrigin.storageHealth(); }
         catch { base.telegramOriginStorage = { state: 'unavailable' }; }
+      }
+      // Honest delivery (spec §1): verdict-dispatcher counters ride the AUTHED
+      // branch only — every /threadline/* path bypasses Bearer auth by design.
+      if (ctx.relayVerdictCounters) {
+        try { base.threadline = { ...(base.threadline as object ?? {}), relayVerdicts: ctx.relayVerdictCounters() }; }
+        catch { /* counters are best-effort observability */ }
       }
       base.project = ctx.config.projectName;
       base.node = process.version;
@@ -17676,27 +17678,106 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── A2A peer-health (A2A-DURABLE-DELIVERY-SPEC.md) ──────────────────────
   // "Is my channel to <peer> alive?" as a lookup, not a guess. Read-only
   // observability over the durable delivery tracker — never gates a send.
-  router.get('/threadline/peers/health', (req, res) => {
-    if (!ctx.a2aDeliveryTracker) {
+  // Security posture (spec §6): the DEFAULT scope is reachable without a token
+  // (pre-existing `/threadline/*` middleware exemption), per peer, this machine
+  // only. `?scope=pool` fans out to every machine and therefore checks the token
+  // inline (token-only compare + the agent-id rule) — it guards AMPLIFICATION,
+  // not the per-peer data. Peers are queried with the default scope only.
+  const peerHealthInstarVersion = (): string => {
+    const integrity = ProcessIntegrity.getInstance();
+    return integrity?.runningVersion ?? (ctx.config.version || '0.0.0');
+  };
+  const poolScopeAuthorized = (req: { headers: Record<string, unknown> }, res: { status: (c: number) => { json: (b: unknown) => unknown } }): boolean => {
+    if (!bearerMatches(req, ctx.config.authToken)) {
+      res.status(403).json({ error: 'forbidden', scope: 'pool' });
+      return false;
+    }
+    const provided = req.headers['x-instar-agentid'];
+    if (typeof provided === 'string' && ctx.config.projectName && provided !== ctx.config.projectName) {
+      res.status(403).json({ error: 'agent_id_mismatch', expected: ctx.config.projectName });
+      return false;
+    }
+    return true;
+  };
+  const isPeerHealthBody = (b: Record<string, unknown>): boolean => Array.isArray(b.peers) && typeof b.count === 'number';
+  const isPeerHealthOne = (b: Record<string, unknown>): boolean => typeof b.peerFp === 'string' && typeof b.stale === 'boolean';
+  const poolPeerRows = (peers: ReaperPoolPeer[], pick: (body: Record<string, unknown>) => unknown[]) => {
+    const local = peerHealthInstarVersion();
+    let mixedVersion = false;
+    const rows: Array<Record<string, unknown>> = [];
+    for (const p of peers) {
+      const v = typeof p.body.instarVersion === 'string' ? p.body.instarVersion : null;
+      if (v !== local) mixedVersion = true; // absent IS the mixed case
+      for (const item of pick(p.body)) {
+        rows.push({ ...(item as Record<string, unknown>), machineId: p.machineId, machineNickname: p.nickname, instarVersion: v });
+      }
+    }
+    return { rows, mixedVersion };
+  };
+
+  router.get('/threadline/peers/health', async (req, res) => {
+    if (!ctx.a2aDeliveryTracker && req.query.scope !== 'pool') {
       res.status(503).json({ error: 'A2A delivery tracker not initialized' });
       return;
     }
     const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
       ? Number(req.query.staleAfterMs)
       : undefined;
-    const peers = ctx.a2aDeliveryTracker.allPeerHealth({ staleAfterMs });
-    res.json({ peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length });
+    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ staleAfterMs }) ?? null;
+    const localBody = peers
+      ? { peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length, instarVersion: peerHealthInstarVersion() }
+      : null;
+    if (req.query.scope !== 'pool') {
+      if (!localBody) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
+      res.json(localBody);
+      return;
+    }
+    if (!poolScopeAuthorized(req, res)) return;
+    const qs = staleAfterMs !== undefined ? `?staleAfterMs=${staleAfterMs}` : '';
+    const { peers: pool, failed, peersQueried } = await readReaperPoolPeers(`/threadline/peers/health${qs}`, isPeerHealthBody);
+    const selfId = ctx.meshSelfId ?? 'local';
+    const { rows, mixedVersion } = poolPeerRows(pool, (b) => b.peers as unknown[]);
+    const localRows = (localBody?.peers ?? []).map((p) => ({ ...p, machineId: selfId, machineNickname: null, instarVersion: localBody?.instarVersion ?? null }));
+    const all = [...localRows, ...rows];
+    res.json({
+      scope: 'pool',
+      local: localBody,
+      peers: all,
+      count: all.length,
+      staleCount: all.filter((p) => (p as { stale?: boolean }).stale).length,
+      mixedVersion,
+      pool: { selfMachineId: selfId, peersQueried, peersOk: pool.length, failed },
+    });
   });
 
-  router.get('/threadline/peers/:fp/health', (req, res) => {
-    if (!ctx.a2aDeliveryTracker) {
-      res.status(503).json({ error: 'A2A delivery tracker not initialized' });
+  router.get('/threadline/peers/:fp/health', async (req, res) => {
+    const fp = req.params.fp;
+    if (!/^[0-9a-f]{6,64}$/i.test(fp)) {
+      res.status(400).json({ error: 'invalid fingerprint' });
       return;
     }
     const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
       ? Number(req.query.staleAfterMs)
       : undefined;
-    res.json(ctx.a2aDeliveryTracker.peerHealth(req.params.fp, { staleAfterMs }));
+    const local = ctx.a2aDeliveryTracker
+      ? { ...ctx.a2aDeliveryTracker.peerHealth(fp, { staleAfterMs }), instarVersion: peerHealthInstarVersion() }
+      : null;
+    if (req.query.scope !== 'pool') {
+      if (!local) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
+      res.json(local);
+      return;
+    }
+    if (!poolScopeAuthorized(req, res)) return;
+    const qs = staleAfterMs !== undefined ? `?staleAfterMs=${staleAfterMs}` : '';
+    const { peers: pool, failed, peersQueried } = await readReaperPoolPeers(`/threadline/peers/${encodeURIComponent(fp)}/health${qs}`, isPeerHealthOne);
+    const selfId = ctx.meshSelfId ?? 'local';
+    const { rows, mixedVersion } = poolPeerRows(pool, (b) => [b]);
+    const all = [...(local ? [{ ...local, machineId: selfId, machineNickname: null }] : []), ...rows];
+    res.json({
+      scope: 'pool', peerFp: fp, local, machines: all,
+      staleCount: all.filter((p) => (p as { stale?: boolean }).stale).length,
+      mixedVersion, pool: { selfMachineId: selfId, peersQueried, peersOk: pool.length, failed },
+    });
   });
 
   // ── Secure A2A Verified Pairing surfaces (§3.6) ────────────────────────
@@ -35572,6 +35653,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     senderAgent: string,
     threadId: string,
     timeoutSec?: number,
+    onRegistered?: (cancel: () => void) => void,
   ): Promise<string | null> {
     const timeout = Math.min(Math.max(timeoutSec ?? 120, 5), 300) * 1000; // 5s–300s, default 120s
 
@@ -35584,7 +35666,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         resolve(null);
       }, timeout);
 
-      routeCtx.threadlineReplyWaiters.set(threadId, {
+      const entry = {
         resolve: (reply: string) => {
           clearTimeout(timer);
           routeCtx.threadlineReplyWaiters.delete(threadId);
@@ -35593,6 +35675,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         threadId,
         senderAgent,
         timer,
+      };
+      routeCtx.threadlineReplyWaiters.set(threadId, entry);
+      // Honest delivery (spec §4): a refused send cancels ITS OWN waiter only —
+      // an orphaned waiter's timeout would otherwise delete a retry's waiter on
+      // the same thread.
+      onRegistered?.(() => {
+        clearTimeout(timer);
+        if (routeCtx.threadlineReplyWaiters.get(threadId) === entry) routeCtx.threadlineReplyWaiters.delete(threadId);
+        resolve(null);
       });
     });
   }
@@ -36380,67 +36471,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // and wait on THAT id — never the messageId (ACT-1304 fault 3).
       const { messageId: relayMsgId, threadId: effectiveRelayThreadId } =
         relayClient.sendAutoWithThread(resolvedId, message, threadId);
+      // waitForReply: the reply listener is registered NOW, before any await, so
+      // it runs concurrently with the verdict wait (no time comes off the reply
+      // budget, and a fast reply can never land in a gap with no listener).
+      let cancelReplyWait: (() => void) | undefined;
+      const replyPromise = waitForReply
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; })
+        : null;
 
-      // Canonical outbox write for the relay-delivery path — same shape as the
-      // local-delivery path above, so the observability tab sees both paths.
-      if (ctx.listenerManager) {
-        try {
-          ctx.listenerManager.appendCanonicalOutboxEntry({
-            from: ctx.config.projectName ?? 'self',
-            senderName: ctx.config.projectName ?? 'self',
-            to: resolvedId,
-            recipientName: targetAgent,
-            threadId: effectiveRelayThreadId,
-            text: message,
-            messageId: relayMsgId,
-            inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
-            outcome: 'relay-sent',
-          });
-          if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
-        } catch (err) {
-          console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-          if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
-        }
-      }
-      // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
-      // canonical log through the funnel. The wire createdAt is stamped inside the
-      // relay client, so this end's createdAt is best-effort (symmetry on the relay
-      // path degrades to unverified, advisory-only); F3 holds unconditionally — the
-      // sender's own message is now auditable per-thread regardless of symmetry.
-      if (ctx.threadMessageRecorder) {
-        recordThreadMessage(ctx.threadMessageRecorder, {
-          threadId: effectiveRelayThreadId,
-          messageId: relayMsgId,
-          direction: 'outbound',
-          body: message,
-          createdAt: new Date().toISOString(),
-          peerFingerprint: resolvedId ?? undefined,
-          author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
-          subject: typeof purpose === 'string' ? purpose : undefined,
-        });
-      }
-
-      // Mirror outbound into Telegram bridge (relay-only — best effort).
-      if (ctx.telegramBridge) {
-        ctx.telegramBridge.mirrorOutbound({
-          threadId: effectiveRelayThreadId,
-          remoteAgent: resolvedId,
-          remoteAgentName: targetAgent,
-          text: message,
-          messageId: relayMsgId,
-          outcome: 'relay-sent',
-        }).catch(() => { /* swallow — bridge is relay-only */ });
-      }
-
-      // `resolvedId` is the peer's full routing fingerprint; store IT as the
-      // canonical thread owner (display = the raw target the caller typed) so a
-      // reply matches the anti-hijack guard instead of being false-isolated.
-      // This is the fix for the composite "name:fpPrefix" address being stored
-      // un-resolved and causing a known peer's replies to cold-spawn.
-      await captureOrigin(effectiveRelayThreadId, resolvedId, targetAgent);
-      // Durable delivery record (A2A-DURABLE-DELIVERY-SPEC.md): start the
-      // awaiting-ack lifecycle so silence becomes a visible, escalatable signal.
-      // Recording-only — never gates the send (already happened above).
+      // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:
+      //   1. send (above)  2. recordSent + canonical thread leg + captureOrigin,
+      //   all BEFORE the verdict wait so a fast reply never precedes them —
+      //   3. wait ≤3 s for the relay's verdict (cache covers a verdict that
+      //   landed during captureOrigin)  4. outbox ONCE with the final outcome
+      //   5. bridge mirror + reply-claim release on 2xx; a refusal 502s and the
+      //   finish handler releases the claim (retry allowed).
       try {
         ctx.a2aDeliveryTracker?.recordSent({
           messageId: relayMsgId,
@@ -36454,30 +36499,141 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the send (the message was already submitted above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
-      if (waitForReply) {
-        const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
-        res.json({
-          success: true,
-          accepted: reply !== null,
-          delivered: reply !== null,
-          messageId: relayMsgId,
+      // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
+      // canonical log through the funnel. The wire createdAt is stamped inside the
+      // relay client, so this end's createdAt is best-effort (symmetry on the relay
+      // path degrades to unverified, advisory-only); F3 holds unconditionally — the
+      // sender's own message is now auditable per-thread regardless of symmetry.
+      // Known limit: a leg the relay then REFUSES stays in the log (the verdict is
+      // not known yet), so that thread reads `diverged` until the next exchange.
+      if (ctx.threadMessageRecorder) {
+        recordThreadMessage(ctx.threadMessageRecorder, {
           threadId: effectiveRelayThreadId,
-          resolvedAgent: resolvedId,
-          deliveryPath: 'relay',
-          deliveryOutcome: reply !== null ? 'reply received' : 'submitted to relay; acceptance unconfirmed',
-          reply,
-          topicLinkageStamped: resolvedOriginTopicId !== undefined,
+          messageId: relayMsgId,
+          direction: 'outbound',
+          body: message,
+          createdAt: new Date().toISOString(),
+          peerFingerprint: resolvedId ?? undefined,
+          author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+          subject: typeof purpose === 'string' ? purpose : undefined,
         });
-      } else {
-        res.json({
-          success: true,
+      }
+      // `resolvedId` is the peer's full routing fingerprint; store IT as the
+      // canonical thread owner (display = the raw target the caller typed) so a
+      // reply matches the anti-hijack guard instead of being false-isolated.
+      await captureOrigin(effectiveRelayThreadId, resolvedId, targetAgent);
+
+      const RELAY_ACK_WAIT_MS = 3000;
+      const verdict = await relayClient.awaitRelayAck(relayMsgId, RELAY_ACK_WAIT_MS);
+      if (verdict?.status === 'rejected') cancelReplyWait?.();
+      const relayStatus = verdict?.status ?? 'unconfirmed';
+      const relayReasonCode = verdict?.reasonCode ?? (relayStatus === 'unconfirmed' && relayClient.banSuspected ? 'banned' : undefined);
+      const banSuspected = relayStatus === 'unconfirmed' && relayClient.banSuspected;
+      const outboxOutcome = relayStatus === 'delivered' ? 'relay-sent'
+        : relayStatus === 'queued' ? 'relay-queued'
+        : relayStatus === 'rejected' ? 'relay-rejected'
+        : 'relay-unconfirmed';
+      if (outboxOutcome === 'relay-unconfirmed') relayClient.noteUnconfirmedSettled();
+
+      // Canonical outbox write for the relay-delivery path — ONCE, with the final
+      // outcome (the outbox is append-only + HMAC-per-line; no placeholder, no
+      // update-by-id). Same shape as the local-delivery path above.
+      if (ctx.listenerManager) {
+        try {
+          ctx.listenerManager.appendCanonicalOutboxEntry({
+            from: ctx.config.projectName ?? 'self',
+            senderName: ctx.config.projectName ?? 'self',
+            to: resolvedId,
+            recipientName: targetAgent,
+            threadId: effectiveRelayThreadId,
+            text: message,
+            messageId: relayMsgId,
+            inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
+            outcome: outboxOutcome,
+          });
+        } catch (err) {
+          console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+          if (typeof inReplyTo === 'string' && relayStatus !== 'rejected') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
+        }
+      }
+
+      if (relayStatus === 'rejected') {
+        // A refused send is a failed send: 502 (the relay is the upstream), the
+        // body carries the contract (`retryLater`, never the relay's prose), and
+        // the >=400 finish handler releases the reply claim so a retry is allowed.
+        // NOT retainReplyClaimFailure — that marks "delivered but settlement
+        // failed" and would block the retry forever.
+        res.status(502).json({
+          success: false,
+          error: `not delivered: relay refused (${relayReasonCode ?? 'unmapped'}). Tracked; do not resend now.`,
           accepted: false,
           delivered: false,
           messageId: relayMsgId,
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
-          deliveryOutcome: 'submitted to relay; acceptance unconfirmed',
+          relayStatus: 'rejected',
+          relayReasonCode: relayReasonCode ?? 'unmapped',
+          retryLater: verdict?.retryLater ?? null,
+          deliveryOutcome: `not delivered: relay refused (${relayReasonCode ?? 'unmapped'}). Tracked; do not resend now.`,
+          topicLinkageStamped: resolvedOriginTopicId !== undefined,
+        });
+        return;
+      }
+
+      // Mirror outbound into Telegram bridge (relay-only — best effort), then
+      // release the reply claim: this is the 2xx path.
+      if (ctx.telegramBridge) {
+        ctx.telegramBridge.mirrorOutbound({
+          threadId: effectiveRelayThreadId,
+          remoteAgent: resolvedId,
+          remoteAgentName: targetAgent,
+          text: message,
+          messageId: relayMsgId,
+          outcome: outboxOutcome,
+        }).catch(() => { /* swallow — bridge is relay-only */ });
+      }
+      if (ctx.listenerManager && typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
+
+      const deliveryOutcome = relayStatus === 'delivered'
+        ? "handed to the peer's relay connection; not yet confirmed read"
+        : relayStatus === 'queued'
+          ? `peer offline; the relay holds it for up to ${relayHoldHours(verdict?.ttlSec)} h`
+          : banSuspected
+            ? 'submitted to relay; the relay reports this sender banned'
+            : `submitted to relay; no relay acknowledgement within ${RELAY_ACK_WAIT_MS / 1000}s`;
+      const honest = {
+        relayStatus,
+        ...(relayReasonCode ? { relayReasonCode } : {}),
+        ...(banSuspected ? { banSuspected: true } : {}),
+      };
+
+      if (waitForReply) {
+        const reply = await replyPromise;
+        res.json({
+          success: true,
+          accepted: reply !== null || relayStatus === 'delivered' || relayStatus === 'queued',
+          delivered: reply !== null,
+          messageId: relayMsgId,
+          threadId: effectiveRelayThreadId,
+          resolvedAgent: resolvedId,
+          deliveryPath: 'relay',
+          deliveryOutcome: reply !== null ? 'reply received' : deliveryOutcome,
+          ...honest,
+          reply,
+          topicLinkageStamped: resolvedOriginTopicId !== undefined,
+        });
+      } else {
+        res.json({
+          success: true,
+          accepted: relayStatus === 'delivered' || relayStatus === 'queued',
+          delivered: false,
+          messageId: relayMsgId,
+          threadId: effectiveRelayThreadId,
+          resolvedAgent: resolvedId,
+          deliveryPath: 'relay',
+          deliveryOutcome,
+          ...honest,
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       }

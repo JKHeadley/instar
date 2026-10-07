@@ -408,6 +408,7 @@ export class AgentServer {
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
+  private relayVerdictCounters: (() => Record<string, number>) | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
   private resourceLedgerPoller: ResourceLedgerPoller | null = null;
@@ -1006,6 +1007,8 @@ export class AgentServer {
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
+    /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
+    relayVerdictCounters?: () => Record<string, number>;
     responseReviewGate?: import('../core/CoherenceGate.js').CoherenceGate;
     /** §D9.4b canary-battery driver (context-aware-outbound-review) — wired
      *  by server.ts alongside the response-review gate; the trigger route
@@ -2112,6 +2115,7 @@ export class AgentServer {
     // directly, as in e2e) we build it here from stateDir so the peer-health
     // routes are ALIVE on every entry path, not a 503-stub. Own try/catch
     // (cascade-isolation). Recording-only — never gates a send.
+    this.relayVerdictCounters = options.relayVerdictCounters ?? null;
     if (!options.a2aDeliveryTracker && options.config.stateDir) {
       try {
         this.a2aDeliveryTracker = A2ADeliveryTracker.open(options.config.projectName, options.config.stateDir);
@@ -4383,6 +4387,7 @@ export class AgentServer {
       getLastRelayEvent: options.getLastRelayEvent ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
+      relayVerdictCounters: this.relayVerdictCounters,
       responseReviewGate: options.responseReviewGate ?? null,
       reviewCanaryBattery: options.reviewCanaryBattery ?? null,
       messagingToneGate: options.messagingToneGate ?? null,

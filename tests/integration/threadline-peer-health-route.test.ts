@@ -80,7 +80,7 @@ describe('GET /threadline/peers/health (integration)', () => {
   });
 
   it('an unknown peer returns an all-null, not-stale health record (200, not 404)', async () => {
-    const res = await request(app).get('/threadline/peers/unknownfp/health');
+    const res = await request(app).get('/threadline/peers/0000ffff0000ffff/health') // well-formed hex, never seen (non-hex is 400 since honest delivery);
     expect(res.status).toBe(200);
     expect(res.body.lastSentAt).toBeNull();
     expect(res.body.pendingCount).toBe(0);

@@ -52,7 +52,7 @@ describe('/threadline/relay-send stores resolved fingerprint as remoteAgent (can
     const stubRelayClient = {
       connectionState: 'connected',
       resolveAgent: async (_name: string) => DAWN_FP,
-      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, sendAuto: (_recipientId: string, _message: string, _threadId?: string) => `msg-stub-${Date.now()}`,
+      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, awaitRelayAck: async (_id: string, _ms: number) => null, banSuspected: false, noteUnconfirmedSettled() {}, sendAuto: (_recipientId: string, _message: string, _threadId?: string) => `msg-stub-${Date.now()}`,
     };
 
     // Capture what captureOrigin → captureOriginOnSend receives.
