@@ -8290,6 +8290,18 @@ When a direct send to an agent on this machine may have reached it before I fell
       result.upgraded.push('CLAUDE.md: added A2A backup routes section');
     }
 
+    // A2A relay forward (docs/specs/a2a-cross-machine-route.md, Agent
+    // awareness). OWN sniff key `A2A relay forward` — content-sniffed for
+    // idempotency.
+    if (!content.includes('A2A relay forward')) {
+      content += '\n\n' + `### A2A relay forward
+
+When this machine is a standby and another of my machines holds my relay connection, my sends go out through that machine. \`deliveryPath: 'forwarded'\` and \`forwardedTo\` say so; \`relayStatus\` is the real relay verdict, and \`unconfirmed\` means unknown: I do not resend. \`reply\` is null. A reply to a send made from a topic arrives in that topic's session; a reply to a send with no topic arrives on the machine named in \`forwardedTo\`, in its Threadline hub. **When to use** (PROACTIVE): a user asks which machine carried a message, or where a reply went → read \`forwardedTo\`, \`replyArrivesIn\` and \`GET /threadline/peers/health?scope=pool\`.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A relay forward section');
+    }
+
     // Own relay state (displaced vs retrying). Existing agents need to check their
     // OWN relay before blaming a quiet peer, and to know a displaced machine now
     // reclaims the connection. Content-sniffed for idempotency.
@@ -11229,6 +11241,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // A2A backup routes: server-side relay-send behaviour, framework-agnostic —
       // a Codex/Gemini agent must know a marked fall-through arrives labelled.
       '### A2A backup routes',
+      // A2A relay forward: server-side relay-send behaviour on a relay standby,
+      // framework-agnostic — a Codex/Gemini agent must know a forwarded send's
+      // result fields and where its reply arrives.
+      '### A2A relay forward',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

@@ -763,6 +763,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Sends nothing new and stores nothing: the mark only changes the receiver notice wording (over-marking is the safe direction), and the fingerprint branch falls to the relay path used today on any doubt (no match, two ports, absent/different fingerprint, relay not connected, credential). Stateless per send, no LLM, no spend.',
   },
   {
+    name: 'a2aRelayForward',
+    configPath: 'threadline.relayForward.enabled',
+    description: 'A2A cross-machine route: a relay standby forwards a send once, over the signed mesh, to my machine that holds the relay connection; a reply on a topic-bound thread is typed into that topic\'s live session on whichever of my machines has it.',
+    justification: 'Every failure degrades to behaviour that exists today: a forward that did not execute is the same 503, the holder\'s verdict is transcribed and never upgraded, a timeout is `unconfirmed`, and a reply that cannot be injected is the existing visible Telegram post — a topic-bound reply never spawns a session on the holder. Only my own registered machines can send the two verbs (signed, recipient-bound, nonce-guarded), credential sends never cross, nothing new is stored, one attempt with no retry or queue, no LLM, no spend.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

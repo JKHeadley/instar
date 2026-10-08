@@ -111,6 +111,15 @@ export interface ThreadlineBootstrapResult {
    * so `/threadline/health` never advertises `inbound-id-ledger` while this holds.
    */
   daemonHandlingRelay?: boolean;
+  /**
+   * True when the relay client was NOT created because this machine is a relay
+   * standby (`relayWanted && config.relayStandby`). A boot-time fact, threaded
+   * to the relay-send route so a standby can forward its sends to my machine
+   * that holds the connection (docs/specs/a2a-cross-machine-route.md §1). It is
+   * never recomputed from live config: a displaced or disconnected machine is
+   * NOT a standby and keeps today's 503.
+   */
+  relaySuppressedByStandby?: boolean;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -425,6 +434,7 @@ export async function bootstrapThreadline(
      *  is — the distinction the 2026-07-26 incident turned on. */
     getLastRelayEvent: () => relayObservability?.getLastEvent() ?? null,
     daemonHandlingRelay,
+    relaySuppressedByStandby: relayWanted && config.relayStandby === true,
     inboundGate,
     shutdown: async () => {
       stopHeartbeat();

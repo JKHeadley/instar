@@ -5380,6 +5380,13 @@ export interface ThreadlineConfig {
    * the fleet). `false` restores today's relay-send behaviour.
    */
   backupRoutes?: { enabled?: boolean };
+  /**
+   * A2A cross-machine route (docs/specs/a2a-cross-machine-route.md). Read live
+   * on every machine. `enabled` omitted ⇒ the developmentAgent gate (live on a
+   * dev agent, dark on the fleet). `false` restores today's 503 on a relay
+   * standby and today's topic linkage on the holder.
+   */
+  relayForward?: { enabled?: boolean };
 }
 
 /**

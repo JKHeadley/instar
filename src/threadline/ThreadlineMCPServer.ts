@@ -159,6 +159,10 @@ export interface SendMessageResult {
   note?: string;
   /** Signal-only advisory nudge (e.g. commitment-class prose → anchor via mandate). */
   advisory?: string;
+  /** A2A relay forward: the machine of mine that carried a `deliveryPath: 'forwarded'` send. */
+  forwardedTo?: string;
+  /** A2A relay forward: where the reply will arrive — `topic-session` | `holder-hub`. */
+  replyArrivesIn?: string;
 }
 
 export interface RequestSecretParams {
@@ -682,6 +686,12 @@ export class ThreadlineMCPServer {
           if (result.relayReasonCode !== undefined) response.relayReasonCode = result.relayReasonCode;
           if (result.retryLater !== undefined) response.retryLater = result.retryLater;
           if (result.banSuspected) response.banSuspected = true;
+          // A2A relay forward: which machine of mine carried the send and where
+          // its reply will arrive. `reply` is null — a forwarded send never waits.
+          if (result.deliveryPath === 'forwarded') {
+            if (result.forwardedTo !== undefined) response.forwardedTo = result.forwardedTo;
+            if (result.replyArrivesIn !== undefined) response.replyArrivesIn = result.replyArrivesIn;
+          }
           // Surface the negotiator lease's holding note + the commitment-class
           // advisory nudge so the sending session learns it is not the voice /
           // is pointed at the anchored binding path (Robustness Phase 1).
@@ -692,6 +702,22 @@ export class ThreadlineMCPServer {
           if (args.waitForReply && result.reply) {
             response.reply = result.reply;
             response.replyFrom = result.replyFrom;
+          } else if (result.deliveryPath === 'forwarded') {
+            response.reply = null;
+            if (args.waitForReply) {
+              const machine = result.forwardedTo ?? 'unknown';
+              // An unconfirmed forward is NOT "sent": the holder never answered.
+              const lead = result.relayStatus === 'unconfirmed'
+                ? `Handed to my machine "${machine}"; delivery is unknown — do not resend. `
+                : `Sent through my machine "${machine}". `;
+              const forwardNote = lead + 'waitForReply is not honoured across machines. '
+                + (result.replyArrivesIn === 'topic-session'
+                  ? 'A reply arrives in the session of the topic this send was made from.'
+                  : `A reply arrives in the Threadline hub on "${machine}".`);
+              response.note = typeof response.note === 'string' && response.note
+                ? `${response.note} ${forwardNote}`
+                : forwardNote;
+            }
           } else if (args.waitForReply && !result.reply) {
             response.reply = null;
             response.note = 'No reply received within timeout';

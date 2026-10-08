@@ -3,13 +3,15 @@ title: A2A cross-machine route — a standby forwards its sends to my machine th
 slug: a2a-cross-machine-route
 date: 2026-10-08
 author: echo
-status: draft
+status: approved
 parent-spec: a2a-backup-routes.md
 depends-on: a2a-honest-delivery-outcomes.md
 parent-principle: "Verify the State, Not Its Symbol"
 parent-principle-fit: "A standby machine of mine answers 'not connected' although the agent is connected. The send goes out through the machine that holds the connection, and that machine's real verdict comes back."
 binding-standards: ["A Refusal Stays a Refusal — conservation of negative outcomes", "Capacity Safety — No Unbounded Self-Action", "Ownership-Gated Side Effects"]
 eli16-overview: a2a-cross-machine-route.eli16.md
+approved: true
+approved-by: "operator standing approval for the agent-comms track — 2026-10-06 18:57, Telegram topic 122413 (“Yes, I approve. Please don’t let me be the bottleneck here.”)"
 review-convergence: "2026-10-08T21:02:08.753Z"
 review-iterations: 5
 review-completed-at: "2026-10-08T21:02:08.753Z"

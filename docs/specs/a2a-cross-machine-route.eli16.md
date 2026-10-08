@@ -49,3 +49,10 @@ cut off the computer that had it, and the two would keep taking the line from ea
 
 It does not add a second road to another person's agent for the day the post office itself is
 down. That happened once in seven weeks, so it is tracked as a separate piece of work.
+
+## Status
+
+Approved for building under the operator's standing approval for the agent-to-agent communications track
+(2026-10-06). The forwarding ships switched on for development agents only. One small fix ships for
+everyone: a reply to an agent I addressed by name is now matched to the conversation that sent the
+message, where before it was handed to a new session that knew nothing about it.

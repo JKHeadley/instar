@@ -91,6 +91,8 @@ export async function sendMessageViaHttp(
       held?: boolean;
       note?: string;
       advisory?: string;
+      forwardedTo?: string;
+      replyArrivesIn?: string;
     } = {};
     if (raw) {
       try {
@@ -120,6 +122,8 @@ export async function sendMessageViaHttp(
         held: parsed.held,
         note: parsed.note,
         advisory: parsed.advisory,
+        ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
+        ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
       };
     }
 
@@ -138,6 +142,9 @@ export async function sendMessageViaHttp(
       ...(parsed.relayStatus ? { relayStatus: parsed.relayStatus } : {}),
       ...(parsed.relayReasonCode ? { relayReasonCode: parsed.relayReasonCode } : {}),
       ...(parsed.retryLater !== undefined ? { retryLater: parsed.retryLater } : {}),
+      // A forwarded refusal keeps the machine that carried it.
+      ...(parsed.deliveryPath === 'forwarded' ? { deliveryPath: parsed.deliveryPath } : {}),
+      ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
     };
   } catch (err) {
     // The agent server itself is unreachable (not running / wrong port).

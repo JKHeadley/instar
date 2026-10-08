@@ -696,6 +696,7 @@ export class ThreadlineRouter {
               subject: existingEntry.subject,
               originTopicId: existingEntry.originTopicId,
               originSessionName: existingEntry.originSessionName,
+              machineOrigin: existingEntry.machineOrigin,
             },
           });
           if (outcome.kind === 'routed') {
