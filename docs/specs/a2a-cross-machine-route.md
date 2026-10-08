@@ -94,15 +94,18 @@ reply claim, the negotiator gate and the credential refusal. It sends one mesh v
 `a2a-relay-forward`: `{ targetAgent, resolvedFp?, body, messageId, threadId?, resend,
 originTopicId?, purpose? }`.
 
-- `resolvedFp` is the sender's own nickname resolution, so the holder cannot re-resolve the name to
-  a different agent.
+- `targetAgent` is forwarded unchanged, so names in the holder's records stay names. `resolvedFp`
+  is the sender's own nickname resolution; the holder uses it and cannot re-resolve the name to a
+  different agent. Without `resolvedFp` the holder resolves the name from its own nickname file and
+  relay discovery (`routes.ts:36706`).
 - `threadId` is `relayLegThreadId`: the caller's raw thread id, unless a local POST was issued. The
   records live on the holder, so the holder's resolver decides which thread a send with no thread id
   joins.
 - `resend` is `classifyFallthrough(localPostOutcome).marked`.
 - `originTopicId` is resolved by the sender, because that lookup is local to it.
 
-One attempt, 15 seconds, no retry; the route adds at most 17 seconds. The mesh verb is used, not a
+One attempt, 15 seconds, no retry. With the 2-second holder probe, a forwarded send takes at most
+about 17 seconds, inside one tool call. The mesh verb is used, not a
 direct HTTP call to the holder's route, because the envelope gives signing, replay protection,
 recipient binding and registered-peer RBAC.
 
@@ -110,34 +113,43 @@ recipient binding and registered-peer RBAC.
 
 The handler POSTs to its own `POST /threadline/relay-send` on loopback. The route body is about a
 thousand lines of closure state that writes the response as it goes; a loopback call reuses it
-unchanged, and lifting it is a larger and riskier change for the same result. The call carries a
+unchanged, and lifting it is a larger and riskier change for the same result (the lift is tracked
+as ACT-068, due 2026-10-20). The call carries a
 secret generated in memory at boot. The secret is never in the environment, config or logs, and is
 compared with `timingSafeEqual`. A restart mid-flight makes the forward fail closed (503).
 
-The body is `{ targetAgent: resolvedFp ?? targetAgent, message, threadId, originTopicId, purpose,
-waitForReply: false, messageId, resend, forwardedFromMachine }`. `forwardedFromMachine` is the
+The body is `{ targetAgent, resolvedFp, message, threadId, originTopicId, purpose, waitForReply:
+false, messageId, resend, forwardedFromMachine }`. `forwardedFromMachine` is the
 authenticated mesh sender. `inReplyTo` and `originSessionName` are never sent.
 
 | On the holder, for a forwarded request | |
 |---|---|
-| **Runs** | required fields and the 64 KiB limit; target resolution (a fingerprint skips the nickname lookup); the local-delivery branches; the 503 guard on its own relay client; the relay send; tracker row; thread leg; origin capture and its commitment; the 3-second verdict wait; outbox entry; bridge mirror |
+| **Runs** | required fields and the 64 KiB limit; target resolution; the 503 guard on its own relay client; the relay send; tracker row; thread leg; origin capture and its commitment; the 3-second verdict wait; outbox entry; bridge mirror |
 | **Skipped because the field is absent** | the warm-reply rule, the authenticated-inbound rule and the reply claim; the session-to-topic lookup; the reply wait |
-| **Only when the secret matches** | the negotiator gate is skipped; `messageId` is honoured; `resend` is OR-ed with the holder's own fall-through result; `forwardedFromMachine` is stored as the thread's `machineOrigin` and as the thread-log author's machine |
-| **Refused** | a forwarded `messageId` that the holder's tracker already has (409), so a reused id can never read an old cached verdict |
+| **Only when the secret matches** | the negotiator gate and the local-delivery branches are skipped; the §1 trigger never fires; `resolvedFp` is used as the nickname resolution; `messageId` and `resend` are honoured; `forwardedFromMachine` is stored as the thread's `machineOrigin` and as the thread-log author's machine |
 
-The holder has no relay-less trigger of its own (it is not a standby), so a forward cannot loop.
+A forwarded request always goes over the relay on the holder. So a holder 503 proves the forward
+sent nothing, and a target that runs on the holder's machine is simply reached through the relay.
+`machineOrigin` is overwritten on every forwarded capture (`input.machineOrigin ??
+existing?.machineOrigin`; today the existing value is kept), so a topic that moved to a second
+standby asks the right machine first.
+
+**Loop stop.** The `a2a-relay-forward` handler refuses with a typed reason when its own machine has
+`relaySuppressedByStandby`, and the §1 trigger never fires for a request that carries the secret.
 Negotiator single-voice is not enforced across machines; the gate is dry-run today.
 
 ### 4. The answer
 
 - **The forward did not execute → today's 503.** Any typed mesh rejection (`ok: false` with a
   reason, including `claim-unauthorized` from an older peer, `stale-timestamp`, `replayed-nonce`,
-  `unknown-sender` and the 503 "mesh-rpc not configured"); a refused connection; the gate off on the
-  holder; the holder's own 503 or 409. This proves only that the forward sent nothing. If the
+  `unknown-sender`, a standby refusing, and the 503 "mesh-rpc not configured"); a refused
+  connection; the gate off on the holder; the holder's own 503. This proves only that the forward
+  sent nothing. If the
   sender's own local POST was issued earlier, that attempt's uncertainty stands, and `resend`
   carries it.
-- **Any other answer from the holder's route** → that status and body (a relay `rejected` is 502),
-  plus `deliveryPath: 'forwarded'`, `forwardedTo: <machine nickname>`, `reply: null`, and
+- **Any other answer from the holder's route** → that status and body, unchanged: a relay
+  `rejected` is 502, and every 4xx passes through (for example the ambiguous-nickname 409,
+  `routes.ts:36116-36135`). Added: `deliveryPath: 'forwarded'`, `forwardedTo: <machine nickname>`, `reply: null`, and
   `replyArrivesIn`: `'topic-session'` when the send had a topic, else `'holder-hub'`.
 - **A timeout or a non-200 with no reason → `relayStatus: 'unconfirmed'`**, with the `messageId` and
   "do not resend; check delivery on <machine>". A caller that retries anyway mints a new id, as with
@@ -145,14 +157,16 @@ Negotiator single-voice is not enforced across machines; the gate is dry-run tod
 
 **The sender's records.** The sender writes one log line, `[a2a-forward] id=<messageId>
 to=<machine> outcome=<outcome>`, and a counter on the authed `/health`. It writes no A2A record,
-except one settlement line: when its own `inReplyTo` check passed and the forward executed, it calls
-`appendCanonicalOutboxEntry` with `inReplyTo` and the holder's outcome, so reap recovery does not
-re-drive an answered message.
+except one settlement line: when its own `inReplyTo` check passed and the holder sent, it calls
+`appendCanonicalOutboxEntry` with `inReplyTo`, the request's own `threadId` (the one that check
+validated, `routes.ts:35912-35915`) and the holder's outcome, so reap recovery does not re-drive an
+answered message.
 
 | Answer | Settlement line | Reply claim |
 |---|---|---|
 | 2xx with a relay verdict | holder's outcome | released |
-| 502 refusal | `relay-rejected` (stays re-drivable) | released by the finish handler |
+| 502 refusal | none (stays re-drivable) | released by the finish handler |
+| holder 4xx | none | released by the finish handler |
 | 503, forward did not execute | none | released by the finish handler |
 | timeout | `relay-unconfirmed` (settled: no duplicate over no loss) | released |
 
@@ -173,11 +187,19 @@ fingerprint. The stored commitment is unchanged, because other readers use its n
 has a topic and no local session for it is alive:
 
 1. If the thread's `machineOrigin` names another machine, ask it.
-2. If that did not inject and `ownerOf(String(topicId))` names a third machine, ask that one.
+2. Only if that answered a definitive `{ injected: false }`, and `ownerOf(String(topicId))` names a
+   third machine, ask that one. A timeout or transport error on the first ask ends in
+   `failure-visible` with no second ask, because the first may have landed.
 3. With no `machineOrigin`, ask the machine `ownerOf` names, if it is not this one.
 
-At most two asks, one after the other, 12 seconds each. Step 1 needs no ownership record, so it
-works with the session pool dark. The payload is built by the existing steps (`:386-405`); for a
+At most two asks, one after the other, inside one 12-second budget. Step 1 needs no ownership
+record, so it works with the session pool dark. A stale `machineOrigin` after a holder-local send is
+harmless: a live local session wins before any ask. The `ownerOf` read and each ask are wrapped; a
+throw is `failure-visible`. Without that, the router would catch the throw and fall through to the
+thread worker (`ThreadlineRouter.ts:715-719`).
+
+Only the per-thread spawn lock is held while this runs (`ThreadlineRouter.ts:372`, `:627-638`).
+Other threads are not blocked. The payload is built by the existing steps (`:386-405`); for a
 remote inject its truncation line names the holder as the place to read the full body.
 
 The ask is a second verb, `a2a-topic-reply-inject`: `{ topicId, text, messageId, threadId }`. The
@@ -201,7 +223,9 @@ today's behaviour for a thread started on this machine.
 topic: a visible duplicate note, never a second processing by a session on the holder. (2) The
 Telegram post is rate-limited (one per thread per minute, three per topic per minute). A second
 reply inside that window while the other machine is unreachable is neither injected nor posted. It
-stays in the holder's hub with the commitment open.
+stays in the holder's hub with the commitment open and no beacon. (3) A second reply on the same
+thread that arrives while an ask is in flight is refused "Spawn already in progress"
+(`ThreadlineRouter.ts:627-634`) and is not retried.
 
 **A pre-existing case this fixes.** A message sent from topic T on machine A, after which T moved to
 machine B: today the reply finds no local session on A. Step 3 reaches T's session on B.
@@ -239,7 +263,8 @@ machine B: today the reply finds no local session on A. Step 3 reaches T's sessi
   authorises it from its own live session for that topic. A stale duplicate session for a topic is
   the duplicate-session reconciler's concern, not this spec's.
 - **No manual work.** A topic-bound reply returns by code; no agent instruction is needed.
-- Reply commitments have no beacon and the redrive engine ships off; both are unchanged.
+- **Residual.** A rate-limited reply stays in the holder's hub with its commitment open. Reply
+  commitments have no beacon and the redrive engine ships off; all of this exists today.
 
 ## Evidence each check relies on (symbol → state)
 
@@ -285,6 +310,8 @@ asked on a reply. The sender check fix is not gated.
 ## Rollback
 
 `threadline.relayForward.enabled: false`, read live, restores today's 503 and today's topic linkage.
+After that, a reply to a thread that was already forwarded finds no local session on the holder,
+takes `topic-expired`, and spawns on the holder.
 
 ## Agent awareness
 
@@ -300,10 +327,12 @@ a message, or where a reply went → read `forwardedTo`, `replyArrivesIn` and
 ## Tests
 
 - **Unit:** both sides of each §1 condition (standby, not a standby, credential, no holder, wrong
-  fingerprint, cache dropped after a failure); the §3 table, including a wrong or missing secret and
-  a reused id; each §4 class and its settlement and claim row; a standby `inReplyTo` it never
-  received → 400; the sender check with a name-addressed target; the ask order of §5; the receiver
-  (alive, not alive; never spawns). "No `machineOrigin` and no record" asserts today's exact outcome.
+  fingerprint, cache dropped after a failure); the §3 table, including a wrong or missing secret, a
+  target co-located with the holder still going over the relay, and a standby handler refusing; each
+  §4 class and its settlement and claim row; a standby `inReplyTo` it never
+  received → 400; the sender check with a name-addressed target; the ask order of §5 (no second ask after a
+  timeout); a throwing `ownerOf` or ask still returns `routed`; the receiver (alive, not alive;
+  never spawns). "No `machineOrigin` and no record" asserts today's exact outcome.
 - **Integration:** two real servers of one agent, a real RelayServer and a third agent addressed by
   name. A send from a topic session on the standby arrives once; all A2A records are on the holder;
   the reply is injected into the standby's session. Nothing is spawned on the holder for a
