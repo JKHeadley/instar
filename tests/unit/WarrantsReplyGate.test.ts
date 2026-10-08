@@ -100,10 +100,32 @@ describe('WarrantsReplyGate — pure acks suppressed', () => {
     expect(v.signal).toBe('pure-ack');
   });
 
-  it('first contact replies even to an ack (writes a row / responsive)', async () => {
-    const v = await gate.evaluate({ threadId: 't', text: 'thanks', humanInLoop: false, conversation: null });
+  // docs/specs/a2a-ack-never-acked.md: pure-ack is checked BEFORE first contact.
+  it('a bare ack as the FIRST inbound on a thread does not warrant a reply', async () => {
+    for (const conversation of [null, conv({ turnCount: 0, lastInboundHash: undefined })]) {
+      for (const text of ['thanks', 'Message received. Composing response...', 'got it, thank you', '👍']) {
+        const v = await gate.evaluate({ threadId: 't', text, humanInLoop: false, conversation });
+        expect(v.warrants, text).toBe(false);
+        expect(v.signal, text).toBe('pure-ack');
+      }
+    }
+  });
+
+  it('first contact with real content still replies', async () => {
+    const v = await gate.evaluate({
+      threadId: 't', text: 'The relay handshake drops after thirty seconds of silence', humanInLoop: false, conversation: null,
+    });
     expect(v.warrants).toBe(true);
     expect(v.signal).toBe('first-contact');
+  });
+
+  it('a first inbound that asks, instructs, or forces a reply still warrants one', async () => {
+    const q = await gate.evaluate({ threadId: 't', text: 'thanks — got it?', humanInLoop: false, conversation: null });
+    expect(q).toMatchObject({ warrants: true, signal: 'question' });
+    const forced = await gate.evaluate({ threadId: 't', text: 'thanks', humanInLoop: false, expectsReply: true, conversation: null });
+    expect(forced).toMatchObject({ warrants: true, signal: 'expects-reply' });
+    const human = await gate.evaluate({ threadId: 't', text: 'thanks', humanInLoop: true, conversation: null });
+    expect(human).toMatchObject({ warrants: true, signal: 'human-in-loop' });
   });
 });
 

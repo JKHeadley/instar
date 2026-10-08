@@ -33,6 +33,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { detectMachineName } from '../core/MachineIdentity.js';
+import { decodePlaintextPayload } from './autoAck.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -305,20 +306,12 @@ export async function bootstrapThreadline(
       let textContent: string;
       let msgType: string | undefined;
       let resend = false;
-      try {
-        const payloadStr = Buffer.from(envelope.payload as string, 'base64').toString('utf-8');
-        const parsed = JSON.parse(payloadStr);
-        if (typeof parsed === 'object' && parsed !== null && 'text' in parsed) {
-          textContent = String(parsed.text);
-          msgType = parsed.type as string | undefined;
-          // inbound-id ledger §5: `resend` travels INSIDE the message body.
-          resend = (parsed as { resend?: unknown }).resend === true;
-        } else if (typeof parsed === 'string') {
-          textContent = parsed;
-        } else {
-          textContent = JSON.stringify(parsed);
-        }
-      } catch {
+      const decoded = decodePlaintextPayload(envelope.payload);
+      if (decoded) {
+        textContent = decoded.text;
+        msgType = decoded.type;
+        resend = decoded.resend;
+      } else {
         textContent = `[undecryptable relay message from ${String(envelope.from).slice(0, 16)}]`;
       }
 

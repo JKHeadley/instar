@@ -260,6 +260,7 @@ import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
+import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage } from '../threadline/autoAck.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
@@ -18199,20 +18200,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           return syntheticThreadIds.get(fingerprint)!;
         }
 
-        // Per-sender ack rate limiter
-        const ackTimestamps = new Map<string, number[]>();
-        const ACK_RATE_LIMIT = config.threadline?.ackRateLimit ?? 5;
-        const ACK_WINDOW_MS = 60 * 1000;
-        function isAckRateLimited(fingerprint: string): boolean {
-          const now = Date.now();
-          let timestamps = ackTimestamps.get(fingerprint);
-          if (!timestamps) { timestamps = []; ackTimestamps.set(fingerprint, timestamps); }
-          const filtered = timestamps.filter(t => now - t < ACK_WINDOW_MS);
-          ackTimestamps.set(fingerprint, filtered);
-          if (filtered.length >= ACK_RATE_LIMIT) return true;
-          filtered.push(now);
-          return false;
-        }
+        // Per-sender ack rate limiter (flood protection; an ack itself is never
+        // acked — see runRelayAckStage / docs/specs/a2a-ack-never-acked.md).
+        const isAckRateLimited = createAckRateLimiter(config.threadline?.ackRateLimit ?? 5, 60 * 1000);
 
         // Wire router reference into InboundMessageGate
         if (threadline.inboundGate) {
@@ -18264,7 +18254,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // rather than sender fingerprint or agent name. Fall back to the
           // legacy fingerprint/name lookup only if no threadId is present,
           // for compatibility with older senders.
-          const isAutoAck = textContent.startsWith('Message received.') || textContent.startsWith('Message received,');
+          const msgType = typeof msg.content === 'object' && msg.content !== null ? (msg.content as Record<string, unknown>).type : undefined;
+          const isAutoAck = isAutoAckInbound({ type: msgType, text: textContent });
           let waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
           if (!waiter) {
             // Legacy fallback: try by sender fingerprint, then by resolved name
@@ -18286,17 +18277,35 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
             }
           }
-          if (waiter && !isAutoAck) {
+          if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent)) {
             waiter.resolve(textContent);
             // Don't return — still process the message normally for routing
           }
 
-          // Auto-ack (post-trust-verification, never ack status messages)
-          const msgType = typeof msg.content === 'object' && msg.content !== null ? (msg.content as Record<string, unknown>).type : undefined;
-          if (trustLevel !== 'untrusted' && msgType !== 'status' && config.threadline?.autoAck !== false && !isAckRateLimited(senderFingerprint)) {
-            try {
-              threadlineRelayClient!.sendPlaintext(senderFingerprint, config.threadline?.autoAckMessage ?? 'Message received. Composing response...', msg.threadId);
-            } catch (ackErr) { console.error(`[relay] Auto-ack failed: ${ackErr instanceof Error ? ackErr.message : ackErr}`); }
+          // Ack stage (docs/specs/a2a-ack-never-acked.md). INVARIANT: an ack is
+          // never acked, never reaches the warrants gate or any router, and never
+          // spawns a session — it only records delivery. So an inbound ack records
+          // the implicit delivery ack + the ledger disposition `no-reply` and the
+          // handler RETURNS here, before the auto-ack send, the inbox append, the
+          // Telegram mirror and the gate. Any other message gets our own ack
+          // (post-trust-verification, never for status messages, rate-limited).
+          const recordRelayDelivery = () => recordInboundAck(
+            { a2aDeliveryTracker },
+            { threadId: msg.threadId, senderFingerprint, senderName: senderName ?? null },
+          );
+          const ackStage = runRelayAckStage(
+            {
+              autoAckEnabled: config.threadline?.autoAck !== false,
+              autoAckMessage: config.threadline?.autoAckMessage,
+              isAckRateLimited,
+              sendAck: (to, text, threadId) => { threadlineRelayClient!.sendAck(to, text, threadId); },
+              recordDelivery: recordRelayDelivery,
+            },
+            { isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket },
+          );
+          if (ackStage === 'ack-consumed') {
+            console.log(`[relay] delivery ack from ${senderName} (thread: ${msg.threadId ?? 'none'}, by ${autoAckRecognition({ type: msgType, text: textContent })}) recorded — not acked, not routed`);
+            return;
           }
 
           // Canonical inbox write — single source of truth across all routing branches.
@@ -18330,10 +18339,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // so every inbound-receive path records the ack via one helper. Here the
           // senderFingerprint is the peer's real routing fingerprint, so liveness
           // keys correctly without a thread-owner lookup. Recording-only.
-          recordInboundAck(
-            { a2aDeliveryTracker },
-            { threadId: msg.threadId, senderFingerprint, senderName: senderName ?? null },
-          );
+          recordRelayDelivery();
 
           // Threadline → Telegram bridge: mirror inbound message into a per-thread
           // Telegram topic so the user has visibility into agent-to-agent

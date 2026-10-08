@@ -481,6 +481,7 @@ import type { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js
 import type { QuotaManager } from '../monitoring/QuotaManager.js';
 import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
+import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../threadline/autoAck.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { resolveChannels } from '../core/channelRegistry.js';
@@ -34747,6 +34748,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (envelope.message?.resend === true) ledgerNotice = buildResentNotice(false);
       }
 
+      // Ack stage (docs/specs/a2a-ack-never-acked.md). INVARIANT: an ack is
+      // never acked, never reaches the warrants gate or any router, and never
+      // spawns a session — it only records delivery. So an ack that ARRIVES
+      // here (this route sends none) stops now: after auth, the loop check and
+      // the ledger commit, BEFORE messageRouter.relay stores it, so it is not
+      // left in the message store as an undelivered message either.
+      if (isAutoAckBody(envelope.message?.body)) {
+        const ackSender: string | undefined = envelope.message?.from?.agent;
+        recordInboundAck(
+          { a2aDeliveryTracker: ctx.a2aDeliveryTracker, threadResumeMap: ctx.threadResumeMap ?? null },
+          { threadId: envelope.message?.threadId, senderFingerprint: ackSender ?? undefined, senderName: ackSender ?? null },
+        );
+        ledgerTicket?.recordNoReply();
+        // Release the content window: every ack has the same text, so a second,
+        // genuine ack on this thread must not be answered "duplicate content"
+        // (which would leave its delivery row uncleared). Repeats of the SAME
+        // ack are caught by id, in the ledger — so the window is released ONLY
+        // while the ledger is on. With no ledger the window is the one thing
+        // that stops a same-id retry clearing a second row, and it is kept.
+        if (dedupReservation && relayLedger) {
+          relayContentDedup.forget(dedupReservation.senderAgent, dedupReservation.threadId, dedupReservation.content);
+        }
+        dedupReservation = null;
+        console.log(`[relay-agent] delivery ack from ${ackSender ?? 'unknown'} (thread: ${envelope.message?.threadId ?? 'none'}, by ${autoAckBodyRecognition(envelope.message?.body)}) recorded — not stored, not routed`);
+        res.json({
+          ok: true,
+          accepted: true,
+          delivered: true,
+          threadline: {
+            handled: true,
+            accepted: true,
+            delivered: true,
+            threadId: envelope.message?.threadId,
+            spawned: false,
+            suppressed: true,
+            signal: 'auto-ack',
+          },
+        });
+        return;
+      }
+
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
         // MessageRouter has now admitted the envelope to its inbox. Keep the
@@ -34822,9 +34864,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             textContent = String((body as Record<string, unknown>).content ?? (body as Record<string, unknown>).text ?? JSON.stringify(body));
           }
           if (textContent) {
-            const isAutoAck = textContent.startsWith('Message received.') || textContent.startsWith('Message received,');
+            // A recognised ack never reaches here (the ack stage returned before
+            // relay()); a message that merely opens like one is still not "the reply".
             const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
-            if (waiter && !isAutoAck) {
+            if (waiter && !looksLikeAutoAckText(textContent)) {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
             }

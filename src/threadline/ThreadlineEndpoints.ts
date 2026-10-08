@@ -23,6 +23,7 @@ import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { verify } from './ThreadlineCrypto.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { recordInboundAck, type InboundAckDeps } from './recordInboundAck.js';
+import { isAutoAckBody, autoAckBodyRecognition } from './autoAck.js';
 import { computeFingerprint } from './client/MessageEncryptor.js';
 import { recordThreadMessage } from './recordThreadMessage.js';
 import { honorPeerThreadSync, serveBackfill, type SymmetryDeps } from './threadSymmetry.js';
@@ -667,6 +668,16 @@ export function createThreadlineRoutes(
           senderName: verifiedSender ?? null,
         });
       } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
+
+      // Ack stage (docs/specs/a2a-ack-never-acked.md). INVARIANT: an ack is never
+      // acked, never reaches the router, and never spawns a session — it only
+      // records delivery (done just above). The route's `finally` finishes the
+      // ticket, which now carries the terminal `no-reply` disposition.
+      if (isAutoAckBody(body.message?.body)) {
+        ticket?.recordNoReply();
+        console.log(`[ThreadlineEndpoints] delivery ack (thread: ${body.message?.threadId ?? 'none'}, by ${autoAckBodyRecognition(body.message?.body)}) recorded — not routed`);
+        return;
+      }
 
       // Robustness Phase 2 (D-B): append THIS inbound leg to the canonical log via
       // the single funnel (the 4th and final message-persisting site — the F4 path).
