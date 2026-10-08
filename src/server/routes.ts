@@ -511,6 +511,13 @@ import {
   selectFingerprintTarget,
   type LocalPostOutcome,
 } from '../threadline/backupRoutes.js';
+import {
+  createLocalRouteTrustCounters,
+  localRouteTrustLogLine,
+  resolveLocalRouteTrust,
+  resolveLocalRouteTrustMode,
+  statedLocalTrustLevel,
+} from '../threadline/localRouteTrust.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
 import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
 import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
@@ -3138,6 +3145,16 @@ export function createRoutes(ctx: RouteContext): Router {
   // A2A backup routes (docs/specs/a2a-backup-routes.md): in-memory counters for
   // the authed /health — the graduation evidence, never an input.
   const backupRouteCounters = createBackupRouteCounters();
+  // Local-route trust counters (docs/specs/a2a-local-route-trust.md): in memory,
+  // surfaced on the AUTHED /health — the evidence the wider rollout is decided on.
+  const localRouteTrustCounters = createLocalRouteTrustCounters();
+  const localRouteTrustMode = () => resolveLocalRouteTrustMode(
+    {
+      enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.localRouteTrust.enabled', undefined),
+      dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.localRouteTrust.dryRun', undefined),
+    },
+    ctx.config as { developmentAgent?: boolean; threadline?: { localRouteTrust?: { enabled?: boolean; dryRun?: boolean } } },
+  );
 
   // ── PR-REVIEW-HARDENING kill-switch (Phase A) ─────────────────────
   //
@@ -4826,6 +4843,12 @@ export function createRoutes(ctx: RouteContext): Router {
       // A2A backup routes counters (docs/specs/a2a-backup-routes.md "Migration
       // parity"): beside the relay-verdict counters, AUTHED branch only.
       base.threadline = { ...(base.threadline as object ?? {}), backupRoutes: { ...backupRouteCounters } };
+      // Local-route trust (docs/specs/a2a-local-route-trust.md): the live mode,
+      // whether a trust manager is wired, and the verdict counters. AUTHED only.
+      base.threadline = {
+        ...(base.threadline as object ?? {}),
+        localRouteTrust: { ...localRouteTrustMode(), trustManagerWired: !!ctx.unifiedTrust?.trustManager, ...localRouteTrustCounters },
+      };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.
       {
@@ -34618,6 +34641,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let ledgerTicket: import('../threadline/InboundIdLedger.js').AdmissionTicket | null = null;
     let ledgerChainStarted = false;
     let ledgerNotice: string | null = null;
+    // Local-route trust: the resolved level when the check is ENFORCING and
+    // passed; null keeps the router's `verified` default (today's behaviour).
+    let localTrustLevel: import('../threadline/AgentTrustManager.js').AgentTrustLevel | null = null;
     try {
       // Verify bearer token — the sender must present our agent's token
       const authHeader = req.headers.authorization;
@@ -34650,10 +34676,73 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // fingerprint suppresses, answered bare.
       const relayLedger = ctx.inboundIdLedger?.current() ?? null;
       const relayFromAgent: string = typeof envelope.message?.from?.agent === 'string' ? envelope.message.from.agent : 'unknown';
-      const relayRegistryFp = relayLedger ? (resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null) : null;
+      const trustMode = localRouteTrustMode();
+      // One registry read serves both the trust check and the ledger key.
+      const senderRegistryFp = (relayLedger || trustMode.enabled)
+        ? (resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null)
+        : null;
+      const relayRegistryFp = relayLedger ? senderRegistryFp : null;
       const relayAssertedFp = typeof envelope.message?.from?.fingerprint === 'string' && /^[0-9a-f]{6,64}$/i.test(envelope.message.from.fingerprint)
         ? envelope.message.from.fingerprint as string
         : null;
+
+      // Local-route trust (docs/specs/a2a-local-route-trust.md, ACT-056). The
+      // sender's level comes from the SAME trust manager the relay gate reads,
+      // and the SAME operation-permission check applies — PRE-ADMISSION: before
+      // the content window reserves and before the ledger admits, so a refused
+      // message leaves no row and holds no window. Dry-run only logs + counts.
+      if (trustMode.enabled) {
+        const tm = ctx.unifiedTrust?.trustManager;
+        if (!tm) {
+          // No trust manager (relay off, relay standby, or trust init failed):
+          // there is no authority to consult, so today's handling stands. Counted.
+          localRouteTrustCounters.noTrustManager++;
+        } else {
+          let verdict: ReturnType<typeof resolveLocalRouteTrust> | null = null;
+          try {
+            verdict = resolveLocalRouteTrust(tm, {
+              registryFingerprint: senderRegistryFp,
+              // Profiles are matched exactly; the ledger key keeps the body's own case.
+              assertedFingerprint: relayAssertedFp ? relayAssertedFp.toLowerCase() : null,
+              senderName: relayFromAgent,
+              body: envelope.message?.body,
+            });
+          } catch (trustErr) {
+            localRouteTrustCounters.lookupErrors++;
+            console.warn(`[relay-agent-trust] lookup failed: ${trustErr instanceof Error ? trustErr.message : String(trustErr)}`);
+            if (!trustMode.dryRun) {
+              // Enforcing and the authority cannot answer: refuse, retryable —
+              // the sender's relay fall-through meets the relay gate instead.
+              res.status(503).json({ error: 'trust-unavailable', refused: true, retryable: true });
+              return;
+            }
+          }
+          if (verdict) {
+            localRouteTrustCounters.evaluated++;
+            if (verdict.allowed) {
+              localRouteTrustCounters.allowed++;
+              // Enforcing: the router is told the resolved level instead of the
+              // `verified` default — capped at `verified`, because the identity
+              // is claimed, not proven. Dry-run changes nothing downstream.
+              if (!trustMode.dryRun) localTrustLevel = statedLocalTrustLevel(verdict.level);
+            } else if (trustMode.dryRun) {
+              localRouteTrustCounters.wouldRefuse++;
+              console.log(localRouteTrustLogLine('would-refuse', relayFromAgent, verdict));
+            } else {
+              localRouteTrustCounters.refused++;
+              console.log(localRouteTrustLogLine('refuse', relayFromAgent, verdict));
+              res.status(403).json({
+                error: 'insufficient-trust',
+                refused: true,
+                retryable: false,
+                // No trust level: the claimed identity's level is not the caller's to learn.
+                operation: verdict.operation,
+              });
+              return;
+            }
+          }
+        }
+      }
       const relaySenderKey = relayRegistryFp
         ? `registry:${relayRegistryFp}`
         : relayAssertedFp ? `asserted:${relayAssertedFp}` : `local:relay-agent:${relayFromAgent}`;
@@ -34870,7 +34959,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 text: gText,
                 senderFingerprint: senderAgentName,
                 senderName: senderAgentName,
-                trustLevel: 'verified',
+                trustLevel: localTrustLevel ?? 'verified',
                 // Local agent↔agent delivery is autonomous; humanInLoop derived
                 // only from our own records (never the peer), default false.
                 humanInLoop: false,
@@ -34953,7 +35042,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const chainTicket = ledgerTicket;
           ledgerChainStarted = true;
           void ctx.threadlineRouter
-            .handleInboundMessage(envelope, undefined, { inboundSenderFingerprint, resentNotice: ledgerNotice })
+            .handleInboundMessage(envelope, undefined, {
+              inboundSenderFingerprint,
+              resentNotice: ledgerNotice,
+              ...(localTrustLevel ? { localTrustLevel } : {}),
+            })
             .then((threadlineResult) => {
               chainTicket?.recordRouterResult(threadlineResult);
               console.log(

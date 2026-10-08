@@ -8290,6 +8290,17 @@ When a direct send to an agent on this machine may have reached it before I fell
       result.upgraded.push('CLAUDE.md: added A2A backup routes section');
     }
 
+    // A2A local-route trust (docs/specs/a2a-local-route-trust.md, Agent awareness).
+    // OWN sniff key `A2A local-route trust` — content-sniffed for idempotency.
+    if (!content.includes('A2A local-route trust')) {
+      content += '\n\n' + `### A2A local-route trust
+
+Messages from another agent on this machine arrive on a direct route that used to treat every sender as \`verified\`, while the same sender over the relay is \`untrusted\` unless I hold a trust profile for it. With \`threadline.localRouteTrust\` on, the direct route looks the sender up in the same trust profiles and applies the same rule: a sender with no profile may only ping. It starts in watch-only mode (\`dryRun\`, the default): every message is delivered as before, and each one that would be refused is logged (\`[relay-agent-trust] would-refuse\`) and counted. With \`dryRun: false\` such a message is refused before it is recorded, with HTTP 403 \`{ error: 'insufficient-trust', refused: true }\`; the sender then falls back to the relay, which judges the message again under its own rules and may accept it. Live on a development agent, dark on the fleet (omitted \`enabled\`). With no trust manager (relay off, or a relay standby) it does nothing and counts that. Counters and the current mode: authed \`/health\` → \`threadline.localRouteTrust\`. **When to use** (PROACTIVE): before turning \`dryRun\` off, read \`wouldRefuse\` — each count is a working same-machine conversation that would stop; grant those senders trust first (\`threadline_trust\`). A same-machine agent says its message was refused with \`insufficient-trust\` → grant it trust, or check the mode.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A local-route trust section');
+    }
+
     // Own relay state (displaced vs retrying). Existing agents need to check their
     // OWN relay before blaming a quiet peer, and to know a displaced machine now
     // reclaims the connection. Content-sniffed for idempotency.
@@ -11229,6 +11240,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // A2A backup routes: server-side relay-send behaviour, framework-agnostic —
       // a Codex/Gemini agent must know a marked fall-through arrives labelled.
       '### A2A backup routes',
+      // A2A local-route trust: a server-side check on the same-machine inbound
+      // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
+      // the watch-only counters.
+      '### A2A local-route trust',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

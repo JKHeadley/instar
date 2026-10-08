@@ -763,6 +763,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Sends nothing new and stores nothing: the mark only changes the receiver notice wording (over-marking is the safe direction), and the fingerprint branch falls to the relay path used today on any doubt (no match, two ports, absent/different fingerprint, relay not connected, credential). Stateless per send, no LLM, no spend.',
   },
   {
+    name: 'a2aLocalRouteTrust',
+    configPath: 'threadline.localRouteTrust.enabled',
+    description: 'Local-route trust: the same-machine A2A route resolves the sender\'s trust level from the trust manager and applies the relay gate\'s operation-permission check, instead of handling every sender as verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Reads in-memory trust profiles only: no writes, no LLM, no spend, no outbound messages; with no trust manager wired it is a counted no-op.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

@@ -563,6 +563,14 @@ export class ThreadlineRouter {
        * Only ever a server constant — never peer text.
        */
       resentNotice?: string | null;
+      /**
+       * Local-route trust (docs/specs/a2a-local-route-trust.md): the sender's
+       * trust level as the LOCAL route resolved it from the trust manager.
+       * Replaces the `verified` default ONLY where a local delivery (no
+       * relayContext) states a trust level — the live-inject grounding. Absent
+       * → the `verified` default, byte-for-byte.
+       */
+      localTrustLevel?: AgentTrustLevel;
     },
   ): Promise<CompleteThreadlineHandleResult> {
     const notice = opts?.resentNotice ?? null;
@@ -725,7 +733,7 @@ export class ThreadlineRouter {
       // spawning a fresh Claude process. Fall through to resume/spawn on
       // failure.
       if (existingEntry && this.messageDelivery) {
-        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext, notice);
+        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext, notice, opts?.localTrustLevel);
         if (injected) return injected;
       }
 
@@ -1222,6 +1230,7 @@ export class ThreadlineRouter {
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
     notice: string | null = null,
+    localTrustLevel?: AgentTrustLevel,
   ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.messageDelivery) return null;
     if (!entry.sessionName) return null;
@@ -1234,7 +1243,7 @@ export class ThreadlineRouter {
       // land without the boundary. This also fixes the already-shipped slice-1
       // inject path, independent of warm sessions. We re-wrap by cloning the
       // envelope with a grounded body — deliverToSession formats envelope.message.body.
-      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext, notice);
+      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext, notice, localTrustLevel);
 
       const result = await this.messageDelivery.deliverToSession(entry.sessionName, groundedEnvelope);
       if (!result.success) {
@@ -1285,12 +1294,13 @@ export class ThreadlineRouter {
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
     notice: string | null = null,
+    localTrustLevel?: AgentTrustLevel,
   ): MessageEnvelope {
     const grounding = buildRelayGroundingPreamble({
       agentName: this.config.localAgent,
       senderName: relayContext?.senderName ?? entry.remoteAgent,
       senderFingerprint: relayContext?.senderFingerprint ?? entry.remoteAgent,
-      trustLevel: relayContext?.trustLevel ?? 'verified',
+      trustLevel: relayContext?.trustLevel ?? localTrustLevel ?? 'verified',
       trustSource: relayContext?.trustSource,
       trustDate: relayContext?.trustDate,
       originFingerprint: relayContext?.originFingerprint,

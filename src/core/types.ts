@@ -5380,6 +5380,14 @@ export interface ThreadlineConfig {
    * the fleet). `false` restores today's relay-send behaviour.
    */
   backupRoutes?: { enabled?: boolean };
+  /**
+   * Local-route trust (docs/specs/a2a-local-route-trust.md). Read live per
+   * request on `POST /messages/relay-agent`. `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-refuse verdicts are logged and counted, delivery is
+   * unchanged; only an explicit `false` refuses (pre-admission 403).
+   */
+  localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
 }
 
 /**
