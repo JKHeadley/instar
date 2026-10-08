@@ -176,6 +176,9 @@ Freezes the running version at startup and compares it to what's on disk. Detect
 ### ForegroundRestartWatcher
 When running without a supervisor, watches for restart signals (written by AutoUpdater after an update). Notifies you, waits 3 seconds for graceful shutdown, then exits so the process manager can restart with the new code.
 
+### TickSerializer
+Serializes overlapping calls to an asynchronous "tick" without dropping any of them. At most one evaluation runs at a time and at most one more waits behind it; callers that arrive while one is already waiting share it. Every caller therefore receives the result of an evaluation that started at or after its own call, and a failed in-flight evaluation does not reject the callers waiting behind it. It replaced a "skip if already ticking and return the last snapshot" guard, which handed an explicit caller a stale read — `null` before the first save — whenever a background tick happened to be running. Its one method is `run(evaluate)`. `WindowRunLivenessAuthority` and `WindowRunCadenceExecutor` each hold one, so an HTTP tick that races the server's background tick waits for a fresh result.
+
 ### CredentialSwapExecutor
 Ships **dark** (off + dry-run for everyone). The staged-exchange primitive of live credential re-pointing: it MOVES an account's OAuth credential between two config-home "slots" without restarting the sessions reading them (the `claude` client re-reads its store on the next API call). The `CredentialSwapExecutor` exchanges (never copies) the two slots' credentials through a crash-proof sequence — stage an escrow copy and journal `begin`, exchange keychain-first then config-second, verify each slot on its **account identity** via the profile-endpoint oracle, commit with the escrow retained, then re-verify ~90s later before deleting the escrow. It writes only what an oracle can identity-confirm: an unverifiable slot is quarantined, never repaired blindly. Going live requires a deliberate two-flag flip (`enabled:true` AND `dryRun:false`); see `docs/specs/live-credential-repointing-rebalancer.md` §2.3.
 
@@ -258,6 +261,18 @@ Code-enforced requester-≠-authorizer gate for an agent-to-agent credential tra
 
 ### ThreadlineGroundingGate
 "Ground Before You Assert" pre-send check for outbound agent-to-agent messages. Flags a scheme-qualified URL to a host the agent has not verified this session, so an unverified claim does not propagate to a peer as fact. Known/infra hosts and bare-host references are exempt; the gate is wired into `threadline_send` as a block-with-override.
+
+### InboundIdLedger
+The receiver's two-week SQLite record of every agent-to-agent message id it accepted and how far each one got. When the same id arrives again, the ledger tells the ingress whether the first copy reached a terminal outcome. Only a verified "no reply needed" row suppresses a second copy today, because no hand-off path is durable yet; every other resend is delivered again with a fixed "resent copy" notice. Every failure (a database error, a cooldown, a message with no usable id) delivers without a row, so the worst case is a labelled duplicate and never a lost message. `admit` is the commit point and returns an `AdmissionTicket` that the owning attempt finishes with the outcome. Consulted by the relay socket, the signed HTTP receive route and the same-machine relay-agent route; read through `GET /a2a/inbound-ids`. On for a development agent, off for the fleet, unless `threadline.inboundIdLedger.enabled` says otherwise. See the [Threadline module reference](/reference/threadline-internals/).
+
+### ThreadlineReplyValidation
+One check, `isAuthenticatedThreadlineInbound`: does a reply's `inReplyTo` id name a real inbound message on the thread the caller claims? It accepts evidence from either the signed listener inbox or the hash-chained per-thread log, and fails closed on malformed input, a mismatch, a read error, or a missing listener manager. The relay-send route calls it before accepting a reply.
+
+### HubIntentClassifier
+Decides whether a message in the "Threadline" hub topic is a command ("open this", "tie this to <topic>") or ordinary conversation. A model judges the message together with recent conversation, and for a "tie" must pick the target from the list of real topics; that returned field is validated against the list. Any uncertainty returns "not a command", so the message reaches the agent untouched. It replaced a regular expression that swallowed the message before the agent saw it. Settings: `threadline.hubIntent`.
+
+### TelegramOriginAttribution
+Records the true author of a Threadline message posted into Telegram. `withThreadlineTelegramAuthor` binds an automation-reply token to the exact topic and text for the check-in and relay producers; `withThreadlineForwardedAuthor` records a mirrored peer message with an unknown author, so a peer's words never inherit this agent's model attribution. Used by the Telegram bridge, the topic-linkage handler and the check-in sender.
 
 ### A2ACheckInPolicy
 The decision core of the agent-to-agent coherence "check-in" (Layer 4): given whether a conversation is active, whether a salient event occurred, and how long since the operator last heard anything, it returns `salience` (something to surface), `heartbeat` (the silence-breaker — a periodic "still talking" while active and silent for the configured interval), or `none` (stay quiet — routine churn never surfaces). Pure and clock-injected.
