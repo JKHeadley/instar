@@ -16,10 +16,8 @@ eli16-overview: a2a-cross-machine-route.eli16.md
 
 When this machine's relay connection is down and another of my own machines holds it, a send is
 forwarded once to that machine over the existing signed mesh. That machine does the ordinary relay
-send. No public endpoint, no new keys, no timer and no re-send are added.
-
-**Terms.** The *holder* is the one machine of mine whose relay client is `connected`. The
-*forwarder* is a machine of mine whose relay client exists but is not connected.
+send. No public endpoint, no new keys, no timer and no re-send are added. The *holder* is my machine
+whose relay client is `connected`; the *forwarder* is one whose client exists but is not connected.
 
 ## Problem
 
@@ -41,22 +39,19 @@ such episode lasted 6 h 45 min (`src/threadline/ThreadlineEndpoints.ts:262-266`)
 | One verb already carries agent-to-agent text between my machines, in the registered-peer class, with a caller-side `meshClient.send` and a per-peer URL resolver. | `src/core/MeshRpc.ts:43-51`, `:465-470`; `src/commands/server.ts:23466-23480`, `:23851-23857`, `:23947-23958` |
 | `MessageRouter`'s cross-machine forward delivers stored envelopes to a target machine. It is not an outbound relay send. | `src/messaging/MessageRouter.ts:588-622` |
 | Every server reports its relay state on the unauthenticated `/threadline/health`. No heartbeat field carries it. | `src/threadline/ThreadlineEndpoints.ts:253-275` |
-| Tailscale and LAN ropes are `http://`; the Cloudflare rope is public `https`. | `src/core/MeshUrlAdvertiser.ts:260-263`; `src/core/MeshEndpointValidator.ts:49-53` |
 | After a relay send the route writes, in order: reply waiter, tracker row, thread leg, origin capture, a 3-second verdict wait, outbox entry, bridge mirror and reply-claim release. | `src/server/routes.ts:36748-36751`, `:36760-36767`, `:36779-36790`, `:36794`, `:36800`, `:36811-36828`, `:36855-36866` |
-| The mesh view names which machine holds each agent-to-agent conversation. | `src/server/routes.ts:17649-17661` |
 
-**The mesh can carry this.** Missing: one new verb, its handler, and a way for the handler to enter
-the relay-send path, which today is a route closure (its body after the 503 point must be lifted
-into a function both callers share).
+**The mesh can carry this.** Missing: one verb, its handler, and a shared function for the
+relay-send path, which today is a route closure (its body after the 503 point must be lifted out).
 
 ## Threat model
 
-Only my own registered machines can send the verb: the envelope is signed with the sender machine's
-key, bound to the recipient, and nonce-guarded. A machine of mine that is compromised can already
-speak as the agent, so the verb adds no new authority. The message body crosses between my machines
-signed but not encrypted by the mesh. Tailscale and Cloudflare ropes encrypt in transit; a LAN rope
-does not. This matches what the existing `a2a-inbox-deliver` verb already carries, and it is
-accepted for ordinary messages. Credential sends are not forwarded.
+Only my own registered machines can send the verb: the envelope is signed by the sender machine,
+bound to the recipient and nonce-guarded. A compromised machine of mine can already speak as the
+agent, so the verb adds no authority. The message body crosses between my machines signed but not
+encrypted by the mesh. Tailscale and Cloudflare ropes encrypt in transit; a LAN rope is plain
+`http://` (`src/core/MeshUrlAdvertiser.ts:260-263`). The existing `a2a-inbox-deliver` verb carries
+text the same way. Credential sends are not forwarded.
 
 ## Design
 
@@ -65,31 +60,27 @@ accepted for ordinary messages. Credential sends are not forwarded.
 At the 503 point (`routes.ts:36677`), a forward is tried only when all of these hold:
 
 - the relay client is **present** and its state is not `connected` (an absent client keeps the 503);
-- `relayClient.banSuspected` is false (a ban is a refusal);
-- the send is not a credential share (`isCredentialShareSend`);
-- the request is not itself a forwarded one;
+- `relayClient.banSuspected` is false (a ban is a refusal), the send is not a credential share
+  (`isCredentialShareSend`), and the request is not itself a forwarded one;
 - one of my active peer machines reports `relay.state: 'connected'`.
 
-The last condition is read from each active peer's `/threadline/health` over its mesh URL, with a
-2-second timeout, at most 8 peers. It is a hint that picks the target. If no peer reports
-`connected`, the answer is today's 503.
+The last condition is read from each active peer's `/threadline/health` over its mesh URL (2-second
+timeout, at most 8 peers). It only picks the target. If no peer reports `connected`: today's 503.
 
-### 2. Forward
+### 2. Forward, and the holder sends
 
 The forwarder sends one new mesh verb, `a2a-relay-forward`, to the first such peer:
-`{ targetAgent, message, threadId, messageId, originTopicId?, purpose?, inReplyTo? }`. `messageId`
-and `threadId` are the ones this request already minted. The timeout is 15 seconds. There is one
-attempt and no retry. The verb is in the registered-peer class, like `a2a-inbox-deliver`.
+`{ targetAgent, message, threadId, messageId, originTopicId?, purpose?, inReplyTo? }`, with the id
+and thread this request already minted. One attempt, 15-second timeout, no retry. The verb is in the
+registered-peer class, like `a2a-inbox-deliver`.
 
-### 3. The holder sends
-
-The handler first checks its own relay client. If it is absent or not `connected`, it answers
+The holder's handler first checks its own relay client. If it is absent or not `connected`, it answers
 `{ forwarded: false, reason: 'not-holder' }` and sends nothing. Otherwise it runs the ordinary
-relay-send path with the given id and thread, marked as forwarded, with `waitForReply` off. Every
-gate on that path runs on the holder as for a local send. A forwarded request is never forwarded
-again. The handler returns the route's own status and answer body.
+relay-send path with the given id and thread, marked forwarded, with `waitForReply` off. Every gate
+on that path runs on the holder as for a local send. A forwarded request is never forwarded again.
+The handler returns the route's own status and answer body.
 
-### 4. The answer
+### 3. The answer
 
 | Holder's result | Forwarder answers |
 |---|---|
@@ -99,48 +90,41 @@ again. The handler returns the route's own status and answer body.
 
 A refusal from the holder is returned as that refusal. Nothing is retried on another machine.
 
-### 5. Bookkeeping: the holder is the single writer
+### 4. Bookkeeping: the holder is the single writer
 
-The holder writes the tracker row, the thread leg, the origin capture, the outbox entry and the
-bridge mirror, because its ordinary relay-send path does. The forwarder writes none of them. It
-writes one log line, `[a2a-forward] id=<messageId> to=<machine> outcome=<outcome>`, and bumps a
-counter on the authed `/health`. Delivery state for a forwarded send is therefore read on the
-holder, or from any machine through `GET /threadline/peers/health?scope=pool`.
+The holder writes the tracker row, thread leg, origin capture, outbox entry and bridge mirror,
+because its ordinary relay-send path does. The forwarder writes none of them. It writes one log
+line, `[a2a-forward] id=<messageId> to=<machine> outcome=<outcome>`, and bumps a counter on the
+authed `/health`. Delivery state for a forwarded send is read on the holder, or from any machine
+through `GET /threadline/peers/health?scope=pool`. `waitForReply` cannot be honoured: the forwarder
+answers `reply: null` with `replyArrivesOn: <machine nickname>`. A reply claim (`inReplyTo`) is
+released by the forwarder on a 2xx answer and by its finish handler otherwise, as on the relay path.
 
-`waitForReply` cannot be honoured: the reply arrives at the holder. The forwarder answers
-`reply: null` with `replyArrivesOn: <machine nickname>`. A reply claim (`inReplyTo`) is released by
-the forwarder on a 2xx answer and by its existing finish handler otherwise, as on the relay path.
-
-### 6. Replies: the residual
-
-A peer's reply reaches the holder, not the forwarder. Nothing routes it back to the session that
-sent. The holder treats it as any inbound message on that thread: if `originTopicId` was given, the
+**Replies: the residual.** A peer's reply reaches the holder, not the forwarder, and nothing routes it back to the sending
+session. The holder treats it as any inbound message on that thread: with `originTopicId`, the
 existing topic linkage shows it in that Telegram topic; otherwise it goes to the Threadline hub.
-`GET /threadline/conversations?scope=mesh` names the holder. The sending session does not see the
-reply in its own context. This is the stated residual.
+`GET /threadline/conversations?scope=mesh` names the holder (`src/server/routes.ts:17649-17661`).
 
 ## What it does not do
 
 - No direct route to a different agent's machine. The log shows 1 relay-server outage in 7 weeks,
   so that stays a separate, evidence-gated item (follow-up to be registered).
 - It does not help a standby, a relay-disabled agent or a daemon-owned relay: the client is absent.
-- It does not forward credentials, retry, queue, or run in the background.
-- It does not route a reply back to the forwarder (§6).
+- It does not forward credentials, retry, queue, run in the background, or route a reply back (§4).
 
 ## Decision points touched
 
 | Decision point | Class | Floor + arbiter |
 |---|---|---|
-| When a forward is tried | invariant | The five conditions of §1; code decides. |
+| When a forward is tried | invariant | The conditions of §1; code decides. |
 | Whether the holder sends | invariant | Its own client is `connected` at handling time; else `not-holder`. |
-| What the caller is told | invariant | The table in §4; the holder's verdict is transcribed, never upgraded. |
-| Who records the send | invariant | The holder only (§5). |
+| What the caller is told | invariant | The table in §3; the holder's verdict is transcribed, never upgraded. |
+| Who records the send | invariant | The holder only (§4). |
 
 ## Multi-machine posture
 
-- **Unified.** The feature exists to make two of my machines act as one agent on the relay. It
-  stores nothing new. Send records live where the send happened and are read across machines
-  through the existing pool read.
+- **Unified.** The feature makes two of my machines act as one agent on the relay. It stores
+  nothing new. Send records live where the send happened and are read through the existing pool read.
 - **Ownership at fire time.** The holder acts only while it holds the relay connection, checked
   when the verb is handled. The health read on the forwarder only chooses a target.
 
@@ -155,8 +139,7 @@ reply in its own context. This is the stated residual.
 
 ## Frontloaded Decisions
 
-1. **Forward only when the client is present, not connected, not ban-suspected, and a peer of mine
-   reports `connected`.**
+1. **Forward only when the client is present, not connected, not ban-suspected, and a peer holds.**
 2. **The holder is found by reading each peer's `/threadline/health`; its own check is the authority.**
 3. **One attempt, 15 seconds, no retry; a timeout is reported `unconfirmed`.**
 4. **The holder is the single writer of all send records.**
@@ -191,30 +174,27 @@ Template + migrator section (`### A2A relay forward`): "When this machine's rela
 down and another of my machines holds it, a send is forwarded to that machine, which sends it over
 the relay. `deliveryPath: 'relay-via-machine'` and `forwardedTo` say so; `relayStatus` is that
 machine's real verdict. The reply arrives on that machine, not in this session: `reply` is null and
-`replyArrivesOn` names the machine. **When to use** (PROACTIVE): I am waiting on a reply to a
-forwarded send → read `GET /threadline/conversations?scope=mesh` and the thread on the named
-machine; do not resend."
+`replyArrivesOn` names it. **When to use** (PROACTIVE): I am waiting on a reply to a forwarded send
+→ read `GET /threadline/conversations?scope=mesh` and the thread on that machine; do not resend."
 
 ## Tests
 
 - **Unit:** both sides of each §1 condition (absent client, connected, ban-suspected, credential,
-  already forwarded, no connected peer); the §4 table, including a holder `rejected` returned as 502
+  already forwarded, no connected peer); the §3 table, including a holder `rejected` returned as 502
   and a timeout returned `unconfirmed`; the handler's `not-holder` answer; no re-forward.
 - **Integration:** two real servers of one agent and a real RelayServer. The forwarder is displaced;
-  a send arrives at a third agent once, with the forwarder's id and thread; the tracker row, outbox
-  entry and thread leg exist on the holder only; `reply` is null. With the holder also disconnected,
-  the answer is 503. An older peer without the verb gives 503.
+  a send reaches a third agent once, with the forwarder's id and thread; the tracker row, outbox
+  entry and thread leg exist on the holder only. Holder disconnected, or no verb on the peer → 503.
 - **E2E:** production bootstrap registers the `a2a-relay-forward` handler and RBAC case; with the
   gate on a forwarded send returns the holder's verdict; with the gate off, today's 503.
 
 ## Maturation plan
 
-- **test-agent-live:** a throwaway agent on two machines: displace one, send from it, and observe
-  one forwarded send with the holder's verdict and the records on the holder only.
+- **test-agent-live:** a throwaway agent on two machines: displace one, send from it, observe one
+  forwarded send with the holder's verdict and the records on the holder only.
 - **dev-agent-live:** gate on for 48 hours on the development agent's own pool.
 - **fleet:** flip `threadline.relayForward.enabled` fleet-wide after the graduation criterion holds.
-- **graduation criterion:** at least 1 observed forwarded send on the development agent's own pool,
-  shown by an `[a2a-forward]` line on the forwarder and the matching tracker row on the holder. A
-  zero count is not a pass.
+- **graduation criterion:** at least 1 observed forwarded send on the development agent's own pool:
+  an `[a2a-forward]` line on the forwarder and the matching tracker row on the holder. Zero fails.
 - **dark-window:** at most 7 days from merge to the fleet decision. If the count is still zero
   then, the reason and a new date go on ACT-052; it is never left dark silently.
