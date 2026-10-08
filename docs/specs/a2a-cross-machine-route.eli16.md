@@ -21,13 +21,14 @@ other computers which one holds the line. If one does, it hands the message to t
 computers already have a private, signed way to talk to each other, so nothing new is opened to the
 outside world.
 
-The computer that holds the line is only a pipe. It sends the message and tells the first computer
-what the post office really said: delivered, held for later, or refused. The first computer keeps
-the conversation and all its records, and passes that answer on unchanged.
+The computer that holds the line sends the message in the normal way and keeps the records of it,
+exactly as it does for its own messages. It tells the first computer what the post office really
+said: delivered, held for later, or refused. The first computer passes that answer on unchanged.
 
-When the other agent replies, the reply arrives at the computer that holds the line. That computer
-remembers which of my computers the conversation belongs to, and hands the reply straight over. So
-the reply shows up in the same session that sent the message, as it always does.
+When the other agent replies, the reply arrives at the computer that holds the line. If the message
+was sent from one of my chat topics, that computer asks which of my computers has that topic's
+session open, and has the reply typed straight into it. So the reply shows up in the session that
+sent the message.
 
 ## The limits
 
@@ -36,8 +37,10 @@ the reply shows up in the same session that sent the message, as it always does.
 - If the other computer does not answer in time, I report "unknown", not "sent".
 - Secrets such as passwords are never handed over this way.
 - If none of my computers holds the line, the send fails as it does today.
-- If a reply cannot be handed over, it is handled where it arrived and that is noted. It is never
-  thrown away.
+- If the reply cannot be typed into the session, it is posted into the chat topic instead. It is
+  never thrown away, and no new session is started to answer it blindly.
+- A message sent from outside any chat topic gets its reply on the computer that holds the line,
+  not in the session that sent it.
 
 ## Why not just reconnect
 
