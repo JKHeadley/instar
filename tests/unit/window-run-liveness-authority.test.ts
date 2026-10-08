@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   WindowRunLivenessAuthority,
   WindowRunLivenessStore,
@@ -389,5 +390,39 @@ describe('WindowRunLivenessAuthority', () => {
     expect(store.load()?.lastWorkReceipt).toMatchObject({ sequence: 1, digest: 'c'.repeat(64) });
     const restarted = new WindowRunLivenessAuthority(store, { sample: async () => { throw new Error('unused'); } }, { enabled: true });
     expect(restarted.status().state?.lastWorkReceipt?.digest).toBe('c'.repeat(64));
+  });
+  it('an overlapping tick waits for a fresh evaluation instead of returning the mid-flight snapshot', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-overlap-'));
+    const store = new WindowRunLivenessStore(dir);
+    let sampleEntered!: () => void;
+    const entered = new Promise<void>(resolve => { sampleEntered = resolve; });
+    let releaseSample!: () => void;
+    const released = new Promise<void>(resolve => { releaseSample = resolve; });
+    let samples = 0;
+    const authority = new WindowRunLivenessAuthority(store, {
+      now: () => new Date(BASE).toISOString(),
+      sample: async state => {
+        samples++;
+        if (samples === 1) { sampleEntered(); await released; }
+        return {
+          sampledAt: new Date(BASE).toISOString(), executor: { id: state.executorId, running: true, heartbeatAt: new Date(BASE).toISOString() }, deliveryReachable: true,
+          work: state.lastWorkReceipt ?? null,
+          lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'active_start', admitted: true, expiresAt: new Date(BASE + 60_000).toISOString() },
+        };
+      },
+    }, { enabled: true, dryRun: true });
+    authority.register({ windowId: 'w32', topicId: 36966, autonomousRunId: 'run-overlap', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966' });
+    const registered = store.load();
+    const background = authority.tick();
+    await entered;
+    const explicit = authority.tick();
+    releaseSample();
+    const [, second] = await Promise.all([background, explicit]);
+    // The old guard returned the pre-tick registration snapshot; the explicit
+    // caller now gets an evaluation that started after its request.
+    expect(samples).toBe(2);
+    expect(second?.predicates).not.toEqual(registered?.predicates);
+    expect(second).toEqual(store.load());
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:overlap-cleanup' });
   });
 });

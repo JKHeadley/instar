@@ -4,6 +4,7 @@ import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import type { WindowRunLivenessDocument, WindowRunWorkReceipt } from './WindowRunLivenessAuthority.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { TickSerializer } from './TickSerializer.js';
 import { sign as signEd25519, verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 
 export const WINDOW_RUN_CADENCE_VERSION = 1 as const;
@@ -234,7 +235,7 @@ export class WindowRunCadenceStore {
 /* @self-action-controller: window-run-cadence-delivery-redrive */
 export class WindowRunCadenceExecutor {
   private readonly cfg: Required<WindowRunCadenceConfig>;
-  private ticking = false;
+  private readonly ticks = new TickSerializer<WindowRunCadenceDocument | null>();
 
   constructor(
     private readonly store: WindowRunCadenceStore,
@@ -276,53 +277,56 @@ export class WindowRunCadenceExecutor {
   }
 
   async tick(): Promise<WindowRunCadenceDocument | null> {
-    if (!this.cfg.enabled || this.ticking) return this.store.load();
-    this.ticking = true;
-    try {
-      return await this.store.withMutation(async () => {
-        const liveness = this.deps.getLiveness();
-        if (!liveness) return this.store.load();
-        const now = this.now();
-        let state = this.store.load();
-        // Registration/preparation is not window execution. Do not start a
-        // clock, prompt, miss an interval, or report until the five-predicate
-        // authority has actually promoted the run and stamped activation.
-        if (!state && (liveness.status !== 'active' || !liveness.activatedAt)) return null;
-        if (this.deps.canAct && !this.deps.canAct(liveness)) return state;
-        if (!state || !this.sameBinding(state, liveness)) {
-          if (state && state.status !== 'closed') throw new Error('window-run-cadence-active-binding-exists');
-          state = this.initialize(liveness);
-          this.store.save(state);
-        }
-        if (livenessTerminal(liveness.status)) {
-          state.status = 'closed';
-          state.closedAt ??= now;
-          state.lastTickAt = now;
-          this.store.save(state);
-          return state;
-        }
+    if (!this.cfg.enabled) return this.store.load();
+    // A tick requested while another is in flight (e.g. the HTTP tick racing the
+    // server's initial background tick) waits for a fresh evaluation instead of
+    // returning a mid-flight snapshot — which, before the first save, is null
+    // and surfaced as a false "not registered" 404.
+    return this.ticks.run(() => this.tickOnce());
+  }
 
-        // A verified authority rebind changes only the executor identity, not
-        // the cadence binding or its elapsed clock/history.
-        state.executorId = liveness.executorId;
-
-        if (state.status === 'failed') {
-          await this.notifyFailure(state, liveness);
-          state.lastTickAt = now;
-          this.store.save(state);
-          return state;
-        }
-
-        await this.maybeRequestCheckpoint(state, liveness, now);
-        this.materializeDueIntervals(state, liveness, now);
-        await this.materializeDueReports(state, liveness, now);
+  private tickOnce(): Promise<WindowRunCadenceDocument | null> {
+    return this.store.withMutation(async () => {
+      const liveness = this.deps.getLiveness();
+      if (!liveness) return this.store.load();
+      const now = this.now();
+      let state = this.store.load();
+      // Registration/preparation is not window execution. Do not start a
+      // clock, prompt, miss an interval, or report until the five-predicate
+      // authority has actually promoted the run and stamped activation.
+      if (!state && (liveness.status !== 'active' || !liveness.activatedAt)) return null;
+      if (this.deps.canAct && !this.deps.canAct(liveness)) return state;
+      if (!state || !this.sameBinding(state, liveness)) {
+        if (state && state.status !== 'closed') throw new Error('window-run-cadence-active-binding-exists');
+        state = this.initialize(liveness);
+        this.store.save(state);
+      }
+      if (livenessTerminal(liveness.status)) {
+        state.status = 'closed';
+        state.closedAt ??= now;
         state.lastTickAt = now;
         this.store.save(state);
         return state;
-      });
-    } finally {
-      this.ticking = false;
-    }
+      }
+
+      // A verified authority rebind changes only the executor identity, not
+      // the cadence binding or its elapsed clock/history.
+      state.executorId = liveness.executorId;
+
+      if (state.status === 'failed') {
+        await this.notifyFailure(state, liveness);
+        state.lastTickAt = now;
+        this.store.save(state);
+        return state;
+      }
+
+      await this.maybeRequestCheckpoint(state, liveness, now);
+      this.materializeDueIntervals(state, liveness, now);
+      await this.materializeDueReports(state, liveness, now);
+      state.lastTickAt = now;
+      this.store.save(state);
+      return state;
+    });
   }
 
   private initialize(liveness: WindowRunLivenessDocument): WindowRunCadenceDocument {
