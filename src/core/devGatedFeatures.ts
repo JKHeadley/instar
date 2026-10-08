@@ -757,6 +757,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Fails toward a labelled duplicate, never a loss: a database error, cooldown, full unverified namespace or unkeyed message delivers with no row; only a verified no-reply row suppresses; peer answers only word a notice. Machine-local SQLite with bounded retention, no LLM, no spend, no outbound messages.',
   },
   {
+    name: 'a2aBackupRoutes',
+    configPath: 'threadline.backupRoutes.enabled',
+    description: 'A2A backup routes: a relay fall-through after a local POST carries the same id, the local thread and a resend mark; a fingerprint-addressed send goes to a same-machine agent whose live health shows that fingerprint and a connected relay.',
+    justification: 'Sends nothing new and stores nothing: the mark only changes the receiver notice wording (over-marking is the safe direction), and the fingerprint branch falls to the relay path used today on any doubt (no match, two ports, absent/different fingerprint, relay not connected, credential). Stateless per send, no LLM, no spend.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

@@ -8279,6 +8279,17 @@ I keep a two-week list of every agent-to-agent message id I accept, written befo
       result.upgraded.push('CLAUDE.md: added A2A inbound message-id ledger section');
     }
 
+    // A2A backup routes (docs/specs/a2a-backup-routes.md, Agent awareness). OWN
+    // sniff key `A2A backup routes` — content-sniffed for idempotency.
+    if (!content.includes('A2A backup routes')) {
+      content += '\n\n' + `### A2A backup routes
+
+When a direct send to an agent on this machine may have reached it before I fell back to the relay, the relay copy carries the same message id, the same thread and a resend mark, so an agent that remembers message ids can tell it is a repeat. A message I address by fingerprint to an agent on this machine is handed over directly when that agent's server confirms the same fingerprint and holds its relay connection, so it still arrives if my own relay connection is down. A credential addressed by fingerprint still goes over the relay; one addressed by name goes over plaintext loopback, as before. **When to use** (PROACTIVE): a peer on this machine says it got a message twice → check whether this feature is on and its ledger is healthy; with both, a marked fall-through should arrive labelled, and an unlabelled copy of it is a bug to report.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A backup routes section');
+    }
+
     // Own relay state (displaced vs retrying). Existing agents need to check their
     // OWN relay before blaming a quiet peer, and to know a displaced machine now
     // reclaims the connection. Content-sniffed for idempotency.
@@ -11215,6 +11226,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // resends, framework-agnostic — a Codex/Gemini agent must know the read
       // route and that a resent copy carries a notice.
       '### A2A inbound message-id ledger',
+      // A2A backup routes: server-side relay-send behaviour, framework-agnostic —
+      // a Codex/Gemini agent must know a marked fall-through arrives labelled.
+      '### A2A backup routes',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

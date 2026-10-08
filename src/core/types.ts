@@ -5374,6 +5374,12 @@ export interface ThreadlineConfig {
    * dark on the fleet). `retentionDays` default 14, floor 2.
    */
   inboundIdLedger?: { enabled?: boolean; retentionDays?: number };
+  /**
+   * A2A backup routes (docs/specs/a2a-backup-routes.md). Read live per send.
+   * `enabled` omitted ⇒ the developmentAgent gate (live on a dev agent, dark on
+   * the fleet). `false` restores today's relay-send behaviour.
+   */
+  backupRoutes?: { enabled?: boolean };
 }
 
 /**
