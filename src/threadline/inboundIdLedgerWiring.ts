@@ -63,7 +63,7 @@ export async function admitRelayInbound(
         try { onDuplicate(r.row); } catch { /* @silent-fallback-ok — ack bookkeeping never breaks the drop */ }
         return { action: 'drop', reason: 'duplicate' };
       case 'admitted': {
-        const notice = r.ticket.readmissions > 0 || req.resend ? buildResentNotice(false) : null;
+        const notice = r.ticket.readmissions > 0 || req.resend || r.crossNamespace ? buildResentNotice(false) : null;
         const needsPeerAnnotation = !!req.resend && !r.readmitted && isVerifiedNamespace(req.senderKey);
         return { action: 'deliver', ticket: r.ticket, notice, needsPeerAnnotation };
       }

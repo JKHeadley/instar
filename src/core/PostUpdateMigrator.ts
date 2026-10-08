@@ -8279,6 +8279,17 @@ I keep a two-week list of every agent-to-agent message id I accept, written befo
       result.upgraded.push('CLAUDE.md: added A2A inbound message-id ledger section');
     }
 
+    // A2A cross-namespace label (docs/specs/a2a-inbound-id-ledger.md §1 "The same
+    // id under another namespace", ACT-061). A SEPARATE addendum paragraph with
+    // its OWN sniff key, so agents that already carry the ledger section learn
+    // it too (the ledger sniff above never re-fires for them).
+    if (!content.includes('**A2A cross-route copies are labelled:**')) {
+      content += '\n\n' + `**A2A cross-route copies are labelled:** one peer can reach me under more than one kind of identity: one I verified, one the relay vouched for, or one I only read in a direct request on this machine. An identity I did not verify never stops a message. But when a copy is admitted and the same message id is already listed under another kind of identity for the same fingerprint (a relay copy that overtook the direct one, or the reverse), I still receive it, with the resent-copy notice. The notice is a prompt to look, not proof: I check the thread's history, and if it does not show an earlier copy of this same message, I treat this one as new and answer it. The authed \`/health\` counts each such admission as \`crossNamespaceLabelled\` under \`threadline.inboundIdLedger\`. A sender I know only by name carries no fingerprint and is not labelled this way.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A cross-route copies paragraph');
+    }
+
     // A2A backup routes (docs/specs/a2a-backup-routes.md, Agent awareness). OWN
     // sniff key `A2A backup routes` — content-sniffed for idempotency.
     if (!content.includes('A2A backup routes')) {
@@ -11226,6 +11237,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // resends, framework-agnostic — a Codex/Gemini agent must know the read
       // route and that a resent copy carries a notice.
       '### A2A inbound message-id ledger',
+      // The cross-namespace label addendum: its own marker, so a shadow that
+      // already carries the ledger section above still receives the paragraph.
+      '**A2A cross-route copies are labelled:**',
       // A2A backup routes: server-side relay-send behaviour, framework-agnostic —
       // a Codex/Gemini agent must know a marked fall-through arrives labelled.
       '### A2A backup routes',

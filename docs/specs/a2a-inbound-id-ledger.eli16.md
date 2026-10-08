@@ -15,3 +15,5 @@ An earlier version of this design tried to prove that each message reached a ses
 **Status.** Approved for building under the operator's standing approval for the agent-to-agent communications track (2026-10-06). It ships switched on for development agents only.
 
 The "resent copy" note goes on every delivery path, including replies that land in a Telegram topic linked to the conversation.
+
+One sender can reach me under more than one kind of identity: one I verified over the relay, or one I only read in a direct request on the same computer. An identity I did not verify never stops a message. But if a copy arrives and the same message id is already on the list under another kind of identity for the same fingerprint, I still deliver it, and I add the same "resent copy" note, so the second copy is not mistaken for a new message. The note is a prompt to check the conversation, not proof: if the conversation shows no earlier copy of that message, I treat it as new.

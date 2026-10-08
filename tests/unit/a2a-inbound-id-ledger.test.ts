@@ -34,6 +34,9 @@ import {
   WAIT_PER_SENDER_CAP,
   COOLDOWN_START_MS,
   resolveInboundIdLedgerPath,
+  fingerprintOfSenderKey,
+  crossNamespaceKeys,
+  PERSISTENT_COUNTERS,
 } from '../../src/threadline/InboundIdLedger.js';
 import {
   admitRelayInbound,
@@ -286,6 +289,212 @@ describe('namespaces (Know Your Principal)', () => {
   it('an in-flight local row answers in-flight (the 409 case)', () => {
     l.admit({ senderKey: 'local:relay-agent:codey', messageId: 'm1', ingress: 'relay-agent' });
     expect(l.admit({ senderKey: 'local:relay-agent:codey', messageId: 'm1', ingress: 'relay-agent' }).kind).toBe('in-flight');
+  });
+});
+
+describe('cross-namespace label (the same id under another namespace of the same fingerprint)', () => {
+  let l: InboundIdLedger;
+  beforeEach(() => { l = InboundIdLedger.openMemory(); });
+  afterEach(() => l.close());
+
+  const handOff = (key: string, id: string, extra: Partial<Parameters<InboundIdLedger['admit']>[0]> = {}) => {
+    const r = admitted(l, key, id, extra);
+    r.ticket.recordHandoff('live');
+    r.ticket.finish();
+    return r;
+  };
+
+  it('extracts the fingerprint part precisely; local: name keys and non-hex remainders carry none', () => {
+    expect(fingerprintOfSenderKey(FP)).toBe(FP);
+    expect(fingerprintOfSenderKey(`unverified:${FP}`)).toBe(FP);
+    expect(fingerprintOfSenderKey(`registry:${FP}`)).toBe(FP);
+    expect(fingerprintOfSenderKey(`asserted:${FP}`)).toBe(FP);
+    expect(fingerprintOfSenderKey('local:relay-agent:dawn')).toBeNull();
+    expect(fingerprintOfSenderKey(`local:relay-agent:${FP}`)).toBeNull(); // a NAME that looks like hex is still a name
+    expect(fingerprintOfSenderKey('not-a-fingerprint')).toBeNull();
+    expect(fingerprintOfSenderKey('registry:abc')).toBeNull(); // shorter than 6 hex
+    expect(fingerprintOfSenderKey(`unverified:registry:${FP}`)).toBeNull(); // one prefix only
+    expect(fingerprintOfSenderKey(null)).toBeNull();
+    expect(crossNamespaceKeys(`registry:${FP}`).sort()).toEqual([FP, `asserted:${FP}`, `unverified:${FP}`].sort());
+    expect(crossNamespaceKeys(FP).sort()).toEqual([`asserted:${FP}`, `registry:${FP}`, `unverified:${FP}`].sort());
+    expect(crossNamespaceKeys('local:relay-agent:dawn')).toEqual([]);
+    expect(PERSISTENT_COUNTERS).toContain('crossNamespaceLabelled');
+  });
+
+  it('the live sequence: relay copy first (unverified:<fp>), late local copy (registry:<fp>) is admitted AND labelled', async () => {
+    // The relay fall-back copy overtakes the original: marked resend, unknown sender.
+    const relay = await admitRelayInbound(l, { senderKey: `unverified:${FP}`, messageId: 'm1', threadId: 'thread-abc', ingress: 'relay-unknown-sender', resend: true }, () => {});
+    expect(relay.action).toBe('deliver');
+    if (relay.action !== 'deliver') return;
+    expect(relay.notice).toBe(RESENT_COPY_NOTICE);
+    relay.ticket.recordHandoff('live');
+    relay.ticket.finish();
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+    const before = l.getRow(`unverified:${FP}`, 'm1');
+
+    // The original local copy is processed later, under registry:<fp>.
+    const local = l.admit({ senderKey: `registry:${FP}`, messageId: 'm1', ingress: 'relay-agent', threadId: 'thread-abc', verifiedKeyToConsult: FP });
+    expect(local.kind).toBe('admitted'); // delivered — never suppressed
+    if (local.kind !== 'admitted') return;
+    expect(local.readmitted).toBe(false);
+    expect(local.crossNamespace).toBe(true);
+    expect(l.counters().crossNamespaceLabelled).toBe(1);
+    // The other namespace's row is not modified; this copy has its own row.
+    expect(l.getRow(`unverified:${FP}`, 'm1')).toEqual(before);
+    expect(l.getRow(`registry:${FP}`, 'm1')).toMatchObject({ disposition: 'admitted', readmissions: 0, ingress: 'relay-agent' });
+    expect(l.counters().dedupById).toBe(0);
+  });
+
+  it('the reverse order: local copy first, then the relay copy — the relay copy is labelled (even unmarked)', async () => {
+    handOff(`registry:${FP}`, 'm2', { ingress: 'relay-agent' });
+    const relay = await admitRelayInbound(l, { senderKey: `unverified:${FP}`, messageId: 'm2', ingress: 'relay-unknown-sender' }, () => {});
+    expect(relay.action).toBe('deliver');
+    if (relay.action !== 'deliver') return;
+    expect(relay.notice).toBe(RESENT_COPY_NOTICE);
+    expect(relay.needsPeerAnnotation).toBe(false);
+    expect(l.counters().crossNamespaceLabelled).toBe(1);
+    expect(l.getRow(`registry:${FP}`, 'm2')).toMatchObject({ disposition: 'handed-off', path: 'live', readmissions: 0 });
+  });
+
+  it('every pair of fingerprint namespaces labels, in both directions, whatever the first row\'s disposition', () => {
+    const keys = [FP, `unverified:${FP}`, `registry:${FP}`, `asserted:${FP}`];
+    let n = 0;
+    for (const first of keys) {
+      for (const second of keys) {
+        if (first === second) continue;
+        const id = `pair-${n++}`;
+        const r1 = admitted(l, first, id);
+        expect(r1.crossNamespace).toBe(false);
+        // Leave half in flight, fail the other half: any row counts, not only a hand-off.
+        if (n % 2 === 0) { r1.ticket.recordHandoffFailed(); r1.ticket.finish(); }
+        const r2 = admitted(l, second, id);
+        expect(r2.crossNamespace).toBe(true);
+        r1.ticket.finish(); r2.ticket.finish();
+      }
+    }
+    expect(l.counters().crossNamespaceLabelled).toBe(n);
+  });
+
+  it('a different fingerprint never labels, and neither does a local: name key', () => {
+    for (const [i, other] of [`registry:${FP2}`, FP2, `asserted:${FP2}`, `unverified:${FP2}`, 'local:relay-agent:dawn'].entries()) {
+      handOff(`unverified:${FP}`, `m3-${i}`);
+      expect(admitted(l, other, `m3-${i}`).crossNamespace).toBe(false);
+    }
+    // …and a local: row never labels a fingerprint key.
+    handOff('local:relay-agent:dawn', 'm4');
+    expect(admitted(l, FP, 'm4').crossNamespace).toBe(false);
+    // A different id under the same fingerprint never labels.
+    expect(admitted(l, `registry:${FP}`, 'other-id').crossNamespace).toBe(false);
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+  });
+
+  it('never changes an answer: a terminal row still dedups, an in-flight one still answers in-flight, own-namespace repeats are unchanged', () => {
+    // Terminal verified row + registry key → the bare duplicate, exactly as before.
+    const v = admitted(l, FP, 'm5'); v.ticket.recordNoReply(); v.ticket.finish();
+    expect(l.admit({ senderKey: `registry:${FP}`, messageId: 'm5', ingress: 'relay-agent', verifiedKeyToConsult: FP })).toMatchObject({ kind: 'duplicate', bare: true });
+    expect(l.admit({ senderKey: FP, messageId: 'm5', ingress: 'relay' }).kind).toBe('duplicate');
+    // In flight under its own key.
+    admitted(l, `registry:${FP}`, 'm6');
+    expect(l.admit({ senderKey: `registry:${FP}`, messageId: 'm6', ingress: 'relay-agent' }).kind).toBe('in-flight');
+    // A same-namespace repeat with no other namespace present is not a cross-namespace label.
+    handOff(FP, 'm7');
+    const again = admitted(l, FP, 'm7');
+    expect(again.readmitted).toBe(true);
+    expect(again.crossNamespace).toBe(false);
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+  });
+
+  it('a forged asserted fingerprint only adds the notice — the verified copy is still delivered and its row untouched', () => {
+    // A token holder pre-registers an id under asserted:<victim fp>.
+    handOff(`asserted:${FP}`, 'm8', { ingress: 'relay-agent' });
+    const verified = admitted(l, FP, 'm8');
+    expect(verified.crossNamespace).toBe(true); // a notice, nothing else
+    expect(verified.readmitted).toBe(false);
+    expect(l.lookup(FP, 'm8')).toBe('retryable');
+    expect(l.getRow(`asserted:${FP}`, 'm8')).toMatchObject({ disposition: 'handed-off', readmissions: 0 });
+  });
+
+  it('ledger unavailable: no row, no label, delivered as today (dark, cooling down, read failure)', async () => {
+    handOff(`unverified:${FP}`, 'm9');
+    // Dark.
+    const dark = await admitRelayInbound(null, { senderKey: `registry:${FP}`, messageId: 'm9', ingress: 'relay' }, () => {});
+    expect(dark).toMatchObject({ action: 'deliver', notice: null });
+    // A failing read of the other namespaces answers false and never trips the cooldown.
+    const db = (l as unknown as { db: { prepare: (sql: string) => unknown } }).db;
+    const realPrepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (sql.startsWith('SELECT 1 FROM inbound_message_ids')) throw new Error('read failed');
+      return realPrepare(sql);
+    });
+    const r = admitted(l, `registry:${FP}`, 'm9');
+    expect(r.crossNamespace).toBe(false);
+    expect(l.isOperational()).toBe(true);
+    expect(l.counters().ledgerError).toBe(0);
+    spy.mockRestore();
+    // Broken database: the admission itself fails open / errors; nothing is labelled.
+    l._testBreakDb();
+    const broken = l.admit({ senderKey: `asserted:${FP}`, messageId: 'm9', ingress: 'relay-agent' });
+    expect(broken.kind).toBe('error');
+    const cooling = await admitRelayInbound(l, { senderKey: `asserted:${FP}`, messageId: 'm9', ingress: 'relay' }, () => {});
+    expect(cooling).toMatchObject({ action: 'deliver', notice: null });
+    expect(l.hasCrossNamespaceRow(`asserted:${FP}`, 'm9')).toBe(false);
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+  });
+
+  it('a letter-case difference in the fingerprint is a miss (exact comparison) — delivered unlabelled', () => {
+    const upper = FP.toUpperCase();
+    expect(fingerprintOfSenderKey(`asserted:${upper}`)).toBe(upper);
+    handOff(`unverified:${FP}`, 'case-1');
+    expect(admitted(l, `asserted:${upper}`, 'case-1').crossNamespace).toBe(false);
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+  });
+
+  it('a full unverified: space delivers without a row and without the label', async () => {
+    const key = `unverified:${FP}`;
+    for (let i = 0; i < UNVERIFIED_PER_SENDER_CAP; i++) admitted(l, key, `fill-${i}`, { ingress: 'relay-unknown-sender' });
+    handOff(`registry:${FP}`, 'full-1', { ingress: 'relay-agent' });
+    const adm = await admitRelayInbound(l, { senderKey: key, messageId: 'full-1', ingress: 'relay-unknown-sender' }, () => {});
+    expect(adm).toMatchObject({ action: 'deliver', notice: null });
+    expect(l.getRow(key, 'full-1')).toBeNull();
+    expect(l.counters().unverifiedUnrecorded).toBe(1);
+    expect(l.counters().crossNamespaceLabelled).toBe(0);
+  });
+
+  it('the relay in-flight wait: the re-run admission still finds the other namespace and labels', async () => {
+    handOff(`registry:${FP}`, 'wait-1', { ingress: 'relay-agent' });
+    // The relay original is in flight; a second relay copy waits on it.
+    const first = await admitRelayInbound(l, { senderKey: FP, messageId: 'wait-1', ingress: 'relay' }, () => {});
+    expect(first.action).toBe('deliver');
+    if (first.action !== 'deliver') return;
+    expect(first.notice).toBe(RESENT_COPY_NOTICE); // cross-namespace: the local copy came first
+    const second = admitRelayInbound(l, { senderKey: FP, messageId: 'wait-1', ingress: 'relay' }, () => {});
+    await new Promise((r) => setImmediate(r));
+    first.ticket.recordHandoffFailed();
+    first.ticket.finish();
+    const settled = await second;
+    expect(settled.action).toBe('deliver');
+    if (settled.action !== 'deliver') return;
+    expect(settled.notice).toBe(RESENT_COPY_NOTICE);
+    expect(l.counters().crossNamespaceLabelled).toBe(2); // once per admission where the match is found
+    settled.ticket.finish();
+  });
+
+  it('the counter persists with the other event counters', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inbound-ledger-xns-'));
+    try {
+      const a = InboundIdLedger.open('agent', dir, { startTimers: false });
+      const r1 = a.admit({ senderKey: `unverified:${FP}`, messageId: 'p1', ingress: 'relay-unknown-sender' });
+      if (r1.kind === 'admitted') { r1.ticket.recordHandoff('live'); r1.ticket.finish(); }
+      const r2 = a.admit({ senderKey: `registry:${FP}`, messageId: 'p1', ingress: 'relay-agent' });
+      expect(r2.kind === 'admitted' && r2.crossNamespace).toBe(true);
+      if (r2.kind === 'admitted') r2.ticket.finish();
+      a.close();
+      const b = InboundIdLedger.open('agent', dir, { startTimers: false });
+      expect(b.counters().crossNamespaceLabelled).toBe(1);
+      b.close();
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/a2a-inbound-id-ledger.test.ts' });
+    }
   });
 });
 
