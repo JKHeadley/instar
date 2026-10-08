@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { deriveX25519PublicKey } from '../threadline/client/MessageEncryptor.js';
+import { readIdentityKeyFile, writeFileAtomicOwnerOnly } from './IdentityKeyFile.js';
 import { encryptPrivateKey, generateSalt } from './KeyEncryption.js';
 import {
   generateRecoveryPhrase,
@@ -93,10 +94,18 @@ export function migrateFromLegacy(
     throw new Error('Canonical identity already exists — migration not needed');
   }
 
-  // Read legacy identity
-  const legacyRaw = JSON.parse(fs.readFileSync(legacyPath, 'utf-8')) as LegacyIdentityFile;
-  const publicKey = Buffer.from(legacyRaw.publicKey, 'base64');
-  const privateKey = Buffer.from(legacyRaw.privateKey, 'base64');
+  // Read legacy identity — validated, never trusted. A legacy file whose keys
+  // were stored as hex (ACT-062) is repaired in place first, so the canonical
+  // file is always built from the real 32-byte keys and never from the stored
+  // strings. An unusable legacy file throws IdentityFileInvalidError; nothing
+  // is written.
+  const legacy = readIdentityKeyFile(legacyPath, { repair: true });
+  if (!legacy || !legacy.privateKey) {
+    throw new Error('No usable legacy identity found at ' + legacyPath);
+  }
+  const legacyRaw = legacy.raw as unknown as LegacyIdentityFile;
+  const publicKey = legacy.publicKey;
+  const privateKey = legacy.privateKey;
 
   // Compute new canonical identifiers
   const canonicalId = computeCanonicalId(publicKey);
@@ -124,13 +133,13 @@ export function migrateFromLegacy(
     privateKeyData = encryptPrivateKey(privateKey, options.passphrase, salt);
     keySalt = salt.toString('base64');
   } else {
-    privateKeyData = legacyRaw.privateKey; // keep the same base64
+    privateKeyData = privateKey.toString('base64');
   }
 
   // Build canonical identity file
   const file: IdentityFile = {
     version: IDENTITY_SCHEMA_VERSION,
-    publicKey: legacyRaw.publicKey,
+    publicKey: publicKey.toString('base64'),
     privateKey: privateKeyData,
     privateKeyEncryption: options.passphrase !== undefined ? 'xchacha20-poly1305+argon2id' : 'none',
     ...(keySalt && { keySalt }),
@@ -142,10 +151,7 @@ export function migrateFromLegacy(
   };
 
   // Write canonical identity (legacy file preserved for rollback)
-  fs.mkdirSync(path.dirname(canonicalPath), { recursive: true });
-  const tmpPath = `${canonicalPath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(file, null, 2), { mode: 0o600 });
-  fs.renameSync(tmpPath, canonicalPath);
+  writeFileAtomicOwnerOnly(canonicalPath, JSON.stringify(file, null, 2));
 
   const identity: CanonicalIdentity = {
     version: IDENTITY_SCHEMA_VERSION,

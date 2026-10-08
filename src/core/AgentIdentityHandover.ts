@@ -33,13 +33,9 @@
  */
 
 import { createHash, createPrivateKey, type KeyObject } from 'node:crypto';
-import {
-  readFileSync as nodeReadFileSync,
-  writeFileSync as nodeWriteFileSync,
-  renameSync as nodeRenameSync,
-  mkdirSync as nodeMkdirSync,
-} from 'node:fs';
-import { join as nodeJoin, dirname as nodeDirname } from 'node:path';
+import { readFileSync as nodeReadFileSync } from 'node:fs';
+import { join as nodeJoin } from 'node:path';
+import { writeFileAtomicOwnerOnly } from '../identity/IdentityKeyFile.js';
 import { encryptForSync, decryptFromSync, type EncryptedSecretPayload } from './SecretStore.js';
 
 /** How an identity came to exist on a machine. Spec §3 — lineage, not "who did I join". */
@@ -333,9 +329,7 @@ export function installAgentIdentityFromPairing(input: {
  * A half-written identity is worse than none — it is an agent that starts with a corrupt key.
  */
 function defaultAtomicWrite(target: string, data: string): void {
-  const dir = nodeDirname(target);
-  nodeMkdirSync(dir, { recursive: true });
-  const tmp = nodeJoin(dir, `.identity.${process.pid}.${Date.now()}.tmp`);
-  nodeWriteFileSync(tmp, data, { mode: 0o600 });
-  nodeRenameSync(tmp, target);
+  // The one raw identity-file write lives in IdentityKeyFile (spec:
+  // threadline-identity-single-writer): temp file created 0600 → rename.
+  writeFileAtomicOwnerOnly(target, data);
 }

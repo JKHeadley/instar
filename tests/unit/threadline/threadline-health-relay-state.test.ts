@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
 import request from 'supertest';
+import { IdentityManager } from '../../../src/threadline/client/IdentityManager.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import {
   createThreadlineRoutes,
@@ -171,6 +172,7 @@ describe('GET /threadline/health — relay reporting', () => {
     // NEVER on `status`. If a degraded relay changed those, peers would silently
     // drop this agent from their registries — a far worse failure than the one
     // being fixed. This test pins the contract.
+    new IdentityManager(stateDir).getOrCreate(); // health reports an identity, never mints one
     const res = await request(appWith((() => ({
       connectionState: 'disconnected',
       lastEvent: lossEvent(true),
