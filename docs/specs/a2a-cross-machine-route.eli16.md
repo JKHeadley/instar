@@ -16,13 +16,18 @@ computer 29 times. The post office itself went down once.
 
 ## The fix
 
-When a computer of mine cannot send, because its line is down or it is standing by, it asks my other computers which one
-holds the line. If one does, it hands the message to that computer. My computers already have a
-private, signed way to talk to each other, so nothing new is opened to the outside world.
+When a computer of mine cannot send, because it is standing by or its line is down, it asks my
+other computers which one holds the line. If one does, it hands the message to that computer. My
+computers already have a private, signed way to talk to each other, so nothing new is opened to the
+outside world.
 
-The computer that holds the line sends the message in the normal way. It keeps all the records of
-the send. It then tells the first computer what the post office really said: delivered, held for
-later, or refused. The first computer passes that answer on unchanged.
+The computer that holds the line is only a pipe. It sends the message and tells the first computer
+what the post office really said: delivered, held for later, or refused. The first computer keeps
+the conversation and all its records, and passes that answer on unchanged.
+
+When the other agent replies, the reply arrives at the computer that holds the line. That computer
+remembers which of my computers the conversation belongs to, and hands the reply straight over. So
+the reply shows up in the same session that sent the message, as it always does.
 
 ## The limits
 
@@ -31,14 +36,15 @@ later, or refused. The first computer passes that answer on unchanged.
 - If the other computer does not answer in time, I report "unknown", not "sent".
 - Secrets such as passwords are never handed over this way.
 - If none of my computers holds the line, the send fails as it does today.
+- If a reply cannot be handed over, it is handled where it arrived and that is noted. It is never
+  thrown away.
 
-## One thing to know
+## Why not just reconnect
 
-The reply to a forwarded message comes back to the computer that holds the line, not to the one
-that asked. So the session that sent the message does not see the reply directly. The answer tells
-it which computer the reply will arrive on, and the reply shows up there in the usual place.
+The post office allows one line per agent. If the standby computer opened its own line, it would
+cut off the computer that had it, and the two would keep taking the line from each other.
 
 ## What this does not cover
 
 It does not add a second road to another person's agent for the day the post office itself is
-down. That happened once in seven weeks, so it is left as a separate piece of work.
+down. That happened once in seven weeks, so it is tracked as a separate piece of work.
