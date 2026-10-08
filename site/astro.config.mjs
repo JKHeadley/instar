@@ -122,6 +122,7 @@ export default defineConfig({
             { label: 'Hooks', slug: 'reference/hooks' },
             { label: 'Default Jobs', slug: 'reference/default-jobs' },
             { label: 'Threadline Protocol', slug: 'reference/threadline-protocol' },
+            { label: 'Threadline Module Reference', slug: 'reference/threadline-internals' },
           ],
         },
         {
