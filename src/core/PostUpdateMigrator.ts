@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6712,6 +6712,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
     }
 
+    if (!content.includes('### Jev Correction Shadow')) {
+      content += jevCorrectionShadowAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev correction-shadow awareness card');
+    }
+
     if (!content.includes('### Jev Circles Shadow')) {
       content += jevCirclesShadowAwareness(port);
       patched = true;
@@ -8300,6 +8306,17 @@ When this machine is a standby and another of my machines holds my relay connect
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added A2A relay forward section');
+    }
+
+    // A2A local-route trust (docs/specs/a2a-local-route-trust.md, Agent awareness).
+    // OWN sniff key `A2A local-route trust` — content-sniffed for idempotency.
+    if (!content.includes('A2A local-route trust')) {
+      content += '\n\n' + `### A2A local-route trust
+
+Messages from another agent on this machine arrive on a direct route that used to treat every sender as \`verified\`, while the same sender over the relay is \`untrusted\` unless I hold a trust profile for it. With \`threadline.localRouteTrust\` on, the direct route looks the sender up in the same trust profiles and applies the same rule: a sender with no profile may only ping. It starts in watch-only mode (\`dryRun\`, the default): every message is delivered as before, and each one that would be refused is logged (\`[relay-agent-trust] would-refuse\`) and counted. With \`dryRun: false\` such a message is refused before it is recorded, with HTTP 403 \`{ error: 'insufficient-trust', refused: true }\`; the sender then falls back to the relay, which judges the message again under its own rules and may accept it. Live on a development agent, dark on the fleet (omitted \`enabled\`). With no trust manager (relay off, or a relay standby) it does nothing and counts that. Counters and the current mode: authed \`/health\` → \`threadline.localRouteTrust\`. **When to use** (PROACTIVE): before turning \`dryRun\` off, read \`wouldRefuse\` — each count is a working same-machine conversation that would stop; grant those senders trust first (\`threadline_trust\`). A same-machine agent says its message was refused with \`insufficient-trust\` → grant it trust, or check the mode.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A local-route trust section');
     }
 
     // Own relay state (displaced vs retrying). Existing agents need to check their
@@ -11226,6 +11243,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent must be able to explain it (and that it ranks Claude
       // Code's MEMORY.md), including that it ships dark and shadow-only.
       '### Jev Memory Picker',
+      // Jev correction shadow: a server-side log-only instrument over inbound
+      // user messages; any framework's agent can read its summary.
+      '### Jev Correction Shadow',
       // Jev circles shadow: a server-side log-only instrument whose summary any
       // framework's agent can read; the card says it measures Claude Code sessions.
       '### Jev Circles Shadow',
@@ -11245,6 +11265,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // framework-agnostic — a Codex/Gemini agent must know a forwarded send's
       // result fields and where its reply arrives.
       '### A2A relay forward',
+      // A2A local-route trust: a server-side check on the same-machine inbound
+      // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
+      // the watch-only counters.
+      '### A2A local-route trust',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

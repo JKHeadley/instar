@@ -668,6 +668,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Signal only — it chooses which already-saved index lines are offered to a session and cannot block, send or change anything; in shadow mode it changes nothing. Inert without the vault typesafe_api_key (only the dev agent holds one). One bounded Jev call per session start, only when the index overflows the load cut, under a daily call cap and at most 2 in flight; text is secret-scrubbed before egress; every failure is today\'s load. No destructive action.',
   },
   {
+    name: 'jevCorrectionShadow',
+    configPath: 'intelligence.jevCorrectionShadow.enabled',
+    description: 'Jev correction-detector shadow (jev-correction-shadow.md): for each inbound user message, asks Jev whether it is a correction, a standing preference, neither, or cannot tell, and logs a content-free row beside the correction sentinel\'s Layer-0 verdict.',
+    justification: 'Log-only — changes nothing the correction sentinel records, delivers nothing, and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Never awaited on the message seam; the message and the previous agent message are secret-scrubbed before egress; bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
     name: 'jevCirclesShadow',
     configPath: 'intelligence.jevCirclesShadow.enabled',
     description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',
@@ -767,6 +773,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'threadline.relayForward.enabled',
     description: 'A2A cross-machine route: a relay standby forwards a send once, over the signed mesh, to my machine that holds the relay connection; a reply on a topic-bound thread is typed into that topic\'s live session on whichever of my machines has it.',
     justification: 'Every failure degrades to behaviour that exists today: a forward that did not execute is the same 503, the holder\'s verdict is transcribed and never upgraded, a timeout is `unconfirmed`, and a reply that cannot be injected is the existing visible Telegram post — a topic-bound reply never spawns a session on the holder. Only my own registered machines can send the two verbs (signed, recipient-bound, nonce-guarded), credential sends never cross, nothing new is stored, one attempt with no retry or queue, no LLM, no spend.',
+  },
+  {
+    name: 'a2aLocalRouteTrust',
+    configPath: 'threadline.localRouteTrust.enabled',
+    description: 'Local-route trust: the same-machine A2A route resolves the sender\'s trust level from the trust manager and applies the relay gate\'s operation-permission check, instead of handling every sender as verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Reads in-memory trust profiles only: no writes, no LLM, no spend, no outbound messages; with no trust manager wired it is a counted no-op.',
   },
   {
     name: 'blockerLifecycleLedger',

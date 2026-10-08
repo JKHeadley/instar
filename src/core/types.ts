@@ -3917,6 +3917,24 @@ export interface InstarConfig {
       bands?: Record<string, { lo: number; hi: number }>;
     };
     /**
+     * Jev correction-detector shadow (docs/specs/jev-correction-shadow.md).
+     * LOG-ONLY: asks Jev whether each inbound user message is a correction, a
+     * standing preference, neither, or cannot tell, and logs a content-free row
+     * beside the Layer-0 verdict the correction sentinel gates on. Changes
+     * nothing the sentinel records. `enabled` OMITTED by default ⇒ the
+     * development-agent gate decides; explicit false is the kill switch, read
+     * live. Needs the vault `typesafe_api_key`.
+     */
+    jevCorrectionShadow?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted calls (default 500). */
+      maxChecksPerDay?: number;
+    };
+    /**
      * Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md). LOG-ONLY:
      * every 5 tool actions per session, asks Jev the measured five-label question
      * over the last 15 actions and appends a content-free row (would-nudge or
@@ -5387,6 +5405,14 @@ export interface ThreadlineConfig {
    * standby and today's topic linkage on the holder.
    */
   relayForward?: { enabled?: boolean };
+  /**
+   * Local-route trust (docs/specs/a2a-local-route-trust.md). Read live per
+   * request on `POST /messages/relay-agent`. `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-refuse verdicts are logged and counted, delivery is
+   * unchanged; only an explicit `false` refuses (pre-admission 403).
+   */
+  localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
 }
 
 /**

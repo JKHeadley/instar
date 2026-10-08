@@ -15267,6 +15267,37 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // Jev correction-detector shadow (docs/specs/jev-correction-shadow.md) — log-only:
+    // asks Jev whether each inbound user message is a correction or a standing
+    // preference and logs it beside the Layer-0 verdict the Correction & Preference
+    // Learning Sentinel gates on. Changes nothing the sentinel records. Dev-gated
+    // (live on a development agent, dark on the fleet), read live per message,
+    // inert without the vault typesafe_api_key. Chained, never replacing.
+    if (telegram) {
+      try {
+        const { buildJevCorrectionShadow, installJevCorrectionShadow } = await import('../core/JevCorrectionShadow.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        const { SecretStore } = await import('../core/SecretStore.js');
+        const correctionShadow = buildJevCorrectionShadow({
+          readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+          bootBlock: config.intelligence?.jevCorrectionShadow,
+          developmentAgent: config.developmentAgent === true,
+          readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+          layer0: (text) => HumanAsDetectorLog.getInstance().classify(text),
+          stateDir: config.stateDir,
+          metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+        });
+        installJevCorrectionShadow(correctionShadow);
+        const beforeJevCorrectionCb = telegram.onMessageLogged;
+        telegram.onMessageLogged = (entry) => {
+          if (beforeJevCorrectionCb) beforeJevCorrectionCb(entry);
+          correctionShadow.observe(entry); // synchronous, never throws; the check is detached
+        };
+      } catch (err) {
+        console.log(pc.yellow(`  Jev correction shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+      }
+    }
+
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
       try {
