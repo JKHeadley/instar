@@ -88,6 +88,29 @@ describe('A2A backup routes — real relay, ledger on the receiver', () => {
     loop = loopApp.listen(loopPort ?? 0, '127.0.0.1', () => { loopPort = (loop.address() as { port: number }).port; resolve(); });
   });
 
+  const writeKnownAgents = () => {
+    fs.writeFileSync(path.join(senderState, 'threadline', 'known-agents.json'), JSON.stringify({
+      agents: [{ name: RECV_NAME, port: loopPort, fingerprint: recvFp }],
+    }));
+  };
+
+  /**
+   * Move the loopback to a PORT THAT HAS NEVER BEEN DIALLED, with every socket
+   * of the old one destroyed. `loop.close()` alone only stops the listener
+   * accepting NEW connections — undici keeps the keep-alive socket an earlier
+   * test pooled, so the POST reuses it, reaches the handler and the send
+   * truthfully reports deliveryPath 'local'. The refusal must happen at CONNECT
+   * time, because classifyFallthrough() treats ONLY ECONNREFUSED as proven
+   * non-admission; a socket cut mid-request is ECONNRESET and is marked.
+   */
+  const relistenOnFreshPort = async () => {
+    loop.closeAllConnections();
+    await new Promise<void>((resolve) => { loop.close(() => resolve()); });
+    loopPort = 0 as unknown as number;
+    await listenLoop();
+    writeKnownAgents();
+  };
+
   beforeAll(async () => {
     relay = new RelayServer({
       port: 0,
@@ -196,6 +219,7 @@ describe('A2A backup routes — real relay, ledger on the receiver', () => {
   }, 30_000);
 
   it('an ECONNREFUSED fall-through arrives unmarked (still on the local attempt\'s thread)', async () => {
+    await relistenOnFreshPort();
     postMode = 'refuse';
     try {
       const r = await send({ targetAgent: RECV_NAME, message: 'refused then relay' });
@@ -206,6 +230,7 @@ describe('A2A backup routes — real relay, ledger on the receiver', () => {
       expect(copy.threadId).toBe(r.body.threadId);
     } finally {
       await listenLoop();
+      writeKnownAgents();
     }
   });
 
