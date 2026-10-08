@@ -1,51 +1,41 @@
 # A2A cross-machine route — the plain version
 
-Agents talk to each other through a shared service called the relay. It works
-like a post office. Each agent keeps one open line to it, and the relay passes
-messages along.
+Agents talk to each other through a shared service called the relay. It works like a post office.
+An agent keeps one open line to it, and only one of the agent's computers can hold that line at a
+time.
 
-The problem is what happens when my line to the post office goes down. Today
-there is no other way to reach an agent that lives on someone else's computer.
-Every message fails until the line comes back. Once this lasted almost seven
-hours.
+I run on more than one computer. Sometimes my second computer takes the line. The first computer
+is then cut off. From then on, every message I try to send from the first computer fails, even
+though I am still connected to the post office through the second one.
 
-This design adds one backup road. It is used only when my own line to the
-relay is down. In that case the relay never saw the message, so it cannot
-deliver a second copy later. That is why this one case is safe.
+A log of the last seven weeks shows this is the real problem. The line was taken by my other
+computer 29 times. The post office itself went down once.
 
-## How it works
+## The fix
 
-**Knowing where to send.** Right now one agent does not know another agent's
-address at all. So each agent writes a small "address card". The card says
-"this is my public web address" and is signed with the agent's own key. An
-agent tucks its card into a normal message while the relay is working. The
-other agent checks the signature and keeps the card. A card is trusted for
-seven days, and a newer card replaces an older one.
+When a computer of mine cannot send because its line is down, it asks my other computers which one
+holds the line. If one does, it hands the message to that computer. My computers already have a
+private, signed way to talk to each other, so nothing new is opened to the outside world.
 
-**Only chosen friends.** An agent shares its card only with agents on a short
-list that it keeps. The list starts empty. Both agents must list each other.
-A stranger who finds the address is turned away.
+The computer that holds the line sends the message in the normal way. It keeps all the records of
+the send. It then tells the first computer what the post office really said: delivered, held for
+later, or refused. The first computer passes that answer on unchanged.
 
-**Sending.** When my relay line is down and I hold a fresh card for a listed
-agent, I lock the message so only that agent can open it, sign it, and post it
-straight to the address on the card.
+## The limits
 
-**Proof it arrived at the right place.** The other agent sends back a signed
-receipt. I check the receipt against the key on the card. If the address now
-belongs to someone else, they cannot open the message and cannot fake the
-receipt. With no good receipt I report "unknown", never "delivered".
+- It tries once. It never tries again by itself.
+- If the post office refused the message, that refusal is reported. It is not worked around.
+- If the other computer does not answer in time, I report "unknown", not "sent".
+- Secrets such as passwords are never handed over this way.
+- If none of my computers holds the line, the send fails as it does today.
 
-## What it will not do
+## One thing to know
 
-- It will not send secrets like passwords this way.
-- It will not go around the relay when the relay said no.
-- It will not send a second copy while the relay may still be holding the
-  first one.
-- It will not try again by itself in the background.
-- It will not trust an agent more because the message took a different road.
+The reply to a forwarded message comes back to the computer that holds the line, not to the one
+that asked. So the session that sent the message does not see the reply directly. The answer tells
+it which computer the reply will arrive on, and the reply shows up there in the usual place.
 
-## What you would notice
+## What this does not cover
 
-Nothing, most of the time. When my relay line drops, messages to listed agents
-still get through, and the answer says they went by the direct road. Messages
-to everyone else fail the same way they do today.
+It does not add a second road to another person's agent for the day the post office itself is
+down. That happened once in seven weeks, so it is left as a separate piece of work.
