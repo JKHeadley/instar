@@ -27,6 +27,8 @@ import { computeFingerprint } from './client/MessageEncryptor.js';
 import { recordThreadMessage } from './recordThreadMessage.js';
 import { honorPeerThreadSync, serveBackfill, type SymmetryDeps } from './threadSymmetry.js';
 import { type ThreadSync } from './threadDigest.js';
+import { buildResentNotice, type InboundIdLedger } from './InboundIdLedger.js';
+import { recordDuplicateAck } from './inboundIdLedgerWiring.js';
 
 /**
  * Robustness Phase 2 (D-B/D-D) dependencies for the canonical-history surfaces on
@@ -87,6 +89,28 @@ export interface ThreadlineEndpointsConfig {
     connectionState: string;
     lastEvent: { event: string; ts: string; terminal: boolean } | null;
   } | null;
+  /**
+   * The live inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md), late-bound.
+   * Null/absent ⇒ dark: no dedup, no capability advertised.
+   */
+  inboundIdLedger?: () => InboundIdLedger | null;
+  /** True while the listener daemon owns inbound relay handling (no capability then). */
+  inboundIdLedgerDaemonDeferred?: () => boolean;
+}
+
+/**
+ * §3: advertise `inbound-id-ledger` (and protocolVersion 2) only while the
+ * lookup is operational — table open, no DB-error cooldown or breaker — and the
+ * relay is not daemon-deferred. Evaluated per probe.
+ */
+export function inboundIdLedgerAdvertised(config: Pick<ThreadlineEndpointsConfig, 'inboundIdLedger' | 'inboundIdLedgerDaemonDeferred'>): boolean {
+  try {
+    if (config.inboundIdLedgerDaemonDeferred?.()) return false;
+    const ledger = config.inboundIdLedger?.() ?? null;
+    return !!ledger && ledger.isOperational();
+  } catch {
+    return false;
+  }
 }
 
 /** What `/threadline/health` reports about the relay. Code-defined, never peer text. */
@@ -261,6 +285,10 @@ export function createThreadlineRoutes(
       // Omitted when no count callback is wired (legacy behavior).
       ...(config.mutualVerifiedCount
         ? { mutualVerifiedCount: config.mutualVerifiedCount() }
+        : {}),
+      // Inbound-id ledger §3: a HINT for senders; the per-message answer is the truth.
+      ...(inboundIdLedgerAdvertised(config)
+        ? { capabilities: ['inbound-id-ledger'], protocolVersion: 2 }
         : {}),
       timestamp: new Date().toISOString(),
     });
@@ -519,6 +547,11 @@ export function createThreadlineRoutes(
   // ── Messages: Receive (AUTHENTICATED) ──────────────────────────
 
   router.post('/threadline/messages/receive', threadlineAuth, async (req: Request, res: Response) => {
+    // Inbound-id ledger: the attempt-owned ticket. Cleared by the route's
+    // `finally` until the background chain starts, then by the chain's own.
+    let ticket: import('./InboundIdLedger.js').AdmissionTicket | null = null;
+    let chainStarted = false;
+    let resentNotice: string | null = null;
     try {
       const body = req.body;
 
@@ -539,6 +572,48 @@ export function createThreadlineRoutes(
           5,
         ));
         return;
+      }
+
+      // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md §1): the commit
+      // point — after the signature check (threadlineAuth), before res.json and
+      // every side effect (implicit ack, thread record, dispatch). Keyed on the
+      // SIGNATURE-DERIVED fingerprint, never the x-threadline-agent header.
+      {
+        const ledger = config.inboundIdLedger?.() ?? null;
+        const verifiedFp = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+        if (body.message?.resend === true) resentNotice = buildResentNotice(false);
+        if (ledger && verifiedFp) {
+          const r = ledger.admit({
+            senderKey: verifiedFp,
+            messageId: typeof body.message?.id === 'string' ? body.message.id : null,
+            ingress: 'threadline-http',
+            threadId: body.message?.threadId,
+          });
+          if (r.kind === 'error') {
+            res.status(503).json({ error: 'ledger-unavailable', retryable: true });
+            return;
+          }
+          if (r.kind === 'duplicate') {
+            ledger.bump('dedupById');
+            recordDuplicateAck(inboundAckDeps?.a2aDeliveryTracker, r.row);
+            res.json({
+              accepted: false,
+              deduped: true,
+              dedupBy: 'id',
+              disposition: r.row.disposition,
+              path: r.row.path,
+              firstSeenAt: r.row.admitted_at,
+              retryable: false,
+            });
+            return;
+          }
+          if (r.kind === 'in-flight') {
+            res.status(409).json({ deduped: true, disposition: 'admitted', retryable: true });
+            return;
+          }
+          ticket = r.ticket;
+          if (r.kind === 'admitted' && r.ticket.readmissions > 0) resentNotice = buildResentNotice(false);
+        }
       }
 
       // Route the message through the ThreadlineRouter
@@ -620,8 +695,11 @@ export function createThreadlineRoutes(
         }
       } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
 
-      void threadlineRouter.handleInboundMessage(envelope)
+      const chainTicket = ticket;
+      chainStarted = true;
+      void threadlineRouter.handleInboundMessage(envelope, undefined, { resentNotice })
         .then((result) => {
+          chainTicket?.recordRouterResult(result);
           if (result?.error) {
             console.warn(
               `[ThreadlineEndpoints] Background handleInboundMessage reported: ${result.error}`,
@@ -629,8 +707,10 @@ export function createThreadlineRoutes(
           }
         })
         .catch((err) => {
+          chainTicket?.recordHandoffFailed();
           console.error('[ThreadlineEndpoints] Background handleInboundMessage failed:', err);
-        });
+        })
+        .finally(() => chainTicket?.finish());
       return;
     } catch (err) {
       console.error('[ThreadlineEndpoints] Message receive error:', err);
@@ -640,6 +720,10 @@ export function createThreadlineRoutes(
         true,
         5,
       ));
+    } finally {
+      // A synchronous exit before the background chain started can never leave
+      // a key in flight: finish() records handoff-failed when no outcome was set.
+      if (!chainStarted) ticket?.finish();
     }
   });
 

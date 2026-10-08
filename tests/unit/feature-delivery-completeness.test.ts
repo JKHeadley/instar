@@ -124,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
       '### Telegram message origin',
+      'inbound message-id ledger', // a2a-inbound-id-ledger: the "### A2A inbound message-id ledger" card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key per the spec's Migration parity), framework-shadowed.
       '### Jev Memory Picker', // jev-memory-picker: the session-start memory ranking card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Jev Review-Flag Shadow', // jev-review-flag-shadow: the log-only measurement card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
       '### Jev Circles Shadow', // jev-circles-shadow: the log-only measurement card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).

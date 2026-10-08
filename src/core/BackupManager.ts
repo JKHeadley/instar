@@ -46,6 +46,9 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
   'state/pending-inbound.',
   'state/pending-inbound-quarantine/',
+  // A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md): per-
+  // machine in-flight dedup state, never copied between machines.
+  'state/a2a-inbound-ids.',
   // Parallel-Hand PR Lease (spec parallel-hand-pr-lease §8): the lease store is
   // ephemeral per-machine coordination state (TTL-bounded, self-healing). Restoring
   // it to another machine would resurrect a stale lease as "live" — a regression.

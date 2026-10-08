@@ -105,6 +105,12 @@ export interface ThreadlineBootstrapResult {
    * gone. See relayConnectionObserver.ts.
    */
   getLastRelayEvent?: () => RelayConnectionEvent | null;
+  /**
+   * True when the standalone listener daemon owns inbound relay handling (the
+   * server only sends). The inbound-id ledger does not cover daemon-inbox mode,
+   * so `/threadline/health` never advertises `inbound-id-ledger` while this holds.
+   */
+  daemonHandlingRelay?: boolean;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -298,12 +304,15 @@ export async function bootstrapThreadline(
       // Attempt to decode the base64 payload as plaintext JSON
       let textContent: string;
       let msgType: string | undefined;
+      let resend = false;
       try {
         const payloadStr = Buffer.from(envelope.payload as string, 'base64').toString('utf-8');
         const parsed = JSON.parse(payloadStr);
         if (typeof parsed === 'object' && parsed !== null && 'text' in parsed) {
           textContent = String(parsed.text);
           msgType = parsed.type as string | undefined;
+          // inbound-id ledger §5: `resend` travels INSIDE the message body.
+          resend = (parsed as { resend?: unknown }).resend === true;
         } else if (typeof parsed === 'string') {
           textContent = parsed;
         } else {
@@ -317,8 +326,10 @@ export async function bootstrapThreadline(
         from: String(envelope.from ?? 'unknown'),
         fromName: String(envelope.from ?? 'unknown').slice(0, 8),
         threadId: String(envelope.threadId ?? `relay-${Date.now()}`),
-        messageId: String(envelope.messageId ?? `msg-${Date.now()}`),
-        content: { content: textContent, type: msgType },
+        // inbound-id ledger §1: no fabricated `msg-<now>` id — a message with no
+        // id is UNKEYED (admitted, never deduplicated, counted).
+        messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
+        content: { content: textContent, type: msgType, ...(resend ? { resend: true } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
         envelope: envelope as never,
       };
@@ -413,6 +424,7 @@ export async function bootstrapThreadline(
      *  Lets a status surface report WHY the relay is down instead of only that it
      *  is — the distinction the 2026-07-26 incident turned on. */
     getLastRelayEvent: () => relayObservability?.getLastEvent() ?? null,
+    daemonHandlingRelay,
     inboundGate,
     shutdown: async () => {
       stopHeartbeat();
