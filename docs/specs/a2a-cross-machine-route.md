@@ -10,6 +10,11 @@ parent-principle: "Verify the State, Not Its Symbol"
 parent-principle-fit: "A standby machine of mine answers 'not connected' although the agent is connected. The send goes out through the machine that holds the connection, and that machine's real verdict comes back."
 binding-standards: ["A Refusal Stays a Refusal — conservation of negative outcomes", "Capacity Safety — No Unbounded Self-Action", "Ownership-Gated Side Effects"]
 eli16-overview: a2a-cross-machine-route.eli16.md
+review-convergence: "2026-10-08T21:02:08.753Z"
+review-iterations: 5
+review-completed-at: "2026-10-08T21:02:08.753Z"
+review-report: "docs/specs/reports/a2a-cross-machine-route-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
 ---
 
 # Spec — A2A cross-machine route
@@ -263,7 +268,8 @@ machine B: today the reply finds no local session on A. Step 3 reaches T's sessi
   authorises it from its own live session for that topic. A stale duplicate session for a topic is
   the duplicate-session reconciler's concern, not this spec's.
 - **No manual work.** A topic-bound reply returns by code; no agent instruction is needed.
-- **Residual.** A rate-limited reply stays in the holder's hub with its commitment open. Reply
+- **Residual.** A rate-limited reply stays in the holder's hub with its commitment open. Nothing
+  resurfaces it today; that is tracked as ACT-070 (due 2026-10-12). Reply
   commitments have no beacon and the redrive engine ships off; all of this exists today.
 
 ## Evidence each check relies on (symbol → state)
