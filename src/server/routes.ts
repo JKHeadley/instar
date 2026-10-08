@@ -143,6 +143,7 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { getJevReviewFlagShadow } from '../core/JevReviewFlagShadow.js';
 import { PasskeyGrantStore, canonicalEmail as canonicalPasskeyEmail } from '../core/PasskeyGrantStore.js';
@@ -5820,6 +5821,18 @@ export function createRoutes(ctx: RouteContext): Router {
     }
 
     res.json({ ok: true, event: payload.event });
+  });
+
+  // GET /jev-correction/summary — the jev-correction-shadow log, summarised
+  // (docs/specs/jev-correction-shadow.md): checks, Jev flags vs Layer-0 signals,
+  // agreement. Read-only; content-free rows. 503 when the shadow is not constructed.
+  router.get('/jev-correction/summary', (_req, res) => {
+    const shadow = getJevCorrectionShadow();
+    if (!shadow) {
+      res.status(503).json({ error: 'jev-correction shadow not constructed on this agent' });
+      return;
+    }
+    res.json(shadow.summary());
   });
 
   // GET /jev-circles/summary — the jev-circles-shadow log, summarised

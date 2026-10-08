@@ -37,7 +37,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6712,6 +6712,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
     }
 
+    if (!content.includes('### Jev Correction Shadow')) {
+      content += jevCorrectionShadowAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev correction-shadow awareness card');
+    }
+
     if (!content.includes('### Jev Circles Shadow')) {
       content += jevCirclesShadowAwareness(port);
       patched = true;
@@ -11214,6 +11220,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent must be able to explain it (and that it ranks Claude
       // Code's MEMORY.md), including that it ships dark and shadow-only.
       '### Jev Memory Picker',
+      // Jev correction shadow: a server-side log-only instrument over inbound
+      // user messages; any framework's agent can read its summary.
+      '### Jev Correction Shadow',
       // Jev circles shadow: a server-side log-only instrument whose summary any
       // framework's agent can read; the card says it measures Claude Code sessions.
       '### Jev Circles Shadow',
