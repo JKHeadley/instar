@@ -8,12 +8,15 @@ I run on more than one computer. Sometimes my second computer takes the line. Th
 is then cut off. From then on, every message I try to send from the first computer fails, even
 though I am still connected to the post office through the second one.
 
+The same is true of a computer that is set to stand by. It never takes the line at all, so its
+messages always fail.
+
 A log of the last seven weeks shows this is the real problem. The line was taken by my other
 computer 29 times. The post office itself went down once.
 
 ## The fix
 
-When a computer of mine cannot send because its line is down, it asks my other computers which one
+When a computer of mine cannot send, because its line is down or it is standing by, it asks my other computers which one
 holds the line. If one does, it hands the message to that computer. My computers already have a
 private, signed way to talk to each other, so nothing new is opened to the outside world.
 
