@@ -124,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
       '### Telegram message origin',
+      'A2A local-route trust', // a2a-local-route-trust: the same-machine inbound trust-check card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A local-route trust`), framework-shadowed.
       'A2A backup routes', // a2a-backup-routes: the relay-send backup-routes card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A backup routes`), framework-shadowed.
       'inbound message-id ledger', // a2a-inbound-id-ledger: the "### A2A inbound message-id ledger" card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key per the spec's Migration parity), framework-shadowed.
       '### Jev Memory Picker', // jev-memory-picker: the session-start memory ranking card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (content-sniffed on the heading).
