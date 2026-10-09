@@ -43,6 +43,7 @@ import type { MessageEnvelope } from '../messaging/types.js';
 import type { MessageStore } from '../messaging/MessageStore.js';
 import type { TelegramOriginService } from '../messaging/telegram-origin/TelegramOriginService.js';
 import { withThreadlineForwardedAuthor } from './TelegramOriginAttribution.js';
+import { TOPIC_REPLY_BUDGET_MS, type TopicOwnerAskResult } from './relayForward.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -70,6 +71,31 @@ export interface TopicLinkageDeps {
   getSessionForTopic?: (topicId: number) => string | null;
   /** Local-agent name, for sender filtering. */
   localAgent: string;
+  /**
+   * A2A cross-machine route §5 (docs/specs/a2a-cross-machine-route.md): ask ONE
+   * other machine of mine to type a topic-bound reply into that topic's live
+   * session. The receiver decides from its own live session and never spawns.
+   * Absent (single machine, or mesh not wired) ⇒ today's code. Every call is
+   * wrapped: a throw or a timeout is `failure-visible`, never a fall-through
+   * to the thread worker.
+   */
+  deliverToTopicOwner?: (
+    machineId: string,
+    payload: { topicId: number; text: string; messageId: string; threadId: string },
+    timeoutMs: number,
+  ) => Promise<TopicOwnerAskResult>;
+  /** The live `threadline.relayForward` gate. Off ⇒ no machine is asked. */
+  remoteReplyEnabled?: () => boolean;
+  /** This machine's mesh id, or null when the mesh is not configured. */
+  selfMachineId?: () => string | null;
+  /** A human name for this machine (the truncation pointer in a remote inject). */
+  selfMachineName?: () => string | null;
+  /** The ownership record: which machine has a topic. May throw (wrapped). */
+  topicOwnerOf?: (topicId: number) => string | null;
+  /** Total budget for every ask one reply makes. Default 12 s. */
+  remoteReplyBudgetMs?: number;
+  /** Observability hook for the asks (counters); never an input. */
+  onRemoteReplyEvent?: (event: 'ask' | 'injected' | 'failure-visible') => void;
   /** Optional clock for deterministic tests. */
   now?: () => number;
 }
@@ -90,6 +116,13 @@ export interface CaptureOriginInput {
   originSessionName?: string;
   /** TTL for the commitment + thread cache. Defaults to 7 days. */
   ttlMs?: number;
+  /**
+   * The machine of mine that made this send, when it was forwarded here by a
+   * relay standby (a2a-cross-machine-route §3). Written ONLY from the
+   * authenticated mesh sender. When present it OVERWRITES the stored value, so
+   * a topic that moved to a second standby asks the right machine first.
+   */
+  machineOrigin?: string;
 }
 
 export interface CaptureOriginResult {
@@ -111,7 +144,7 @@ export type TopicRouteOutcome =
 
 export interface RouteReplyInput {
   envelope: MessageEnvelope;
-  threadEntry: { remoteAgent: string; subject?: string; originTopicId?: number; originSessionName?: string };
+  threadEntry: { remoteAgent: string; subject?: string; originTopicId?: number; originSessionName?: string; machineOrigin?: string };
 }
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -243,7 +276,7 @@ export class TopicLinkageHandler {
         state: existing?.state ?? 'active',
         pinned: existing?.pinned ?? false,
         messageCount: existing?.messageCount ?? 1,
-        machineOrigin: existing?.machineOrigin,
+        machineOrigin: input.machineOrigin ?? existing?.machineOrigin,
         migratedTo: existing?.migratedTo,
         spawnMode: existing?.spawnMode,
         resolvedAt: existing?.resolvedAt,
@@ -352,15 +385,37 @@ export class TopicLinkageHandler {
     // / affinity collision). Without this check, anyone who can guess or
     // observe an active threadId and pass the autonomy gate could deliver
     // a fabricated reply against that thread.
+    //
+    // The commitment stores the DISPLAY name the caller typed, while a relay
+    // inbound's sender is the peer's fingerprint — so a name-addressed send
+    // failed this check on every reply. The thread entry's `remoteAgent` is
+    // the resolved fingerprint the send actually went to; a sender equal to it
+    // is the expected peer (a2a-cross-machine-route §5, ungated).
+    const senderIsThreadPeer =
+      !!threadEntry.remoteAgent &&
+      !!message.from.agent &&
+      threadEntry.remoteAgent.toLowerCase() === message.from.agent.toLowerCase();
     if (
       commitment?.relatedAgent &&
       message.from.agent &&
-      commitment.relatedAgent !== message.from.agent
+      commitment.relatedAgent !== message.from.agent &&
+      !senderIsThreadPeer
     ) {
       console.warn(
         `[TopicLinkageHandler] Sender mismatch on thread ${threadId}: commitment recorded ${commitment.relatedAgent}, inbound from ${message.from.agent}. Falling through to thread-worker path; commitment not transitioned.`,
       );
       return { kind: 'no-linkage' };
+    }
+
+    // A2A cross-machine route §5: the topic's live session may be on another
+    // machine of mine. Asked BEFORE the topic-active test, and only when no
+    // local session for the topic is alive (a live local session always wins).
+    // Every outcome of this branch is `routed`, so the router never spawns.
+    // (The plan is computed first so that with the gate off — plan null — not
+    // even the liveness probe runs: today's path, call for call.)
+    const remotePlan = this.planRemoteAsk(topicId, threadEntry.machineOrigin);
+    if (remotePlan && !(liveSessionName !== null && this.safeIsAlive(liveSessionName))) {
+      return this.routeViaTopicOwner({ plan: remotePlan, threadId, topicId, message, threadEntry, commitment });
     }
 
     if (!topicActive) {
@@ -396,7 +451,6 @@ export class TopicLinkageHandler {
 
     const sessionName = liveSessionName ?? threadEntry.originSessionName ?? null;
     let deliveryMode: 'live-inject' | 'resume-pending' | 'failure-visible' = 'failure-visible';
-    let telegramSent = false;
 
     const payload = this.buildSessionPayload({
       threadId,
@@ -435,6 +489,26 @@ export class TopicLinkageHandler {
       // quieted reply — recovery of a low-salience reply is via the hub.
       deliveryMode = 'resume-pending';
     }
+
+    return this.finishRouted({ threadId, topicId, message, threadEntry, commitment, deliveryMode, verdictResult });
+  }
+
+  /**
+   * The shared tail of every `routed` outcome: the salience-gated, rate-limited
+   * Telegram surface and the commitment lifecycle.
+   */
+  private async finishRouted(args: {
+    threadId: string;
+    topicId: number;
+    message: MessageEnvelope['message'];
+    threadEntry: RouteReplyInput['threadEntry'];
+    commitment: Commitment | null;
+    deliveryMode: 'live-inject' | 'resume-pending' | 'failure-visible';
+    verdictResult: { verdict: SalienceVerdict; reason: string };
+  }): Promise<TopicRouteOutcome> {
+    const { threadId, topicId, message, threadEntry, commitment, deliveryMode, verdictResult } = args;
+    const { commitmentTracker } = this.deps;
+    let telegramSent = false;
 
     // Salience-gated Telegram surface (#16 — suppress low-salience a2a chatter).
     //   - live-inject confirmed → NEVER surface (the agent relays the reply
@@ -545,6 +619,154 @@ export class TopicLinkageHandler {
 
   // ── Helpers ────────────────────────────────────────────────────
 
+  private safeIsAlive(sessionName: string): boolean {
+    try { return this.deps.isSessionAlive(sessionName); } catch { return false; /* @silent-fallback-ok — an unreadable liveness check is "not alive" */ }
+  }
+
+  /**
+   * Whom to ask first (a2a-cross-machine-route §5), or null for today's code.
+   *  1. the thread's `machineOrigin`, when it names another machine;
+   *  3. with no (foreign) `machineOrigin`, the machine the ownership record names.
+   * A throwing ownership read returns `{ first: null }`: the reply is still
+   * `routed` (failure-visible), never handed to the thread worker.
+   */
+  private planRemoteAsk(
+    topicId: number,
+    machineOrigin: string | undefined,
+  ): { first: string | null; viaOrigin: boolean; self: string } | null {
+    if (!this.deps.deliverToTopicOwner) return null;
+    let self: string | null = null;
+    try {
+      if (this.deps.remoteReplyEnabled?.() !== true) return null;
+      self = this.deps.selfMachineId?.() ?? null;
+    } catch {
+      // @silent-fallback-ok — an unreadable gate / identity is "off": today's code.
+      return null;
+    }
+    if (!self) return null;
+    if (machineOrigin && machineOrigin !== self) return { first: machineOrigin, viaOrigin: true, self };
+    if (!this.deps.topicOwnerOf) return null;
+    let owner: string | null;
+    try {
+      owner = this.deps.topicOwnerOf(topicId);
+    } catch (err) {
+      console.warn(
+        `[TopicLinkageHandler] ownership read failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)} — surfacing the reply in the topic`,
+      );
+      return { first: null, viaOrigin: false, self };
+    }
+    if (owner && owner !== self) return { first: owner, viaOrigin: false, self };
+    return null;
+  }
+
+  /** One ask, bounded by `timeoutMs` even if the dependency hangs. Never throws. */
+  private async askOnce(
+    machineId: string,
+    payload: { topicId: number; text: string; messageId: string; threadId: string },
+    timeoutMs: number,
+  ): Promise<TopicOwnerAskResult> {
+    this.deps.onRemoteReplyEvent?.('ask');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<TopicOwnerAskResult>((resolve) => {
+        timer = setTimeout(() => resolve({ injected: false, definitive: false, reason: 'timeout' }), timeoutMs);
+      });
+      return await Promise.race([this.deps.deliverToTopicOwner!(machineId, payload, timeoutMs), timeout]);
+    } catch (err) {
+      console.warn(
+        `[TopicLinkageHandler] ask to ${machineId} threw for thread ${payload.threadId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { injected: false, definitive: false, reason: 'ask-threw' };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Deliver a topic-bound reply to the machine that has the topic's session.
+   * At most two asks, one after the other, inside ONE budget. INVARIANT: every
+   * path returns `routed` — the router returns `handled: true` before any
+   * spawn, so a topic-bound reply never spawns a context-less session here.
+   */
+  private async routeViaTopicOwner(args: {
+    plan: { first: string | null; viaOrigin: boolean; self: string };
+    threadId: string;
+    topicId: number;
+    message: MessageEnvelope['message'];
+    threadEntry: RouteReplyInput['threadEntry'];
+    commitment: Commitment | null;
+  }): Promise<TopicRouteOutcome> {
+    const { plan, threadId, topicId, message, threadEntry, commitment } = args;
+    let verdictResult: { verdict: SalienceVerdict; reason: string } = {
+      verdict: 'user-visible',
+      reason: 'remote topic delivery failed before classification',
+    };
+    let injected = false;
+    try {
+      const isFirstReply = !commitment || !commitment.lastReplyAt;
+      const history = this.fetchThreadHistory(threadId);
+      verdictResult = await this.deps.salienceGate.evaluate({
+        replyBody: message.body ?? '',
+        purpose: commitment?.userRequest,
+        history,
+        isFirstReply,
+        remoteAgent: message.from.agent,
+      });
+      if (plan.first) {
+        let holderName: string | null = null;
+        try { holderName = this.deps.selfMachineName?.() ?? null; } catch { holderName = null; /* @silent-fallback-ok — the pointer falls back to the machine id */ }
+        const text = this.buildSessionPayload({
+          threadId, message, threadEntry, commitment,
+          verdict: verdictResult.verdict, verdictReason: verdictResult.reason,
+          history, topicId,
+          remoteHolderName: holderName || plan.self,
+        });
+        const payload = { topicId, text, messageId: message.id ?? '', threadId };
+        const budget = this.deps.remoteReplyBudgetMs ?? TOPIC_REPLY_BUDGET_MS;
+        const startedAt = Date.now();
+        const first = await this.askOnce(plan.first, payload, budget);
+        if (first.injected) {
+          injected = true;
+        } else if (plan.viaOrigin && first.definitive && this.deps.topicOwnerOf) {
+          // Step 2: ONLY after a definitive not-injected. A timeout or a
+          // transport error gets no second ask — the first may have landed.
+          let owner: string | null = null;
+          try { owner = this.deps.topicOwnerOf(topicId); } catch { owner = null; /* @silent-fallback-ok — no second ask ⇒ the Telegram post below */ }
+          const remaining = budget - (Date.now() - startedAt);
+          if (owner && owner !== plan.self && owner !== plan.first && remaining >= 1000) {
+            const second = await this.askOnce(owner, payload, remaining);
+            injected = second.injected;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[TopicLinkageHandler] Remote topic delivery failed for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — surfacing the reply in the topic`,
+      );
+      injected = false;
+    }
+    try { this.deps.onRemoteReplyEvent?.(injected ? 'injected' : 'failure-visible'); } catch { /* @silent-fallback-ok — counters are observability only */ }
+    try {
+      return await this.finishRouted({
+        threadId, topicId, message, threadEntry, commitment,
+        deliveryMode: injected ? 'live-inject' : 'failure-visible',
+        verdictResult,
+      });
+    } catch (err) {
+      console.warn(
+        `[TopicLinkageHandler] finishRouted threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        kind: 'routed',
+        deliveryMode: injected ? 'live-inject' : 'failure-visible',
+        verdict: verdictResult.verdict,
+        reason: verdictResult.reason,
+        commitmentDelivered: false,
+        telegramSent: false,
+      };
+    }
+  }
+
   private fetchThreadHistory(threadId: string): Array<{ from: string; body: string; createdAt?: string }> {
     if (!this.deps.messageStore) return [];
     try {
@@ -571,8 +793,10 @@ export class TopicLinkageHandler {
     verdictReason: string;
     history: Array<{ from: string; body: string; createdAt?: string }>;
     topicId: number;
+    /** Set for a remote inject: the machine that holds the full body. */
+    remoteHolderName?: string;
   }): string {
-    const { threadId, message, threadEntry, commitment, verdict, verdictReason, history, topicId } = args;
+    const { threadId, message, threadEntry, commitment, verdict, verdictReason, history, topicId, remoteHolderName } = args;
 
     const subject = threadEntry.subject ?? message.subject ?? 'threadline conversation';
     const purposeLine = commitment?.userRequest
@@ -594,7 +818,11 @@ export class TopicLinkageHandler {
     // or instructions. Per security review F2. The session can still read the
     // full body from MessageStore via thread history.
     const bodyRaw = message.body ?? '(empty)';
-    const truncatedFlag = bodyRaw.length > INJECT_BODY_CAP ? `\n[reply body truncated to ${INJECT_BODY_CAP} chars; full body available via threadline_history]` : '';
+    const truncatedFlag = bodyRaw.length > INJECT_BODY_CAP
+      ? (remoteHolderName
+        ? `\n[reply body truncated to ${INJECT_BODY_CAP} chars; the full body is on my machine "${remoteHolderName}" (threadline_history there)]`
+        : `\n[reply body truncated to ${INJECT_BODY_CAP} chars; full body available via threadline_history]`)
+      : '';
     const bodyText = bodyRaw.slice(0, INJECT_BODY_CAP) + truncatedFlag;
     const guardNonce = crypto.randomBytes(8).toString('hex');
     const beginGuard = `<<<REMOTE_REPLY_BEGIN nonce=${guardNonce}>>>`;

@@ -1008,6 +1008,10 @@ export class AgentServer {
      *  report WHY the relay is down (and whether it can self-heal) instead of a
      *  literal 'ok'. Undefined when no relay client exists in this process. */
     getLastRelayEvent?: () => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null;
+    /** A2A cross-machine route (docs/specs/a2a-cross-machine-route.md): the
+     *  shared forward context — boot secret, standby fact, forwarder, counters.
+     *  Absent ⇒ relay-send behaves exactly as before. */
+    a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
@@ -4419,6 +4423,7 @@ export class AgentServer {
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
       getLastRelayEvent: options.getLastRelayEvent ?? null,
+      a2aRelayForward: options.a2aRelayForward ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       relayVerdictCounters: this.relayVerdictCounters,

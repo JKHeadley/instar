@@ -515,6 +515,18 @@ import {
   type LocalPostOutcome,
 } from '../threadline/backupRoutes.js';
 import {
+  RELAY_FORWARD_HEADER,
+  buildForwardAnswer,
+  forwardLogLine,
+  forwardSecretMatches,
+  isForwardableMessageId,
+  isForwardedFingerprint,
+  resolveRelayForwardEnabled,
+  type ForwardOutcome,
+  type RelayForwardCommand,
+  type RelayForwardCounters,
+} from '../threadline/relayForward.js';
+import {
   createLocalRouteTrustCounters,
   localRouteTrustLogLine,
   resolveLocalRouteTrust,
@@ -1213,6 +1225,20 @@ export interface RouteContext {
   /** Relay connection-LOSS reader. Null when no relay client exists in this
    *  process (relay disabled, or the listener daemon owns it). */
   getLastRelayEvent?: (() => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null) | null;
+  /**
+   * A2A cross-machine route (docs/specs/a2a-cross-machine-route.md). ONE object
+   * shared with the mesh handlers in server.ts, whose fields are filled in as
+   * boot proceeds: `secret` (in memory only — never env, config or logs) marks
+   * the holder's loopback call; `relaySuppressedByStandby` is the bootstrap's
+   * boot-time fact; `forward` exists once the mesh client does. Null/absent ⇒
+   * the route behaves exactly as before.
+   */
+  a2aRelayForward?: {
+    secret: string;
+    relaySuppressedByStandby: boolean;
+    forward: ((command: RelayForwardCommand) => Promise<ForwardOutcome>) | null;
+    counters: RelayForwardCounters;
+  } | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
@@ -4846,6 +4872,11 @@ export function createRoutes(ctx: RouteContext): Router {
       // A2A backup routes counters (docs/specs/a2a-backup-routes.md "Migration
       // parity"): beside the relay-verdict counters, AUTHED branch only.
       base.threadline = { ...(base.threadline as object ?? {}), backupRoutes: { ...backupRouteCounters } };
+      // A2A cross-machine route counters (docs/specs/a2a-cross-machine-route.md
+      // §4): AUTHED branch only, beside the backup-route counters.
+      if (ctx.a2aRelayForward) {
+        base.threadline = { ...(base.threadline as object ?? {}), relayForward: { ...ctx.a2aRelayForward.counters } };
+      }
       // Local-route trust (docs/specs/a2a-local-route-trust.md): the live mode,
       // whether a trust manager is wired, and the verdict counters. AUTHED only.
       base.threadline = {
@@ -36051,6 +36082,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+    // ── A2A cross-machine route (docs/specs/a2a-cross-machine-route.md §3) ──
+    // A request that carries THIS server's boot secret is my own mesh handler
+    // running a send that a relay standby of mine forwarded here. ONLY under the
+    // secret (compared in constant time) does the route: honour the caller's
+    // messageId / resend, take `resolvedFp` as the nickname resolution, skip the
+    // negotiator gate and the local-delivery branches, never forward again, and
+    // stamp the authenticated mesh sender as the thread's machineOrigin and the
+    // thread-log author. Everything else is the ordinary route.
+    const fwdCtx = ctx.a2aRelayForward ?? null;
+    const forwardedRequest = !!fwdCtx && forwardSecretMatches(fwdCtx.secret, req.headers[RELAY_FORWARD_HEADER]);
+    const forwardedFromMachine = forwardedRequest
+      && typeof req.body?.forwardedFromMachine === 'string' && req.body.forwardedFromMachine
+      && req.body.forwardedFromMachine.length <= 128
+      ? req.body.forwardedFromMachine as string : undefined;
+    const forwardedResolvedFp = forwardedRequest && isForwardedFingerprint(req.body?.resolvedFp)
+      ? (req.body.resolvedFp as string).toLowerCase() : null;
     const replyClaimOwner = typeof originSessionName === 'string' && originSessionName
       ? originSessionName : `relay-send:${randomUUID()}`;
     const boundWarmInbound = typeof originSessionName === 'string' && typeof threadId === 'string'
@@ -36211,6 +36258,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           originTopicId: resolvedOriginTopicId,
           purpose: resolvedPurpose,
           subject: 'Threadline conversation',
+          // Forwarded send: the reply is asked of the machine that sent it first.
+          ...(forwardedFromMachine ? { machineOrigin: forwardedFromMachine } : {}),
         });
       } catch (err) {
         console.warn(
@@ -36243,7 +36292,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { name: targetAgent.substring(0, ci), fpPrefix: suffix.toLowerCase() };
     })();
     const usesFpPrefixSyntax = fpPrefixParse !== null;
-    if (!looksLikeFingerprint) {
+    // Forwarded with `resolvedFp`: the standby already resolved the name; the
+    // holder uses that and cannot re-resolve the name to a different agent.
+    if (forwardedResolvedFp) {
+      nicknameResolvedFp = forwardedResolvedFp;
+    } else if (!looksLikeFingerprint) {
       try {
         const nicknameStore = new ThreadlineNicknames({ stateDir: ctx.config.stateDir });
         // For "name:fpPrefix" inputs, look up the bare name in the nickname
@@ -36312,7 +36365,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // A forwarded request keeps the standby's message id (ONE id on every route).
+    const msgId = forwardedRequest && isForwardableMessageId(req.body?.messageId)
+      ? req.body.messageId as string
+      : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Mint a stable UUID threadId when caller didn't provide one so
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
@@ -36359,7 +36415,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // on who-speaks, not on what a message means). Prose is inert (G2), so a
     // fail-open window briefly risks only two of our own sessions both speaking
     // inert prose — never a binding.
-    {
+    // A forwarded request skips it: the gate already ran on the standby, against
+    // the session that is actually speaking (single-voice is not enforced
+    // across machines; a2a-cross-machine-route §3).
+    if (!forwardedRequest) {
       const negVerdict = await evaluateSendGate(effectiveThreadId, {
         conversationStore: ctx.conversationStore ?? null,
         rawConfig: (ctx.config as { threadline?: { singleNegotiator?: unknown } }).threadline?.singleNegotiator,
@@ -36455,7 +36514,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Declared before the name path's `try`; set immediately before the POST.
     let localPostOutcome: LocalPostOutcome = { kind: 'no-post' };
     let localPostPeerFp = '';
-    try {
+    // A forwarded request ALWAYS goes over the relay on the holder (the standby
+    // already tried its own local route), so a holder 503 proves nothing was sent.
+    if (!forwardedRequest) try {
       const knownAgentsPath = path.join(ctx.config.stateDir, 'threadline', 'known-agents.json');
       if (fs.existsSync(knownAgentsPath)) {
         const knownData = JSON.parse(fs.readFileSync(knownAgentsPath, 'utf-8'));
@@ -36823,6 +36884,88 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // ── Fall back to relay delivery ─────────────────────────────────
     if (!relayClient || relayClient.connectionState !== 'connected') {
+      // ── A2A cross-machine route §1/§2/§4: a relay STANDBY forwards once ──
+      // Tried only when the client is ABSENT because this machine is a standby
+      // (the boot-time fact, never recomputed), the send is not a credential
+      // share, this request is not itself a forward, and the gate is on. A
+      // displaced or disconnected machine keeps the 503 below.
+      const relayForwardOn = resolveRelayForwardEnabled(
+        ctx.liveConfig?.get<boolean | undefined>('threadline.relayForward.enabled', undefined),
+        ctx.config as { developmentAgent?: boolean; threadline?: { relayForward?: { enabled?: boolean } } },
+      );
+      if (relayForwardOn && !forwardedRequest && !relayClient && !isCredentialShareSend
+        && fwdCtx?.relaySuppressedByStandby === true && fwdCtx.forward) {
+        // The relay leg's thread + resend mark, exactly as the local relay leg
+        // would have carried them (a2a-backup-routes §1).
+        const ft = backupRoutesOn ? classifyFallthrough(localPostOutcome) : null;
+        const forwardThreadId = ft?.postIssued ? effectiveThreadId : (typeof threadId === 'string' && threadId ? threadId : undefined);
+        let outcome: ForwardOutcome;
+        try {
+          outcome = await fwdCtx.forward({
+            type: 'a2a-relay-forward',
+            targetAgent,
+            ...(nicknameResolvedFp ? { resolvedFp: nicknameResolvedFp } : {}),
+            body: message,
+            messageId: msgId,
+            ...(forwardThreadId ? { threadId: forwardThreadId } : {}),
+            resend: ft?.marked === true,
+            ...(resolvedOriginTopicId !== undefined ? { originTopicId: resolvedOriginTopicId } : {}),
+            ...(resolvedPurpose ? { purpose: resolvedPurpose } : {}),
+          });
+        } catch {
+          // The forwarder never throws; if it somehow does, nothing is known
+          // about a holder, so the answer is today's 503.
+          outcome = { kind: 'no-holder' };
+        }
+        const answer = buildForwardAnswer(outcome, {
+          messageId: msgId,
+          threadId: forwardThreadId,
+          hadTopic: resolvedOriginTopicId !== undefined,
+        });
+        const toMachine = outcome.kind === 'no-holder' ? '' : (outcome.machine.nickname || outcome.machine.machineId);
+        if (!answer) {
+          fwdCtx.counters.notExecuted++;
+          console.log(forwardLogLine(msgId, toMachine, `not-executed:${outcome.kind === 'not-executed' ? outcome.reason : 'no-holder'}`));
+          // falls through to today's 503
+        } else {
+          if (outcome.kind === 'answered') fwdCtx.counters.forwarded++; else fwdCtx.counters.unconfirmed++;
+          console.log(forwardLogLine(msgId, toMachine, answer.label));
+          // The ONE record the standby writes: a settlement line, so reap
+          // recovery does not re-drive an inbound this send already answered.
+          // Keyed on the request's OWN threadId — the one the inReplyTo check
+          // validated above.
+          if (typeof inReplyTo === 'string' && ctx.listenerManager && answer.status < 400) {
+            if (answer.settlementOutcome && typeof threadId === 'string') {
+              try {
+                ctx.listenerManager.appendCanonicalOutboxEntry({
+                  from: ctx.config.projectName ?? 'self',
+                  senderName: ctx.config.projectName ?? 'self',
+                  // The fingerprint the holder actually sent to, when it said so.
+                  to: (typeof answer.body.resolvedAgent === 'string' && answer.body.resolvedAgent)
+                    ? answer.body.resolvedAgent
+                    : (nicknameResolvedFp ?? targetAgent),
+                  recipientName: targetAgent,
+                  threadId,
+                  text: message,
+                  messageId: msgId,
+                  inReplyTo,
+                  outcome: answer.settlementOutcome,
+                });
+                ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
+              } catch (err) {
+                console.warn(`[relay-send] Forward settlement line failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
+              }
+            } else {
+              ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
+            }
+          }
+          // A >=400 answer (502 refusal, a holder 4xx) settles nothing; the
+          // finish handler releases the reply claim so a retry is allowed.
+          res.status(answer.status).json(answer.body);
+          return;
+        }
+      }
       res.status(503).json({ success: false, error: 'Relay not connected and local delivery unavailable' });
       return;
     }
@@ -36888,7 +37031,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }
       const { messageId: relayMsgId, threadId: effectiveRelayThreadId } =
-        fallthrough?.marked
+        (fallthrough?.marked || (forwardedRequest && req.body?.resend === true))
           ? relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId, true)
           : relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId);
       // waitForReply: the reply listener is registered NOW, before any await, so
@@ -36934,7 +37077,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           body: message,
           createdAt: new Date().toISOString(),
           peerFingerprint: resolvedId ?? undefined,
-          author: { machineId: ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
+          // A forwarded leg is authored by the standby that sent it (the
+          // authenticated mesh sender), not by this holder.
+          author: { machineId: forwardedFromMachine ?? ctx.meshSelfId ?? undefined, sessionName: typeof originSessionName === 'string' ? originSessionName : undefined },
           subject: typeof purpose === 'string' ? purpose : undefined,
         });
       }

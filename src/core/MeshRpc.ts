@@ -50,6 +50,39 @@ export type MeshCommand =
       senderBotId: string;
     }
   | {
+      // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md §2): a
+      // relay STANDBY of mine hands one send to my machine that holds the relay
+      // connection. Registered-peer class — the envelope proves a machine of
+      // mine sent it, which can already speak as the agent, so the verb adds no
+      // authority. The HANDLER is the gate: it refuses when the feature is off
+      // or when this machine is itself a standby, and otherwise runs the
+      // complete ordinary relay-send route. `inReplyTo` / `originSessionName`
+      // are deliberately NOT fields: checks keyed on the sending session ran on
+      // the sender. An older peer answers `claim-unauthorized` (today's 503).
+      type: 'a2a-relay-forward';
+      targetAgent: string;
+      /** The sender's own nickname resolution; the holder cannot re-resolve the name. */
+      resolvedFp?: string;
+      body: string;
+      messageId: string;
+      threadId?: string;
+      resend: boolean;
+      originTopicId?: number;
+      purpose?: string;
+    }
+  | {
+      // A2A cross-machine route §5: the relay holder asks the machine that has a
+      // topic's live session to type a reply into it. Registered-peer class —
+      // the RECEIVER decides from its own live session for the topic, injects
+      // with the confirmed paste, and never spawns or moves the topic. Replay
+      // is refused by the envelope nonce guard; each ask is one attempt.
+      type: 'a2a-topic-reply-inject';
+      topicId: number;
+      text: string;
+      messageId: string;
+      threadId: string;
+    }
+  | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
       // planner (router authority) tells the CURRENT owner of `session` to
       // drain its live session because a transfer to `target` is in flight.
@@ -463,6 +496,13 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
     case 'a2a-inbox-deliver':
+    case 'a2a-relay-forward':
+    case 'a2a-topic-reply-inject':
+      // a2a-relay-forward / a2a-topic-reply-inject (a2a-cross-machine-route):
+      // registered-peer class. Both handlers are the real gate — the forward
+      // handler refuses when the feature is off or this machine is a relay
+      // standby; the inject handler acts only on its OWN live session for the
+      // topic and never spawns.
       // Registered-peer class — any caller here has already passed signed,
       // recipient-bound, replay-safe machine authentication. a2a-inbox-deliver
       // gains NO content authority here: the recipient handler re-validates the

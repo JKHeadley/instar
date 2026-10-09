@@ -1078,6 +1078,15 @@ let _handbackCanary: ((oldHolder: string) => Promise<boolean>) | null = null;
 let _handbackSendOffer:
   | ((target: string, offer: { proposedEpoch: number; consentToken: import('../core/FencedLease.js').HandbackConsentToken; expiresAt: string }) => Promise<import('../core/LeaseHandbackReconciler.js').HandbackOfferResponse>)
   | null = null;
+// A2A cross-machine route (docs/specs/a2a-cross-machine-route.md). ONE shared
+// context for the relay-send route and the two mesh handlers. The boot secret
+// lives ONLY here, in memory — never env, config or logs. `forward` and
+// `_a2aAskTopicOwner` are assigned where the MeshRpcClient exists; until then a
+// standby answers today's 503 and a topic-bound reply takes today's path.
+let _a2aRelayForwardCtx: NonNullable<import('../server/routes.js').RouteContext['a2aRelayForward']> | null = null;
+let _a2aAskTopicOwner:
+  | ((machineId: string, payload: { topicId: number; text: string; messageId: string; threadId: string }, timeoutMs: number) => Promise<import('../threadline/relayForward.js').TopicOwnerAskResult>)
+  | null = null;
 let _deliverA2aToMachine:
   | ((input: { machineId: string; targetAgent: string; text: string; topicId: number; senderAgent: string; senderBotId: string }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>)
   | null = null;
@@ -17784,6 +17793,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // router immediately.
     const { SalienceGate } = await import('../threadline/SalienceGate.js');
     const { TopicLinkageHandler } = await import('../threadline/TopicLinkageHandler.js');
+    // A2A cross-machine route: the shared forward context. The secret is minted
+    // here, once per boot, and held in memory only.
+    const a2aRelayForwardMod = await import('../threadline/relayForward.js');
+    const a2aRelayForwardCtx: NonNullable<typeof _a2aRelayForwardCtx> = {
+      secret: a2aRelayForwardMod.createForwardSecret(),
+      relaySuppressedByStandby: false,
+      forward: null,
+      counters: a2aRelayForwardMod.createRelayForwardCounters(),
+    };
+    _a2aRelayForwardCtx = a2aRelayForwardCtx;
+    const a2aRelayForwardEnabled = (): boolean => a2aRelayForwardMod.resolveRelayForwardEnabled(
+      liveConfig.get<boolean | undefined>('threadline.relayForward.enabled', undefined),
+      config as { developmentAgent?: boolean; threadline?: { relayForward?: { enabled?: boolean } } },
+    );
     const salienceGate = new SalienceGate(); // fallback-only for v1; spec §5.4
     let topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null = null;
     if (commitmentTracker) {
@@ -17813,6 +17836,21 @@ export async function startServer(options: StartOptions): Promise<void> {
         getSessionForTopic: telegram
           ? (topicId: number) => telegram.getSessionForTopic(topicId)
           : undefined,
+        // A2A cross-machine route §5: a topic-bound reply is typed into the
+        // topic's live session on whichever machine has it. Late-bound: the
+        // mesh client exists only after the multi-machine wiring below.
+        deliverToTopicOwner: (machineId, payload, timeoutMs) => _a2aAskTopicOwner
+          ? _a2aAskTopicOwner(machineId, payload, timeoutMs)
+          : Promise.resolve({ injected: false as const, definitive: false, reason: 'mesh-not-wired' }),
+        remoteReplyEnabled: () => _a2aAskTopicOwner !== null && a2aRelayForwardEnabled(),
+        selfMachineId: () => _meshSelfId,
+        selfMachineName: () => _listPoolMachines?.().find((m) => m.machineId === _meshSelfId)?.nickname ?? _meshSelfId,
+        topicOwnerOf: (topicId: number) => sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null,
+        onRemoteReplyEvent: (event) => {
+          if (event === 'ask') a2aRelayForwardCtx.counters.replyAsks++;
+          else if (event === 'injected') a2aRelayForwardCtx.counters.replyInjected++;
+          else a2aRelayForwardCtx.counters.replyFailureVisible++;
+        },
       });
       threadlineRouter.setTopicLinkageHandler(topicLinkageHandler);
     }
@@ -18130,6 +18168,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       threadlineShutdown = threadline.shutdown;
       threadlineRelayClient = threadline.relayClient;
       threadlineGetLastRelayEvent = threadline.getLastRelayEvent;
+      // A2A cross-machine route §1: the boot-time standby fact, threaded from
+      // the bootstrap to the relay-send route. Never recomputed from live config.
+      if (_a2aRelayForwardCtx) _a2aRelayForwardCtx.relaySuppressedByStandby = threadline.relaySuppressedByStandby === true;
       // Inbound-id ledger §3/§6: daemon-inbox mode is not covered — never advertise there.
       _inboundIdLedgerDaemonDeferred = threadline.daemonHandlingRelay === true;
       // Inbound-id ledger §1: the gate consults the ledger AFTER the operation-
@@ -23509,6 +23550,42 @@ export async function startServer(options: StartOptions): Promise<void> {
                 : undefined;
               return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
+            // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
+            // Both verbs are ALWAYS registered; with the gate off both refuse.
+            // §3 — the holder runs the complete ordinary relay-send route by a
+            // loopback call marked with the boot secret; it refuses when this
+            // machine is itself a relay standby (the loop stop).
+            'a2a-relay-forward': async (cmd, sender) => {
+              const fwd = _a2aRelayForwardCtx;
+              if (!fwd) return { outcome: 'refused', reason: 'relay-forward-not-wired' };
+              const mod = await import('../threadline/relayForward.js');
+              return mod.handleRelayForwardCommand(cmd as import('../threadline/relayForward.js').RelayForwardCommand, sender, {
+                enabled: () => mod.resolveRelayForwardEnabled(
+                  liveConfig.get<boolean | undefined>('threadline.relayForward.enabled', undefined),
+                  config as { developmentAgent?: boolean; threadline?: { relayForward?: { enabled?: boolean } } },
+                ),
+                relaySuppressedByStandby: () => fwd.relaySuppressedByStandby,
+                secret: fwd.secret,
+                loopbackUrl: `http://127.0.0.1:${config.port}`,
+                authToken: config.authToken ?? '',
+                counters: fwd.counters,
+              });
+            },
+            // §5 — type a reply into THIS machine's own live session for the
+            // topic (the confirmed paste). Never spawns, never moves the topic.
+            'a2a-topic-reply-inject': async (cmd) => {
+              const mod = await import('../threadline/relayForward.js');
+              return mod.handleTopicReplyInjectCommand(cmd as import('../threadline/relayForward.js').TopicReplyInjectCommand, {
+                enabled: () => mod.resolveRelayForwardEnabled(
+                  liveConfig.get<boolean | undefined>('threadline.relayForward.enabled', undefined),
+                  config as { developmentAgent?: boolean; threadline?: { relayForward?: { enabled?: boolean } } },
+                ),
+                getSessionForTopic: (topicId) => telegram?.getSessionForTopic(topicId) ?? null,
+                isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+                inject: (name, text) => sessionManager.injectPasteNotificationConfirmed(name, text),
+                counters: _a2aRelayForwardCtx?.counters,
+              });
+            },
             'a2a-inbox-deliver': async (cmd, sender) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'a2a-inbox-deliver' };
               const { handleA2aMeshInbox } = await import('../core/A2aMeshInbox.js');
@@ -23990,6 +24067,33 @@ export async function startServer(options: StartOptions): Promise<void> {
               return 'timeout'; /* @silent-fallback-ok — a transport fault reads as timeout: the holder KEEPS HOLDING (claim-before-release, the safe direction) */
             }
           };
+          // A2A cross-machine route — the SENDING legs over the signed mesh RPC.
+          // §1/§2: a relay standby finds my relay-holding machine and forwards
+          // one send. §5: the holder asks a topic's machine to inject a reply.
+          if (_a2aRelayForwardCtx) {
+            const fwdMod = await import('../threadline/relayForward.js');
+            const { IdentityManager: ThreadlineIdentityManager } = await import('../threadline/client/IdentityManager.js');
+            const holderFinder = new fwdMod.RelayHolderFinder({
+              listPeers: () => meshIdMgr.getActiveMachines()
+                .filter((m) => m.machineId !== meshSelfId)
+                .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) ?? '', nickname: m.entry.nickname }))
+                .filter((p) => p.url !== ''),
+              ownFingerprint: () => new ThreadlineIdentityManager(config.stateDir).get()?.fingerprint ?? null,
+            });
+            const relayForwarder = new fwdMod.RelayForwarder({
+              finder: holderFinder,
+              send: (peer, command, timeoutMs) => meshClient.send({ machineId: peer.machineId, url: peer.url }, command, 0, { timeoutMs }),
+            });
+            _a2aRelayForwardCtx.forward = (command) => relayForwarder.forward(command);
+            _a2aAskTopicOwner = (machineId, payload, timeoutMs) => fwdMod.askTopicOwner(
+              async (id, command, t) => {
+                const url = peerUrl(id);
+                if (!url) return null;
+                return meshClient.send({ machineId: id, url }, command, 0, { timeoutMs: t });
+              },
+              machineId, payload, timeoutMs,
+            );
+          }
           _deliverA2aToMachine = async (input) => {
             const url = peerUrl(input.machineId);
             if (!url) return { ok: false, reason: 'no-peer-url' };
@@ -27252,7 +27356,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.log(pc.yellow(`  Jev memory picker: not constructed (${(err as Error)?.message ?? 'unknown'})`));
     }
-    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
