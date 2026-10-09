@@ -72,6 +72,10 @@ export interface Session {
   maxDurationMinutes?: number;
   /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
   claudeSessionId?: string;
+  /** Confined (feedback executor) sessions only: the Claude config home the session writes its
+   *  transcript under (`<home>/projects/<key>/<--session-id>.jsonl`), so trusted code can judge the
+   *  sandbox canary by what actually reached the model. */
+  confinedConfigHome?: string;
   /** Subscription & Auth Standard P1.3: which subscription-pool account this
    *  session is running under (the account whose config home it launched/resumed
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
@@ -3632,6 +3636,11 @@ export interface InstarConfig {
       baseSmokeTests?: string[];
       /** Build-session wall clock in minutes (≤ the 6 h lease; default 300). */
       maxDurationMinutes?: number;
+      /**
+       * The fork (`owner/name`) attempt branches are pushed to; PRs are opened from it against the
+       * canonical repository. Unset, or equal to the canonical repository, publication is refused.
+       */
+      publishRepo?: string;
     };
   };
   /**

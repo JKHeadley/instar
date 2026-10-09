@@ -21,11 +21,13 @@ export function deriveApprover(repo: RepoInfo, pinSetOrgApprover: string | null)
 
 export interface AgentIdentityFacts {
   agentGithubLogin: string | null;
+  /** EVERY account `gh` holds a login for (not just the active one); null when unreadable. */
+  agentGithubAccounts: string[] | null;
   /** Accounts in the Playwright profile registry: `{ service, identity }`. */
   profileAccounts: Array<{ service: string; identity: string; vaultRefs?: string[] }>;
   /** Entries in the owned-identities registry. */
   ownedIdentities: Array<{ service: string; identity: string }>;
-  /** Vault key NAMES (never values); null when unreadable. */
+  /** Vault key NAMES (never values); null when unreadable (→ not independent). */
   vaultNames: string[] | null;
   /** Identity registries that exist but could not be read: their absence of a match proves nothing. */
   unreadableSources?: string[];
@@ -41,7 +43,12 @@ export function approverIndependence(approver: string, facts: AgentIdentityFacts
   const reasons: string[] = [];
   if (facts.agentGithubLogin === null) reasons.push('agent-github-login-unreadable');
   else if (facts.agentGithubLogin.toLowerCase() === a) reasons.push('agent-github-login');
+  // Any account gh can switch to is an account the agent can act as, active or not.
+  if (facts.agentGithubAccounts === null) reasons.push('agent-github-accounts-unreadable');
+  else if (facts.agentGithubAccounts.some((login) => login.toLowerCase() === a)) reasons.push('agent-github-account');
   if ((facts.unreadableSources ?? []).length > 0) reasons.push('identity-registry-unreadable');
+  // The vault's key names are part of the evidence: an unreadable vault proves nothing.
+  if (facts.vaultNames === null) reasons.push('vault-names-unreadable');
   for (const acct of facts.profileAccounts) {
     if (acct.service.toLowerCase() === 'github' && acct.identity.toLowerCase() === a) reasons.push('browser-profile-account');
   }

@@ -69,7 +69,8 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
-import { buildFeedbackExecutor } from '../feedback-factory/execute/buildFeedbackExecutor.js';
+import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
+import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
@@ -407,6 +408,8 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
+  private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
@@ -2809,6 +2812,27 @@ export class AgentServer {
               this.feedbackExecute = null;
             }
           }
+        }
+        // The executor's stop path must not depend on triage being on: when the executor is not
+        // built (triage dark, or either failed to start), open executor PRs still get GitHub
+        // auto-merge turned off — once shortly after boot, then hourly — on the canonical owner.
+        if (!this.feedbackExecute) {
+          const sourceRepoPath = resolveExecuteConfig(options.config.feedbackFactory?.execute as Record<string, unknown> | undefined, options.config.projectDir, isInstarSourceCheckout).sourceRepoPath;
+          const sweep = () => {
+            if (!isCanonicalOwner()) return;
+            void disarmExecutorPrsWithoutExecutor({
+              drainStore: store, sourceRepoPath, stateDir: options.config.stateDir,
+              raiseAttention: async (item) => {
+                const enqueue = this.telegramAdapter?.createAttentionItem;
+                if (!enqueue) throw new Error('durable attention enqueue unavailable');
+                await enqueue.call(this.telegramAdapter, item);
+              },
+            }).then((r) => { if (r.checked > 0) console.log(`[feedback-factory] executor not built: disarm sweep checked=${r.checked} disarmed=${r.disarmed} failed=${r.failed}`); })
+              .catch((error) => console.warn('[feedback-factory] executor disarm sweep failed (retried hourly):', error instanceof Error ? error.message : error)); // @silent-fallback-ok: logged; retried hourly, and a PR it cannot disarm raises its own HIGH Attention line
+          };
+          setTimeout(sweep, 60_000).unref?.();
+          this.feedbackExecuteDisarmTimer = setInterval(sweep, 60 * 60_000);
+          this.feedbackExecuteDisarmTimer.unref?.();
         }
         if (options.config.stateDir && sourceCheckout) {
           const selfHealBootId = randomUUID();
@@ -6809,6 +6833,10 @@ export class AgentServer {
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
+    }
+    if (this.feedbackExecuteDisarmTimer) {
+      clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
+      this.feedbackExecuteDisarmTimer = null;
     }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }

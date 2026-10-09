@@ -64,6 +64,9 @@ function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> 
       if (st.isSymbolicLink()) { out.set(rel, { kind: 'link', mode: st.mode, size: 0, linkTarget: fs.readlinkSync(full) }); continue; }
       if (st.isDirectory()) { visit(rel); continue; }
       if (!st.isFile()) throw new ChangeSetError('special-file', rel);
+      // A hard link shares its bytes with a file elsewhere (possibly one the sandbox denies
+      // reading): never publish one, whatever its name.
+      if (st.nlink > 1) throw new ChangeSetError('special-file', `${rel} (hard link)`);
       out.set(rel, { kind: 'file', mode: st.mode, size: st.size });
     }
   };
@@ -77,6 +80,7 @@ function readNoFollow(full: string): Buffer {
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new ChangeSetError('special-file', path.basename(full));
+    if (st.nlink > 1) throw new ChangeSetError('special-file', `${path.basename(full)} (hard link)`);
     return fs.readFileSync(fd);
   } finally { fs.closeSync(fd); }
 }

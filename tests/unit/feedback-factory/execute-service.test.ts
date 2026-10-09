@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASE_SHA, HEAD_SHA, createExecHarness, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { EVIDENCE_FILE, RESULT_FILE } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
 
 const DAY = 24 * 60 * 60_000;
 let h: ExecHarness;
@@ -263,7 +263,9 @@ describe('verification and publication', () => {
     expect(row).toMatchObject({ state: 'pr-open', prNumber: 100, headSha: HEAD_SHA, approver: 'Owner' });
     const push = h.pushes[0];
     expect(push.branch).toMatch(/^feedback\/feedback-c1-[0-9a-f]{8}-a1$/);
-    expect(push.remoteUrl).toBe('https://github.com/owner/repo.git');
+    // Pushed to the configured FORK, never the canonical repository; the PR is cross-repository.
+    expect(push.remoteUrl).toBe('https://github.com/agent-bot/repo.git');
+    expect(h.prs.get(100)!.headRefName).toBe(`agent-bot:${push.branch}`);
     expect(push.files['src/thing.ts']).toBe('export const thing = 2;\n');
     expect(push.files[RESULT_FILE]).toBeUndefined();
     expect(push.files[EVIDENCE_FILE]).toBeUndefined();
@@ -316,7 +318,7 @@ describe('verification and publication', () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();
     // Lint passed in the base canary; it fails on the session's change.
-    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-base$/.test(cmd.cwd) ? { exitCode: 2 } : null);
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd) ? { exitCode: 2 } : null);
     finishSessions(h);
     await h.exec.tick();
     expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:lint' });
@@ -878,5 +880,178 @@ describe('second-pass review regressions', () => {
     expect(await h.exec.publishHeld('x:a1', 'd', 'ref')).toMatchObject({ ok: false });
     (h.exec as unknown as { running: boolean }).running = false;
     expect(await h.exec.stopItem('feedback-c1')).toEqual({ stopped: 0 });
+  });
+});
+
+describe('focused review round regressions', () => {
+  const approveHead = () => h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+  const gh = () => (h.exec as unknown as { opts: { github: { disableAuto: (s: string, pr: number) => Promise<boolean> } } }).opts.github;
+
+  it('A: publication goes through a fork only — unset, or the canonical repository itself, refuses (publish-fork-unset)', async () => {
+    h = await createExecHarness({ config: { publishRepo: null } });
+    expect((await h.exec.refreshAvailability()).reason).toBe('publish-fork-unset');
+    await h.workItem('c1');
+    expect((await h.exec.tick()).started).toBe(0);
+    h.cleanup();
+    h = await createExecHarness({ config: { publishRepo: 'OWNER/Repo' } }); // the canonical repo, any case
+    expect((await h.exec.refreshAvailability()).reason).toBe('publish-fork-unset');
+    // A fork configured when the attempt started but removed before publication: refused, nothing pushed.
+    h.cleanup();
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.cfg.publishRepo = null;
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'stopped', reason: 'publish-fork-unset' });
+    expect(h.pushes).toHaveLength(0);
+    expect(h.prs.size).toBe(0);
+  });
+
+  it('A: a held secret-shaped change set is not published without a fork', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fixtures/cred.ts': `export const token = 'ghp_${'A1b2C3d4E5'.repeat(4)}';\n`, 'tests/fix.test.ts': 'x' });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    const held = h.execStore.latestFor(id)!;
+    const plan = h.exec.planPublishSecretShape(held.attemptId);
+    if (!plan.ok) throw new Error('expected a plan');
+    h.cfg.publishRepo = 'owner/repo';
+    const refused = await h.exec.publishHeld(held.attemptId, plan.digest, 'dashboard-pin:x');
+    expect(refused).toMatchObject({ ok: false });
+    expect(h.pushes).toHaveLength(0);
+    expect(h.execStore.get(held.attemptId)!.state).toBe('held');
+  });
+
+  it('A: an existing cross-repository PR still goes through the review gate and merges at the approved head', async () => {
+    h = await createExecHarness();
+    const { initiativeId, row } = await toPrOpen();
+    expect(h.prs.get(row.prNumber!)!.headRefName).toMatch(/^agent-bot:feedback\//);
+    approveHead();
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('merge-armed');
+  });
+
+  it('4: stop paths run before any refusal — an executor refusing (approver not independent) still stops a re-triaged item and disarms every PR', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    approveHead();
+    await h.exec.tick();
+    expect(h.execStore.latestFor(a.initiativeId)!.state).toBe('merge-armed');
+    // Authority is withdrawn: the agent can now act as the approver.
+    h.repo.viewer = 'owner';
+    h.drain.sharedDatabase().prepare("UPDATE triage SET state='hold', reason='needs-evidence' WHERE initiative_id=?").run(a.initiativeId);
+    const t = await h.exec.tick();
+    expect(t.reason).toBe('approver-not-independent');
+    expect(h.disarmed).toContain(100);
+    expect(h.execStore.latestFor(a.initiativeId)).toMatchObject({ state: 'stopped', reason: 'retriaged-away-from-work' });
+  });
+
+  it('4: an authority-withdrawing refusal disarms an armed PR even with no other stop condition, and it is not re-armed while refusing', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    approveHead();
+    await h.exec.tick();
+    h.repo.viewer = 'owner';
+    await h.exec.tick();
+    expect(h.disarmed).toEqual([100]);
+    expect(h.execStore.latestFor(a.initiativeId)).toMatchObject({ state: 'pr-open', reason: 'disarmed:executor-approver-not-independent' });
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(1); // never re-armed while refusing
+  });
+
+  it('4: a merge deadline is enforced while the executor refuses', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    approveHead();
+    await h.exec.tick();
+    h.enabled.value = false;
+    h.now.value += 25 * 60 * 60_000;
+    await h.exec.tick();
+    expect(h.disarmed).toContain(100);
+    expect(h.execStore.latestFor(a.initiativeId)!.state).not.toBe('merge-armed');
+  });
+
+  it('5: a safe-merge run with no exit code (timeout) is treated as possibly armed, and disarmed on the next tick', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    approveHead();
+    h.safeMergeExit = { code: null, stdout: '' };
+    await h.exec.tick();
+    expect(h.execStore.latestFor(a.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true, reason: 'merge-outcome-unknown', approvedSha: HEAD_SHA });
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.disarmed).toEqual([100]);
+    expect(h.execStore.latestFor(a.initiativeId)).toMatchObject({ state: 'pr-open', disarmFailed: false });
+  });
+
+  it('5: a refused merge whose disarm fails stays merge-armed (disarmFailed) instead of being forgotten', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    approveHead();
+    h.safeMergeExit = { code: 1, stdout: 'safe-merge-result: {"result":"refused:checks"}' };
+    gh().disableAuto = async () => false;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(a.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true });
+  });
+
+  it('5: the operator stop and a re-triage call --disable-auto for an open PR that was never armed (idempotent)', async () => {
+    h = await createExecHarness();
+    const a = await toPrOpen('c1');
+    expect(h.execStore.latestFor(a.initiativeId)!.state).toBe('pr-open');
+    await h.exec.stopItem(a.initiativeId);
+    expect(h.disarmed).toEqual([100]);
+    h.cleanup();
+    h = await createExecHarness();
+    const b = await toPrOpen('c2');
+    h.drain.sharedDatabase().prepare("UPDATE triage SET state='hold', reason='needs-evidence' WHERE initiative_id=?").run(b.initiativeId);
+    await h.exec.tick();
+    expect(h.disarmed).toEqual([100]);
+    // A failed disarm of a never-armed PR is still treated as possibly armed and retried.
+    h.cleanup();
+    h = await createExecHarness();
+    const c = await toPrOpen('c3');
+    gh().disableAuto = async () => false;
+    await expect(h.exec.stopItem(c.initiativeId)).resolves.toEqual({ stopped: 0 });
+    expect(h.execStore.latestFor(c.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true });
+  });
+
+  it('8: lint and the related tests run in a fresh third clone, never the clone the head run\'s test code could rewrite; each run has its own temp directory', async () => {
+    h = await createExecHarness();
+    await toPrOpen('c1');
+    const verify = h.runs.filter((r) => /-(base|head|gate)$/.test(r.cwd));
+    const where = (re: RegExp) => verify.filter((r) => re.test(r.command)).map((r) => r.cwd.split('-').pop());
+    expect(where(/^npx vitest run/)).toEqual(['base', 'head']);
+    expect(where(/^npm run lint$/)).toEqual(['gate']);
+    expect(where(/vitest related/)).toEqual(['gate']);
+    const tmps = new Set(verify.map((r) => r.env.TMPDIR));
+    expect(tmps.size).toBe(verify.length);
+    const clones = [...new Set(verify.map((r) => r.cwd))];
+    expect(clones).toHaveLength(3);
+    for (const r of verify) {
+      expect(r.settings.filesystem.allowWrite).toContain(r.cwd);
+      for (const other of clones.filter((c) => c !== r.cwd)) expect(r.settings.filesystem.allowWrite).not.toContain(other);
+    }
+  });
+
+  it('9: the session name is recorded before spawning; if recording the spawn fails (ownership moved), the session is stopped, never left running unrecorded', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'x' });
+    const planned = `feedback-${pathSlug(id)}-a1`;
+    // Ownership moves to epoch 2 while the build session is being spawned.
+    h.sessions.behavior.fn = () => { h.store.fenced(2, () => undefined); };
+    await h.exec.tick();
+    const row = h.execStore.latestFor(id)!;
+    expect(row.sessionName).toBe(planned);                // recorded before the spawn
+    expect(row.state).toBe('claimed');                    // the post-spawn write was refused (stale epoch)
+    expect(h.sessions.stopped).toContain(`tmux-${planned}`); // the unrecorded session was stopped
+    expect(h.sessions.alive.has(`tmux-${planned}`)).toBe(false);
+    // The new owner's stop paths end the row.
+    h.epoch.value = 2;
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(id)[0]).toMatchObject({ state: 'stopped', reason: 'stale-epoch' });
   });
 });

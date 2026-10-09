@@ -27,18 +27,18 @@ import type { FeedbackTriageAuditLog } from '../triage/FeedbackTriageAuditLog.js
 import type { AttentionInput } from '../triage/FeedbackTriageService.js';
 import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
-import { FeedbackExecuteStore, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
+import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
   CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
-  buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, pathSlug, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
+  buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
-import { canaryStamp, evaluateSessionCanary, prepareCanaryFixture, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
+import { canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
 import type { AttemptGit, GitHubGateway } from './executorPorts.js';
@@ -55,7 +55,13 @@ function deriveTargetKey(initiativeId: string): DerivedTarget { return { key: `f
 
 export interface ConfinedSessionPort {
   /** Spawn the CONFINED build or canary session (claude-code adapter, omitAuthEnv, cwd under .worktrees). */
-  spawnConfined(input: { name: string; prompt: string; cwd: string; settingsPath: string; tmpDir: string; maxDurationMinutes: number }): Promise<{ sessionName: string; sessionId: string }>;
+  spawnConfined(input: { name: string; prompt: string; cwd: string; settingsPath: string; tmpDir: string; maxDurationMinutes: number }): Promise<{
+    sessionName: string; sessionId: string;
+    /** Where the session's transcript lands (Claude config home + its `--session-id`); the canary judges reads from it. */
+    transcript?: { configHome: string; sessionUuid: string } | null;
+  }>;
+  /** The live session name `spawnConfined` will give `name` (recorded BEFORE spawning, so a session never runs unrecorded). */
+  plannedSessionName?(name: string): string;
   /** Spawn a normal, trusted session (spec convergence, live proof). No MCP servers. */
   spawnTrusted(input: { name: string; prompt: string; maxDurationMinutes: number }): Promise<{ sessionName: string; sessionId: string }>;
   isAlive(sessionName: string): boolean;
@@ -94,7 +100,7 @@ export interface FeedbackExecutorServiceOptions {
   deps: DepsCachePort;
   sessions: ConfinedSessionPort;
   admission: ExecutorAdmission;
-  identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin'>;
+  identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin' | 'agentGithubAccounts'>;
   /** Ranked `work` items (the triage queue order). */
   rankedWork: () => Array<{ initiativeId: string; clusterId: string }>;
   enabled: () => boolean;
@@ -117,10 +123,16 @@ export interface FeedbackExecutorServiceOptions {
 
 export type UnavailableReason =
   | 'disabled' | 'dry-run' | 'no-source-repo' | 'github-unavailable' | 'auto-merge-disabled' | 'approver-unset'
-  | 'approver-not-independent' | 'profile-unenforceable' | 'deps-unavailable' | 'not-canonical-owner';
+  | 'approver-not-independent' | 'profile-unenforceable' | 'deps-unavailable' | 'not-canonical-owner' | 'publish-fork-unset';
 
 /** Reasons the execute tick refuses outright (503) rather than running without starting new work. */
 export const REFUSING_REASONS: ReadonlySet<string> = new Set(['disabled', 'no-source-repo', 'auto-merge-disabled', 'approver-unset', 'approver-not-independent']);
+
+/**
+ * Refusals that withdraw the executor's merge authority: every armed PR is disarmed on each such
+ * tick (idempotent), so a PR can never merge while the executor itself is refusing.
+ */
+export const AUTHORITY_WITHDRAWN_REASONS: ReadonlySet<string> = new Set(['disabled', 'no-source-repo', 'auto-merge-disabled', 'approver-unset', 'approver-not-independent']);
 
 export interface ExecutorAvailability {
   available: boolean;
@@ -178,7 +190,7 @@ export class FeedbackExecutorService {
    */
   setApproverAcceptance(approver: string, reasons: string[], operatorDecisionRef: string): void {
     this.setMeta(this.opts.ownerEpoch(), 'exec:approver_acceptance', { approver, reasons: [...reasons].sort(), operatorDecisionRef, at: this.now(),
-      residualRisk: 'Accepted by name: once accepted, a full-tool session that opens the approver\'s browser profile could submit an approval; that is not detected.' });
+      residualRisk: 'Accepted by name: once accepted, a full-tool session that opens the approver\'s browser profile (or launches a browser on its files directly) could submit an approval; that is not detected.' });
     this.opts.audit.append('execute:approver-acceptance', { approver, reasons, operatorDecisionRef });
     this.availability = null;
   }
@@ -211,7 +223,7 @@ export class FeedbackExecutorService {
     if (!repo.allowAutoMerge) return out('auto-merge-disabled', { slug: remote.slug });
     const approver = deriveApprover(repo, this.metaJson<{ login: string }>('exec:org_approver')?.login ?? null);
     if ('error' in approver) return out('approver-unset', { slug: remote.slug });
-    const facts: AgentIdentityFacts = { ...this.opts.identityFacts(), agentGithubLogin: await this.opts.github.viewerLogin() };
+    const facts: AgentIdentityFacts = { ...this.opts.identityFacts(), agentGithubLogin: await this.opts.github.viewerLogin(), agentGithubAccounts: await this.opts.github.authAccounts() };
     const current = approverIndependence(approver.login, facts);
     // Sticky: once the agent was seen able to act as this approver, removing the evidence (e.g. a
     // Bearer-only edit of the profile registry) does not make it independent again. Only the
@@ -232,6 +244,9 @@ export class FeedbackExecutorService {
     if (latch && latch.until > at) return out('profile-unenforceable', extra);
     const deps = this.metaJson<{ nextRetryAt: number; failures: number }>('exec:deps');
     if (deps && deps.failures > 0 && deps.nextRetryAt > at) return out('deps-unavailable', extra);
+    // Publication goes through a fork only (CI on a same-repository branch would run with the
+    // canonical repository's secrets before review). Existing PRs keep being reconciled.
+    if (!publishFork(cfg, remote.slug)) return out('publish-fork-unset', extra);
     return out('ok', extra);
   }
 
@@ -273,38 +288,112 @@ export class FeedbackExecutorService {
     return out;
   }
 
-  /** The `enabled: false` stop path: disarm every armed PR (idempotent; runs on the 503 path too). */
+  /**
+   * The authority-withdrawn stop path (`enabled: false`, approver no longer independent, …):
+   * `--disable-auto` on EVERY open PR, armed or not (idempotent — the gateway only disarms an armed
+   * one). Runs on the refusing (503) path too.
+   */
   async disarmAll(reason: string): Promise<number> {
     let disarmed = 0;
     const epoch = this.opts.ownerEpoch();
-    for (const row of this.opts.store.inStates('merge-armed')) {
+    for (const row of this.opts.store.inStates('pr-open', 'spec-pr-open', 'merge-armed')) {
+      if (!row.prNumber) continue;
       // A failed disarm leaves the row merge-armed (disarmFailed); the next tick tries again.
       if (!(await this.disarm(row, epoch, reason))) continue;
       disarmed++;
+      if (row.state !== 'merge-armed') continue;
       try { this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: `disarmed:${reason}`, approvedSha: null, mergeDeadlineAt: null, disarmFailed: false }); } catch { /* @silent-fallback-ok: a stale-epoch writer leaves the row to the owner */ }
     }
     return disarmed;
+  }
+
+  /**
+   * Stop paths, run on EVERY tick before any refusal (an executor that refuses to start new work
+   * still owes its stops): a re-triage away from `work`, a merge deadline, a stale owner epoch, an
+   * earlier disarm that failed, and a session past its lease.
+   */
+  private async runStopPaths(epoch: number, knownSlug: string | null): Promise<Set<string>> {
+    // Rows a stop path acted on wait for the next tick before anything re-gates them.
+    const acted = new Set<string>();
+    const sourceRepo = this.opts.config().sourceRepoPath;
+    const slug = knownSlug ?? (sourceRepo ? (await this.opts.git.githubRemote(sourceRepo))?.slug ?? null : null);
+    for (const row of this.opts.store.inStates('claimed', 'running', 'verifying')) {
+      const triage = this.opts.triageStore.get(row.initiativeId);
+      const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
+      const adoptable = row.sessionMachine === this.opts.selfMachineId && row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace));
+      if (row.ownerEpoch < epoch && !adoptable) {
+        await this.stopSession(row);
+        this.endAttempt(row, epoch, 'stopped', 'stale-epoch');
+        acted.add(row.attemptId);
+      } else if (awayFromWork) {
+        await this.stopSession(row);
+        this.endAttempt(row, epoch, 'stopped', 'retriaged-away-from-work');
+        acted.add(row.attemptId);
+      } else if (row.leaseExpiresAt !== null && this.now() > row.leaseExpiresAt && row.sessionName && this.opts.sessions.isAlive(row.sessionName)) {
+        await this.stopSession(row);
+        this.endAttempt(row, epoch, 'failed', 'limit:session-wall-clock');
+        await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+        acted.add(row.attemptId);
+      }
+    }
+    for (const rowIn of this.opts.store.inStates('pr-open', 'spec-pr-open', 'merge-armed')) {
+      let row = rowIn;
+      if (!row.prNumber) continue;
+      // A merge GitHub already performed is recorded by the normal path, never disarmed after the fact.
+      const pr = slug ? await this.opts.github.prState(slug, row.prNumber) : null;
+      if (pr?.mergedAt) continue;
+      const triage = this.opts.triageStore.get(row.initiativeId);
+      const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
+      if (row.ownerEpoch < epoch) {
+        acted.add(row.attemptId);
+        if (!(await this.disarm(row, epoch, 'stale-epoch'))) continue;
+        if (row.state === 'merge-armed') this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:stale-epoch', disarmFailed: false });
+        row = this.opts.store.adopt(epoch, row.attemptId);
+      }
+      if (awayFromWork) {
+        acted.add(row.attemptId);
+        if (!(await this.disarm(row, epoch, 'retriaged'))) continue;
+        this.endAttempt(row, epoch, 'stopped', 'retriaged-away-from-work');
+        continue;
+      }
+      if (row.state !== 'merge-armed') continue;
+      if (row.disarmFailed) {
+        acted.add(row.attemptId);
+        if (await this.disarm(row, epoch, 'retry-disarm')) this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, disarmFailed: false, reason: 'disarmed:retry' });
+        continue;
+      }
+      if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) {
+        acted.add(row.attemptId);
+        await this.mergeRefused(row, epoch, 'deadline');
+      }
+    }
+    return acted;
   }
 
   private async tickBody(epoch: number, out: ExecuteTickResult): Promise<void> {
     sweepTrash(this.trashRoot(), 'feedback-execute trash sweep');
     this.pruneScratch();
     const avail = await this.refreshAvailability();
+    if (avail.reason === 'not-canonical-owner') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    // Stop paths first: no refusal below may skip them.
+    const acted = await this.runStopPaths(epoch, avail.slug);
+    if (AUTHORITY_WITHDRAWN_REASONS.has(avail.reason)) await this.disarmAll(avail.reason === 'disabled' ? 'executor-disabled' : `executor-${avail.reason}`);
     if (REFUSING_REASONS.has(avail.reason)) {
-      if (avail.reason === 'disabled') await this.disarmAll('executor-disabled');
       out.reason = avail.reason;
       return;
     }
-    if (avail.reason === 'github-unavailable' || avail.reason === 'not-canonical-owner') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason === 'github-unavailable') { out.result = 'degraded'; out.reason = avail.reason; return; }
     const slug = avail.slug!;
     const approver = avail.approver!;
     // Live attempts: lease, disk cap, finished sessions.
     for (const row of this.opts.store.inStates('claimed', 'running', 'verifying')) {
+      if (acted.has(row.attemptId)) continue;
       await this.reconcileLive(row, epoch, slug, approver);
       out.reconciled++;
     }
     // Open PRs through the review gate.
     for (const row of this.opts.store.inStates('pr-open', 'spec-pr-open', 'merge-armed')) {
+      if (acted.has(row.attemptId)) continue;
       await this.reconcilePr(row, epoch, slug, approver);
       out.reconciled++;
     }
@@ -392,9 +481,9 @@ export class FeedbackExecutorService {
     return null;
   }
 
-  attemptPaths(row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): { workspace: string; publishClone: string; baseClone: string; tmpDir: string; reviewDir: string } {
+  attemptPaths(row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): { workspace: string; publishClone: string; baseClone: string; headClone: string; gateClone: string; tmpDir: string; reviewDir: string } {
     const base = path.join(this.opts.paths.agentHome, '.worktrees', `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`);
-    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, tmpDir: `${base}-tmp`, reviewDir: `${base}-review` };
+    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: `${base}-tmp`, reviewDir: `${base}-review` };
   }
 
   private executeStateDir(): string { return path.join(this.opts.paths.stateDir, 'state', 'feedback-factory', 'execute'); }
@@ -418,6 +507,7 @@ export class FeedbackExecutorService {
   private async prepareAndSpawn(row: ExecutionRow, triage: TriageRow, epoch: number): Promise<boolean> {
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
+    let spawned: { sessionName: string; sessionId: string } | null = null;
     try {
       // Stop any earlier attempt's session first (remote-close when it ran on a previous owner).
       for (const prior of this.opts.store.attemptsFor(row.initiativeId)) {
@@ -450,7 +540,11 @@ export class FeedbackExecutorService {
         brief: triage.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, evidenceComplete: triage.evidenceComplete !== false,
         needsSpec: row.needsSpec, workspace: p.workspace, specPath,
       });
-      const spawned = await this.opts.sessions.spawnConfined({ name: `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`, prompt, cwd: p.workspace, settingsPath, tmpDir: p.tmpDir,
+      const sessionBase = `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`;
+      // Record the session's name BEFORE spawning it (fenced): a lost ownership refuses here, and a
+      // crash after the spawn leaves a row whose session the next owner can find and stop.
+      this.opts.store.patch(epoch, row.attemptId, { sessionName: this.opts.sessions.plannedSessionName?.(sessionBase) ?? sessionBase, sessionMachine: this.opts.selfMachineId });
+      spawned = await this.opts.sessions.spawnConfined({ name: sessionBase, prompt, cwd: p.workspace, settingsPath, tmpDir: p.tmpDir,
         maxDurationMinutes: Math.min(cfg.maxDurationMinutes, EXECUTION_LEASE_MS / 60_000) });
       // transcriptRef = the session's uuid (its transcript and the remote-close key).
       this.opts.store.patch(epoch, row.attemptId, { state: 'running', sessionName: spawned.sessionName, sessionMachine: this.opts.selfMachineId, transcriptRef: spawned.sessionId });
@@ -458,11 +552,24 @@ export class FeedbackExecutorService {
       await this.markBuildPhase(row.initiativeId, 'in-progress');
       return true;
     } catch (error) {
-      const reason = error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
+      // A session that started but could not be recorded (e.g. ownership moved mid-preparation)
+      // must not keep running unrecorded: stop it now.
+      if (spawned) {
+        const stopped = await this.opts.sessions.stop(spawned.sessionName).catch(() => false); // @silent-fallback-ok: the outcome is audited on the next line
+        this.opts.audit.append('execute:unrecorded-session-stopped', { attemptId: row.attemptId, session: spawned.sessionName, stopped });
+      }
+      const reason = error instanceof DrainConflictError ? 'stale-epoch'
+        : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown' });
-      if (reason === 'profile-unenforceable') await this.profileUnenforceable(epoch, [{ probe: 'confined-spawn', expect: 'succeed', ok: false, detail: error instanceof Error ? error.message.slice(0, 120) : 'refused' }]);
-      this.endAttempt(row, epoch, reason === 'profile-unenforceable' ? 'stopped' : 'failed', reason);
-      if (reason !== 'profile-unenforceable') await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+      // Under a stale epoch every write below is refused; the new owner ends the row.
+      if (reason === 'stale-epoch') return false;
+      try {
+        if (reason === 'profile-unenforceable') await this.profileUnenforceable(epoch, [{ probe: 'confined-spawn', expect: 'succeed', ok: false, detail: error instanceof Error ? error.message.slice(0, 120) : 'refused' }]);
+        this.endAttempt(row, epoch, reason === 'profile-unenforceable' ? 'stopped' : 'failed', reason);
+        if (reason !== 'profile-unenforceable') await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+      } catch (recordError) {
+        this.opts.audit.append('execute:prepare-failed-unrecorded', { attemptId: row.attemptId, error: recordError instanceof Error ? recordError.name : 'unknown' });
+      }
       return false;
     }
   }
@@ -506,15 +613,19 @@ export class FeedbackExecutorService {
     const fullGateDone = this.metaJson<{ stamp: string }>('exec:canary_full_gate')?.stamp === stamp;
     const fixture = await prepareCanaryFixture(paths, { secretsDir: path.join(this.executeStateDir(), 'canary'), configPath: this.opts.paths.configPath });
     const probes: CanaryProbeResult[] = [];
+    let canarySession: string | null = null;
     try {
       probes.push(...await runRunnerCanary({ paths, fixture, runner: this.opts.runner, fullGate: fullGateDone ? null : { lintCommand: cfg.lintCommand, smokeTests: cfg.baseSmokeTests } }));
       if (probes.every((p) => p.ok)) {
         const reportPath = path.join(paths.tmpDir, `canary-report-${fixture.nonce}.json`);
+        prepareSessionLinkProbe(paths, fixture);
         const settingsPath = this.writeClaudeSettings(row.attemptId, paths);
         const spawned = await this.opts.sessions.spawnConfined({ name: `feedback-canary-${pathSlug(row.initiativeId)}-a${row.attempt}`, prompt: sessionCanaryPrompt(paths, fixture, reportPath),
           cwd: paths.workspace, settingsPath, tmpDir: paths.tmpDir, maxDurationMinutes: 10 });
+        canarySession = spawned.sessionName;
         await this.waitForSession(spawned.sessionName, this.opts.sessionWaitMs ?? 10 * 60_000);
-        probes.push(...evaluateSessionCanary(paths, fixture, reportPath));
+        canarySession = null;
+        probes.push(...evaluateSessionCanary(paths, fixture, reportPath, findSessionTranscript(spawned.transcript ?? null)));
         // The must-succeed probes leave two marker files in the workspace; they are not part of any change set.
         for (const marker of [`.feedback-canary-ok-${fixture.nonce}`, `.feedback-canary-bash-${fixture.nonce}`]) {
           try { removeAttemptTree(path.join(paths.workspace, marker), this.trashRoot(), 'feedback-execute canary marker cleanup'); } catch (error) {
@@ -523,6 +634,8 @@ export class FeedbackExecutorService {
         }
       }
     } finally {
+      // A canary session interrupted by an error never outlives the canary.
+      if (canarySession && this.opts.sessions.isAlive(canarySession)) await this.opts.sessions.stop(canarySession).catch(() => false); // @silent-fallback-ok: the canary session is capped at 10 minutes regardless
       await fixture.close();
     }
     const verdict = verdictOf(probes, stamp);
@@ -642,7 +755,7 @@ export class FeedbackExecutorService {
     const p = this.attemptPaths(row);
     const settingsPrefix = this.settingsPrefix(row.attemptId);
     const settings = (() => { try { return fs.readdirSync(this.settingsDir()).filter((n) => n.startsWith(settingsPrefix)).map((n) => path.join(this.settingsDir(), n)); } catch { return []; } })(); // @silent-fallback-ok: no settings directory → nothing to remove
-    for (const dir of [p.workspace, p.reviewDir, p.publishClone, p.baseClone, p.tmpDir, ...settings]) {
+    for (const dir of [p.workspace, p.reviewDir, p.publishClone, p.baseClone, p.headClone, p.gateClone, p.tmpDir, ...settings]) {
       try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute attempt cleanup'); } catch (error) {
         this.opts.audit.append('execute:cleanup-failed', { attemptId: row.attemptId, dir: path.basename(dir), error: error instanceof Error ? error.name : 'unknown' });
       }
@@ -751,49 +864,59 @@ export class FeedbackExecutorService {
     const depsDir = path.join(this.depsRoot(), depsHash);
     // --no-cache: vitest's results cache lives in node_modules, which is the read-only dependency cache here.
     const testCmd = `npx vitest run --no-cache ${result.testFiles.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`;
-    const diskOk = () => treeBytes(p.baseClone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
-    const run = async (cwd: string, command: string) => this.opts.runner.run({
-      command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, p.tmpDir, depsDir)),
-      env: confinedEnv(process.env, { TMPDIR: p.tmpDir, VITEST_CACHE_DIR: path.join(p.tmpDir, 'vitest'), ESBUILD_CACHE_DIR: path.join(p.tmpDir, 'esbuild') }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
-    });
+    const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
+    // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
+    // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
+    const run = async (cwd: string, label: string, command: string) => {
+      const runTmp = path.join(p.tmpDir, `check-${label}`);
+      fs.mkdirSync(runTmp, { recursive: true, mode: 0o700 });
+      return this.opts.runner.run({
+        command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir)),
+        env: confinedEnv(process.env, { TMPDIR: runTmp, VITEST_CACHE_DIR: path.join(runTmp, 'vitest'), ESBUILD_CACHE_DIR: path.join(runTmp, 'esbuild') }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
+      });
+    };
     const limit = (r: { timedOut: boolean; outputCapped: boolean }) => (r.timedOut ? 'limit:command-wall-clock' : r.outputCapped ? 'limit:output' : null);
     /** A fresh trusted clone at the base SHA with `entries` applied and node_modules linked by trusted code. */
-    const freshClone = async (entries: ChangeEntry[]) => {
-      removeAttemptTree(p.baseClone, this.trashRoot(), 'feedback-execute stale check clone');
-      await this.opts.git.createClone(cfg.sourceRepoPath!, p.baseClone, row.baseSha!);
-      removeAttemptTree(path.join(p.baseClone, '.claude'), this.trashRoot(), 'feedback-execute strip check clone .claude');
-      fs.symlinkSync(path.join(depsDir, 'node_modules'), path.join(p.baseClone, 'node_modules'), 'dir');
-      applyChangeSet(p.baseClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute check clone delete') });
+    const freshClone = async (dir: string, entries: ChangeEntry[]) => {
+      removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale check clone');
+      await this.opts.git.createClone(cfg.sourceRepoPath!, dir, row.baseSha!);
+      removeAttemptTree(path.join(dir, '.claude'), this.trashRoot(), 'feedback-execute strip check clone .claude');
+      fs.symlinkSync(path.join(depsDir, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+      applyChangeSet(dir, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute check clone delete') });
     };
     try {
       // (a) base check: a throwaway clone at the base SHA with only the tests/ changes copied in.
-      await freshClone(testEntries(changeSet));
-      const base = await run(p.baseClone, testCmd);
+      await freshClone(p.baseClone, testEntries(changeSet));
+      const base = await run(p.baseClone, 'base', testCmd);
       if (limit(base)) return { ok: false, reason: limit(base)! };
       const imports = relativeImports(testEntries(changeSet).map((e) => ({ path: e.path, text: e.bytes?.toString('utf8') ?? '' })));
       const verdict = classifyBaseFailure(`${base.stdout}\n${base.stderr}`, base.exitCode, sourcePaths(changeSet), imports);
       if (!verdict.ok) return { ok: false, reason: `base-check:${verdict.reason}` };
-      // (b)+(c) run in ANOTHER fresh clone with exactly the bytes that will be published (never the
-      // session's own workspace, whose node_modules link and files the session controlled, and never
-      // the base clone, which the base run's test code could have modified).
-      await freshClone(changeSet.entries);
-      const head = await run(p.baseClone, testCmd);
+      // (b) a second fresh clone with exactly the bytes that will be published (never the session's
+      // own workspace, whose node_modules link and files the session controlled).
+      await freshClone(p.headClone, changeSet.entries);
+      const head = await run(p.headClone, 'head', testCmd);
       if (limit(head)) return { ok: false, reason: limit(head)! };
       if (head.exitCode !== 0) return { ok: false, reason: 'head-check:test-fails-at-head' };
-      if (!diskOk()) return { ok: false, reason: 'limit:workspace-disk' };
-      // (c) the repository's lint gate, then the unit tests related to the changed sources.
-      const lint = await run(p.baseClone, cfg.lintCommand);
+      if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
+      // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
+      // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
+      // runs only the base tooling), then the unit tests related to the changed sources.
+      await freshClone(p.gateClone, changeSet.entries);
+      const lint = await run(p.gateClone, 'lint', cfg.lintCommand);
       if (limit(lint)) return { ok: false, reason: limit(lint)! };
       if (lint.exitCode !== 0) return { ok: false, reason: 'gate:lint' };
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
-        const related = await run(p.baseClone, `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`);
+        const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`);
         if (limit(related)) return { ok: false, reason: limit(related)! };
         if (related.exitCode !== 0) return { ok: false, reason: 'gate:related-tests' };
       }
     } finally {
-      try { removeAttemptTree(p.baseClone, this.trashRoot(), 'feedback-execute check clone cleanup'); } catch { /* @silent-fallback-ok: retried by the attempt cleanup */ }
+      for (const dir of [p.baseClone, p.headClone, p.gateClone]) {
+        try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute check clone cleanup'); } catch { /* @silent-fallback-ok: retried by the attempt cleanup */ }
+      }
     }
     return { ok: true };
   }
@@ -900,6 +1023,7 @@ export class FeedbackExecutorService {
     if (this.heldChangeSetDigest(row.heldChangesetRef) !== expectedDigest) return { ok: false, error: 'the held change set changed since the plan was rendered' };
     const avail = await this.refreshAvailability();
     if (!avail.slug || !avail.approver || REFUSING_REASONS.has(avail.reason)) return { ok: false, error: `executor unavailable: ${avail.reason}` };
+    if (!publishFork(this.opts.config(), avail.slug)) return { ok: false, error: 'publish-fork-unset: set feedbackFactory.execute.publishRepo to the fork (not the canonical repository); nothing was published' };
     // RULE 3: EXEMPT — reads the executor's own held-change-set file (its own JSON contract).
     const payload = JSON.parse(fs.readFileSync(path.join(this.heldDir(), `${row.heldChangesetRef}.json`), 'utf8')) as { kind: 'fix' | 'spec'; baseSha: string; result: SessionResult; entries: Array<{ path: string; kind: ChangeEntry['kind']; executable: boolean; bytes: string | null }> };
     const entries: ChangeEntry[] = payload.entries.map((e) => ({ path: e.path, kind: e.kind, executable: e.executable, ...(e.bytes !== null ? { bytes: Buffer.from(e.bytes, 'base64') } : {}) }));
@@ -928,14 +1052,22 @@ export class FeedbackExecutorService {
     const p = this.attemptPaths(row);
     const identity = this.opts.commitIdentity();
     if (!identity) { this.endAttempt(row, epoch, 'failed', 'commit-identity-unset'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return false; }
+    // Branches are pushed to the fork only, and the PR is opened cross-repository: CI on a fork PR
+    // gets a read-only token and no repository secrets. No fork (or the canonical repo) → refuse.
+    const fork = publishFork(this.opts.config(), slug);
+    if (!fork) {
+      this.opts.audit.append('execute:publish-refused', { attemptId: row.attemptId, reason: 'publish-fork-unset' });
+      this.endAttempt(row, epoch, 'stopped', 'publish-fork-unset');
+      return false;
+    }
     try {
       applyChangeSet(p.publishClone, entries, { removeFile: (full) => removeAttemptTree(full, this.trashRoot(), 'feedback-execute publish clone delete') });
       let codeowners: string | null = null;
       try { codeowners = fs.readFileSync(path.join(p.publishClone, '.github', 'CODEOWNERS'), 'utf8'); } catch { codeowners = null; } // @silent-fallback-ok: no CODEOWNERS file → no owner note
       const outside = codeownersOutsideApprover(codeowners, entries.map((e) => e.path), approver);
-      const headSha = await this.opts.git.commitAndPush(p.publishClone, { branch: row.branch, message: text.message, remoteUrl: `https://github.com/${slug}.git`,
+      const headSha = await this.opts.git.commitAndPush(p.publishClone, { branch: row.branch, message: text.message, remoteUrl: `https://github.com/${fork.slug}.git`,
         authorName: identity.name, authorEmail: identity.email, credentialHelper: this.opts.ghCredentialHelper });
-      const pr = await this.opts.github.createPr({ slug, head: row.branch, base: 'main', title: text.title, body: text.body, label: HOLD_LABEL });
+      const pr = await this.opts.github.createPr({ slug, head: `${fork.owner}:${row.branch}`, base: 'main', title: text.title, body: text.body, label: HOLD_LABEL });
       if (!pr) throw new Error('pr-create-failed');
       this.opts.store.patch(epoch, row.attemptId, {
         state: kind === 'fix' ? 'pr-open' : 'spec-pr-open', reason: operatorDecisionRef ? `published:${operatorDecisionRef}` : 'published', prNumber: pr.number,
@@ -961,6 +1093,7 @@ export class FeedbackExecutorService {
     const sourceRepo = this.opts.config().sourceRepoPath;
     const slug = this.availability?.slug ?? (sourceRepo ? (await this.opts.git.githubRemote(sourceRepo))?.slug : null);
     if (!slug) {
+      this.parkArmed(row, epoch);
       await this.attention({ id: `feedback-execute:disarm-failed:${row.attemptId}:${reason}`, title: `Could not disarm auto-merge on PR #${row.prNumber}`,
         summary: `A stop was requested (${reason}) but the repository could not be resolved to turn GitHub auto-merge off for PR #${row.prNumber}. Disable it on GitHub directly.`,
         category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:disarm' });
@@ -969,12 +1102,22 @@ export class FeedbackExecutorService {
     const ok = await this.opts.github.disableAuto(slug, row.prNumber);
     this.opts.audit.append('execute:disarm', { attemptId: row.attemptId, pr: row.prNumber, reason, ok });
     if (!ok) {
-      try { this.opts.store.patch(epoch, row.attemptId, { disarmFailed: true }); } catch { /* @silent-fallback-ok: the Attention line below still reports it */ }
+      this.parkArmed(row, epoch);
       await this.attention({ id: `feedback-execute:disarm-failed:${row.attemptId}:${reason}`, title: `Could not disarm auto-merge on PR #${row.prNumber}`,
         summary: `A stop was requested (${reason}) but GitHub auto-merge could not be turned off for PR #${row.prNumber}. Disable it on GitHub directly.`,
         category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:disarm' });
     }
     return ok;
+  }
+
+  /**
+   * A failed (or unresolvable) disarm: whatever the row's state, treat the PR as possibly armed —
+   * merge-armed + disarmFailed — so every later tick retries the disarm before anything else.
+   */
+  private parkArmed(row: ExecutionRow, epoch: number): void {
+    try {
+      this.opts.store.patch(epoch, row.attemptId, { disarmFailed: true, ...(OPEN_PR_STATES.has(row.state) ? { state: 'merge-armed' as const } : {}) });
+    } catch { /* @silent-fallback-ok: a stale-epoch writer leaves the row to the owner, whose stop paths disarm it; the Attention line still reports it */ }
   }
 
   private async reconcilePr(rowIn: ExecutionRow, epoch: number, slug: string, approver: string): Promise<void> {
@@ -1003,7 +1146,7 @@ export class FeedbackExecutorService {
     // Stop path: re-triaged away from work (hold or ignore). A queued re-triage is not a decision yet.
     const triage = this.opts.triageStore.get(row.initiativeId);
     if (!triage || triage.state === 'hold' || triage.state === 'ignored') {
-      if (row.state === 'merge-armed' && !(await this.disarm(row, epoch, 'retriaged'))) return;
+      if (!(await this.disarm(row, epoch, 'retriaged'))) return;
       this.endAttempt(row, epoch, 'stopped', 'retriaged-away-from-work');
       return;
     }
@@ -1034,6 +1177,13 @@ export class FeedbackExecutorService {
     const unlabeled = await this.opts.github.removeLabel(slug, prNumber, HOLD_LABEL);
     if (!unlabeled) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'remove-label' }); return; }
     const mergeRun = await this.opts.github.safeMerge(slug, prNumber, pr.headRefOid);
+    if (mergeRun.exitCode === null) {
+      // No exit code (timeout, killed): auto-merge may or may not have been armed. Treat it as
+      // armed and undisarmed, so the next tick disarms it before anything else.
+      this.opts.audit.append('execute:merge', { attemptId: row.attemptId, pr: prNumber, state: 'merge-outcome-unknown', reason: null });
+      this.opts.store.patch(epoch, row.attemptId, { state: 'merge-armed', approvedSha: pr.headRefOid, approvedAt: this.now(), mergeDeadlineAt: this.now() + MERGE_ARMED_DEADLINE_MS, disarmFailed: true, reason: 'merge-outcome-unknown' });
+      return;
+    }
     const merge = mapSafeMergeExit(mergeRun.exitCode, mergeRun.stdout);
     this.opts.audit.append('execute:merge', { attemptId: row.attemptId, pr: prNumber, state: merge.state, reason: merge.state === 'merge-refused' ? merge.reason : null });
     if (merge.state === 'merged') {
@@ -1053,8 +1203,9 @@ export class FeedbackExecutorService {
   /** merge-refused: disarm; retried once after 1 h; then hold merge-unavailable (listed once in the action list). */
   private async mergeRefused(row: ExecutionRow, epoch: number, reason: string): Promise<void> {
     // An armed PR whose disarm fails stays merge-armed (disarmFailed) and is retried next tick.
+    // A failed disarm parks the row merge-armed (disarmFailed), whatever its state: it is retried next tick.
     const disarmed = await this.disarm(row, epoch, `merge-refused:${reason}`);
-    if (!disarmed && row.state === 'merge-armed') return;
+    if (!disarmed) return;
     if (row.mergeRetries < 1) {
       this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', reason: `merge-refused:${reason}`, mergeRetries: row.mergeRetries + 1, mergeRetryAt: this.now() + MERGE_RETRY_DELAY_MS, approvedSha: null, mergeDeadlineAt: null });
       return;
@@ -1232,7 +1383,8 @@ export class FeedbackExecutorService {
     let stopped = 0;
     for (const row of this.opts.store.attemptsFor(initiativeId)) {
       if (this.opts.store.isTerminal(row.state)) continue;
-      if (row.state === 'merge-armed' && !(await this.disarm(row, epoch, 'operator-stop'))) continue; // stays armed + disarmFailed; retried each tick
+      // Every row with an open PR is disarmed (idempotent); a failed disarm stays armed + disarmFailed and is retried each tick.
+      if (row.prNumber && OPEN_PR_STATES.has(row.state) && !(await this.disarm(row, epoch, 'operator-stop'))) continue;
       await this.stopSession(row);
       this.endAttempt(row, epoch, 'stopped', 'operator-stop');
       stopped++;
@@ -1355,8 +1507,8 @@ export class FeedbackExecutorService {
     return {
       ok: true, approver: avail.approver, reasons,
       renderedText: `Let the feedback executor run even though this agent could act as the approver "${avail.approver}" itself (${reasons.join(', ')}). ` +
-        'Every executor pull request still merges only at the exact version that account approves on GitHub, and sessions the executor starts can never open a browser profile holding that account. ' +
-        'Accepted risk, by name: any other full-tool session that opens that browser profile could technically submit an approval, and that is not detected. ' +
+        'Every executor pull request still merges only at the exact version that account approves on GitHub. The build session runs sandboxed with no credentials; the trusted sessions the executor starts get no browser tools and are refused browser-profile activation. ' +
+        'Accepted risk, by name: a full-tool session (including those trusted sessions) that launches a browser on that profile\'s files itself, or any other session that opens the profile, could technically submit an approval, and that is not detected. ' +
         'This covers exactly the reasons listed; if they change, the executor waits for a new acceptance. Withdraw it at any time by asking me to revoke it.',
     };
   }

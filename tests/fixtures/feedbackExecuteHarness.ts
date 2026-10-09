@@ -30,8 +30,8 @@ export interface ExecHarness extends Harness {
   cfg: ExecuteLiveConfig;
   enabled: { value: boolean };
   epoch: { value: number };
-  repo: { info: RepoInfo | null; viewer: string | null };
-  identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }> };
+  repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
+  identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean };
   pushes: PushRecord[];
   prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; labels: string[]; title: string; body: string }>;
@@ -44,7 +44,9 @@ export interface ExecHarness extends Harness {
   runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
   runnerAvailable: { value: boolean };
   deps: { ok: boolean; ensureCalls: number };
-  sessions: { alive: Set<string>; spawned: Array<{ name: string; prompt: string; cwd: string; settingsPath?: string; trusted: boolean }>; behavior: { fn: (workspace: string, prompt: string) => void }; stopped: string[]; remoteStops: Array<{ machine: string; name: string }>; canaryReport: { fn: ((reportPath: string, workspace: string, prompt: string) => void) | null } };
+  sessions: { alive: Set<string>; spawned: Array<{ name: string; prompt: string; cwd: string; settingsPath?: string; trusted: boolean }>; behavior: { fn: (workspace: string, prompt: string) => void }; stopped: string[]; remoteStops: Array<{ machine: string; name: string }>; canaryReport: { fn: ((reportPath: string, workspace: string, prompt: string) => void) | null };
+    /** The canary session's transcript lines (default: one tool result per step plus the report, no nonce). */
+    canaryTranscript: { fn: ((prompt: string) => string[] | null) | null }; claudeHome: string };
   attentionExec: AttentionInput[];
   /** Make a triage work item ready for the executor. */
   workItem(id: string, opts?: { reports?: number; needsSpec?: boolean; userFacing?: boolean }): Promise<string>;
@@ -63,7 +65,7 @@ export function defaultRun(cmd: ConfinedCommand): Partial<ConfinedResult> {
   const c = cmd.command;
   if (/better-sqlite3/.test(c)) return { exitCode: 0, stdout: 'sqlite-ok' };
   if (/^git /.test(c)) return { exitCode: 0 };
-  if (/^(cat |ls |echo |security )/.test(c) || /^node -e/.test(c)) return { exitCode: 1, stderr: 'Operation not permitted' };
+  if (/^(cat |ls |echo |security |ln )/.test(c) || /^node -e/.test(c)) return { exitCode: 1, stderr: 'Operation not permitted' };
   if (/vitest run/.test(c) && isBaseState(cmd.cwd)) return { exitCode: 1, stdout: ' FAIL  tests/fix.test.ts > fixes it\nAssertionError: expected 1 to be 2\n Test Files  1 failed (1)' };
   return { exitCode: 0, stdout: 'ok' };
 }
@@ -83,11 +85,11 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, 'package.json'), '{"name":"fixture"}\n');
   fs.writeFileSync(path.join(h.sourceRepo, 'src', 'thing.ts'), 'export const thing = 1;\n');
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
-  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, ...(opts.config ?? {}) };
+  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', ...(opts.config ?? {}) };
   h.enabled = { value: true };
   h.epoch = { value: 1 };
-  h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot' };
-  h.identity = { profileAccounts: [], ownedIdentities: [] };
+  h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
+  h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false };
   h.pushes = [];
   h.prs = new Map();
@@ -101,7 +103,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.runnerAvailable = { value: true };
   h.deps = { ok: true, ensureCalls: 0 };
   h.attentionExec = [];
-  h.sessions = { alive: new Set(), spawned: [], behavior: { fn: () => {} }, stopped: [], remoteStops: [], canaryReport: { fn: null } };
+  h.sessions = { alive: new Set(), spawned: [], behavior: { fn: () => {} }, stopped: [], remoteStops: [], canaryReport: { fn: null }, canaryTranscript: { fn: null }, claudeHome: path.join(base.dir, 'claude-home') };
 
   const git: AttemptGit = {
     fetchBase: async () => BASE_SHA,
@@ -132,6 +134,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   const github: GitHubGateway = {
     repoInfo: async () => h.repo.info,
     viewerLogin: async () => h.repo.viewer,
+    authAccounts: async () => h.repo.accounts,
     createPr: async (input) => {
       const number = nextPr++;
       h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head, labels: [input.label], title: input.title, body: input.body });
@@ -173,9 +176,16 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
           const bashFile = /echo ok > (\S+\.feedback-canary-bash-[0-9a-f]+)/.exec(input.prompt)![1];
           fs.writeFileSync(okFile, 'ok');
           fs.writeFileSync(bashFile, 'ok');
-          fs.writeFileSync(reportPath!, JSON.stringify({ attempted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], outputs: { 1: 'Operation not permitted', 8: 'Operation not permitted', 9: 'exit 0: ?? node_modules' } }));
+          fs.writeFileSync(reportPath!, JSON.stringify({ attempted: CANARY_STEPS, outputs: { 1: 'Operation not permitted', 8: 'Operation not permitted', 9: 'exit 0: ?? node_modules' } }));
         }
-        return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}` };
+        const sessionUuid = canaryUuid(input.name);
+        const lines = h.sessions.canaryTranscript.fn ? h.sessions.canaryTranscript.fn(input.prompt) : defaultCanaryTranscript(input.prompt);
+        if (lines) {
+          const dir = path.join(h.sessions.claudeHome, 'projects', input.cwd.replace(/[/.]/g, '-'));
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${lines.join('\n')}\n`);
+        }
+        return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}`, transcript: { configHome: h.sessions.claudeHome, sessionUuid } };
       }
       h.sessions.alive.add(`tmux-${input.name}`);
       h.sessions.behavior.fn(input.cwd, input.prompt);
@@ -197,7 +207,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending },
-    identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: null }),
+    identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
     rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
     enabled: () => h.enabled.value,
     config: () => h.cfg,
@@ -233,6 +243,28 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     };
   };
   return h;
+}
+
+export const CANARY_STEPS = Array.from({ length: 16 }, (_, i) => i + 1);
+
+/** A stable uuid-shaped id per canary session name. */
+export function canaryUuid(name: string): string {
+  const hex = Buffer.from(name).toString('hex').padEnd(32, '0').slice(-32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** A Read tool call and its (refused) result, in the shape Claude Code writes them. */
+export function readCallLines(id: string, filePath: string, result = 'File is in a directory that is denied by your permission settings.'): string[] {
+  return [
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: filePath } }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: true }] } }),
+  ];
+}
+
+/** Every Read the canary prompt asks for, each attempted and refused. */
+export function defaultCanaryTranscript(prompt: string): string[] {
+  const targets = [...prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
+  return targets.flatMap((t, i) => readCallLines(`toolu_${i}`, t));
 }
 
 /** End the running build session (as if claude -p exited). */

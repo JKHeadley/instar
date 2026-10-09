@@ -15,7 +15,7 @@ import { FeedbackDrainStore, DrainConflictError } from '../../../src/feedback-fa
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
-import { buildFeedbackExecutor, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
+import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
 import { SafeAttemptGit, GhGateway } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SandboxRuntimeRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -76,17 +76,24 @@ describe('buildFeedbackExecutor wiring', () => {
   it('the session port delegates to the SessionManager confined spawn with omitAuthEnv and the claude-code adapter', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const sm = {
-      spawnSession: async (o: Record<string, unknown>) => { calls.push(o); return { id: 'uuid-1', tmuxSession: 'proj-feedback-x' }; },
+      spawnSession: async (o: Record<string, unknown>) => { calls.push(o); return { id: 'uuid-1', tmuxSession: 'proj-feedback-x', ...(o.confinement ? { confinedConfigHome: '/claude-home' } : {}) }; },
+      plannedTmuxSessionName: (n: string) => `proj-${n}`,
       isSessionAlive: (n: string) => n === 'proj-feedback-x',
       listRunningSessions: () => [{ id: 'uuid-1', tmuxSession: 'proj-feedback-x' }],
       killSession: () => true,
     } as unknown as SessionManager;
     const { ctx } = build({ sessionManager: sm });
-    const sessions = (ctx.service as unknown as { opts: { sessions: { spawnConfined: (i: unknown) => Promise<unknown>; spawnTrusted: (i: unknown) => Promise<unknown>; isAlive: (n: string) => boolean; stop: (n: string) => Promise<boolean> } } }).opts.sessions;
-    await expect(sessions.spawnConfined({ name: 'feedback-x', prompt: 'p', cwd: '/w', settingsPath: '/s.json', tmpDir: '/w-tmp', maxDurationMinutes: 60 })).resolves.toEqual({ sessionName: 'proj-feedback-x', sessionId: 'uuid-1' });
-    expect(calls[0]).toMatchObject({ cwd: '/w', omitAuthEnv: true, framework: 'claude-code', confinement: { framework: 'claude-code', settingsPath: '/s.json', tmpDir: '/w-tmp' } });
+    const sessions = (ctx.service as unknown as { opts: { sessions: { spawnConfined: (i: unknown) => Promise<unknown>; spawnTrusted: (i: unknown) => Promise<unknown>; isAlive: (n: string) => boolean; stop: (n: string) => Promise<boolean>; plannedSessionName: (n: string) => string } } }).opts.sessions;
+    const spawned = await sessions.spawnConfined({ name: 'feedback-x', prompt: 'p', cwd: '/w', settingsPath: '/s.json', tmpDir: '/w-tmp', maxDurationMinutes: 60 }) as { sessionName: string; sessionId: string; transcript: { configHome: string; sessionUuid: string } };
+    // A fixed --session-id, so the canary can read exactly this session's transcript.
+    expect(spawned).toMatchObject({ sessionName: 'proj-feedback-x', sessionId: 'uuid-1', transcript: { configHome: '/claude-home' } });
+    expect(calls[0].sessionId).toBe(spawned.transcript.sessionUuid);
+    expect(spawned.transcript.sessionUuid).toMatch(/^[0-9a-f-]{36}$/);
+    expect(calls[0]).toMatchObject({ cwd: '/w', omitAuthEnv: true, framework: 'claude-code', triggeredBy: 'feedback-executor', confinement: { framework: 'claude-code', settingsPath: '/s.json', tmpDir: '/w-tmp' } });
+    // The planned name delegates to the SessionManager's own naming (recorded before spawning).
+    expect(sessions.plannedSessionName('feedback-x')).toBe('proj-feedback-x');
     await sessions.spawnTrusted({ name: 'feedback-specconverge-x', prompt: 'p', maxDurationMinutes: 10 });
-    expect(calls[1]).toMatchObject({ disableProjectMcp: true });
+    expect(calls[1]).toMatchObject({ disableProjectMcp: true, triggeredBy: 'feedback-executor' });
     expect(calls[1].omitAuthEnv).toBeUndefined();
     expect(sessions.isAlive('proj-feedback-x')).toBe(true);
     expect(await sessions.stop('proj-feedback-x')).toBe(true);
@@ -98,10 +105,39 @@ describe('buildFeedbackExecutor wiring', () => {
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'state', 'playwright-profiles.json'), JSON.stringify({ profiles: [{ id: 'p', accounts: [{ service: 'github', identity: 'JK', owner: 'operator', vaultRefs: ['gh_jk'] }] }] }));
     fs.writeFileSync(path.join(dir, 'owned-identities.json'), JSON.stringify([{ service: 'github', identity: 'bot-test' }]));
-    expect(readIdentityFacts(dir)).toEqual({ profileAccounts: [{ service: 'github', identity: 'JK', vaultRefs: ['gh_jk'] }], ownedIdentities: [{ service: 'github', identity: 'bot-test' }], vaultNames: null, unreadableSources: [] });
-    expect(readIdentityFacts(path.join(dir, 'missing'))).toEqual({ profileAccounts: [], ownedIdentities: [], vaultNames: null, unreadableSources: [] });
+    // No vault file: readable, no names.
+    expect(readIdentityFacts(dir)).toEqual({ profileAccounts: [{ service: 'github', identity: 'JK', vaultRefs: ['gh_jk'] }], ownedIdentities: [{ service: 'github', identity: 'bot-test' }], vaultNames: [], unreadableSources: [] });
+    expect(readIdentityFacts(path.join(dir, 'missing'))).toEqual({ profileAccounts: [], ownedIdentities: [], vaultNames: [], unreadableSources: [] });
+    // The vault's key NAMES are read (values never leave the traversal); an undecryptable vault is null (→ not independent).
+    fs.mkdirSync(path.join(dir, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'secrets', 'config.secrets.enc'), 'ciphertext');
+    expect(readVaultNames(dir, () => ({ github: { jk_token: 'value-never-returned' }, other: 'x' }))).toEqual(['github.jk_token', 'other']);
+    fs.writeFileSync(path.join(dir, 'secrets', 'config.secrets.enc'), 'ciphertext-2');
+    expect(readVaultNames(dir, () => { throw new Error('decrypt failed'); })).toBeNull();
+    expect(readIdentityFacts(dir, () => null).vaultNames).toBeNull();
     // A registry that exists but cannot be parsed fails closed (reported, never "no accounts").
     fs.writeFileSync(path.join(dir, 'state', 'playwright-profiles.json'), '{ corrupt');
     expect(readIdentityFacts(dir).unreadableSources).toEqual(['playwright-profiles']);
+  });
+
+  it('with the executor not built (triage dark), every open executor PR still gets auto-merge turned off; an unresolvable one raises Attention', async () => {
+    const { ctx, drain, dir } = build();
+    const store = ctx.store;
+    for (const [i, state] of (['pr-open', 'merge-armed', 'merged'] as const).entries()) {
+      const row = store.claim(3, { initiativeId: `i${i}`, clusterId: `c${i}`, needsSpec: false, userFacing: false, leaseMs: 1000, maxStartsPerDay: 6 })!;
+      store.patch(3, row.attemptId, { state, prNumber: 200 + i });
+    }
+    const disarmed: number[] = [];
+    const attention: string[] = [];
+    const git = { githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }) };
+    const r = await disarmExecutorPrsWithoutExecutor({ drainStore: drain, sourceRepoPath: dir, git, github: { disableAuto: async (_s, pr) => { disarmed.push(pr); return true; } }, stateDir: dir, raiseAttention: async (a) => { attention.push(a.id); } });
+    expect(r).toEqual({ checked: 2, disarmed: 2, failed: 0 });
+    expect(disarmed.sort()).toEqual([200, 201]); // the merged PR is left alone
+    const failed = await disarmExecutorPrsWithoutExecutor({ drainStore: drain, sourceRepoPath: dir, git: { githubRemote: async () => null }, github: { disableAuto: async () => true }, stateDir: dir, raiseAttention: async (a) => { attention.push(a.id); } });
+    expect(failed).toMatchObject({ checked: 2, failed: 2 });
+    expect(attention).toHaveLength(2);
+    // No execution table at all (executor never ran): nothing to do.
+    const empty = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: 'k'.repeat(32) });
+    expect(await disarmExecutorPrsWithoutExecutor({ drainStore: empty, sourceRepoPath: dir, stateDir: dir, raiseAttention: async () => {} })).toEqual({ checked: 0, disarmed: 0, failed: 0 });
   });
 });

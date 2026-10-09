@@ -28,6 +28,7 @@ import { RateLimiter, RATE_LIMITS } from '../../src/feedback-factory/receiver/de
 import { FakeBlobServer } from '../fixtures/FakeBlobServer.js';
 import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID } from '../../src/feedback-factory/triage/FeedbackTriageArbiter.js';
 import { decisionRow, packetsFrom } from '../fixtures/feedbackTriageHarness.js';
+import { readCallLines } from '../fixtures/feedbackExecuteHarness.js';
 
 const AUTH = 'feedback-execute-e2e-auth';
 const PIN = '161803';
@@ -61,7 +62,7 @@ function executorEdge(root: string, clock: { now: number }) {
   const state = {
     pr: null as null | { number: number; headRefOid: string; mergedAt: string | null; mergeCommit: string | null; labels: string[] },
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
-    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, spawned: [] as string[], alive: new Set<string>(),
+    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
     release: 'none' as { tag: string; taggedAt: number } | 'none',
   };
   const source = path.join(root, 'source');
@@ -72,14 +73,15 @@ function executorEdge(root: string, clock: { now: number }) {
     git: {
       fetchBase: async () => BASE_SHA,
       createClone: async (src: string, dest: string) => { fs.cpSync(src, dest, { recursive: true }); },
-      commitAndPush: async () => { state.pushes++; return HEAD_SHA; },
+      commitAndPush: async (_clone: string, input: { remoteUrl: string }) => { state.pushes++; state.pushedTo.push(input.remoteUrl); return HEAD_SHA; },
       githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
       firstReleaseContaining: async () => state.release,
     },
     github: {
       repoInfo: async () => ({ ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }),
       viewerLogin: async () => 'echo-bot',
-      createPr: async (input: { label: string }) => { state.pr = { number: 7, headRefOid: HEAD_SHA, mergedAt: null, mergeCommit: null, labels: [input.label] }; return { number: 7 }; },
+      authAccounts: async () => ['echo-bot'],
+      createPr: async (input: { label: string; head: string }) => { state.prHeads.push(input.head); state.pr = { number: 7, headRefOid: HEAD_SHA, mergedAt: null, mergeCommit: null, labels: [input.label] }; return { number: 7 }; },
       prState: async () => (state.pr ? { state: state.pr.mergedAt ? 'MERGED' : 'OPEN', mergedAt: state.pr.mergedAt, headRefOid: state.pr.headRefOid, mergeCommit: state.pr.mergeCommit, author: 'echo-bot', headRefName: 'feedback/x' } : null),
       reviews: async () => state.reviews,
       removeLabel: async () => { state.pr!.labels = []; return true; },
@@ -107,7 +109,14 @@ function executorEdge(root: string, clock: { now: number }) {
         if (input.name.startsWith('feedback-canary-')) {
           fs.writeFileSync(/create (\S+\.feedback-canary-ok-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
           fs.writeFileSync(/echo ok > (\S+\.feedback-canary-bash-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
-          fs.writeFileSync(/write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)![1], JSON.stringify({ attempted: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], outputs: { 9: 'exit 0' } }));
+          fs.writeFileSync(/write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)![1], JSON.stringify({ attempted: Array.from({ length: 16 }, (_, i) => i + 1), outputs: { 9: 'exit 0' } }));
+          // The session's own transcript: every requested Read attempted and refused.
+          const sessionUuid = '00000000-0000-4000-8000-000000000001';
+          const dir = path.join(root, 'claude-home', 'projects', 'key');
+          fs.mkdirSync(dir, { recursive: true });
+          const reads = [...input.prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
+          fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${reads.flatMap((file, i) => readCallLines(`r${i}`, file)).join('\n')}\n`);
+          return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}`, transcript: { configHome: path.join(root, 'claude-home'), sessionUuid } };
         } else {
           // The confined build session: reproduce with a failing test, fix, write the result file.
           fs.mkdirSync(path.join(input.cwd, 'tests'), { recursive: true });
@@ -120,7 +129,7 @@ function executorEdge(root: string, clock: { now: number }) {
       spawnTrusted: async (input: { name: string }) => { state.spawned.push(input.name); return { sessionName: `tmux-${input.name}`, sessionId: 'u' }; },
       isAlive: (n: string) => state.alive.has(n), stop: async () => true, remoteStop: async () => true, frameworkVersion: async () => '2.1.295',
     },
-    identityFacts: () => ({ profileAccounts: [], ownedIdentities: [], vaultNames: null }),
+    identityFacts: () => ({ profileAccounts: [], ownedIdentities: [], vaultNames: [] }),
     commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
     sleep: async () => {}, sessionWaitMs: 1_000, clock: () => clock.now, homeDir: root,
   };
@@ -178,7 +187,7 @@ describe('feedback executor — production lifecycle (live on a development agen
       feedbackFactory: {
         receiverPersistence: { enabled: true, blobTokenEnv: TOKEN_ENV, blobApiBase: blob.baseUrl, pollIntervalMs: 60_000 },
         processing: {}, drain: {}, consumer: { dryRun: false }, triage: {},
-        execute: { sourceRepoPath: edge.source, dryRun: false },
+        execute: { sourceRepoPath: edge.source, dryRun: false, publishRepo: 'echo-bot/repo' },
       },
     });
     server = new AgentServer({
@@ -244,6 +253,9 @@ describe('feedback executor — production lifecycle (live on a development agen
     status = await executeTick(app, clock);
     expect(status.counts).toMatchObject({ 'pr-open': 1 });
     expect(edge.state.pushes).toBe(1);
+    // Published from the fork, as a cross-repository PR against the canonical repository.
+    expect(edge.state.pushedTo).toEqual(['https://github.com/echo-bot/repo.git']);
+    expect(edge.state.prHeads[0]).toMatch(/^echo-bot:feedback\//);
     expect(edge.state.pr!.labels).toEqual(['hold']);
 
     // The repository owner approves the exact head → safe-merge --auto pinned to it → merged.

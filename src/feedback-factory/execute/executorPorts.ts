@@ -46,6 +46,8 @@ export interface AttemptGit {
 export interface GitHubGateway {
   repoInfo(slug: string): Promise<RepoInfo | null>;
   viewerLogin(): Promise<string | null>;
+  /** Every github.com account `gh` holds a login for (active or not); null when any is unreadable. */
+  authAccounts(): Promise<string[] | null>;
   createPr(input: { slug: string; head: string; base: string; title: string; body: string; label: string }): Promise<{ number: number } | null>;
   prState(slug: string, pr: number): Promise<{ state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string } | null>;
   reviews(slug: string, pr: number): Promise<PrReview[] | null>;
@@ -159,6 +161,22 @@ export class GhGateway implements GitHubGateway {
     try { return (JSON.parse(await this.gh(['api', 'user'])) as { login?: string }).login ?? null; } catch { return null; } // @silent-fallback-ok: unreadable login counts as NOT independent
   }
 
+  async authAccounts(): Promise<string[] | null> {
+    let raw: string;
+    try { raw = await this.gh(['auth', 'status', '--hostname', 'github.com', '--json', 'hosts']); } catch (error) {
+      // @silent-fallback-ok: gh exits non-zero when one account has a problem; the JSON on stdout still lists them (unparseable → null below)
+      raw = String((error as { stdout?: string }).stdout ?? '');
+    }
+    try {
+      const hosts = (JSON.parse(raw) as { hosts?: Record<string, Array<{ login?: string }>> }).hosts ?? {};
+      const entries = hosts['github.com'];
+      if (!Array.isArray(entries)) return null;
+      const logins = entries.map((e) => String(e.login ?? ''));
+      // An entry whose login cannot be read could be the approver: the whole set is unreadable.
+      return logins.some((l) => l === '') ? null : [...new Set(logins)];
+    } catch { return null; } // @silent-fallback-ok: unreadable accounts count as NOT independent
+  }
+
   async createPr(input: { slug: string; head: string; base: string; title: string; body: string; label: string }): Promise<{ number: number } | null> {
     const bodyFile = path.join(os.tmpdir(), `feedback-pr-body-${process.pid}-${Date.now()}.md`);
     fs.writeFileSync(bodyFile, input.body, { mode: 0o600, flag: 'wx' });
@@ -191,8 +209,19 @@ export class GhGateway implements GitHubGateway {
     try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; } catch { return false; } // @silent-fallback-ok: caller records the failure
   }
 
+  /**
+   * Idempotent: a PR with no auto-merge request (never armed, already disarmed, merged or closed)
+   * is already in the wanted state. Only a PR that is armed is disarmed; any unreadable answer is
+   * a failure (the caller keeps the row armed and retries).
+   */
   async disableAuto(slug: string, pr: number): Promise<boolean> {
-    try { await this.gh(['pr', 'merge', String(pr), '--repo', slug, '--disable-auto']); return true; } catch { return false; } // @silent-fallback-ok: caller raises the disarm-failure Attention line
+    try {
+      // RULE 3: EXEMPT — gh's documented --json output (a stable, versioned data contract).
+      const view = JSON.parse(await this.gh(['pr', 'view', String(pr), '--repo', slug, '--json', 'autoMergeRequest,state'])) as { autoMergeRequest?: unknown; state?: string };
+      if (view.autoMergeRequest === null || view.autoMergeRequest === undefined || view.state === 'MERGED' || view.state === 'CLOSED') return true;
+      await this.gh(['pr', 'merge', String(pr), '--repo', slug, '--disable-auto']);
+      return true;
+    } catch { return false; } // @silent-fallback-ok: caller keeps the row armed (disarmFailed) and raises the disarm-failure Attention line
   }
 
   async safeMerge(slug: string, pr: number, sha: string): Promise<{ exitCode: number | null; stdout: string }> {

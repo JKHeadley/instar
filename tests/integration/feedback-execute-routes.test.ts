@@ -34,7 +34,7 @@ function deps(fakes: Fakes): Partial<FeedbackExecutorServiceOptions> {
       githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }), firstReleaseContaining: async () => 'none',
     },
     github: {
-      repoInfo: async () => fakes.repo, viewerLogin: async () => fakes.viewer, createPr: async () => null, prState: async () => null, reviews: async () => [],
+      repoInfo: async () => fakes.repo, viewerLogin: async () => fakes.viewer, authAccounts: async () => (fakes.viewer ? [fakes.viewer] : []), createPr: async () => null, prState: async () => null, reviews: async () => [],
       removeLabel: async () => true, disableAuto: async (_s, pr) => { fakes.disarmed.push(pr); return true; }, safeMerge: async () => ({ exitCode: 1, stdout: '' }),
     },
     runner: { available: () => ({ ok: true, version: '0.0.77' }), run: async () => ({ exitCode: 1, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }) },
@@ -43,7 +43,7 @@ function deps(fakes: Fakes): Partial<FeedbackExecutorServiceOptions> {
       spawnConfined: async () => { throw new Error('no sessions in this test'); }, spawnTrusted: async () => { throw new Error('no sessions in this test'); },
       isAlive: () => false, stop: async () => true, remoteStop: async () => true, frameworkVersion: async () => 'test',
     },
-    identityFacts: () => ({ profileAccounts: [], ownedIdentities: [], vaultNames: null }),
+    identityFacts: () => ({ profileAccounts: [], ownedIdentities: [], vaultNames: [] }),
     commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
   };
 }

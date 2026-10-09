@@ -5,6 +5,7 @@
  * (`overrides`) replace only the external boundaries (git, GitHub, sandbox runtime, sessions).
  */
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,9 +25,15 @@ import { FeedbackExecutorService, type ConfinedSessionPort, type ExecutorAdmissi
 import { resolveExecuteConfig } from './executePolicy.js';
 import { SandboxRuntimeRunner } from './ConfinedRunner.js';
 import { DepsCache } from './depsCache.js';
-import { GhGateway, SafeAttemptGit } from './executorPorts.js';
+import { GhGateway, SafeAttemptGit, type AttemptGit, type GitHubGateway } from './executorPorts.js';
+import { SecretStore } from '../../core/SecretStore.js';
+import { secretKeyPaths } from '../../core/SecretSync.js';
+import { OPEN_PR_STATES } from './FeedbackExecuteStore.js';
 
 const execFileAsync = promisify(execFile);
+
+/** The `triggeredBy` every executor-started session carries. */
+export const FEEDBACK_EXECUTOR_TRIGGER = 'feedback-executor';
 
 export interface FeedbackExecuteRouteContext {
   service: FeedbackExecutorService;
@@ -50,7 +57,28 @@ export function isInstarSourceCheckout(dir: string): boolean {
  * only). A registry file that EXISTS but cannot be parsed is reported as unreadable — the executor
  * then treats the approver as not independent (fail closed), never as "no accounts".
  */
-export function readIdentityFacts(stateDir: string): { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null; unreadableSources: string[] } {
+const vaultNamesCache = new Map<string, { mtimeMs: number; size: number; names: string[] }>();
+
+/**
+ * The agent vault's key NAMES (never values), cached by the vault file's mtime and size. No vault
+ * file → `[]` (nothing to match); a vault that exists but cannot be decrypted → null, which the
+ * review gate treats as NOT independent (an unreadable vault proves nothing).
+ */
+export function readVaultNames(stateDir: string, read: () => unknown = () => new SecretStore({ stateDir }).read()): string[] | null {
+  const vaultPath = path.join(stateDir, 'secrets', 'config.secrets.enc');
+  let st: fs.Stats;
+  try { st = fs.statSync(vaultPath); } catch { return []; } // @silent-fallback-ok: no vault → no names to match (readable, empty)
+  const cached = vaultNamesCache.get(vaultPath);
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.names;
+  try {
+    // The decrypted object is not retained beyond this traversal; only key names leave it.
+    const names = secretKeyPaths(read() as Parameters<typeof secretKeyPaths>[0]);
+    vaultNamesCache.set(vaultPath, { mtimeMs: st.mtimeMs, size: st.size, names });
+    return names;
+  } catch { vaultNamesCache.delete(vaultPath); return null; } // @silent-fallback-ok: unreadable → not independent (fail closed)
+}
+
+export function readIdentityFacts(stateDir: string, readVault: () => string[] | null = () => readVaultNames(stateDir)): { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null; unreadableSources: string[] } {
   const profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }> = [];
   const unreadableSources: string[] = [];
   const read = (file: string, label: string): unknown => {
@@ -70,7 +98,7 @@ export function readIdentityFacts(stateDir: string): { profileAccounts: Array<{ 
     const entry = o as { service?: string; identity?: string };
     if (typeof entry.service === 'string' && typeof entry.identity === 'string') ownedIdentities.push({ service: entry.service, identity: entry.identity });
   }
-  return { profileAccounts, ownedIdentities, vaultNames: null, unreadableSources };
+  return { profileAccounts, ownedIdentities, vaultNames: readVault(), unreadableSources };
 }
 
 export function buildFeedbackExecutor(input: {
@@ -110,13 +138,18 @@ export function buildFeedbackExecutor(input: {
   const sessions: ConfinedSessionPort = input.overrides?.sessions ?? {
     async spawnConfined(spawn) {
       if (!sm) throw new Error('confinement-unavailable: no session manager');
-      const session = await sm.spawnSession({ name: spawn.name, prompt: spawn.prompt, cwd: spawn.cwd, omitAuthEnv: true, framework: 'claude-code',
-        confinement: { framework: 'claude-code', settingsPath: spawn.settingsPath, tmpDir: spawn.tmpDir }, maxDurationMinutes: spawn.maxDurationMinutes, triggeredBy: 'feedback-executor' });
-      return { sessionName: session.tmuxSession, sessionId: session.id };
+      // A fixed --session-id: the transcript lands at a known name, so the canary can judge what
+      // actually reached the model from it.
+      const sessionUuid = randomUUID();
+      const session = await sm.spawnSession({ name: spawn.name, prompt: spawn.prompt, cwd: spawn.cwd, omitAuthEnv: true, framework: 'claude-code', sessionId: sessionUuid,
+        confinement: { framework: 'claude-code', settingsPath: spawn.settingsPath, tmpDir: spawn.tmpDir }, maxDurationMinutes: spawn.maxDurationMinutes, triggeredBy: FEEDBACK_EXECUTOR_TRIGGER });
+      return { sessionName: session.tmuxSession, sessionId: session.id, transcript: session.confinedConfigHome ? { configHome: session.confinedConfigHome, sessionUuid } : null };
     },
+    plannedSessionName: (name) => (sm ? sm.plannedTmuxSessionName(name) : name),
     async spawnTrusted(spawn) {
       if (!sm) throw new Error('no session manager');
-      const session = await sm.spawnSession({ name: spawn.name, prompt: spawn.prompt, disableProjectMcp: true, maxDurationMinutes: spawn.maxDurationMinutes, triggeredBy: 'feedback-executor' });
+      // triggeredBy marks it for the Playwright profile route, which refuses to activate a profile for it.
+      const session = await sm.spawnSession({ name: spawn.name, prompt: spawn.prompt, disableProjectMcp: true, maxDurationMinutes: spawn.maxDurationMinutes, triggeredBy: FEEDBACK_EXECUTOR_TRIGGER });
       return { sessionName: session.tmuxSession, sessionId: session.id };
     },
     isAlive: (name) => (sm ? sm.isSessionAlive(name) : false),
@@ -189,4 +222,42 @@ export function buildFeedbackExecutor(input: {
     service, store, ownerMachineId: input.ownerMachineId, isCanonicalOwner: input.isCanonicalOwner,
     fetchFromOwner: input.triage.fetchFromOwner, ownerCache: new Map(),
   };
+}
+
+/**
+ * The stop path when the executor itself is NOT built (triage dark or failed to start): every
+ * open executor PR still has GitHub auto-merge turned off (idempotent), so turning triage off can
+ * never leave an armed PR merging unattended. Read-only on the database (no owner fence is held
+ * without triage); a PR that cannot be disarmed raises a HIGH Attention line.
+ */
+export async function disarmExecutorPrsWithoutExecutor(input: {
+  drainStore: FeedbackDrainStore;
+  sourceRepoPath: string | null;
+  git?: Pick<AttemptGit, 'githubRemote'>;
+  github?: Pick<GitHubGateway, 'disableAuto'>;
+  stateDir: string;
+  raiseAttention: (item: AttentionInput) => Promise<void>;
+}): Promise<{ checked: number; disarmed: number; failed: number }> {
+  const db = input.drainStore.sharedDatabase();
+  const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='execution'").get();
+  if (!table) return { checked: 0, disarmed: 0, failed: 0 };
+  const states = [...OPEN_PR_STATES];
+  const rows = db.prepare(`SELECT attempt_id AS attemptId, pr_number AS prNumber FROM execution WHERE pr_number IS NOT NULL AND state IN (${states.map(() => '?').join(',')})`).all(...states) as Array<{ attemptId: string; prNumber: number }>;
+  if (rows.length === 0) return { checked: 0, disarmed: 0, failed: 0 };
+  const git = input.git ?? new SafeAttemptGit();
+  const github = input.github ?? new GhGateway({ cwd: input.stateDir, safeMergeScript: path.join(input.sourceRepoPath ?? input.stateDir, 'scripts', 'safe-merge.mjs') });
+  const slug = input.sourceRepoPath ? (await git.githubRemote(input.sourceRepoPath))?.slug ?? null : null;
+  let disarmed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const ok = slug ? await github.disableAuto(slug, row.prNumber) : false;
+    if (ok) { disarmed++; continue; }
+    failed++;
+    try {
+      await input.raiseAttention({ id: `feedback-execute:disarm-failed:${row.attemptId}:executor-not-built`, title: `Could not disarm auto-merge on PR #${row.prNumber}`,
+        summary: `Feedback triage is off, so the feedback executor is not running, and GitHub auto-merge could not be confirmed off for PR #${row.prNumber}. Disable it on GitHub directly.`,
+        category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:disarm' });
+    } catch { /* @silent-fallback-ok: the boot log line below still records the failure */ }
+  }
+  return { checked: rows.length, disarmed, failed };
 }

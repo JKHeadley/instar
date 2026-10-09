@@ -70,6 +70,14 @@ export interface ExecuteLiveConfig {
   baseSmokeTests: string[];
   /** Session wall clock in minutes (≤ the lease). */
   maxDurationMinutes: number;
+  /**
+   * The fork (`owner/name`) every attempt branch is pushed to; the pull request is opened from it
+   * against the canonical repository. A fork PR gets a read-only GITHUB_TOKEN and no repository
+   * secrets in CI, so code the session wrote never runs with the canonical repository's
+   * credentials before review. Unset, or equal to the canonical repository, the executor refuses
+   * to publish (`publish-fork-unset`).
+   */
+  publishRepo: string | null;
   actionTopicId?: number;
 }
 
@@ -90,6 +98,7 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
   const configured = typeof raw?.sourceRepoPath === 'string' && raw.sourceRepoPath.trim() ? path.resolve(raw.sourceRepoPath) : null;
   const sourceRepoPath = configured ?? (isSourceCheckout(agentHome) ? path.resolve(agentHome) : null);
   const topic = Number(raw?.actionTopicId);
+  const publish = typeof raw?.publishRepo === 'string' && /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(raw.publishRepo.trim()) ? raw.publishRepo.trim() : null;
   const smoke = Array.isArray(raw?.baseSmokeTests) ? (raw!.baseSmokeTests as unknown[]).filter((t): t is string => typeof t === 'string' && /^tests\/[\w./-]+$/.test(t)).slice(0, 10) : null;
   return {
     dryRun: raw?.dryRun !== false,
@@ -100,6 +109,7 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     lintCommand: typeof raw?.lintCommand === 'string' && raw.lintCommand.trim() ? raw.lintCommand.trim().slice(0, 300) : EXECUTE_CONFIG_DEFAULTS.lintCommand,
     baseSmokeTests: smoke && smoke.length > 0 ? smoke : [...EXECUTE_CONFIG_DEFAULTS.baseSmokeTests],
     maxDurationMinutes: int(raw?.maxDurationMinutes, EXECUTE_CONFIG_DEFAULTS.maxDurationMinutes, 10, EXECUTION_LEASE_MS / 60_000),
+    publishRepo: publish,
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }
@@ -255,7 +265,12 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
   // workspace and temp directory beneath it (the live canary showed exactly that).
   const deny: string[] = ['WebFetch', 'WebSearch', 'mcp__*'];
   for (const d of [...deniedPaths].sort()) deny.push(`Read(${abs(d)}/**)`, `Read(${abs(d)})`, `Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
-  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude')]) deny.push(`Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
+  // The dependency cache (and every cache beside it) is read-only, and the workspace's
+  // node_modules link points into it: an Edit/Write through either path is denied explicitly, so a
+  // file tool can never write into the shared cache even where it resolves the link.
+  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
+    deny.push(`Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
+  }
   deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`);
   const runtime = buildSandboxRuntimeSettings(p);
   // Claude Code keeps its own shell bookkeeping in its temp directory; the confined spawn points
@@ -315,6 +330,17 @@ export function confinedEnv(parent: NodeJS.ProcessEnv, extra: Record<string, str
   return out;
 }
 
+
+/**
+ * The fork an attempt publishes to, or null when publication must be refused: no fork is
+ * configured, or the configured repository IS the canonical one (a same-repository branch would
+ * run CI with the canonical repository's secrets).
+ */
+export function publishFork(cfg: Pick<ExecuteLiveConfig, 'publishRepo'>, canonicalSlug: string): { slug: string; owner: string } | null {
+  const fork = cfg.publishRepo;
+  if (!fork || fork.toLowerCase() === canonicalSlug.toLowerCase()) return null;
+  return { slug: fork, owner: fork.split('/')[0] };
+}
 
 /** The branch an attempt publishes on — outside Green-PR Auto-Merge's namespace. */
 export function attemptBranch(initiativeId: string, attempt: number): string {

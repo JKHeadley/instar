@@ -176,6 +176,18 @@ describe('confined spawn (feedback executor)', () => {
     } finally { delete process.env.FEEDBACK_TEST_SECRET_TOKEN; }
   });
 
+  it('a confined spawn with a session id records its Claude config home and launches with that --session-id (the canary reads its transcript)', async () => {
+    const { manager } = makeManager({}, tmpDir);
+    const uuid = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9';
+    const session = await manager.spawnSession({ name: 'feedback-canary-x-a1', prompt: 'canary', cwd: ws, omitAuthEnv: true, framework: 'claude-code', sessionId: uuid, confinement: confined() });
+    expect(session.confinedConfigHome).toBeTruthy();
+    const launch = launchArgvFrom(lastNewSessionArgv(), CLAUDE);
+    expect(launch[launch.indexOf('--session-id') + 1]).toBe(uuid);
+    expect(manager.plannedTmuxSessionName('feedback-canary-x-a1')).toBe(session.tmuxSession);
+    const ordinary = await manager.spawnSession({ name: 'ordinary-x', prompt: 'p' });
+    expect(ordinary.confinedConfigHome).toBeUndefined();
+  });
+
   it('an ordinary spawn is unchanged (bypass permissions, project dir, the agent token)', async () => {
     const { manager } = makeManager({}, tmpDir);
     await manager.spawnSession({ name: 'job', prompt: 'p' });

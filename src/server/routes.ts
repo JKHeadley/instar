@@ -27995,6 +27995,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const profileId = req.params.id;
     const sessionName = typeof req.body?.sessionName === 'string' ? req.body.sessionName : '';
+    // Sessions the feedback executor starts (convergence, live proof) may never get a browser
+    // profile: one could hold the account that approves the executor's own pull requests
+    // (docs/specs/feedback-triage-and-execution.md §4). Refused before any write or refresh.
+    const target = sessionName ? ctx.sessionManager.listRunningSessions().find((sess) => sess.tmuxSession === sessionName || sess.name === sessionName) : undefined;
+    if (target?.triggeredBy === 'feedback-executor') {
+      appendPlaywrightAudit('activate', profileId, { refused: 'feedback-executor-session' });
+      res.status(403).json({ error: 'feedback-executor sessions cannot activate a browser profile' });
+      return;
+    }
     const dryRun = readPlaywrightFlags().dryRun !== false; // default TRUE (D5)
     try {
       const reg = buildPlaywrightRegistry();

@@ -3119,6 +3119,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return reroute;
   }
 
+  /** The tmux session name `spawnSession` gives a session named `name` (callers record it before spawning). */
+  plannedTmuxSessionName(name: string): string {
+    return `${path.basename(this.config.projectDir)}-${sanitizeSessionName(name)}`;
+  }
+
   /**
    * Spawn a new Claude Code session in tmux.
    *
@@ -3247,8 +3252,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     const sessionId = this.generateId();
-    const safeName = sanitizeSessionName(options.name);
-    const tmuxSession = `${path.basename(this.config.projectDir)}-${safeName}`;
+    const tmuxSession = this.plannedTmuxSessionName(options.name);
 
     // Check if tmux session already exists
     if (this.tmuxSessionExists(tmuxSession)) {
@@ -3717,6 +3721,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // headless one-shot signals completion by process exit — today's behavior).
       launchLane: 'headless',
       completionMode: 'exit',
+      ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
     };
 
     try {

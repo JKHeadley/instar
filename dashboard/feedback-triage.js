@@ -93,6 +93,7 @@ const EXECUTOR_REASON_WORDS = {
   'approver-not-independent': 'waiting for you: this agent could approve its own fixes as the repository owner, so it needs your one-time PIN acceptance (or leave it off)',
   'profile-unenforceable': 'stopped: the sandbox check did not hold, so no attempts start (retried daily)',
   'deps-unavailable': 'waiting: installing the code dependencies failed (retrying)',
+  'publish-fork-unset': 'waiting: no fork is set to publish fixes from (feedbackFactory.execute.publishRepo), so no new attempts start',
   'not-canonical-owner': 'runs on another machine',
   'not-checked-yet': 'not checked yet',
 };
