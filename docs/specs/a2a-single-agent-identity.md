@@ -411,16 +411,14 @@ a reply, no dashboard surface. The `init --standalone` case is the same shape.
 finds both files and they disagree, the canonical one wins (as today) AND the legacy file is
 rewritten to match — by the single writer, under the lock, atomically, old file backed up as
 `threadline/identity.json.superseded-<ISO>` — with ONE degradation row. The listener daemon
-loads the legacy path as ITS key, and the server has no real restart for it (its only lever
-is a SIGTERM; a clean exit is not relaunched by launchd; the server never spawns it). So:
-(a) the daemon loads the CANONICAL `.instar/identity.json` FIRST, legacy as fallback (one
-path change at `listener-daemon.ts:135`), so any future daemon start is correct without a
-restart; (b) when a repair happens while a daemon is alive under the superseded key, the
-server SIGTERMs it through the existing lever and re-runs its own `daemonHandlingRelay`
-decision, taking the relay connection itself — if launchd relaunches the daemon it now loads
-the right key and takes the connection back exactly as it does at every boot today; a daemon
-that is not running is left alone. Today's manual fix left exactly this state and the server
-logs an `[identity]` ERROR at every boot.
+loads the legacy path as ITS key and the server's only lever over it is a SIGTERM (a clean
+exit is not relaunched by launchd). So: (a) the daemon drops its legacy-first manager and
+loads the CANONICAL file first (`listener-daemon.ts:135`), so any future start is correct;
+(b) when a repair happens while a daemon is alive under the superseded key, the server
+SIGTERMs it and re-runs its own `daemonHandlingRelay` decision, taking the relay connection
+itself — a relaunched daemon loads the right key and takes it back as at every boot today; a
+daemon that is not running is left alone. Today's manual fix left exactly this state and the
+server logs an `[identity]` ERROR at every boot.
 
 ### 2. Loud cross-machine mismatch: one formula, one episode, one item
 
@@ -565,12 +563,10 @@ reconnecting it would displace the live holder: (1) if my relay is `disconnected
 the heal is skipped with reason `standby`. Two passes 40 s apart inside the 120 s ceiling.
 
 **3.4 Rollout.** `threadline.peerDarkNotice: {dryRun: true, queuedDarkAfterMs: 7200000,
-cooldownMs: 43200000}`, `enabled` OMITTED (dev-gate resolution; in `DEV_GATED_FEATURES`); the
-block reaches existing agents through the `ConfigDefaults` deep-merge (it is nested, so
-`migrateConfig` is not the carrier). Dry-run logs would-raise and would-sentence rows to
-`logs/a2a-peer-dark.jsonl`; the raw fields (`dark`, `darkSince`, `queuedCount`,
-`connectedNow`) are live on the health read from the first build — they are reads, so the
-threshold changes a served value immediately, but no item and no sentence until the flip.
+cooldownMs: 43200000}`, `enabled` OMITTED (dev-gate; in `DEV_GATED_FEATURES`); delivered by
+the `ConfigDefaults` deep-merge. Dry-run logs would-raise/would-sentence rows to
+`logs/a2a-peer-dark.jsonl`; the raw health fields are live from the first build (reads), but
+no item and no sentence until the flip.
 
 ### 4. ACT-058 — a reply from a non-lease machine is forwarded; a failed forward is held durably and reported
 
@@ -651,11 +647,10 @@ names, which share the prefix), `.instar/threadline/identity.json`,
 `.instar/threadline/secure-invitations.json`, `.instar/machine-ssh/`,
 `.instar/state/inbound-delivery.hmac-key`, `.instar/relay-tokens.json`, `.instar/local-state/`,
 `.instar/origin-sessions-`, `.instar/state/conversation-bind-token.secret`. Only the KEY files
-under `.instar/threadline/` are denied, not the directory (`conversations.json`,
-`trust-profiles.json` and thread history are the operator's own audit surfaces). The list is
-config-immune: `PATCH /api/files/config` can narrow `allowedPaths` but never remove a
-never-served entry. This is exact-path access control, not a meaning filter (Signal vs.
-Authority does not apply to an enumerated floor).
+under `.instar/threadline/` are denied (`conversations.json`, `trust-profiles.json` and thread
+history are the operator's own audit surfaces). Config-immune: `PATCH /api/files/config` can
+narrow `allowedPaths` but never remove an entry. Exact-path access control, not a meaning
+filter (Signal vs. Authority does not apply to an enumerated floor).
 
 **5.2 Check the file that is actually opened.** `read`/`download` already run the never-served
 check on the `realpath` (`fileRoutes.ts:245-268`); the gaps are `blockedFilenames` (requested
@@ -689,8 +684,7 @@ name matching `*.key`, `*.secret`, `*hmac*`, `*.enc`, `*token*`, and asserts eac
 `read`/`download`/`list`/`link`, excluded from backup, gitignored and secret-classified. A new
 key file the list does not cover fails the build.
 
-**5.5 No flag.** A security floor; ships live. A one-line release note says what became
-unreadable through the Files tab.
+**5.5 No flag.** A security floor; ships live; one release-note line names what the Files tab stops serving.
 
 ## Decision points touched
 
@@ -845,10 +839,9 @@ recoverable latency above is `120s`.
     {enabled}` (array-aware migration); `threadline.peerDarkNotice {dryRun, queuedDarkAfterMs,
     cooldownMs}` (dev-gated, in `DEV_GATED_FEATURES`, delivered by the `ConfigDefaults`
     deep-merge); `agentIdentity.adoption {enabled: true}` (top-level, FLEET-LIVE kill switch,
-    not dev-gated). Lock file `.instar/identity.lock` (pid-dead AND >60 s = stale;
-    rename-to-unique break; 30 s wait). Item ids and refusal reason names as in §1.2–§1.4
-    (`single-witness`, `last-known-mismatch`, `identity-locked`, `identity-file-invalid`, the serving refusals);
-    priorities from the real enum. `DEV_GATED_FEATURES` entry `configPath:
+    not dev-gated). Lock file `.instar/identity.lock` (pid+start-time stale rule, 10-min
+    ceiling, rename-to-unique break, 30 s wait). Item ids and refusal reason names as in
+    §1.2–§1.4; priorities from the real enum. `DEV_GATED_FEATURES` entry `configPath:
     'threadline.peerDarkNotice.enabled'`. NOT cheap (published names).
 15. **No relay change** (no `recipientLastSeenAt`, no orphan retirement — CMT-026). NOT cheap.
 
