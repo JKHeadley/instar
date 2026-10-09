@@ -31,14 +31,12 @@ One agent, one identity, on every machine — and when that is not true, the age
 before a peer has to.
 
 Five parts and no more (operator direction, 2026-10-09: 80/20, no over-engineering; the five
-parts, including the ACT-058 reply hold, were named by the operator). Everything a reviewer
-wanted beyond them is in §Out of scope with a carrier.
+parts, including the ACT-058 reply hold, were named by the operator); the rest is in §Out of scope.
 
 ## Glossary (five lines)
 
 - **Routing fingerprint** — the 32-hex address peers pin for me on the relay; one per agent.
-- **Lease / serving-lease holder** — the one machine currently allowed to serve Telegram; the
-  **awake** machine is the one polling Telegram and holding my single relay connection.
+- **Lease holder / awake** — the one machine allowed to serve Telegram and hold my single relay connection.
 - **Item** — one entry on the Attention queue, deduped by id; raised, then resolved.
 - **Posture** — a machine's declared mode (`identity-not-provisioned` here).
 - **Dark** — a peer with messages queued for N h and nothing back; a proxy, not a cause.
@@ -815,28 +813,24 @@ recoverable latency above is `120s`.
    been seen once since the repair.** NOT cheap (alert semantics). The coherence-advert field / MachineCoherence `identity` dimension was cut
    (§Out of scope): three requests every five minutes do not justify new advert plumbing.
 9. **Dark-peer reporting rides the REWORKED `A2ARedeliverySentinel` (constructed when either
-   gate is on; per-peer trigger and resolve both over pool-scope acks; id
-   `a2a-peer-dark:<agent>:<peerFp>`; resolve line names the expired-unacknowledged count);
-   `connectedNow` comes from the client's existing `knownAgents` presence map fed by
-   `discover-result` and `presence-change` frames (stale = relay not connected or no frame
-   since the last 15-min tick), never a new relay field or an inline call; `allPeerHealth` is
-   bounded to 30 days and ledger rows in every state are deleted after 30 days.** The field NAMES, the 30-day constants and the id are NOT cheap
-   (published interface). The thresholds (`queuedDarkAfterMs` 2 h, cooldown 12 h) and the
-   dry-run gate on the sentence AND notice are cheap-to-change-after: the threshold changes
-   the live `dark` read at once, but no item and no sentence until the flip.
+   gate is on; per-peer trigger and resolve over pool-scope acks; id
+   `a2a-peer-dark:<agent>:<peerFp>`); `connectedNow` comes from the existing `knownAgents`
+   presence map (`discover-result` + `presence-change` frames), never a new relay field or an
+   inline call; `allPeerHealth` and ledger rows are bounded to 30 days.** Field NAMES, the
+   30-day constants and the id are NOT cheap (published interface). The thresholds (2 h dark,
+   12 h cooldown) and the dry-run gate on sentence AND notice are cheap-to-change-after: the
+   threshold changes the live `dark` read at once; no item or sentence until the flip.
 10. **A standby forwards its origin sends (`sendMessage` only in v1; media, edits and pins
     hold durably and are reported) to the lease holder after a ≤15 s `lease-settling` window
-    that also treats an unhealthy named holder as unsettled (and an unsettled window as
-    `forward-to-holder-failed`), then a 3×10 s ladder; only a
-    failed forward holds, durably, with `lease-not-held`, a notice through the holder, a
-    `/health` degradation and one item; the holder's `submit` runs `authorize`.** NOT cheap
-    (reachability). Ships live with a kill switch, no dry-run.
+    (an unhealthy named holder = unsettled = `forward-to-holder-failed`), one bounded attempt
+    in-request, then the ladder from the recovery tick; only a failed forward holds, durably,
+    with `lease-not-held`, a notice through the holder, a `/health` degradation and one item;
+    the holder's `submit` runs `authorize`.** NOT cheap (reachability). Live, kill switch, no dry-run.
 11. **Key material is denied by code-owned, config-immune lists (routes, backup, gitignore,
     classifier) checked on the requested path, the resolved path AND the opened descriptor
-    (served from that descriptor; a hard link to a key inode refused anywhere), with one behavioural
-    fixture walk (mode, JSON fields and secret-shaped names).** NOT cheap
-    (security surface); no flag. The static `KEY_FILE_MANIFEST` ratchet was cut (§Out of
-    scope): the walk is the arm that can disagree with the list.
+    (served from that descriptor; a hard link to a key inode refused anywhere), with one
+    behavioural fixture walk.** NOT cheap (security surface); no flag. The static
+    `KEY_FILE_MANIFEST` ratchet was cut: the walk is the arm that can disagree with the list.
 12. **Under `.instar/threadline/`, only the key-bearing files are never-served.** NOT cheap.
 13. **The operator is never notified before self-heal has run** (missing identity → adoption
     first; dark peer → fix-my-side first; held forward → settle + ladder + re-forward first);
@@ -928,9 +922,8 @@ plan, run before "done" is claimed.
 
 ## Rollback
 
-- §1.1: reverting re-opens silent minting. Adoption's kill switch
-  (`agentIdentity.adoption.enabled:false`) leaves a joined identity-less machine unprovisioned,
-  lease-ineligible and loud — strictly better than minting; the CLI (§1.4) works regardless.
+- §1.1: reverting re-opens silent minting. Adoption's kill switch (`agentIdentity.adoption.enabled:false`)
+  leaves a joined identity-less machine unprovisioned and loud — better than minting; the CLI still works.
 - §1.4: a wrong `identity adopt` is reversed by a second one from the right machine, or by
   restoring the superseded backup; nothing ever deletes an identity file.
 - §2: reverting the formula restores the false alarm; nothing else to unwind.
@@ -956,21 +949,18 @@ plan, run before "done" is claimed.
   (queued for hours, nothing acknowledged; `connectedNow` true/false/`null` = unknown; offline
   OR listening under a different address). `GET /threadline/peers/health` → `dark`,
   `darkSince`, `queuedCount`, `connectedNow`. Before blaming the peer, read my own `relay.state`.
-- **"Why was my reply delayed / why did a topic go quiet on my other machine?"** → on a
-  machine that does not hold the lease, replies are forwarded to the holder; a failed forward
-  is a durable hold in `GET /telegram/origins/status` (`held[].hold_reason: lease-not-held`)
-  with one attention item — never a silent drop.
-- **Files tab**: identity, machine, SSH and HMAC key files are never served, listed or backed
-  up; a 403 on one of these is correct, not a bug to route around.
+- **"Why was my reply delayed on my other machine?"** → a non-holder forwards replies to the
+  holder; a failed forward is a durable `held[].hold_reason: lease-not-held` in
+  `GET /telegram/origins/status` with one attention item — never a silent drop.
+- **Files tab**: key files are never served, listed or backed up; a 403 there is correct.
 
 ## Out of scope (each with its carrier)
 
 Cut from this spec under the 80/20 direction (2026-10-09); each is filed as an evolution
 action at build time with this spec as origin, unless a carrier already exists:
 
-- **Dashboard reconcile ceremony** (plan/commit routes, PIN, signed replace mandates,
-  replicated commit record, `decideReconciliation` wiring, any mesh-callable replace) —
-  carrier: the parent spec's open AC6/AC7b; §1.4 is the v1 path.
+- **Dashboard reconcile ceremony** (plan/commit routes, PIN, replace mandates, replicated
+  commit record, `decideReconciliation` wiring) — carrier: the parent's open AC6/AC7b.
 - **Join-time pin** (`afp` pairing-URL parameter, `--agent-fingerprint`, envelope stamp) — a
   wrong envelope is caught by §2 within 10 min. **Coherence-advert `agentFingerprint` field +
   MachineCoherence `identity` dimension** — the detector keeps its direct `/provenance` read.
@@ -984,14 +974,11 @@ action at build time with this spec as origin, unless a carrier already exists:
   flap detection, ≥2-peers-crossing aggregation** — the 12 h cooldown bounds v1. **`capabilities`
   RPC cache per lease epoch; forwarding media/edits/pins from a standby** — v1 forwards
   `sendMessage`; the rest holds durably and is reported.
-- **Rotation of the agent identity across the fleet / per-device certificates**; **at-rest
-  passphrase for the canonical key** — the parent's accepted-cost boundary, now two incidents
-  old; evolution actions `agent-identity-rotation-and-device-certs`,
-  `agent-identity-at-rest-passphrase`, with a named trigger: a THIRD identity incident, a
-  revoked machine suspected compromised, a
-  fifth machine joining the fleet, or ANY further spec touching the adoption rules (a
-  complexity trigger — the bridge must not keep growing), converts the rotation action into
-  scheduled work.
+- **Rotation of the agent identity / per-device certificates; at-rest passphrase** — the
+  parent's accepted-cost boundary, now two incidents old; evolution actions
+  `agent-identity-rotation-and-device-certs`, `agent-identity-at-rest-passphrase`. Trigger: a
+  THIRD identity incident, a revoked machine suspected compromised, a fifth machine joining,
+  or ANY further spec touching the adoption rules (the bridge must not keep growing).
 - **A signed `agent-identity-adopt-trigger` mesh verb** (no key in the body) — rejected, not
   deferred: a compromised active sibling could make a healthy machine replace its good key.
 - **The pool ownership-record divergence** also named in ACT-058 — stays with ACT-058 (WS1.3
