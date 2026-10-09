@@ -279,19 +279,14 @@ export class WarrantsReplyGate {
     if (question) return base({ warrants: true, signal: 'question', reason: 'contains a question' });
     if (imperative) return base({ warrants: true, signal: 'imperative', reason: 'imperative / actionable request' });
     if (input.expectsReply) return base({ warrants: true, signal: 'expects-reply', reason: 'sender set expectsReply' });
+    if (firstContact) return base({ warrants: true, signal: 'first-contact', reason: 'first contact on this thread' });
+
     // (d) Deterministic strong terminal signal: a content-free ack. Checked
-    //     BEFORE first contact — a bare acknowledgement that happens to be the
-    //     first inbound on a thread (typically a thread WE started: the peer's
-    //     receipt for our own message) asks for nothing, so it must not spawn a
-    //     session to "reply" (docs/specs/a2a-ack-never-acked.md). And BEFORE
-    //     novelty so a differently-worded ack ("thanks" → "got it") can't
-    //     masquerade as forward progress and sustain a loop.
+    //     BEFORE novelty so a differently-worded ack ("thanks" → "got it")
+    //     can't masquerade as forward progress and sustain a loop.
     if (isPureAck(text)) {
       return base({ warrants: false, signal: 'pure-ack', reason: 'content-free acknowledgement' });
     }
-
-    // (d2) First contact with real content → reply.
-    if (firstContact) return base({ warrants: true, signal: 'first-contact', reason: 'first contact on this thread' });
 
     // (e) Novel substantive content → reply (forward progress).
     if (novel) return base({ warrants: true, signal: 'novel', reason: 'novel content vs last inbound' });

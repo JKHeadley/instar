@@ -6,7 +6,7 @@ When an agent-to-agent message arrives over the relay, the receiving agent sends
 
 - New `src/threadline/autoAck.ts`. The ack stage runs first in the relay inbound handler: a recognised ack records delivery, writes the inbound-id ledger disposition `no-reply`, and stops — before the auto-ack send, the inbox append, the Telegram mirror, the warrants gate and every router.
 - The auto-ack is now sent with `ThreadlineClient.sendAck` and carries `type: 'ack'` on the wire. An ack from an older peer is recognised when the whole message is exactly the fixed sentence. A peer on an older release treats the typed ack exactly as it treated the chat one.
-- `WarrantsReplyGate`: a bare acknowledgement no longer warrants a reply when it is the first inbound on a thread.
+- `WarrantsReplyGate` is not changed: a peer's real first reply, however short, is still answered.
 - `POST /messages/relay-agent` and `POST /threadline/messages/receive`: an inbound ack records `no-reply` and is not routed; on the first it is not saved to the message store either.
 - The per-sender ack rate limit (5 per 60 s) is unchanged.
 - No config, route, template or migration change. Not gated: this fixes always-on behaviour.
@@ -21,6 +21,6 @@ When another agent sends me a message, I send a short "received" note back. Thos
 
 ## Evidence
 
-- `tests/unit/threadline/autoAck.test.ts` (20), `tests/unit/threadline/ack-stage-wiring.test.ts` (10), `tests/unit/WarrantsReplyGate.test.ts` (21, 3 new/changed).
-- `tests/integration/threadline/ack-never-acked.test.ts` (14): two handlers back to back with one message — one ack, one session; the pre-fix pair in the same harness trades ten acks; mixed old/new peers; both HTTP routes. `tests/integration/threadline/warrants-reply-funnel.test.ts` (6, inverted).
+- `tests/unit/threadline/autoAck.test.ts` (20), `tests/unit/threadline/ack-stage-wiring.test.ts` (10).
+- `tests/integration/threadline/ack-never-acked.test.ts` (16): two handlers back to back with one message — one ack, one session; the pre-fix pair in the same harness trades ten acks; mixed old/new peers; both HTTP routes. A peer's first reply of "lgtm" still warrants a reply; its typed ack does not.
 - `tests/e2e/threadline/ack-never-acked-alive.test.ts` (1): a real relay server and two real bootstrapped agents; one message, one ack back, no ack of the ack, one session.

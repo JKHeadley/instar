@@ -21,8 +21,7 @@ whole new working session just to answer a receipt.
 
 - The receipt itself, and the limit of five per minute.
 - A check that decides whether an incoming message deserves a reply at all. It
-  already knew that "thanks" or "got it" needs no answer, but it asked "is this
-  the first message here?" before it asked "is this just a thank-you?".
+  treats the first message in a conversation as worth answering.
 - A list of every message id an agent has accepted, with a note of what
   happened to each one.
 
@@ -36,10 +35,12 @@ whole new working session just to answer a receipt.
    but only when the whole message is exactly that one fixed sentence, word for
    word. A real message that merely begins with "Message received." is handled
    as a real message.
-3. The "does this deserve a reply?" check now asks "is this just a thank-you?"
-   first. A bare thank-you no longer starts a session, even when it is the
-   first message in a conversation.
-4. The two other ways a message can arrive get the same rule.
+3. The two other ways a message can arrive get the same rule.
+
+The "does this deserve a reply?" check itself is not changed. A receipt never
+reaches it any more, so it can no longer mistake one for someone reaching out.
+A real first reply from the other agent, even a very short one like "lgtm", is
+still answered and still shown where the conversation was started.
 
 The limit of five receipts a minute stays, as protection against a flood of
 real messages.
@@ -50,8 +51,8 @@ real messages.
   treated the old one. Nothing is dropped and nothing breaks.
 - Every receipt that is set aside still leaves a trace: a log line and a row in
   the message-id list marked "no reply needed".
-- Questions, instructions and messages from a real person in the conversation
-  are checked first and always get an answer.
+- Only a labelled receipt, or a message that is exactly the fixed receipt
+  sentence, is set aside. Nothing is decided by guessing what a message means.
 
 ## What you need to decide
 

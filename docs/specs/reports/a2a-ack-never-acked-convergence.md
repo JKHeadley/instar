@@ -23,10 +23,9 @@ working session was started to answer it.
 The fix: the note now carries a label that says "this is only a receipt". An
 agent that gets a labelled receipt writes down that its message arrived and
 does nothing else. Receipts from older agents, which have no label, are
-recognised only when the message is exactly the one fixed sentence. Separately,
-the check that decides whether a message deserves an answer now treats a bare
-"thanks" as not needing one, even when it is the first message in a
-conversation.
+recognised only when the message is exactly the one fixed sentence. The check
+that decides whether a message deserves an answer is left as it was: a receipt
+no longer reaches it, and a real first reply, however short, is still answered.
 
 ## Original vs Converged
 
@@ -54,49 +53,49 @@ conversation.
   both routes), and how the live criterion can be checked without stored text
   (the log line now names `by type` or `by exact-text`).
 
+- **The warrants-gate reorder was removed.** The first design also moved the
+  gate's acknowledgement word list ahead of first contact, so a bare "thanks"
+  as the first inbound would not warrant a reply. Both passes of the
+  Standards-Conformance Gate flagged it (a fixed vocabulary deciding before the
+  classifier), and the review of the built code showed it would hide a peer's
+  genuine short first reply (`lgtm`, `will do`) from a Telegram topic the
+  thread was started from. Once the stage consumes recognised acks ahead of the
+  gate, the reorder is not needed to stop the loop. It was reverted on the
+  coordinator's instruction; `WarrantsReplyGate` and its tests are unchanged
+  from `main`, and a test proves a first-inbound `lgtm` is still routed.
+- **After the code review.** On `/messages/relay-agent` the ack stage now runs
+  before the message store. Listener-daemon mode is named as not covered.
+
 ## Iteration Summary
 
 | Pass | Standards gate | External review | Changes |
 |---|---|---|---|
 | 1 | 2 possible violations (legacy text recogniser; pure-ack ahead of first contact) | MINOR ISSUES — 3 findings | Exact-sentence recognition; invariant scoped; waiter wording; compatibility bounded |
 | 2 (re-read) | 2 possible violations, both on the pure-ack reorder only | MINOR ISSUES — 3 new, all clarifications | Delivery matching stated; HTTP mapping stated; recognition reason logged; tests added |
+| 3 (after the reorder was removed) | 1 possible violation, on the exact-sentence match | not re-run | Reorder removed from the spec; gate section rewritten |
 
 ## Open item carried to the operator's review
 
-The Standards-Conformance Gate still reports **two possible violations**
-(*Intelligence Infers, Keywords Only Guard* and *Signal vs. Authority*), both
-about one thing: moving the warrants gate's existing pure-ack check ahead of
-first contact lets a fixed word list decide that a hand-written "thanks" needs
-no reply before the classifier is asked.
+After the reorder was removed, the Standards-Conformance Gate reports **one
+possible violation**, under *Signal vs. Authority*: the exact-sentence match
+sets a message aside before any intelligent gate, and matching the fixed
+sentence does not prove the message was automatic.
 
-This was not changed, for three reasons the spec states in Design §3:
+It was kept, for these reasons:
 
-1. The reorder is the instruction this fix was given, and the pure-ack check is
-   the gate's existing deterministic signal — it already runs ahead of novelty
-   and the classifier for every message after the first. The change removes one
-   exemption; it adds no new matcher.
-2. The message itself is kept: it is recorded on the conversation, and on the
-   relay path it is in the canonical inbox before the gate runs.
-3. A question, an instruction, the sender's `expectsReply` or a verified human
-   in the thread all decide earlier and always get a reply.
+1. It is the only way to recognise an ack from a peer that predates the wire
+   type, and without it the exchange with such a peer still loops.
+2. It is an exact whole-message match against one constant our own software
+   emits. It is never a prefix and never a word list, so it cannot widen.
+3. A peer that hand-types that exact sentence has said nothing beyond a
+   receipt; what is lost is a session to answer it.
 
-A related consequence, found when the built code was reviewed and now stated
-in the spec: a suppressed first reply is not shown in a Telegram topic the
-thread was started from. With a peer that auto-acks over the relay this
-matches today's behaviour, because the peer's real reply used to be the second
-message. It is new for same-machine agents and for peers with `autoAck` off,
-where a first reply of only `lgtm` or `will do` used to be shown. The same
-code review moved the `/messages/relay-agent` ack stage ahead of the message
-store and named listener-daemon mode as not covered.
-
-The gate's finding is advisory. It is recorded here, unresolved, so the
-reviewer sees it rather than discovering it. If the pure-ack word list should
-stop deciding alone anywhere in the gate, that is a change to the gate as a
-whole (the same reading applies to its behaviour before this fix) and would be
-its own item.
+The same gate did not raise this on its two earlier passes over the same rule;
+its findings vary from run to run. It is recorded here so the reviewer sees it.
 
 ## Convergence verdict
 
-Converged for a bug fix at two passes: the remaining external findings were
-clarifications that no longer changed the build, and the one standing
+Converged for a bug fix: two full passes, then a standards re-check after the
+reorder was removed. The external review was not re-run for that removal,
+which deleted a section and changed no remaining rule. The one standing
 standards-gate flag is disclosed above.

@@ -119,12 +119,32 @@ describe('A. two relay handlers back to back, ONE message sent', () => {
     expect(pair.nodes.B.acksSent).toHaveLength(5);
     expect(pair.nodes.A.acksSent).toHaveLength(5);
     expect(pair.delivered).toBe(11);
-    // Every one of those acks reached the warrants gate. The gate (pure-ack now
-    // checked BEFORE first contact) is the second, independent layer: even with
-    // the pre-fix handler, the ack that opens a thread WE started spawns nothing.
+    // Every one of those acks reached the warrants gate. A started the thread, so
+    // B's FIRST ack was first contact on it → A spawned a session to answer an ack.
     expect(pair.nodes.A.gated.length).toBe(5);
-    expect(pair.nodes.A.gated.every((g) => g.suppressed && g.signal === 'pure-ack')).toBe(true);
-    expect(pair.nodes.A.routed).toHaveLength(0);
+    expect(pair.nodes.A.gated[0]).toMatchObject({ suppressed: false, signal: 'first-contact' });
+    expect(pair.nodes.A.routed).toHaveLength(1);
+    expect(pair.nodes.A.routed[0].text).toBe(DEFAULT_AUTO_ACK_MESSAGE);
+    expect(pair.nodes.A.routed.length + pair.nodes.B.routed.length).toBe(2);
+  });
+
+  it('a peer\'s genuine short first reply ("lgtm") on a thread we started still warrants a reply; its typed ack does not', async () => {
+    pair = new Pair();
+    pair.send('A', 'B', REAL, 'chat', 'thread-lgtm');
+    await pair.drain();
+    const { A } = pair.nodes;
+    // B's typed ack arrived on A and was consumed before the gate.
+    expect(A.gated).toHaveLength(0);
+    expect(A.routed).toHaveLength(0);
+    // Now B's real reply — the first inbound A's gate ever sees on this thread.
+    pair.send('B', 'A', 'lgtm', 'chat', 'thread-lgtm');
+    await pair.drain();
+    expect(A.gated).toEqual([{ text: 'lgtm', suppressed: false, signal: 'first-contact' }]);
+    expect(A.routed).toEqual([{ from: Pair.fp('B'), text: 'lgtm', threadId: 'thread-lgtm' }]);
+    // A acks the real reply once; B consumes that ack. No loop.
+    expect(A.acksSent).toHaveLength(1);
+    expect(pair.nodes.B.acksSent).toHaveLength(1);
+    expect(pair.rows('A').map((r) => r.disposition)).toEqual(['no-reply', 'handed-off']);
   });
 
   it('with the fix: at most one ack per side, at most one session in total', async () => {

@@ -41,7 +41,7 @@ describe('warrants-a-reply funnel (integration)', () => {
   });
   afterEach(() => cleanup());
 
-  it('#6 the echo↔codey ack-loop never starts: a bare ack is suppressed even as the first inbound', async () => {
+  it('#6 the echo↔codey ack-loop terminates after first contact', async () => {
     const threadId = 'loop-thread';
     const acks = [
       'Message received. Composing response...',
@@ -54,29 +54,18 @@ describe('warrants-a-reply funnel (integration)', () => {
     for (const text of acks) {
       decisions.push(await evaluateAndRecordInbound(gate, store, { threadId, text, ...CODEY }));
     }
-    // docs/specs/a2a-ack-never-acked.md: pure-ack is checked BEFORE first contact,
-    // so the peer's receipt for a message WE sent (the first inbound on a thread we
-    // started) does not spawn a session to "reply" to it. Every ack is suppressed.
-    for (const d of decisions) {
-      expect(d.suppress).toBe(true);
-      expect(d.verdict.signal).toBe('pure-ack');
+    // First contact replies (responsive). Every subsequent pure ack is suppressed —
+    // the loop does NOT sustain a spawn cadence.
+    expect(decisions[0].suppress).toBe(false); // first-contact
+    for (let i = 1; i < decisions.length; i++) {
+      expect(decisions[i].suppress).toBe(true);
     }
     expect(store.get(threadId)?.state).toBe('idle');
-    expect(store.get(threadId)?.messageCount).toBe(acks.length); // still recorded
-  });
-
-  it('first contact with real content still replies; an ack after it is suppressed', async () => {
-    const threadId = 'real-first';
-    const first = await evaluateAndRecordInbound(gate, store, { threadId, text: 'The deploy finished and the canary is green on both machines', ...CODEY });
-    expect(first.suppress).toBe(false);
-    expect(first.verdict.signal).toBe('first-contact');
-    const ack = await evaluateAndRecordInbound(gate, store, { threadId, text: 'thanks', ...CODEY });
-    expect(ack.suppress).toBe(true);
   });
 
   it('#4 a question always warrants a reply, even amid acks', async () => {
     const threadId = 'q-thread';
-    await evaluateAndRecordInbound(gate, store, { threadId, text: 'thanks', ...CODEY }); // bare ack, suppressed
+    await evaluateAndRecordInbound(gate, store, { threadId, text: 'thanks', ...CODEY }); // first contact
     await evaluateAndRecordInbound(gate, store, { threadId, text: 'thanks again', ...CODEY }); // ack, suppressed
     const q = await evaluateAndRecordInbound(gate, store, { threadId, text: 'How did the deploy go?', ...CODEY });
     expect(q.suppress).toBe(false);

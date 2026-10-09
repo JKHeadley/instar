@@ -11,9 +11,9 @@ binding-standards: ["Capacity Safety — No Unbounded Self-Action", "Signal vs A
 eli16-overview: a2a-ack-never-acked.eli16.md
 approved: true
 approved-by: "operator standing approval for the agent-comms track — 2026-10-06 18:57, Telegram topic 122413"
-review-convergence: "2026-10-08T20:56:35.963Z"
-review-iterations: 2
-review-completed-at: "2026-10-08T20:56:35.963Z"
+review-convergence: "2026-10-09T00:51:10.526Z"
+review-iterations: 3
+review-completed-at: "2026-10-09T00:51:10.526Z"
 review-report: "docs/specs/reports/a2a-ack-never-acked-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 ---
@@ -37,12 +37,11 @@ message-id ledger (`a2a-inbound-id-ledger.md`).
    `isAutoAck`, but only uses it to keep an ack from resolving a reply waiter;
    the ack send never looks at it. The exchange stops only at the per-sender
    rate limit (5 acks per 60 s): about five acks each way for one message.
-2. **An ack can start a session.** In `WarrantsReplyGate.evaluate` the
-   first-contact check runs before the pure-ack check. When we start a thread,
-   the peer's ack is the first inbound on it, so it counts as first contact and
-   warrants a reply. The handler then spawns a session to answer a receipt.
-   `tests/integration/threadline/warrants-reply-funnel.test.ts` asserted that
-   behaviour.
+2. **An ack can start a session.** The warrants gate treats the first inbound
+   on a thread as first contact, which warrants a reply. When we start a
+   thread, the peer's ack is the first inbound on it, because the ack reaches
+   the gate like any message. The handler then spawns a session to answer a
+   receipt.
 
 Root-caused from code and live logs on 2026-10-08 (ACT-063).
 
@@ -55,7 +54,7 @@ Root-caused from code and live logs on 2026-10-08 (ACT-063).
 | `isAutoAck` is a prefix test (`Message received.` / `Message received,`) used only for the reply waiter. | `src/commands/server.ts:18267`, `:18289`; `src/server/routes.ts:34825` |
 | A plaintext envelope reaches the handler through the `unknown-sender` decode, which passes the payload's `type` through unchanged and skips the inbound gate's operation check. | `src/threadline/ThreadlineBootstrap.ts:300-357` |
 | The only test of the wire type in the handler is `msgType !== 'status'`. No code tests for `'chat'`. | `src/commands/server.ts:18295-18296` |
-| First-contact is decided before pure-ack. | `src/threadline/WarrantsReplyGate.ts:282`, `:287` |
+| The first inbound on a thread warrants a reply (first contact), whatever its words. | `src/threadline/WarrantsReplyGate.ts:282` |
 | Two more inbound paths reach a router: the signed HTTP route goes straight to `handleInboundMessage`; `/messages/relay-agent` runs the warrants gate first. Neither sends an ack. | `src/threadline/ThreadlineEndpoints.ts:700`; `src/server/routes.ts:34868`, `:34956` |
 
 ## Invariant
@@ -67,7 +66,7 @@ never spawns a session. It only records delivery.**
 type `ack`, or one that is exactly the fixed ack sentence (Design §2). Any
 other acknowledgement — a hand-written "thanks", or an older peer's own custom
 ack sentence — is an ordinary message and gets the warrants gate's normal
-decision (Design §3).
+decision, which this fix does not change.
 
 ## Design
 
@@ -143,42 +142,19 @@ What each pairing does with one message:
 | older → new | new 1 (typed), older acks it once (old habit), new consumes that | 1, plus whatever the older peer's own gate does with our ack, as today |
 | older → older | about 5 each way (unchanged, their code) | unchanged |
 
-### 3. Pure-ack is checked before first contact (warrants gate)
+### 3. The warrants gate is not changed
 
-In `WarrantsReplyGate.evaluate` the pure-ack check moves above the first-contact
-check. A bare acknowledgement that is the first inbound on a thread no longer
-warrants a reply. A control token, a question, an imperative, the sender's
-`expectsReply` and a verified human in the thread are all still checked earlier
-and still warrant a reply. First contact with real content still warrants one.
+Once the stage consumes a recognised ack ahead of the gate, the gate never sees
+one, so the session spawn in Problem 2 cannot happen. The gate's order stays as
+it is: the first inbound on a thread is first contact and warrants a reply.
 
-This is a second, independent layer with its own conditions, not a guarantee
-over every acknowledgement. A hand-written "thanks", or an ack the stage did
-not recognise, is suppressed here only when every word of it is in the gate's
-acknowledgement vocabulary and nothing earlier in the gate claims it. Other
-wordings go on to first contact, novelty or the classifier, as before.
-
-The pure-ack check is not a new reading of intent. It is the gate's existing
-deterministic terminal signal, already placed ahead of novelty and ahead of the
-classifier for every message after the first; this change removes the one
-exemption it had. It can only decide "nothing here to answer", and only for a
-message with no content word in it. What it withholds is a reply session and
-nothing else: on the relay path the message is already in the inbox and
-mirrored before the gate runs, and the gate records it on the conversation. A
-miss in the other direction (a real ack not in the vocabulary) reaches the
-classifier as before. Anything that asks, instructs or is forced by the sender
-never reaches the check.
-
-**What a suppressed first reply loses.** A gate suppression returns before the
-router, and the router is where a reply on a thread started from a Telegram
-topic is shown in that topic. So a peer's first reply that is only `lgtm` or
-`will do` is recorded on the conversation but not shown in the topic. Every
-reply after the first already behaves this way. With a peer that auto-acks over
-the relay, nothing changes in practice: the peer's ack used to be the first
-inbound, so its real first reply was already the second message; now that the
-ack is consumed without touching the conversation, the reorder keeps that
-outcome the same. It is a real change for a first reply made only of
-acknowledgement words on `/messages/relay-agent` and from a peer with
-`autoAck` off.
+That matters for real replies. A peer's genuine first reply can be very short
+(`lgtm`, `will do`). It is the first inbound the gate sees on the thread now
+that the ack is gone, it still warrants a reply, and so it still reaches the
+router, which is where a reply on a thread started from a Telegram topic is
+shown in that topic. Moving the gate's acknowledgement word list ahead of
+first contact would have hidden those replies and let a word list decide
+before the classifier; it is not needed to stop the loop and is not done.
 
 ### 4. The other inbound paths
 
@@ -216,7 +192,6 @@ many real messages gets back.
 |---|---|---|
 | Is this inbound an automatic ack? | invariant | Enumerable and structural: the wire type `ack`, or an exact whole-message match against the one fixed ack sentence. No text is interpreted. A miss falls to the warrants gate. |
 | Does an ack get an ack, a gate pass or a router? | invariant | Never. |
-| Pure-ack versus first contact in the warrants gate | invariant | Order of two existing deterministic checks. The gate's classifier (the judgment authority for ambiguous messages) is untouched and still runs only after both. |
 
 ## Multi-machine posture
 
@@ -270,14 +245,13 @@ meaning.
   of every boundary; the stage with a real ledger ticket and a real delivery
   tracker on a thread we started (nothing sent, `no-reply`, delivery recorded);
   the four no-ack conditions; the limiter; the wire format through a real
-  `ThreadlineClient`. `tests/unit/WarrantsReplyGate.test.ts`: a bare ack as the
-  first inbound does not warrant; content, a question and `expectsReply` still
-  do. `tests/unit/threadline/ack-stage-wiring.test.ts`: the stage sits before
+  `ThreadlineClient`. `tests/unit/threadline/ack-stage-wiring.test.ts`: the stage sits before
   every side effect and router in the real handler and both HTTP routes.
 - **Integration** — `tests/integration/threadline/ack-never-acked.test.ts`: two
   handlers back to back with one message (at most one ack per side, at most one
   session in total); the pre-fix pair shown looping in the same harness; mixed
-  old/new pairs; both HTTP routes. `warrants-reply-funnel.test.ts` inverted.
+  old/new pairs; a peer's first reply of `lgtm` on a thread we started still
+  warrants a reply while its typed ack does not; both HTTP routes.
 - **E2E** — `tests/e2e/threadline/ack-never-acked-alive.test.ts`: a real
   relay server and two agents booted with the real bootstrap; one message.
 
