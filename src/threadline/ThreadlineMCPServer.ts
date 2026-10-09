@@ -163,6 +163,13 @@ export interface SendMessageResult {
   forwardedTo?: string;
   /** A2A relay forward: where the reply will arrive — `topic-session` | `holder-hub`. */
   replyArrivesIn?: string;
+  /**
+   * Dark peer (a2a-single-agent-identity §3.2): present only when my ledger shows
+   * messages to this peer queued/unconfirmed/expired for hours with nothing back.
+   * `connectedNow` is the presence map's answer (null = unknown). A proxy — it
+   * cannot tell offline from wrong-address.
+   */
+  peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null };
 }
 
 export interface RequestSecretParams {
@@ -686,6 +693,8 @@ export class ThreadlineMCPServer {
           if (result.relayReasonCode !== undefined) response.relayReasonCode = result.relayReasonCode;
           if (result.retryLater !== undefined) response.retryLater = result.retryLater;
           if (result.banSuspected) response.banSuspected = true;
+          // §3.2: a send to a dark peer carries the evidence object (additive).
+          if (result.peerDark) response.peerDark = result.peerDark;
           // A2A relay forward: which machine of mine carried the send and where
           // its reply will arrive. `reply` is null — a forwarded send never waits.
           if (result.deliveryPath === 'forwarded') {

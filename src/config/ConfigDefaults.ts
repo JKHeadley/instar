@@ -981,6 +981,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     inboundIdLedger: {
       retentionDays: 14,
     },
+    // Honest sender-side reporting of a send that stays queued
+    // (docs/specs/a2a-single-agent-identity.md §3.4). `enabled` is OMITTED on
+    // purpose — the developmentAgent gate decides (registered in
+    // DEV_GATED_FEATURES as threadline.peerDarkNotice.enabled): LIVE on a dev
+    // agent, DARK on the fleet. Ships dry-run FIRST: would-raise and
+    // would-sentence rows land in logs/a2a-peer-dark.jsonl; no attention item
+    // and no deliveryOutcome sentence until a deliberate dryRun:false. The raw
+    // health fields are live from the first build (they are reads). applyDefaults
+    // deep-merges this under `threadline` on update (Migration Parity) — nested,
+    // so migrateConfig is not the carrier.
+    peerDarkNotice: {
+      dryRun: true,
+      queuedDarkAfterMs: 7200000,  // 2 h — below the 6 h `stale` window so the sender hears first
+      cooldownMs: 43200000,        // 12 h per peer
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap

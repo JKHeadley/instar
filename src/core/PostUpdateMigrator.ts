@@ -8335,6 +8335,17 @@ When this machine is a standby and another of my machines holds my relay connect
       result.upgraded.push('CLAUDE.md: added A2A relay forward section');
     }
 
+    // A2A dark peers (docs/specs/a2a-single-agent-identity.md §3, Agent
+    // awareness). OWN sniff key `A2A dark peers` — content-sniffed for idempotency.
+    if (!content.includes('A2A dark peers')) {
+      content += '\n\n' + `### A2A dark peers (did my message arrive?)
+
+A peer is \`dark\` when my own delivery ledger shows messages to it queued at the relay, unconfirmed, or expired for hours with nothing back — no acknowledgement, no inbound, no \`delivered\` verdict since. It is a proxy read from my ledger: it means "nothing from this peer for N h" and cannot by itself tell offline from a wrong address. A send to a dark peer answers with \`peerDark\` (\`since\`, \`queuedCount\`, \`expiresAt\`, \`connectedNow\`) beside \`relayStatus\`; \`connectedNow\` is the presence map's answer (\`true\` / \`false\` / \`null\` = unknown — never a fresh discover on the send path). \`GET /threadline/peers/health\` and the per-peer route (\`?scope=pool\` across my machines) carry \`dark\`, \`darkSince\`, \`queuedCount\`, \`connectedNow\`. Before blaming the peer I read my own \`relay.state\` first: a disconnected sender makes every peer look queued. The operator hears about it ONCE per peer (item \`a2a-peer-dark:<agent>:<peer>\`, 12 h cooldown) only after the awake machine reconnected its relay, refreshed the presence map and re-checked; a peer that answered on any of my machines is not dark, and the item resolves naming the messages that expired unacknowledged. Ships dry-run (\`threadline.peerDarkNotice\`): the fields are live, the worded sentence and the item wait for \`dryRun: false\`. **When to use** (PROACTIVE): a user asks "did <peer> get my message?" → read the send's \`relayStatus\` AND \`peerDark\`; "is <peer> there?" → \`GET /threadline/peers/<fingerprint>/health\` → \`dark\`, \`darkSince\`, \`queuedCount\`, \`connectedNow\`. It may be offline, or listening under a different address — I say which evidence I have, never "nothing will arrive".
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A dark peers section');
+    }
+
     // A2A local-route trust (docs/specs/a2a-local-route-trust.md, Agent awareness).
     // OWN sniff key `A2A local-route trust` — content-sniffed for idempotency.
     if (!content.includes('A2A local-route trust')) {
@@ -11304,6 +11315,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
       '### A2A local-route trust',
+      // A2A dark peers: server-side send-response + health-read fields,
+      // framework-agnostic — a Codex/Gemini agent must know `peerDark` and the
+      // `dark` health fields to answer "did <peer> get my message?" honestly.
+      '### A2A dark peers',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

@@ -1,0 +1,29 @@
+# A send that stays queued now says so honestly (dark peers)
+
+## What Changed
+
+Part §3 of `docs/specs/a2a-single-agent-identity.md` (CMT-706, approved 2026-10-09): when messages to another agent sit queued at the relay for hours with nothing back, the sender now knows — on the send itself, on the health read, and (once the notice is switched on) as one operator item per peer.
+
+- **`dark` on the delivery ledger.** `GET /threadline/peers/health` and `/threadline/peers/:fp/health` (and `?scope=pool`) carry `dark`, `darkSince`, `queuedCount`, `queuedExpiresAt`, `lastDeliveredAt`, `connectedNow`; the list carries `darkCount`. A peer is dark when its oldest message that is queued, unconfirmed or expired — sent after the last ack, inbound or `delivered` verdict from it — is older than `threadline.peerDarkNotice.queuedDarkAfterMs` (2 h). Relay expiry never clears it; a sign of life does.
+- **`peerDark` on the send.** `POST /threadline/relay-send` and the `threadline_send` tool answer a send to a dark peer with `peerDark: { since, queuedCount, expiresAt, connectedNow }`. `connectedNow` is the relay presence map's answer (`presence_change` frames now update it; `null` when unknown — never a fresh discover on the send path). With `dryRun: false` the `deliveryOutcome` becomes "no acknowledgement from <peer> for N h; this and K other messages are still queued (oldest expires T); <peer> is not connected to the relay right now — it may be offline, or listening under a different address" (or the connected / unknown variant) — worded to the evidence, never "nothing will arrive".
+- **One item per peer through the reworked `A2ARedeliverySentinel`.** It is now constructed under EITHER `monitoring.a2aRedelivery.enabled` OR `threadline.peerDarkNotice` (escalate-only under the latter). Trigger: dark, with queued rows, after the awake machine healed its own side (reconnect a dropped relay, one presence refresh, the identity self-check; two passes 40 s apart). Deterministic id `a2a-peer-dark:<agent>:<peerFp>`, raise and resolve both read pool-scope evidence (a peer that answered on another of my machines is not dark), the resolve line names how many messages expired unacknowledged, 12 h cooldown per peer. My own relay down → one aggregated item instead. A standby heals nothing and raises nothing.
+- **Bounded ledger.** The silence sweep deletes rows older than 30 days in every state; `findOverdue` reads the oldest 500.
+- **Dev-gated, dry-run first.** `threadline.peerDarkNotice: { dryRun: true, queuedDarkAfterMs: 7200000, cooldownMs: 43200000 }` with `enabled` omitted (live on a development agent, dark on the fleet; registered as `a2aPeerDarkNotice`). Dry-run writes would-raise / would-sentence rows to `logs/a2a-peer-dark.jsonl`; the health fields are live everywhere. CLAUDE.md section "A2A dark peers (did my message arrive?)" for new and existing agents.
+
+## What to Tell Your User
+
+When I message another agent and the relay has to hold the message because that agent is not connected, I used to say "queued" and nothing more — and if the message quietly expired a day later, nobody heard. Now I keep count: if messages to an agent have been waiting for hours with nothing back, I say so on the spot, with how many are waiting, when the oldest expires, and whether the relay sees that agent connected right now. I cannot always tell "offline" from "listening under a different address", so I say which it might be rather than guessing. Once the notice is switched on, you also get a single heads-up per agent — after I have first checked and repaired my own connection — and a note when that agent is back saying how many messages expired unanswered so you can resend what still matters.
+
+## Summary of New Capabilities
+
+- `peerHealth()` / `GET /threadline/peers/health`: `dark`, `darkSince`, `queuedCount`, `queuedExpiresAt`, `lastDeliveredAt`, `connectedNow`, `darkCount`.
+- `POST /threadline/relay-send` + `threadline_send`: `peerDark` object; evidence-worded `deliveryOutcome` when live.
+- `ThreadlineClient.peerConnectedNow()` / `refreshPresence()`; `presence_change` frames feed the presence map.
+- `A2ARedeliverySentinel`: per-peer dark path (deterministic item id, pool-scope raise/resolve, cooldown, local-relay aggregate, awake-only self-heal), constructed under either gate.
+- `threadline.peerDarkNotice` config block (dev-gated, dry-run), `logs/a2a-peer-dark.jsonl`.
+
+## Evidence
+
+- `tests/unit/a2a-peer-dark.test.ts` (41): the classification (threshold, every clearing event, expiry never clears, `escalated` never suppresses, counts, expiry, retention in every state, `findOverdue` bound, bounded `allPeerHealth`); the presence map (`presence_change`, stale frame → null, rejected refresh → false/null, relay down → null); the sentinel (gate-alone construction, one item after the heal, dry-run rows, pool-cleared raise, pool-life resolve with the expired count, cooldown + reopen, restart rebuild, local-relay aggregate, standby, split supersede, cleared-during-heal, legacy loop coexistence, failing pool read); helpers (resolver + floors, every sentence variant, HTML-escaped label, audit writer); migration parity (template = migrator wording, deep-merged defaults with `enabled` omitted, dev-gate entry).
+- `tests/integration/threadline/a2a-peer-dark-route.test.ts` (6): a real `ThreadlineClient` against the in-repo `RelayServer` — `peerDark` + would-sentence in dry-run, the worded sentence when live, the MCP client passthrough, the live-read threshold, dark clearing on reconnect, the health fields.
+- `tests/e2e/a2a-peer-dark-alive.test.ts` (5): the real `AgentServer` on the production init path — the routes answer 200 with the §3 fields, a row in the real on-disk ledger reads dark, the construction rule under the gate alone, migration E2E (defaults twice + CLAUDE.md once).

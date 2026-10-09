@@ -5440,6 +5440,16 @@ export interface ThreadlineConfig {
    * unchanged; only an explicit `false` refuses (pre-admission 403).
    */
   localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Honest sender-side reporting of a send that stays queued
+   * (docs/specs/a2a-single-agent-identity.md §3). `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-raise / would-sentence rows go to
+   * logs/a2a-peer-dark.jsonl, no item and no sentence; the raw health fields
+   * (`dark`, `darkSince`, `queuedCount`, `connectedNow`) are live regardless.
+   * `queuedDarkAfterMs` default 2 h (floor 5 min); `cooldownMs` default 12 h.
+   */
+  peerDarkNotice?: { enabled?: boolean; dryRun?: boolean; queuedDarkAfterMs?: number; cooldownMs?: number };
 }
 
 /**

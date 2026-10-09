@@ -126,6 +126,7 @@ describe('Feature Delivery Completeness', () => {
       '### Telegram message origin',
       'A2A relay forward', // a2a-cross-machine-route: the standby-forward card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A relay forward`), framework-shadowed.
       'A2A local-route trust', // a2a-local-route-trust: the same-machine inbound trust-check card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A local-route trust`), framework-shadowed.
+      'A2A dark peers', // a2a-single-agent-identity §3: the dark-peer send/health card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A dark peers`), framework-shadowed.
       'A2A backup routes', // a2a-backup-routes: the relay-send backup-routes card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A backup routes`), framework-shadowed.
       '**A2A cross-route copies are labelled:**', // ACT-061 cross-namespace label addendum to the inbound-id ledger card — template + migrateClaudeMd (own sniff key) + Codex/Gemini shadow marker.
       'inbound message-id ledger', // a2a-inbound-id-ledger: the "### A2A inbound message-id ledger" card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key per the spec's Migration parity), framework-shadowed.

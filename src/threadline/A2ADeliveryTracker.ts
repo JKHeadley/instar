@@ -116,6 +116,22 @@ export interface PeerHealth {
    * signal — silence made visible.
    */
   stale: boolean;
+  /**
+   * Dark (a2a-single-agent-identity §3.1): the oldest row that is queued at the
+   * relay, `unconfirmed`, or `failed`+`expired` — AND newer than the last ack,
+   * last inbound and last `delivered` verdict from this peer — is older than
+   * `queuedDarkAfterMs`. A PROXY: "nothing from this peer for N h"; it cannot
+   * tell offline from wrong-address. Relay expiry alone never clears it.
+   */
+  dark: boolean;
+  /** Send time of the oldest unanswered row when `dark`; null otherwise. */
+  darkSince: string | null;
+  /** Rows in the unanswered set (queued / unconfirmed / expired-unacknowledged, newer than the last sign of life). */
+  queuedCount: number;
+  /** Earliest relay expiry among the still-queued rows in that set; null when none. */
+  queuedExpiresAt: string | null;
+  /** Newest `delivered` relay verdict for this peer — a sign of life that clears `dark` (§3.1). */
+  lastDeliveredAt: string | null;
 }
 
 const SCHEMA = `
@@ -157,6 +173,12 @@ export function resolveA2ADeliveryPath(stateDir: string, agentId: string): strin
 
 /** Default: a message awaiting ack longer than this marks the channel stale. */
 export const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6h — matches the ACK-discipline window proposed to Dawn.
+/** Default: nothing back from a peer with queued rows for this long marks it dark (§3.1; below `stale` so the sender hears first). */
+export const DEFAULT_QUEUED_DARK_AFTER_MS = 2 * 60 * 60 * 1000;
+/** Retention (§3.1): rows older than this, in every state, are deleted by the sweep; peers quiet this long leave `allPeerHealth`. */
+export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** findOverdue scan bound (§3.1): oldest-first, per call. */
+export const FIND_OVERDUE_LIMIT = 500;
 
 /** Silence sweep constants (spec Frontloaded #5). */
 export const SWEEP_QUEUED_GRACE_MS = 60 * 60 * 1000;        // relay_expires_at + 1 h
@@ -414,12 +436,30 @@ export class A2ADeliveryTracker {
          ORDER BY sent_at ASC LIMIT ${SWEEP_MAX_ROWS_PER_TICK})
        RETURNING message_id, peer_fp, relay_status`,
     ).all(since, queuedCutoff, noVerdictCutoff) as Array<{ message_id: string; peer_fp: string; relay_status: string | null }>;
+    // Retention (§3.1): one statement on the (state, sent_at) index deleting rows
+    // with sent_at older than RETENTION_MS in EVERY state, enumerated — acked,
+    // failed, escalated, unconfirmed AND awaiting-ack (including a delivered-but-
+    // never-acked row, which has no relay expiry and which the reworked sentinel
+    // no longer terminalizes) — so findOverdue and the distinct-peer scan stay
+    // bounded. A peer silent that long has left allPeerHealth; its `dark` state
+    // is re-established by the next send.
+    const retentionCutoff = new Date(nowMs - RETENTION_MS).toISOString();
+    const pruned = this.db.prepare(
+      `DELETE FROM a2a_delivery
+       WHERE sent_at < ? AND state IN ('acked','failed','escalated','unconfirmed','awaiting-ack')`,
+    ).run(retentionCutoff);
+    this.prunedTotal += pruned.changes;
+    this.lastPruned = pruned.changes;
     return rows.map((r) => ({
       messageId: r.message_id,
       peerFp: r.peer_fp,
       cause: r.relay_status === 'queued' ? 'queued-expired-unobserved' : 'no-verdict-timeout',
     }));
   }
+
+  /** Rows deleted by the retention statement: lifetime total and the last sweep's count. */
+  prunedTotal = 0;
+  lastPruned = 0;
 
   /**
    * Implicit ack: a reply ON A THREAD is proof the peer processed our prior send
@@ -493,8 +533,11 @@ export class A2ADeliveryTracker {
    * redelivery/escalation work-list. Sorted oldest-first.
    */
   findOverdue(ttlMs: number, nowMs: number = Date.now()): A2ADeliveryEntry[] {
+    // Bounded (§3.1): oldest-first, at most FIND_OVERDUE_LIMIT rows per scan;
+    // retention keeps the backlog finite so the bound is a ceiling, not a cap
+    // that hides work.
     const rows = this.db
-      .prepare(`SELECT * FROM a2a_delivery WHERE state IN ('awaiting-ack','unconfirmed') ORDER BY sent_at ASC`)
+      .prepare(`SELECT * FROM a2a_delivery WHERE state IN ('awaiting-ack','unconfirmed') ORDER BY sent_at ASC LIMIT ${FIND_OVERDUE_LIMIT}`)
       .all() as any[];
     return rows
       .map(rowToEntry)
@@ -540,9 +583,10 @@ export class A2ADeliveryTracker {
   }
 
   /** "Is my channel to <peer> alive?" — composed from outbound + inbound records. */
-  peerHealth(peerFp: string, opts: { nowMs?: number; staleAfterMs?: number } = {}): PeerHealth {
+  peerHealth(peerFp: string, opts: { nowMs?: number; staleAfterMs?: number; queuedDarkAfterMs?: number } = {}): PeerHealth {
     const nowMs = opts.nowMs ?? Date.now();
     const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+    const queuedDarkAfterMs = opts.queuedDarkAfterMs ?? DEFAULT_QUEUED_DARK_AFTER_MS;
 
     const lastSent = this.db
       .prepare(`SELECT sent_at, peer_name FROM a2a_delivery WHERE peer_fp = ? ORDER BY sent_at DESC LIMIT 1`)
@@ -582,6 +626,42 @@ export class A2ADeliveryTracker {
       .get(peerFp, lastAcked?.acked_at ?? null, inbound?.last_accepted_at ?? null) as { hit: number } | undefined) !== undefined;
     const stale = (oldestPendingAgeMs !== null && oldestPendingAgeMs > staleAfterMs) || expiredNewer;
 
+    // §3.1 dark: the unanswered set = rows queued at the relay (awaiting-ack +
+    // relay `queued`), `unconfirmed`, `escalated` (not delivered), or
+    // `failed`+`expired`, sent AFTER the last sign of life from this peer — an
+    // ack, an inbound, or a relay `delivered` verdict (the peer's relay
+    // connection took a message). The set survives relay expiry (an expired
+    // row stays in it) — so a persistently dark peer is ONE episode, not one
+    // per day.
+    const lastDelivered = this.db
+      .prepare(`SELECT relay_status_at FROM a2a_delivery WHERE peer_fp = ? AND relay_status = 'delivered' AND relay_status_at IS NOT NULL ORDER BY relay_status_at DESC LIMIT 1`)
+      .get(peerFp) as { relay_status_at: string } | undefined;
+    const lifeBound = [lastAcked?.acked_at, inbound?.last_accepted_at, lastDelivered?.relay_status_at]
+      .filter((v): v is string => typeof v === 'string')
+      .sort()
+      .pop() ?? '';
+    const unanswered = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, MIN(sent_at) AS oldest,
+                MIN(CASE WHEN state = 'awaiting-ack' AND relay_status = 'queued' THEN relay_expires_at END) AS expires
+         FROM a2a_delivery
+         WHERE peer_fp = ? AND sent_at > ?
+           AND ((state = 'awaiting-ack' AND relay_status = 'queued')
+             OR state = 'unconfirmed'
+             OR (state = 'escalated' AND (relay_status IS NULL OR relay_status = 'queued'))
+             OR (state = 'failed' AND relay_status = 'expired'))`,
+      )
+      .get(peerFp, lifeBound) as { n: number; oldest: string | null; expires: string | null };
+    let dark = false;
+    let darkSince: string | null = null;
+    if (unanswered.n > 0 && unanswered.oldest) {
+      const oldestMs = Date.parse(unanswered.oldest);
+      if (!Number.isNaN(oldestMs) && nowMs - oldestMs > queuedDarkAfterMs) {
+        dark = true;
+        darkSince = unanswered.oldest;
+      }
+    }
+
     return {
       peerFp,
       peerName: lastSent?.peer_name ?? inbound?.peer_name ?? null,
@@ -602,15 +682,37 @@ export class A2ADeliveryTracker {
           }
         : null,
       stale,
+      dark,
+      darkSince,
+      queuedCount: unanswered.n,
+      queuedExpiresAt: unanswered.expires ?? null,
+      lastDeliveredAt: lastDelivered?.relay_status_at ?? null,
     };
   }
 
-  /** Health for every peer we've sent to or heard from. */
-  allPeerHealth(opts: { nowMs?: number; staleAfterMs?: number } = {}): PeerHealth[] {
+  /**
+   * Rows to this peer sent at/after `sinceIso` that the relay provably expired
+   * unacknowledged (§3.2 iv — the count a dark item's resolve line names).
+   */
+  expiredUnacknowledgedSince(peerFp: string, sinceIso: string): number {
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM a2a_delivery WHERE peer_fp = ? AND sent_at >= ? AND state = 'failed' AND relay_status = 'expired'`)
+      .get(peerFp, sinceIso) as { n: number };
+    return r?.n ?? 0;
+  }
+
+  /**
+   * Health for every peer we've sent to or heard from within `activeWithinMs`
+   * (default 30 days — §3.1 bounds this published read; a peer quiet that long
+   * is re-listed by its next send or inbound).
+   */
+  allPeerHealth(opts: { nowMs?: number; staleAfterMs?: number; queuedDarkAfterMs?: number; activeWithinMs?: number } = {}): PeerHealth[] {
+    const nowMs = opts.nowMs ?? Date.now();
+    const cutoff = new Date(nowMs - (opts.activeWithinMs ?? RETENTION_MS)).toISOString();
     const fps = new Set<string>();
-    for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_delivery`).all() as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
-    for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_peer_inbound`).all() as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
-    return [...fps].map((fp) => this.peerHealth(fp, opts));
+    for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_delivery WHERE sent_at > ?`).all(cutoff) as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
+    for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_peer_inbound WHERE last_accepted_at > ?`).all(cutoff) as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
+    return [...fps].map((fp) => this.peerHealth(fp, { ...opts, nowMs }));
   }
 
   close(): void {
