@@ -109,6 +109,43 @@ export function isVerifiedNamespace(senderKey: string): boolean {
   return !isLocalNamespace(senderKey) && !isUnverifiedNamespace(senderKey);
 }
 
+// ── Cross-namespace label (spec §1 "The same id under another namespace") ──
+
+/**
+ * A fingerprint as the ledger keys carry it: 6–64 hex characters — the same
+ * shape the local route accepts for an asserted fingerprint.
+ */
+export const SENDER_FINGERPRINT_RE = /^[0-9a-f]{6,64}$/i;
+
+/** The namespaces whose key IS a fingerprint (`''` = the verified namespace). */
+export const FINGERPRINT_NAMESPACE_PREFIXES = ['', 'unverified:', 'registry:', 'asserted:'] as const;
+
+/**
+ * The fingerprint part of a sender key, or null when the key carries none.
+ *   `<fp>` | `unverified:<fp>` | `registry:<fp>` | `asserted:<fp>` → `<fp>`
+ *   `local:…` (a name, never a fingerprint) and any non-hex remainder → null
+ * The remainder is returned byte-for-byte: keys are compared exactly, the way
+ * the local route already compares a registry fingerprint with a verified key.
+ */
+export function fingerprintOfSenderKey(senderKey: string | null | undefined): string | null {
+  if (typeof senderKey !== 'string' || senderKey.startsWith('local:')) return null;
+  let rest = senderKey;
+  for (const p of FINGERPRINT_NAMESPACE_PREFIXES) {
+    if (p && senderKey.startsWith(p)) { rest = senderKey.slice(p.length); break; }
+  }
+  return SENDER_FINGERPRINT_RE.test(rest) ? rest : null;
+}
+
+/**
+ * The OTHER namespaces' keys for the same fingerprint (at most three). Empty
+ * when the key carries no fingerprint — such a copy is never labelled this way.
+ */
+export function crossNamespaceKeys(senderKey: string | null | undefined): string[] {
+  const fp = fingerprintOfSenderKey(senderKey);
+  if (!fp) return [];
+  return FINGERPRINT_NAMESPACE_PREFIXES.map((p) => `${p}${fp}`).filter((k) => k !== senderKey);
+}
+
 /** Classify an existing row (pure; the single decision used by `admit`). */
 export function classifyExistingRow(
   row: { disposition: string; path: string | null; process_epoch: string },
@@ -216,7 +253,7 @@ export function resolveInboundIdLedgerPath(stateDir: string, agentId: string): s
 export const PERSISTENT_COUNTERS = [
   'dedupById', 'unkeyedInbound', 'staleAttemptWrite', 'waitDropped', 'waitCeilingReadmit',
   'unverifiedEvicted', 'unverifiedUnrecorded', 'unverifiedRefusedLogged', 'localRedelivered',
-  'weakPathRedelivered', 'readmitted', 'handoffFailed', 'peerAnnotated',
+  'weakPathRedelivered', 'readmitted', 'handoffFailed', 'peerAnnotated', 'crossNamespaceLabelled',
 ] as const;
 export type PersistentCounter = (typeof PERSISTENT_COUNTERS)[number];
 
@@ -235,7 +272,12 @@ export type AdmitResult =
   | { kind: 'duplicate'; row: InboundIdRow; bare: boolean }
   /** Admitted by a live attempt still in flight. */
   | { kind: 'in-flight'; row: InboundIdRow }
-  | { kind: 'admitted'; ticket: AdmissionTicket; readmitted: boolean };
+  /**
+   * `crossNamespace`: the same id already has a row under ANOTHER namespace of
+   * this sender's fingerprint — deliver with the resent-copy notice (a label;
+   * it never changes the admission, the disposition or the other row).
+   */
+  | { kind: 'admitted'; ticket: AdmissionTicket; readmitted: boolean; crossNamespace: boolean };
 
 export interface AdmitRequest {
   senderKey: string | null;
@@ -659,7 +701,29 @@ export class InboundIdLedger {
       for (const st of superseded.settlers) { try { st({ disposition: 'unknown', path: null }); } catch { /* never propagates */ } }
     }
     const ticket = new AdmissionTicket(this, senderKey, messageId, out.attempt, out.readmissions, true);
-    return { kind: 'admitted', ticket, readmitted: out.readmitted };
+    const crossNamespace = this.hasCrossNamespaceRow(senderKey, messageId);
+    if (crossNamespace) this.persistent.crossNamespaceLabelled++;
+    return { kind: 'admitted', ticket, readmitted: out.readmitted, crossNamespace };
+  }
+
+  /**
+   * After the commit, same tick: does this id already have a row under another
+   * namespace of the same fingerprint? At most three primary-key reads. READ
+   * ONLY — the other row is never written, and the answer only adds the notice.
+   * Any failure answers false (today's behaviour: delivered without the label)
+   * and never touches the cooldown: the admission itself already succeeded.
+   */
+  hasCrossNamespaceRow(senderKey: string, messageId: string): boolean {
+    if (!this.db) return false;
+    try {
+      const keys = crossNamespaceKeys(senderKey);
+      if (keys.length === 0) return false;
+      const stmt = this.db.prepare(`SELECT 1 FROM inbound_message_ids WHERE sender_key=? AND message_id=?`);
+      return keys.some((k) => stmt.get(k, messageId) !== undefined);
+    } catch {
+      // @silent-fallback-ok — a label is an annotation; without it the copy is delivered as today.
+      return false;
+    }
   }
 
   /**

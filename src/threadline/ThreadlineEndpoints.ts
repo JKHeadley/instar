@@ -612,7 +612,7 @@ export function createThreadlineRoutes(
             return;
           }
           ticket = r.ticket;
-          if (r.kind === 'admitted' && r.ticket.readmissions > 0) resentNotice = buildResentNotice(false);
+          if (r.kind === 'admitted' && (r.ticket.readmissions > 0 || r.crossNamespace)) resentNotice = buildResentNotice(false);
         }
       }
 

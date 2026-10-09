@@ -34837,7 +34837,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return;
           }
           ledgerTicket = r.ticket;
-          if (r.kind === 'admitted' && r.ticket.readmissions > 0) ledgerNotice = buildResentNotice(false);
+          // Also when the same id already sits under another namespace of this
+          // sender's fingerprint (a relay copy that overtook this one): a label only.
+          if (r.kind === 'admitted' && (r.ticket.readmissions > 0 || r.crossNamespace)) ledgerNotice = buildResentNotice(false);
           // Capture the content triple now; `forget` runs only after the ticket's
           // conditional handoff-failed/refused write succeeds (a superseded
           // attempt never releases the window).

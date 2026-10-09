@@ -23,7 +23,9 @@ import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../../../src/threadline/ThreadlineEndpoints.js';
 import { sign, generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
-import { InboundIdLedger } from '../../../src/threadline/InboundIdLedger.js';
+import { InboundIdLedger, RESENT_COPY_NOTICE } from '../../../src/threadline/InboundIdLedger.js';
+import { runRelayInboundWithLedger } from '../../../src/threadline/inboundIdLedgerWiring.js';
+import { InboundMessageGate } from '../../../src/threadline/InboundMessageGate.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { AgentServer } from '../../../src/server/AgentServer.js';
 import { MessageStore } from '../../../src/messaging/MessageStore.js';
@@ -173,6 +175,30 @@ describe('A. signed HTTP receive + health', () => {
     expect(r2.status).toBe(200);
   });
 
+  it('a signed copy whose id already sits under unverified:<same fp> is delivered with the resent-copy notice', async () => {
+    // The sender was unknown to the relay path when its first copy arrived.
+    const first = ledger.admit({ senderKey: `unverified:${aFp}`, messageId: 'xns-1', ingress: 'relay-unknown-sender', threadId: 'thread-1' });
+    if (first.kind === 'admitted') { first.ticket.recordHandoff('live'); first.ticket.finish(); }
+    const before = ledger.getRow(`unverified:${aFp}`, 'xns-1');
+    const router = { handleInboundMessage: vi.fn(async () => ({ handled: true, path: 'cold' })) };
+    const x = app(router);
+    const r = await post(x, body('xns-1'));
+    expect(r.status).toBe(200);
+    expect(r.body.accepted).toBe(true);
+    expect(r.body.deduped).toBeUndefined();
+    expect((router.handleInboundMessage.mock.calls[0][2] as { resentNotice: string | null }).resentNotice).toBe(RESENT_COPY_NOTICE);
+    await tick(); await tick();
+    expect(ledger.getRow(`unverified:${aFp}`, 'xns-1')).toEqual(before);
+    expect(ledger.getRow(aFp, 'xns-1')).toMatchObject({ disposition: 'handed-off', readmissions: 0 });
+    expect(ledger.counters().crossNamespaceLabelled).toBe(1);
+    // Another sender's row for the same id never labels this sender's copy.
+    const other = ledger.admit({ senderKey: `unverified:${'c'.repeat(32)}`, messageId: 'xns-2', ingress: 'relay-unknown-sender' });
+    if (other.kind === 'admitted') { other.ticket.recordHandoff('live'); other.ticket.finish(); }
+    await post(x, body('xns-2'));
+    expect((router.handleInboundMessage.mock.calls[1][2] as { resentNotice: string | null }).resentNotice).toBeNull();
+    expect(ledger.counters().crossNamespaceLabelled).toBe(1);
+  });
+
   it('advertises the capability only while operational and not daemon-deferred', async () => {
     const x = app(null);
     const h1 = await request(x).get('/threadline/health');
@@ -285,6 +311,100 @@ describe('B. AgentServer — /messages/relay-agent and GET /a2a/inbound-ids', ()
     expect(ledgerOf()!.lookup(DAWN_FP, 'dawn-2')).toBe('retryable');
   });
 
+  // The live sequence of 2026-10-08 (ACT-061): the sender's local POST timed out,
+  // it fell back to the relay with the SAME id and `resend: true`, the relay copy
+  // arrived first (unknown sender → `unverified:<fp>`), and the original local
+  // copy was processed afterwards (→ `registry:<fp>`).
+  const relayCopyFirst = async (id: string, fp: string) => {
+    const seen: Array<string | null> = [];
+    const delivered = await runRelayInboundWithLedger(
+      { reason: 'relay-authenticated', message: { from: fp, threadId: 'thread-live', messageId: id, content: { content: `body ${id}`, resend: true } } },
+      { ledger: () => ledgerOf(), tracker: () => null, extractMessageId: (m) => InboundMessageGate.extractMessageId(m as never) },
+      async (ticket, notice) => { seen.push(notice); ticket?.recordHandoff('live'); },
+    );
+    expect(delivered).toBe(true);
+    expect(seen).toEqual([RESENT_COPY_NOTICE]);
+  };
+  const lastNotice = () => (handleInboundMessage.mock.calls[handleInboundMessage.mock.calls.length - 1][2] as { resentNotice: string | null }).resentNotice;
+
+  it('relay copy first, late local copy: the local copy is DELIVERED and labelled with the resent-copy notice', async () => {
+    handleInboundMessage.mockClear();
+    const l = ledgerOf()!;
+    const labelledBefore = l.counters().crossNamespaceLabelled as number;
+    await relayCopyFirst('live-1', DAWN_FP);
+    const relayRow = l.getRow(`unverified:${DAWN_FP}`, 'live-1');
+    expect(relayRow).toMatchObject({ ingress: 'relay-unknown-sender', disposition: 'handed-off', path: 'live', readmissions: 0 });
+
+    const res = await post(envelope('live-1', 'dawn', 'body live-1', 'thread-live'));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, accepted: true }); // the normal accept answer, unchanged
+    expect(res.body.deduped).toBeUndefined();
+    await tick(); await tick();
+    expect(handleInboundMessage).toHaveBeenCalledTimes(1); // delivered — never suppressed
+    expect(lastNotice()).toBe(RESENT_COPY_NOTICE);
+    // Its own row in its own namespace; the relay copy's row is not modified.
+    expect(l.getRow(`registry:${DAWN_FP}`, 'live-1')).toMatchObject({ ingress: 'relay-agent', disposition: 'handed-off', path: 'cold', readmissions: 0 });
+    expect(l.getRow(`unverified:${DAWN_FP}`, 'live-1')).toEqual(relayRow);
+    expect(l.counters().crossNamespaceLabelled).toBe(labelledBefore + 1);
+    // The read route shows both rows for the id.
+    const rows = await request(app).get('/a2a/inbound-ids?id=live-1').set('Authorization', `Bearer ${AUTH}`);
+    expect((rows.body.rows as Array<{ senderKey: string }>).map((r) => r.senderKey).sort()).toEqual([`registry:${DAWN_FP}`, `unverified:${DAWN_FP}`].sort());
+    // The counter is on the authed /health beside the other ledger counters.
+    const health = await request(app).get('/health').set('Authorization', `Bearer ${AUTH}`);
+    expect(health.body.threadline.inboundIdLedger.crossNamespaceLabelled).toBe(labelledBefore + 1);
+  });
+
+  it('an asserted fingerprint (no registry entry) is labelled the same way; a different fingerprint or a name-only sender is not', async () => {
+    const l = ledgerOf()!;
+    const OTHER_FP = 'e'.repeat(32);
+    const withFp = (id: string, agent: string, fp?: string) => {
+      const env = envelope(id, agent, `body ${id}`, 'thread-live');
+      if (fp) (env.message.from as Record<string, unknown>).fingerprint = fp;
+      return env;
+    };
+    // asserted:<fp> — the sender is not in the registry but states its fingerprint.
+    await relayCopyFirst('live-2', OTHER_FP);
+    handleInboundMessage.mockClear();
+    expect((await post(withFp('live-2', 'stranger', OTHER_FP))).status).toBe(200);
+    await tick(); await tick();
+    expect(lastNotice()).toBe(RESENT_COPY_NOTICE);
+    expect(l.getRow(`asserted:${OTHER_FP}`, 'live-2')).not.toBeNull();
+
+    // A different fingerprint: the same id is a plain new message.
+    await relayCopyFirst('live-3', OTHER_FP);
+    handleInboundMessage.mockClear();
+    expect((await post(withFp('live-3', 'stranger', '9'.repeat(32)))).status).toBe(200);
+    await tick(); await tick();
+    expect(lastNotice()).toBeNull();
+
+    // A name-only sender (local:relay-agent:<name>) has no fingerprint: no label.
+    await relayCopyFirst('live-4', OTHER_FP);
+    handleInboundMessage.mockClear();
+    expect((await post(withFp('live-4', 'codey'))).status).toBe(200);
+    await tick(); await tick();
+    expect(lastNotice()).toBeNull();
+    expect(l.getRow('local:relay-agent:codey', 'live-4')).not.toBeNull();
+  });
+
+  it('local copy first, relay copy second: the relay copy is delivered and labelled', async () => {
+    handleInboundMessage.mockClear();
+    const l = ledgerOf()!;
+    expect((await post(envelope('live-5', 'dawn', 'body live-5', 'thread-live'))).status).toBe(200);
+    await tick(); await tick();
+    expect(lastNotice()).toBeNull(); // first copy: nothing to label
+    const localRow = l.getRow(`registry:${DAWN_FP}`, 'live-5');
+    const seen: Array<string | null> = [];
+    // Unmarked on purpose: the label comes from the other namespace's row, not the resend flag.
+    const delivered = await runRelayInboundWithLedger(
+      { reason: 'relay-authenticated', message: { from: DAWN_FP, threadId: 'thread-live', messageId: 'live-5', content: { content: 'body live-5' } } },
+      { ledger: () => ledgerOf(), tracker: () => null, extractMessageId: (m) => InboundMessageGate.extractMessageId(m as never) },
+      async (ticket, notice) => { seen.push(notice); ticket?.recordHandoff('live'); },
+    );
+    expect(delivered).toBe(true);
+    expect(seen).toEqual([RESENT_COPY_NOTICE]);
+    expect(l.getRow(`registry:${DAWN_FP}`, 'live-5')).toEqual(localRow);
+  });
+
   it('a loop envelope is refused with no row', async () => {
     const env = envelope('loop-1', 'codey');
     env.transport.relayChain = ['test-machine'];
@@ -321,6 +441,14 @@ describe('B. AgentServer — /messages/relay-agent and GET /a2a/inbound-ids', ()
     const r2 = await post(envelope('lock-2', 'codey', 'locked text', 'thread-lock'));
     expect(r2.status).toBe(200);
     expect(r2.body.deduped).toBeUndefined();
+    // Ledger unavailable: a late local copy of an id the relay already delivered
+    // goes through without a row and without the label — today's behaviour.
+    handleInboundMessage.mockClear();
+    const r3 = await post(envelope('live-1', 'dawn', 'body live-1 again', 'thread-lock-2'));
+    expect(r3.status).toBe(200);
+    await tick(); await tick();
+    expect(handleInboundMessage).toHaveBeenCalledTimes(1);
+    expect((handleInboundMessage.mock.calls[0][2] as { resentNotice: string | null }).resentNotice).toBeNull();
   });
 
   it('a live true→false flip closes the ledger; the read route then answers 503', async () => {
