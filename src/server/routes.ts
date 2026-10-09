@@ -179,6 +179,8 @@ import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
 import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { brakePlainWords, buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
+import { buildTriageAuthorityProposal, TRIAGE_ARBITER_ROUTING, TRIAGE_AUTHORITY_ID, type TriageEnvelope } from '../feedback-factory/triage/triageAuthorityProposal.js';
+import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID } from '../feedback-factory/triage/FeedbackTriageArbiter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
@@ -1515,6 +1517,8 @@ export interface RouteContext {
     /** Owner binding the readiness authority must match (for the operator proposal). Optional for older wiring. */
     authorityBinding?: () => { ownerMachineId: string | null; ownerEpoch: number };
   } | null;
+  /** Feedback triage (docs/specs/feedback-triage-and-execution.md). Null when dev-gate dark or drain unavailable → routes 503. */
+  feedbackTriage?: import('../feedback-factory/triage/buildFeedbackTriage.js').FeedbackTriageRouteContext | null;
   feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
@@ -13958,7 +13962,180 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const record = ctx.feedbackDrain.promotion.revoke();
       ctx.feedbackDrain.checkpointBackup('promotion');
       res.json({ revoked: true, revokedAt: record.revokedAt });
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
+    } catch (error) { /* @silent-fallback-ok: error returned to the caller as 409 */ res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
+  });
+
+  // ── Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1) ──
+  // Ticks run only on the drain's fenced owner (409 naming it elsewhere). GETs on a
+  // non-owner fetch the owner's answer over the authenticated peer transport, fall back to
+  // the last fetched copy tagged stale, or answer 503 naming the owner.
+  const triageUnavailable = (res: import('express').Response): boolean => {
+    if (ctx.feedbackTriage && ctx.feedbackDrain) return false;
+    res.status(503).json({ error: 'feedback triage unavailable (feedbackFactory.triage dark for this agent, or the drain is not live)' });
+    return true;
+  };
+  const triageRead = async (route: string, res: import('express').Response, local: () => unknown): Promise<void> => {
+    const triage = ctx.feedbackTriage!;
+    try {
+      if (triage.isCanonicalOwner()) { res.json(local()); return; }
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'feedback triage read failed' });
+      return;
+    }
+    const owner = triage.ownerMachineId();
+    const fetched = await triage.fetchFromOwner(route);
+    if (fetched && fetched.status === 200 && fetched.body && typeof fetched.body === 'object') {
+      triage.ownerCache.set(route, { body: fetched.body, fetchedAt: Date.now() });
+      res.json({ ...(fetched.body as Record<string, unknown>), servedBy: owner });
+      return;
+    }
+    const cached = triage.ownerCache.get(route);
+    if (cached) { res.json({ ...(cached.body as Record<string, unknown>), servedBy: owner, stale: true, staleAgeMs: Date.now() - cached.fetchedAt }); return; }
+    res.status(503).json({ error: 'feedback triage runs on the drain owner, which is unreachable from here', owner });
+  };
+  const triageOwnerConflict = (res: import('express').Response): boolean => {
+    if (ctx.feedbackTriage!.isCanonicalOwner()) return false;
+    res.status(409).json({ error: 'not-canonical-owner', owner: ctx.feedbackTriage!.ownerMachineId() });
+    return true;
+  };
+
+  const triageReadSafe = (route: string, res: import('express').Response, local: () => unknown): void => {
+    triageRead(route, res, local).catch((error) => {
+      if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'feedback triage read failed' });
+    });
+  };
+  router.get('/feedback-factory/triage/queue', (_req, res) => {
+    if (triageUnavailable(res)) return;
+    triageReadSafe('/feedback-factory/triage/queue', res, () => ({ items: ctx.feedbackTriage!.service.queue() }));
+  });
+
+  router.get('/feedback-factory/triage/summary', (_req, res) => {
+    if (triageUnavailable(res)) return;
+    triageReadSafe('/feedback-factory/triage/summary', res, () => ctx.feedbackTriage!.service.summary());
+  });
+
+  router.post('/feedback-factory/triage/tick', (req, res) => {
+    if (triageUnavailable(res)) return;
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const admitted = ctx.feedbackTriage!.service.acceptTick();
+    res.status(admitted.status).json(admitted.status === 409 && admitted.body.error === 'not-canonical-owner'
+      ? { ...admitted.body, owner: ctx.feedbackTriage!.ownerMachineId() } : admitted.body);
+  });
+
+  router.post('/feedback-factory/triage/action-list', (req, res) => {
+    if (triageUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    void ctx.feedbackTriage!.service.sendActionList()
+      .then((result) => res.json(result))
+      .catch((error) => res.status(502).json({ sent: false, error: error instanceof Error ? error.message.slice(0, 200) : 'delivery failed' }));
+  });
+
+  // Triage authority card: server-computed proposal (read-only), PIN-gated registration.
+  const triageAuthorityProposal = (envelope?: Partial<TriageEnvelope>) => {
+    const drain = ctx.feedbackDrain!;
+    const intel = ctx.intelligence;
+    const r = TRIAGE_ARBITER_ROUTING;
+    const route = intel instanceof IntelligenceRouter
+      ? intel.previewPrimary(r.component, { category: r.category, nature: r.nature, injectionExposed: r.injectionExposed, model: r.model })
+      : null;
+    const current = drain.store.getAuthority(TRIAGE_AUTHORITY_ID);
+    const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
+    const posture = current ? drain.store.authorityPosture(current.authorityId, current.generation) : null;
+    return buildTriageAuthorityProposal({
+      agentId: ctx.config.projectName ?? '', binding, route, piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
+      currentMode: posture?.mode, currentModeReason: posture?.reason,
+      currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
+      envelope, maxCallsPerDay: ctx.feedbackTriage!.service.summary().maxCallsPerDay as number,
+    });
+  };
+
+  router.get('/feedback-factory/triage/authority/proposal', (req, res) => {
+    if (triageUnavailable(res)) return;
+    const q = req.query;
+    const num = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? Number(v) : undefined);
+    res.json(triageAuthorityProposal({ maxBatch: num(q.maxBatch), maxTokens: num(q.maxTokens), maxDailySpendUsd: num(q.maxDailySpendUsd) }));
+  });
+
+  router.post('/feedback-factory/triage/authority', (req, res) => {
+    if (triageUnavailable(res)) return;
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
+      if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
+      const existing = ctx.feedbackDrain!.store.getAuthority(TRIAGE_AUTHORITY_ID);
+      let source: Record<string, unknown>;
+      if (action === 'create' || action === 'replace') {
+        if (body.useProposal === true) {
+          const built = triageAuthorityProposal({ maxBatch: body.maxBatch, maxTokens: body.maxTokens, maxDailySpendUsd: body.maxDailySpendUsd });
+          if (!built.proposal || built.blockers.length > 0) throw new Error(`authority proposal not approvable: ${built.blockers.join(' ') || 'no proposal'}`);
+          source = { ...built.proposal };
+        } else {
+          // Explicit fields: the prompt, schema and decision point are always the deployed ones.
+          source = { ...body, authorityId: TRIAGE_AUTHORITY_ID, promptVersion: FEEDBACK_TRIAGE_PROMPT_ID, schemaVersion: FEEDBACK_TRIAGE_SCHEMA_ID, decisionPointId: FEEDBACK_TRIAGE_DECISION_POINT };
+        }
+      } else {
+        if (!existing) throw new Error('authority does not exist');
+        source = { ...existing };
+      }
+      const record = ctx.feedbackDrain!.store.mutateAuthority({
+        action, operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
+        authorityId: TRIAGE_AUTHORITY_ID, agentId: String(source.agentId ?? ''), ownerMachineId: String(source.ownerMachineId ?? ''),
+        ownerEpoch: Number(source.ownerEpoch), provider: String(source.provider ?? ''), modelFamily: String(source.modelFamily ?? ''),
+        promptVersion: String(source.promptVersion ?? ''), schemaVersion: String(source.schemaVersion ?? ''), decisionPointId: String(source.decisionPointId ?? ''),
+        maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
+      });
+      res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+    }
+  });
+
+  // PIN plan/commit (Frontloaded Decision 7): the agent renders the exact action with its
+  // Bearer token; only the operator's PIN commits it. Phase 1 commits `ignore-live` only.
+  const EXECUTOR_PLAN_ACTIONS = new Set(['accept-approver-dependence', 'publish-secret-shape']);
+  router.post('/feedback-factory/triage/plan', (req, res) => {
+    if (triageUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const action = String(req.body?.action ?? '');
+    if (EXECUTOR_PLAN_ACTIONS.has(action)) {
+      res.status(400).json({ error: `${action} is not available until the feedback executor ships (Phase 2); nothing was planned` });
+      return;
+    }
+    if (action !== 'ignore-live') { res.status(400).json({ error: 'action must be ignore-live (or an executor action once the executor ships)' }); return; }
+    const enabled = req.body?.enabled !== false;
+    const evidence = ctx.feedbackTriage!.service.ignoreLiveEvidence();
+    const renderedText = enabled
+      ? `Turn ON live ignores for feedback triage. Items the sorting model judges not worth work will be set aside (paused, never deleted) instead of only being parked in practice mode. ` +
+        `Serious, security-shaped, truncated or fast-rising ignores still need a second model to agree and stay parked otherwise. Evidence so far: ${evidence.graded} practice ignores checked ` +
+        `(${evidence.strong} strong, ${evidence.medium} medium), ${evidence.wrong} judged wrong. You can turn this off again the same way.`
+      : 'Turn OFF live ignores for feedback triage: new ignore decisions go back to practice mode (parked as holds). Nothing already set aside is changed.';
+    const plan = ctx.feedbackTriage!.store.createPlan({ action: 'ignore-live', payload: { enabled }, renderedText });
+    res.json({ action: 'ignore-live', ...plan });
+  });
+
+  router.post('/feedback-factory/triage/commit', (req, res) => {
+    if (triageUnavailable(res)) return;
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    if (triageOwnerConflict(res)) return;
+    try {
+      const plan = ctx.feedbackTriage!.store.consumePlan(String(req.body?.planId ?? ''), String(req.body?.nonce ?? ''));
+      if (plan.action !== 'ignore-live') {
+        res.status(400).json({ error: `${plan.action} is not available until the feedback executor ships (Phase 2)` });
+        return;
+      }
+      const enabled = plan.payload.enabled !== false;
+      ctx.feedbackTriage!.service.setIgnoreLive(enabled, `dashboard-pin:${String(req.body?.planId ?? '').slice(-36)}`);
+      res.json({ committed: true, action: plan.action, ignoreLive: ctx.feedbackTriage!.service.ignoreLive(), renderedText: plan.renderedText });
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      res.status(409).json({ error: error instanceof Error ? error.message : 'commit failed' });
+    }
   });
 
   // The readiness signal. Read-only.

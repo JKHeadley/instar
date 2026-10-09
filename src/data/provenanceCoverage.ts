@@ -237,6 +237,9 @@ export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
 /** Feedback cluster evidence → owned-work readiness judgment. */
 export const DP_FEEDBACK_READINESS = 'feedback-readiness';
 
+/** Feedback work item scrubbed evidence → work/hold/ignore triage disposition. */
+export const DP_FEEDBACK_TRIAGE = 'feedback-triage';
+
 /** Verified operator message → durable goal-priority classification. */
 export const DP_GOAL_PRIORITY_EXTRACT = 'goal-priority-extract';
 
@@ -429,6 +432,23 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
+  },
+  {
+    decisionPoint: DP_FEEDBACK_TRIAGE,
+    component: 'FeedbackTriageArbiter',
+    status: 'wired',
+    volumeClass: 'budget:250',
+    contentClass: 'content-bearing',
+    reason:
+      'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
+  },
+  {
+    decisionPoint: 'feedback-triage-second-opinion',
+    component: 'FeedbackTriageSecondOpinion',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Cross-family second opinion for the triage never-ignore floor; it runs on a dedicated per-framework provider outside the shared router (so the seam cannot mint its row yet). Its verdicts are recorded triage-side as floor outcomes and medium-strength grades; router enrollment is queued in the uniform-provenance backlog.',
   },
   {
     decisionPoint: DP_GOAL_PRIORITY_EXTRACT,
@@ -1331,6 +1351,11 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   },
   'completion-claim-window-unknown-v1': {
     ruleId: 'completion-claim-window-unknown-v1', decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
+  },
+  'feedback-triage-window-unknown-v1': {
+    ruleId: 'feedback-triage-window-unknown-v1', decisionPoint: DP_FEEDBACK_TRIAGE,
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
     owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
   },

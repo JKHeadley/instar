@@ -35,6 +35,9 @@ const PENDING_BASELINE = [
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
   'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
   'mentor-stage-b', 'openConversationBrief',
+  // feedback-triage-and-execution Phase 1 (2026-10-08): operator-approved per-deployment triage authority and its
+  // cross-family second opinion; graded triage-side (weekly cross-family sample + recurrence) until a bench task lands.
+  'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
 ].sort();
 
 const EXEMPT_BASELINE = [
