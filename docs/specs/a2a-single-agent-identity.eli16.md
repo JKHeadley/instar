@@ -43,8 +43,10 @@ it is tracked.
 1. **A machine with no identity never invents one.** If it is part of my fleet it asks the
    siblings it can reach and adopts the identity they agree on. If they disagree, it stays
    off the network and says so loudly rather than guessing. Replacing an identity that
-   already exists is a single command that I run on that machine, through my own session
-   there, after Justin says yes; it backs up the old file first. There is no dashboard
+   already exists is a single command that I run on that machine after Justin says yes: I
+   move the conversation to that machine first (the existing "move this to the Studio"
+   lever), run the command from there, and report back. It backs up the old files first and
+   puts them back if anything fails. There is no dashboard
    ceremony, no PIN flow, no approval mandate — those were in the first draft and were cut —
    and the command is never something Justin has to type.
 2. **One loud mismatch alert.** One fingerprint formula everywhere, so the "are my machines
