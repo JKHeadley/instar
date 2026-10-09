@@ -72,6 +72,10 @@ export interface Session {
   maxDurationMinutes?: number;
   /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
   claudeSessionId?: string;
+  /** Confined (feedback executor) sessions only: the Claude config home the session writes its
+   *  transcript under (`<home>/projects/<key>/<--session-id>.jsonl`), so trusted code can judge the
+   *  sandbox canary by what actually reached the model. */
+  confinedConfigHome?: string;
   /** Subscription & Auth Standard P1.3: which subscription-pool account this
    *  session is running under (the account whose config home it launched/resumed
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
@@ -3612,16 +3616,31 @@ export interface InstarConfig {
       maxCallsPerDay?: number;
     };
     /**
-     * Feedback executor settings (§4). Phase 1 reads only `actionTopicId` (the daily action
-     * list's destination; the Attention hub when unset). The executor itself is not built yet.
+     * Feedback executor (§4). DEV-GATED: `enabled` is OMITTED in defaults so resolveDevAgentGate
+     * decides. `dryRun` (default true) evaluates admission and records the attempt it would start
+     * without spawning, pushing or merging. `actionTopicId` is also the daily action list's
+     * destination (the Attention hub when unset). Read live per tick.
      */
     execute?: {
       enabled?: boolean;
+      dryRun?: boolean;
       actionTopicId?: number;
+      /** The source checkout the feedback is about (default: the agent home when it is an instar source checkout). */
       sourceRepoPath?: string;
       maxConcurrent?: number;
       maxStartsPerDay?: number;
       maxOpenPrs?: number;
+      /** The lint gate run confined in the attempt workspace (default `npm run lint`). */
+      lintCommand?: string;
+      /** A small unit smoke the base canary runs once per canary stamp. */
+      baseSmokeTests?: string[];
+      /** Build-session wall clock in minutes (≤ the 6 h lease; default 300). */
+      maxDurationMinutes?: number;
+      /**
+       * The fork (`owner/name`) attempt branches are pushed to; PRs are opened from it against the
+       * canonical repository. Unset, or equal to the canonical repository, publication is refused.
+       */
+      publishRepo?: string;
     };
   };
   /**

@@ -181,6 +181,7 @@ import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { brakePlainWords, buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
 import { buildTriageAuthorityProposal, TRIAGE_ARBITER_ROUTING, TRIAGE_AUTHORITY_ID, type TriageEnvelope } from '../feedback-factory/triage/triageAuthorityProposal.js';
 import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID } from '../feedback-factory/triage/FeedbackTriageArbiter.js';
+import { REFUSING_REASONS as REFUSING_EXECUTE_REASONS } from '../feedback-factory/execute/FeedbackExecutorService.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
@@ -1519,6 +1520,8 @@ export interface RouteContext {
   } | null;
   /** Feedback triage (docs/specs/feedback-triage-and-execution.md). Null when dev-gate dark or drain unavailable → routes 503. */
   feedbackTriage?: import('../feedback-factory/triage/buildFeedbackTriage.js').FeedbackTriageRouteContext | null;
+  /** Feedback executor (docs/specs/feedback-triage-and-execution.md §4). Null when triage is dark → execute routes 503. */
+  feedbackExecute?: import('../feedback-factory/execute/buildFeedbackExecutor.js').FeedbackExecuteRouteContext | null;
   feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
@@ -14096,18 +14099,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // PIN plan/commit (Frontloaded Decision 7): the agent renders the exact action with its
-  // Bearer token; only the operator's PIN commits it. Phase 1 commits `ignore-live` only.
-  const EXECUTOR_PLAN_ACTIONS = new Set(['accept-approver-dependence', 'publish-secret-shape']);
+  // Bearer token; only the operator's PIN commits it. Three actions: ignore-live,
+  // accept-approver-dependence and publish-secret-shape (the last two need the executor).
   router.post('/feedback-factory/triage/plan', (req, res) => {
     if (triageUnavailable(res)) return;
     if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
     if (triageOwnerConflict(res)) return;
     const action = String(req.body?.action ?? '');
-    if (EXECUTOR_PLAN_ACTIONS.has(action)) {
-      res.status(400).json({ error: `${action} is not available until the feedback executor ships (Phase 2); nothing was planned` });
+    if (action === 'accept-approver-dependence' || action === 'publish-secret-shape') {
+      const executor = ctx.feedbackExecute?.service;
+      if (!executor) { res.status(503).json({ error: 'the feedback executor is not available on this agent; nothing was planned' }); return; }
+      void (async () => {
+        if (action === 'accept-approver-dependence') {
+          await executor.refreshAvailability();
+          const planned = executor.planApproverAcceptance();
+          if (!planned.ok) { res.status(409).json({ error: planned.error }); return; }
+          const plan = ctx.feedbackTriage!.store.createPlan({ action, payload: { approver: planned.approver, reasons: planned.reasons }, renderedText: planned.renderedText });
+          res.json({ action, ...plan });
+          return;
+        }
+        const attemptId = String(req.body?.attemptId ?? '');
+        const planned = executor.planPublishSecretShape(attemptId);
+        if (!planned.ok) { res.status(409).json({ error: planned.error }); return; }
+        const plan = ctx.feedbackTriage!.store.createPlan({ action, payload: { attemptId, digest: planned.digest }, renderedText: planned.renderedText });
+        res.json({ action, ...plan });
+      })().catch((error) => { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+        if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'plan failed' });
+      });
       return;
     }
-    if (action !== 'ignore-live') { res.status(400).json({ error: 'action must be ignore-live (or an executor action once the executor ships)' }); return; }
+    if (action !== 'ignore-live') { res.status(400).json({ error: 'action must be ignore-live, accept-approver-dependence or publish-secret-shape' }); return; }
     const enabled = req.body?.enabled !== false;
     const evidence = ctx.feedbackTriage!.service.ignoreLiveEvidence();
     const renderedText = enabled
@@ -14124,17 +14145,103 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
     if (triageOwnerConflict(res)) return;
-    try {
+    void (async () => {
       const plan = ctx.feedbackTriage!.store.consumePlan(String(req.body?.planId ?? ''), String(req.body?.nonce ?? ''));
-      if (plan.action !== 'ignore-live') {
-        res.status(400).json({ error: `${plan.action} is not available until the feedback executor ships (Phase 2)` });
+      const decisionRef = `dashboard-pin:${String(req.body?.planId ?? '').slice(-36)}`;
+      if (plan.action === 'ignore-live') {
+        const enabled = plan.payload.enabled !== false;
+        ctx.feedbackTriage!.service.setIgnoreLive(enabled, decisionRef);
+        res.json({ committed: true, action: plan.action, ignoreLive: ctx.feedbackTriage!.service.ignoreLive(), renderedText: plan.renderedText });
         return;
       }
-      const enabled = plan.payload.enabled !== false;
-      ctx.feedbackTriage!.service.setIgnoreLive(enabled, `dashboard-pin:${String(req.body?.planId ?? '').slice(-36)}`);
-      res.json({ committed: true, action: plan.action, ignoreLive: ctx.feedbackTriage!.service.ignoreLive(), renderedText: plan.renderedText });
-    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
-      res.status(409).json({ error: error instanceof Error ? error.message : 'commit failed' });
+      const executor = ctx.feedbackExecute?.service;
+      if (!executor) { res.status(503).json({ error: 'the feedback executor is not available on this agent' }); return; }
+      if (plan.action === 'accept-approver-dependence') {
+        executor.setApproverAcceptance(String(plan.payload.approver ?? ''), Array.isArray(plan.payload.reasons) ? (plan.payload.reasons as unknown[]).map(String) : [], decisionRef);
+        res.json({ committed: true, action: plan.action, approver: plan.payload.approver, renderedText: plan.renderedText });
+        return;
+      }
+      if (plan.action === 'publish-secret-shape') {
+        const published = await executor.publishHeld(String(plan.payload.attemptId ?? ''), String(plan.payload.digest ?? ''), decisionRef);
+        if (!published.ok) { res.status(409).json({ error: published.error }); return; }
+        res.json({ committed: true, action: plan.action, prNumber: published.prNumber, renderedText: plan.renderedText });
+        return;
+      }
+      res.status(400).json({ error: `unknown plan action ${plan.action}` });
+    })().catch((error) => { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      if (!res.headersSent) res.status(409).json({ error: error instanceof Error ? error.message : 'commit failed' });
+    });
+  });
+
+  // ── Feedback executor (docs/specs/feedback-triage-and-execution.md §4, Phase 2) ──
+  // Owner-only like triage. A source checkout is required (503 no-source-repo otherwise); the
+  // tick refuses outright (503) when the approver is not independent of the agent or the
+  // repository disallows auto-merge, and disarms every armed PR when the executor is disabled.
+  const executeUnavailable = (res: import('express').Response): boolean => {
+    if (ctx.feedbackExecute && ctx.feedbackTriage && ctx.feedbackDrain) return false;
+    res.status(503).json({ error: 'feedback executor unavailable (feedbackFactory triage/execute dark for this agent, or the drain is not live)', reason: 'dark' });
+    return true;
+  };
+  router.get('/feedback-factory/execute/status', (_req, res) => {
+    if (executeUnavailable(res)) return;
+    const executor = ctx.feedbackExecute!;
+    // Only the owner's own config decides "not applicable here"; a non-owner proxies to the owner.
+    if (executor.isCanonicalOwner() && !executor.service.status().available && ['disabled', 'no-source-repo'].includes(executor.service.status().reason)) {
+      res.status(503).json({ error: 'feedback executor unavailable', reason: executor.service.status().reason });
+      return;
+    }
+    triageReadSafe('/feedback-factory/execute/status', res, () => executor.service.summary());
+  });
+
+  router.post('/feedback-factory/execute/tick', (req, res) => {
+    if (executeUnavailable(res)) return;
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const executor = ctx.feedbackExecute!.service;
+    void (async () => {
+      const avail = await executor.refreshAvailability();
+      if (REFUSING_EXECUTE_REASONS.has(avail.reason)) {
+        if (avail.reason === 'disabled') await executor.disarmAll('executor-disabled');
+        res.status(503).json({ error: 'feedback executor refuses to run', reason: avail.reason, ...(avail.approver ? { approver: avail.approver } : {}) });
+        return;
+      }
+      const admitted = executor.acceptTick();
+      res.status(admitted.status).json(admitted.body);
+    })().catch((error) => { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      if (!res.headersSent) res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'execute tick failed' });
+    });
+  });
+
+  // Operator levers given in conversation (the agent relays the operator's words): stop an item's
+  // attempts (disarming any armed PR), or release a parked item back to triage.
+  router.post('/feedback-factory/execute/stop', (req, res) => {
+    if (executeUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const initiativeId = String(req.body?.initiativeId ?? '');
+    if (!/^[\w.:-]{1,120}$/.test(initiativeId)) { res.status(400).json({ error: 'initiativeId required' }); return; }
+    void ctx.feedbackExecute!.service.stopItem(initiativeId).then((r) => res.json(r)).catch((error) => { // @silent-fallback-ok: not silent — returned as an HTTP error status
+      if (!res.headersSent) res.status(409).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'stop failed' });
+    });
+  });
+
+  // Withdrawing the approver-dependence acceptance REDUCES authority, so the Bearer token suffices.
+  router.post('/feedback-factory/execute/revoke-acceptance', (req, res) => {
+    if (executeUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    res.json({ revoked: ctx.feedbackExecute!.service.revokeApproverAcceptance('api') });
+  });
+
+  router.post('/feedback-factory/execute/release', (req, res) => {
+    if (executeUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const initiativeId = String(req.body?.initiativeId ?? '');
+    if (!/^[\w.:-]{1,120}$/.test(initiativeId)) { res.status(400).json({ error: 'initiativeId required' }); return; }
+    try { res.json(ctx.feedbackExecute!.service.release(initiativeId)); } catch (error) { // @silent-fallback-ok: not silent — returned as an HTTP error status
+      res.status(409).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'release failed' });
     }
   });
 
@@ -27888,6 +27995,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const profileId = req.params.id;
     const sessionName = typeof req.body?.sessionName === 'string' ? req.body.sessionName : '';
+    // Sessions the feedback executor starts (convergence, live proof) may never get a browser
+    // profile: one could hold the account that approves the executor's own pull requests
+    // (docs/specs/feedback-triage-and-execution.md §4). Refused before any write or refresh.
+    const target = sessionName ? ctx.sessionManager.listRunningSessions().find((sess) => sess.tmuxSession === sessionName || sess.name === sessionName) : undefined;
+    if (target?.triggeredBy === 'feedback-executor') {
+      appendPlaywrightAudit('activate', profileId, { refused: 'feedback-executor-session' });
+      res.status(403).json({ error: 'feedback-executor sessions cannot activate a browser profile' });
+      return;
+    }
     const dryRun = readPlaywrightFlags().dryRun !== false; // default TRUE (D5)
     try {
       const reg = buildPlaywrightRegistry();

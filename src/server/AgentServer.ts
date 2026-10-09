@@ -69,6 +69,8 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
+import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
+import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
@@ -406,6 +408,8 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
+  private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
@@ -470,6 +474,8 @@ export class AgentServer {
   } | null = null;
   /** Feedback triage (docs/specs/feedback-triage-and-execution.md). Null when dark → routes 503. */
   private feedbackTriage: import('../feedback-factory/triage/buildFeedbackTriage.js').FeedbackTriageRouteContext | null = null;
+  /** Feedback executor (docs/specs/feedback-triage-and-execution.md §4). Null when triage is dark → execute routes 503. */
+  private feedbackExecute: import('../feedback-factory/execute/buildFeedbackExecutor.js').FeedbackExecuteRouteContext | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
   private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
@@ -1087,6 +1093,9 @@ export class AgentServer {
     /** Test seams for feedback triage (docs/specs/feedback-triage-and-execution.md); production leaves undefined. */
     feedbackTriageDeps?: Partial<Pick<import('../feedback-factory/triage/FeedbackTriageService.js').FeedbackTriageServiceOptions,
       'secondOpinion' | 'quotaUsedPercent' | 'listMergedPrs' | 'sendToTopic' | 'raiseAttention' | 'clock'>>;
+    /** Test seams for the feedback executor's external boundaries (git, GitHub, sandbox runtime, sessions); production leaves undefined. */
+    feedbackExecuteDeps?: Partial<Pick<import('../feedback-factory/execute/FeedbackExecutorService.js').FeedbackExecutorServiceOptions,
+      'git' | 'github' | 'runner' | 'deps' | 'sessions' | 'admission' | 'identityFacts' | 'commitIdentity' | 'clock' | 'sleep' | 'sessionWaitMs'>> & { homeDir?: string };
     /** Test seam for canonical stage-evidence resolution; production leaves undefined. */
     stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
     /** Project drift checker (Phase 1b connect-the-dots). Optional —
@@ -2759,6 +2768,71 @@ export class AgentServer {
             console.warn('[feedback-factory] triage init failed (non-fatal):', error);
             this.feedbackTriage = null;
           }
+          // Feedback executor (§4): built beside triage so the `enabled: false` stop path can still
+          // disarm armed PRs; `feedbackFactory.execute.enabled` is read live through the dev gate.
+          if (this.feedbackTriage) {
+            try {
+              const triageCtx = this.feedbackTriage;
+              this.feedbackExecute = buildFeedbackExecutor({
+                config: options.config,
+                drainStore: store,
+                triage: triageCtx,
+                processing: this.feedbackProcessing,
+                initiativeTracker: options.initiativeTracker,
+                sessionManager: options.sessionManager ?? null,
+                selfMachineId,
+                ownerMachineId: () => ownerHost,
+                ownerEpoch: () => options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch,
+                isCanonicalOwner,
+                enabled: () => resolveDevAgentGate(options.config.feedbackFactory?.execute?.enabled, options.config),
+                quotaShedding: () => {
+                  try { return options.quotaTracker ? !options.quotaTracker.shouldSpawnSession('low').allowed : false; } catch { return true; } // @silent-fallback-ok: an unreadable quota brake refuses admission (safe side)
+                },
+                updatePending: () => {
+                  try { return Boolean(options.autoUpdater?.getStatus().pendingUpdate); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
+                },
+                raiseAttention: async (item) => {
+                  const enqueue = this.telegramAdapter?.createAttentionItem;
+                  if (!enqueue) throw new Error('durable attention enqueue unavailable');
+                  await enqueue.call(this.telegramAdapter, item);
+                },
+                tunnelUrl: () => options.tunnel?.url ?? null,
+                overrides: options.feedbackExecuteDeps,
+              });
+              const executor = this.feedbackExecute.service;
+              triageCtx.service.attachExecutor({
+                status: () => executor.status(),
+                executionStateFor: (id) => executor.executionStateFor(id),
+                actionItems: () => executor.actionItems(),
+                holdsItem: (id) => executor.holdsItem(id),
+              });
+              console.log('[feedback-factory] executor built (dev-gated; dry-run until feedbackFactory.execute.dryRun is false)');
+            } catch (error) { /* @silent-fallback-ok: logged; the executor stays null so its routes answer 503 and triage is unaffected */
+              console.warn('[feedback-factory] executor init failed (non-fatal):', error);
+              this.feedbackExecute = null;
+            }
+          }
+        }
+        // The executor's stop path must not depend on triage being on: when the executor is not
+        // built (triage dark, or either failed to start), open executor PRs still get GitHub
+        // auto-merge turned off — once shortly after boot, then hourly — on the canonical owner.
+        if (!this.feedbackExecute) {
+          const sourceRepoPath = resolveExecuteConfig(options.config.feedbackFactory?.execute as Record<string, unknown> | undefined, options.config.projectDir, isInstarSourceCheckout).sourceRepoPath;
+          const sweep = () => {
+            if (!isCanonicalOwner()) return;
+            void disarmExecutorPrsWithoutExecutor({
+              drainStore: store, sourceRepoPath, stateDir: options.config.stateDir,
+              raiseAttention: async (item) => {
+                const enqueue = this.telegramAdapter?.createAttentionItem;
+                if (!enqueue) throw new Error('durable attention enqueue unavailable');
+                await enqueue.call(this.telegramAdapter, item);
+              },
+            }).then((r) => { if (r.checked > 0) console.log(`[feedback-factory] executor not built: disarm sweep checked=${r.checked} disarmed=${r.disarmed} failed=${r.failed}`); })
+              .catch((error) => console.warn('[feedback-factory] executor disarm sweep failed (retried hourly):', error instanceof Error ? error.message : error)); // @silent-fallback-ok: logged; retried hourly, and a PR it cannot disarm raises its own HIGH Attention line
+          };
+          setTimeout(sweep, 60_000).unref?.();
+          this.feedbackExecuteDisarmTimer = setInterval(sweep, 60 * 60_000);
+          this.feedbackExecuteDisarmTimer.unref?.();
         }
         if (options.config.stateDir && sourceCheckout) {
           const selfHealBootId = randomUUID();
@@ -4578,6 +4652,7 @@ export class AgentServer {
       feedbackDrain: this.feedbackDrain,
       feedbackDrainPosture: this.feedbackDrainPosture,
       feedbackTriage: this.feedbackTriage,
+      feedbackExecute: this.feedbackExecute,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
@@ -6758,6 +6833,10 @@ export class AgentServer {
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
+    }
+    if (this.feedbackExecuteDisarmTimer) {
+      clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
+      this.feedbackExecuteDisarmTimer = null;
     }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }

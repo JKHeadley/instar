@@ -100,6 +100,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Inert until the operator approves the triage authority with the dashboard PIN; every disposition is reversible (hold/ignore pause the Initiative, never archive), ignore ships in shadow until a separate PIN approval, model calls are capped per day and pause on subscription quota, and it never writes cluster or report status or takes an external action.',
   },
   {
+    name: 'feedbackFactoryExecute',
+    configPath: 'feedbackFactory.execute.enabled',
+    description: 'Feedback executor: confined build sessions turn top-ranked feedback work items into pull requests that merge only at the exact head the repository owner approves.',
+    justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',

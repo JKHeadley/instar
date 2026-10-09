@@ -208,11 +208,12 @@ describe('feedback triage routes — owner', () => {
     } finally { triage.service.summary = original; }
   });
 
-  it('PIN plan/commit: ignore-live commits once with the PIN; executor actions are refused as not yet available', async () => {
+  it('PIN plan/commit: ignore-live commits once with the PIN; executor actions plan only what actually exists', async () => {
     const app = server.getApp();
-    const executor = await request(app).post('/feedback-factory/triage/plan').set(HX).send({ action: 'publish-secret-shape' });
-    expect(executor.status).toBe(400);
-    expect(executor.body.error).toMatch(/not available until the feedback executor ships/);
+    // Phase 2: the executor is built here; with no held change set there is nothing to publish (409), never a plan.
+    const executor = await request(app).post('/feedback-factory/triage/plan').set(HX).send({ action: 'publish-secret-shape', attemptId: 'none:a1' });
+    expect(executor.status).toBe(409);
+    expect(executor.body.error).toMatch(/no held secret-shaped change set/);
     const plan = await request(app).post('/feedback-factory/triage/plan').set(HX).send({ action: 'ignore-live' });
     expect(plan.status).toBe(200);
     expect(plan.body.renderedText).toMatch(/Turn ON live ignores/);

@@ -1,0 +1,28 @@
+# Feedback work items can now be fixed by a sandboxed worker
+
+## What Changed
+
+Phase 2 of `docs/specs/feedback-triage-and-execution.md` adds the executor (§4): the worker that turns the top-ranked triage `work` items into pull requests.
+
+- `src/feedback-factory/execute/`: each attempt claims the item (owner-epoch fenced, 6 h lease, caps of 2 running / 6 starts a day / 4 open PRs, spawn limiter, quota brake, no pending update), creates two fresh clones at `origin/main` (the session's workspace and a publish clone the session cannot touch), and runs a Claude Code build session inside the OS sandbox: no network, no credentials, no reads outside its workspace. A must-fail / must-succeed canary proves the sandbox before every attempt; if it cannot be proven, nothing starts.
+- The session reproduces the problem with a failing test and fixes it (or drafts a spec when the item needs design). Trusted code then reads the changes as bytes, refuses symlinks, build-tooling changes and secret-shaped content (held for the operator), re-checks the fix in the sandbox, each check in its own fresh clone (fails before, passes after, lint and related tests pass), and pushes from its own clone with hooks and repository config disabled to a FORK (`feedbackFactory.execute.publishRepo`), opening a cross-repository PR. CI on a fork PR gets a read-only token and no repository secrets; without a fork configured (or with the canonical repository itself) nothing is published (`publish-fork-unset`).
+- It merges only the exact version the repository owner approved on GitHub (`safe-merge --auto --match-head-commit`), disarms auto-merge on every stop path, and refuses to run while the agent could act as that approver unless the operator accepts that once with the dashboard PIN. A merged fix counts as verified only after it ships in a release and the reports stay quiet for 30 days.
+- New: `GET /feedback-factory/execute/status`, `POST /feedback-factory/execute/tick|stop|release`; executor actions on the existing triage plan/commit (`accept-approver-dependence`, `publish-secret-shape`, PIN to commit); built-in job `feedback-factory-execute`; dashboard executor card; CLAUDE.md template + migration. New pinned dependency `@anthropic-ai/sandbox-runtime@0.0.77`.
+- Dev-gated (live on development agents, dark on the fleet) and `dryRun: true` by default: it records what it would start and starts nothing until `feedbackFactory.execute.dryRun` is set to false, and `feedbackFactory.execute.publishRepo` names the fork to publish from.
+- Stop paths (re-triage, merge deadline, stale owner, a failed disarm) run on every tick before any refusal; a refusal that withdraws merge authority disarms every open executor PR, and with the executor not built at all (triage off) open executor PRs are still disarmed hourly. Sessions the executor starts are refused Playwright profile activation.
+
+## What to Tell Your User
+
+I can now start fixing the most important feedback items myself, inside a locked-down copy of the code with no internet and no keys. Every fix arrives as a pull request that only merges after you approve that exact version on GitHub. It is switched off (practice mode) until you turn it on, and on this agent it also waits for your one PIN tap because I can technically act as your GitHub account.
+
+## Summary of New Capabilities
+
+- Sandboxed fix attempts for top-ranked feedback items, verified before and after, published as held pull requests.
+- Merge only at the version the repository owner approved; nothing merges without that approval.
+- Status and plain-language executor card on the dashboard Feedback Drain tab; daily action list lines for PRs awaiting approval.
+
+## Evidence
+
+- Unit: `tests/unit/feedback-factory/execute-*.test.ts` (state machine, gates, review gate, canary, change set, real-git trusted publishing with planted hooks), `tests/unit/session-manager-confined-spawn.test.ts`, `tests/unit/PostUpdateMigrator-feedbackExecutor.test.ts`, `tests/unit/self-action-convergence.test.ts` (`feedback-execute`).
+- Integration: `tests/integration/feedback-execute-routes.test.ts`. E2E: `tests/e2e/feedback-execute-lifecycle.test.ts`.
+- Live on the operated host: both confinement paths run for real against sandbox-runtime 0.0.77 and Claude Code 2.1.295 (all must-fail probes refused, all must-succeed probes passed); see the side-effects artifact.
