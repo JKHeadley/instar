@@ -1794,6 +1794,7 @@ const INITIATIVE_STATUS_WORD = {
 const SIGNAL_REASON_WORD = {
   'needs-user': 'Waiting on you', 'next-check-due': 'Time for a check-in',
   'ready-to-advance': 'Ready to move forward', 'stale': "Hasn't moved in a while",
+  'feedback-summary': 'Feedback work items (see the triage queue)',
 };
 
 /** The single population for the list tile: the (already server-filtered) items. */

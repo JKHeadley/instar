@@ -3596,6 +3596,33 @@ export interface InstarConfig {
       dryRun?: boolean;
       maxClaimsPerTick?: number;
     };
+    /**
+     * Feedback triage (docs/specs/feedback-triage-and-execution.md §1–§3, §5–§7): a registered
+     * frontier-model authority decides work/hold/ignore for each feedback Initiative within
+     * deterministic floors. DEV-GATED: `enabled` is OMITTED in defaults so resolveDevAgentGate
+     * decides (live on a development agent, dark on the fleet). Read live per tick.
+     */
+    triage?: {
+      enabled?: boolean;
+      /** Explicit kill switch over a PIN-approved live ignore; true alone never turns ignore live. */
+      ignoreLive?: boolean;
+      maxBatchChars?: number;
+      reportsPerItem?: number;
+      charsPerReport?: number;
+      maxCallsPerDay?: number;
+    };
+    /**
+     * Feedback executor settings (§4). Phase 1 reads only `actionTopicId` (the daily action
+     * list's destination; the Attention hub when unset). The executor itself is not built yet.
+     */
+    execute?: {
+      enabled?: boolean;
+      actionTopicId?: number;
+      sourceRepoPath?: string;
+      maxConcurrent?: number;
+      maxStartsPerDay?: number;
+      maxOpenPrs?: number;
+    };
   };
   /**
    * Model-routing config. `tierEscalation` is the Model-Tier Escalation

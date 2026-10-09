@@ -872,6 +872,130 @@ const feedbackGeneratedDefaultsHeal: SelfActionController = {
 };
 
 /**
+ * feedback-triage-tick — the triage tick's model calls and re-queues
+ * (docs/specs/feedback-triage-and-execution.md §1 floors 9–10, "Spend").
+ *
+ * Convergence argument: under sustained pressure (new reports land on the same
+ * cluster every tick, quota readable, authority usable) an item is re-queued and
+ * re-triaged at most once per 24 h (floor 10's durable last_requeued_at), and
+ * every call is reserved against the authority's durable maxCallsPerDay row
+ * (re-triage sub-cap 50, second-opinion sub-cap 30). Re-triaging an item that
+ * keeps receiving genuinely new evidence is legitimately eternal, so this is a
+ * declared Eternal Sentinel floored at one call per item per 24 h; the daily
+ * call cap is the delegated give-up. The throttle stamp is durable (in
+ * feedback-drain.db), so reconstruction cannot buy a fresh re-queue.
+ */
+const feedbackTriageTick: SelfActionController = {
+  id: 'feedback-triage-tick',
+  actionVerb: 'retry-triage-call',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (24 h re-queue throttle + authority_daily_usage maxCallsPerDay and sub-caps)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  delegatedGiveUp: 'the durable 24 h per-item re-queue throttle and the authority_daily_usage maxCallsPerDay cap (re-triage sub-cap 50, second-opinion sub-cap 30)',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 96 * 3,
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'an item that keeps receiving new reports is re-triaged at most once per 24 h; total calls are capped per day', rateFloorMs: 24 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageTick.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const THROTTLE_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      // New reports arrived on the same cluster this tick (the pressure never clears).
+      const last = f.durableState.get('feedback-triage-last-requeued-at') as number | undefined;
+      if (last !== undefined && f.clock.nowMs() - last < THROTTLE_MS) return;
+      f.durableState.set('feedback-triage-last-requeued-at', f.clock.nowMs());
+      sink.emit({ verb: 'retry-triage-call', target: 'hot-cluster' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+    } };
+  },
+};
+
+/**
+ * feedback-triage-action-list — the operator action list (§5).
+ *
+ * Convergence argument: each item carries a durable notifiedAt stamp written
+ * only after delivery and never re-sent, a day gate (action_list:last_day) caps
+ * delivery at one message per day, and a message carries at most 10 items. Under
+ * sustained pressure (a fixed backlog of 12 serious holds, the job firing every
+ * tick) the total notifications equal the backlog size — horizon-independent —
+ * and no item is ever notified twice.
+ */
+const feedbackTriageActionList: SelfActionController = {
+  id: 'feedback-triage-action-list',
+  actionVerb: 'notify-action-list',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (sendActionList: notifiedAt once-only, once per day, ≤10 items, 23:00–07:30 quiet window)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  boundK: 12,
+  perTargetBoundK: 1,
+  ticks: 96 * 3,
+  tickMs: 15 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageActionList.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const DAY_MS = 24 * 60 * 60_000;
+    const backlog = Array.from({ length: 12 }, (_, i) => `needs-review-hold-${i}`);
+    return { tick() {
+      sink.considered += 1;
+      const day = Math.floor(f.clock.nowMs() / DAY_MS);
+      if (f.durableState.get('feedback-action-list-last-day') === day) return;
+      const notified = (f.durableState.get('feedback-action-list-notified') as string[] | undefined) ?? [];
+      const pending = backlog.filter((item) => !notified.includes(item)).slice(0, 10);
+      if (pending.length === 0) return;
+      for (const item of pending) sink.emit({ verb: 'notify-action-list', target: item });
+      f.durableState.set('feedback-action-list-notified', [...notified, ...pending]);
+      f.durableState.set('feedback-action-list-last-day', day);
+    } };
+  },
+};
+
+/**
+ * feedback-triage-self-heal-probe — the triage authority re-probe ladder (§6).
+ *
+ * Convergence argument: under a permanently failing authority, an episode
+ * probes at most three times (30 min, 1 h, 4 h; max wall clock 5.5 h), then
+ * settles to `exhausted` for that authority generation and raises one Attention
+ * item; nothing probes again until a fresh operator approval mints a new
+ * generation. Three episodes in seven days escalate at once as flapping. The
+ * episode state is durable (triage_meta), so a restart resumes the ladder
+ * instead of restarting it.
+ */
+const feedbackTriageSelfHealProbe: SelfActionController = {
+  id: 'feedback-triage-self-heal-probe',
+  actionVerb: 'retry-authority-probe',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (probe(): 3-attempt ladder per authority generation, then exhausted + one Attention item; 3 episodes / 7 days = flapping)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 4 * 24,
+  tickMs: 15 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageSelfHealProbe.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const LADDER_MS = [30 * 60_000, 60 * 60_000, 4 * 60 * 60_000];
+    return { tick() {
+      sink.considered += 1;
+      // The authority never answers usably; the episode started at time 0.
+      const state = (f.durableState.get('feedback-triage-self-heal') as { attempts: number; nextProbeAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, nextProbeAt: LADDER_MS[0], exhausted: false };
+      if (state.exhausted || f.clock.nowMs() < state.nextProbeAt) { f.durableState.set('feedback-triage-self-heal', state); return; }
+      sink.emit({ verb: 'retry-authority-probe', target: 'triage-authority' });
+      const attempts = state.attempts + 1;
+      f.durableState.set('feedback-triage-self-heal', attempts >= LADDER_MS.length
+        ? { attempts, nextProbeAt: 0, exhausted: true }
+        : { attempts, nextProbeAt: f.clock.nowMs() + LADDER_MS[attempts], exhausted: false });
+    } };
+  },
+};
+
+/**
  * Mutual SSH repair is a declared eternal health controller: a persistent path
  * outage must continue to be rechecked, but each repair episode is bounded to
  * four probes / two minutes and three failed episodes open a fifteen-minute
@@ -1530,6 +1654,9 @@ const passkeyRevokeOutbox: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  feedbackTriageTick,
+  feedbackTriageActionList,
+  feedbackTriageSelfHealProbe,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

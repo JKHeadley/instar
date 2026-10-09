@@ -1206,6 +1206,42 @@ export class FeedbackDrainStore {
     }).immediate();
   }
 
+  /**
+   * Fail-closed reservation of model CALLS against an authority's UTC-day call cap, counted
+   * in the same authority_daily_usage row (its `decisions` column). The triage authority is
+   * capped by calls, not dollars (docs/specs/feedback-triage-and-execution.md §1, "Spend").
+   */
+  reserveAuthorityCalls(authority: AuthorityRecord, calls: number, maxCallsPerDay: number, now = this.now()): boolean {
+    if (!Number.isSafeInteger(calls) || calls < 1 || !Number.isSafeInteger(maxCallsPerDay) || maxCallsPerDay < 1) return false;
+    const day = new Date(now).toISOString().slice(0, 10);
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation) return false;
+      const used = this.authorityCallsToday(authority, now);
+      if (used + calls > maxCallsPerDay) return false;
+      this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)
+        VALUES (?,?,?,0,?,?) ON CONFLICT(authority_id,generation,utc_day) DO UPDATE SET
+        decisions=authority_daily_usage.decisions+excluded.decisions,updated_at=excluded.updated_at`)
+        .run(authority.authorityId, authority.generation, day, calls, now);
+      return true;
+    }).immediate();
+  }
+
+  /** Model calls reserved today (UTC) for this authority generation. */
+  authorityCallsToday(authority: Pick<AuthorityRecord, 'authorityId' | 'generation'>, now = this.now()): number {
+    const day = new Date(now).toISOString().slice(0, 10);
+    const row = this.db.prepare(`SELECT decisions FROM authority_daily_usage WHERE authority_id=? AND generation=? AND utc_day=?`)
+      .get(authority.authorityId, authority.generation, day) as { decisions: number } | undefined;
+    return Number(row?.decisions ?? 0);
+  }
+
+  /**
+   * The connection to feedback-drain.db for stages that keep their own tables in the same
+   * file (the triage disposition record), so they share the WAL, the backup checkpoint and
+   * the owner-epoch fence instead of opening a second database.
+   */
+  sharedDatabase(): BetterSqliteDatabase { return this.db; }
+
   private latestAuthority(authorityId: string): AuthorityRecord | null {
     const row = this.db.prepare('SELECT * FROM authority_records WHERE authority_id=? ORDER BY generation DESC LIMIT 1').get(authorityId) as Record<string, unknown> | undefined;
     return row ? this.authorityFromRow(row) : null;

@@ -267,4 +267,20 @@ describe('InitiativeTracker — digest', () => {
     const d = tracker.digest();
     expect(d.items).toEqual([]);
   });
+
+  it('feedback-linked Initiatives never get per-item ready-to-advance/stale flags; one summary line instead (feedback-triage-and-execution §2)', async () => {
+    for (const id of ['fa', 'fb', 'fc']) {
+      await tracker.create({ ...baseInput(id), feedbackWorkKey: `feedback-work:${id}:1` });
+      await tracker.setPhaseStatus(id, 'plan', 'done');
+    }
+    await tracker.create(baseInput('plain'));
+    await tracker.setPhaseStatus('plain', 'plan', 'done');
+    const d = tracker.digest(new Date(Date.now() + STALE_THRESHOLD_MS + 60_000));
+    const feedback = d.items.filter((i) => i.reason === 'feedback-summary');
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0].detail).toMatch(/3 active feedback work items \(3 past triage\)/);
+    expect(feedback[0].detail).toContain('/feedback-factory/triage/queue');
+    expect(d.items.filter((i) => ['fa', 'fb', 'fc'].includes(i.initiativeId))).toHaveLength(0);
+    expect(d.items.find((i) => i.initiativeId === 'plain')?.reason).toBe('ready-to-advance');
+  });
 });

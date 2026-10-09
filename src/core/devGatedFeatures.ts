@@ -94,6 +94,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true; development agents exercise the exact state machine without canonical queue or Initiative mutation until operator promotion.',
   },
   {
+    name: 'feedbackFactoryTriage',
+    configPath: 'feedbackFactory.triage.enabled',
+    description: 'Frontier-model work/hold/ignore triage of feedback Initiatives within deterministic floors, with a ranked work queue and a daily operator action list.',
+    justification: 'Inert until the operator approves the triage authority with the dashboard PIN; every disposition is reversible (hold/ignore pause the Initiative, never archive), ignore ships in shadow until a separate PIN approval, model calls are capped per day and pause on subscription quota, and it never writes cluster or report status or takes an external action.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',

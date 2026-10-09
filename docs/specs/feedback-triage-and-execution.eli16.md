@@ -25,3 +25,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 - It costs usage: the sorter is capped at 150 model calls a day, and build sessions at 2 running and 6 started per day.
 - The sorter can be wrong. That is why ignoring is limited to low-risk items, every decision is logged, and a wrongly ignored problem that comes back gets counted as a mistake so we can see how accurate it is.
 - It runs first on a throwaway test agent, then on Echo. Everyone else gets it only after two weeks of measured results on Echo.
+
+## Why this matters
+
+Instar has a rule that anything it accepts must reach a deliberate end. Feedback reports were being accepted and then left to pile up. This design gives every work item an end: worked on, held with a reason, or set aside with a reason.

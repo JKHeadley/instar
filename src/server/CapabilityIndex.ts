@@ -1073,6 +1073,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'feedbackTriage',
+    // Routes live under /feedback-factory (claimed by feedbackFactoryProcessing); this entry surfaces the triage block.
+    prefixes: [],
+    description: 'Feedback TRIAGE (docs/specs/feedback-triage-and-execution.md) — a registered frontier-model authority decides work/hold/ignore for each feedback work item (with severity, priority and a reason) inside deterministic floors; hold/ignore pause the Initiative (never archive), ignore runs in shadow until a separate PIN approval. Dev-gated dark (feedbackFactory.triage) — LIVE on a development agent, 503 on the fleet; inert until the operator approves the triage authority on the dashboard Feedback Drain tab. The executor is not built yet.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.feedbackTriage,
+      endpoints: [
+        'GET /feedback-factory/triage/queue — work items in rank order { rank, initiativeId, title, summary, severity, priority, executionState, prLink }',
+        'GET /feedback-factory/triage/summary — counts by disposition/reason, authority state, last tick, self-heal/quota/brake state, floors fired today, rule-default agreement, calls used, ignoreLiveRecommended',
+        'POST /feedback-factory/triage/tick — owner-only, single-flight, rate-limited; 202 { runId } (409 naming the owner elsewhere)',
+        'GET /feedback-factory/triage/authority/proposal — the server-computed triage authority the operator approves with the dashboard PIN',
+        'POST /feedback-factory/triage/plan — render a PIN-bound operator action (ignore-live); the commit route needs the dashboard PIN',
+      ],
+    }),
+  },
+  {
     key: 'cutoverReadiness',
     prefixes: ['/cutover-readiness'],
     description: 'Cutover-READINESS checker (coordination-mandate spec §7 G2.4, decision 1A) — everything UP TO the cutover door, never the door. Composes the two objective conditions from REAL durable state: the persisted import IntegrityReport (integrity-gate-pass) and the durable zero-divergence parity window with a freshness bound (parity-zero-divergence). The flip itself is the operator\'s manual click; there is NO fire-cutover route by design.',

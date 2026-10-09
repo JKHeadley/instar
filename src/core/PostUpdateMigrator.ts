@@ -7619,6 +7619,13 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feedback Readiness Authority section');
     }
+    // Feedback triage and execution (docs/specs/feedback-triage-and-execution.md, Phase 1):
+    // the triage queue/summary routes and the operator-only approval path. Own marker, idempotent.
+    if (!content.includes('Feedback triage and execution (operated feedback factory)')) {
+      content += `\n**Feedback triage and execution (operated feedback factory)** — Feedback work items (Initiatives the drain created) are read by a registered frontier model that decides **work**, **hold** or **ignore**, with a severity, a priority and a stated reason, inside deterministic floors (low confidence → hold; serious, security-shaped or truncated items are never ignored without a second model family agreeing; duplicates and "already fixed" must cite real evidence; a rising ignore rate brakes itself). Hold and ignore only PAUSE the Initiative — never archive it — and items come back on a timer or when new reports arrive. Ignore starts in a "would ignore" practice mode until the operator turns it on with the dashboard PIN. Triage does nothing until the operator approves the triage authority on the dashboard **Feedback Drain** tab (Triage section) — you can never approve it yourself. Dev-gated (\`feedbackFactory.triage\`): live on a development agent, 503 on the fleet. The executor that turns work items into pull requests is not built yet.\n- Ranked work queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/queue\` → \`{ items: [{ rank, initiativeId, title, summary, severity, priority, executionState, prLink }] }\`.\n- Summary: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/summary\` → counts by disposition and reason, \`authority\` (\`awaiting-approval\` / \`active\` / \`paused\` / \`self-healing\` / \`exhausted\`), last tick, quota pause, brake, calls used today, \`ignoreLiveRecommended\`.\n- **When to use** (PROACTIVE): "what are we working on from feedback?" → the queue; "why was this report ignored / held?" → the summary's reasons (and the item's row in the queue/summary); \`authority: awaiting-approval\` → send the operator to the dashboard Feedback Drain tab, Triage section, for the one PIN tap. Turning ignores live goes through \`POST /feedback-factory/triage/plan\` (\`{"action":"ignore-live"}\`) and the operator's PIN on the dashboard — never a chat confirmation.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feedback triage and execution section');
+    }
     // 2026-10-01: a single timeout no longer demotes and same-machine restarts keep the approval.
     // 2026-10-02: one rejected answer no longer demotes either, and the status route names the failed check.
     const readinessBrakeOlds = ['(spend cap or model mismatch);', '(spend cap, model/schema mismatch, or three timeouts or provider errors in a row; a single timeout is just retried, and a restart on the same machine keeps the approval);'];
@@ -11397,6 +11404,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Feedback Readiness Authority: framework-agnostic — any agent on the operated
       // machine must know it cannot self-register and where the operator approves.
       '**Feedback Readiness Authority (operator approval)**',
+      // Feedback triage: framework-agnostic HTTP — any agent on the operated machine reads the queue/summary
+      // and must know the triage authority and live ignores are PIN-only.
+      '**Feedback triage and execution (operated feedback factory)**',
       // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
       // capability — a Codex/Gemini agent should also know it can manage a
       // multi-account subscription pool, swap to keep a session alive, and drive
