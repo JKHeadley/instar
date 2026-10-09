@@ -2,7 +2,7 @@
 title: "A2A single agent identity — one identity across all machines, loudly checked, honestly reported"
 slug: "a2a-single-agent-identity"
 author: "echo"
-status: "draft"
+status: "approved"
 origin: "CMT-706 (Justin, Telegram topic 9210, 2026-10-09): 'Find a robust solution so agent identity mismatches are NEVER an issue for agent-to-agent communication.' Incident 2026-10-08 / ACT-058."
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 sibling-principles: "Verify the State, Not Its Symbol; No Silent Degradation; The Agent Is Always Reachable; Know Your Principal — An Unverified Identity Is a Guess; Structure > Willpower; Close the Loop; Self-Heal Before Notify; Bounded Notification Surface; Mobile-Complete Operator Actions"
@@ -10,8 +10,19 @@ parent-spec: "docs/specs/agent-identity-continuity-on-expansion.md"
 related-specs: "docs/specs/machine-coherence-guard.md; docs/specs/a2a-cross-machine-route.md; docs/specs/cross-machine-secret-sync-spec.md; docs/specs/threadline-identity-single-writer.md; docs/specs/machine-self-assertion.md"
 eli16-overview: "docs/specs/a2a-single-agent-identity.eli16.md"
 lessons-engaged: "P3 (migration parity: array-aware origin block, deep-merged threadline block, explicit gitignore migration); P4 (three test tiers per AC); P7 (no new LLM loop — every decision point is tier0 by the Decision-points table); P19 (adoption loop declared an Eternal Sentinel with a 5-min floor); P20 (every detector declares symbol/state/corroboration/unmeasurable; the parent's fail-toward-minting is reversed with the least-harmful direction argued); P22 (claims are verified against the tree at e76caca6a, with file:line); L12 (superseded/invalid files are renamed, never unlinked); B2/B3 (the operator is never handed a command — the agent runs it after one yes)"
-review-convergence: "pending"
-approved: false
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 9210, 2026-10-09: 'please proceed as you recommend' (08:31) and 'go' for the autonomous build run (10:10)"
+clean-door-anthropic-review: "claude-code:claude-fable-5"
+review-convergence: "2026-10-09T18:14:18.319Z"
+review-iterations: 4
+review-completed-at: "2026-10-09T18:14:18.319Z"
+review-report: "docs/specs/reports/a2a-single-agent-identity-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 15
+cheap-to-change-tags: 1
+contested-then-cleared: 1
 ---
 
 # A2A single agent identity
@@ -227,6 +238,8 @@ binds every criterion here to a named test.
   deny list checked on the opened file (not just the resolved path) in
   `read`/`download`/`list`/`link`, mirrored into backup, gitignore and the secret classifier,
   with a fixture walk that can disagree with it.
+- **Authority confusion.** None granted: a shared identity is a routing key, not a permission;
+  a forwarded reply still passes the holder's full outbound gate; adoption binds no operator.
 
 ## Design
 
@@ -322,13 +335,10 @@ at either path, `IdentityManager.get()` null) asks its siblings:
   rename succeeds), after which creation goes through O_EXCL again — two processes can never
   both hold it. A waiter retries for 30 s, then refuses `identity-locked`.
 - Audit: both sides append to `logs/agent-identity.jsonl` on every reason TRANSITION plus an
-  hourly heartbeat while refused (fingerprints, machine ids, the observed set `k of n
-  active` and the adoption MODE — `one-witness+pin` or `two-witnesses`; NEVER key material).
-  The adopting machine raises ONE `medium` item
-  `agent-identity-adopted:<agent>:<machineId>:<fp>` on success, whose body states the mode
-  and how many active siblings were observed, worded "this proves agreement among the
-  machines I could reach, not correctness" — a key copy is an event the operator must be
-  able to see.
+  hourly heartbeat while refused (fingerprints, machine ids, `k of n active`, the adoption
+  MODE `one-witness+pin` / `two-witnesses`; NEVER key material). The adopter raises ONE
+  `medium` item `agent-identity-adopted:<agent>:<machineId>:<fp>` stating mode and count,
+  worded "this proves agreement among the machines I could reach, not correctness".
 - A joiner that completes `instar join` WITHOUT an envelope (old awake machine) boots in the
   same posture and adopts the same way, instead of today's "update and re-pair".
 
@@ -706,10 +716,6 @@ key file the list does not cover fails the build.
 | File-route never-served list + opened-file check | new denials in `read`/`download`/`list`/`link` (incl. a hard link to a key inode anywhere), backup, gitignore, classifier | invariant — a code-owned path list; security floor; exact-path access control |
 | `POST /agent-identity/reload` | new Bearer route | invariant — re-reads this machine's own disk and rebuilds its relay client; carries no key; installs nothing |
 
-Nothing here grants authority: a shared identity is a routing key, not a permission; a
-forwarded reply is still subject to the holder's full outbound gate; an adopted identity does
-not establish an operator.
-
 ## Multi-machine posture
 
 Default posture is `unified`. Each surface this spec introduces:
@@ -877,40 +883,48 @@ in `/telegram/origins/status.held[]`; holder back → delivered once. File route
 classifier against a fixture home booted through the real init path and paired to a stub.
 
 **Tier 3 — E2E (`tests/e2e/`)**: the production init path — `/agent-identity/audit`
-(+`?scope=pool`), `/threadline/peers/health` with the new fields,
-`/threadline/health.identityCoherence` populated after the first check, answer 200 (never 503);
-wiring-integrity: the forward dependency, the observe/request handlers, the reworked sentinel's
-construction under the new gate, the identity lock and the never-served lists are real
-implementations. Migration E2E: an existing config gains the new defaults (incl. the
-array-aware origin block and the deep-merged `threadline` block), the gitignore entries land
-via `migrateGitignore`, the CLAUDE.md sections land once and are idempotent.
+(+`?scope=pool`), `/threadline/peers/health` with the new fields and
+`/threadline/health.identityCoherence` answer 200 (never 503); wiring-integrity: the forward
+dependency, the observe/request handlers, the sentinel's construction under the new gate, the
+lock and the never-served lists are real implementations. Migration E2E: the new defaults
+(array-aware origin block, deep-merged `threadline` block), the gitignore entries and the
+CLAUDE.md sections land once and are idempotent.
 
-Live proof (Live-User-Channel Proof Before Done): a throwaway two-agent-home pair on this
-Studio exercises adoption (incl. the `single-witness` refusal and `identity adopt --from`
-driven by transferring the proof conversation to the target home and running it there), the false-alarm regression (identical keys
-→ `agree` on the real detector), a forwarded Telegram reply into a proof room, and a Files-tab
-download of `.instar/identity.json` (expect 403).
+Live proof (Live-User-Channel Proof Before Done): the `test-agent-live` step of §Maturation
+plan, run before "done" is claimed.
 
 ## Migration parity
 
 - **Config defaults**: `agentIdentity.adoption {enabled:true}` (top-level → `migrateConfig`);
   `threadline.peerDarkNotice {dryRun:true, queuedDarkAfterMs, cooldownMs}` (nested → the
-  `ConfigDefaults` deep-merge; no `enabled` key). **Array-aware**:
-  `messaging[].config.messageOrigin.forwardToHolder {enabled:true}` via
-  `migrateTelegramOriginDisplay`.
+  `ConfigDefaults` deep-merge; no `enabled` key); **array-aware**
+  `messaging[].config.messageOrigin.forwardToHolder {enabled:true}` via `migrateTelegramOriginDisplay`.
 - **Gitignore**: the §5.1 prefixes in `GITIGNORE_ENTRIES` (init) AND explicit
   `addGitignoreEntry` calls in `migrateGitignore` (update), both repos, idempotent.
 - **CLAUDE.md template** (`generateClaudeMd()` + `migrateClaudeMd` content-sniff): §Agent
-  awareness below. **Hooks / skills**: none. **Dev-gate registry**: `threadline.peerDarkNotice`
-  in `src/core/devGatedFeatures.ts` (`configPath: 'threadline.peerDarkNotice.enabled'`).
-- **Listener daemon**: the canonical-first key load (§1.5) applies to every daemon start after
-  update; no migration step — a daemon already running under the legacy key is handled by the
-  boot repair.
-- **One-time boot repair**: §1.5 mirror repair, §2.1 provenance-root rewrite and §2.2's first
-  check run at boot on every updated machine, so today's "two disagreeing files" state heals on
-  update.
+  awareness. **Hooks / skills**: none. **Dev-gate registry**: `threadline.peerDarkNotice` in
+  `src/core/devGatedFeatures.ts`.
+- **One-time boot repair**: §1.5 mirror repair (and the daemon's canonical-first load), §2.1
+  provenance-root rewrite and §2.2's first check run at boot on every updated machine.
 - **Rolling update**: every new verb/field tolerates an older peer (§Multi-machine posture).
-- **Idempotency**: every step checks before writing; the E2E migration test runs twice.
+  **Idempotency**: every step checks before writing; the E2E migration test runs twice.
+
+## Maturation plan
+
+- **test-agent-live:** the §Tests live proof — a throwaway two-agent-home pair on this Studio
+  exercises adoption (incl. `single-witness`), `identity adopt --from` via a transferred
+  proof conversation, the identical-keys → `agree` regression, a forwarded reply into a proof
+  room and a Files-tab 403 on `.instar/identity.json`.
+- **dev-agent-live:** §1, §2, §4 and §5 live on the development agent at merge (adoption's
+  kill switch on); §3's sentence + notice in `dryRun` there, reading `logs/a2a-peer-dark.jsonl`.
+- **fleet:** §1, §2, §4, §5 ship live fleet-wide (a reachability floor, a security floor and an
+  identity check that is only useful when on); §3 lands on the fleet in `dryRun` after
+  graduation, then flips per agent.
+- **graduation criterion:** 48 h on the development agent with zero false
+  `agent-identity-split` raises on the repaired fleet and no §3 would-raise for a peer that
+  acked inside the window; then `peerDarkNotice.dryRun: false` there.
+- **dark-window:** §3 only — 7 days from fleet landing to `dryRun: false` (operator direction
+  2026-10-08: soak 48 h, dark 7 d); §1, §2, §4 and §5 have no dark window.
 
 ## Rollback
 
@@ -985,4 +999,4 @@ action at build time with this spec as origin, unless a carrier already exists:
 
 ## Open questions
 
-*(none)* — every question is resolved in Frontloaded Decisions.
+*(none)*

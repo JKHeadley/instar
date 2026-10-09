@@ -42,7 +42,10 @@ it is tracked.
 
 1. **A machine with no identity never invents one.** If it is part of my fleet it asks the
    siblings it can reach and adopts the identity they agree on. If they disagree, it stays
-   off the network and says so loudly rather than guessing. Replacing an identity that
+   off the network and says so loudly rather than guessing. One exception, found in the last
+   review round: a machine with no live sibling to defer to (a single machine, or a
+   two-machine setup whose partner is asleep) keeps answering Telegram while it waits, because
+   going quiet there would silence the very alert that asks for the fix. Replacing an identity that
    already exists is a single command that I run on that machine after Justin says yes: I
    move the conversation to that machine first (the existing "move this to the Studio"
    lever), run the command from there, and report back. It backs up the old files first and
@@ -52,15 +55,19 @@ it is tracked.
 2. **One loud mismatch alert.** One fingerprint formula everywhere, so the "are my machines
    the same me" check can finally say "yes" when the answer is yes. It runs every five
    minutes instead of once at boot, and raises exactly one alert when two machines publish
-   different numbers. The alert names the machine and the command to run on it.
+   different numbers. The alert names the odd machine out and asks for a yes; when there is
+   no odd one out (two machines, two numbers) it asks which number other agents have pinned
+   instead of guessing.
 3. **An honest answer when a message stays queued.** When messages I send sit queued for two
    hours with nothing acknowledged, I tell the person sending them, in the reply and in one
    notice: how long, how many are waiting, whether the other agent is connected to the
    network right now, and that it may be offline or listening under a different number. I
    never say "it will arrive" when I do not know that.
 4. **A reply from a machine not in charge gets through.** The conversation hands its reply
-   to the machine that is in charge, which posts it. If that hand-off fails, the reply is
-   kept on disk, retried, listed in my status page and reported — never dropped in silence.
+   to the machine that is in charge, which posts it. The hand-off tries once within a fixed
+   time budget; if it fails, the reply is kept on disk, retried in the background, listed in
+   my status page and reported — never dropped in silence, and never posted twice, even if
+   the machine in charge changes halfway through.
 5. **The Files tab refuses key files.** Identity, machine, SSH and signing-key files are
    never served, listed or backed up, by a list that no setting can loosen. A test boots a
    throwaway copy of me, finds every key file it creates, and fails if any of them can be
@@ -88,7 +95,8 @@ reported in my health check, and raised as one item. Expiry is recorded, not for
 A reply is never posted twice: the machine in charge recognises a retry of the same reply.
 
 **Prevents key leakage.** The deny list lives in code, applies to reading, downloading and
-listing, checks the real file behind a symlink, and is backed by the throwaway-copy test.
+listing, checks the real file behind a symlink or a hard link (both outside reviewers caught
+the same gap in the earlier draft), and is backed by the throwaway-copy test.
 
 ## What ships when
 
@@ -108,6 +116,18 @@ as a second opinion, a new "last seen" field on the network's queued answer, the
 test for key-writing code, and media or edits forwarded from a machine not in charge. Each
 is listed at the end of the spec with the place it is tracked, so none of them is silently
 forgotten.
+
+## What the final review round changed
+
+Nine findings changed what gets built, and all were folded: the lone-machine exception above;
+a bounded hand-off that cannot double-post; the split alert raised and cleared on one machine
+(alerts are stored per machine, so a copy raised elsewhere would never close); the
+no-majority wording; the hard-link fix; signed refusals on the identity request; a
+domain-separated seal for the identity; a ledger clean-up that covers delivered-but-silent
+peers; and the "remove machine" command now says plainly that a removed machine can still
+sign as me until the identity is rotated. Rotation itself stays deferred with a trigger that
+now includes "any further change to the adoption rules". There is no fifth round: Justin's
+direction is to stop reviewing when findings stop changing the build.
 
 ## How long the build takes
 
