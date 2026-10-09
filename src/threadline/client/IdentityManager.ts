@@ -9,13 +9,25 @@
  *
  * The IdentityInfo interface is unchanged — consumers don't need to know
  * which storage backend is in use.
+ *
+ * This is the ONLY module that writes {stateDir}/threadline/identity.json
+ * (spec: docs/specs/threadline-identity-single-writer.md). Every read is
+ * validated: keys must be 32 bytes; a file whose keys were stored as hex is
+ * the same identity in the wrong encoding and is repaired in place; any other
+ * invalid file is reported and is never overwritten by a freshly minted
+ * identity.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { generateIdentityKeyPair, type KeyPair } from '../ThreadlineCrypto.js';
+import { generateIdentityKeyPair } from '../ThreadlineCrypto.js';
 import { computeFingerprint, deriveX25519PublicKey } from './MessageEncryptor.js';
 import { detectJoinedMesh } from './JoinedMeshDetector.js';
+import {
+  IdentityFileInvalidError,
+  createFileExclusiveOwnerOnly,
+  readIdentityKeyFile,
+} from '../../identity/IdentityKeyFile.js';
 import type { AgentFingerprint } from '../relay/types.js';
 
 /**
@@ -47,11 +59,16 @@ export interface IdentityInfo {
   createdAt: string;
 }
 
+/** One loud line per (file, reason) per process — health polls must not spam the log. */
+const reportedProblems = new Set<string>();
+
 export class IdentityManager {
   private readonly stateDir: string;
   private readonly legacyKeyFile: string;
   private readonly canonicalKeyFile: string;
   private identity: IdentityInfo | null = null;
+  private loadProblem: IdentityFileInvalidError | null = null;
+  private filesDisagree = false;
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
@@ -72,11 +89,16 @@ export class IdentityManager {
     if (this.identity) return this.identity;
 
     // Try canonical first, then legacy
-    const loaded = this.loadFromCanonical() ?? this.loadFromLegacy();
+    const loaded = this.loadFromDisk();
     if (loaded) {
       this.identity = loaded;
       return loaded;
     }
+
+    // An identity file exists but cannot be used. Minting here would write a
+    // NEW identity over (or beside) it and silently change this agent's
+    // address — refuse, loudly. The file is left exactly as it was.
+    if (this.loadProblem) throw this.loadProblem;
 
     // ── The mint refusal (spec: agent-identity-continuity-on-expansion §2) ───────────
     // Nothing was found on disk. For the FIRST machine of a new agent that is correct and
@@ -105,7 +127,18 @@ export class IdentityManager {
       createdAt: new Date().toISOString(),
     };
 
-    this.saveToDisk(identity);
+    // Create-if-absent, never replace. If another process minted between our
+    // read and this write, ITS identity stands and we adopt it — two processes
+    // that both found no file must not end up with two identities.
+    if (!this.saveToDisk(identity)) {
+      const winner = this.loadFromDisk();
+      if (!winner) {
+        throw this.loadProblem
+          ?? new IdentityFileInvalidError(this.legacyKeyFile, 'it appeared while an identity was being created and could not be loaded');
+      }
+      this.identity = winner;
+      return winner;
+    }
     this.identity = identity;
     return identity;
   }
@@ -115,11 +148,29 @@ export class IdentityManager {
    */
   get(): IdentityInfo | null {
     if (this.identity) return this.identity;
-    const loaded = this.loadFromCanonical() ?? this.loadFromLegacy();
+    const loaded = this.loadFromDisk();
     if (loaded) {
       this.identity = loaded;
     }
     return this.identity;
+  }
+
+  /**
+   * The unusable identity file found by the most recent load, or null. It is
+   * set whether or not the OTHER file still yielded an identity — check get()
+   * for that. A caller with a degradation surface (the server boot) reports it.
+   */
+  get problem(): IdentityFileInvalidError | null {
+    return this.loadProblem;
+  }
+
+  /**
+   * True when the canonical and the legacy file both hold a usable identity
+   * and the two differ (as of the most recent load). The canonical one is in
+   * use; the server boot reports the disagreement.
+   */
+  get identityFilesDisagree(): boolean {
+    return this.filesDisagree;
   }
 
   /**
@@ -141,60 +192,83 @@ export class IdentityManager {
   // ── Private ─────────────────────────────────────────────────────
 
   /**
+   * Canonical first, then legacy. Both files are always visited so a
+   * hex-encoded legacy file is repaired even when the canonical file answers.
+   */
+  private loadFromDisk(): IdentityInfo | null {
+    this.loadProblem = null;
+    this.filesDisagree = false;
+    const canonical = this.loadFromCanonical();
+    const legacy = this.loadFromLegacy();
+    // Coherence invariant: when both files hold a usable identity it must be
+    // the SAME identity. Checked on every load. A disagreement is reported,
+    // never auto-resolved — picking a key is picking an address. The canonical
+    // file keeps precedence, so every consumer of this manager still agrees.
+    if (canonical && legacy && !canonical.publicKey.equals(legacy.publicKey)) {
+      this.filesDisagree = true;
+      this.reportOnce(this.canonicalKeyFile, 'files-disagree',
+        `[identity] ${this.canonicalKeyFile} and ${this.legacyKeyFile} hold two different identities; using the first (fingerprint ${canonical.fingerprint}).`);
+    }
+    return canonical ?? legacy;
+  }
+
+  /**
    * Load from canonical identity.json (new format).
    * Only loads unencrypted keys — encrypted keys require the CanonicalIdentityManager
    * with a passphrase, which is handled at a higher level.
    */
   private loadFromCanonical(): IdentityInfo | null {
-    try {
-      if (!fs.existsSync(this.canonicalKeyFile)) return null;
-      const raw = JSON.parse(fs.readFileSync(this.canonicalKeyFile, 'utf-8'));
-
-      // Only load if unencrypted — encrypted keys need CanonicalIdentityManager
-      if (raw.privateKeyEncryption && raw.privateKeyEncryption !== 'none') {
-        return null;
-      }
-
-      const privateKey = Buffer.from(raw.privateKey, 'base64');
-      const publicKey = Buffer.from(raw.publicKey, 'base64');
-      return {
-        fingerprint: computeFingerprint(publicKey),
-        publicKey,
-        privateKey,
-        x25519PublicKey: deriveX25519PublicKey(privateKey),
-        createdAt: raw.createdAt,
-      };
-    } catch {
-      return null;
-    }
+    return this.loadKeyFile(this.canonicalKeyFile);
   }
 
   /**
    * Load from legacy threadline/identity.json (old format).
    */
   private loadFromLegacy(): IdentityInfo | null {
+    return this.loadKeyFile(this.legacyKeyFile);
+  }
+
+  /**
+   * Read one identity file through the validating reader. The fingerprint and
+   * the X25519 key are always derived from the validated keys, never taken
+   * from the file.
+   */
+  private loadKeyFile(file: string): IdentityInfo | null {
     try {
-      if (!fs.existsSync(this.legacyKeyFile)) return null;
-      const raw = JSON.parse(fs.readFileSync(this.legacyKeyFile, 'utf-8'));
-      const privateKey = Buffer.from(raw.privateKey, 'base64');
+      const loaded = readIdentityKeyFile(file, { repair: true });
+      if (!loaded || loaded.encrypted || !loaded.privateKey) return null;
+      if (loaded.repaired) {
+        this.reportOnce(file, 'repaired', `[identity] ${file} stored its keys as hex; rewrote it as base64 (same key, same address).`);
+      } else if (loaded.repairError) {
+        this.reportOnce(file, 'repair-failed', `[identity] ${file} stores its keys as hex and could not be rewritten (${loaded.repairError}); using the decoded key for this run.`);
+      }
       return {
-        fingerprint: raw.fingerprint,
-        publicKey: Buffer.from(raw.publicKey, 'base64'),
-        privateKey,
-        x25519PublicKey: raw.x25519PublicKey
-          ? Buffer.from(raw.x25519PublicKey, 'base64')
-          : deriveX25519PublicKey(privateKey),
-        createdAt: raw.createdAt,
+        fingerprint: computeFingerprint(loaded.publicKey),
+        publicKey: loaded.publicKey,
+        privateKey: loaded.privateKey,
+        x25519PublicKey: deriveX25519PublicKey(loaded.privateKey),
+        createdAt: typeof loaded.raw.createdAt === 'string' ? loaded.raw.createdAt : '',
       };
-    } catch {
+    } catch (err) {
+      const problem = err instanceof IdentityFileInvalidError
+        ? err
+        : new IdentityFileInvalidError(file, 'it could not be loaded');
+      this.loadProblem ??= problem;
+      this.reportOnce(file, problem.reason, `[identity] ${problem.message}`);
       return null;
     }
   }
 
-  private saveToDisk(identity: IdentityInfo): void {
-    const dir = path.dirname(this.legacyKeyFile);
-    fs.mkdirSync(dir, { recursive: true });
+  private reportOnce(file: string, reason: string, line: string): void {
+    const key = `${file}::${reason}`;
+    if (reportedProblems.has(key)) return;
+    reportedProblems.add(key);
+    if (reason === 'repaired') console.warn(line);
+    else console.error(line);
+  }
 
+  /** @returns false when the file already existed (nothing was written). */
+  private saveToDisk(identity: IdentityInfo): boolean {
     const data = JSON.stringify({
       fingerprint: identity.fingerprint,
       publicKey: identity.publicKey.toString('base64'),
@@ -203,9 +277,7 @@ export class IdentityManager {
       createdAt: identity.createdAt,
     }, null, 2);
 
-    // Atomic write
-    const tmpPath = `${this.legacyKeyFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, data, { mode: 0o600 });
-    fs.renameSync(tmpPath, this.legacyKeyFile);
+    // Atomic, owner-only, create-only
+    return createFileExclusiveOwnerOnly(this.legacyKeyFile, data);
   }
 }

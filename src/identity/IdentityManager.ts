@@ -15,6 +15,13 @@ import { generateIdentityKeyPair } from '../threadline/ThreadlineCrypto.js';
 import { deriveX25519PublicKey } from '../threadline/client/MessageEncryptor.js';
 import { encryptPrivateKey, decryptPrivateKey, generateSalt } from './KeyEncryption.js';
 import {
+  IDENTITY_KEY_BYTES,
+  IdentityFileInvalidError,
+  derivePublicKey,
+  readIdentityKeyFile,
+  writeFileAtomicOwnerOnly,
+} from './IdentityKeyFile.js';
+import {
   generateRecoveryPhrase,
   deriveRecoveryKeypair,
   createRecoveryCommitment,
@@ -143,13 +150,18 @@ export class CanonicalIdentityManager {
   load(options: LoadIdentityOptions = {}): CanonicalIdentity | null {
     if (this.identity) return this.identity;
 
-    const file = this.readFromDisk();
-    if (!file) return null;
+    // Validate on read (spec: threadline-identity-single-writer). A file whose
+    // keys were stored as hex is the same identity in the wrong encoding: it is
+    // repaired in place. Any other invalid file throws — never a silent null
+    // that a caller could answer by creating a new identity over it.
+    const loaded = readIdentityKeyFile(this.identityFile, { repair: true });
+    if (!loaded) return null;
+    const file = loaded.raw as unknown as IdentityFile;
 
     let privateKey: Buffer;
 
     if (file.privateKeyEncryption === 'none') {
-      privateKey = Buffer.from(file.privateKey, 'base64');
+      privateKey = loaded.privateKey!;
     } else if (file.privateKeyEncryption === 'xchacha20-poly1305+argon2id') {
       if (!options.passphrase && options.passphrase !== '') {
         throw new Error('Passphrase required to decrypt identity');
@@ -159,13 +171,22 @@ export class CanonicalIdentityManager {
       }
       const salt = Buffer.from(file.keySalt, 'base64');
       privateKey = decryptPrivateKey(file.privateKey, options.passphrase!, salt);
+      if (privateKey.length !== IDENTITY_KEY_BYTES) {
+        throw new IdentityFileInvalidError(
+          this.identityFile,
+          `the decrypted private key is ${privateKey.length} bytes, expected ${IDENTITY_KEY_BYTES}`,
+        );
+      }
+      if (!derivePublicKey(privateKey).equals(loaded.publicKey)) {
+        throw new IdentityFileInvalidError(this.identityFile, 'the public key does not belong to the private key');
+      }
     } else {
       throw new Error(`Unknown encryption method: ${file.privateKeyEncryption}`);
     }
 
     const identity: CanonicalIdentity = {
       version: file.version,
-      publicKey: Buffer.from(file.publicKey, 'base64'),
+      publicKey: loaded.publicKey,
       privateKey,
       x25519PublicKey: deriveX25519PublicKey(privateKey),
       canonicalId: file.canonicalId,
@@ -221,11 +242,6 @@ export class CanonicalIdentityManager {
   }
 
   private writeToDisk(file: IdentityFile): void {
-    fs.mkdirSync(path.dirname(this.identityFile), { recursive: true });
-
-    const data = JSON.stringify(file, null, 2);
-    const tmpPath = `${this.identityFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, data, { mode: 0o600 });
-    fs.renameSync(tmpPath, this.identityFile);
+    writeFileAtomicOwnerOnly(this.identityFile, JSON.stringify(file, null, 2));
   }
 }

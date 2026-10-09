@@ -18559,7 +18559,16 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         // Relay client is passed to AgentServer → RouteContext for the /threadline/relay-send endpoint
 
-        console.log(pc.green(`  Threadline: relay connected to ${config.threadline?.relayUrl ?? DEFAULT_RELAY_HOST}`));
+        // Report the client's ACTUAL state. This line used to say "connected"
+        // unconditionally — it only ever meant "handlers wired" — so it could
+        // directly follow a relay rejection (ACT-062).
+        const { describeRelayBootStatus } = await import('../threadline/relayBootStatus.js');
+        const relayBoot = describeRelayBootStatus(
+          config.threadline?.relayUrl ?? DEFAULT_RELAY_HOST,
+          threadlineRelayClient.connectionState,
+          { daemonHandlingRelay: threadline.daemonHandlingRelay === true },
+        );
+        console.log((relayBoot.connected ? pc.green : pc.yellow)(`  ${relayBoot.text}`));
       }
       console.log(pc.green(`  Threadline: enabled (MCP tools registered, discovery heartbeat active)`));
     } catch (err) {

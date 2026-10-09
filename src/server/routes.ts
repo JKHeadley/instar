@@ -13,6 +13,7 @@ import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
+import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
@@ -36534,16 +36535,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         let isSelfTarget = localTarget?.name === ctx.config.projectName;
         if (localTarget && !isSelfTarget) {
           try {
-            const selfIdPath = path.join(ctx.config.stateDir, 'threadline', 'identity.json');
-            if (fs.existsSync(selfIdPath)) {
-              const selfId = JSON.parse(fs.readFileSync(selfIdPath, 'utf-8'));
-              const selfFp = (selfId.fingerprint || '').toLowerCase();
-              const targetFp = (localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || '').toLowerCase();
-              if (selfFp && targetFp && selfFp === targetFp) {
-                isSelfTarget = true;
-              }
+            // The ONE identity source (the same read /threadline/health and the
+            // relay client use), never a second parse of the key file.
+            const selfFp = (new ThreadlineIdentityManager(ctx.config.stateDir).get()?.fingerprint ?? '').toLowerCase();
+            const targetFp = (localTarget.fingerprint || localTarget.publicKey?.substring(0, 32) || '').toLowerCase();
+            if (selfFp && targetFp && selfFp === targetFp) {
+              isSelfTarget = true;
             }
-          } catch { /* @silent-fallback-ok — identity.json read is best-effort */ }
+          } catch { /* @silent-fallback-ok — identity read is best-effort */ }
         }
         if (localTarget?.port && !isSelfTarget) {
           // §3.5 outbound credential-share chokepoint (local-delivery path). A credential
@@ -36577,9 +36576,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               if (targetToken) {
                 const senderFingerprint = (() => {
                   try {
-                    const idPath = path.join(ctx.config.stateDir, 'threadline', 'identity.json');
-                    const idData = JSON.parse(fs.readFileSync(idPath, 'utf-8'));
-                    return idData.fingerprint ?? ctx.config.projectName;
+                    return new ThreadlineIdentityManager(ctx.config.stateDir).get()?.fingerprint ?? ctx.config.projectName;
                   } catch { return ctx.config.projectName; }
                 })();
 

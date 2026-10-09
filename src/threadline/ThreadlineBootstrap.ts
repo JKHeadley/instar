@@ -31,7 +31,8 @@ import { attachRelayObservability, type RelayConnectionEvent } from './relayConn
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { IdentityManager } from './client/IdentityManager.js';
+import { IdentityManager, IdentityNotProvisionedError } from './client/IdentityManager.js';
+import { IdentityFileInvalidError } from '../identity/IdentityKeyFile.js';
 import { detectMachineName } from '../core/MachineIdentity.js';
 import { decodePlaintextPayload } from './autoAck.js';
 
@@ -147,7 +148,26 @@ export async function bootstrapThreadline(
   // relay client is constructed, so discovery advertises the routable identity
   // — not the orphan identity-keys.json hex key, which nothing on the relay
   // routing path reads.
-  const routingIdentity = new IdentityManager(config.stateDir).get();
+  const routingIdentityManager = new IdentityManager(config.stateDir);
+  const routingIdentity = routingIdentityManager.get();
+  // An identity file that exists but cannot be used is a degradation, not an
+  // empty state: nothing is minted over it (that would change this agent's
+  // address), so the agent stays off the relay until the file is restored.
+  // The reason carries lengths and the path only — never key material.
+  const identityProblem = routingIdentityManager.problem;
+  if (identityProblem) {
+    DegradationReporter.getInstance().report({
+      feature: 'Threadline.identity',
+      primary: 'load this agent\'s Threadline identity key',
+      fallback: routingIdentity
+        ? `the identity in the other key file is used (fingerprint ${routingIdentity.fingerprint}); the unusable file is left untouched`
+        : 'no routing identity: not relay-discoverable, relay connection will fail; the file is left untouched and no new identity is created',
+      reason: identityProblem.reason,
+      impact: routingIdentity
+        ? `${identityProblem.filePath} is ignored; if it held a different identity, that address is not in use`
+        : `other agents cannot reach this agent over Threadline until ${identityProblem.filePath} is restored or deliberately replaced`,
+    });
+  }
 
   // Announce presence for other agents to find us. When a routing identity
   // resolves, advertise its fingerprint (the routable relay address) AND set
@@ -168,6 +188,16 @@ export async function bootstrapThreadline(
 
   // Start heartbeat for liveness detection
   const stopHeartbeat = discovery.startPresenceHeartbeat();
+
+  if (routingIdentityManager.identityFilesDisagree) {
+    DegradationReporter.getInstance().report({
+      feature: 'Threadline.identity',
+      primary: 'one agent identity across the canonical and the legacy key file',
+      fallback: `the canonical file is used (fingerprint ${routingIdentity?.fingerprint ?? 'unknown'}); the legacy file is ignored`,
+      reason: 'the canonical and the legacy identity file hold two different valid identities',
+      impact: 'a tool that reads only the legacy file would present a different address; remove or replace the file that is wrong',
+    });
+  }
 
   // ── 4. Register MCP server into framework config(s) ──────────────
   await registerThreadlineMcp(config.projectDir, config.agentName, config.stateDir);
@@ -396,7 +426,10 @@ export async function bootstrapThreadline(
       // Keep the client: a failed first connect still schedules reconnects with
       // backoff, and dropping the reference left the agent local-only for the
       // life of the process even after the relay came back.
-      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; retrying in the background with backoff`);
+      // Only a connection that was actually attempted retries. With no usable
+      // identity no relay socket was ever opened, so nothing will retry — say so.
+      const attempted = relayClient.connectionState !== 'disconnected' || !(err instanceof IdentityFileInvalidError || err instanceof IdentityNotProvisionedError);
+      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; ${attempted ? 'retrying in the background with backoff' : 'NOT retrying: there is no usable identity to connect with (fix the identity, then restart)'}`);
     }
     } else {
       // Daemon handles the relay connection (both inbound and outbound).

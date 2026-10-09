@@ -257,8 +257,12 @@ export function createThreadlineRoutes(
     // resolves, identityPub + fingerprint correspond
     // (fingerprint === computeFingerprint(identityPub)) so a peer discovering us
     // via health obtains a routable address. When no routing identity resolves
-    // (none on disk, or canonical identity.json is locked-encrypted), fall back
-    // to the handshake-layer key and omit the fingerprint — never fabricate one.
+    // (none on disk, canonical identity.json is locked-encrypted, or the file
+    // is unusable), OMIT both fields — never fabricate one. Reading health must
+    // never create an identity: it is polled by every other local agent's
+    // discovery, and an identity minted here is how ACT-062 began. Consumers
+    // treat an absent identityPub/fingerprint as "not verifiable / no local
+    // route" (AgentDiscovery.verifyAgent, backupRoutes.checkFingerprintHealth).
     const routingIdentity = new IdentityManager(config.stateDir).get();
     // Relay state. Until 2026-07-30 `status` was the LITERAL 'ok' and this handler
     // never consulted the relay at all, so it reported healthy for 6h45m while the
@@ -277,10 +281,12 @@ export function createThreadlineRoutes(
       protocol: 'threadline',
       version: config.version,
       agent: config.localAgent,
-      identityPub: routingIdentity
-        ? routingIdentity.publicKey.toString('hex')
-        : handshakeManager.getIdentityPublicKey(),
-      fingerprint: routingIdentity?.fingerprint,
+      ...(routingIdentity
+        ? {
+            identityPub: routingIdentity.publicKey.toString('hex'),
+            fingerprint: routingIdentity.fingerprint,
+          }
+        : {}),
       pairedAgents: handshakeManager.listPairedAgents().length,
       // Secure A2A Verified Pairing (§3.6): count of mutual-verified pairings.
       // Omitted when no count callback is wired (legacy behavior).
