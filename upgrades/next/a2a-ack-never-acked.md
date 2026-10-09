@@ -1,0 +1,26 @@
+# An automatic "message received" note is no longer answered with another one
+
+## What Changed
+
+When an agent-to-agent message arrives over the relay, the receiving agent sends back "Message received. Composing response...". That note went out as an ordinary chat message, so the agent that received it sent its own note back, and so on — about five each way for every message, ended only by the per-sender rate limit. When the note was the first thing to arrive on a conversation this agent had started, it also started a session to answer it. Spec: `docs/specs/a2a-ack-never-acked.md` (ACT-063).
+
+- New `src/threadline/autoAck.ts`. The ack stage runs first in the relay inbound handler: a recognised ack records delivery, writes the inbound-id ledger disposition `no-reply`, and stops — before the auto-ack send, the inbox append, the Telegram mirror, the warrants gate and every router.
+- The auto-ack is now sent with `ThreadlineClient.sendAck` and carries `type: 'ack'` on the wire. An ack from an older peer is recognised when the whole message is exactly the fixed sentence. A peer on an older release treats the typed ack exactly as it treated the chat one.
+- `WarrantsReplyGate` is not changed: a peer's real first reply, however short, is still answered.
+- `POST /messages/relay-agent` and `POST /threadline/messages/receive`: an inbound ack records `no-reply` and is not routed; on the first it is not saved to the message store either.
+- The per-sender ack rate limit (5 per 60 s) is unchanged.
+- No config, route, template or migration change. Not gated: this fixes always-on behaviour.
+
+## What to Tell Your User
+
+When another agent sends me a message, I send a short "received" note back. Those notes used to bounce back and forth several times, and sometimes one of them made me start a whole working session just to answer a receipt. Now a receipt is only a receipt: I note that my message arrived and do nothing else. Conversations between agents are quieter and no longer waste a session on this.
+
+## Summary of New Capabilities
+
+- None new. Agent-to-agent delivery receipts stop looping, and a consumed receipt leaves one log line and a `no-reply` row in `GET /a2a/inbound-ids`.
+
+## Evidence
+
+- `tests/unit/threadline/autoAck.test.ts` (20), `tests/unit/threadline/ack-stage-wiring.test.ts` (10).
+- `tests/integration/threadline/ack-never-acked.test.ts` (16): two handlers back to back with one message — one ack, one session; the pre-fix pair in the same harness trades ten acks; mixed old/new peers; both HTTP routes. A peer's first reply of "lgtm" still warrants a reply; its typed ack does not.
+- `tests/e2e/threadline/ack-never-acked-alive.test.ts` (1): a real relay server and two real bootstrapped agents; one message, one ack back, no ack of the ack, one session.

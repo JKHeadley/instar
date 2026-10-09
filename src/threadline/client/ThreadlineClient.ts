@@ -13,6 +13,7 @@ import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../re
 import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
+import { AUTO_ACK_TYPE, encodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
 import {
@@ -357,6 +358,28 @@ export class ThreadlineClient extends EventEmitter {
     callerMessageId?: string,
     resend?: boolean,
   ): string {
+    return this.sendPlaintextTyped('chat', recipientId, content, threadId, callerMessageId, resend);
+  }
+
+  /**
+   * Send the automatic "message received" acknowledgement
+   * (docs/specs/a2a-ack-never-acked.md). Same plaintext envelope as
+   * sendPlaintext(), but typed `ack` so the receiver records delivery and stops:
+   * an ack is never acked, never routed, and never spawns a session. A receiver
+   * that predates the type treats it exactly as it treated the `chat` ack.
+   */
+  sendAck(recipientId: AgentFingerprint, content: string, threadId?: string): string {
+    return this.sendPlaintextTyped(AUTO_ACK_TYPE, recipientId, content, threadId);
+  }
+
+  private sendPlaintextTyped(
+    type: string,
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
+  ): string {
     if (!this.relayClient || !this.identity) {
       throw new Error('Not connected');
     }
@@ -365,11 +388,7 @@ export class ThreadlineClient extends EventEmitter {
     const messageId = callerMessageId || crypto.randomUUID();
 
     // Encode as base64 JSON payload (same format as inbound unknown-sender messages)
-    const payload = Buffer.from(JSON.stringify({
-      text: content,
-      type: 'chat',
-      ...(resend ? { resend: true } : {}),
-    })).toString('base64');
+    const payload = encodePlaintextPayload(content, type, resend);
 
     // Send as a raw envelope through the relay
     const envelope = {
