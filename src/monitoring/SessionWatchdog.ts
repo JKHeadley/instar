@@ -147,7 +147,7 @@ export interface InterventionEvent {
 
 export interface ProtectedWaitEvidence {
   protected: boolean;
-  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output';
+  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output' | 'test-runner' | 'test-runner-ancestor';
 }
 
 export interface LongLivedServiceEvidence {
@@ -205,11 +205,113 @@ export function classifyFrameworkInfrastructureProcess(
  */
 const MAX_PROTECTED_WAIT_MS = 2 * 60 * 60 * 1_000;
 
+/**
+ * Bound for the test-runner floor. A full instar suite takes roughly 5-15 min
+ * on an idle machine and has been seen past 30 min under CPU saturation (the
+ * exact condition in which the LLM judge misread a busy `npm test` as stuck).
+ * One hour covers a saturated full suite with margin, while still handing a
+ * genuinely hung run back to the contextual judge (and its hard ceiling) the
+ * same afternoon. Deliberately shorter than the 2h external-wait floor: a test
+ * run is local CPU work, not a wait on someone else's system.
+ */
+export const MAX_TEST_RUNNER_PROTECTION_MS = 60 * 60 * 1_000;
+
+const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn']);
+const VITEST_EXECUTABLES = new Set(['vitest', 'vitest.mjs', 'vitest.js']);
+
+/** First argument after `start` that is not a flag or the `--` separator. */
+function firstPositional(argv: string[], start: number): string | undefined {
+  for (let i = start; i < argv.length; i++) {
+    if (argv[i] === '--' || argv[i].startsWith('-')) continue;
+    return argv[i];
+  }
+  return undefined;
+}
+
+/**
+ * Deterministic argv-contract match for a known test runner. The executable
+ * position decides, never a substring: `echo npm test`, `grep vitest file` and
+ * `node worker.mjs --label "npm test"` do not match.
+ */
+export function classifyTestRunnerCommand(command: string): 'test-runner' | null {
+  const trimmed = command.trim();
+  // Vitest rewrites its own process title: main process `node (vitest)`,
+  // pool workers `node (vitest 1)`, `node (vitest 2)`, ...
+  if (/^node \(vitest(?: \d+)?\)$/.test(trimmed)) return 'test-runner';
+  const argv = trimmed.split(/\s+/);
+  const base = (index: number) => path.basename(argv[index] ?? '');
+  const i = /^node(?:\.exe)?$/.test(base(0)) ? 1 : 0;
+  const exe = base(i);
+  const sub = argv[i + 1];
+  if (PACKAGE_MANAGERS.has(exe)) {
+    if (sub === 'test' || sub === 't') return 'test-runner';
+    if ((sub === 'run' || sub === 'run-script') && /^test(?::[\w.-]+)?$/.test(argv[i + 2] ?? '')) return 'test-runner';
+    // pnpm/yarn run package scripts without `run`: `pnpm test:push`.
+    if (exe !== 'npm' && /^test(?::[\w.-]+)?$/.test(sub ?? '')) return 'test-runner';
+    if ((sub === 'exec' || sub === 'x') && VITEST_EXECUTABLES.has(path.basename(firstPositional(argv, i + 2) ?? ''))) return 'test-runner';
+    return null;
+  }
+  if (exe === 'npx' || exe === 'pnpx') {
+    return VITEST_EXECUTABLES.has(path.basename(firstPositional(argv, i + 1) ?? '')) ? 'test-runner' : null;
+  }
+  if (VITEST_EXECUTABLES.has(exe)) return 'test-runner';
+  return null;
+}
+
+/** Commands of every process below `rootPid` in an already-captured snapshot. */
+function descendantCommands(rows: readonly ChildProcessInfo[], rootPid: number): string[] {
+  const below = new Set([rootPid]);
+  const out: string[] = [];
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const row of rows) {
+      if (row.parentPid !== undefined && below.has(row.parentPid) && !below.has(row.pid)) {
+        below.add(row.pid); out.push(row.command); changed = true;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * A process with a matched test runner running below it (a shell wrapper such
+ * as `zsh -lc 'cd repo && npm test'`, or `git push` running a pre-push test
+ * tier) is protected like the runner itself. The decision rests on the live
+ * descendant in the snapshot, not on the ancestor's own argv.
+ */
+function hasTestRunnerDescendant(descendantCommands: readonly string[]): boolean {
+  return descendantCommands.some((c) => classifyTestRunnerCommand(c) !== null);
+}
+
+/**
+ * The test-runner floor on its own. Returns null when the process is neither a
+ * runner nor above one. `command` is the `ps` command column (argv joined by
+ * spaces, or a process title the program set itself); `elapsedMs` is THIS
+ * process's age, so an ancestor's bound is measured from the ancestor's own
+ * start. Past the bound the contextual judge (and, if the judge cannot run,
+ * the hard ceiling) regains authority.
+ */
+export function classifyTestRunnerProtection(
+  command: string,
+  elapsedMs: number,
+  descendantCommands: readonly string[] = [],
+): ProtectedWaitEvidence | null {
+  const testRunner = classifyTestRunnerCommand(command)
+    ?? (hasTestRunnerDescendant(descendantCommands) ? 'test-runner-ancestor' : null);
+  if (!testRunner) return null;
+  return elapsedMs > MAX_TEST_RUNNER_PROTECTION_MS
+    ? { protected: false }
+    : { protected: true, reason: testRunner };
+}
+
 export function classifyProtectedWait(
   command: string,
   recentOutput = '',
   elapsedMs = 0,
+  descendantCommands: readonly string[] = [],
 ): ProtectedWaitEvidence {
+  const testRunner = classifyTestRunnerProtection(command, elapsedMs, descendantCommands);
+  if (testRunner) return testRunner;
   // Protection is a bounded floor, not permanent immunity. Past two hours the
   // normal contextual judge gets authority even if the original argv matches.
   if (elapsedMs > MAX_PROTECTED_WAIT_MS) return { protected: false };
@@ -350,6 +452,9 @@ export class SessionWatchdog extends EventEmitter {
   private readonly observedIncarnations = new Set<string>();
   private provenanceCanaryInterval: ReturnType<typeof setInterval> | null = null;
   private readonly onProvenanceCanaryAlert?: (message: string) => void;
+  /** Optional live reader for `monitoring.watchdog` so threshold edits apply
+   *  without a restart. Boot values remain the fallback. */
+  private readonly readLiveWatchdogConfig?: () => { stuckCommandSec?: unknown; hardCeilingSec?: unknown } | undefined;
 
   /** Intelligence provider — gates escalation entry with LLM command analysis */
   intelligence: IntelligenceProvider | null = null;
@@ -383,6 +488,7 @@ export class SessionWatchdog extends EventEmitter {
 
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager, options: {
     onProvenanceCanaryAlert?: (message: string) => void;
+    readLiveWatchdogConfig?: () => { stuckCommandSec?: unknown; hardCeilingSec?: unknown } | undefined;
   } = {}) {
     super();
     this.config = config;
@@ -392,6 +498,7 @@ export class SessionWatchdog extends EventEmitter {
     try { const persisted = JSON.parse(fs.readFileSync(this.inspectionAuthorityPath, 'utf8')) as { key: string; epoch: string; pollRevision: number; decisions?: Record<string, string> }; this.inspectionAuthorityKey = Buffer.from(persisted.key, 'base64'); this.inspectionAuthorityEpoch = persisted.epoch; this.pollRevision = persisted.pollRevision; for (const [name, at] of Object.entries(persisted.decisions ?? {})) this.lastStallDecisionAt.set(name, at); if (this.inspectionAuthorityKey.length !== 32 || !this.inspectionAuthorityEpoch || !Number.isSafeInteger(this.pollRevision)) throw new Error('invalid-watchdog-authority'); }
     catch { /* @silent-fallback-ok — first boot creates durable inspection authority */ this.inspectionAuthorityKey = crypto.randomBytes(32); this.inspectionAuthorityEpoch = crypto.randomUUID(); this.persistInspectionAuthority(); }
     this.onProvenanceCanaryAlert = options.onProvenanceCanaryAlert;
+    this.readLiveWatchdogConfig = options.readLiveWatchdogConfig;
 
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
@@ -561,7 +668,14 @@ export class SessionWatchdog extends EventEmitter {
     const framework = sessionRecord?.framework;
     const children = await this.getChildProcesses(claudePid);
     let stuckChild: ChildProcessInfo | undefined;
+    const stuckThresholdMs = this.currentStuckThresholdMs();
+    // Subtrees of a protected test runner. They are skipped and the search goes
+    // on. An ancestor of a runner (a shell wrapper, `git push`) is itself left
+    // alone but NOT pruned, so its other children are still checked: a test run
+    // cannot hide an unrelated stuck command, even under a shared parent.
+    const protectedSubtrees = new Set<number>();
     for (const c of children) {
+      if (protectedSubtrees.has(c.parentPid)) { protectedSubtrees.add(c.pid); continue; }
       const infrastructure = classifyFrameworkInfrastructureProcess(c.command, framework);
       if (infrastructure.protected) {
         const verdict = await this.frameworkProvenance.classify({
@@ -595,9 +709,17 @@ export class SessionWatchdog extends EventEmitter {
       // is the real work, and the 3-minute default threshold is too
       // aggressive for long-running builds, tests, or measurements.
       const threshold = this.isStdinConsumerCommand(c.command)
-        ? Math.max(this.stuckThresholdMs, 600_000) // at least 10 minutes
-        : this.stuckThresholdMs;
-      if (c.elapsedMs > threshold) { stuckChild = c; break; }
+        ? Math.max(stuckThresholdMs, 600_000) // at least 10 minutes
+        : stuckThresholdMs;
+      if (c.elapsedMs > threshold) {
+        const testRun = classifyTestRunnerProtection(c.command, c.elapsedMs, descendantCommands(children, c.pid));
+        if (testRun?.protected) {
+          console.log(`[Watchdog] "${tmuxSession}": protected wait (${testRun.reason}) — refusing to interrupt`);
+          if (testRun.reason === 'test-runner') protectedSubtrees.add(c.pid);
+          continue;
+        }
+        stuckChild = c; break;
+      }
     }
 
     if (stuckChild) {
@@ -619,10 +741,12 @@ export class SessionWatchdog extends EventEmitter {
       // Pass recent tmux output so the LLM can see what the session is actually doing,
       // not just the (often truncated) child command name.
       const recentOutput = this.sessionManager.captureOutput(tmuxSession, 30) ?? '';
-      const protectedWait = classifyProtectedWait(stuckChild.command, recentOutput, stuckChild.elapsedMs);
+      const protectedWait = classifyProtectedWait(
+        stuckChild.command, recentOutput, stuckChild.elapsedMs, descendantCommands(children, stuckChild.pid),
+      );
       if (protectedWait.protected) {
         console.log(
-          `[Watchdog] "${tmuxSession}": protected external wait (${protectedWait.reason}) — refusing to interrupt`,
+          `[Watchdog] "${tmuxSession}": protected wait (${protectedWait.reason}) — refusing to interrupt`,
         );
         // Re-evaluate on every poll. A waiter must not gain permanent PID
         // immunity from one historical match if its evidence later changes.
@@ -1042,7 +1166,24 @@ export class SessionWatchdog extends EventEmitter {
    * never interrupt without a positive LLM "stuck" verdict).
    */
   private hardCeilingExceeded(elapsedMs: number): boolean {
-    return this.hardCeilingMs > 0 && elapsedMs > this.hardCeilingMs;
+    const ceilingMs = this.liveSeconds('hardCeilingSec', this.hardCeilingMs);
+    return ceilingMs > 0 && elapsedMs > ceilingMs;
+  }
+
+  private currentStuckThresholdMs(): number {
+    return this.liveSeconds('stuckCommandSec', this.stuckThresholdMs);
+  }
+
+  /** Live `monitoring.watchdog.<key>` in ms; any missing, invalid or unreadable
+   *  value falls back to the boot-time value (never to an implicit 0). */
+  private liveSeconds(key: 'stuckCommandSec' | 'hardCeilingSec', bootMs: number): number {
+    try {
+      const value = this.readLiveWatchdogConfig?.()?.[key];
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value * 1000 : bootMs;
+    } catch {
+      // @silent-fallback-ok — live config unreadable; boot value is the documented fallback
+      return bootMs;
+    }
   }
 
   // --- Process utilities (self-contained, no shared module) ---

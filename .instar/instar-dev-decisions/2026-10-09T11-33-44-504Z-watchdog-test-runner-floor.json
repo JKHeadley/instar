@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-09T11:33:44.504Z",
+  "slug": "watchdog-test-runner-floor",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 162,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 155,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Narrows an existing self-triggered kill (SessionWatchdog SIGINT): adds no new emit, retry, loop or target; it withholds the interrupt from matched test runs for a bounded 60 min and otherwise leaves the loop unchanged."
+  },
+  "verdict": "pass"
+}

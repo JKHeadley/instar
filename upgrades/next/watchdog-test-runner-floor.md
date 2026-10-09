@@ -1,0 +1,36 @@
+# Watchdog Test-Runner Floor
+
+<!-- bump: patch -->
+
+## What Changed
+
+The session watchdog no longer interrupts a running test suite for its first
+60 minutes. It recognises `npm test`, `npm run test:*`, `pnpm`/`yarn` test
+scripts, `npx vitest`, `npm exec vitest`, direct `vitest`, and Vitest's own
+`node (vitest)` processes by their command, not by a word search, and skips
+the AI "is this stuck?" check for them. A command with a test run going on
+underneath it (a shell running `cd repo && npm test`, or a `git push` whose
+pre-push hook runs tests) gets the same protection, only while that test run
+is actually there.
+After 60 minutes the normal check decides again. The 30-minute last-resort
+limit no longer cuts a protected test run short. The `stuckCommandSec` and
+`hardCeilingSec` watchdog settings now take effect without a restart.
+
+## What to Tell Your User
+
+Long test runs and code pushes are no longer cut off part-way by the
+watchdog when the machine is busy. If a test run still gets stopped before an
+hour, that is a bug worth reporting.
+
+## Summary of New Capabilities
+
+- Test runs are protected from false "stuck" interrupts for 60 minutes.
+- Watchdog timing settings apply live.
+
+## Evidence
+
+Unit tests cover every matched command shape, near-misses such as
+`echo npm test`, and both sides of the 60-minute bound. Integration tests
+replay the 2026-10-08 case (`npm test` at 190 s with the judge saying "stuck")
+and show it is neither judged nor signalled, that the 30-minute ceiling does
+not fire before the bound, and that live threshold edits apply.

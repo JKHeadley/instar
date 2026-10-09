@@ -11076,6 +11076,11 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       patched = true;
       result.upgraded.push('CLAUDE.md: hardened command-watchdog descendant attribution awareness');
     }
+    if (!content.includes('Command-watchdog test-runner floor:')) {
+      content += `\n- **Command-watchdog test-runner floor:** a running test suite (\`npm test\`, \`npm run test:*\`, \`pnpm test\`, \`npx vitest\`, Vitest's own \`node (vitest)\` processes), and any process with one of those running underneath it (a shell wrapper, or a \`git push\` running a pre-push test tier), are never judged stuck or interrupted for their first 60 minutes, even under CPU saturation; past that the normal stuck judge (and its hard ceiling) decides again. \`monitoring.watchdog.stuckCommandSec\` / \`hardCeilingSec\` edits now apply without a restart. If a user asks "why did my test run get Ctrl+C'd?" read \`.instar/watchdog-interventions.jsonl\`; a test run killed before 60 min is a bug to report.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added command-watchdog test-runner floor awareness');
+    }
     if (!content.includes('Crash-safe inbound delivery:')) {
       content += `\n- **Crash-safe inbound delivery:** Normal tmux injection and Codex stranded-draft key attempts use FULL-durable armed/started/terminal phases. A crash-open mutation becomes \`effect-unknown\` and is never blindly repeated. Diagnose privacy-safe counts at \`GET /sessions/inbound-delivery-status\`; no message body is exposed. Command-watchdog continuation is owned by the canonical continuation/recovery funnel, never an independent watchdog prompt.\n`;
       patched = true;

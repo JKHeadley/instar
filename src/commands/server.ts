@@ -11678,6 +11678,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (config.monitoring.watchdog?.enabled) {
       watchdog = new SessionWatchdog(config, sessionManager, state, {
         onProvenanceCanaryAlert: (message) => notify('IMMEDIATE', 'codex-provenance-canary', message),
+        readLiveWatchdogConfig: () => liveConfig.get<{ stuckCommandSec?: unknown; hardCeilingSec?: unknown } | undefined>('monitoring.watchdog', undefined),
       });
       watchdog.intelligence = sharedIntelligence ?? null;
       guardRegistry.register('monitoring.watchdog.enabled', () => watchdog!.guardStatus());
