@@ -19,10 +19,9 @@ approved: false
 One agent, one identity, on every machine — and when that is not true, the agent says so
 before a peer has to.
 
-This spec is deliberately five parts and no more (operator direction, 2026-10-09: 80/20
-convergence, no over-engineering; the five parts, including the ACT-058 reply hold, were
-named by the operator). Everything a reviewer wanted beyond them is in §Out of scope with a
-carrier.
+Five parts and no more (operator direction, 2026-10-09: 80/20, no over-engineering; the five
+parts, including the ACT-058 reply hold, were named by the operator). Everything a reviewer
+wanted beyond them is in §Out of scope with a carrier.
 
 ## Glossary (five lines)
 
@@ -97,11 +96,10 @@ approved 2026-08-19) shipped a join-time carry on 2026-08-20; the Studio minted 
    (`:411`, `:484`) and `link` resolves nothing (`:926`). Any Bearer holder can download the
    agent's signing identity.
 
-Every item is the same defect at a different layer: a symbol was trusted in place of the
-state it stands for (one mint site; one formula; "queued" read as "will arrive"; `admitted`
-read as "will be sent"; "allowed path" read as "safe to serve"). The parent spec's own
-acceptance criteria AC1/AC6/AC7/AC7b are unmet in code; §Tests binds every criterion of THIS
-spec to a named test.
+Every item is the same defect at a different layer: a symbol trusted in place of its state
+(one mint site; one formula; "queued" read as "will arrive"; `admitted` as "will be sent";
+"allowed path" as "safe to serve"). The parent's AC1/AC6/AC7/AC7b are unmet in code; §Tests
+binds every criterion here to a named test.
 
 ## What exists (verified at `e76caca6a`)
 
@@ -148,28 +146,22 @@ spec to a named test.
   (`expiredNewer` rule), `sweepSilence`, `findOverdue()` (`:495`, `SELECT *` over every
   `awaiting-ack`/`unconfirmed` row). No `DELETE` anywhere: rows accumulate by design (`:556`).
 - **Relay `discover`**: `RelayServer.handleDiscover` (`RelayServer.ts:1170-1200`) returns
-  registry-persisted agents with `status: 'online'|'offline'` plus public presence-only
-  agents; the client keeps a `knownAgents` presence map with `online` (`ThreadlineClient.ts:66-75`)
-  fed by `discover-result` frames (`:270`) AND by `presence-change` frames (`:274`, today only
-  re-emitted). `ThreadlineClient.discover()` resolves `[]` on its 10 s timeout and on
-  rate-limit (`:468-510`) but REJECTS `Not connected` when there is no relay client (`:473`;
-  `relayClient = null` on disconnect, `:755`); discovery is rate-limited to 10/min per agent
-  (`RelayRateLimiter.ts:34`). `reconnectRelay()` (`:207-210`) reuses the `RelayClient` built
+  agents with `status: 'online'|'offline'`; the client's `knownAgents` presence map
+  (`ThreadlineClient.ts:66-75`) is fed by `discover-result` (`:270`) and `presence-change`
+  (`:274`, today only re-emitted) frames. `discover()` resolves `[]` on its 10 s timeout and on
+  rate-limit (`:468-510`, 10/min, `RelayRateLimiter.ts:34`) but REJECTS `Not connected` with no
+  relay client (`:473`, `:755`). `reconnectRelay()` (`:207-210`) reuses the `RelayClient` built
   with the identity loaded at construction (`:217`, `:231`) — it cannot pick up a new key.
-- **A2A redelivery sentinel** (`src/monitoring/A2ARedeliverySentinel.ts`): per-MESSAGE —
-  `findOverdue` → `markEscalated` (terminal); no resolve path, no cooldown, no per-peer
-  state; its attention item id is minted in `src/commands/server.ts:19204`; constructed only
-  when `monitoring.a2aRedelivery.enabled` (`server.ts:19180`), default `false` (`types.ts:5913`).
-- **Standby relay forward** (`a2a-cross-machine-route.md`, built): a standby's A2A send is
-  forwarded to the machine holding the relay connection. A standby's relay is `disconnected`
-  BY DESIGN (one connection per identity; a second displaces the first).
+- **A2A redelivery sentinel** (`src/monitoring/A2ARedeliverySentinel.ts`): per-MESSAGE
+  (`findOverdue` → `markEscalated`, terminal; no resolve, cooldown or per-peer state); item id
+  minted at `server.ts:19204`; constructed only when `monitoring.a2aRedelivery.enabled`
+  (`server.ts:19180`), default `false`. A standby's relay is `disconnected` BY DESIGN (one
+  connection per identity; a second displaces the first).
 - **Telegram origin** (`src/messaging/telegram-origin/`): `TelegramOriginService` (admit →
-  claim → authorize → execute); durable store whose `recordOperationState` accepts
-  `held|suppressed|expired|admitted` and whose `expireOperation` writes `expired-unresolved` —
-  neither called from the hold path; recovery schedule (15-min interval, 6 h deadline, 9
-  attempts); `relayOriginBot` (signed RPCs `capabilities` + `submit`, forwards `sendMessage`
-  only); the holder-side `submit` handler (`OriginMesh.ts:111-125`) runs `admit` then
-  executes WITHOUT `authorize`.
+  claim → authorize → execute); the durable store's `recordOperationState('held')` and
+  `expireOperation` (`expired-unresolved`) are never called from the hold path; recovery
+  schedule 15 min / 6 h / 9 attempts; `relayOriginBot` (signed `capabilities` + `submit`,
+  `sendMessage` only); the holder-side `submit` (`OriginMesh.ts:111-125`) skips `authorize`.
 - **Lease**: `LeaseCoordinator.holdsLease()` / `currentHolder()` (`LeaseCoordinator.ts:462`,
   returns `lease.holder` with NO expiry check) / `isHolderHealthy()` (`:475`); `holdsLease()`
   is `true` on a single machine; right after a respawn the eventual holder reads `false` for
@@ -192,11 +184,10 @@ spec to a named test.
   dev-gated flags must be registered in `src/core/devGatedFeatures.ts` (`DEV_GATED_FEATURES`,
   read by `scripts/lint-dev-agent-dark-gate.js`); `scripts/lint-machine-local-justification.js`
   validates posture markers.
-- **Acting on another machine**: `POST /sessions/spawn` is local-only (no machine target,
-  `routes.ts:11165`); peer SSH (`multiMachine.peerExecution`) is dev-gated, dry-run, fleet-dark;
-  an idle machine has zero sessions. The one real "act on machine X" primitive is
-  `POST /pool/transfer {topic, to}` (`routes.ts:21181`, consent-gated; 409 when the target is
-  offline), after which the conversation's session runs ON that machine.
+- **Acting on another machine**: `POST /sessions/spawn` is local-only (`routes.ts:11165`); peer
+  SSH is fleet-dark; an idle machine has zero sessions. The one real primitive is
+  `POST /pool/transfer {topic, to}` (`routes.ts:21181`, consent-gated; 409 offline; 503 when
+  the pool is dark), after which the conversation's session runs ON that machine.
 - **`a2a-cross-machine-route`** forwards a standby's A2A sends to the relay holder; §4 is its
   Telegram-origin sibling (attested origin payload, the serving-lease holder, `relayOriginBot`,
   its own durable hold) — they share the signed mesh RPC transport and nothing else.
@@ -219,22 +210,16 @@ spec to a named test.
   correspondence is checked in memory before the write; with no local memory of its own
   address a machine needs two independent signed witnesses (§1.3).
 - **A wrong "canonical" is auto-written over a working identity.** Not possible by
-  construction: adoption fills a VOID only. Replacing an existing identity is a command run
-  on that machine (§1.4) after a human yes, with a backup before the rename. A mesh-callable
-  "replace my key" verb was considered and rejected: it is exactly the push-a-fabricated-key
-  attack above. So was a signed "adopt from X" TRIGGER verb carrying no key: a compromised
-  but still-active sibling could make a healthy machine replace its good key with the
-  compromised one's — the same attack with one indirection. The lever is deliberately not
-  reachable over the network; the agent reaches the machine by moving the conversation there
-  (§1.4). The only Bearer route added, `POST /agent-identity/reload`, re-reads this
-  machine's OWN disk and rebuilds its relay client — it carries no key and can install
-  nothing.
-- **A detector that pages on healthy fleets trains the operator to ignore it.** Mitigated by
-  §2: one formula, a semantic test that asserts `agree` on identical keys, and a resolve rule
-  that a sleeping sibling cannot starve.
-- **A notice flood when a peer goes dark or MY relay is down.** Mitigated: one item per peer
-  per episode through the reworked escalate-once sentinel; one aggregated item when my relay
-  is not connected; dry-run first.
+  construction: adoption fills a VOID only; replacement is a command on that machine (§1.4)
+  after a human yes, with a backup. A mesh-callable "replace my key" verb and a signed
+  key-less "adopt from X" TRIGGER verb were both rejected: each lets a compromised but
+  still-active sibling make a healthy machine replace its good key. The lever is not
+  reachable over the network; the only Bearer route added, `POST /agent-identity/reload`,
+  re-reads this machine's OWN disk and can install nothing.
+- **A detector that pages on healthy fleets; a notice flood when a peer goes dark or MY relay
+  is down.** Mitigated by §2 (one formula, a semantic `agree` test, a resolve rule a sleeping
+  sibling cannot starve) and §3 (one item per peer per episode; one aggregated item when my
+  relay is down; dry-run first).
 - **The forward-to-holder path double-posts or loops.** Mitigated: the holder's `submit` runs
   `authorize`; a forwarded operation keeps its ORIGINAL operation id so the holder dedupes;
   an `outcome-unknown` forward is never re-sent blind; the standby never also executes locally.
@@ -266,11 +251,12 @@ encrypted) file boots the same posture; adoption refuses `identity-file-invalid`
 
 A refused mint boots the server in `identity-not-provisioned` posture: the relay connection
 is not attempted (`/threadline/health → relay.state: 'not-provisioned'`, `fingerprint`
-absent); the machine is **lease-ineligible ONLY when the registry names ≥1 other ACTIVE
-machine** (declines to acquire the serving lease; releases one it holds at the next tick — an
-unprovisioned holder would take the WHOLE fleet off the network). With no active sibling
-(self-only, all revoked, or `unreadable`) it STAYS lease-eligible and keeps serving Telegram,
-scheduler and live-tail unprovisioned — a paired-then-shrunk machine still runs a real
+absent); the machine **yields the lease ONLY to a live provisioned peer**: it is
+lease-ineligible (declines to acquire; releases at the next tick) iff at least one ACTIVE
+sibling is presence-online AND answered `provisioned` in the latest observe round — an
+unprovisioned holder would take the WHOLE fleet off the network. Otherwise (lone machine,
+all revoked, `unreadable`, or the only sibling asleep) it acquires/holds as today and keeps
+serving Telegram, scheduler and live-tail unprovisioned — a paired-then-shrunk machine still runs a real
 `LeaseCoordinator` (`MultiMachineCoordinator.ts:397-405`, `server.ts:5451`), and declining
 there would hold every reply, including the item asking for the fix, behind
 `TelegramOriginBoot.authorize` (The Agent Is Always Reachable); `DegradationReporter` writes
@@ -330,8 +316,9 @@ at either path, `IdentityManager.get()` null) asks its siblings:
   60 s per-machine cooldown, `429`) so the CLI (§1.4) and the mirror repair (§1.5) share it.
 - **The identity lock.** Identity mutations on a machine are serialized by
   `.instar/identity.lock` (O_EXCL, pid-stamped), shared by adoption, the CLI (§1.4), the
-  mirror repair (§1.5) and `instar join`. A lock is stale only when its pid is dead AND it is
-  older than 60 s; a stale lock is broken by renaming it to a unique name (only one breaker's
+  mirror repair (§1.5) and `instar join`. The lock stamps pid + process start time; it is
+  stale when that pair no longer matches a live process AND it is older than 60 s, or after a
+  10-min ceiling regardless (pids are reused); a stale lock is broken by renaming it to a unique name (only one breaker's
   rename succeeds), after which creation goes through O_EXCL again — two processes can never
   both hold it. A waiter retries for 30 s, then refuses `identity-locked`.
 - Audit: both sides append to `logs/agent-identity.jsonl` on every reason TRANSITION plus an
@@ -405,22 +392,20 @@ run ON the affected machine:
   sign as <agent> until the identity is rotated fleet-wide" — today it says "can no longer
   authenticate" (`machine.ts:283`), true of the machine key, false of the agent key.
 
-**Who runs it.** I do, not the operator (Echo is the interface; a terminal command is never
-the user's chore). The §2 item says "I can fix this: say yes and I will adopt the identity
-<sibling> publishes onto <nick>". Replacing a live key is irreversible in effect (the old key
-is backed up, but peers' queued messages are not), so the floor is one human approval. On
-the yes, the HONEST path to a shell on the named machine is the existing one: I move the
-conversation there with `POST /pool/transfer {topic, to: <nick>}` (consent-gated; the
-operator's yes is the consent), the resumed session on that machine runs the command, and I
-report the outcome in one line, then `POST /pool/unpin {topic}` so placement returns to
-normal (the topic is the one the yes arrived in). A target that is offline answers 409 and the item stays open
-saying so (an offline machine is not holding the relay, so the split is not hurting peers
-until it wakes). There is no session of mine on an idle peer, no peer-SSH on the fleet, and
-no network verb (§Threat model) — the transfer IS the mechanism. Where the session pool is
-dark (`/pool/transfer` → 503, the fleet default) the yes is recorded durably ON the item and
-the named machine runs `identity adopt --from <sibling>` from its own first session the next
-time it boots or holds the lease; the item says "nothing to do now". Mobile-complete by a
-reply, with no dashboard surface. The `init --standalone` case is the same shape.
+**Who runs it.** I do, not the operator (a terminal command is never the user's chore). The
+§2 item says "I can fix this: say yes and I will adopt the identity <sibling> publishes onto
+<nick>". Replacing a live key is irreversible in effect (peers' queued messages are not backed
+up), so the floor is one human approval. On the yes, the HONEST path to a shell on the named
+machine is the existing one: I move the conversation (the topic the yes arrived in) there with
+`POST /pool/transfer {topic, to: <nick>}` (the yes is the consent), the resumed session runs
+the command, I report the outcome in one line, then `POST /pool/unpin {topic}`. An offline
+target answers 409 and the item stays open saying so (an offline machine holds no relay, so
+peers are not hurt until it wakes). There is no session of mine on an idle peer, no peer-SSH
+on the fleet, no network verb (§Threat model) — the transfer IS the mechanism. Where the pool
+is dark (`/pool/transfer` → 503, the fleet default) the yes is recorded durably ON the item
+and the named machine runs `identity adopt --from <sibling>` from its own first session the
+next time it boots or holds the lease; the item says "nothing to do now". Mobile-complete by
+a reply, no dashboard surface. The `init --standalone` case is the same shape.
 
 **1.5 The legacy file is a mirror, repaired at first load.** When `IdentityManager.loadFromDisk()`
 finds both files and they disagree, the canonical one wins (as today) AND the legacy file is
@@ -466,14 +451,19 @@ always on, every machine, no flag (a dark identity check checks nothing) — wit
   all match, and some active sibling was unobserved — it stays visible on the health read
   until every active sibling has been observed once since the last repair; `cannot-tell`
   when fewer than two values were observed;
-- item id `agent-identity-split:<agent>:<sorted fingerprint set>`, priority `high`, RAISED by
-  any machine after 2 consecutive `disagree` reads. RESOLVED only by the serving-lease holder,
+- item id `agent-identity-split:<agent>:<sorted fingerprint set>`, priority `high`, RAISED AND
+  RESOLVED by the serving-lease holder only (attention items are a per-machine store with
+  local id dedupe, `TelegramAdapter.ts:524,4047`, and the cross-machine ack ships dark — a
+  raise elsewhere would strand a copy and post N hub messages; a non-holder's `disagree` is a
+  health state, not a raise), after 2 consecutive `disagree` reads; resolved
   after 2 consecutive rounds in which (i) every machine that contributed a differing value to
   the item's set AND whose registry row is still ACTIVE has been re-observed, and (ii) the
   round holds exactly ONE value. A sibling that was never part of the split and is asleep
   does NOT block resolution (the same asymmetry §1.3 applies to adoption; without it a
   repaired fleet would carry an open `high` item until all four machines were awake
-  together); a split member that was revoked (`instar machines remove`) drops out of the
+  together); the required set is carried on the item as `metadata.contributors {machineId:
+  fp}` = machines whose LAST OBSERVED value ≠ the round's single value; a split member that
+  was revoked (`instar machines remove`) AND is offline by presence drops out of the
   required set, and the item body names that lever for a decommissioned member. If a member
   is re-observed still differing, the item stays. A machine unobserved during the episode
   that later publishes a THIRD value is caught by the next tick as a new `disagree` with a
@@ -551,7 +541,9 @@ already left `allPeerHealth`, and its `dark` state is re-established by the next
   minted where it is today (`server.ts:19204`), becomes the deterministic
   `a2a-peer-dark:<agent>:<peerFp>` (no episode stamp — rows live on whichever machine carried
   the send, and a lease move would otherwise strand one machine's item forever); (iv) it
-  RESOLVES from pool-scope `peers/health` (any machine's ack/inbound from that peer newer
+  RESOLVES — on EVERY machine over its OWN item store, awake or not (the heal stays
+  awake-only) — from pool-scope `peers/health` (any machine's ack, inbound or `delivered`
+  verdict from that peer newer
   than the item's raise time), its resolve line names the count of messages that were never
   acknowledged and have expired ("<peer> is back; N messages from the dark window expired
   unacknowledged — resend what still matters"), and it carries a per-peer cooldown of 12 h.
@@ -609,9 +601,11 @@ hold of §4.2.
   never times out before the hold is written and re-runs with a NEW operation id (the one
   double-post the holder's dedupe cannot catch). It answers 200 on a local send or confirmed
   forward, 409 `telegram-origin-held {hold_reason}` the moment the attempt fails. The
-  remaining attempts run from the recovery tick: a `retryable` refusal (holder busy, timeout,
-  `not-lease-holder` because the lease just moved) is retried 2× more at +10 s and +20 s,
-  re-resolving the holder each time, then the 15-min schedule.
+  remaining attempts run from the recovery tick: a TYPED refusal that proves non-admission
+  (`not-lease-holder`, `rate-limited`, `execution-owner-mismatch` before admit) is retried
+  2× more at +10 s and +20 s, re-resolving the holder each time, then the 15-min schedule. A
+  transport timeout is NEVER retryable: it is `outcome-unknown`, and the next step is the
+  existing `receipt` RPC to the SAME holder for that operation id.
 - **Durable hold.** Only `forward-to-holder-failed` holds: the EXISTING
   `recordOperationState('held')` is called with a new `hold_reason` = `lease-not-held` —
   distinct from `destination-not-authorized`, which keeps meaning "foreign chat" and is never
@@ -682,7 +676,8 @@ file (the listed key files are `stat`ed per request — a dozen calls): a hard l
 **5.3 The same list guards the other read surfaces.** The same prefixes are added, in both
 spellings the list uses (`identity.json` and `.instar/identity.json`), to `BackupManager`'s
 `BLOCKED_PATH_PREFIXES` (an operator adding `identity.json` to `backup.includeFiles` must not
-ship the key in a snapshot); to `GITIGNORE_ENTRIES` for new agents AND as explicit
+ship the key in a snapshot — stated cost: a lone machine's only identity recovery is then
+`init --standalone` + peer re-pins); to `GITIGNORE_ENTRIES` for new agents AND as explicit
 `addGitignoreEntry` calls in `migrateGitignore` for existing ones (both repos); and to the
 classifier's `DEFAULT_SECRET_PATTERNS` as prefixes (`.instar/identity.json` is there today as
 an exact match, so its backups are not; the other files are absent).
@@ -702,7 +697,7 @@ unreadable through the Files tab.
 | Decision point | Change | Classification |
 |---|---|---|
 | Both mint sites (`createUnifiedTrustSystem`, `getOrCreate`) | refuse on `joined` and on the new `unreadable` verdict; boot `identity-not-provisioned` | invariant — an on-disk fact decides; no competing signal; the human lever is §1.4 |
-| `identity-not-provisioned` → lease-ineligible iff ≥1 active sibling | new | invariant — a count over the registry's active rows; a lone machine keeps the operator's Telegram |
+| `identity-not-provisioned` → yield the lease only to a live provisioned peer | new | invariant — presence-online + signed `provisioned` in the latest observe round; a lone machine or one whose sibling sleeps keeps the operator's Telegram |
 | `agent-identity-request` serving refusals | new | invariant — deterministic predicates on local state or a signed read; the verb hands out a private key, so no judgment may widen it |
 | Adoption acceptance (§1.3: `reachable-agree`, witness floor 1-with-memory / 2-without, last-known pin) | new | invariant — deliberately: choosing an identity is the irreversible act this spec exists to stop being guessed; the only other path is §1.4 after a human yes |
 | `instar identity adopt` replace | new; run by the agent after one human approval | invariant — the human is the arbiter (rung 1 floor); the command itself only verifies signature + key correspondence |
@@ -730,18 +725,22 @@ Default posture is `unified`. Each surface this spec introduces:
   verified equal by §2 every 5 min.
 - **`identity-not-provisioned` posture** — `unified` by construction: exists only on the
   machine lacking the identity, makes it lease-ineligible, ends when the fleet's identity lands.
-- **`logs/agent-identity.jsonl`** — proxied-on-read: `GET /agent-identity/audit` (Bearer,
-  read-only; `?scope=pool` merges online machines' rows tagged by machineId, dark-peer
-  tolerant; `?limit` default 200).
-- **Divergence verdict / `identityCoherence`** — every machine computes it; one shared item id
-  (raise anywhere, resolve only on the lease holder) makes the notice unified; the read is
-  per machine on `/threadline/health`.
+- **`logs/agent-identity.jsonl`, `.instar/identity.lock`, `threadline/agent-info.json` (the
+  last-known pin) and `*.superseded-*` backups** — facts about the key copy on this disk.
+  - machine-local-justification: physical-credential-locality impossible-because="this-disk-holds-the-key-copy-and-the-relay-connection-it-signs-under-relocating-it-is-the-split" permanence=permanent
+  - mitigation: `GET /agent-identity/audit` (Bearer, read-only; `?scope=pool` merges online
+    machines' rows tagged by machineId, dark-peer tolerant; `?limit` default 200).
+- **Divergence verdict / `identityCoherence`** — every machine computes it; the item is
+  raised and resolved on the lease holder only; the read is per machine on `/threadline/health`.
 - **A2A delivery ledger + `dark`** — proxied-on-read: rows live on the machine that carried
   the send (the relay holder); `GET /threadline/peers/health?scope=pool` merges (existing),
-  and the item resolves from that merged read so a lease move cannot strand it. The item is
-  raised by the awake machine (the only one whose heal may run).
-- **Telegram origin held operation on a standby** — proxied-on-read: the held record is
-  operational state (an origin operation attested under the standby's machine key), readable
+  and each machine resolves its own copy of the item from that merged read so a lease move
+  cannot strand it. The item is raised by the awake machine (the only one whose heal may run).
+  - machine-local-justification: physical-credential-locality impossible-because="this-disk-holds-the-key-copy-and-the-relay-connection-it-signs-under-relocating-it-is-the-split" permanence=permanent
+  - mitigation: the pool-scope read above (rows follow the relay connection on this disk).
+- **Telegram origin held operation on a standby** — attested under this machine's signing key.
+  - machine-local-justification: physical-credential-locality impossible-because="this-disk-holds-the-key-copy-and-the-relay-connection-it-signs-under-relocating-it-is-the-split" permanence=permanent
+  - mitigation: readable
   from the pool via `/telegram/origins/status?scope=pool` (existing); the design moves the
   WORK (the forward) to the holder, not the record.
 - **Relay connection** — unchanged: one per agent identity, on the awake machine
@@ -795,15 +794,13 @@ recoverable latency above is `120s`.
 5. **The identity rides two dedicated signed mesh verbs, sealed with the existing
    an AAD-bound `encryptForSync` variant to the requester's REGISTRY X25519 key, audited both sides, announced once
    by the adopter.** NOT cheap (key custody). `secret-share` rejected (unsigned responses).
-6. **No dashboard ceremony, no replace mandate, no replicated commit record, no mesh-callable
-   replace, no signed trigger verb.** Replacement and fleet recovery are the NEW
-   `instar identity adopt --from <machine>` and `instar identity init --standalone`, run on
-   that machine by MY session there after one human yes — reached by `POST /pool/transfer`
-   of the conversation to that machine (the existing consent-gated lever; 409 when offline,
-   item stays open). `adopt` moves the old identity file AND `agent-info.json` aside before
-   requesting, restores both on failure, calls `POST /agent-identity/reload`, restarts a live
-   listener via the CLI's `restartListener`, and skips the `reachable-agree` and last-known
-   rules. NOT cheap (identity); decided here.
+6. **No dashboard ceremony, replace mandate, replicated commit record, mesh-callable replace
+   or signed trigger verb.** Replacement and fleet recovery are the NEW `instar identity adopt
+   --from <machine>` / `init --standalone`, run on that machine by MY session after one human
+   yes — reached by `POST /pool/transfer` (409 offline → item stays open; 503 pool-dark → the
+   recorded yes drives the repair from that machine's next session). `adopt` moves the old
+   identity file AND `agent-info.json` aside, restores both on failure, reloads, restarts a
+   live listener, and skips the `reachable-agree` and last-known rules. NOT cheap (identity).
 7. **The legacy `threadline/identity.json` is a mirror repaired at first load, with backup;
    the listener daemon loads the canonical file FIRST (legacy fallback); a daemon alive under
    the superseded key is SIGTERMed and the server takes the relay itself by re-running its
@@ -812,7 +809,7 @@ recoverable latency above is `120s`.
    the mirror repair; `announcePresence` never rewrites `agent-info.json` while unprovisioned.
 8. **The detector stays on its existing `/provenance` read, every 5 min; self contributes
    disk AND `connectedAs`; an offline-by-presence peer is `unobserved` and never counts as
-   `cannot-tell`; any machine raises; the lease holder resolves when every still-active split
+   `cannot-tell`; the lease holder raises and resolves when every still-active split
    member is re-observed and the round holds one value; `agree` stays strict and
    `partial-agree` is a distinct health state that persists until every active sibling has
    been seen once since the repair.** NOT cheap (alert semantics). The coherence-advert field / MachineCoherence `identity` dimension was cut
@@ -859,7 +856,7 @@ recoverable latency above is `120s`.
 
 | AC | Criterion | Test |
 |---|---|---|
-| AC1 | A joined machine with no identity never mints at boot and boots lease-ineligible; a standalone first machine still mints; an unreadable registry refuses at BOTH sites; with no active sibling (lone, all-revoked or unreadable) the machine stays lease-eligible and its item reaches Telegram (loud, lever named); a present-but-invalid file boots unprovisioned and refuses `identity-file-invalid` | `agent-identity-mint-guard.test.ts` (unit); E2E boot |
+| AC1 | A joined machine with no identity never mints at boot and boots lease-ineligible; a standalone first machine still mints; an unreadable registry refuses at BOTH sites; with no live provisioned sibling (lone, all-revoked, unreadable, or the sibling asleep) the machine keeps the lease, answers `/telegram/reply`, processes inbound, and its item reaches Telegram (loud, lever named); a present-but-invalid file boots unprovisioned and refuses `identity-file-invalid` | `agent-identity-mint-guard.test.ts` (unit); E2E boot |
 | AC2 | An identity-less paired machine adopts the `reachable-agree` identity over signed responses and connects as it; one witness with local memory adopts, INCLUDING across a server restart in the unprovisioned posture (the memory survives); one witness without memory refuses `single-witness`; two witnesses without memory adopt; a disagreement, forged answer, keypair mismatch or last-known mismatch refuses with the named reason, and the last-known item names the adopt-from-a-sibling path | `agent-identity-adoption.test.ts` (unit); two-server integration |
 | AC3 | Four machines holding the same key read `agree`; the 63b1/afd2 pair reads `disagree`; a disk value that differs from `connectedAs` reads `disagree`; one unreachable member with two differing observed values reads `disagree`; an offline-by-presence peer is `unobserved` and never increments `cannot-tell`; the item is raised once and resolved by the lease holder after the split member is re-observed repaired while a non-member sleeps, and a revoked member drops out of the required set | `agent-identity-fingerprint-formula.test.ts` |
 | AC4 | `instar identity adopt --from` moves the identity file and `agent-info.json` aside, is NOT refused by `requester-publishes-identity` (the observe handler reads disk) or the last-known pin, installs, reloads via `POST /agent-identity/reload` (the relay client is rebuilt — `connectedAs` changes without a server restart; on a standby the lever never connects; a second call inside 60 s answers 429), and restores both files on a refusal; a re-run after a crash proceeds as a void-fill; `init --standalone` mints with the recovery provenance; with the pool dark the recorded yes drives the repair from the named machine's next session; `machines remove` prints the still-signs notice; a disagreeing legacy mirror is repaired with a backup, the daemon loads canonical first, and a daemon alive under the old key is stopped while the server takes the relay | `agent-identity-operator-cli.test.ts`; `agent-identity-legacy-mirror.test.ts` |
@@ -875,18 +872,16 @@ win; audit rows never contain key bytes (byte-scan); the mint-site census fails 
 unlisted `generateIdentityKeyPair(` site.
 
 **Tier 2 — integration (`tests/integration/`)**: two in-process servers paired over the real
-`/mesh/rpc` — B boots with no identity and a registry naming A, is lease-ineligible, observes
+`/mesh/rpc` — B boots with no identity and a registry naming A, yields the lease, observes
 (signed), adopts, connects to a stub relay as A's fingerprint, one `agent-identity-adopted` item
-exists; a stub peer publishing a different fingerprint → B refuses and the item names both; a
-forged answer is ignored. Stub relay answering `queued` + a `discover` row marked `offline`:
-after the threshold the send route carries `peerDark`, health shows `dark`, exactly one item
-exists; an inbound on the OTHER machine (pool scope) resolves it. Standby + holder pair with a
-Telegram stub: the standby's `/telegram/reply` lands via the holder with `forwardedFromMachine`;
-holder refuses `not-lease-holder` after a lease move and the ladder re-resolves; holder down →
-409 `telegram-origin-held` `{hold_reason: lease-not-held}`, listed in
-`/telegram/origins/status.held[]`, `/health` degradation; holder back → delivered once (same
-operation id). File routes + backup + classifier against a fixture home booted through the
-real init path and paired to a stub.
+exists; a stub peer publishing a different fingerprint → B refuses, the item names both; a
+forged answer is ignored. Stub relay `queued` + a `discover` row `offline`: after the threshold
+the send route carries `peerDark`, health shows `dark`, exactly one item; an inbound on the
+OTHER machine resolves it. Standby + holder with a Telegram stub: the standby's reply lands via
+the holder; `not-lease-holder` after a lease move → the old record is superseded and the reply
+lands ONCE via the new holder; holder down → 409 `telegram-origin-held {lease-not-held}`, listed
+in `/telegram/origins/status.held[]`; holder back → delivered once. File routes + backup +
+classifier against a fixture home booted through the real init path and paired to a stub.
 
 **Tier 3 — E2E (`tests/e2e/`)**: the production init path — `/agent-identity/audit`
 (+`?scope=pool`), `/threadline/peers/health` with the new fields,
@@ -932,8 +927,8 @@ download of `.instar/identity.json` (expect 403).
 - §1.4: a wrong `identity adopt` is reversed by a second one from the right machine, or by
   restoring the superseded backup; nothing ever deletes an identity file.
 - §2: reverting the formula restores the false alarm; nothing else to unwind.
-- §3: flag off → raw fields still populated, no sentence, no notice; the sentinel is then
-  constructed only under its original `monitoring.a2aRedelivery.enabled` (today's behaviour).
+- §3: flag off → raw fields still populated, no sentence, no notice; the sentinel rework
+  itself (per-peer, deterministic id) is reversible by code revert only.
 - §4: `forwardToHolder.enabled:false` → today's local hold, now DURABLE and reported.
 - §5: no lever by design; a false positive is fixed by moving the document, not by serving keys.
 
@@ -948,14 +943,12 @@ download of `.instar/identity.json` (expect 403).
   there, report the outcome, then unpin — never a file copy, never a command handed to the
   operator. A 409 (machine offline) means the item stays open; say so.
 - **"Are my machines the same me on the agent network?"** → `GET /threadline/health →
-  identityCoherence` on any machine (`agree` / `partial-agree` / `disagree` / `cannot-tell`).
-  A split means peers' messages to me are being queued and lost; the item names the machine
-  holding the relay under the wrong address and asks for the yes.
-- **"Did <peer> get my message?"** → the send response's `relayStatus` AND `peerDark`; a dark
-  peer has had messages queued for hours with no acknowledgement; `connectedNow` says whether
-  the relay sees it connected right now (`null` = unknown). It may be offline, or listening
-  under a different address. `GET /threadline/peers/health` → `dark`, `darkSince`,
-  `queuedCount`, `connectedNow`. Before blaming the peer, read my own `relay.state`.
+  identityCoherence` (`agree` / `partial-agree` / `disagree` / `cannot-tell`). A split means
+  peers' messages are queued and lost; the item names the machine and asks for the yes.
+- **"Did <peer> get my message?"** → the send response's `relayStatus` AND `peerDark`
+  (queued for hours, nothing acknowledged; `connectedNow` true/false/`null` = unknown; offline
+  OR listening under a different address). `GET /threadline/peers/health` → `dark`,
+  `darkSince`, `queuedCount`, `connectedNow`. Before blaming the peer, read my own `relay.state`.
 - **"Why was my reply delayed / why did a topic go quiet on my other machine?"** → on a
   machine that does not hold the lease, replies are forwarded to the holder; a failed forward
   is a durable hold in `GET /telegram/origins/status` (`held[].hold_reason: lease-not-held`)
@@ -971,23 +964,19 @@ action at build time with this spec as origin, unless a carrier already exists:
 - **Dashboard reconcile ceremony** (plan/commit routes, PIN, signed replace mandates,
   replicated commit record, `decideReconciliation` wiring, any mesh-callable replace) —
   carrier: the parent spec's open AC6/AC7b; §1.4 is the v1 path.
-- **Join-time pin** (`afp` pairing-URL parameter, `--agent-fingerprint`, `fingerprintFormula`
-  envelope stamp) — the join envelope is accepted under either formula; a wrong envelope is
-  caught by §2 within 10 min.
-- **Coherence-advert `agentFingerprint` field + MachineCoherence `identity` dimension** — the
-  detector keeps its direct `/provenance` read.
+- **Join-time pin** (`afp` pairing-URL parameter, `--agent-fingerprint`, envelope stamp) — a
+  wrong envelope is caught by §2 within 10 min. **Coherence-advert `agentFingerprint` field +
+  MachineCoherence `identity` dimension** — the detector keeps its direct `/provenance` read.
 - **Out-of-process corroboration** (relay registry self-lookup, inbound recipient
   fingerprints) — a unanimous-but-wrong fleet is reported by the PEER's §3 notice on their side.
 - **Relay-side `recipientLastSeenAt` on queued acks; relay orphan retirement** — CMT-026,
   which now carries a trigger: the next relay deploy for any other reason, OR a second
   dark-peer episode whose cause turns out to be a wrong address — whichever first. The relay
   is the only party that can tell "offline" from "nobody has ever had this number".
-- **Static `KEY_FILE_MANIFEST` ratchet at the single writer** — the fixture walk (§5.4) is the
-  v1 guard.
-- **Dark-peer flap detection ("intermittent"), ≥2-peers-crossing aggregation** — the per-peer
-  12 h cooldown bounds the surface in v1.
-- **`capabilities` RPC cache per lease epoch; forwarding media/edits/pins from a standby** —
-  v1 forwards `sendMessage`; the rest holds durably and is reported.
+- **Static `KEY_FILE_MANIFEST` ratchet** — the fixture walk (§5.4) is the v1 guard. **Dark-peer
+  flap detection, ≥2-peers-crossing aggregation** — the 12 h cooldown bounds v1. **`capabilities`
+  RPC cache per lease epoch; forwarding media/edits/pins from a standby** — v1 forwards
+  `sendMessage`; the rest holds durably and is reported.
 - **Rotation of the agent identity across the fleet / per-device certificates**; **at-rest
   passphrase for the canonical key** — the parent's accepted-cost boundary, now two incidents
   old; evolution actions `agent-identity-rotation-and-device-certs`,
