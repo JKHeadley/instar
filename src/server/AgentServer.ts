@@ -68,6 +68,7 @@ import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/Fe
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
@@ -467,6 +468,8 @@ export class AgentServer {
     isRestorePending: () => boolean;
     authorityBinding: () => { ownerMachineId: string | null; ownerEpoch: number };
   } | null = null;
+  /** Feedback triage (docs/specs/feedback-triage-and-execution.md). Null when dark → routes 503. */
+  private feedbackTriage: import('../feedback-factory/triage/buildFeedbackTriage.js').FeedbackTriageRouteContext | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
   private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
@@ -1081,6 +1084,9 @@ export class AgentServer {
     codexLiveUsageReader?: ((opts?: { codexHome?: string }) => Promise<
       import('../providers/adapters/openai-codex/observability/codexRateLimitReader.js').CodexUsageSnapshot | null
     >) | null;
+    /** Test seams for feedback triage (docs/specs/feedback-triage-and-execution.md); production leaves undefined. */
+    feedbackTriageDeps?: Partial<Pick<import('../feedback-factory/triage/FeedbackTriageService.js').FeedbackTriageServiceOptions,
+      'secondOpinion' | 'quotaUsedPercent' | 'listMergedPrs' | 'sendToTopic' | 'raiseAttention' | 'clock'>>;
     /** Test seam for canonical stage-evidence resolution; production leaves undefined. */
     stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
     /** Project drift checker (Phase 1b connect-the-dots). Optional —
@@ -2720,6 +2726,40 @@ export class AgentServer {
         this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
+        // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner
+        // fence, same drain database; dev-gated (live on a development agent, dark on the fleet).
+        if (resolveDevAgentGate(options.config.feedbackFactory?.triage?.enabled, options.config)) {
+          try {
+            this.feedbackTriage = buildFeedbackTriage({
+              config: options.config,
+              drainStore: store,
+              processing: this.feedbackProcessing,
+              initiativeTracker: options.initiativeTracker,
+              intelligence: options.intelligence ?? null,
+              dataDir,
+              tokenKey,
+              ownerHost: serviceOwnerHost,
+              ownerMachineId: () => ownerHost,
+              ownerEpoch: () => options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch,
+              isCanonicalOwner,
+              resolvePeerUrls: options.resolvePeerUrls,
+              codexLiveUsageReader: options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool),
+              subscriptionPool: options.subscriptionPool ?? null,
+              telegram: options.telegram ?? null,
+              raiseAttention: async (item) => {
+                const enqueue = this.telegramAdapter?.createAttentionItem;
+                if (!enqueue) throw new Error('durable attention enqueue unavailable');
+                await enqueue.call(this.telegramAdapter, item);
+              },
+              tunnelUrl: () => options.tunnel?.url ?? null,
+              overrides: options.feedbackTriageDeps,
+            });
+            console.log('[feedback-factory] triage live (awaiting operator approval until the triage authority is registered)');
+          } catch (error) { /* @silent-fallback-ok: logged; triage stays null so its routes answer 503 and the drain is unaffected */
+            console.warn('[feedback-factory] triage init failed (non-fatal):', error);
+            this.feedbackTriage = null;
+          }
+        }
         if (options.config.stateDir && sourceCheckout) {
           const selfHealBootId = randomUUID();
           void runFeedbackFactoryDefaultsSelfHeal({
@@ -4537,6 +4577,7 @@ export class AgentServer {
       feedbackProcessing: this.feedbackProcessing,
       feedbackDrain: this.feedbackDrain,
       feedbackDrainPosture: this.feedbackDrainPosture,
+      feedbackTriage: this.feedbackTriage,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,

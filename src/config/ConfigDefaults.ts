@@ -2263,6 +2263,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       dryRun: true,
       maxClaimsPerTick: 10,
     },
+    // Feedback triage (docs/specs/feedback-triage-and-execution.md): dev-gated like the
+    // drain — `enabled` OMITTED so the developmentAgent gate decides (live on a dev agent,
+    // dark on the fleet). ignoreLive is deliberately absent: ignore goes live only through the
+    // PIN-bound plan/commit record; an explicit false is the kill switch.
+    triage: {
+      maxBatchChars: 24000,
+      reportsPerItem: 4,
+      charsPerReport: 1200,
+      maxCallsPerDay: 150,
+    },
   },
 };
 

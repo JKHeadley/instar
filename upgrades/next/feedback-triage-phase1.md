@@ -1,0 +1,28 @@
+# Feedback work items get ranked, worked, held or ignored
+
+## What Changed
+
+The feedback drain turns report clusters into Initiative work items and stopped there: on 2026-10-06 there were 426 untouched items, all `normal` priority, none ever closed. Phase 1 of `docs/specs/feedback-triage-and-execution.md` (converged, 10 rounds; approved) adds the missing triage step.
+
+- `src/feedback-factory/triage/`: a registered frontier-model triage authority (`feedback-triage`, schema `feedback-triage-decision-v1`) reads each item's scrubbed evidence and decides `work` / `hold` / `ignore` with severity, priority and a reason, inside deterministic floors (invalid output → untriaged; low confidence, truncated or withheld evidence, security-shaped wording or high severity never ignored without a second model family; duplicate and already-fixed need cited evidence; ignore-rate brake; stale-write guard; re-queue throttle and backoff).
+- Triage tables in `feedback-drain.db`, owner-epoch fenced. `work` keeps the Initiative active; `hold` and `ignore` pause it (never archive). Items return on a timer or when new reports arrive. `Cluster.status` and report statuses are never written.
+- `ignore` runs in shadow on development agents until graded evidence and a PIN-bound operator approval turn it on.
+- Routes `GET /feedback-factory/triage/queue`, `/summary`; `POST /feedback-factory/triage/tick`, `/plan`, `/commit`, `/action-list`, plus the triage authority proposal/approve card. Non-owner reads proxy to the owner with a stale fallback.
+- A once-a-day operator action list (08:00 host time, never 23:00–07:30, ≤10 items, each item once), a self-heal ladder for triage outages, call and quota caps, and a dashboard Triage section on the Feedback Drain tab.
+- Built-in jobs `feedback-factory-triage` and `feedback-factory-action-list` (route-gated); CLAUDE.md template + migration. Dev-gated: live on development agents, dark on the fleet.
+
+## What to Tell Your User
+
+The feedback reports I collect now get sorted. A strong model reads each one and decides whether it's worth working on, should wait, or can be set aside, and why. Nothing is deleted; set-aside items come back if new reports arrive. You'll get at most one short message a day, and only when something needs your tap.
+
+## Summary of New Capabilities
+
+- Ranked feedback work queue and plain-language triage summary (dashboard Feedback Drain tab, or `GET /feedback-factory/triage/queue` and `/summary`).
+- Work / hold / ignore decisions with reasons, reversible, with ignore in practice mode until approved.
+- Daily operator action list for items that genuinely need a decision.
+
+## Evidence
+
+- Unit: `tests/unit/feedback-factory/triage-*.test.ts`, `tests/unit/feedback-triage-ui.test.ts`, `tests/unit/feedback-triage-job-templates.test.ts` — every floor on both sides, rank key, throttles, brake, action-list once-only and quiet window, self-heal ladder, plus a regression test for each second-pass finding.
+- Integration: `tests/integration/feedback-triage-routes.test.ts` — routes with a fake provider (valid, invalid, low-confidence, critical-ignore, truncated-ignore, chain-duplicate, runaway-ignore), PIN plan/commit, non-owner proxy with differing machine and agent ids.
+- E2E: `tests/e2e/feedback-triage-lifecycle.test.ts` — production construction path; routes 200 when enabled, 503 when dark.

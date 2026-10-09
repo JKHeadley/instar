@@ -5,6 +5,7 @@ import { FeedbackDrainStore, type AuthorityRecord, type ReadinessProjection } fr
 import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js';
 import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, ReadinessOutputRejected, outputExcerpt, type FeedbackReadinessArbiter, type ReadinessCallDiagnosis, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
+import { StageBudgetExceeded, unitsThatFit, withStageBudget } from './stageBudget.js';
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -409,7 +410,7 @@ export class FeedbackDrainService {
       const remaining = deadline - this.now();
       // Before the first call a full chunk is assumed to fit its call budget; after it, the
       // chunk is sized from this tick's observed pace with a 25% margin.
-      const fits = reviewedCandidates > 0 ? Math.floor(remaining / (1.25 * reviewedMs / reviewedCandidates)) : this.readinessChunkSize;
+      const fits = unitsThatFit(remaining, reviewedMs, reviewedCandidates, this.readinessChunkSize);
       const chunk = pending.slice(0, Math.min(this.readinessChunkSize, fits));
       // A later call also needs MIN_LATER_READINESS_CALL_MS: every call pays a fixed start-up
       // cost the per-candidate pace does not show (live: one-candidate calls given 7.6 s timed out).
@@ -501,20 +502,9 @@ export class FeedbackDrainService {
     if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
   }
 
-  private async withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {
-    const startedAt = this.now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new StageBudgetExceeded(`${stage} stage budget exceeded`)), budgetMs);
-        if (typeof timer.unref === 'function') timer.unref();
-      });
-      const result = await Promise.race([operation(), timeout]);
-      if (this.now() - startedAt > budgetMs) throw new StageBudgetExceeded(`${stage} stage budget exceeded`);
-      return result;
-    } finally { if (timer) clearTimeout(timer); }
+  private withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {
+    return withStageBudget(stage, operation, budgetMs, this.now);
   }
 }
 
 class FeedbackDrainCancellation extends Error {}
-class StageBudgetExceeded extends Error { override name = 'StageBudgetExceeded'; }

@@ -1554,6 +1554,26 @@
         "maxRecords": 1,
         "note": "A single replace-in-place record; {clear:true} deletes the file. No rows accumulate."
       }
+    },
+    {
+      "category": "feedback-triage-evidence",
+      "description": "Feedback triage audit stream (decision, floor and transition rows: ids, dispositions, reasons, scores and floors, never report text) plus the scrubbed per-decision evidence packets the triage authority saw. Written only by the drain's fenced canonical owner; the triage disposition tables themselves live inside the backed-up feedback-drain.db. Packets are never served raw over HTTP.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/feedback-triage.jsonl",
+        "state/feedback-factory/store/triage-packets/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 20971520,
+        "maxAgeMs": 7776000000,
+        "note": "Audit log rotated at 20 MB with 90-day retention of rotated segments; evidence packets kept 14 days (pruned each triage tick)."
+      }
     }
   ]
 }

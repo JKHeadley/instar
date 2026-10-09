@@ -271,6 +271,20 @@ export class JsonlFeedbackStore implements FeedbackStore {
     this.counts.captured++;
   }
 
+  /** Read-only: every clustered report grouped by its cluster id (oldest first). */
+  feedbackByCluster(): Map<string, FeedbackItem[]> {
+    const grouped = new Map<string, FeedbackItem[]>();
+    for (const item of this.feedback.values()) {
+      const clusterId = typeof item.clusterId === 'string' ? item.clusterId : '';
+      if (!clusterId) continue;
+      const list = grouped.get(clusterId) ?? [];
+      list.push({ ...item });
+      grouped.set(clusterId, list);
+    }
+    for (const list of grouped.values()) list.sort((a, b) => String(a.receivedAt ?? '').localeCompare(String(b.receivedAt ?? '')));
+    return grouped;
+  }
+
   hasFeedback(feedbackId: string): boolean {
     return this.feedback.has(feedbackId);
   }

@@ -3801,6 +3801,7 @@
       <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
       <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
       <section id="fdAuthority" class="ph-section spend-arm-root"></section>
+      <section id="fdTriage" class="ph-section spend-arm-root"></section>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -10544,9 +10545,53 @@
         },
       });
     }
+    // Triage section (feedback-triage-and-execution): queue, summary, authority card, PIN buttons.
+    // Rendered on tab open and after each action — not on the poll, which would wipe a PIN.
+    let __ftModule = null;
+    async function loadFeedbackTriage(noteText) {
+      const root = document.getElementById('fdTriage');
+      if (!root) return;
+      if (!__ftModule) {
+        try { __ftModule = await import('/dashboard/feedback-triage.js'); }
+        catch (e) { console.error('[feedback-triage] module load failed', e); root.textContent = 'Loading the triage section failed — refresh to retry.'; return; }
+      }
+      const M = __ftModule;
+      const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
+      const [summary, queue, proposal] = await Promise.all([
+        get('/feedback-factory/triage/summary'), get('/feedback-factory/triage/queue'), get('/feedback-factory/triage/authority/proposal'),
+      ]);
+      const post = async (url, body) => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+          body: JSON.stringify(body),
+        });
+        return { ok: response.ok, data: await response.json().catch(() => ({})) };
+      };
+      M.renderTriageSection(document, root, { summary, queue, proposal }, {
+        submitAuthority: async (action, pin) => {
+          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
+          const note = M.triageResultNote(r.ok, r.data);
+          if (r.ok) await loadFeedbackTriage(note);
+          return note;
+        },
+        planIgnoreLive: async (enabled) => {
+          const r = await post('/feedback-factory/triage/plan', { action: 'ignore-live', enabled });
+          return r.ok ? r.data : null;
+        },
+        commitPlan: async (plan, pin) => {
+          const r = await post('/feedback-factory/triage/commit', { pin, planId: plan.planId, nonce: plan.nonce });
+          const note = r.ok ? (r.data.ignoreLive ? 'Done: ignores are live.' : 'Done: ignores are back in practice mode.') : M.triageResultNote(false, r.data);
+          if (r.ok) await loadFeedbackTriage(note);
+          return note;
+        },
+      });
+      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; }
+    }
     function startFeedbackDrain() {
       stopFeedbackDrain();
       void loadFeedbackAuthority();
+      void loadFeedbackTriage();
       void loadFeedbackDrain();
       __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
     }

@@ -50,6 +50,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'correction-learning': { task: 'correction-distiller' },
   CoherenceReviewer: { task: 'gate-triage' },
   FeedbackReadinessArbiter: { task: 'feedback-readiness' },
+  FeedbackTriageArbiter: { pending: 'wave-3' },
+  FeedbackTriageSecondOpinion: { pending: 'wave-3' },
   GoalPriorityExtractor: { pending: 'wave-3' },
   AlignmentReviewer: { pending: 'wave-3' },
 
@@ -201,6 +203,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   SessionSummarySentinel: true,
   TelegramAdapter: true,
   FeedbackReadinessArbiter: true,
+  FeedbackTriageArbiter: true,
+  FeedbackTriageSecondOpinion: true,
   GoalPriorityExtractor: true,
   AlignmentReviewer: true,
   'subscription-relogin-supervisor': true, // provider DOM classification is untrusted even after deterministic clamping
@@ -399,6 +403,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
   FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
+  FeedbackTriageArbiter: false, // judges whether a feedback work item is worth work, not a completion/health claim
+  FeedbackTriageSecondOpinion: false, // re-judges an ignore decision, not a completion/health claim
   GoalPriorityExtractor: false, // extracts durable operator priorities; it does not credit a completion/progress/health claim
   AlignmentReviewer: { claimKind: 'healthClaim' }, // judges whether the active run remains healthy relative to durable operator priorities
 
@@ -520,6 +526,8 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
   FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
+  FeedbackTriageArbiter: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
+  FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
@@ -847,6 +855,8 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
   FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
+  FeedbackTriageArbiter: exposed(EXPOSED_USER_TOOL), // scrubbed feedback report text + cluster metadata
+  FeedbackTriageSecondOpinion: exposed(EXPOSED_USER_TOOL), // the same scrubbed triage packet
   GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context
   AlignmentReviewer: exposed(EXPOSED_ALL), // operator priorities + model/tool-authored run focus
   'subscription-relogin-supervisor': exposed(EXPOSED_TOOL), // clamped provider-page state originates in browser DOM
