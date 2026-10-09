@@ -36693,6 +36693,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let localPostPeerFp = '';
     // A forwarded request ALWAYS goes over the relay on the holder (the standby
     // already tried its own local route), so a holder 503 proves nothing was sent.
+    // Per-request: did this send's fingerprint branch already record its route?
+    let fingerprintRouteCounted = false;
     if (!forwardedRequest) try {
       const knownAgentsPath = path.join(ctx.config.stateDir, 'threadline', 'known-agents.json');
       if (fs.existsSync(knownAgentsPath)) {
@@ -36721,9 +36723,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (!isCredentialShareSend) {
             const sel = selectFingerprintTarget(agents, targetAgent);
             if (sel.kind === 'one') localTarget = sel.entry;
-            else backupRouteCounters.fingerprintToRelay++;
+            else { backupRouteCounters.fingerprintToRelay++; fingerprintRouteCounted = true; }
           } else {
             backupRouteCounters.fingerprintToRelay++;
+            fingerprintRouteCounted = true;
           }
         } else {
         // If a nickname resolved upstream, prefer fingerprint match over
@@ -36805,6 +36808,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               probeOk = fpVerdict.ok;
               if (!fpVerdict.ok) {
                 backupRouteCounters.fingerprintToRelay++;
+                fingerprintRouteCounted = true;
                 console.log(`[relay-send] Fingerprint-addressed local route skipped for ${targetAgent.slice(0, 8)}… (${fpVerdict.reason}); using the relay`);
               }
             }
@@ -36933,6 +36937,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   console.log(`[relay-send] Local delivery to ${localTarget.name}:${localTarget.port} (thread: ${effectiveThreadId}) — ${outcome}`);
                   if (fingerprintBranch) {
                     backupRouteCounters.fingerprintLocal++;
+                    fingerprintRouteCounted = true;
                     console.log(backupLogLine('fingerprint-local', msgId, localPostPeerFp, outcome));
                   }
 
@@ -37054,9 +37059,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // Local agent not reachable — fall through to relay
           }
         }
+      } else if (backupRoutesOn && isExactFingerprintTarget(targetAgent)) {
+        // No known-agents.json ⇒ no local candidate exists; the fingerprint
+        // branch's only route is the relay, and it is counted like any other
+        // fingerprint-to-relay decision (ACT-064).
+        backupRouteCounters.fingerprintToRelay++;
+        fingerprintRouteCounted = true;
       }
     } catch {
-      // Known-agents read failed — fall through to relay
+      // Known-agents read failed — fall through to relay. A fingerprint send whose
+      // routing never reached a decision (nothing counted, nothing posted) is
+      // still a fingerprint-to-relay route and is counted as one (ACT-064).
+      if (
+        backupRoutesOn && isExactFingerprintTarget(targetAgent) &&
+        !fingerprintRouteCounted && localPostOutcome.kind === 'no-post'
+      ) {
+        backupRouteCounters.fingerprintToRelay++;
+        fingerprintRouteCounted = true;
+      }
     }
 
     // ── Fall back to relay delivery ─────────────────────────────────

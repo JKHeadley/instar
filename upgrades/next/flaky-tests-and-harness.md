@@ -1,0 +1,25 @@
+# Load-only test flakes and test-as-self teardown
+
+<!-- bump: patch -->
+
+## What Changed
+
+The job-completion audit's flush now waits for every evidence capture still in flight, not only the most recent one. The standards-coverage measurement fetches canonical main's exact commit when the local checkout is behind, instead of reporting "not proven". `instar test-as-self` now:
+- finds its verifier from any working directory;
+- passes with `--no-roundtrip` when the deploy is clean;
+- on teardown, removes the throwaway's launchd/systemd autostart, stops its processes, the public quick tunnel, and its tmux sessions, without touching its own parent shell.
+
+A fingerprint-addressed agent-to-agent send with no known-agents file is now counted in `threadline.backupRoutes.fingerprintToRelay`.
+
+## What to Tell Your User
+
+Nothing changes in how your agent talks to you. If you run the throwaway-deploy check, it now cleans up after itself and leaves no background service or public tunnel running.
+
+## Summary of New Capabilities
+
+- `instar test-as-self` teardown leaves nothing running.
+- `verify.mjs --no-lease` for deploys without a test bot.
+
+## Evidence
+
+Each fix has a regression test that fails without it. The audit flake ran 80/80 under 4× parallel load. The measurement flake was reproduced in a clone missing main's newest commit (null before, proven after) and ran 20/20 under parallel load. A live `test-as-self --no-roundtrip` run from outside the repo passed, with zero leftover plist, processes, or sessions.

@@ -11,6 +11,7 @@
  * "Forbidden inputs".
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 
 export interface TargetGuardOptions {
@@ -20,12 +21,19 @@ export interface TargetGuardOptions {
   protectedNames: string[];
   /** Optional: absolute homes that are off-limits regardless of name (e.g. a known Bob path). */
   protectedHomes?: string[];
+  /**
+   * Optional: every live agent home on this machine (e.g. each ~/.instar/agents/*).
+   * The teardown sweeps processes naming the target path and tmux sessions named
+   * `<basename(target)>-*`, so a target may be neither an ANCESTOR of any of these
+   * homes nor share a basename with one (ACT-064 second-pass review).
+   */
+  agentHomes?: string[];
 }
 
 export interface GuardResult {
   ok: boolean;
   /** Stable machine-readable reason code (also the suggested process exit semantics). */
-  code: 'ok' | 'target-is-canonical' | 'target-is-protected' | 'raw-token-on-cli' | 'empty-target';
+  code: 'ok' | 'target-is-canonical' | 'target-is-protected' | 'target-is-ancestor' | 'target-name-collides' | 'raw-token-on-cli' | 'empty-target';
   reason?: string;
 }
 
@@ -42,6 +50,22 @@ export function isRawToken(value: string): boolean {
 }
 
 /** Normalize a path for comparison (resolve + strip trailing sep). */
+/** Resolve symlinks for the longest existing prefix; the remainder is appended unchanged. */
+function realOrSelf(p: string): string {
+  let head = p;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(head), ...tail);
+    } catch {
+      const parent = path.dirname(head);
+      if (parent === head) return p;
+      tail.unshift(path.basename(head));
+      head = parent;
+    }
+  }
+}
+
 function norm(p: string): string {
   const r = path.resolve(p);
   return r.length > 1 && r.endsWith(path.sep) ? r.slice(0, -1) : r;
@@ -84,6 +108,39 @@ export function validateTarget(target: string | undefined, opts: TargetGuardOpti
         ok: false,
         code: 'target-is-protected',
         reason: `Refusing to use protected home ${norm(ph)} as a throwaway target.`,
+      };
+    }
+  }
+
+  // The teardown signals every process whose argv names a path under the target,
+  // and every tmux session prefixed `<basename>-`. Refuse targets for which that
+  // sweep could reach a real agent.
+  const homes = [canonical, ...(opts.protectedHomes ?? []), ...(opts.agentHomes ?? [])].map(norm);
+  const tReal = realOrSelf(t);
+  for (const h of homes) {
+    const hReal = realOrSelf(h);
+    if (tReal === hReal) {
+      return {
+        ok: false,
+        code: 'target-is-canonical',
+        reason: `Refusing target ${t}: it resolves to the agent home ${h}.`,
+      };
+    }
+    if (t === path.parse(t).root || h.startsWith(t + path.sep) || hReal.startsWith(tReal + path.sep)) {
+      return {
+        ok: false,
+        code: 'target-is-ancestor',
+        reason: `Refusing target ${t}: it contains a real agent home (${h}); teardown would stop that agent's processes.`,
+      };
+    }
+    // tmux sessions are `<agentBase>-*`; the reaper kills `<base>-*`. They
+    // overlap when the names are equal or either is a dash-prefix of the other.
+    const hb = path.basename(h).toLowerCase();
+    if (hb === base || hb.startsWith(base + '-') || base.startsWith(hb + '-')) {
+      return {
+        ok: false,
+        code: 'target-name-collides',
+        reason: `Refusing target ${t}: its name "${base}" matches the agent home ${h}; teardown would stop that agent's sessions.`,
       };
     }
   }

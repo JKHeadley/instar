@@ -190,4 +190,18 @@ describe('runVerify — aggregate report', () => {
     expect(r.allPass).toBe(false);
     expect(r.crashes.length).toBeGreaterThan(0);
   });
+
+  it('expectLease:false (no lifeline started) skips lease + demote, so a clean deploy passes', () => {
+    writeServerLog('server up\n');
+    const r = runVerify(dir, { now: 1_500, expectLease: false });
+    expect(r.allPass).toBe(true);
+    expect(r.checks['lease.present'].detail).toMatch(/skipped/);
+    expect(r.checks['server.demoteLogged'].detail).toMatch(/skipped/);
+  });
+
+  it('expectLease:false still FAILS on a crash signature', () => {
+    writeServerLog('FATAL ERROR\n');
+    const r = runVerify(dir, { now: 1_500, expectLease: false });
+    expect(r.allPass).toBe(false);
+  });
 });
