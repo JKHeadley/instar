@@ -34,11 +34,11 @@ User: /autonomous --duration=8h --goal="Complete Slack feature parity"
 Agent: Here's my task breakdown for autonomous mode:
 
 TASKS (all must be complete before I can exit):
-1. [ ] Implement job-specific Slack channels
-2. [ ] Build full PresenceProxy Slack integration
-3. [ ] Update dashboard HTML with platform badges
-4. [ ] Implement Slack Lifeline process
-5. [ ] Add platform dropdown to new session UI
+- [ ] (1) Implement job-specific Slack channels
+- [ ] (2) Build full PresenceProxy Slack integration
+- [ ] (3) Update dashboard HTML with platform badges
+- [ ] (4) Implement Slack Lifeline process
+- [ ] (5) Add platform dropdown to new session UI
 ...
 
 Completion promise: "ALL_TASKS_COMPLETE"
@@ -47,6 +47,13 @@ Emergency stop: "stop everything" via messaging
 
 Shall I proceed? (The stop hook will prevent me from exiting until all tasks are done)
 ```
+
+<!-- CHECKBOX_TASK_LIST — task lines MUST be `- [ ] text` (a dash bullet). The server's task
+parser reads only dash-bullet checkboxes; numbered `1. [ ]` lines are invisible to it, so no
+work receipt can ever be minted against them and the run is never admitted. Put any number
+inside the text: `- [ ] (1) text`. -->
+**Task lines must use `- [ ]` checkboxes** (put a number inside the text if you want one:
+`- [ ] (1) ...`). Numbered `1. [ ]` lines are not read as tasks by the server.
 
 **The user must confirm before the hook activates.** This is the safety gate.
 

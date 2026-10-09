@@ -1,0 +1,24 @@
+# An ordinary autonomous run can be admitted by the window-run liveness check
+
+## What Changed
+
+The window-run liveness authority (Echo-only, dev-gated) marks a run active only when five checks pass. One of them, "lifecycle admitted", read only the window-ritual ledger, which an ordinary topic run never has, so no ordinary run could ever become active. Two smaller traps blocked the same runs. This lands, in source, the fix that was hot-patched into Echo's running install on 2026-10-09.
+
+- `src/core/WindowRunLivenessAuthority.ts`: `register()` may correct the executor id of a binding that is still `preparing` with no transitions and no work receipt, when every other field matches. The document records `bindingCorrection { fromExecutorId, at }`. Any other differing binding is still refused with `window-run-liveness-active-binding-exists`.
+- New pure `resolveWindowRunSampleLifecycle()` in the same module; `src/server/AgentServer.ts` now calls it to build the sample's lifecycle part. With the new opt-in `monitoring.windowRunLiveness.ordinaryRunLifecycle: true` (read live, default false), a run is admitted by its own open, unexpired server registration when no window-ritual ledger claims the window and the binding's `lifecycleRunId` equals its `autonomousRunId`. With the flag off, behaviour is unchanged. Ritual windows are unaffected either way.
+- `.claude/skills/autonomous/SKILL.md`: the example task list now uses `- [ ] (1) text` lines. The server's task parser reads only dash-bullet checkboxes, so runs that copied the old `1. [ ]` example had zero tasks and could never mint a work receipt. Existing agents receive the fixed skill through a new `CHECKBOX_TASK_LIST` marker bump in `PostUpdateMigrator` (stock copies only; customized skills untouched).
+
+## What to Tell Your User
+
+Nothing changes unless the new setting is turned on. On my own development setup, a long autonomous run started from a normal conversation could never be recognised as properly running by the stricter liveness check, so it would be treated as not alive. That is now fixable with one setting, and the autonomous-mode instructions now write task lists in the format the server actually reads.
+
+## Summary of New Capabilities
+
+- `monitoring.windowRunLiveness.ordinaryRunLifecycle` (default false): admit an ordinary autonomous run by its own server registration.
+- A preparing liveness binding registered with the wrong executor id can be re-registered with the right one.
+
+## Evidence
+
+- `tests/unit/window-run-liveness-authority.test.ts`: executor-only correction accepted and recorded; refused after a transition and when another field differs; `resolveWindowRunSampleLifecycle` admits an ordinary run when opted in and refuses it for flag off, closed run, no run, lifecycle id not the run id, and a ledger claiming the window; ritual windows stay on their ledger.
+- `tests/unit/autonomous-skill-checkbox-task-list.test.ts`: the bundled example parses as 5 open tasks; the prior stock skill (from `origin/main` 3f7ef0422) is re-deployed and the migration is idempotent; a customized skill is untouched.
+- Live: the same logic, hot-patched into Echo's install, took run `run-mv0lptt1-fce570aa` (topic 52075) from never-admittable to all five checks green on 2026-10-09 00:14 PDT.

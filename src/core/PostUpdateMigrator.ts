@@ -5318,6 +5318,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'SCOPE_ACCRETION',
       'skills/autonomous/SKILL.md (W32 preparation-aware active state)',
     );
+    // CHECKBOX_TASK_LIST: the example task list used numbered `1. [ ]` lines,
+    // which parseContinuationTasks does not read (it needs `- [ ]`), so runs
+    // copied from it could never mint a work receipt or be admitted.
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'CHECKBOX_TASK_LIST',
+      'W32_PREPARING_LIVENESS',
+      'skills/autonomous/SKILL.md (dash-bullet task checkboxes)',
+    );
   }
 
   /**

@@ -53,6 +53,35 @@ export interface WindowRunLivenessSample {
   };
 }
 
+/**
+ * The lifecycle part of a liveness sample. A window-ritual run is admitted by
+ * its own ledger entry. An ordinary topic run has no such ledger, so (opt-in
+ * via `ordinaryRunLifecycle`) it is admitted by its own open, unexpired server
+ * registration — but only when no ledger claims this window and the binding
+ * names the run as its own lifecycle.
+ */
+export function resolveWindowRunSampleLifecycle(input: {
+  state: Pick<WindowRunLivenessDocument, 'windowId' | 'autonomousRunId' | 'lifecycleRunId'>;
+  ledger: { windowId?: string; lifecycleRunId?: string; state?: string; admission?: { admitted?: boolean } } | null | undefined;
+  run: { runId: string; endAt: string } | null;
+  runIsOpen: boolean;
+  ordinaryRunLifecycle: boolean;
+}): WindowRunLivenessSample['lifecycle'] {
+  const { state, ledger, run } = input;
+  const lifecycleMatches = !!ledger && ledger.lifecycleRunId === state.lifecycleRunId && ledger.windowId === state.windowId;
+  const runOwnsLifecycle = input.ordinaryRunLifecycle && !lifecycleMatches && ledger?.windowId !== state.windowId
+    && state.lifecycleRunId === state.autonomousRunId && run?.runId === state.autonomousRunId && input.runIsOpen;
+  if (runOwnsLifecycle) {
+    return { lifecycleRunId: run!.runId, state: 'autonomous-run-registered', admitted: true, expiresAt: run!.endAt };
+  }
+  return {
+    lifecycleRunId: lifecycleMatches ? ledger!.lifecycleRunId! : null,
+    state: lifecycleMatches ? ledger!.state ?? null : null,
+    admitted: lifecycleMatches && ledger!.admission?.admitted === true,
+    expiresAt: run?.runId === state.autonomousRunId ? run.endAt : null,
+  };
+}
+
 export interface WindowRunPredicateVerdict {
   ok: boolean;
   observed: string;
@@ -137,6 +166,8 @@ export interface WindowRunLivenessDocument {
     headDigest: string | null;
   };
   legacyProjection?: { status: WindowRunLivenessStatus; at: string; receipt: string };
+  /** Set when a never-evaluated preparing binding had its executor id corrected. */
+  bindingCorrection?: { fromExecutorId: string; at: string };
   transitions: WindowRunTransitionReceipt[];
   finalSnapshot?: {
     frozenAt: string;
@@ -353,7 +384,19 @@ export class WindowRunLivenessAuthority {
       if (existing && !isTerminal(existing.status)) {
         const same = existing.windowId === input.windowId && existing.autonomousRunId === input.autonomousRunId && existing.lifecycleRunId === input.lifecycleRunId && existing.executorId === input.executorId && existing.topicId === input.topicId;
         if (same) return existing;
-        throw new Error('window-run-liveness-active-binding-exists');
+        // A binding registered with the wrong executor id (e.g. the Claude session
+        // UUID instead of the tmux name) can never go green. While it is still
+        // 'preparing' with no transitions and no work receipt, nothing has been
+        // decided on it, so correcting ONLY the executor id is safe. Any other
+        // difference, or any history, still refuses.
+        const executorCorrection = existing.status === 'preparing' && existing.transitions.length === 0 && !existing.lastWorkReceipt
+          && existing.windowId === input.windowId && existing.autonomousRunId === input.autonomousRunId
+          && existing.lifecycleRunId === input.lifecycleRunId && existing.topicId === input.topicId;
+        if (!executorCorrection) throw new Error('window-run-liveness-active-binding-exists');
+        const corrected: WindowRunLivenessDocument = { ...existing, executorId: input.executorId, bindingCorrection: { fromExecutorId: existing.executorId, at: this.now() } };
+        this.project(corrected, 'preparing', corrected.bindingCorrection!.at);
+        this.store.save(corrected);
+        return corrected;
       }
       if (existing && isTerminal(existing.status)) {
         this.store.recordTerminalWindow(existing.windowId, existing.finalSnapshot?.frozenAt ?? existing.lastEvaluatedAt ?? existing.registeredAt);
