@@ -275,18 +275,93 @@ describe('identity key file — validate on read, repair hex, refuse the rest', 
     });
   });
 
-  it('CanonicalIdentityManager.load keeps refusing a file with no declared encryption (unchanged behaviour)', () => {
-    // The pairing installer writes this shape. Loading it here was an error
-    // before this change and still is; widening that is a separate decision.
-    fs.writeFileSync(canonicalFile, JSON.stringify({
+  describe('CanonicalIdentityManager.load — the pairing installer shape (ACT-072)', () => {
+    // Spec: docs/specs/joined-machine-unified-trust.md. The pairing installer
+    // writes {version, publicKey, privateKey, createdAt, provenance} with no
+    // privateKeyEncryption / canonicalId / displayFingerprint. This used to throw
+    // "Unknown encryption method: undefined", so unified trust never started on
+    // a machine that joined via pairing.
+    const installerShape = (): Record<string, unknown> => ({
       version: 1,
       publicKey: kp.publicKey.toString('base64'),
       privateKey: kp.privateKey.toString('base64'),
       createdAt: '2026-10-01T00:00:00.000Z',
-    }));
-    expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(/Unknown encryption method/);
-    // The relay-side manager loads it, as before.
-    expect(new IdentityManager(stateDir).get()?.fingerprint).toBe(computeFingerprint(kp.publicKey));
+      provenance: { schemaVersion: 1, origin: 'received-on-join' },
+    });
+
+    it('loads a file with no declared encryption as plaintext, deriving the identifiers', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify(installerShape()));
+      const before = fs.readFileSync(canonicalFile, 'utf-8');
+      const loaded = new CanonicalIdentityManager(stateDir).load();
+      const id = computeCanonicalId(kp.publicKey);
+      expect(sameBytes(loaded!.publicKey, kp.publicKey)).toBe(true);
+      expect(sameBytes(loaded!.privateKey, kp.privateKey)).toBe(true);
+      expect(loaded!.canonicalId).toBe(id);
+      expect(loaded!.displayFingerprint).toBe(computeDisplayFingerprint(id));
+      expect(loaded!.x25519PublicKey.length).toBe(32);
+      // A read path: the file is not rewritten.
+      expect(fs.readFileSync(canonicalFile, 'utf-8')).toBe(before);
+      // The relay-side manager agrees on the same key.
+      expect(new IdentityManager(stateDir).get()?.fingerprint).toBe(computeFingerprint(kp.publicKey));
+    });
+
+    it('repairs the installer shape stored as hex, then loads it with derived identifiers', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify({
+        ...installerShape(),
+        publicKey: kp.publicKey.toString('hex'),
+        privateKey: kp.privateKey.toString('hex'),
+      }));
+      const loaded = new CanonicalIdentityManager(stateDir).load();
+      expect(sameBytes(loaded!.publicKey, kp.publicKey)).toBe(true);
+      expect(loaded!.canonicalId).toBe(computeCanonicalId(kp.publicKey));
+      const onDisk = readJson(canonicalFile);
+      expect(onDisk.publicKey).toBe(kp.publicKey.toString('base64'));
+      expect('privateKeyEncryption' in onDisk).toBe(false);
+      expect('canonicalId' in onDisk).toBe(false);
+    });
+
+    it('derives the identifiers when they are stored empty', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify({ ...installerShape(), canonicalId: '', displayFingerprint: '' }));
+      const loaded = new CanonicalIdentityManager(stateDir).load();
+      const id = computeCanonicalId(kp.publicKey);
+      expect(loaded!.canonicalId).toBe(id);
+      expect(loaded!.displayFingerprint).toBe(computeDisplayFingerprint(id));
+    });
+
+    it('still refuses a declared empty encryption method', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify({ ...installerShape(), privateKeyEncryption: '' }));
+      expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(/Unknown encryption method/);
+    });
+
+    it('still refuses a declared but unknown encryption method', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify({ ...installerShape(), privateKeyEncryption: 'rot13' }));
+      expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(/Unknown encryption method/);
+    });
+
+    it('still refuses a declared null encryption method (present, not absent)', () => {
+      fs.writeFileSync(canonicalFile, JSON.stringify({ ...installerShape(), privateKeyEncryption: null }));
+      expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(/Unknown encryption method/);
+    });
+
+    it('still refuses an installer-shaped file whose private key is not a plaintext seed', () => {
+      // e.g. ciphertext shipped without its encryption field: never misread as a key.
+      fs.writeFileSync(canonicalFile, JSON.stringify({
+        ...installerShape(),
+        privateKey: Buffer.alloc(72, 7).toString('base64'),
+      }));
+      const before = fs.readFileSync(canonicalFile, 'utf-8');
+      expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(IdentityFileInvalidError);
+      expect(fs.readFileSync(canonicalFile, 'utf-8')).toBe(before);
+    });
+
+    it('still refuses an installer-shaped file whose key pair does not match', () => {
+      const other = generateIdentityKeyPair();
+      fs.writeFileSync(canonicalFile, JSON.stringify({
+        ...installerShape(),
+        privateKey: other.privateKey.toString('base64'),
+      }));
+      expect(() => new CanonicalIdentityManager(stateDir).load()).toThrow(/does not belong/);
+    });
   });
 
   describe('IdentityManager (threadline client) — unusable files', () => {

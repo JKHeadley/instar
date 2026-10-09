@@ -160,7 +160,17 @@ export class CanonicalIdentityManager {
 
     let privateKey: Buffer;
 
-    if (file.privateKeyEncryption === 'none') {
+    // The pairing installer (installAgentIdentityFromPairing) writes a
+    // plaintext key with no `privateKeyEncryption` field (spec:
+    // joined-machine-unified-trust). An ABSENT field therefore means 'none'.
+    // readIdentityKeyFile has already validated that file as a plaintext pair
+    // (32-byte seed whose public key matches), so a ciphertext key without the
+    // field never reaches here. A field that is present but holds anything
+    // other than the two known methods is still refused below.
+    const declaresNoEncryption =
+      file.privateKeyEncryption === 'none' || !('privateKeyEncryption' in loaded.raw);
+
+    if (declaresNoEncryption) {
       privateKey = loaded.privateKey!;
     } else if (file.privateKeyEncryption === 'xchacha20-poly1305+argon2id') {
       if (!options.passphrase && options.passphrase !== '') {
@@ -184,13 +194,17 @@ export class CanonicalIdentityManager {
       throw new Error(`Unknown encryption method: ${file.privateKeyEncryption}`);
     }
 
+    // The installer shape also carries no canonicalId / displayFingerprint.
+    // Both are pure functions of the public key, so derive them when absent
+    // (or empty).
+    const canonicalId = file.canonicalId || computeCanonicalId(loaded.publicKey);
     const identity: CanonicalIdentity = {
       version: file.version,
       publicKey: loaded.publicKey,
       privateKey,
       x25519PublicKey: deriveX25519PublicKey(privateKey),
-      canonicalId: file.canonicalId,
-      displayFingerprint: file.displayFingerprint,
+      canonicalId,
+      displayFingerprint: file.displayFingerprint || computeDisplayFingerprint(canonicalId),
       createdAt: file.createdAt,
       recoveryCommitment: file.recoveryCommitment,
       migrationComplete: file.migrationComplete,

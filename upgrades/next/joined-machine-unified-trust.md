@@ -1,0 +1,22 @@
+# Unified trust starts on a machine that joined by pairing
+
+<!-- bump: patch -->
+
+## What Changed
+
+A bug fix (spec: `docs/specs/joined-machine-unified-trust.md`, ACT-072). A machine that joined an existing agent by pairing saves the agent's identity file without a `privateKeyEncryption` field, because the key it saves is not encrypted. `CanonicalIdentityManager.load()` refused any file without that field (`Unknown encryption method: undefined`), so the unified trust layer (authorization policy, trust audit log, invitations, verified pairing, MoltBridge identity) never started on a joined machine; the boot only logged `Unified trust system init failed (non-fatal)`.
+
+The loader now reads a missing field as "not encrypted", which is what the pairing installer means and what every other reader of the file already assumed. It accepts the file only after the existing checks pass: the private key must be a 32-byte seed whose public key matches. The two identifiers the short file lacks (`canonicalId`, `displayFingerprint`) are computed from the public key. A field that is present but unknown is still refused, and a malformed key is still refused with the file left untouched. Nothing is written to disk.
+
+## What to Tell Your User
+
+If you run me on more than one computer, my trust settings now work on every one of them, not just the first. Before, a computer that joined later quietly ran without them. It fixes itself the next time that computer starts; there is nothing to do.
+
+## Summary of New Capabilities
+
+- No new capability. Joined machines regain the unified trust layer the first machine already had.
+
+## Evidence
+
+- `tests/unit/identity/IdentityKeyFile.test.ts`: the installer shape loads with the right key and identifiers and the file unchanged; a declared unknown or `null` method, a non-seed private key, and a mismatched pair are still refused.
+- `tests/integration/joined-machine-unified-trust.test.ts`: a real source identity, sealed and installed by the real pairing code, then `createUnifiedTrustSystem` on the joiner: no error, same identity as the source, and a signature made on the joiner verifies against the source key. Both tests fail on the previous code.
