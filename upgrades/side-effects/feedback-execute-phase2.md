@@ -155,3 +155,7 @@ Open items (named residual risks; none is reachable while `dryRun` is true, the 
 - **`defectClass`:** `unbounded-self-action` (this change adds a self-triggered controller; no agent-authored-artifact defect is fixed).
 - **`closure`:** `guard`
 - **`guardEvidence`:** enforcement `ratchet`, citation `tests/unit/self-action-convergence.test.ts`. How it is caught: `feedback-execute` attempts each item at most twice per failure episode and stops taking it after two episodes (durable per-item count), under a durable 6-starts/day cap and the concurrency/open-PR caps; registered in `SELF_ACTION_CONTROLLERS`, and the ratchet proves the attempt count is horizon-independent, including across restarts.
+
+## Follow-up: full-suite ratchet fix (2026-10-09)
+
+The full suite flagged `tests/unit/credential-env-token-gate.test.ts`: the `omitAuthEnv` env-token refusal in `SessionManager` used the exact expression that ratchet counts as a credential-source derivation (it pins exactly three, one per launch lane). The refusal now tests `.length > 0` on the same value; behaviour is unchanged.

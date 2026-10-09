@@ -3235,7 +3235,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!fs.existsSync(requested)) throw new Error('spawn-cwd-refused: directory does not exist');
     }
     if (options.confinement && !options.omitAuthEnv) throw new Error('confinement-requires-omit-auth-env');
-    if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '') !== '') {
+    if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
     const runningSessions = this.listRunningSessions();
