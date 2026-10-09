@@ -25,7 +25,7 @@ then dropped them. Nothing told me, and nothing told Dawn. We found it by accide
   is healthy or broken. Today, with everything repaired, it still says split. That is why it
   was ignored.
 - **A secure way to copy secrets between my machines.** Each copy is encrypted so only the
-  receiving machine can open it. The identity can ride the same mechanism.
+  receiving machine can open it. The identity can ride the same encryption.
 - **A "queued" answer from the network** that means "the recipient is not connected right
   now". It cannot tell "offline for an hour" from "nobody has ever had this number".
 - **A rule that a reply is only sent from the machine currently in charge.** With conversations
@@ -34,75 +34,87 @@ then dropped them. Nothing told me, and nothing told Dawn. We found it by accide
 - **A Files tab** that lets any session or script download project files. It currently
   includes the file holding my private signing key.
 
-## What this adds
+## What this adds — five parts, nothing more
 
-The biggest change: a machine with no identity never invents one. If it is part of my fleet
-it asks its siblings and adopts the identity they all agree on. If they do not all agree, or
-one cannot be reached, it stays off the network and says so loudly rather than guessing.
+This spec was cut back on purpose. Justin's direction is 80/20 and no over-engineering, so
+everything beyond these five parts was moved to an "out of scope" list with a note on where
+it is tracked.
 
-Secondary changes:
-
-- One fingerprint formula everywhere, so the "are my machines the same me" check can
-  finally say "yes" when the answer is yes, and raises exactly one alert when it is not.
-- When messages I send sit queued for hours with nothing delivered, I tell the person
-  sending them, in the reply and in one notice, that the other agent may be offline or
-  listening under a different number.
-- A conversation on a machine not in charge hands its reply to the machine that is, and if
-  that fails the reply is kept on disk and reported, never dropped in silence.
-- The Files tab refuses to serve any identity, machine, SSH or signing-key file, by a list
-  no setting can loosen, with a test that fails if a new key file is ever added without
-  being denied.
-
-## The new pieces
-
-- **Adoption** — a paired machine with no identity asks every sibling, accepts only an
-  identity they unanimously publish, and installs it exactly as pairing would. It fills an
-  empty slot; it never overwrites an identity that exists.
-- **The operator ceremony, now real** — the August design for choosing between two
-  competing identities was never wired to anything. It becomes a dashboard action that
-  needs your PIN, shows the candidates in plain words, and backs up the file it replaces.
-- **The identity row in the machine-coherence check** — a new, always-loud comparison that
-  names which machine is holding the network connection under the wrong number.
-- **Dark-peer reporting** — a per-peer "dark" state in my delivery ledger, surfaced in the
-  send reply and as one de-duplicated notice.
-- **Forward-to-holder for replies** — the existing "send through the machine in charge"
-  path, now used whenever this machine is not in charge, with a durable hold and a report
-  as the fallback.
-- **The key-file deny list and its ratchet test.**
+1. **A machine with no identity never invents one.** If it is part of my fleet it asks the
+   siblings it can reach and adopts the identity they agree on. If they disagree, it stays
+   off the network and says so loudly rather than guessing. Replacing an identity that
+   already exists is a single command an operator runs on that machine, which backs up the
+   old file first. There is no dashboard ceremony, no PIN flow, no approval mandate — those
+   were in the first draft and were cut.
+2. **One loud mismatch alert.** One fingerprint formula everywhere, so the "are my machines
+   the same me" check can finally say "yes" when the answer is yes. It runs every five
+   minutes instead of once at boot, and raises exactly one alert when two machines publish
+   different numbers. The alert names the machine and the command to run on it.
+3. **An honest answer when a message stays queued.** When messages I send sit queued for two
+   hours with nothing acknowledged, I tell the person sending them, in the reply and in one
+   notice: how long, how many are waiting, whether the other agent is connected to the
+   network right now, and that it may be offline or listening under a different number. I
+   never say "it will arrive" when I do not know that.
+4. **A reply from a machine not in charge gets through.** The conversation hands its reply
+   to the machine that is in charge, which posts it. If that hand-off fails, the reply is
+   kept on disk, retried, listed in my status page and reported — never dropped in silence.
+5. **The Files tab refuses key files.** Identity, machine, SSH and signing-key files are
+   never served, listed or backed up, by a list that no setting can loosen. A test boots a
+   throwaway copy of me, finds every key file it creates, and fails if any of them can be
+   downloaded.
 
 ## The safeguards
 
-**Prevents a wrong identity from being installed.** Adoption needs every registered sibling
-to answer with the same fingerprint and the sealed copy must match it. One machine being
-wrong cannot produce that. Replacing an existing identity needs your PIN.
+**Prevents a wrong identity from being installed.** Adoption needs every sibling it can reach
+to answer, signed, with the same fingerprint, and the sealed copy must match it. If this
+machine remembers the number it used before, the copy must match that too. A machine that
+is asleep does not block adoption — in this fleet two machines are asleep most hours, and
+waiting for them would make the alarm the normal path. The accepted cost: if the only
+sibling awake is itself wrong, the new machine copies the wrong number, which is a state the
+mismatch alert already reports within ten minutes.
 
 **Prevents the alert from crying wolf.** One formula, and a test that feeds four identical
 keys to the check and insists it answers "agree".
 
 **Prevents a notice flood.** One item per peer per episode, cleared the moment the peer
-answers, with a half-day cooldown, dry-run first on my development machine.
+answers, with a half-day cooldown, dry-run first on my development machine. If my own
+connection is down, one combined notice instead of one per peer.
 
 **Prevents a silent reply hold.** The hold is written to disk, listed in the origin status,
 reported in my health check, and raised as one item. Expiry is recorded, not forgotten.
+A reply is never posted twice: the machine in charge recognises a retry of the same reply.
 
 **Prevents key leakage.** The deny list lives in code, applies to reading, downloading and
-listing, checks the real file behind a symlink, and is backed by a test that scans the
-source for every place a key is written.
+listing, checks the real file behind a symlink, and is backed by the throwaway-copy test.
 
 ## What ships when
 
 1. The mint guard at the second site, the fingerprint-formula fix, the legacy-file mirror
-   repair, and the key-file deny list ship live for everyone. A dark identity fix fixes
-   nothing, and a security floor is not optional.
-2. Adoption and the operator ceremony ship live, with a kill switch for adoption only.
-3. The identity row in the machine-coherence check rides that check's existing rollout.
-4. Dark-peer notices run dry on my development machine first, then the fleet.
-5. Forward-to-holder for replies runs dry for 48 hours on my development machine, then on
-   for everyone, with an off switch.
+   repair, the forward-to-holder path for replies, and the key-file deny list ship live for
+   everyone. A dark identity fix fixes nothing, a reply that cannot be sent is a reachability
+   failure, and a security floor is not optional.
+2. Adoption ships live with a kill switch.
+3. Dark-peer notices run dry on my development machine first, then the fleet. The raw
+   fields (how long, how many, connected now) are visible from the first build.
+
+## What was cut, and where it lives
+
+The dashboard ceremony for choosing between two identities, the join-time pin in the pairing
+link, the identity row in the machine-coherence check, the network's own view of my number
+as a second opinion, a new "last seen" field on the network's queued answer, the source-scan
+test for key-writing code, and media or edits forwarded from a machine not in charge. Each
+is listed at the end of the spec with the place it is tracked, so none of them is silently
+forgotten.
+
+## How long the build takes
+
+Five parts, each with its own tests at three levels, plus a live proof on a throwaway pair
+of agent homes on the Studio. Roughly two to three builder days of work, in one autonomous
+run.
 
 ## What you actually need to decide
 
-Yes or no to this shape: a machine with no identity adopts the fleet's unanimous one or
-stays off the network loudly; an existing identity is only ever replaced through your PIN;
-replies from a machine not in charge are forwarded rather than held; and key files are
-never served by the Files tab.
+Yes or no to this shape: a machine with no identity adopts what its reachable siblings agree
+on or stays off the network loudly; an existing identity is only ever replaced by a command
+run on that machine; replies from a machine not in charge are forwarded rather than held;
+and key files are never served by the Files tab.
