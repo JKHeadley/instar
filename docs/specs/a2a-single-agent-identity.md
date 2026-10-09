@@ -37,23 +37,16 @@ carrier.
 
 ### The incident (2026-10-08)
 
-Echo runs on four machines. Three of them (the Mini, the Laptop, the Mama PC) publish
-routing fingerprint `63b1dbb2…`, the value every peer has pinned for Echo since May. The Mac
-Studio had minted its own canonical identity (`.instar/identity.json`, created 2026-08-26,
-routing fingerprint `afd256bc…`). The Studio also held the serving lease and therefore the
-one relay connection the agent is allowed. So for every day of that overlap:
-
-- peers addressed `63b1dbb2…`, which no machine had connected to the relay as;
-- the relay answered them `queued` (it queues for any fingerprint that is not connected right
-  now, holds the message 24 h), then silently expired each one;
-- the Studio sat connected as `afd256bc…`, an address nobody had pinned, and received nothing.
-
-Dawn's messages from 2026-10-05 onward were lost. Nothing on Echo's side reported it, and
-nothing on Dawn's side could tell "offline for a while" from "no one will ever receive this".
-It was fixed by hand on 2026-10-09 (the Mini's `.instar/identity.json` copied onto the
-Studio, server restarted). This is the SECOND split of the same machine: the parent spec
-(`agent-identity-continuity-on-expansion.md`, approved 2026-08-19) shipped a join-time carry
-on 2026-08-19/20, and the Studio minted `afd256bc…` on 2026-08-26, six days after.
+Echo runs on four machines. Three publish routing fingerprint `63b1dbb2…`, the value every
+peer has pinned since May. The Mac Studio had minted its own identity (`.instar/identity.json`,
+2026-08-26, fingerprint `afd256bc…`) AND held the serving lease, so it held the agent's one
+relay connection. Peers addressed `63b1dbb2…`, which nothing was connected as; the relay
+answered `queued` (it queues for any unconnected fingerprint, 24 h) and silently expired each
+message; the Studio sat connected as an address nobody had pinned. Dawn's messages from
+2026-10-05 were lost; nothing on either side could tell "offline" from "never arriving". It
+was fixed by hand on 2026-10-09 (the Mini's file copied onto the Studio). This is the SECOND
+split of the same machine: the parent spec (`agent-identity-continuity-on-expansion.md`,
+approved 2026-08-19) shipped a join-time carry on 2026-08-20; the Studio minted six days after.
 
 ### Why the parent spec did not prevent it (confirmed in code at `e76caca6a`, v1.3.1334)
 
@@ -204,12 +197,9 @@ spec to a named test.
   an idle machine has zero sessions. The one real "act on machine X" primitive is
   `POST /pool/transfer {topic, to}` (`routes.ts:21181`, consent-gated; 409 when the target is
   offline), after which the conversation's session runs ON that machine.
-- **Relationship to `a2a-cross-machine-route`**: that spec forwards a standby's AGENT-TO-AGENT
-  sends to the machine holding the relay connection (`threadline.relayForward`). §4 here is
-  the TELEGRAM-ORIGIN sibling of that idea: a different payload (an attested origin
-  operation), a different holder (the serving-lease holder, not the relay holder), the
-  existing `relayOriginBot` primitive, and its own durable hold — the two share the signed
-  mesh RPC transport and nothing else.
+- **`a2a-cross-machine-route`** forwards a standby's A2A sends to the relay holder; §4 is its
+  Telegram-origin sibling (attested origin payload, the serving-lease holder, `relayOriginBot`,
+  its own durable hold) — they share the signed mesh RPC transport and nothing else.
 
 ## Threat model
 
@@ -270,13 +260,20 @@ standalone agent; the least-harmful direction (P20) is reversed here because a r
 EXISTENCE is itself pairing evidence (a standalone first machine has none), and minting there
 is exactly how a rebuilt sibling recreates the split. The one case this costs — a
 single-machine agent with no identity AND a corrupt registry — boots loud, and the lever
-(§1.4 `init --standalone`) is named in the item.
+(§1.4 `init --standalone`) is named in the item. A present-but-unloadable (invalid or
+encrypted) file boots the same posture; adoption refuses `identity-file-invalid` every round
+(it never writes over a file) and the item names `instar identity adopt --from <sibling>`.
 
 A refused mint boots the server in `identity-not-provisioned` posture: the relay connection
 is not attempted (`/threadline/health → relay.state: 'not-provisioned'`, `fingerprint`
-absent); the machine is **lease-ineligible** (declines to acquire the serving lease; releases
-one it holds at the next tick — an unprovisioned lease holder would take the WHOLE fleet off
-the network; on a single machine there is nothing to release); `DegradationReporter` writes
+absent); the machine is **lease-ineligible ONLY when the registry names ≥1 other ACTIVE
+machine** (declines to acquire the serving lease; releases one it holds at the next tick — an
+unprovisioned holder would take the WHOLE fleet off the network). With no active sibling
+(self-only, all revoked, or `unreadable`) it STAYS lease-eligible and keeps serving Telegram,
+scheduler and live-tail unprovisioned — a paired-then-shrunk machine still runs a real
+`LeaseCoordinator` (`MultiMachineCoordinator.ts:397-405`, `server.ts:5451`), and declining
+there would hold every reply, including the item asking for the fix, behind
+`TelegramOriginBoot.authorize` (The Agent Is Always Reachable); `DegradationReporter` writes
 the row on the same tick; the adoption loop (§1.2) starts immediately. The operator sees ONE
 `high` attention item `agent-identity-missing:<agent>:<machineId>` only after adoption has
 been refused for a fleet reason on 4 consecutive rounds or 120 s have passed — whichever
@@ -310,18 +307,27 @@ at either path, `IdentityManager.get()` null) asks its siblings:
   never more than once per 10 min, one in flight. Serving refusals, each typed:
   `not-registered`, `no-usable-identity`, `fingerprint-mismatch`, `requester-publishes-identity`
   (the server reads the requester's own observe answer back first — the one void-check it
-  can do), `rate-limited` (`retryAfterMs`). Payload: the identity sealed with `encryptForSync`
-  to the requester's REGISTRY `encryptionPublicKey`; the signed envelope `{sealed, fingerprint,
+  can do), `rate-limited` (`retryAfterMs`). A refusal is signed over `{reason, requesterNonce}`
+  exactly like an answer; an unsigned or mis-signed refusal, like `no-handler`, counts as
+  `unreachable` — a LAN peer cannot spoof a refusal to stall or steer adoption. Payload: the
+  identity sealed to the requester's REGISTRY `encryptionPublicKey` with an AAD-bound variant
+  of `encryptForSync` (own HKDF info string; AAD = `{verb, requesterMachineId, requesterNonce,
+  fingerprint}`, fail closed on mismatch — the plain primitive is forbidden for credential
+  payloads by `SecretStore.ts:597-610`, and a blob sealed with it would be interchangeable
+  with a secret-sync blob); the signed envelope `{sealed, fingerprint,
   requesterNonce, adoptedFrom: {machineId, at}}`.
 - Acceptance (§1.3), then install through `installAgentIdentityFromPairing`'s atomic
   owner-only write after verifying private↔public correspondence IN MEMORY (`keypair-mismatch`
   writes nothing). Then the **reload lever** runs: `IdentityManager` re-reads disk (the cache
   is invalidated, not reused), the `RelayClient` is REBUILT with the new key (today's
   `reconnectRelay()` reuses the client built at construction and cannot change identity),
-  lease-ineligibility lifts, and a normal relay connect follows on the next tick — no server
-  restart. The same lever is exposed as Bearer `POST /agent-identity/reload` (local effect
-  only: re-read this machine's own disk, rebuild its relay client, answer the resulting
-  fingerprint; it carries no key) so the CLI (§1.4) and the mirror repair (§1.5) share it.
+  lease-ineligibility lifts, and the bootstrap's standby + daemon predicate is RE-RUN before
+  any connect (a standby stays `disconnected` by design — a rebuilt machine is usually a
+  standby, and a connect from it would displace the awake machine); the awake machine
+  connects on the next tick — no server restart. The same lever is exposed as Bearer
+  `POST /agent-identity/reload` (local effect only: re-read this machine's own disk, rebuild
+  its relay client, answer the resulting fingerprint; carries no key; single-flight with a
+  60 s per-machine cooldown, `429`) so the CLI (§1.4) and the mirror repair (§1.5) share it.
 - **The identity lock.** Identity mutations on a machine are serialized by
   `.instar/identity.lock` (O_EXCL, pid-stamped), shared by adoption, the CLI (§1.4), the
   mirror repair (§1.5) and `instar join`. A lock is stale only when its pid is dead AND it is
@@ -338,10 +344,6 @@ at either path, `IdentityManager.get()` null) asks its siblings:
   able to see.
 - A joiner that completes `instar join` WITHOUT an envelope (old awake machine) boots in the
   same posture and adopts the same way, instead of today's "update and re-pair".
-
-A separate verb from `secret-share` because the identity is credential-class
-(cf. `AccountCredentialShare`), must never ride the general secret set, and needs a signed
-response, which `secret-share` lacks.
 
 **1.3 Which identity to adopt: `reachable-agree`, pinned by local memory, else refuse.** Adopt
 only when, in one observe round, all of the following hold:
@@ -367,8 +369,8 @@ and an operator who deleted the bad key expecting self-heal must not read the re
 fleet problem. An UNREACHABLE
 sibling does not block (the Laptop and the Mama PC are asleep most hours; a rule that waits
 for all of them makes the alert the normal path for every rebuilt machine). The accepted
-cost, stated: a machine with no memory whose two reachable siblings are BOTH split adopts the
-split value — a state §2 is already loud about, with §1.4 as the fix. Revoked rows are
+cost, stated: a machine whose reachable witnesses (two, or one plus its own memory) are ALL
+split adopts the split value — a state §2 is already loud about, with §1.4 as the fix. Revoked rows are
 excluded and named in the refusal when they are the only siblings. The parent spec rejected
 peer MAJORITY for choosing BETWEEN candidates; this rule fills a void with the one value the
 reachable fleet signs for, and `reachable-agree` is the exact term used in items and audit so
@@ -398,7 +400,10 @@ run ON the affected machine:
 - `instar identity init --standalone --i-understand-peers-must-repin` — mints a NEW identity
   on a fleet with no usable candidate (provenance `minted-by-operator-recovery`).
 - A decommissioned sibling that answers nothing is removed with `instar machines remove`
-  (existing).
+  (existing) — which, with this spec, prints and the §2.2 item repeats the parent's required
+  notice: "<name> is revoked for the mesh but still holds a copy of the agent identity and can
+  sign as <agent> until the identity is rotated fleet-wide" — today it says "can no longer
+  authenticate" (`machine.ts:283`), true of the machine key, false of the agent key.
 
 **Who runs it.** I do, not the operator (Echo is the interface; a terminal command is never
 the user's chore). The §2 item says "I can fix this: say yes and I will adopt the identity
@@ -407,11 +412,15 @@ is backed up, but peers' queued messages are not), so the floor is one human app
 the yes, the HONEST path to a shell on the named machine is the existing one: I move the
 conversation there with `POST /pool/transfer {topic, to: <nick>}` (consent-gated; the
 operator's yes is the consent), the resumed session on that machine runs the command, and I
-report the outcome in one line. A target that is offline answers 409 and the item stays open
+report the outcome in one line, then `POST /pool/unpin {topic}` so placement returns to
+normal (the topic is the one the yes arrived in). A target that is offline answers 409 and the item stays open
 saying so (an offline machine is not holding the relay, so the split is not hurting peers
 until it wakes). There is no session of mine on an idle peer, no peer-SSH on the fleet, and
-no network verb (§Threat model) — the transfer IS the mechanism. Mobile-complete by a reply,
-with no dashboard surface. The `init --standalone` case is the same shape.
+no network verb (§Threat model) — the transfer IS the mechanism. Where the session pool is
+dark (`/pool/transfer` → 503, the fleet default) the yes is recorded durably ON the item and
+the named machine runs `identity adopt --from <sibling>` from its own first session the next
+time it boots or holds the lease; the item says "nothing to do now". Mobile-complete by a
+reply, with no dashboard surface. The `init --standalone` case is the same shape.
 
 **1.5 The legacy file is a mirror, repaired at first load.** When `IdentityManager.loadFromDisk()`
 finds both files and they disagree, the canonical one wins (as today) AND the legacy file is
@@ -447,8 +456,9 @@ always on, every machine, no flag (a dark identity check checks nothing) — wit
   speaks under the old key — the incident state — must never read as healthy);
 - it runs every 5 min (not once), with an in-flight guard; peers are read as today
   (Bearer `fetch(<peerUrl>/provenance)`, 8 s timeout, one request per active sibling —
-  roughly a tenth of the 30 s presence pull's cost). A peer whose presence registry entry
-  reads OFFLINE is `unobserved` for the round (not fetched, not counted) — an asleep machine
+  roughly a tenth of the 30 s presence pull's cost). A peer whose pool-registry `online` flag
+  (written by `PeerPresencePuller`, not the active-machine list) reads OFFLINE is
+  `unobserved` for the round (not fetched, not counted) — an asleep machine
   is a known state, not a failure to observe;
 - the health field `identityCoherence.state`: `disagree` whenever ANY two observed values
   differ (an unreachable member never hides a demonstrated split); `agree` only when every
@@ -470,7 +480,11 @@ always on, every machine, no flag (a dark identity check checks nothing) — wit
   different sorted set — a new item, never a silent gap. Body: "my machines are not the same
   me on the agent network — <nick> publishes X, the others publish Y; messages addressed to Y
   are lost while <nick> holds the relay. I can fix this: say yes and I will adopt the
-  identity <sibling> publishes onto <nick>." It resolves itself after the repair;
+  identity <sibling> publishes onto <nick>." The proposed TARGET is each machine publishing
+  the minority value, the SOURCE any machine publishing the strict majority; with no strict
+  majority (1-vs-1, 2-vs-2) NO direction is proposed — the item lists each value with its
+  machines and the relay holder, and asks which address peers have pinned; `adopt --from`
+  takes the machine the operator names. It resolves itself after the repair;
 - `cannot-tell` rounds are counted per peer ONLY while that peer's presence says ONLINE (an
   online peer that does not answer `/provenance` is the anomaly; an asleep one is not); 10
   consecutive such rounds, after a self-heal (re-pull that peer's presence), produce one
@@ -491,18 +505,21 @@ episode, not one per day). `dark` is a PROXY read from my own ledger: it means "
 this peer for N h", and it cannot by itself tell offline from wrong-address — the data model
 carries no cause, only the duration, and the wording says so. `allPeerHealth` is bounded to
 peers active in the last 30 days (a narrowing of a published read, decided here). Retention:
-the existing `sweepSilence` tick gains one statement deleting rows older than 30 days in
-EVERY state — terminal (`acked`/`failed`/`escalated`), `unconfirmed`, and `awaiting-ack`
-whose relay expiry has passed — on the existing `(state, sent_at)` index, so the sentinel's
-`findOverdue` scan (which reads exactly `awaiting-ack`/`unconfirmed`) and `allPeerHealth`'s
-distinct-peer scan are bounded. This is consistent with `dark`: a peer silent for 30 days has
+the existing `sweepSilence` tick gains one statement deleting rows with `sent_at` older than
+30 days in EVERY state, enumerated (`acked`/`failed`/`escalated`/`unconfirmed`/`awaiting-ack`
+— including a `delivered`-but-never-acked row, which has no relay expiry and which the
+reworked sentinel no longer terminalizes) on the existing `(state, sent_at)` index, and
+`findOverdue` gains `ORDER BY sent_at ASC LIMIT 500`, so the sentinel's scan and
+`allPeerHealth`'s distinct-peer scan are bounded. This is consistent with `dark`: a peer silent for 30 days has
 already left `allPeerHealth`, and its `dark` state is re-established by the next send.
 
 **3.2 Where it is said.**
 
 - **In the send response.** `POST /threadline/relay-send` (and the `threadline_send` tool
   result, additive) answers a send to a dark peer with `peerDark: {since, queuedCount,
-  expiresAt, connectedNow}`. `connectedNow` is read from the client's EXISTING `knownAgents`
+  expiresAt, connectedNow}`, computed from THIS machine's ledger and presence map only (the
+  pool-scope merge belongs to the sentinel and the health reads — never a peer fan-out inside
+  a send). `connectedNow` is read from the client's EXISTING `knownAgents`
   presence map — fed today by `discover-result` frames and, with this spec, also by the
   `presence-change` frames the relay already pushes (today only re-emitted) — never from an
   inline `discover` on the send path (a slow relay must not cost a reply 10 s, and discovery
@@ -518,7 +535,9 @@ already left `allPeerHealth`, and its `dark` state is re-established by the next
   "<peer> IS connected to the relay but has not acknowledged anything — it may be listening
   under a different address, or not reading" / "whether <peer> is connected right now is
   unknown" — worded to the evidence (never "nothing will arrive") and riding the dry-run flag.
-  Peer names render as fingerprint prefix + clamped, HTML-escaped display name.
+  Peer names render as fingerprint prefix + clamped, HTML-escaped display name — in the
+  sentence AND in every attention item body (§2.2, §3.2); relay-supplied free text never
+  reaches an item my sessions read.
 - **On the health read.** `GET /threadline/peers/health` and the per-peer route carry `dark`,
   `darkSince`, `queuedCount`, `connectedNow`; pool scope merges as today.
 - **To the operator, once — through the REWORKED sentinel.** `A2ARedeliverySentinel` is today
@@ -582,19 +601,31 @@ hold of §4.2.
   reads `false` for a few seconds, not a minute — a slower move is the ladder's job). Settles
   to self → send locally; to a healthy peer → forward. No row, no notice. A window that does
   NOT settle in 15 s (a dead holder whose lease has not yet expired) is treated as
-  `forward-to-holder-failed`: the ladder runs, then the durable hold.
-- **Ladder.** A forward refused with a typed `retryable` reason (holder busy, timeout,
-  `not-lease-holder` because the lease just moved) is retried 3× at 10 s, re-resolving the
-  holder each time.
+  `forward-to-holder-failed`: the durable hold, then the ladder. Settling reads the in-memory
+  lease view and calls `pullFromPeers()` at most ONCE — never repeated pulls in a request.
+- **Request budget, then the ladder.** The reply request runs settle (≤15 s) plus ONE forward
+  attempt with a per-attempt budget of 30 s (≥ the holder's 10 s execute + 5 s margin; the
+  two RPCs `capabilities`+`submit` share it) — under the route's 120 s timeout, so a caller
+  never times out before the hold is written and re-runs with a NEW operation id (the one
+  double-post the holder's dedupe cannot catch). It answers 200 on a local send or confirmed
+  forward, 409 `telegram-origin-held {hold_reason}` the moment the attempt fails. The
+  remaining attempts run from the recovery tick: a `retryable` refusal (holder busy, timeout,
+  `not-lease-holder` because the lease just moved) is retried 2× more at +10 s and +20 s,
+  re-resolving the holder each time, then the 15-min schedule.
 - **Durable hold.** Only `forward-to-holder-failed` holds: the EXISTING
   `recordOperationState('held')` is called with a new `hold_reason` = `lease-not-held` —
   distinct from `destination-not-authorized`, which keeps meaning "foreign chat" and is never
   forwarded or notified. The in-memory held map becomes a cache of the store; an older reader
   treats an unknown `hold_reason` as `admitted` (additive).
 - **Recovery re-forwards the SAME operation** (original operation id and sealed record; the
-  holder dedupes). On a holder change while an attempt is `outcome-unknown`, it queries the old
-  holder's origin `status` and stays held `effect-unknown` until that answers or the deadline
-  passes — never a blind re-send.
+  holder dedupes) while the holder is unchanged. A record is attested with
+  `executionOwnerMachineId` = the holder that was read, and the holder-side `submit` refuses a
+  record owned by another machine BEFORE `authorize` (`execution-owner-mismatch`, kept — the
+  receipt dedupe depends on it). So on a holder change, recovery FIRST asks the OLD owner's
+  `receipt`: `not-admitted`/no record → the old operation is durably SUPERSEDED (new state,
+  linked by operation id, which lifts the relay's unresolved-operation guard) and a NEW record
+  bound to the new owner is prepared and forwarded; sent → done; old owner unreachable →
+  stays held `effect-unknown` until it answers or the deadline passes — never a blind re-send.
 - **The notice.** The fixed outage template ("I have your message; my reply is delayed while
   it is routed through <holder nickname>") is sent THROUGH the holder. If the holder cannot be
   reached for the notice either: `/health` carries `telegramOrigin.heldForward`,
@@ -611,8 +642,9 @@ extending the array-aware `migrateTelegramOriginDisplay`. Live, no dry-run: reac
 safety floor the constitution forbids dark-shipping ("The Agent Is Always Reachable",
 corollary 2), the holder dedupes on operation id so a bug cannot double-post, and the kill
 switch restores today's hold — now durable and reported (the durable `held` state, the reason
-and the notice are NOT behind the flag; a silent hold is the defect). Single-machine agents
-are a strict no-op (`holdsLease()` is always true). The pool ownership-record divergence also
+and the notice are NOT behind the flag; a silent hold is the defect). An agent with no machine
+identity is a strict no-op (`holdsLease()` is true only with no lease coordinator attached;
+a paired-then-shrunk machine runs one). The pool ownership-record divergence also
 named in ACT-058 stays with ACT-058 (§Out of scope); §4 makes a standby-owned topic
 answerable regardless.
 
@@ -642,9 +674,10 @@ check and the stream), `read`/`download` open the file FIRST, refuse unless the 
 descriptor's `fstat` device+inode equals `stat` of the checked resolved path, and then read
 or stream FROM THAT DESCRIPTOR (`createReadStream(…, {fd})` / `fd.readFile`) — today both
 routes re-open by path (`:570`, `:897`), which would reintroduce the race. A file whose
-`fstat` reports `nlink > 1` and whose resolved path is under `.instar/` is refused too (a hard
-link carries a key's inode under an innocent name). A `realpath` failure in
-`read`/`download`/`link` refuses.
+`fstat` reports `nlink > 1` is refused when its device+inode equals that of ANY never-served
+file (the listed key files are `stat`ed per request — a dozen calls): a hard link OUTSIDE
+`.instar/` carries a key's inode under an innocent name, and no prefix check can see it. A
+`realpath` failure in `read`/`download`/`link` refuses.
 
 **5.3 The same list guards the other read surfaces.** The same prefixes are added, in both
 spellings the list uses (`identity.json` and `.instar/identity.json`), to `BackupManager`'s
@@ -669,10 +702,11 @@ unreadable through the Files tab.
 | Decision point | Change | Classification |
 |---|---|---|
 | Both mint sites (`createUnifiedTrustSystem`, `getOrCreate`) | refuse on `joined` and on the new `unreadable` verdict; boot `identity-not-provisioned` | invariant — an on-disk fact decides; no competing signal; the human lever is §1.4 |
-| `identity-not-provisioned` → lease-ineligible | new | invariant — a machine with no routing identity cannot serve the relay |
+| `identity-not-provisioned` → lease-ineligible iff ≥1 active sibling | new | invariant — a count over the registry's active rows; a lone machine keeps the operator's Telegram |
 | `agent-identity-request` serving refusals | new | invariant — deterministic predicates on local state or a signed read; the verb hands out a private key, so no judgment may widen it |
 | Adoption acceptance (§1.3: `reachable-agree`, witness floor 1-with-memory / 2-without, last-known pin) | new | invariant — deliberately: choosing an identity is the irreversible act this spec exists to stop being guessed; the only other path is §1.4 after a human yes |
 | `instar identity adopt` replace | new; run by the agent after one human approval | invariant — the human is the arbiter (rung 1 floor); the command itself only verifies signature + key correspondence |
+| Split-repair proposal (§2.2: target = minority value, source = strict majority; no majority → no proposal) | new | invariant — a count over published values; the human is the arbiter and the agent never guesses a direction |
 | Legacy mirror rewrite (§1.5) | new automatic write | invariant — the parent's rule (canonical wins), backup before rewrite, no competing signal beyond the two files |
 | Identity-divergence verdict and item raise/resolve | changed: one formula, every 5 min; self = disk AND `connectedAs`; raise on any two differing values; resolve when every still-active split member is re-observed and the round holds one value | invariant — equality of published fingerprints; an offline peer is `unobserved`, `cannot-tell` on insufficient observation never pages |
 | Per-peer `dark` classification (§3.1) | new signal | invariant — a time threshold over ledger rows; signal-only; thresholds are config |
@@ -680,7 +714,7 @@ unreadable through the Files tab.
 | `sendToTopic` / `willRelay()` | modified: also forward when the pool is on and `!holdsLease()`, after `lease-settling` | invariant — the existing deterministic lease reads plus `isHolderHealthy` |
 | Holder `submit` handler | new `authorize` check → typed `not-lease-holder` | invariant — the same predicate the direct path runs |
 | Origin hold reasons | `lease-not-held` (new; forwardable, notifiable) vs `destination-not-authorized` (unchanged; never forwarded) | invariant — two facts, two reasons |
-| File-route never-served list + opened-file check | new denials in `read`/`download`/`list`/`link` (incl. `nlink > 1` under `.instar/`), backup, gitignore, classifier | invariant — a code-owned path list; security floor; exact-path access control |
+| File-route never-served list + opened-file check | new denials in `read`/`download`/`list`/`link` (incl. a hard link to a key inode anywhere), backup, gitignore, classifier | invariant — a code-owned path list; security floor; exact-path access control |
 | `POST /agent-identity/reload` | new Bearer route | invariant — re-reads this machine's own disk and rebuilds its relay client; carries no key; installs nothing |
 
 Nothing here grants authority: a shared identity is a routing key, not a permission; a
@@ -759,7 +793,7 @@ recoverable latency above is `120s`.
    rejected because two of this fleet's machines are asleep most hours; the accepted cost is
    stated in §1.3.
 5. **The identity rides two dedicated signed mesh verbs, sealed with the existing
-   `encryptForSync` to the requester's REGISTRY X25519 key, audited both sides, announced once
+   an AAD-bound `encryptForSync` variant to the requester's REGISTRY X25519 key, audited both sides, announced once
    by the adopter.** NOT cheap (key custody). `secret-share` rejected (unsigned responses).
 6. **No dashboard ceremony, no replace mandate, no replicated commit record, no mesh-callable
    replace, no signed trigger verb.** Replacement and fleet recovery are the NEW
@@ -802,7 +836,7 @@ recoverable latency above is `120s`.
     (reachability). Ships live with a kill switch, no dry-run.
 11. **Key material is denied by code-owned, config-immune lists (routes, backup, gitignore,
     classifier) checked on the requested path, the resolved path AND the opened descriptor
-    (served from that descriptor; `nlink > 1` under `.instar/` refused), with one behavioural
+    (served from that descriptor; a hard link to a key inode refused anywhere), with one behavioural
     fixture walk (mode, JSON fields and secret-shaped names).** NOT cheap
     (security surface); no flag. The static `KEY_FILE_MANIFEST` ratchet was cut (§Out of
     scope): the walk is the arm that can disagree with the list.
@@ -816,7 +850,7 @@ recoverable latency above is `120s`.
     deep-merge); `agentIdentity.adoption {enabled: true}` (top-level, FLEET-LIVE kill switch,
     not dev-gated). Lock file `.instar/identity.lock` (pid-dead AND >60 s = stale;
     rename-to-unique break; 30 s wait). Item ids and refusal reason names as in §1.2–§1.4
-    (`single-witness`, `last-known-mismatch`, `identity-locked`, the serving refusals);
+    (`single-witness`, `last-known-mismatch`, `identity-locked`, `identity-file-invalid`, the serving refusals);
     priorities from the real enum. `DEV_GATED_FEATURES` entry `configPath:
     'threadline.peerDarkNotice.enabled'`. NOT cheap (published names).
 15. **No relay change** (no `recipientLastSeenAt`, no orphan retirement — CMT-026). NOT cheap.
@@ -825,24 +859,20 @@ recoverable latency above is `120s`.
 
 | AC | Criterion | Test |
 |---|---|---|
-| AC1 | A joined machine with no identity never mints at boot and boots lease-ineligible; a standalone first machine still mints; an unreadable registry refuses at BOTH sites, including on a single machine (loud, lever named) | `agent-identity-mint-guard.test.ts` (unit); E2E boot |
+| AC1 | A joined machine with no identity never mints at boot and boots lease-ineligible; a standalone first machine still mints; an unreadable registry refuses at BOTH sites; with no active sibling (lone, all-revoked or unreadable) the machine stays lease-eligible and its item reaches Telegram (loud, lever named); a present-but-invalid file boots unprovisioned and refuses `identity-file-invalid` | `agent-identity-mint-guard.test.ts` (unit); E2E boot |
 | AC2 | An identity-less paired machine adopts the `reachable-agree` identity over signed responses and connects as it; one witness with local memory adopts, INCLUDING across a server restart in the unprovisioned posture (the memory survives); one witness without memory refuses `single-witness`; two witnesses without memory adopt; a disagreement, forged answer, keypair mismatch or last-known mismatch refuses with the named reason, and the last-known item names the adopt-from-a-sibling path | `agent-identity-adoption.test.ts` (unit); two-server integration |
 | AC3 | Four machines holding the same key read `agree`; the 63b1/afd2 pair reads `disagree`; a disk value that differs from `connectedAs` reads `disagree`; one unreachable member with two differing observed values reads `disagree`; an offline-by-presence peer is `unobserved` and never increments `cannot-tell`; the item is raised once and resolved by the lease holder after the split member is re-observed repaired while a non-member sleeps, and a revoked member drops out of the required set | `agent-identity-fingerprint-formula.test.ts` |
-| AC4 | `instar identity adopt --from` moves the identity file and `agent-info.json` aside, is NOT refused by `requester-publishes-identity` (the observe handler reads disk) or the last-known pin, installs, reloads via `POST /agent-identity/reload` (the relay client is rebuilt — `connectedAs` changes without a server restart), and restores both files on a refusal; a re-run after a crash proceeds as a void-fill; `init --standalone` mints with the recovery provenance; a disagreeing legacy mirror is repaired with a backup, the daemon loads canonical first, and a daemon alive under the old key is stopped while the server takes the relay | `agent-identity-operator-cli.test.ts`; `agent-identity-legacy-mirror.test.ts` |
-| AC5 | A dark peer yields one item through the reworked sentinel, which is constructed under the `peerDarkNotice` gate alone; relay expiry does not clear `dark`; an ack received on ANOTHER machine clears it (raise and resolve both pool-scope) and the resolve line names the expired count; an `escalated` message does not suppress a later episode; a local relay outage yields one aggregated item; a standby runs no heal; `connectedNow` is true/false/null from the presence map (a `presence-change` frame updates it; a rejected refresh yields null) and `discover` is never called inline; rows in every state older than 30 days are swept | `a2a-peer-dark.test.ts` |
-| AC6 | A standby's reply reaches the topic via the holder; a settling window never holds, an expired named holder counts as unsettled, and a window that never settles becomes a forward failure (ladder, then hold); a failed forward holds durably with `lease-not-held`, notice via holder, one item; retries never double-post; `destination-not-authorized` is never forwarded | `telegram-origin-forward-on-standby.test.ts`; integration |
-| AC7 | Every key-bearing file produced by a real init+pair is refused by `read`/`download`/`list`/`link` (direct path, symlink, dangling symlink omitted from `list`, descriptor swapped after the check, a hard link under `.instar/`), and an allowed file is streamed from the checked descriptor, excluded from backup, gitignored (new AND migrated agent) and secret-classified; `PATCH /api/files/config` cannot remove a never-served entry; `conversations.json` still serves | `file-routes-never-served.test.ts` (static + behavioural walk) |
+| AC4 | `instar identity adopt --from` moves the identity file and `agent-info.json` aside, is NOT refused by `requester-publishes-identity` (the observe handler reads disk) or the last-known pin, installs, reloads via `POST /agent-identity/reload` (the relay client is rebuilt — `connectedAs` changes without a server restart; on a standby the lever never connects; a second call inside 60 s answers 429), and restores both files on a refusal; a re-run after a crash proceeds as a void-fill; `init --standalone` mints with the recovery provenance; with the pool dark the recorded yes drives the repair from the named machine's next session; `machines remove` prints the still-signs notice; a disagreeing legacy mirror is repaired with a backup, the daemon loads canonical first, and a daemon alive under the old key is stopped while the server takes the relay | `agent-identity-operator-cli.test.ts`; `agent-identity-legacy-mirror.test.ts` |
+| AC5 | A dark peer yields one item through the reworked sentinel, which is constructed under the `peerDarkNotice` gate alone; relay expiry does not clear `dark`; an ack received on ANOTHER machine clears it (raise and resolve both pool-scope) and the resolve line names the expired count; an `escalated` message does not suppress a later episode; a local relay outage yields one aggregated item; a standby runs no heal; `connectedNow` is true/false/null from the presence map (a `presence-change` frame updates it; a rejected refresh yields null) and `discover` is never called inline; rows in every state older than 30 days are swept, including a `delivered`-unacked row; `peerDark` on a send reads only the local ledger | `a2a-peer-dark.test.ts` |
+| AC6 | A standby's reply reaches the topic via the holder; a settling window never holds, an expired named holder counts as unsettled, and a window that never settles becomes a forward failure (hold, then ladder from the recovery tick); the reply request answers within settle + one 30 s attempt; a lease move mid-forward supersedes the old record and lands once via the new holder; a failed forward holds durably with `lease-not-held`, notice via holder, one item; retries never double-post; `destination-not-authorized` is never forwarded | `telegram-origin-forward-on-standby.test.ts`; integration |
+| AC7 | Every key-bearing file produced by a real init+pair is refused by `read`/`download`/`list`/`link` (direct path, symlink, dangling symlink omitted from `list`, descriptor swapped after the check, a hard link OUTSIDE `.instar/` to a key file), and an allowed file is streamed from the checked descriptor, excluded from backup, gitignored (new AND migrated agent) and secret-classified; `PATCH /api/files/config` cannot remove a never-served entry; `conversations.json` still serves | `file-routes-never-served.test.ts` (static + behavioural walk) |
 
-**Tier 1 — unit (`tests/unit/`)**: the seven files above. `agent-identity-fingerprint-formula`
-uses REAL keys (not opaque strings) and asserts `fingerprintOf(pub) === computeFingerprint(pub)
-=== /provenance` and that the sha256 form never equals them. `agent-identity-adoption` covers:
-`reachable-agree` → adopt; one unreachable → still adopts; one disagreeing → refuse;
-unsigned/nonce-mismatched → discarded; `no-handler` → unreachable, named; envelope key not
-hashing → refuse; keypair-mismatch → nothing written; last-known-mismatch → refuse; serving
-side refuses a requester whose own observe carries a fingerprint, an unregistered sender, a
-`fingerprint-mismatch`, and rate-limits; the lock serializes a concurrent install and two
-stale-breakers cannot both win; audit rows never contain key bytes (byte-scan). Mint-site
-census passes the allowlist and fails on an injected unlisted `generateIdentityKeyPair(` site.
+**Tier 1 — unit (`tests/unit/`)**: the seven files above, with REAL keys (never opaque
+strings): `fingerprintOf(pub) === computeFingerprint(pub) === /provenance` and the sha256 form
+never equals them; every §1.2–1.3 acceptance and serving refusal by name (unsigned refusal =
+unreachable); the lock serializes a concurrent install and two stale-breakers cannot both
+win; audit rows never contain key bytes (byte-scan); the mint-site census fails on an injected
+unlisted `generateIdentityKeyPair(` site.
 
 **Tier 2 — integration (`tests/integration/`)**: two in-process servers paired over the real
 `/mesh/rpc` — B boots with no identity and a registry naming A, is lease-ineligible, observes
@@ -896,13 +926,11 @@ download of `.instar/identity.json` (expect 403).
 
 ## Rollback
 
-- §1.1: reverting re-opens silent minting on joined machines. Adoption has a kill switch
-  (`agentIdentity.adoption.enabled:false`); off, a joined identity-less machine stays
-  unprovisioned, lease-ineligible and loud — strictly better than minting. The CLI (§1.4)
-  works regardless.
-- §1.4: a wrong `identity adopt` is reversed by a second one naming the machine that still
-  publishes the right value, or by restoring the superseded backup; nothing deletes an
-  identity file (superseded/invalid files are backed up beside the new one, owner-only).
+- §1.1: reverting re-opens silent minting. Adoption's kill switch
+  (`agentIdentity.adoption.enabled:false`) leaves a joined identity-less machine unprovisioned,
+  lease-ineligible and loud — strictly better than minting; the CLI (§1.4) works regardless.
+- §1.4: a wrong `identity adopt` is reversed by a second one from the right machine, or by
+  restoring the superseded backup; nothing ever deletes an identity file.
 - §2: reverting the formula restores the false alarm; nothing else to unwind.
 - §3: flag off → raw fields still populated, no sentence, no notice; the sentinel is then
   constructed only under its original `monitoring.a2aRedelivery.enabled` (today's behaviour).
@@ -914,12 +942,11 @@ download of `.instar/identity.json` (expect 403).
 - **One identity across my machines**: a machine that joins or is rebuilt ADOPTS the agent
   identity from its siblings; it never invents one. On `identity-not-provisioned`, read
   `GET /threadline/health` (`relay.state`, `identityCoherence`) and the
-  `agent-identity-missing` item; say which sibling disagreed or was unreachable, and whether
-  the refusal was `single-witness`, never guess. Replacing an EXISTING identity is MY action:
-  after the operator's yes I move the conversation to the named machine
+  `agent-identity-missing` item; name the refusal reason, never guess. Replacing an EXISTING
+  identity is MY action: after the operator's yes I move the conversation to the named machine
   (`POST /pool/transfer {"topic":N,"to":"<nick>"}`), run `instar identity adopt --from <sibling>`
-  from the resumed session there, and report the outcome — never a file copy, never a command
-  handed to the operator. A 409 (machine offline) means the item stays open; say so.
+  there, report the outcome, then unpin — never a file copy, never a command handed to the
+  operator. A 409 (machine offline) means the item stays open; say so.
 - **"Are my machines the same me on the agent network?"** → `GET /threadline/health →
   identityCoherence` on any machine (`agree` / `partial-agree` / `disagree` / `cannot-tell`).
   A split means peers' messages to me are being queued and lost; the item names the machine
@@ -935,18 +962,6 @@ download of `.instar/identity.json` (expect 403).
   with one attention item — never a silent drop.
 - **Files tab**: identity, machine, SSH and HMAC key files are never served, listed or backed
   up; a 403 on one of these is correct, not a bug to route around.
-
-## Observability
-
-- `logs/agent-identity.jsonl` (mint-refused, adoption transitions with `k of n active`,
-  mirror-repaired, CLI actions, detector verdict transitions; fingerprints only, never key
-  bytes); read `GET /agent-identity/audit` (`?scope=pool`, `?limit`, `?since`).
-- `GET /threadline/health`: `identityCoherence {state, connectedAs, siblingsPublish,
-  cannotTellRounds, lastCheckedAt}`, `relay.state: 'not-provisioned'`.
-- `GET /threadline/peers/health`: `dark`, `darkSince`, `queuedCount`, `connectedNow`;
-  `logs/a2a-peer-dark.jsonl`.
-- `GET /telegram/origins/status`: durable `held` with `hold_reason`; `/health →
-  telegramOrigin.heldForward`; `logs/telegram-origin-held.jsonl`.
 
 ## Out of scope (each with its carrier)
 
@@ -976,8 +991,11 @@ action at build time with this spec as origin, unless a carrier already exists:
 - **Rotation of the agent identity across the fleet / per-device certificates**; **at-rest
   passphrase for the canonical key** — the parent's accepted-cost boundary, now two incidents
   old; evolution actions `agent-identity-rotation-and-device-certs`,
-  `agent-identity-at-rest-passphrase`, with a named trigger: a THIRD identity incident, or
-  a fifth machine joining the fleet, converts the rotation action into scheduled work.
+  `agent-identity-at-rest-passphrase`, with a named trigger: a THIRD identity incident, a
+  revoked machine suspected compromised, a
+  fifth machine joining the fleet, or ANY further spec touching the adoption rules (a
+  complexity trigger — the bridge must not keep growing), converts the rotation action into
+  scheduled work.
 - **A signed `agent-identity-adopt-trigger` mesh verb** (no key in the body) — rejected, not
   deferred: a compromised active sibling could make a healthy machine replace its good key.
 - **The pool ownership-record divergence** also named in ACT-058 — stays with ACT-058 (WS1.3
