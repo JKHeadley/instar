@@ -402,6 +402,8 @@ export class A2ARedeliverySentinel {
       const rows = await this.deps.poolPeerHealth(peerFp);
       return Array.isArray(rows) ? rows : [];
     } catch (err) {
+      // @silent-fallback-ok: a failing pool read is AUDITED (error row) and degrades
+      // to the local verdict — never to silence, never to a raise it cannot justify.
       this.audit({ kind: 'error', peerFp, reason: `pool-read-failed:${err instanceof Error ? err.message : String(err)}` });
       return [];
     }

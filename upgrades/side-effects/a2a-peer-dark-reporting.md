@@ -137,3 +137,5 @@ No new static heuristic at a competing-signals decision point. The dark threshol
 > Concur with the review
 
 **Author follow-up (same session):** all five discrepancies fixed in code before commit — legacy item suppressed only when `peerDarkLive`; the aggregate resolve consults the durable item state; `peerConnectedNow` keys freshness on the last presence frame; `+1` only on a `queued` verdict; §8 wording corrected above.
+
+**Follow-up commit (same session):** full-suite alignment — the dev-gate hand map shifted +15 for the new config block, the audited pool-read fallback carries its marker, and the peer-health route fixture sits inside the 30-day window.
