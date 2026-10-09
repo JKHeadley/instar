@@ -37,8 +37,7 @@ parts, including the ACT-058 reply hold, were named by the operator); the rest i
 
 - **Routing fingerprint** — the 32-hex address peers pin for me on the relay; one per agent.
 - **Lease holder / awake** — the one machine allowed to serve Telegram and hold my single relay connection.
-- **Item** — one entry on the Attention queue, deduped by id; raised, then resolved.
-- **Posture** — a machine's declared mode (`identity-not-provisioned` here).
+- **Item** — an Attention-queue entry, deduped by id, raised then resolved. **Posture** — a machine's declared mode.
 - **Dark** — a peer with messages queued for N h and nothing back; a proxy, not a cause.
 
 ## Problem
