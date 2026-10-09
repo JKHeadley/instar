@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { KEY_MATERIAL_GITIGNORE_PROJECT } from './keyMaterialPaths.js';
 import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability, MachineHardware } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { assignNickname, isValidNickname } from './NicknameAssigner.js';
@@ -916,6 +917,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/machine/encryption-key.pem',
   '.instar/secrets/',
   '.instar/pairing/',
+  '# Agent key material (a2a-single-agent-identity §5.3 — NEVER commit)',
+  ...KEY_MATERIAL_GITIGNORE_PROJECT,
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
   '# Judgment-call provenance rows (machine-local decision context — never commit)',

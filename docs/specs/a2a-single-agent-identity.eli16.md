@@ -125,7 +125,7 @@ a bounded hand-off that cannot double-post; the split alert raised and cleared o
 no-majority wording; the hard-link fix; signed refusals on the identity request; a
 domain-separated seal for the identity; a ledger clean-up that covers delivered-but-silent
 peers; and the "remove machine" command now says plainly that a removed machine can still
-sign as me until the identity is rotated. Rotation itself stays deferred with a trigger that
+sign as me until the identity is rotated. Rotation itself stays postponed with a trigger that
 now includes "any further change to the adoption rules". There is no fifth round: Justin's
 direction is to stop reviewing when findings stop changing the build.
 

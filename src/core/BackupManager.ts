@@ -1,4 +1,5 @@
 import { ORIGIN_LOCAL_BACKUP_PREFIXES } from '../messaging/telegram-origin/OriginLocalPaths.js';
+import { KEY_MATERIAL_BACKUP_PREFIXES } from './keyMaterialPaths.js';
 /**
  * Backup Manager — snapshot and restore agent state files.
  *
@@ -31,6 +32,13 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
   ...ORIGIN_LOCAL_BACKUP_PREFIXES,
+  // Key material (a2a-single-agent-identity §5.3), in BOTH spellings the set
+  // uses: an operator adding `identity.json` to `backup.includeFiles` must not
+  // ship the agent's private key in a snapshot that git-sync replicates.
+  // Stated cost: a lone machine's only identity recovery is then
+  // `init --standalone` + peer re-pins. Same source list as the file routes'
+  // never-served deny, the gitignore entries and the sync classifier.
+  ...KEY_MATERIAL_BACKUP_PREFIXES,
   '.instar/secrets/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
   // entry)), so the project-relative '.instar/secrets/' spelling above never matched a

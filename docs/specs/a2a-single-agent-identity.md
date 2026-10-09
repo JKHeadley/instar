@@ -979,7 +979,7 @@ action at build time with this spec as origin, unless a carrier already exists:
   THIRD identity incident, a revoked machine suspected compromised, a fifth machine joining,
   or ANY further spec touching the adoption rules (the bridge must not keep growing).
 - **A signed `agent-identity-adopt-trigger` mesh verb** (no key in the body) — rejected, not
-  deferred: a compromised active sibling could make a healthy machine replace its good key.
+  postponed: a compromised active sibling could make a healthy machine replace its good key.
 - **The pool ownership-record divergence** also named in ACT-058 — stays with ACT-058 (WS1.3
   reconciler).
 
