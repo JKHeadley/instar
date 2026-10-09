@@ -8,6 +8,7 @@ import {
   WindowRunLivenessStore,
   type WindowRunLivenessDocument,
   type WindowRunLivenessSample,
+  resolveWindowRunSampleLifecycle,
 } from '../../src/core/WindowRunLivenessAuthority.js';
 
 const BASE = Date.parse('2026-09-05T20:00:00.000Z');
@@ -424,5 +425,57 @@ describe('WindowRunLivenessAuthority', () => {
     expect(second?.predicates).not.toEqual(registered?.predicates);
     expect(second).toEqual(store.load());
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:overlap-cleanup' });
+  });
+
+  it('corrects only the executor id of a never-evaluated preparing binding and records the correction', () => {
+    const h = harness();
+    const corrected = h.authority.register({ windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-fixed' });
+    expect(corrected.executorId).toBe('echo-topic-fixed');
+    expect(corrected.status).toBe('preparing');
+    expect(corrected.bindingCorrection).toEqual({ fromExecutorId: 'echo-topic-36966', at: new Date(BASE).toISOString() });
+    expect(h.store.load()?.executorId).toBe('echo-topic-fixed');
+  });
+
+  it('refuses an executor correction once the binding has a transition, and refuses any other differing field', async () => {
+    const fresh = harness();
+    expect(() => fresh.authority.register({ windowId: 'w32', topicId: 36966, autonomousRunId: 'run-other', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-fixed' }))
+      .toThrow('window-run-liveness-active-binding-exists');
+    const h = harness();
+    expect((await h.authority.tick())?.status).toBe('active');
+    expect(() => h.authority.register({ windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-fixed' }))
+      .toThrow('window-run-liveness-active-binding-exists');
+    expect(h.store.load()?.executorId).toBe('echo-topic-36966');
+  });
+});
+
+describe('resolveWindowRunSampleLifecycle', () => {
+  const ordinary = { windowId: 'w52075', autonomousRunId: 'run-1', lifecycleRunId: 'run-1' };
+  const run = { runId: 'run-1', endAt: '2026-10-10T06:45:34.000Z' };
+  const ritualLedger = { windowId: 'w32', lifecycleRunId: 'lifecycle-w32', state: 'closed_failed', admission: { admitted: true } };
+
+  it('admits an ordinary run by its open registration when opted in and no ledger claims the window', () => {
+    expect(resolveWindowRunSampleLifecycle({ state: ordinary, ledger: ritualLedger, run, runIsOpen: true, ordinaryRunLifecycle: true }))
+      .toEqual({ lifecycleRunId: 'run-1', state: 'autonomous-run-registered', admitted: true, expiresAt: run.endAt });
+    expect(resolveWindowRunSampleLifecycle({ state: ordinary, ledger: null, run, runIsOpen: true, ordinaryRunLifecycle: true }).admitted).toBe(true);
+  });
+
+  it.each([
+    ['flag off', { ordinaryRunLifecycle: false }],
+    ['run closed or expired', { runIsOpen: false }],
+    ['no registered run', { run: null }],
+    ['lifecycle id is not the run id', { state: { ...ordinary, lifecycleRunId: 'lifecycle-x' } }],
+    ['a ledger claims this window', { ledger: { windowId: 'w52075', lifecycleRunId: 'other', state: 'active_start', admission: { admitted: true } } }],
+  ] as const)('does not admit an ordinary run when %s', (_label, override) => {
+    const result = resolveWindowRunSampleLifecycle({ state: ordinary, ledger: ritualLedger, run, runIsOpen: true, ordinaryRunLifecycle: true, ...override });
+    expect(result.admitted).toBe(false);
+    expect(result.state).not.toBe('autonomous-run-registered');
+  });
+
+  it('keeps ritual windows on their ledger, flag or not', () => {
+    const ritual = { windowId: 'w32', autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32' };
+    for (const flag of [true, false]) {
+      expect(resolveWindowRunSampleLifecycle({ state: ritual, ledger: ritualLedger, run: { runId: 'run-w32', endAt: run.endAt }, runIsOpen: true, ordinaryRunLifecycle: flag }))
+        .toEqual({ lifecycleRunId: 'lifecycle-w32', state: 'closed_failed', admitted: true, expiresAt: run.endAt });
+    }
   });
 });

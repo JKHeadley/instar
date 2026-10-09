@@ -30,7 +30,7 @@ import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
-import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../core/WindowRunLivenessAuthority.js';
+import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle } from '../core/WindowRunLivenessAuthority.js';
 import { lifelinePollIsReachable as telegramLifelinePollIsReachable } from '../lifeline/TelegramPollOwnerLease.js';
 import { WindowRunCadenceExecutor, WindowRunCadenceStore, cadenceReportProducerPayload, signCadenceReportProducer } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -4178,18 +4178,21 @@ export class AgentServer {
             const lifelineDeliveryReachable = telegramBotToken !== null
               && Number.isFinite(sampledAtMs)
               && telegramLifelinePollIsReachable(options.config.stateDir, telegramBotToken, sampledAtMs);
-            const lifecycleMatches = ledger?.lifecycleRunId === state.lifecycleRunId && ledger.windowId === state.windowId;
+            const ordinaryRunLifecycle = (typeof options.liveConfig?.get === 'function'
+              ? options.liveConfig.get('monitoring.windowRunLiveness.ordinaryRunLifecycle', false)
+              : options.config.monitoring?.windowRunLiveness?.ordinaryRunLifecycle) === true;
             return {
               sampledAt: now,
               executor: { id: boundSession, running, heartbeatAt },
               deliveryReachable: adapterDeliveryReachable || lifelineDeliveryReachable,
               work: state.lastWorkReceipt ?? null,
-              lifecycle: {
-                lifecycleRunId: lifecycleMatches ? ledger!.lifecycleRunId : null,
-                state: lifecycleMatches ? ledger!.state : null,
-                admitted: lifecycleMatches && ledger!.admission?.admitted === true,
-                expiresAt: run?.runId === state.autonomousRunId ? run.endAt : null,
-              },
+              lifecycle: resolveWindowRunSampleLifecycle({
+                state,
+                ledger,
+                run: run ?? null,
+                runIsOpen: !!run && Number.isFinite(sampledAtMs) && runStore.isOpen(run, sampledAtMs),
+                ordinaryRunLifecycle,
+              }),
             };
           },
           verifyWorkArtifact: (state, request) => {

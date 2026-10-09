@@ -5774,6 +5774,8 @@ export interface MonitoringConfig {
     workEvidenceMaxAgeMs?: number;
     /** Hard-clamped by the authority to no more than 15 minutes. */
     recoveryCeilingMs?: number;
+    /** Admit an ordinary topic run (no window-ritual ledger) by its own open, unexpired server registration. Read live; default false. */
+    ordinaryRunLifecycle?: boolean;
     /** Durable W32 receipt/report executor. Explicitly enabled; dry-run first. */
     cadenceExecutor?: {
       enabled?: boolean;
