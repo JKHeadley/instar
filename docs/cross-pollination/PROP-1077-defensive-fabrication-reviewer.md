@@ -4,10 +4,19 @@
 **Domain:** instar | **Type:** infrastructure | **Impact:** high | **Effort:** small
 **Filing mode:** PROP-379 (docs-only hand-off; `/instar-dev` lands via spec-converge)
 
+> **Anchors**: re-verified against live `JKHeadley/instar@main` on 2026-10-09 at
+> delivery time — the reviewer names, the `reviewerDefs` registration table, and
+> `SessionRetryState`'s `retryCount` / `lastViolations` all still hold, and there is
+> still no defensive-fabrication reviewer under any name (`search/code` for
+> `defensive-fabrication` and `defensiveFabrication`: 0 hits). The remaining line
+> numbers below are as-authored on 2026-08-20 and the file has grown since, so
+> treat them as hints and locate by symbol.
+
 ## Problem
 
 Instar's `CoherenceGate` runs 9 built-in specialist reviewers plus a gate
-triage reviewer (registered `CoherenceGate.ts:607-628`): conversational-tone,
+triage reviewer (registered in the `reviewerDefs` table in
+`src/core/CoherenceGate.ts`, line ~952 as of 2026-10-09): conversational-tone,
 claim-provenance, settling-detection, context-completeness, capability-accuracy,
 url-validity, value-alignment, information-leakage, escalation-resolution.
 
@@ -34,7 +43,8 @@ source, not inherited):
 
 **Root cause in the architecture:** the retry machinery already exists but is
 half-wired for this. `retrySessions: Map<string, SessionRetryState>`
-(`CoherenceGate.ts:166`) tracks `retryCount` and `lastViolations`, and blocks
+(`src/core/CoherenceGate.ts`, interface `SessionRetryState`, lines 116-117 as of
+2026-10-09) tracks `retryCount` and `lastViolations`, and blocks
 loop back through `review()` on revision (`stopHookActive` path, lines 257-279).
 But `SessionRetryState` **never stores the previous message text**, and
 `lastViolations` is used only to *compose feedback* (line 546), never to detect
