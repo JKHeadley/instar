@@ -793,6 +793,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Reads in-memory trust profiles only: no writes, no LLM, no spend, no outbound messages; with no trust manager wired it is a counted no-op.',
   },
   {
+    name: 'a2aRelayUnknownSenderTrust',
+    configPath: 'threadline.relayUnknownSenderTrust.enabled',
+    description: 'Relay unknown-sender trust: a relay message from a sender whose keys this agent does not hold is judged at the trust level the trust manager holds for its fingerprint, with the relay gate\'s operation table, instead of being passed as verified; a new fingerprint profile is no longer created at verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',

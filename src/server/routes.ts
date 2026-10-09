@@ -536,6 +536,10 @@ import {
   resolveLocalRouteTrustMode,
   statedLocalTrustLevel,
 } from '../threadline/localRouteTrust.js';
+import {
+  relayUnknownSenderTrustCounters,
+  resolveRelayUnknownSenderTrustMode,
+} from '../threadline/relayUnknownSenderTrust.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
 import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
 import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
@@ -4889,6 +4893,26 @@ export function createRoutes(ctx: RouteContext): Router {
       base.threadline = {
         ...(base.threadline as object ?? {}),
         localRouteTrust: { ...localRouteTrustMode(), trustManagerWired: !!ctx.unifiedTrust?.trustManager, ...localRouteTrustCounters },
+        // Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md):
+        // the live mode and the process-wide verdict counters. AUTHED only.
+        relayUnknownSenderTrust: {
+          ...resolveRelayUnknownSenderTrustMode(
+            {
+              enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.relayUnknownSenderTrust.enabled', undefined),
+              dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.relayUnknownSenderTrust.dryRun', undefined),
+            },
+            ctx.config as { developmentAgent?: boolean; threadline?: { relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean } } },
+          ),
+          ...relayUnknownSenderTrustCounters,
+          // Fingerprint profiles still at the old first-contact default with no
+          // mark: grants nobody decided, kept as-is. The operator's revoke list.
+          unmarkedSetupDefaultProfiles: (() => {
+            try {
+              const tm = ctx.unifiedTrust?.trustManager;
+              return tm ? tm.listProfiles({ source: 'setup-default' }).filter((p) => !!p.fingerprint && !p.relayFirstContact).length : null;
+            } catch { return null; /* @silent-fallback-ok — evidence only */ }
+          })(),
+        },
       };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.

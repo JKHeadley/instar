@@ -59,6 +59,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
@@ -18164,6 +18165,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             credentialShareEnforced: vp?.credentialShareEnforced ?? false,
           };
         },
+        // Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md).
+        // Read live per message: `enabled` omitted rides the developmentAgent gate,
+        // `dryRun` defaults true (observe + count, deliver as today).
+        getRelayUnknownSenderTrustMode: () => resolveRelayUnknownSenderTrustMode(
+          {
+            enabled: liveConfig.get<boolean | undefined>('threadline.relayUnknownSenderTrust.enabled', undefined),
+            dryRun: liveConfig.get<boolean | undefined>('threadline.relayUnknownSenderTrust.dryRun', undefined),
+          },
+          config as { developmentAgent?: boolean; threadline?: { relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean } } },
+        ),
       });
       threadlineHandshake = threadline.handshakeManager;
       threadlineShutdown = threadline.shutdown;
