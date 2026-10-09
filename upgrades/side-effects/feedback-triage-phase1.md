@@ -95,3 +95,10 @@ First pass raised one high and six medium concerns (non-owner proxy header, with
 - **`defectClass`:** `unbounded-self-action` (this change adds self-triggered controllers; no agent-authored-artifact defect is fixed).
 - **`closure`:** `guard`
 - **`guardEvidence`:** enforcement `ratchet`, citation `tests/unit/self-action-convergence.test.ts`. How it is caught: `feedback-triage-tick` re-triages an item at most once per 24 h (persisted stamp) under the daily call cap of 150 with sub-caps 50/30; `feedback-triage-action-list` notifies each item once ever (persisted `notifiedAt`), one message per day, quiet window; `feedback-triage-self-heal-probe` makes at most 3 probes per episode with a flapping breaker at 3 episodes in 7 days, persisted. All three are registered in `SELF_ACTION_CONTROLLERS`, and the ratchet proves the action count is horizon-independent, including across restarts.
+
+## Follow-up: full-suite ratchet fixes (2026-10-09)
+
+The full unit suite flagged three branch-caused ratchet failures; each is fixed without changing behaviour:
+- **Write-domain:** the five triage POST routes are classified `cluster-shared` in `WriteDomainRegistry` (prefix `/feedback-factory/triage/`), the same class as the drain routes whose owner-fenced database they write. Under enforced write admission a non-holder is refused, which matches the routes' own 409 on a non-owner.
+- **Routing nature:** `FeedbackTriageArbiter` and `FeedbackTriageSecondOpinion` no longer cite a routing nature, because they are still pending a benchmark task. Only nature routing, behind its own flag, reads this map, and without the entry the components use the default routing for gates.
+- **Silent fallbacks:** four catch blocks in the triage routes, plus the existing drain revoke route whose 20-line scan window my block now falls inside, return the error to the caller as an HTTP error status. They are annotated `@silent-fallback-ok` with that reason; nothing is swallowed.

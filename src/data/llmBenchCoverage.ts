@@ -737,8 +737,6 @@ export const LLM_ROUTING_NATURE: Readonly<Record<string, RoutingNature>> = {
   SessionWatchdog: { nature: 'B', chain: 'JUDGE' },
   UnjustifiedStopGate: { nature: 'B', chain: 'JUDGE' },
   FeedbackReadinessArbiter: { nature: 'B', chain: 'JUDGE' },
-  FeedbackTriageArbiter: { nature: 'B', chain: 'JUDGE' },
-  FeedbackTriageSecondOpinion: { nature: 'B', chain: 'JUDGE' },
 
   // ── Nature D — background digests/summaries (→ SORT; R7 redaction on secret-bearing) ──
   SessionActivitySentinel: { nature: 'D', chain: 'SORT' },

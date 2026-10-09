@@ -13962,7 +13962,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const record = ctx.feedbackDrain.promotion.revoke();
       ctx.feedbackDrain.checkpointBackup('promotion');
       res.json({ revoked: true, revokedAt: record.revokedAt });
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
+    } catch (error) { /* @silent-fallback-ok: error returned to the caller as 409 */ res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
   });
 
   // ── Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1) ──
@@ -13978,7 +13978,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const triage = ctx.feedbackTriage!;
     try {
       if (triage.isCanonicalOwner()) { res.json(local()); return; }
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
       res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'feedback triage read failed' });
       return;
     }
@@ -14090,7 +14090,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
       });
       res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
       res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
     }
   });
@@ -14133,7 +14133,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const enabled = plan.payload.enabled !== false;
       ctx.feedbackTriage!.service.setIgnoreLive(enabled, `dashboard-pin:${String(req.body?.planId ?? '').slice(-36)}`);
       res.json({ committed: true, action: plan.action, ignoreLive: ctx.feedbackTriage!.service.ignoreLive(), renderedText: plan.renderedText });
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
       res.status(409).json({ error: error instanceof Error ? error.message : 'commit failed' });
     }
   });

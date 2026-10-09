@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-09T10:00:13.738Z",
+  "slug": "feedback-triage-phase1",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
