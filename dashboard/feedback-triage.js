@@ -70,15 +70,51 @@ export function summaryText(summary) {
   return parts.join(' ');
 }
 
+const EXECUTION_WORDS = {
+  queued: '', running: ' (being worked on)', 'pr-open': ' (fix waiting for your approval)', 'spec-pr-open': ' (design draft waiting for your approval)',
+  merged: ' (fixed — checking it stays fixed)', failed: ' (the last attempt did not work)',
+};
+
 export function queueRowText(item) {
   const sev = item.severity || 'unrated';
   const title = String(item.title || item.clusterId || 'A feedback item').slice(0, 140);
-  return `${item.rank}. [${sev}] ${title}${item.summary ? ` — ${String(item.summary).slice(0, 200)}` : ''}`;
+  const state = EXECUTION_WORDS[item.executionState] || '';
+  return `${item.rank}. [${sev}] ${title}${state}${item.summary ? ` — ${String(item.summary).slice(0, 200)}` : ''}`;
+}
+
+const EXECUTOR_REASON_WORDS = {
+  ok: 'ready to work on the top items',
+  'dry-run': 'in practice mode: it picks what it would work on but starts nothing',
+  disabled: 'turned off',
+  'no-source-repo': 'not available here (no copy of the source code on this machine)',
+  'github-unavailable': 'waiting: GitHub could not be reached',
+  'auto-merge-disabled': 'waiting: the repository does not allow auto-merge',
+  'approver-unset': 'waiting: no approver is set for this organization repository',
+  'approver-not-independent': 'waiting for you: this agent could approve its own fixes as the repository owner, so it needs your one-time PIN acceptance (or leave it off)',
+  'profile-unenforceable': 'stopped: the sandbox check did not hold, so no attempts start (retried daily)',
+  'deps-unavailable': 'waiting: installing the code dependencies failed (retrying)',
+  'not-canonical-owner': 'runs on another machine',
+  'not-checked-yet': 'not checked yet',
+};
+
+/** One plain paragraph for the executor status. */
+export function executorText(status) {
+  if (!status) return 'The fix worker is not available on this machine.';
+  const words = EXECUTOR_REASON_WORDS[status.reason] || status.reason || 'unknown';
+  const parts = [`The fix worker is ${words}.`];
+  if (typeof status.live === 'number') parts.push(`${status.live} attempt(s) running, ${status.openPrs || 0} fix(es) waiting for review, ${status.startsToday || 0} started today.`);
+  return parts.join(' ');
+}
+
+/** Attempts parked because some files look like they contain a secret (names only). */
+export function heldSecretAttempts(status) {
+  return ((status && status.attempts) || []).filter((a) => a.state === 'held' && a.reason === 'needs-review-secret-shape');
 }
 
 /**
  * Render the Triage section into `target`.
- * handlers: submitAuthority(action, pin) → note; planIgnoreLive(enabled) → plan|null; commitPlan(plan, pin) → note.
+ * handlers: submitAuthority(action, pin) → note; planIgnoreLive(enabled) → plan|null; planExecutorAction(request) → plan|null;
+ * commitPlan(plan, pin) → note.
  */
 export function renderTriageSection(doc, target, data, handlers = {}) {
   if (!target) return;
@@ -132,6 +168,42 @@ export function renderTriageSection(doc, target, data, handlers = {}) {
   card.appendChild(btns);
   card.appendChild(note);
   target.appendChild(card);
+
+  // Executor card: its state in plain words, and the two PIN-only executor actions.
+  if (data.execute !== undefined) {
+    const ex = el(doc, 'div', 'spend-arm-plan');
+    ex.appendChild(el(doc, 'div', 'spend-arm-plan-label', 'Fixing the top items'));
+    ex.appendChild(el(doc, 'div', 'ph-detail-body', executorText(data.execute)));
+    const exBtns = el(doc, 'div', 'spend-arm-btns');
+    const exPlan = el(doc, 'div', 'spend-arm-plan-text');
+    const offer = (label, actionKey, request) => {
+      if (typeof handlers.planExecutorAction !== 'function' || typeof handlers.commitPlan !== 'function') return;
+      const b = el(doc, 'button', 'spend-arm-btn', label);
+      b.setAttribute('data-ft-action', `plan-${actionKey}`);
+      b.addEventListener('click', async () => {
+        note.textContent = 'Working…';
+        const plan = await handlers.planExecutorAction(request);
+        if (!plan || !plan.planId) { note.textContent = 'Could not prepare that change. Nothing has changed.'; return; }
+        exPlan.textContent = plan.renderedText;
+        ex.insertBefore(exPlan, exBtns);
+        const confirm = el(doc, 'button', 'spend-arm-btn spend-arm-btn-commit', 'Confirm with PIN');
+        confirm.setAttribute('data-ft-action', `commit-${actionKey}`);
+        confirm.addEventListener('click', async () => { note.textContent = 'Working…'; note.textContent = await handlers.commitPlan(plan, (pin.value || '').trim()); });
+        exBtns.appendChild(confirm);
+        note.textContent = 'Read the change above, enter your PIN in the box above, then confirm.';
+      });
+      exBtns.appendChild(b);
+    };
+    if (data.execute && data.execute.reason === 'approver-not-independent') {
+      offer('Let it run anyway…', 'accept-approver-dependence', { action: 'accept-approver-dependence' });
+    }
+    for (const attempt of heldSecretAttempts(data.execute).slice(0, 5)) {
+      ex.appendChild(el(doc, 'div', 'spend-arm-note', `Held: a fix touched files that look like they hold a secret (${(attempt.secretFiles || []).slice(0, 5).join(', ')}).`));
+      offer('Review and publish…', 'publish-secret-shape', { action: 'publish-secret-shape', attemptId: attempt.attemptId });
+    }
+    ex.appendChild(exBtns);
+    target.appendChild(ex);
+  }
 
   // Ranked queue.
   const items = (data.queue && Array.isArray(data.queue.items)) ? data.queue.items : [];

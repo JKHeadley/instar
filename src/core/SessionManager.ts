@@ -6,6 +6,7 @@
  * and can be monitored/reaped by the server.
  */
 
+import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { promisify } from 'node:util';
@@ -3204,7 +3205,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * never silently land on another framework's login).
      */
     accountPin?: { accountId: string; configHome: string };
+    /**
+     * Feedback executor (docs/specs/feedback-triage-and-execution.md §4 step 4): run the session in
+     * this directory instead of the project directory. Limited to paths under
+     * `<projectDir>/.worktrees/`; mutually exclusive with `topicId` worktree resolution.
+     */
+    cwd?: string;
+    /**
+     * Drop the agent's own authority from the session environment: no INSTAR_AUTH_TOKEN, no origin
+     * or bind token, no vault GitHub token, no fencing token, and every credential-shaped variable
+     * the server process carries is blanked. Refused when the agent authenticates Claude through an
+     * env token (that token would reach the session's child processes).
+     */
+    omitAuthEnv?: boolean;
+    /**
+     * A framework confinement adapter. `claude-code` is the only framework with one: the policy is a
+     * `--settings` file (OS sandbox for Bash and children + permission rules), loaded with
+     * `--setting-sources local` so no user or project hooks run, and no MCP servers. Any other
+     * framework, or a launch that would be rerouted to the interactive lane, is refused.
+     */
+    confinement?: { framework: 'claude-code'; settingsPath: string; tmpDir: string };
   }): Promise<Session> {
+    if (options.cwd !== undefined) {
+      const worktreesRoot = path.resolve(this.config.projectDir, '.worktrees');
+      const requested = path.resolve(options.cwd);
+      if (!path.isAbsolute(options.cwd) || !requested.startsWith(`${worktreesRoot}${path.sep}`) || options.topicId !== undefined) {
+        throw new Error('spawn-cwd-refused: cwd must be an absolute path under <projectDir>/.worktrees/ and cannot combine with topicId');
+      }
+      if (!fs.existsSync(requested)) throw new Error('spawn-cwd-refused: directory does not exist');
+    }
+    if (options.confinement && !options.omitAuthEnv) throw new Error('confinement-requires-omit-auth-env');
+    if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '') !== '') {
+      throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
+    }
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
       throw new Error(
@@ -3225,7 +3258,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // ── PARALLEL-DEV-ISOLATION (PARALLEL-DEV-ISOLATION-SPEC.md AC-1) ──
     // If WorktreeManager is wired AND topicId provided, resolve a topic worktree
     // and use its cwd. Otherwise fall back to projectDir (legacy behavior).
-    let resolvedCwd = this.config.projectDir;
+    let resolvedCwd = options.cwd !== undefined ? path.resolve(options.cwd) : this.config.projectDir;
     let workTreeFencingToken: string | null = null;
     let shimDir: string | null = null;
     if (this.worktreeManager && options.topicId !== undefined) {
@@ -3390,6 +3423,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // below (degradation-reported); under 'force' it REFUSES loudly (no headless
     // fallback — force guarantees zero `claude -p`). So this branch only commits
     // to the reroute when the gate passes; otherwise control falls through.
+    if (options.confinement && (headlessFramework !== options.confinement.framework || headlessFramework !== 'claude-code')) {
+      throw new Error(`confinement-unsupported-framework: ${headlessFramework}`);
+    }
+    if (options.confinement && await this.shouldRerouteToInteractive(headlessFramework)) {
+      throw new Error('confinement-reroute-unsupported: the subscription-path reroute would launch an unconfined interactive session');
+    }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
       const gate = this.evaluateRerouteGate(options.name);
       if (gate.allow) {
@@ -3438,8 +3477,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const extraClaudeFlags = claudeHeadlessExtraFlags({
       framework: headlessFramework,
       allowedTools: options.allowedTools,
-      disableProjectMcp: options.disableProjectMcp,
+      disableProjectMcp: options.disableProjectMcp || Boolean(options.confinement),
+      ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
     });
+    if (options.confinement && !extraClaudeFlags.includes('--settings')) {
+      throw new Error('confinement-adapter-missing: the --settings flag was not applied');
+    }
     if (extraClaudeFlags.length > 0) {
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
@@ -3518,12 +3561,43 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
         : undefined;
 
-    this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
-    const originEnvFlags = await this.originTokenEnvFlags({
+    if (!options.omitAuthEnv) this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
+    const originEnvFlags = options.omitAuthEnv ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
       configuredModel: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
       configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
     });
+    // omitAuthEnv: blank every credential-shaped variable the tmux server could hand down.
+    const omitAuthEnvFlags: string[] = [];
+    if (options.omitAuthEnv) {
+      for (const key of Object.keys(process.env).sort()) {
+        if (isCredentialEnvName(key) && key !== 'CLAUDE_CONFIG_DIR') omitAuthEnvFlags.push('-e', `${key}=`);
+      }
+      omitAuthEnvFlags.push('-e', 'GH_TOKEN=', '-e', 'GITHUB_TOKEN=', '-e', 'INSTAR_BIND_TOKEN=', '-e', 'INSTAR_FENCING_TOKEN=');
+    }
+    if (options.confinement) {
+      // Claude Code's own shell bookkeeping and its default writable temp follow CLAUDE_CODE_TMPDIR:
+      // the attempt's temp directory, never the shared system temp.
+      omitAuthEnvFlags.push('-e', `CLAUDE_CODE_TMPDIR=${options.confinement.tmpDir}`, '-e', `TMPDIR=${options.confinement.tmpDir}`);
+      const dangerous = headlessSpec.argv.indexOf('--dangerously-skip-permissions');
+      if (dangerous >= 0) headlessSpec.argv.splice(dangerous, 1);
+      const dashP = headlessSpec.argv.indexOf('-p');
+      headlessSpec.argv.splice(dashP > 0 ? dashP : headlessSpec.argv.length, 0, ...CLAUDE_CONFINED_PERMISSION_ARGS);
+      if (headlessSpec.argv.includes('--dangerously-skip-permissions') || !headlessSpec.argv.includes('dontAsk')) {
+        throw new Error('confinement-adapter-missing: the confined permission mode was not applied');
+      }
+      // Start the confined CLI from an EMPTY environment plus an allowlist (`env -i`): nothing the
+      // tmux server or this process carries (credentials under any name) reaches the session.
+      const allow: Record<string, string | undefined> = {
+        PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME, SHELL: process.env.SHELL,
+        LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, TERM: process.env.TERM ?? 'xterm-256color',
+        CLAUDE_CONFIG_DIR: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
+        CLAUDE_CODE_TMPDIR: options.confinement.tmpDir, TMPDIR: options.confinement.tmpDir,
+        INSTAR_SESSION_ID: sessionId, INSTAR_SESSION_NAME: tmuxSession,
+      };
+      const pairs = Object.entries(allow).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '' && !isCredentialEnvName(e[0])).map(([k, v]) => `${k}=${v}`);
+      headlessSpec.argv.unshift('/usr/bin/env', '-i', ...pairs);
+    }
     try {
       // §B in-flight marker: this spawn is EXCLUDED from §A async conversion
       // (its synchronous timing is part of the spawn contract) but still funnels
@@ -3543,7 +3617,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...originEnvFlags, // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -3554,11 +3628,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_AGENT_HOME=${this.config.projectDir}`,
         // durable-conversation-identity §7: per-session bind token scoping
         // durable-state opens to this spawn's bootstrap conversation set.
-        ...this.bindTokenEnvFlags(
+        ...(options.omitAuthEnv ? [] : this.bindTokenEnvFlags(
           tmuxSession,
           options.bootstrapConversationIds ??
             (typeof options.topicId === 'number' ? [options.topicId] : []),
-        ),
+        )),
         // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1):
         // a job-spawned session is marked 'automated' in its ENVIRONMENT, so
         // telegram-reply.sh forwards the kind regardless of what the model
@@ -3577,7 +3651,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
-        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(options.omitAuthEnv ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
         ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
         ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
@@ -3598,6 +3672,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
+        ...omitAuthEnvFlags,
         ...headlessSpec.argv,
       ], { encoding: 'utf-8' }));
 

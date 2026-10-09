@@ -2273,6 +2273,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       charsPerReport: 1200,
       maxCallsPerDay: 150,
     },
+    // Feedback executor (§4): dev-gated (`enabled` OMITTED), and dry-run by default — it records
+    // the attempt it would start and spawns/pushes nothing until the operator flips dryRun:false.
+    execute: {
+      dryRun: true,
+      maxConcurrent: 2,
+      maxStartsPerDay: 6,
+      maxOpenPrs: 4,
+    },
   },
 };
 

@@ -3612,16 +3612,26 @@ export interface InstarConfig {
       maxCallsPerDay?: number;
     };
     /**
-     * Feedback executor settings (§4). Phase 1 reads only `actionTopicId` (the daily action
-     * list's destination; the Attention hub when unset). The executor itself is not built yet.
+     * Feedback executor (§4). DEV-GATED: `enabled` is OMITTED in defaults so resolveDevAgentGate
+     * decides. `dryRun` (default true) evaluates admission and records the attempt it would start
+     * without spawning, pushing or merging. `actionTopicId` is also the daily action list's
+     * destination (the Attention hub when unset). Read live per tick.
      */
     execute?: {
       enabled?: boolean;
+      dryRun?: boolean;
       actionTopicId?: number;
+      /** The source checkout the feedback is about (default: the agent home when it is an instar source checkout). */
       sourceRepoPath?: string;
       maxConcurrent?: number;
       maxStartsPerDay?: number;
       maxOpenPrs?: number;
+      /** The lint gate run confined in the attempt workspace (default `npm run lint`). */
+      lintCommand?: string;
+      /** A small unit smoke the base canary runs once per canary stamp. */
+      baseSmokeTests?: string[];
+      /** Build-session wall clock in minutes (≤ the 6 h lease; default 300). */
+      maxDurationMinutes?: number;
     };
   };
   /**
