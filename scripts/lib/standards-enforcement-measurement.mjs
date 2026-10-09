@@ -1,4 +1,4 @@
-// safe-git-allow: protected measurement uses only content-addressed read operations through /usr/bin/git.
+// safe-git-allow: protected measurement uses only content-addressed operations through /usr/bin/git (reads, plus a by-SHA object fetch that moves no ref).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,28 +55,59 @@ function git(root, args, timeout = 20_000) {
   return child.stdout;
 }
 
-function canonicalRemoteMain(root) {
+function canonicalRemoteEnv(root) {
+  return {
+    PATH: '/usr/bin:/bin',
+    HOME: path.parse(root).root,
+    LANG: 'C',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_COUNT: '0',
+    GIT_NO_REPLACE_OBJECTS: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+}
+
+function canonicalRemoteMainOnce(root) {
   const child = spawnSync(SYSTEM_GIT, [
     'ls-remote', '--refs', CANONICAL_PROTECTED_REMOTE, PROTECTED_MAIN_REF,
   ], {
     cwd: path.parse(root).root,
     encoding: 'utf8',
     timeout: 30_000,
-    env: {
-      PATH: '/usr/bin:/bin',
-      HOME: path.parse(root).root,
-      LANG: 'C',
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_GLOBAL: '/dev/null',
-      GIT_CONFIG_COUNT: '0',
-      GIT_NO_REPLACE_OBJECTS: '1',
-      GIT_TERMINAL_PROMPT: '0',
-    },
+    env: canonicalRemoteEnv(root),
   });
   if (child.error || child.status !== 0) return null;
   const fields = child.stdout.trim().split(/\s+/);
   if (fields.length !== 2 || fields[1] !== PROTECTED_MAIN_REF || !/^[a-f0-9]{40}$/.test(fields[0])) return null;
   return fields[0];
+}
+
+/** One retry: a single transient network failure must not read as "unmeasurable". */
+function canonicalRemoteMain(root) {
+  return canonicalRemoteMainOnce(root) ?? canonicalRemoteMainOnce(root);
+}
+
+/**
+ * Make the server-advertised main commit present locally. Canonical main moves
+ * whenever anyone merges; a checkout whose object store predates that merge has
+ * no such commit, so `merge-base` fails and the whole measurement collapses to
+ * not-proven (ACT-075: a long full suite overlapping another merge). Fetching
+ * BY SHA from the canonical remote is content-addressed: it adds objects only,
+ * writes no ref and no FETCH_HEAD, so a candidate cannot steer what is measured.
+ */
+function ensureCommitPresent(root, sha) {
+  if (git(root, ['cat-file', '-e', `${sha}^{commit}`]) !== null) return;
+  // safe-git-allow: by-SHA object fetch from the canonical remote; no ref is created or moved.
+  spawnSync(SYSTEM_GIT, [
+    'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--no-recurse-submodules',
+    CANONICAL_PROTECTED_REMOTE, sha,
+  ], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...canonicalRemoteEnv(root), GIT_NO_LAZY_FETCH: '1' },
+  });
 }
 
 function directorySnapshot(root) {
@@ -135,6 +166,7 @@ export function resolveProtectedMeasurementSnapshot({ root, fixtureRoot = null }
   if (fixtureRoot !== null) return directorySnapshot(fixtureRoot);
   const protectedMainSha = canonicalRemoteMain(root);
   if (!protectedMainSha) throw new Error('protected main unavailable from canonical server');
+  ensureCommitPresent(root, protectedMainSha);
   const baseRevision = git(root, ['merge-base', 'HEAD', protectedMainSha])?.trim() ?? '';
   if (!/^[a-f0-9]{40}$/.test(baseRevision)) {
     throw new Error(`protected merge base unavailable for canonical main ${protectedMainSha.slice(0, 12)}`);
