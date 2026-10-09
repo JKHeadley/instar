@@ -8346,6 +8346,17 @@ Messages from another agent on this machine arrive on a direct route that used t
       result.upgraded.push('CLAUDE.md: added A2A local-route trust section');
     }
 
+    // A2A relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md,
+    // Agent awareness). OWN sniff key `A2A relay unknown-sender trust`.
+    if (!content.includes('A2A relay unknown-sender trust')) {
+      content += '\n\n' + `### A2A relay unknown-sender trust
+
+Messages that reach me over the relay from an agent whose keys I do not hold (it could not encrypt to me) used to be handed on at trust level \`verified\`, with an automatic ack, and the first one created a trust profile for that fingerprint at \`verified\` — so any agent on the relay could start a full session here. The relay proves the sender holds its key, not who it is. With \`threadline.relayUnknownSenderTrust\` on, such a message is judged at the level my trust profiles actually hold for that fingerprint, with the same operation table the relay gate uses: a sender with no profile is dropped, except its delivery acks, and a credential never passes this plaintext path. It starts in watch-only mode (\`dryRun\`, the default): every message is delivered as before, and each one that would be refused is logged (\`[relay-unknown-sender-trust] would-refuse\`) and counted. With \`dryRun: false\` such a message is dropped before it reaches a session (no ack, no inbox entry), an admitted one carries its real level, and a new fingerprint profile starts \`untrusted\` instead of \`verified\`. A profile a stranger's first message writes during watch-only is marked (\`relayFirstContact\`) and grants nothing once enforcing; other existing profiles are not changed. Live on a development agent, dark on the fleet (omitted \`enabled\`). Counters and the current mode: authed \`/health\` → \`threadline.relayUnknownSenderTrust\`. **When to use** (PROACTIVE): before turning \`dryRun\` off, read \`wouldRefuse\` and \`firstContactProfiles\` — each would-refuse is a relay peer that would stop reaching me; grant the ones I work with trust first (\`threadline_trust\`). A peer says its relay messages go unanswered → check this mode and its trust profile.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A relay unknown-sender trust section');
+    }
+
     // Own relay state (displaced vs retrying). Existing agents need to check their
     // OWN relay before blaming a quiet peer, and to know a displaced machine now
     // reclaims the connection. Content-sniffed for idempotency.
@@ -11304,6 +11315,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
       '### A2A local-route trust',
+      // A2A relay unknown-sender trust: a server-side check on the relay inbound
+      // path, framework-agnostic — a Codex/Gemini agent must know the counters.
+      '### A2A relay unknown-sender trust',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the

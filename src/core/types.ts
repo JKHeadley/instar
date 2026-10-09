@@ -5440,6 +5440,15 @@ export interface ThreadlineConfig {
    * unchanged; only an explicit `false` refuses (pre-admission 403).
    */
   localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md).
+   * Read live per unknown-sender relay message. `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-refuse verdicts are logged and counted, delivery is
+   * unchanged; only an explicit `false` refuses, emits the held trust level,
+   * and creates new fingerprint profiles at `untrusted`.
+   */
+  relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean };
 }
 
 /**
