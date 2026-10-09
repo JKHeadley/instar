@@ -43,9 +43,10 @@ it is tracked.
 1. **A machine with no identity never invents one.** If it is part of my fleet it asks the
    siblings it can reach and adopts the identity they agree on. If they disagree, it stays
    off the network and says so loudly rather than guessing. Replacing an identity that
-   already exists is a single command an operator runs on that machine, which backs up the
-   old file first. There is no dashboard ceremony, no PIN flow, no approval mandate — those
-   were in the first draft and were cut.
+   already exists is a single command that I run on that machine, through my own session
+   there, after Justin says yes; it backs up the old file first. There is no dashboard
+   ceremony, no PIN flow, no approval mandate — those were in the first draft and were cut —
+   and the command is never something Justin has to type.
 2. **One loud mismatch alert.** One fingerprint formula everywhere, so the "are my machines
    the same me" check can finally say "yes" when the answer is yes. It runs every five
    minutes instead of once at boot, and raises exactly one alert when two machines publish
@@ -67,11 +68,11 @@ it is tracked.
 
 **Prevents a wrong identity from being installed.** Adoption needs every sibling it can reach
 to answer, signed, with the same fingerprint, and the sealed copy must match it. If this
-machine remembers the number it used before, the copy must match that too. A machine that
-is asleep does not block adoption — in this fleet two machines are asleep most hours, and
+machine remembers the number it used before, the copy must match that too; if it remembers
+nothing, two siblings must agree, not one. A machine that is asleep does not block adoption — in this fleet two machines are asleep most hours, and
 waiting for them would make the alarm the normal path. The accepted cost: if the only
-sibling awake is itself wrong, the new machine copies the wrong number, which is a state the
-mismatch alert already reports within ten minutes.
+two siblings awake are both wrong, the new machine copies the wrong number, which is a state
+the mismatch alert already reports within ten minutes.
 
 **Prevents the alert from crying wolf.** One formula, and a test that feeds four identical
 keys to the check and insists it answers "agree".
@@ -109,8 +110,7 @@ forgotten.
 ## How long the build takes
 
 Five parts, each with its own tests at three levels, plus a live proof on a throwaway pair
-of agent homes on the Studio. Roughly two to three builder days of work, in one autonomous
-run.
+of agent homes on the Studio. Roughly two to three builder days of work, in one autonomous run.
 
 ## What you actually need to decide
 
