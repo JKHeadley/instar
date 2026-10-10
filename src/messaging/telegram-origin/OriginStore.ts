@@ -8,7 +8,7 @@ import type {
   AdmissionResult, ArchiveResult, ClaimFence, ClaimInput, ClaimResult, DerivedMaterializationInput,
   EvidenceReceipt, NoticeReservation, NoticeReservationInput, OriginAdmission, OriginAuditRecord,
   OriginListPage, OriginListQuery, OriginMetrics, OriginStoreOptions, OutcomeInput, OutcomeWriteResult,
-  StoredChild, StoredOriginInput,
+  StoredChild, StoredOriginInput, HeldOperationRow,
 } from './StoreTypes.js';
 
 export class OriginStoreUnavailableError extends Error {
@@ -52,7 +52,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
+const READS = new Set(['listHeldOperations', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -329,7 +329,15 @@ export class OriginStore {
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult> { return this.call('recordOutcome', input); }
   reapAbandoned(now?: number): Promise<number> { return this.call('reapAbandoned', now); }
   addMaterialization(input: DerivedMaterializationInput): Promise<boolean> { return this.call('addMaterialization', input); }
-  recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number }): Promise<boolean> { return this.call('recordOperationState', input); }
+  recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
+    holdReason?: string; holdDetail?: Record<string, unknown> | null }): Promise<boolean> { return this.call('recordOperationState', input); }
+  /** a2a-single-agent-identity §4.2 — durable held rows (read-only). */
+  listHeldOperations(input: { limit?: number; holdReason?: string; now?: number } = {}): Promise<HeldOperationRow[]> { return this.call('listHeldOperations', input); }
+  markHoldExpiryReported(input: { operationId: string; now?: number }): Promise<boolean> { return this.call('markHoldExpiryReported', input); }
+  recordForwardedAcceptance(input: { operationId: string; deliveryMachineId: string; receiptJson: string; now?: number }): Promise<boolean> { return this.call('recordForwardedAcceptance', input); }
+  heldForwardAdmissions(input: { now?: number; limit?: number } = {}): Promise<Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: HeldOperationRow }>> { return this.call('heldForwardAdmissions', input); }
+  supersedeOperation(input: { operationId: string; supersededBy: string; now?: number }): Promise<boolean> { return this.call('supersedeOperation', input); }
+  supersedeWithAdmission(input: { operationId: string; admission: import('./StoreTypes.js').OriginAdmission; holdReason: string; holdDetail: Record<string, unknown> | null; now?: number }): Promise<boolean> { return this.call('supersedeWithAdmission', input); }
   reserveNotice(input: NoticeReservationInput): Promise<NoticeReservation> { return this.call('reserveNotice', input); }
   recordNoticeOutcome(input: Parameters<import('./OriginStoreBackend.js').OriginStoreBackend['recordNoticeOutcome']>[0]): Promise<OutcomeWriteResult> { return this.call('recordNoticeOutcome', input); }
   retireNoticeOwner(ownerBootId: string): Promise<number> { return this.call('retireNoticeOwner', ownerBootId); }

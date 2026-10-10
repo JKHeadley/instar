@@ -9,7 +9,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
 
 import { Router } from 'express';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
-import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -4866,6 +4866,11 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.telegramOrigin) {
         try { base.telegramOriginStorage = ctx.telegramOrigin.storageHealth(); }
         catch { base.telegramOriginStorage = { state: 'unavailable' }; }
+        // a2a-single-agent-identity §4.2 — held FORWARDS (a reply this machine
+        // could not hand to the lease holder) are a /health degradation, read
+        // from the runtime's last refresh (never a live store query here).
+        try { base.telegramOrigin = { ...(base.telegramOrigin as object ?? {}), heldForward: ctx.telegramOrigin.heldForwardHealth() }; }
+        catch { base.telegramOrigin = { ...(base.telegramOrigin as object ?? {}), heldForward: { state: 'unavailable' } }; }
       }
       // Honest delivery (spec §1): verdict-dispatcher counters ride the AUTHED
       // branch only — every /threadline/* path bypasses Bearer auth by design.
@@ -17374,7 +17379,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // credential wall. (A willRelay hand-off is walled by the lease holder's
     // own receive path, which re-enters the full authority.)
     if ((isProxy || isSystemTemplate) && refuseIfCredential(text, res)) return;
-    if (!isProxy && !isSystemTemplate && !willRelay) {
+    const gateLocally = async (): Promise<boolean> => {
       if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
         allowDebugText,
@@ -17387,8 +17392,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         toneAdvisoryComplied,
         // jev-signal-live: this reply path carries the acknowledge-and-override fields.
         liveArtefactSignals: true,
-      })) return;
+      })) return false;
       ctx.telegramOrigin?.service.markCurrentSendPolicyReviewed();
+      return true;
+    };
+    // a2a-single-agent-identity §4.1: the gate skipped here for a relay is
+    // re-run below if the adapter finds the send must proceed LOCALLY after all.
+    const gateSkippedForRelay = !isProxy && !isSystemTemplate && willRelay;
+    if (!isProxy && !isSystemTemplate && !willRelay) {
+      if (!await gateLocally()) return;
     }
 
     // In-flight reservation (2026-07-03): the isDuplicate pre-check above and the
@@ -17411,7 +17423,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // whether the reply actually landed — without it the relay could only
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
-      const sendResult = await ctx.telegram.sendToTopic(topicId, text, {
+      const sendOptions = {
         skipStallClear: isProxy,
         provenance,
         // Relay-hop forwarding (§2.5): when this standby relays through the
@@ -17437,7 +17449,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 ...(toneAdvisoryComplied ? { toneAdvisoryComplied } : {}),
               }
             : undefined,
-      });
+      };
+      let sendResult: Awaited<ReturnType<typeof ctx.telegram.sendToTopic>>;
+      try {
+        sendResult = await ctx.telegram.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay });
+      } catch (err) {
+        if (!(err instanceof OriginForwardSettledLocallyError) || !gateSkippedForRelay) throw err;
+        // The lease settled on THIS machine after the local gate was skipped for
+        // the holder: gate now, then send locally. Never gated zero times.
+        if (!await gateLocally()) {
+          if (!originOwnsContent && !allowDuplicate) outboundContentDedup.releaseReservation(topicId, text);
+          return;
+        }
+        sendResult = await ctx.telegram.sendToTopic(topicId, text, { ...sendOptions, gateSkippedForRelay: false });
+      }
       // Record the content fingerprint AFTER a successful send so an identical
       // re-send within the window is suppressed — but a FAILED send (which
       // throws before here) is never recorded, so its legitimate retry isn't lost.

@@ -5,6 +5,7 @@ import { OriginSessionRegistry } from './OriginSessionRegistry.js';
 import type { OriginSessionBinding, OriginSessionLifecycle } from './OriginSessionRegistry.js';
 import { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
 import { TelegramOriginService } from './TelegramOriginService.js';
+import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { OriginServiceOptions } from './TelegramOriginService.js';
 import { TelegramOriginOutageNotifier } from './TelegramOriginOutageNotifier.js';
 import type { OutageNoticeState, OutagePolicyProjection } from './TelegramOriginOutageNotifier.js';
@@ -51,6 +52,17 @@ export interface TelegramOriginRuntimeOptions {
   noticeProcess?: { role: 'owner' | 'client'; socketPath: string };
   /** Independently refreshed credential-owner lease, not origin-store health. */
   ownsCapacityLease?: () => boolean;
+  /** a2a-single-agent-identity §4 — the serving lease. Feeds the service's
+   * `lease-not-held` hold reason and the holder-side `submit` check. */
+  holdsLease?: () => boolean;
+  /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
+   * Wired by the server; absent ⇒ such rows are retained, never executed here. */
+  forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'retained' | 'skipped'>;
+  /** §4.2 — a held forward reached its deadline: report it ONCE, honestly. */
+  onHeldForwardExpired?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
+  /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
+   * detail) was observed for the first time: the server sends the notice/item. */
+  onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
 }
@@ -119,7 +131,7 @@ export class TelegramOriginRuntime {
       agentId: options.identity.agentId, machineId: options.identity.originMachineId, isSessionLive: options.isSessionLive });
     this.service = new TelegramOriginService({ store, sessions: this.sessions, observer: this.observer,
       identity: options.identity, signingKey: options.signingKey, ownerBootId: this.ownerBootId,
-      display: options.display, authorize: options.authorize, spoolEvidence: record => this.spool.putEvidence(record),
+      display: options.display, authorize: options.authorize, holdsLease: options.holdsLease, spoolEvidence: record => this.spool.putEvidence(record),
       authorizeOrigin: options.authorizeOrigin,
       capacity: this.capacity,
       reviewLegacyRecovery: options.reviewLegacyRecovery,
@@ -250,10 +262,101 @@ export class TelegramOriginRuntime {
       browserRecovery: await this.store.getBrowserRecoveryStates().then(states => ({ coverage: 'complete', states }))
         .catch(() => ({ coverage: 'unknown', states: null })),
       retention: { running: this.retentionRunning, succeededAt: this.retentionSucceededAt, unavailable: this.retentionUnavailable },
-      held: this.service.heldStatus(),
+      held: await this.heldStatusWithDurable(),
+      heldForward: this.heldForwardHealth(),
       expiredHolds: this.service.expiredHeldStatus(),
       browsers: [...this.browsers].map(([profileId, browser]) => ({ profileId, ...browser.executor.broker.readStatus() })),
       notices: this.options.alertDestinations().map(d => this.remoteNotices.get(d.id) ?? this.notifier.getState(d.id)) };
+  }
+  /** §4.2 — the in-memory held map is a CACHE of the store: durable held rows
+   * (with their reason) are listed beside it, deduped on operation id. */
+  async heldStatusWithDurable(): Promise<Array<Record<string, unknown>>> {
+    const memory = this.service.heldStatus() as Array<Record<string, unknown> & { operationId: string }>;
+    let durable: import('./StoreTypes.js').HeldOperationRow[] = [];
+    try { durable = await this.store.listHeldOperations({ limit: 200 }); } catch { durable = []; }
+    const seen = new Set(memory.map(row => row.operationId));
+    const rows: Array<Record<string, unknown>> = memory.map(row => {
+      const match = durable.find(d => d.operationId === row.operationId);
+      return match ? { ...row, hold_reason: match.holdReason, durable: true, topicId: match.destination.topicId, holder: match.executionOwnerMachineId, deadlineAt: match.deadlineAt } : row;
+    });
+    for (const row of durable) {
+      if (seen.has(row.operationId) || row.state !== 'held') continue;
+      rows.push({ operationId: row.operationId, reason: row.holdReason, hold_reason: row.holdReason, since: row.preparedAt,
+        payloadRetainedInMemory: false, durable: true, deadlineAt: row.deadlineAt, topicId: row.destination.topicId,
+        holder: row.executionOwnerMachineId, recovery: row.recovery });
+    }
+    return rows;
+  }
+  #heldForward: { count: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
+    { count: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
+  #heldForwardRefreshedAt = 0;
+  /** Direct-path lease holds already reported (bounded: pruned to the live held set). */
+  #observedLeaseHolds = new Set<string>();
+  /** `/health → telegramOrigin.heldForward` — a synchronous read of the last
+   * refresh (never a live query on the health path). */
+  heldForwardHealth() { return { ...this.#heldForward, topics: [...this.#heldForward.topics] }; }
+  /** Refresh the held-forward summary and report expiries once. Bounded to
+   * one store read per `minIntervalMs` unless forced (a fresh hold forces). */
+  async refreshHeldForward(input: { force?: boolean; minIntervalMs?: number } = {}): Promise<void> {
+    if (this.closed) return;
+    const now = Date.now();
+    if (!input.force && now - this.#heldForwardRefreshedAt < (input.minIntervalMs ?? 30_000)) return;
+    this.#heldForwardRefreshedAt = now;
+    let rows: import('./StoreTypes.js').HeldOperationRow[];
+    try { rows = await this.store.listHeldOperations({ holdReason: 'lease-not-held', limit: 500 }); }
+    catch { return; /* The last known summary stands; the store reports its own health. */ }
+    const held = rows.filter(row => row.state === 'held');
+    const expired = rows.filter(row => row.state === 'expired' && row.expiryReportedAt === null);
+    // Direct-path holds (sealed owner = this machine, no forward detail) are
+    // reported once each; the forward path reports its own holds at hold time.
+    const liveIds = new Set(held.map(row => row.operationId));
+    for (const id of this.#observedLeaseHolds) if (!liveIds.has(id)) this.#observedLeaseHolds.delete(id);
+    for (const row of held) {
+      const detail = row.holdDetail as { kind?: string; reportedAt?: number } | null;
+      const direct = (!row.executionOwnerMachineId || row.executionOwnerMachineId === this.options.identity.originMachineId) && detail?.kind !== 'forward-to-holder';
+      // The report marker is DURABLE (on the row), so a restart never repeats the notice.
+      if (!direct || detail?.reportedAt || this.#observedLeaseHolds.has(row.operationId)) continue;
+      this.#observedLeaseHolds.add(row.operationId);
+      try { await this.options.onLeaseHoldObserved?.(row); }
+      catch { this.#observedLeaseHolds.delete(row.operationId); continue; /* reported again on the next refresh, never silently dropped */ }
+      try { await this.store.recordOperationState({ operationId: row.operationId, state: 'held', holdDetail: { kind: 'direct-lease-hold', reportedAt: now } }); }
+      catch { /* the in-memory set still dedupes this process; a restart may repeat the notice once */ }
+    }
+    this.#heldForward = { count: held.length, topics: [...new Set(held.map(row => row.destination.topicId).filter((t): t is string => t !== null))],
+      oldestSince: held.length ? Math.min(...held.map(row => row.preparedAt)) : null, observedAt: now, expiredUnreported: expired.length };
+    for (const row of expired) {
+      if (this.closed) return;
+      try { await this.options.onHeldForwardExpired?.(row); }
+      catch { continue; /* Not marked: reported again on the next refresh, never silently dropped. */ }
+      try { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); } catch { /* re-reported next refresh */ }
+    }
+  }
+  /** §4.2 — the quick retry ladder for held FORWARDS, driven by the 5 s boot
+   * tick: a held forward whose recorded next step is due is re-forwarded
+   * (or resolved at the old holder's receipt). Bounded, single-flight with
+   * `recoverHeld`, scheduling only — the holder re-runs its full gate. */
+  async runForwardLadder(now = Date.now()): Promise<{ processed: number; recovered: number }> {
+    if (this.closed || this.recovering || !this.options.forwardRecovery) return { processed: 0, recovered: 0 };
+    this.recovering = true;
+    let processed = 0, recovered = 0;
+    try {
+      let due: Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: import('./StoreTypes.js').HeldOperationRow }> = [];
+      try { due = await this.store.heldForwardAdmissions({ now, limit: 10 }); } catch { return { processed, recovered }; }
+      for (const { admission, row } of due) {
+        if (this.closed) break;
+        const operation = { record: parseOriginJson(admission.record.envelopeJson) as unknown as TelegramOriginRecord, admission };
+        if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
+        try {
+          processed++;
+          const outcome = await this.options.forwardRecovery(operation, row);
+          if (outcome === 'sent' || outcome === 'resolved') recovered++;
+        } catch (error) {
+          console.warn('[telegram-origin] forward ladder retained operation', row.operationId, error instanceof Error ? error.name : 'unknown-error');
+        }
+      }
+      if (processed) await this.refreshHeldForward({ force: true });
+      return { processed, recovered };
+    } finally { this.recovering = false; }
   }
   /** Existing runtime maintenance tick owns cleanup and archival; this never
    * dispatches or grants retry authority. Work is bounded and off-event-loop. */
@@ -343,11 +446,46 @@ export class TelegramOriginRuntime {
           }
           continue;
         }
+        if (operation.record.executionOwnerMachineId && operation.record.executionOwnerMachineId !== this.options.identity.originMachineId) {
+          // §4.2 — a held FORWARDED operation is re-forwarded to the holder (or
+          // resolved at the old holder), never executed through this machine's
+          // credential: its sealed execution owner is another machine.
+          if (!this.options.forwardRecovery) continue;
+          try {
+            const audit = await this.store.getOperation(operation.record.operationId);
+            if (!audit?.operation) continue;
+            const row: import('./StoreTypes.js').HeldOperationRow = { operationId: operation.record.operationId, originId: audit.record.originId,
+              state: audit.operation.state === 'expired' ? 'expired' : 'held', holdReason: audit.operation.holdReason ?? null, holdDetail: audit.operation.holdDetail ?? null,
+              preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
+              destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
+              recovery: audit.recovery ?? null, expiryReportedAt: null };
+            if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
+            processed++;
+            const outcome = await this.options.forwardRecovery(operation, row);
+            if (outcome === 'sent' || outcome === 'resolved') recovered++;
+          } catch (error) {
+            console.warn('[telegram-origin] forward recovery retained operation', operation.record.operationId,
+              error instanceof Error ? error.name : 'unknown-error');
+          }
+          continue;
+        }
         const owners = [this.options.bot, ...(this.options.additionalBots ?? [])].filter(bot =>
           bot.token && bot.accountId === operation.record.destination.accountId);
         if (owners.length !== 1) continue;
         try {
         if (!candidate.admitted) await this.service.admit(operation);
+        // §4.2 — a DIRECT-path `lease-not-held` row (durably `held`, owner = this
+        // machine) is replayable only once this machine holds the lease again:
+        // re-admit it (the claim fence admits `admitted|partial` only) and let the
+        // ordinary replay below run `authorize` afresh. Still not the holder → wait.
+        if (candidate.admitted) {
+          const audit = await this.store.getOperation(operation.record.operationId).catch(() => null);
+          if (audit?.operation?.holdReason === 'lease-not-held') {
+            if (this.options.holdsLease && !this.options.holdsLease()) continue;
+            if (!await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'admitted' })) continue;
+            this.#observedLeaseHolds.delete(operation.record.operationId);
+          }
+        }
         // Pre-claim holds used to re-run paid review on every recovery tick.
         // Reserve in the same durable owner before entering either review or
         // transport. Memory-held candidates pass this gate too; a missing or
@@ -366,6 +504,7 @@ export class TelegramOriginRuntime {
             error instanceof Error ? error.name : 'unknown-error');
         }
       }
+      await this.refreshHeldForward({ force: true });
       return { processed, recovered };
     } finally { this.recovering = false; }
   }

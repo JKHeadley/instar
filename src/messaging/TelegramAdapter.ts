@@ -1,4 +1,4 @@
-import { TelegramOriginHoldError } from './telegram-origin/types.js';
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
 import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
@@ -661,8 +661,25 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   willRelay(): boolean {
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
-    return !hasUsableBotToken && this.outboundRelay !== null;
+    if (this.outboundRelay === null) return false;
+    if (!hasUsableBotToken) return true;
+    // a2a-single-agent-identity §4.1 — a token-holding machine that does NOT
+    // hold the serving lease forwards too. Only a DEFINITE forward (a healthy
+    // peer holds the lease) skips the local tone gate; a still-settling lease
+    // keeps the local gate (the holder gates again — a rare double gate beats
+    // an ungated local send if the window settles to self).
+    return this.holderForwardPolicy?.decide() === 'forward';
   }
+  /**
+   * a2a-single-agent-identity §4.1 (ACT-058). When wired by the server, the
+   * send decision becomes "no usable bot token OR (session pool enabled AND
+   * this machine does not hold the serving lease)". `decide()` is the cheap
+   * synchronous read of the lease: 'forward' (a healthy peer holds it),
+   * 'local' (we hold it, the pool is off, or the switch is off) or 'settling'
+   * (no answer yet — the relay path runs the bounded settling window and may
+   * throw OriginForwardSettledLocallyError, after which the send is local).
+   */
+  public holderForwardPolicy: { decide(): 'forward' | 'local' | 'settling' } | null = null;
 
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
@@ -1343,6 +1360,13 @@ export class TelegramAdapter implements MessagingAdapter {
       kindMetadata?: Record<string, unknown>;
       /** Conversational agent reply vs server-generated outbound traffic. */
       provenance?: Exclude<MessageProvenance, 'user'>;
+      /** a2a-single-agent-identity §4.1 — the caller SKIPPED its local outbound
+       *  gate because `willRelay()` said the lease holder would gate instead.
+       *  If the send would now proceed LOCALLY (the lease settled here, or the
+       *  decision changed between the two reads), this method throws
+       *  OriginForwardSettledLocallyError instead of sending ungated; the
+       *  caller gates and re-sends. A message is never gated zero times. */
+      gateSkippedForRelay?: boolean;
       /** 'html' = the caller already produced ESCAPED Telegram HTML (e.g. the
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
@@ -1389,7 +1413,14 @@ export class TelegramAdapter implements MessagingAdapter {
     // usable token is a non-empty string; anything else (placeholder/null/empty) means
     // "no usable token" → relay through the Telegram-owning router (bug #7).
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
-    if (!hasUsableBotToken && this.outboundRelay) {
+    // a2a-single-agent-identity §4.1 — a token-holding machine that does not hold the
+    // serving lease ALSO relays (to the lease holder). 'settling' goes down the relay path
+    // too: the relay runs the bounded lease-settling window and, if it settles to THIS
+    // machine, throws OriginForwardSettledLocallyError so the send proceeds locally below.
+    const forwardRoute = hasUsableBotToken && this.outboundRelay ? (this.holderForwardPolicy?.decide() ?? 'local') : 'local';
+    if (hasUsableBotToken && options?.gateSkippedForRelay && forwardRoute === 'local') throw new OriginForwardSettledLocallyError();
+    let relayed: SendResult | null | undefined;
+    if ((!hasUsableBotToken || forwardRoute !== 'local') && this.outboundRelay) {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
@@ -1411,14 +1442,22 @@ export class TelegramAdapter implements MessagingAdapter {
       // reach — seven of eight calls deleted — and this one stays, deliberately and named, rather than
       // deleted to make a checklist come out even.
       assertTelegramPayloadVisible('sendMessage', { text });
-      const relayed = await this.outboundRelay(topicId, text, {
-        silent: options?.silent,
-        kindMetadata: options?.kindMetadata,
-        provenance: options?.provenance ?? 'automation',
-      });
-      if (!relayed) {
+      try {
+        relayed = await this.outboundRelay(topicId, text, {
+          silent: options?.silent,
+          kindMetadata: options?.kindMetadata,
+          provenance: options?.provenance ?? 'automation',
+        });
+      } catch (err) {
+        if (!(hasUsableBotToken && err instanceof OriginForwardSettledLocallyError)) throw err;
+        if (options?.gateSkippedForRelay) throw err; // the caller skipped its gate: it gates, then re-sends
+        relayed = undefined; // the lease settled HERE: send locally below
+      }
+      if (relayed === null) {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
       }
+    }
+    if (relayed) {
       result = { message_id: relayed.messageId };
     } else if (options?.formatMode === 'html') {
       // Caller-authored, already-escaped Telegram HTML: one deterministic send.

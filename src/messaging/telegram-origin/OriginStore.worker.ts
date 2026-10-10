@@ -10,7 +10,7 @@ const methods = new Set([
   'claim', 'markDispatched', 'releaseUndispatchedClaim', 'renewClaim', 'recordOutcome', 'reapAbandoned', 'addMaterialization',
   'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
   'retireNoticeOwner', 'reconcileReceipt',
-  'reserveRecoveryAttempt',
+  'reserveRecoveryAttempt', 'listHeldOperations', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission',
   'healthTransaction', 'recoverableAdmissions', 'takeRecoverableAdmissions', 'registerOwner', 'legacyCandidates', 'importLegacy', 'reserveDiagnostic', 'completeDiagnostic', 'browserRecovery', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'undiagnosedOrigins',
 ]);
 try { if (data.mode !== 'spool') backend = new OriginStoreBackend(data.options); parentPort!.postMessage({ ready: true }); }

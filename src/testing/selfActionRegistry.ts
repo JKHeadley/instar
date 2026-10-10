@@ -1653,6 +1653,54 @@ const passkeyRevokeOutbox: SelfActionController = {
   },
 };
 
+
+/**
+ * telegram-origin-forward-ladder — a2a-single-agent-identity §4.2 (ACT-058).
+ * A reply from a machine that does not hold the serving lease is forwarded to
+ * the lease holder: ONE attempt inside the reply request, then a durable hold
+ * whose quick ladder retries from the 5 s boot tick at +10 s and +20 s (the
+ * ladder state lives in the held row's `holdDetail.ladder`, restart-surviving),
+ * then the EXISTING 15-minute `reserveRecoveryAttempt` schedule until the
+ * operation's 6 h deadline expires it (`expireOperation`, reported once). Under
+ * a holder that always refuses, one held reply therefore costs at most
+ * 1 + 2 + 24 = 27 forward attempts, horizon-independent: past the deadline the
+ * row is `expired` and nothing fires again. Real source:
+ * src/messaging/telegram-origin/OriginForwardToHolder.ts (nextLadderState,
+ * recoverForwardedHold) + TelegramOriginRuntime.runForwardLadder/recoverHeld.
+ */
+const telegramOriginForwardLadder: SelfActionController = {
+  id: 'telegram-origin-forward-ladder', actionVerb: 'retry-forward-to-holder',
+  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (15-min interval) until expireOperation at the 6 h deadline.',
+  modelsPath: 'src/messaging/telegram-origin/OriginForwardToHolder.ts',
+  boundK: 27, perTargetBoundK: 27, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramOriginForwardLadderPressure },
+  makeUnderPressure: makeTelegramOriginForwardLadderPressure,
+};
+function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const now = f.clock.nowMs();
+    // The held row (durable): prepared at the first pressured tick; `ladder` + `nextAttemptAt` persist across reconstruction.
+    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
+    if (!row) {
+      sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' }); // the one in-request attempt
+      row = { preparedAt: now, ladderAttempts: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
+      f.durableState.set('origin-forward:row', row); return;
+    }
+    if (row.state === 'expired') return;
+    if (now - row.preparedAt >= DEADLINE_MS) { row.state = 'expired'; f.durableState.set('origin-forward:row', row); return; } // expireOperation
+    if (row.nextAt === null || now < row.nextAt) return;
+    sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' });
+    if (row.ladderAttempts < LADDER_DELAYS_MS.length) {
+      row.ladderAttempts += 1; // nextLadderState
+      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now + SCHEDULE_MS; // exhausted → the 15-min schedule
+    } else row.nextAt = now + SCHEDULE_MS; // reserveRecoveryAttempt
+    f.durableState.set('origin-forward:row', row);
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageTick,
   feedbackTriageActionList,
@@ -1662,6 +1710,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   originStoreWorkerRestart,
   telegramOriginOwnedDetectorCanary,
   telegramOriginNativeModelCanary,
+  telegramOriginForwardLadder,
   telegramBrowserCanaryRecovery,
   identityReannounce,
   windowRunCadenceDeliveryRedrive,
