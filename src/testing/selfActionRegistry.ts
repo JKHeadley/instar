@@ -847,6 +847,55 @@ const correctionClassReviewOutcomes: SelfActionController = {
   },
 };
 
+/**
+ * feedback-execute — the feedback executor's fix attempts (docs/specs/feedback-triage-and-execution.md §4).
+ *
+ * Convergence argument: under sustained pressure (a fixed backlog of work items, every attempt
+ * fails, the job firing every tick) each item gets at most one retry per failure episode
+ * (failed → retry → hold execution-failed) and after its second episode the executor no longer
+ * takes it automatically (durable per-item episode count in feedback-drain.db). So each item is
+ * attempted at most 4 times ever and the total equals 4 × the backlog — horizon-independent.
+ * The daily start cap (6) and the concurrency/open-PR caps only pace it further. Items only come
+ * back to `work` after new reports or an operator release, which this fixture never supplies.
+ */
+const feedbackExecute: SelfActionController = {
+  id: 'feedback-execute',
+  actionVerb: 'spawn-fix-attempt',
+  models: 'src/feedback-factory/execute/FeedbackExecutorService.ts (afterFailure episode cap + maxStartsPerDay/maxConcurrent/maxOpenPrs admission)',
+  modelsPath: 'src/feedback-factory/execute/FeedbackExecutorService.ts',
+  boundK: 20,
+  perTargetBoundK: 4,
+  ticks: 48 * 7,
+  tickMs: 30 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackExecute.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const DAY_MS = 24 * 60 * 60_000;
+    const backlog = Array.from({ length: 5 }, (_, i) => `work-item-${i}`);
+    return { tick() {
+      sink.considered += 1;
+      const day = Math.floor(f.clock.nowMs() / DAY_MS);
+      const startsKey = `feedback-execute-starts-${day}`;
+      const startsToday = Number(f.durableState.get(startsKey) ?? 0);
+      if (startsToday >= 6) return;
+      for (const item of backlog) {
+        const meta = (f.durableState.get(`feedback-execute-item-${item}`) as { episodes: number; failedSince: number } | undefined) ?? { episodes: 0, failedSince: 0 };
+        if (meta.episodes >= 2) continue;
+        // Every attempt fails (sustained pressure); two failures end an episode.
+        const failedSince = meta.failedSince + 1;
+        const next = failedSince >= 2 ? { episodes: meta.episodes + 1, failedSince: 0 } : { episodes: meta.episodes, failedSince };
+        f.durableState.set(`feedback-execute-item-${item}`, next);
+        f.durableState.set(startsKey, startsToday + 1);
+        sink.emit({ verb: 'spawn-fix-attempt', target: item });
+        sink.emitTimesMs.push(f.clock.nowMs());
+        return;
+      }
+    } };
+  },
+};
+
 const feedbackGeneratedDefaultsHeal: SelfActionController = {
   id: 'feedback-factory-generated-defaults-heal',
   actionVerb: 'retry-generated-defaults-repair',
@@ -1739,6 +1788,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   stopGateAuthorityProbe,
   correctionClassReviewOutcomes,
   feedbackGeneratedDefaultsHeal,
+  feedbackExecute,
   mutualSshRepairSweep,
   followMeEnrollmentConsumer,
 ];

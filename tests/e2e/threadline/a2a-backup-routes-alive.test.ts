@@ -165,4 +165,23 @@ describe('A2A backup routes — production path is alive', () => {
       delete (sendConfig.threadline as Record<string, unknown>).backupRoutes;
     }
   });
+  it('no known-agents.json: a fingerprint-addressed send takes the relay AND is counted (ACT-064)', async () => {
+    const health = async () =>
+      ((await (await fetch(`${sendUrl}/health`, { headers: { Authorization: `Bearer ${AUTH}` } })).json()) as {
+        threadline?: { backupRoutes?: Record<string, number> };
+      }).threadline?.backupRoutes ?? {};
+    const known = path.join(sendProject.stateDir, 'threadline', 'known-agents.json');
+    const parked = `${known}.parked`;
+    fs.renameSync(known, parked);
+    try {
+      const before = await health();
+      const r = await send({ targetAgent: recvFp, message: 'hello by fingerprint, no known-agents file' });
+      expect(r.body).toMatchObject({ deliveryPath: 'relay' });
+      const after = await health();
+      expect(after.fingerprintToRelay).toBe((before.fingerprintToRelay ?? 0) + 1);
+      expect(after.fingerprintLocal).toBe(before.fingerprintLocal);
+    } finally {
+      fs.renameSync(parked, known);
+    }
+  });
 });

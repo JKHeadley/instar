@@ -294,6 +294,35 @@ export class FeedbackTriageStore {
     });
   }
 
+  /**
+   * The executor parks a work item (§2 hold-reason table: execution-failed, not-reproducible,
+   * merge-unavailable, needs-review-tooling, needs-review-secret-shape). No review timer: these
+   * come back on new reports or an operator instruction. The Initiative is paused by the caller.
+   * Not a model decision, so no triage_decisions row (the ignore-rate brake counts only those).
+   */
+  executorHold(ownerEpoch: number, initiativeId: string, reason: string, currentReportCount: number): void {
+    this.fenced(ownerEpoch, () => {
+      const now = this.now();
+      // Re-bind the report count: only reports arriving AFTER the hold bring the item back.
+      this.db.prepare(`UPDATE triage SET state='hold', reason=?, next_review_at=NULL, hold_count=hold_count+1, notified_at=NULL,
+        bound_report_count=MAX(bound_report_count, ?), expected_initiative_status='paused', work_since=NULL, work_paused_ms=0, work_paused_since=NULL,
+        updated_at=? WHERE initiative_id=?`)
+        .run(clamp(reason, 80), Math.max(0, Math.trunc(currentReportCount)), now, initiativeId);
+    });
+  }
+
+  /**
+   * The operator published a held change set with the dashboard PIN: the item is `work` again
+   * (its PR now waits for review), not re-triaged — a re-triage would orphan the approved PR.
+   */
+  restoreWork(ownerEpoch: number, initiativeId: string, reason: string): void {
+    this.fenced(ownerEpoch, () => {
+      const now = this.now();
+      this.db.prepare(`UPDATE triage SET state='work', reason=?, next_review_at=NULL, expected_initiative_status='active',
+        work_since=COALESCE(work_since, ?), updated_at=? WHERE initiative_id=?`).run(clamp(reason, 80), now, now, initiativeId);
+    });
+  }
+
   /** Forget the expected Initiative status (used when mapping the decision onto the Initiative failed). Caller fences. */
   clearExpectedStatus(initiativeId: string): void {
     this.db.prepare('UPDATE triage SET expected_initiative_status=NULL, updated_at=? WHERE initiative_id=?').run(this.now(), initiativeId);

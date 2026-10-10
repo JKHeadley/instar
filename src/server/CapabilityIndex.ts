@@ -1076,7 +1076,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'feedbackTriage',
     // Routes live under /feedback-factory (claimed by feedbackFactoryProcessing); this entry surfaces the triage block.
     prefixes: [],
-    description: 'Feedback TRIAGE (docs/specs/feedback-triage-and-execution.md) — a registered frontier-model authority decides work/hold/ignore for each feedback work item (with severity, priority and a reason) inside deterministic floors; hold/ignore pause the Initiative (never archive), ignore runs in shadow until a separate PIN approval. Dev-gated dark (feedbackFactory.triage) — LIVE on a development agent, 503 on the fleet; inert until the operator approves the triage authority on the dashboard Feedback Drain tab. The executor is not built yet.',
+    description: 'Feedback TRIAGE (docs/specs/feedback-triage-and-execution.md) — a registered frontier-model authority decides work/hold/ignore for each feedback work item (with severity, priority and a reason) inside deterministic floors; hold/ignore pause the Initiative (never archive), ignore runs in shadow until a separate PIN approval. Dev-gated dark (feedbackFactory.triage) — LIVE on a development agent, 503 on the fleet; inert until the operator approves the triage authority on the dashboard Feedback Drain tab. The executor is its own entry (feedbackExecute).',
     build: ({ ctx }) => ({
       enabled: !!ctx.feedbackTriage,
       endpoints: [
@@ -1084,7 +1084,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /feedback-factory/triage/summary — counts by disposition/reason, authority state, last tick, self-heal/quota/brake state, floors fired today, rule-default agreement, calls used, ignoreLiveRecommended',
         'POST /feedback-factory/triage/tick — owner-only, single-flight, rate-limited; 202 { runId } (409 naming the owner elsewhere)',
         'GET /feedback-factory/triage/authority/proposal — the server-computed triage authority the operator approves with the dashboard PIN',
-        'POST /feedback-factory/triage/plan — render a PIN-bound operator action (ignore-live); the commit route needs the dashboard PIN',
+        'POST /feedback-factory/triage/plan — render a PIN-bound operator action (ignore-live, accept-approver-dependence, publish-secret-shape); the commit route needs the dashboard PIN',
+      ],
+    }),
+  },
+  {
+    key: 'feedbackExecute',
+    // Routes live under /feedback-factory (claimed by feedbackFactoryProcessing); this entry surfaces the executor block.
+    prefixes: [],
+    description: 'Feedback EXECUTOR (docs/specs/feedback-triage-and-execution.md §4) — turns the top-ranked triage work items into pull requests through OS-sandboxed Claude Code build sessions (no network, no credentials, no reads outside the attempt workspace; a must-fail/must-succeed canary before every attempt). Trusted code re-verifies the fix confined, refuses tooling-path and secret-shaped changes, publishes from its own clone, and merges ONLY the exact head the repository owner approved (safe-merge --auto --match-head-commit). Refuses to run while the agent itself could act as the approver unless a PIN-bound acceptance exists. Dev-gated (feedbackFactory.execute), dry-run first; 503 without a source checkout.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.feedbackExecute,
+      endpoints: [
+        'GET /feedback-factory/execute/status — availability + reason (approver-not-independent / auto-merge-disabled / profile-unenforceable / deps-unavailable / dry-run), attempt counts, limits, canary and dependency-cache state',
+        'POST /feedback-factory/execute/tick — owner-only, single-flight, rate-limited; 202 { runId } (409 naming the owner elsewhere; 503 when it refuses to run)',
+        'POST /feedback-factory/execute/stop — the operator\'s stop for one item (disarms an armed merge); POST /feedback-factory/execute/release — let a parked item be tried again',
+        'POST /feedback-factory/execute/revoke-acceptance — withdraw the approver-dependence acceptance (reduces authority; Bearer)',
       ],
     }),
   },

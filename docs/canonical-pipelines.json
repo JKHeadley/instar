@@ -44,6 +44,11 @@
           "id": "triage",
           "metadataCitation": "src/feedback-factory/triage/FeedbackTriageArbiter.ts#FEEDBACK_TRIAGE_STAGE",
           "implementationCitation": "src/feedback-factory/triage/FeedbackTriageService.ts#FeedbackTriageService"
+        },
+        {
+          "id": "execute",
+          "metadataCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FEEDBACK_EXECUTE_STAGE",
+          "implementationCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService"
         }
       ],
       "ingress": {
@@ -52,7 +57,9 @@
           "feedback-factory-process-job",
           "feedback-factory-drain-route",
           "feedback-factory-triage-route",
-          "feedback-factory-triage-job"
+          "feedback-factory-triage-job",
+          "feedback-factory-execute-route",
+          "feedback-factory-execute-job"
         ],
         "wiringCitation": "src/server/AgentServer.ts#AgentServer"
       },
@@ -105,12 +112,19 @@
           "implementationCitation": "src/feedback-factory/triage/FeedbackTriageService.ts#FeedbackTriageService",
           "persistentState": "owner-epoch-fenced triage disposition row in feedback-drain.db",
           "idempotencyKey": "initiative id plus triage decision sequence"
+        },
+        {
+          "from": "triage",
+          "to": "execute",
+          "implementationCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService",
+          "persistentState": "owner-epoch-fenced execution attempt row in feedback-drain.db",
+          "idempotencyKey": "initiative id plus attempt number"
         }
       ],
       "terminalHandoff": {
-        "stage": "triage",
-        "consumer": "FeedbackTriageService",
-        "consumerCitation": "src/feedback-factory/triage/FeedbackTriageService.ts#FeedbackTriageService"
+        "stage": "execute",
+        "consumer": "FeedbackExecutorService",
+        "consumerCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService"
       },
       "cadence": {
         "triggerCitation": "src/scaffold/templates/jobs/instar/feedback-factory-process.md#Feedback-Factory Operating Drain"
