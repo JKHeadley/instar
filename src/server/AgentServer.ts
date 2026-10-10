@@ -183,6 +183,7 @@ import {
   launchdPlistExistsForSelf,
 } from '../core/ProcessCeilingCheck.js';
 import { IdentityCoherenceDetector } from '../core/AgentIdentityCoherence.js';
+import { IdentityAttentionItems } from '../core/AgentIdentityItems.js';
 import { AgentIdentityAudit } from '../core/AgentIdentityAudit.js';
 import { readAgentIdentityOnDisk } from '../core/AgentIdentityAdoption.js';
 import type { AgentIdentityRuntime, AgentIdentityRuntimeDeps } from '../core/AgentIdentityRuntime.js';
@@ -2939,6 +2940,23 @@ export class AgentServer {
         const j = (await r.json()) as { fingerprint?: unknown };
         return typeof j?.fingerprint === 'string' ? j.fingerprint : null;
       };
+      // Single-machine fallback store (no mesh deps): the same episode-aware raise/resolve the
+      // multi-machine wiring uses, over this server's own attention store.
+      const localItems = new IdentityAttentionItems({
+        list: () => (this.telegramAdapter?.getAttentionItems?.() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.description })),
+        create: (i) => {
+          void this.telegramAdapter?.createAttentionItem?.({
+            id: i.id,
+            title: i.title,
+            description: i.body,
+            summary: i.title,
+            priority: i.priority === 'high' ? 'HIGH' : 'NORMAL',
+            category: 'monitoring',
+            sourceContext: 'agent-identity:split',
+          });
+        },
+        resolve: (id) => { void this.telegramAdapter?.updateAttentionStatus?.(id, 'DONE', { silent: true }); },
+      });
       const coherence = new IdentityCoherenceDetector({
         agentName,
         selfMachineId: deps?.selfMachineId() ?? 'self',
@@ -2955,20 +2973,13 @@ export class AgentServer {
         holdsLease: () => deps?.holdsLease() ?? true,
         raiseItem: (item) => {
           if (deps) return deps.raiseItem(item);
-          void this.telegramAdapter?.createAttentionItem?.({
-            id: item.id,
-            title: item.title,
-            description: item.body,
-            summary: item.title,
-            priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
-            category: 'monitoring',
-            sourceContext: 'agent-identity:split',
-          });
+          localItems.raise({ id: item.id, title: item.title, body: item.body, priority: item.priority });
         },
         resolveItem: (id) => {
           if (deps) return deps.resolveItem(id);
-          void this.telegramAdapter?.updateAttentionStatus?.(id, 'DONE', { silent: true });
+          localItems.resolve(id);
         },
+        openSplitItemIds: () => deps?.openSplitItemIds?.() ?? localItems.openBaseIds(`agent-identity-split:${agentName}:`),
         reportDegradation: (row) => DegradationReporter.getInstance().report(row),
         audit,
       });
@@ -4849,19 +4860,25 @@ export class AgentServer {
     // no passphrase here.
     try {
       const identityDir = options.config.stateDir;
-      let aspPublicKey: Buffer | null = null;
-      try {
-        const rawIdentity = new CanonicalIdentityManager(identityDir).readRaw();
-        if (rawIdentity?.publicKey) {
-          const decoded = Buffer.from(rawIdentity.publicKey, 'base64');
-          if (decoded.length === 32) aspPublicKey = decoded;
+      // Read on EVERY request, never captured at boot (a2a-single-agent-identity §1.2/§2.2):
+      // a machine that adopts its identity after boot, or has it replaced by `instar identity
+      // adopt` on a running server, must publish the new value at once. A boot-captured key
+      // would leave siblings reading a healthy adopted machine as `cannot-tell` (it would keep
+      // answering "no fingerprint") and would keep a repaired split item open until a restart.
+      const aspPublicKey = (): Buffer | null => {
+        try {
+          const rawIdentity = new CanonicalIdentityManager(identityDir).readRaw();
+          if (rawIdentity?.publicKey) {
+            const decoded = Buffer.from(rawIdentity.publicKey, 'base64');
+            if (decoded.length === 32) return decoded;
+          }
+        } catch {
+          /* @silent-fallback-ok: an agent with no canonical identity is a legitimate state, not an
+             error. Null means the feature reports `enabled: false` at 200 — honestly OFF rather than
+             absent — and every signature then classifies `unknown-agent`, i.e. rejected. */
         }
-      } catch {
-        /* @silent-fallback-ok: an agent with no canonical identity is a legitimate state, not an
-           error. Null means the feature reports `enabled: false` at 200 — honestly OFF rather than
-           absent — and every signature then classifies `unknown-agent`, i.e. rejected. */
-        aspPublicKey = null;
-      }
+        return null;
+      };
 
       // Replay defence is durable or it is not wired at all. A store that
       // failed to open must NOT silently degrade to "no replay defence while

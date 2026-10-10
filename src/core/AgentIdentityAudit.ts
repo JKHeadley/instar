@@ -40,6 +40,7 @@ export type AgentIdentityAuditEvent =
   | 'coherence-verdict'
   | 'coherence-item-raised'
   | 'coherence-item-resolved'
+  | 'coherence-item-readopted'
   | 'coherence-cannot-tell-escalated';
 
 export interface AgentIdentityAuditRow {

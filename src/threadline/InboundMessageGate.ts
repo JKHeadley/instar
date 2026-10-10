@@ -176,6 +176,16 @@ export class InboundMessageGate {
     credentialDryRunWouldBlock: 0,
   };
 
+  /**
+   * Rebind this agent's own routing fingerprint after the identity reload lever ran
+   * (a2a-single-agent-identity §1.2). The value is captured at construction; without this an
+   * adopted or replaced identity would leave the pair-verify receipt check and the self-pair
+   * guard running against a stale (or absent) fingerprint until the next restart.
+   */
+  setOwnFingerprint(fingerprint: string | undefined): void {
+    (this.config as InboundGateConfig).ownFingerprint = fingerprint;
+  }
+
   constructor(
     trustManager: AgentTrustManager,
     router: ThreadlineRouter | null,

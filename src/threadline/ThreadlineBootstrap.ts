@@ -563,9 +563,11 @@ export async function bootstrapThreadline(
         // A reload that finds no file re-enters the posture (counted as an adopt→lose cycle
         // by the adoption loop, which reads the same disk).
         identityNotProvisioned = !detectJoinedMesh(config.stateDir).mintAllowed;
+        inboundGate?.setOwnFingerprint(undefined);
         return { fingerprint: null, connected: false, reason: identityNotProvisioned ? 'identity-not-provisioned' : 'no-identity' };
       }
       identityNotProvisioned = false;
+      inboundGate?.setOwnFingerprint(fingerprint);
       announce({ publicKey, fingerprint });
       if (!relayEnabled) return { fingerprint, connected: false, reason: config.relayStandby ? 'standby' : 'relay-disabled' };
       // Re-run the standby + daemon predicate BEFORE any connect: a rebuilt machine is

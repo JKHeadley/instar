@@ -55,4 +55,6 @@ export interface AgentIdentityRuntimeDeps {
   refreshPresence?: (machineId: string) => Promise<void> | void;
   raiseItem: (item: { id: string; title: string; body: string; priority: 'high' | 'medium'; metadata?: Record<string, unknown> }) => void;
   resolveItem: (id: string) => void;
+  /** Base ids of split items still open in this machine's attention store (re-adopted after a restart). */
+  openSplitItemIds?: () => string[];
 }

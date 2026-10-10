@@ -249,6 +249,62 @@ describe('§2.2 the detector — raise/resolve rules', () => {
     await d.runOnce(); await d.runOnce();
     expect(items).toHaveLength(2);
     expect(items[1].id).toBe(`agent-identity-split:echo:${[FP_A, FP_B, FP_C].sort().join('+')}`);
+    expect(d.health().openEpisodeCount).toBe(2);
+  });
+
+  it('after a third value BOTH items resolve once the fleet is whole — the first is not stranded', async () => {
+    const world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_mini: { nick: 'mini', fp: FP_B, online: true, active: true }, m_laptop: { nick: 'laptop', fp: FP_A, online: false, active: true } } };
+    const { d, items, resolved } = detector(world);
+    await d.runOnce(); await d.runOnce();
+    world.peers.m_laptop.online = true;
+    world.peers.m_laptop.fp = FP_C;
+    await d.runOnce(); await d.runOnce();
+    expect(items).toHaveLength(2);
+    world.peers.m_mini.fp = FP_A;
+    world.peers.m_laptop.fp = FP_A;
+    await d.runOnce(); await d.runOnce();
+    expect(resolved.sort()).toEqual(items.map((i) => i.id).sort());
+    expect(d.health().openEpisode).toBeNull();
+    expect(d.health().openEpisodeCount).toBe(0);
+  });
+
+  it('a former lease holder resolves the item it raised — the item lives only in ITS store', async () => {
+    const world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_mini: { nick: 'mini', fp: FP_B, online: true, active: true } } };
+    const { d, items, resolved } = detector(world);
+    await d.runOnce(); await d.runOnce();
+    expect(items).toHaveLength(1);
+    world.holdsLease = false; // the lease moves away while the item is open
+    world.peers.m_mini.fp = FP_A; // …and the split is repaired
+    await d.runOnce(); await d.runOnce();
+    expect(resolved).toEqual([items[0].id]);
+    expect(d.health().openEpisode).toBeNull();
+  });
+
+  it('a restarted detector re-adopts a split item still open in the store and resolves it once every active sibling is seen whole', async () => {
+    const id = `agent-identity-split:echo:${[FP_A, FP_B].sort().join('+')}`;
+    const world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_mini: { nick: 'mini', fp: FP_A, online: true, active: true }, m_laptop: { nick: 'laptop', fp: FP_A, online: false, active: true } } };
+    const open = new Set([id]);
+    const { d, items, resolved } = detector(world, { openSplitItemIds: () => [...open], resolveItem: (i) => { resolved.push(i); open.delete(i); } });
+    await d.runOnce(); await d.runOnce(); await d.runOnce();
+    expect(items).toEqual([]); // healed while the server was down: nothing new to raise
+    expect(resolved).toEqual([]); // the laptop is asleep — the conservative member set waits for it
+    expect(d.health().openEpisode?.itemId).toBe(id);
+    world.peers.m_laptop.online = true;
+    await d.runOnce(); await d.runOnce();
+    expect(resolved).toEqual([id]);
+  });
+
+  it('the cannot-tell item is raised by the lease holder only; a machine that becomes the holder later still raises it once', async () => {
+    const world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: false, peers: { m_mini: { nick: 'mini', fp: FP_A, online: true, active: true }, m_laptop: { nick: 'laptop', fp: null, online: true, active: true } } };
+    const { d, items, degradations } = detector(world);
+    for (let i = 0; i < 12; i++) await d.runOnce();
+    expect(items).toEqual([]); // a non-holder never raises
+    expect(degradations).toEqual([]);
+    expect(d.health().cannotTellRounds).toEqual({ m_laptop: 12 }); // still visible on the health read
+    world.holdsLease = true;
+    await d.runOnce(); await d.runOnce();
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('agent-identity-cannot-tell:echo:m_laptop');
   });
 
   it('self disk ≠ connectedAs reads disagree and the item says the process still speaks under the old key', async () => {

@@ -1,0 +1,43 @@
+{
+  "ts": "2026-10-10T20:31:28.848Z",
+  "slug": "a2a-single-agent-identity-part-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 444,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/AgentIdentityAdoption.ts",
+      "src/core/AgentIdentityAudit.ts",
+      "src/core/AgentIdentityCoherence.ts",
+      "src/core/AgentIdentityItems.ts",
+      "src/core/AgentIdentityRuntime.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/types.ts",
+      "src/server/AgentServer.ts",
+      "src/threadline/InboundMessageGate.ts",
+      "src/threadline/ThreadlineBootstrap.ts"
+    ],
+    "addedLines": 342,
+    "deletedLines": 102
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registry entries agent-identity-adoption and agent-identity-coherence-detector are driven by the ratchet at N and 2N ticks under the never-clears fixture: at most elapsed/10min requests, one item per refusal reason, one split item per sorted-set episode, one cannot-tell item per peer."
+    }
+  },
+  "verdict": "pass"
+}

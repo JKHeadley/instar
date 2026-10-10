@@ -167,6 +167,12 @@ export interface IdentityCoherenceDetectorDeps {
   holdsLease: () => boolean;
   raiseItem: (item: CoherenceAttentionItem) => void;
   resolveItem: (id: string) => void;
+  /**
+   * Base ids of split items still OPEN in this machine's attention store. The detector holds
+   * its open episodes in memory; after a restart it re-adopts these so an item raised before
+   * the restart is still resolved once the split heals (it would otherwise stay open forever).
+   */
+  openSplitItemIds?: () => string[];
   reportDegradation?: (row: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
   audit?: AgentIdentityAudit;
   now?: () => number;
@@ -183,7 +189,10 @@ export interface IdentityCoherenceHealth {
   siblingsPublish: Record<string, { nickname: string; fingerprint: string | null; status: CoherenceObservationStatus; reason?: string }>;
   cannotTellRounds: Record<string, number>;
   lastCheckedAt: string | null;
+  /** The most recently raised split item this machine still holds open, or null. */
   openEpisode: { itemId: string; values: string[]; members: string[]; raisedAt: string; cleanRounds: number } | null;
+  /** How many split items this machine raised and still holds open (a third value opens a second). */
+  openEpisodeCount: number;
   consecutiveDisagree: number;
 }
 
@@ -207,7 +216,8 @@ export class IdentityCoherenceDetector {
   private lastCheckedAt: number | null = null;
   private consecutiveDisagree = 0;
   private pendingEpisodeValues: string | null = null;
-  private episode: Episode | null = null;
+  /** Every split item THIS machine raised and has not yet resolved (a third value opens a second one). */
+  private episodes: Episode[] = [];
   private readonly cannotTellRounds = new Map<string, number>();
   private readonly cannotTellEscalated = new Set<string>();
   private readonly observedSinceRepair = new Set<string>();
@@ -246,6 +256,7 @@ export class IdentityCoherenceDetector {
   health(): IdentityCoherenceHealth {
     const cannotTellRounds: Record<string, number> = {};
     for (const [k, v] of this.cannotTellRounds) cannotTellRounds[k] = v;
+    const latest = this.episodes.at(-1) ?? null;
     return {
       state: this.lastVerdict?.state ?? 'not-run',
       connectedAs: this.lastConnectedAs,
@@ -253,9 +264,10 @@ export class IdentityCoherenceDetector {
       siblingsPublish: { ...this.lastSiblings },
       cannotTellRounds,
       lastCheckedAt: this.lastCheckedAt === null ? null : new Date(this.lastCheckedAt).toISOString(),
-      openEpisode: this.episode
-        ? { itemId: this.episode.itemId, values: this.episode.values, members: this.episode.members, raisedAt: new Date(this.episode.raisedAt).toISOString(), cleanRounds: this.episode.cleanRounds }
+      openEpisode: latest
+        ? { itemId: latest.itemId, values: latest.values, members: latest.members, raisedAt: new Date(latest.raisedAt).toISOString(), cleanRounds: latest.cleanRounds }
         : null,
+      openEpisodeCount: this.episodes.length,
       consecutiveDisagree: this.consecutiveDisagree,
     };
   }
@@ -280,10 +292,19 @@ export class IdentityCoherenceDetector {
     const active = this.d.listActiveSiblings().map((s) => ({ ...s, nickname: safeName(s.nickname, s.machineId) }));
     // A revoked split member that is still ONLINE must be re-observed before the item can
     // resolve; only revoked AND offline drops out. Fetch such members alongside the active set.
-    const ep = this.episode;
-    const revokedMembers = ep
+    // Re-adopt split items this machine raised before a restart. Their contributor set was not
+    // persisted, so the required re-observe set is the conservative one: self plus every
+    // sibling active now (a sleeping one blocks resolution until it is seen — the safe side).
+    for (const itemId of this.d.openSplitItemIds?.() ?? []) {
+      if (this.episodes.some((e) => e.itemId === itemId)) continue;
+      const values = itemId.slice(itemId.lastIndexOf(':') + 1).split('+');
+      this.episodes.push({ itemId, values, members: [this.d.selfMachineId, ...active.map((s) => s.machineId)], raisedAt: this.now(), cleanRounds: 0 });
+      this.d.audit?.append('coherence-item-readopted', { machineId: this.d.selfMachineId, itemId });
+    }
+    const episodeMembers = new Set(this.episodes.flatMap((e) => e.members));
+    const revokedMembers = episodeMembers.size
       ? (this.d.listRevokedSiblings?.() ?? [])
-          .filter((s) => ep.members.includes(s.machineId) && this.d.isOnline(s.machineId) === true)
+          .filter((s) => episodeMembers.has(s.machineId) && this.d.isOnline(s.machineId) === true)
           .map((s) => ({ ...s, nickname: safeName(s.nickname, s.machineId) }))
       : [];
     const siblings = [...active, ...revokedMembers.filter((r) => !active.some((a) => a.machineId === r.machineId))];
@@ -355,51 +376,54 @@ export class IdentityCoherenceDetector {
       const key = verdict.values.join('+');
       this.consecutiveDisagree = this.pendingEpisodeValues === key ? this.consecutiveDisagree + 1 : 1;
       this.pendingEpisodeValues = key;
-      if (this.consecutiveDisagree >= (this.d.raiseAfterConsecutive ?? 2) && this.episode?.itemId !== verdict.episodeKey) {
+      for (const e of this.episodes) e.cleanRounds = 0;
+      if (this.consecutiveDisagree >= (this.d.raiseAfterConsecutive ?? 2) && !this.episodes.some((e) => e.itemId === verdict.episodeKey)) {
         // RAISED by the serving-lease holder ONLY: attention items are a per-machine store, so a
         // raise elsewhere would strand a copy and post N hub messages. A non-holder's
         // `disagree` stays a health state (visible on /threadline/health) until the holder's
         // own detector confirms it — every machine runs the same check.
         if (!this.d.holdsLease()) return;
         // A different sorted set is a NEW episode (a third value, or a changed split) — the old
-        // item stays open until its own resolve rule clears it; the new one is raised beside it.
+        // item stays open (still tracked in `episodes`) until its own resolve rule clears it; the
+        // new one is raised beside it.
         // The required re-observe set is the CONTRIBUTORS (machines whose value differs from the
         // majority — or every observed machine when there is no majority), never every machine
         // that merely answered: a non-member that goes to sleep must not block resolution.
         const contributors = contributorsOf(verdict, this.d.selfMachineId, this.lastSelfDisk, this.lastConnectedAs);
         const members = Object.keys(contributors);
-        this.episode = { itemId: verdict.episodeKey, values: verdict.values, members, raisedAt: this.now(), cleanRounds: 0 };
+        this.episodes.push({ itemId: verdict.episodeKey, values: verdict.values, members, raisedAt: this.now(), cleanRounds: 0 });
         const notice = splitNotice({ agentName: this.d.agentName, byValue: verdict.byValue, selfNickname: this.d.selfNickname, connectedAs: this.lastConnectedAs, siblings, selfDisk: this.lastSelfDisk, relayHolder: this.lastConnectedAs ? this.d.selfNickname : null });
         this.d.raiseItem({ id: verdict.episodeKey, title: notice.title, body: notice.body, priority: 'high', metadata: { contributors, values: verdict.values } });
         this.d.audit?.append('coherence-item-raised', { machineId: this.d.selfMachineId, itemId: verdict.episodeKey, values: verdict.values, members, contributors });
-      } else if (this.episode) {
-        this.episode.cleanRounds = 0;
       }
       return;
     }
     this.consecutiveDisagree = 0;
     this.pendingEpisodeValues = null;
-    const ep = this.episode;
-    if (!ep) return;
-    // Resolve: lease holder only, after N consecutive rounds re-observing every split member
-    // that is still ACTIVE (or revoked but still online — `instar machines remove` on an
-    // OFFLINE decommissioned member is what drops it out) with exactly ONE value in the round.
-    if (verdict.values.length !== 1) {
-      ep.cleanRounds = 0;
-      return;
+    if (this.episodes.length === 0) return;
+    // Resolve: after N consecutive rounds re-observing every split member that is still ACTIVE
+    // (or revoked but still online — `instar machines remove` on an OFFLINE decommissioned
+    // member is what drops it out) with exactly ONE value in the round. The item lives ONLY in
+    // the store of the machine that raised it, so the RAISER resolves its own copy whether or
+    // not it still holds the lease: a holder that raised the item and then lost the lease
+    // would otherwise keep a `high` item open forever. Resolving a local item posts nothing
+    // new, so it cannot double-post.
+    for (const ep of [...this.episodes]) {
+      if (verdict.values.length !== 1) {
+        ep.cleanRounds = 0;
+        continue;
+      }
+      const required = ep.members.filter((id) => id === this.d.selfMachineId || this.d.isMachineActive(id) || this.d.isOnline(id) === true);
+      if (!required.every((id) => verdict.observedMachineIds.includes(id))) {
+        ep.cleanRounds = 0;
+        continue;
+      }
+      ep.cleanRounds += 1;
+      if (ep.cleanRounds < (this.d.resolveAfterConsecutive ?? 2)) continue;
+      this.d.resolveItem(ep.itemId);
+      this.d.audit?.append('coherence-item-resolved', { machineId: this.d.selfMachineId, itemId: ep.itemId, value: verdict.values[0], reobserved: required });
+      this.episodes = this.episodes.filter((e) => e !== ep);
     }
-    const required = ep.members.filter((id) => id === this.d.selfMachineId || this.d.isMachineActive(id) || this.d.isOnline(id) === true);
-    const allReobserved = required.every((id) => verdict.observedMachineIds.includes(id));
-    if (!allReobserved) {
-      ep.cleanRounds = 0;
-      return;
-    }
-    ep.cleanRounds += 1;
-    if (ep.cleanRounds < (this.d.resolveAfterConsecutive ?? 2)) return;
-    if (!this.d.holdsLease()) return; // the holder resolves; we keep counting
-    this.d.resolveItem(ep.itemId);
-    this.d.audit?.append('coherence-item-resolved', { machineId: this.d.selfMachineId, itemId: ep.itemId, value: verdict.values[0], reobserved: required });
-    this.episode = null;
   }
 
   private trackCannotTell(peerRows: CoherenceObservation[]): void {
@@ -408,7 +432,9 @@ export class IdentityCoherenceDetector {
       if (o.status === 'cannot-tell' && o.reason !== 'offline-by-presence' && this.d.isOnline(o.machineId) === true) {
         const n = (this.cannotTellRounds.get(o.machineId) ?? 0) + 1;
         this.cannotTellRounds.set(o.machineId, n);
-        if (n === limit && !this.cannotTellEscalated.has(o.machineId)) {
+        // Raised by the lease holder ONLY (one wedged peer on an N-machine fleet must be one
+        // item, not N-1). `>=` so a machine that becomes the holder after round 10 still raises.
+        if (n >= limit && !this.cannotTellEscalated.has(o.machineId) && this.d.holdsLease()) {
           // Self-heal first: re-pull that peer's presence; the escalation lands regardless of
           // the pull's outcome because the chronic condition is already ten rounds old.
           void Promise.resolve(this.d.refreshPresence?.(o.machineId)).catch(() => {

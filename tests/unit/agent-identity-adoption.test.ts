@@ -17,6 +17,7 @@ import {
   AgentIdentityAdoptionLoop,
   canonicalObserve,
   decideAdoption,
+  identityLeaseEligible,
   installAdoptedIdentity,
   openAdoptionEnvelope,
   readAgentIdentityOnDisk,
@@ -399,7 +400,7 @@ describe('§1.2 the adoption loop — end to end over signed fakes', () => {
     rm(a.stateDir); rm(b.stateDir);
   });
 
-  it('the kill switch: adoption disabled → no observe, no install, one item naming the switch', async () => {
+  it('the kill switch: adoption disabled → no request, no install, one item naming the switch — but it STILL observes (the lease rule reads it)', async () => {
     const fleet = new Fleet();
     const a = fleet.add(machine('m_a'));
     const b = fleet.add(machine('m_b'));
@@ -409,7 +410,90 @@ describe('§1.2 the adoption loop — end to end over signed fakes', () => {
     const loop = fleet.loop(b, { items, enabled: false });
     await loop.runOnce();
     expect(readAgentIdentityOnDisk(b.stateDir)).toBeNull();
+    expect(loop.status().requests).toBe(0);
     expect(items.at(-1)?.body).toMatch(/agentIdentity\.adoption\.enabled:false/);
+    // The observation is what makes this machine yield the lease to the provisioned sibling.
+    expect(loop.lastObservations).toMatchObject([{ machineId: 'm_a', state: 'provisioned', fingerprint: id.fingerprint }]);
+    expect(identityLeaseEligible({ notProvisioned: true, observations: loop.lastObservations, isOnline: () => true })).toBe(false);
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
+  it('§1.1 lease rule, both sides: yields ONLY to a live provisioned sibling; lone / asleep / unprovisioned-sibling / provisioned-self keep serving', () => {
+    const prov = { machineId: 'm_a', state: 'provisioned' as const, fingerprint: 'f'.repeat(32) };
+    const noId = { machineId: 'm_c', state: 'not-provisioned' as const, fingerprint: null };
+    const dark = { machineId: 'm_d', state: 'unreachable' as const, fingerprint: null };
+    const online = (ids: string[]) => (id: string) => ids.includes(id);
+    expect(identityLeaseEligible({ notProvisioned: true, observations: [prov], isOnline: online(['m_a']) })).toBe(false); // yield
+    expect(identityLeaseEligible({ notProvisioned: true, observations: [], isOnline: online([]) })).toBe(true); // lone machine
+    expect(identityLeaseEligible({ notProvisioned: true, observations: [prov], isOnline: online([]) })).toBe(true); // sibling asleep
+    expect(identityLeaseEligible({ notProvisioned: true, observations: [prov], isOnline: () => null })).toBe(true); // presence unknown is not "live"
+    expect(identityLeaseEligible({ notProvisioned: true, observations: [noId, dark], isOnline: online(['m_c', 'm_d']) })).toBe(true); // nobody holds the identity
+    expect(identityLeaseEligible({ notProvisioned: false, observations: [prov], isOnline: online(['m_a']) })).toBe(true); // provisioned self never yields
+  });
+
+  it('a round whose deps throw (the corrupt-registry posture) is audited and survived — never an unhandled rejection', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    writeAgentIdentity(a.stateDir);
+    const base = fleet.loop(b);
+    let calls = 0;
+    const loop = new AgentIdentityAdoptionLoop({
+      ...(base as unknown as { d: ConstructorParameters<typeof AgentIdentityAdoptionLoop>[0] }).d,
+      listActiveSiblings: () => { calls += 1; throw new Error('REGISTRY_CORRUPT: unparseable'); },
+    });
+    await expect(loop.runOnce()).resolves.toBeNull();
+    await expect(loop.runOnce()).resolves.toBeNull();
+    expect(calls).toBe(2);
+    const rows = fleet.audits.get('m_b')!.read({}).filter((r) => r.event === 'adoption-refused' && (r as { reason?: string }).reason === 'round-error');
+    expect(rows).toHaveLength(1); // one row per distinct error, not one per tick
+    expect(readAgentIdentityOnDisk(b.stateDir)).toBeNull();
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
+  it('a machine that booted WITH its identity idles, then re-enters the posture and re-adopts when the file disappears (one counted cycle)', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    const id = writeAgentIdentity(a.stateDir);
+    fs.copyFileSync(path.join(a.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json'));
+    writeLastKnown(b.stateDir, id.fingerprint);
+    const items: AdoptionAttentionItem[] = [];
+    let lost = 0;
+    const base = fleet.loop(b, { items });
+    const loop = new AgentIdentityAdoptionLoop({
+      ...(base as unknown as { d: ConstructorParameters<typeof AgentIdentityAdoptionLoop>[0] }).d,
+      onIdentityLost: () => { lost += 1; },
+    });
+    await loop.runOnce();
+    expect(loop.status()).toMatchObject({ provisioned: true, requests: 0 });
+    expect(fleet.audits.get('m_b')!.read({}).some((r) => r.event === 'posture-not-provisioned')).toBe(false); // never claimed for a provisioned boot
+    fs.renameSync(path.join(b.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json.gone'));
+    await loop.runOnce();
+    expect(lost).toBe(1);
+    expect(loop.status().adoptLoseCycles24h).toBe(1);
+    expect(readAgentIdentityOnDisk(b.stateDir)?.fingerprint).toBe(id.fingerprint); // adopted back
+    const events = fleet.audits.get('m_b')!.read({}).map((r) => r.event);
+    expect(events).toEqual(expect.arrayContaining(['identity-lost', 'posture-not-provisioned', 'adoption-installed']));
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
+  it('a rate-limited answer is pacing, not a refusal: audited, honoured, never an operator item', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    const id = writeAgentIdentity(a.stateDir);
+    writeLastKnown(b.stateDir, id.fingerprint);
+    // First loop adopts (consuming the responder's one share per 10 min) …
+    await fleet.loop(b).runOnce();
+    fs.renameSync(path.join(b.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json.gone'));
+    // … a restarted requester asks again at once and is told to wait.
+    const items: AdoptionAttentionItem[] = [];
+    const loop = fleet.loop(b, { items });
+    await loop.runOnce();
+    expect(loop.status().lastRefusal).toBe('refused:rate-limited');
+    expect(items).toEqual([]);
+    expect(loop.status().consecutiveFleetRefusals).toBe(0);
     rm(a.stateDir); rm(b.stateDir);
   });
 

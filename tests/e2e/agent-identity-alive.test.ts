@@ -129,6 +129,32 @@ describe('agent-identity E2E lifecycle (feature is alive on the production init 
     expect(health.body.identityCoherence.state).toBe('cannot-tell');
     expect(health.body.identityCoherence.lastCheckedAt).not.toBeNull();
   });
+
+  it('GET /provenance publishes the key ON DISK NOW, not a boot-captured one: a replaced identity is visible to siblings without a restart', async () => {
+    const before = await request(app).get('/provenance').set(auth());
+    expect(before.status).toBe(200);
+    expect(before.body.fingerprint).toBe(fingerprint);
+    // What `instar identity adopt` does on a running server: the file is replaced under it.
+    const file = path.join(stateDir, 'identity.json');
+    const original = fs.readFileSync(file, 'utf-8');
+    const kp2 = generateIdentityKeyPair();
+    fs.writeFileSync(file, JSON.stringify({ publicKey: kp2.publicKey.toString('base64'), privateKey: kp2.privateKey.toString('base64'), privateKeyEncryption: 'none', createdAt: new Date().toISOString() }), { mode: 0o600 });
+    try {
+      const after = await request(app).get('/provenance').set(auth());
+      expect(after.body.fingerprint).toBe(computeFingerprint(kp2.publicKey));
+      expect(after.body.fingerprint).not.toBe(fingerprint);
+      // …and a machine whose file is gone answers no fingerprint (enabled:false), honestly.
+      fs.renameSync(file, `${file}.aside`);
+      const gone = await request(app).get('/provenance').set(auth());
+      expect(gone.status).toBe(200);
+      expect(gone.body.fingerprint).toBeNull();
+      expect(gone.body.enabled).toBe(false);
+      fs.renameSync(`${file}.aside`, file);
+    } finally {
+      fs.writeFileSync(file, original, { mode: 0o600 });
+    }
+    expect((await request(app).get('/provenance').set(auth())).body.fingerprint).toBe(fingerprint);
+  });
 });
 
 describe('agent-identity migration parity (lands once, idempotent)', () => {

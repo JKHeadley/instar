@@ -779,15 +779,17 @@ export class LeaseCoordinator {
   }
 
   async acquireIfEligible(): Promise<boolean> {
-    // §1.1 lease-ineligibility: an unprovisioned machine never acquires, and releases what it
-    // holds at this (the next) tick. Read live so adoption lifting the posture needs no restart.
+    // §1.1 lease rule: an unprovisioned machine that can see a live provisioned sibling does
+    // not acquire, and releases what it holds at this (the next) tick. Read live so adoption lifting the posture needs no restart.
     if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
       const view = this.effectiveView();
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
-        this.relinquish();
-        this.log('released the serving lease: this machine has no agent identity (identity-not-provisioned)');
+        // Signed tombstone, not the bare local relinquish: peers stop deferring to this
+        // machine now instead of waiting out the lease TTL.
+        await this.relinquishAndBroadcast();
+        this.log('released the serving lease to a live sibling that holds the agent identity (this machine is identity-not-provisioned)');
       } else {
-        this.log('acquire skipped: identity-not-provisioned (lease-ineligible until the agent identity is adopted)');
+        this.log('acquire skipped: identity-not-provisioned and a live sibling holds the agent identity');
       }
       return false;
     }

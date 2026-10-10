@@ -27412,9 +27412,31 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         };
         const nick = (id: string, e?: { nickname?: string; name?: string }) => e?.nickname ?? e?.name ?? id;
-        const activeSiblings = () => idMgr.getActiveMachines().filter((m) => m.machineId !== selfId).map((m) => ({ machineId: m.machineId, nickname: nick(m.machineId, m.entry) }));
-        const revokedSiblings = () => Object.entries(idMgr.loadRegistry().machines ?? {})
-          .filter(([id, e]) => id !== selfId && !idMod2.isRegistryEntryActive(e))
+        // The registry readers below are TOLERANT: `loadRegistry()` throws on a corrupt file,
+        // and a corrupt registry is one of the postures this feature exists to serve (§1.1
+        // `unreadable` → refuse to mint, stay loud, keep serving). An unreadable registry reads
+        // as "no siblings known", logged once per distinct error.
+        let lastRegistryError: string | null = null;
+        const registryMachines = (): Record<string, { nickname?: string; name?: string }> => {
+          try {
+            const machines = idMgr.loadRegistry().machines ?? {};
+            lastRegistryError = null;
+            return machines as Record<string, { nickname?: string; name?: string }>;
+          } catch (err) {
+            // @silent-fallback-ok — an unreadable registry is the typed `unreadable` posture (mint refused, item raised by the mint guard); here it reads as no known siblings rather than crashing the round.
+            const message = err instanceof Error ? err.message : String(err);
+            if (message !== lastRegistryError) {
+              lastRegistryError = message;
+              console.warn(`[agent-identity] machine registry unreadable (${message}); treating the sibling list as empty`);
+            }
+            return {};
+          }
+        };
+        const activeSiblings = () => Object.entries(registryMachines())
+          .filter(([id, e]) => id !== selfId && idMod2.isRegistryEntryActive(e as never))
+          .map(([id, e]) => ({ machineId: id, nickname: nick(id, e) }));
+        const revokedSiblings = () => Object.entries(registryMachines())
+          .filter(([id, e]) => id !== selfId && !idMod2.isRegistryEntryActive(e as never))
           .map(([id, e]) => ({ machineId: id, nickname: nick(id, e) }));
         const isOnline = (id: string): boolean | null => {
           const cap = machinePoolRegistry?.getCapacity(id);
@@ -27451,19 +27473,32 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           audit,
         });
-        const resolveItem = (id: string) => { void telegram?.updateAttentionStatus(id, 'DONE', { silent: true }); };
+        // Raise/resolve through the episode-aware helper: the attention store answers a create
+        // for any id it has EVER held with the old row (even a resolved one) and never updates
+        // a body, so a second loss / a recurring split / a changed refusal reason would
+        // otherwise be silent.
+        const itemsMod = await import('../core/AgentIdentityItems.js');
+        const identityItems = new itemsMod.IdentityAttentionItems({
+          list: () => (telegram?.getAttentionItems() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.description })),
+          create: (i) => { _meshAttentionRaise?.({ id: i.id, title: i.title, body: i.body, priority: i.priority, sourceContext: 'agent-identity' }); },
+          resolve: (id) => { void telegram?.updateAttentionStatus(id, 'DONE', { silent: true }); },
+        });
+        const resolveItem = (id: string) => { identityItems.resolve(id); };
         const raiseItem = (item: { id: string; title: string; body: string; priority: string; metadata?: Record<string, unknown> }) => {
           const contributors = item.metadata?.contributors as Record<string, string> | undefined;
+          const machines = registryMachines();
           const body = contributors && Object.keys(contributors).length
-            ? `${item.body}\n\nMachines to re-observe repaired: ${Object.entries(contributors).map(([m, fp]) => `${nick(m, idMgr.loadRegistry().machines?.[m])} (${fp.slice(0, 8)}…)`).join(', ')}.`
+            ? `${item.body}\n\nMachines to re-observe repaired: ${Object.entries(contributors).map(([m, fp]) => `${nick(m, machines[m])} (${fp.slice(0, 8)}…)`).join(', ')}.`
             : item.body;
-          _meshAttentionRaise?.({ id: item.id, title: item.title, body, priority: item.priority === 'high' || item.priority === 'critical' ? 'high' : 'medium', sourceContext: 'agent-identity' });
+          identityItems.raise({ id: item.id, title: item.title, body, priority: item.priority === 'high' || item.priority === 'critical' ? 'high' : 'medium' });
         };
-        // The adoption loop runs ONLY on a machine that booted without a usable identity on a
-        // joined mesh (§1.1 posture). It fills the void; it never replaces (§1.4 is the CLI).
+        // The adoption loop runs on every machine of a joined mesh (§1.1). On a machine that
+        // booted WITH its identity it idles (one disk read per 5-min round) and wakes if the
+        // file later disappears; on one that booted without, it adopts. It fills the void; it
+        // never replaces (§1.4 is the CLI).
         let loop: import('../core/AgentIdentityAdoption.js').AgentIdentityAdoptionLoop | null = null;
         const postureNow = adoptionMod.readAgentIdentityPosture(config.stateDir);
-        if (postureNow.state !== 'provisioned' && !joinedMod.detectJoinedMesh(config.stateDir).mintAllowed) {
+        if (!joinedMod.detectJoinedMesh(config.stateDir).mintAllowed) {
           loop = new adoptionMod.AgentIdentityAdoptionLoop({
             stateDir: config.stateDir,
             agentName: config.projectName,
@@ -27483,30 +27518,31 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
             },
             onInstalled: async () => { await _threadlineBoot?.reloadIdentity(); },
+            // The file is gone: re-run the lever so the running process re-enters the posture
+            // (relay state, /threadline/health) instead of speaking from a key it no longer holds on disk.
+            onIdentityLost: () => { void _threadlineBoot?.reloadIdentity().catch(() => { /* @silent-fallback-ok — the lever is best-effort here; the loop audits the loss and keeps adopting */ }); },
             raiseItem,
             resolveItem,
             audit,
             mintNonce,
           });
           loop.start();
-          console.log(pc.yellow('  Agent identity: NOT PROVISIONED on this paired machine — adoption loop started (observe every 30 s; one request per 10 min)'));
+          if (postureNow.state !== 'provisioned') {
+            console.log(pc.yellow('  Agent identity: NOT PROVISIONED on this paired machine — adoption loop started (observe every 30 s; one request per 10 min)'));
+          }
         }
         const notProvisioned = () => _threadlineBoot?.identityNotProvisioned() ?? (postureNow.state !== 'provisioned');
         // §1.1: yield the lease ONLY to a live provisioned sibling (presence-online AND signed
         // `provisioned` in the latest observe round). A lone machine, all-revoked, or a sleeping
         // sibling keeps the lease so the item itself can reach the operator.
-        _identityLeaseEligible = () => {
-          if (!notProvisioned()) return true;
-          const obs = loop?.lastObservations ?? [];
-          return !obs.some((o) => o.state === 'provisioned' && isOnline(o.machineId) === true);
-        };
-        const selfNickname = () => nick(selfId, idMgr.loadRegistry().machines?.[selfId]);
+        _identityLeaseEligible = () => adoptionMod.identityLeaseEligible({ notProvisioned: notProvisioned(), observations: loop?.lastObservations ?? [], isOnline });
+        const selfNickname = () => nick(selfId, registryMachines()[selfId]);
         _agentIdentityDeps = {
           selfMachineId: () => selfId,
           selfNickname,
           listActiveSiblings: activeSiblings,
           listRevokedSiblings: revokedSiblings,
-          isMachineActive: (id) => idMgr.isMachineActive(id),
+          isMachineActive: (id) => { const e = registryMachines()[id]; return !!e && idMod2.isRegistryEntryActive(e as never); },
           isOnline,
           holdsLease: () => coordinator.holdsLease(),
           connectedAs: () => _threadlineBoot?.connectedAs() ?? null,
@@ -27520,6 +27556,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           refreshPresence: async () => { await _identityPresencePull?.(); },
           raiseItem,
           resolveItem,
+          openSplitItemIds: () => identityItems.openBaseIds(`agent-identity-split:${config.projectName}:`),
         };
       }
     } catch (err) {

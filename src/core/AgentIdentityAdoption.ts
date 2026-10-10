@@ -375,6 +375,22 @@ export interface AdoptionObservation {
 }
 
 /**
+ * §1.1 lease rule. A provisioned machine is always eligible. An UNPROVISIONED machine yields
+ * the serving lease only to a sibling that is live right now AND holds the identity — signed
+ * `provisioned` in the latest observe round and online by presence. A lone machine, a fleet
+ * of revoked siblings, or a sibling that is asleep leaves this machine eligible: it is then
+ * the one machine that can still carry the item asking for the fix to the operator.
+ */
+export function identityLeaseEligible(input: {
+  notProvisioned: boolean;
+  observations: AdoptionObservation[];
+  isOnline: (machineId: string) => boolean | null;
+}): boolean {
+  if (!input.notProvisioned) return true;
+  return !input.observations.some((o) => o.state === 'provisioned' && input.isOnline(o.machineId) === true);
+}
+
+/**
  * Verify one sibling's observe answer. A verified answer is an observation; anything else is
  * `unreachable` with a named reason — it never counts as agreement OR disagreement.
  */
@@ -639,6 +655,8 @@ export interface AgentIdentityAdoptionLoopDeps {
   verifySig: (machineId: string, canonical: string, sig: string) => boolean;
   /** This machine's X25519 private key PEM (for decryptFromSync), or null when unavailable. */
   ownEncryptionPrivateKeyPem: () => string | null;
+  /** Runs when a previously present identity file is found gone (the running process re-enters the posture). */
+  onIdentityLost?: () => void;
   /** The reload lever (§1.2) — runs after a successful install. */
   onInstalled: (fingerprint: string) => Promise<void> | void;
   raiseItem: (item: AdoptionAttentionItem) => void;
@@ -687,6 +705,7 @@ export class AgentIdentityAdoptionLoop {
   private lastRoundAt: number | null = null;
   private readonly loseCycleTimes: number[] = [];
   private requestedMachineRotation = 0;
+  private postureAudited = false;
   /** The latest observe round's verified observations (§1.1 lease rule reads `provisioned` here). */
   lastObservations: AdoptionObservation[] = [];
 
@@ -700,11 +719,14 @@ export class AgentIdentityAdoptionLoop {
     return `agent-identity-missing:${this.d.agentName}:${this.d.selfMachineId}`;
   }
 
-  /** The loop is only ever started on a machine that booted unprovisioned. */
+  /**
+   * Started on every PAIRED machine. A machine that boots provisioned idles (one disk read
+   * per 5-min round) and wakes the moment its identity file disappears — §1.1: it "re-enters
+   * this posture and counts one cycle" rather than staying silently identity-less.
+   */
   start(): void {
     if (this.timer) return;
     this.startedAt = this.now();
-    this.d.audit?.append('posture-not-provisioned', { machineId: this.d.selfMachineId });
     const tick = () => {
       void this.runOnce().finally(() => {
         if (!this.timer) return;
@@ -731,6 +753,11 @@ export class AgentIdentityAdoptionLoop {
     if (this.installedFingerprint) {
       this.loseCycleTimes.push(this.now());
       this.d.audit?.append('identity-lost', { machineId: this.d.selfMachineId, fingerprint: this.installedFingerprint });
+      try {
+        this.d.onIdentityLost?.();
+      } catch {
+        // @silent-fallback-ok — the lost-identity hook (the reload lever) is best-effort; the loop itself keeps adopting and the audit row above records the loss.
+      }
     }
     this.installedFingerprint = null;
     this.escalated = false;
@@ -762,6 +789,15 @@ export class AgentIdentityAdoptionLoop {
     this.inFlight = true;
     try {
       return await this.round();
+    } catch (err) {
+      // @silent-fallback-ok: the posture this loop serves (a paired machine with no identity,
+      // possibly with an unreadable registry) is exactly where its deps throw. A rejected
+      // round must never take the server down: the machine stays loud-but-serving, the error
+      // is audited once per distinct message, and the next tick tries again.
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[agent-identity-adoption] round failed (non-fatal):', message);
+      this.transition('round-error', message);
+      return null;
     } finally {
       this.inFlight = false;
     }
@@ -770,21 +806,32 @@ export class AgentIdentityAdoptionLoop {
   private async round(): Promise<AdoptionDecision | null> {
     this.rounds += 1;
     this.lastRoundAt = this.now();
-    if (!this.d.enabled()) {
-      this.transition('adoption-disabled', 'adoption is disabled by agentIdentity.adoption.enabled:false');
-      this.maybeEscalate('adoption-disabled', 'adoption is switched off on this machine (agentIdentity.adoption.enabled:false)');
-      return null;
-    }
+    const enabled = this.d.enabled();
     // Already provisioned (installed by us, or by the CLI meanwhile)? Nothing to do.
     const posture = readAgentIdentityPosture(this.d.stateDir);
     if (posture.state === 'provisioned') {
       if (this.installedFingerprint !== posture.fingerprint) {
         this.installedFingerprint = posture.fingerprint;
+        this.postureAudited = false;
+        this.lastObservations = [];
         this.d.resolveItem(this.itemId);
       }
       return null;
     }
     if (this.installedFingerprint) this.noteIdentityLost();
+    if (!this.postureAudited) {
+      this.postureAudited = true;
+      this.d.audit?.append('posture-not-provisioned', { machineId: this.d.selfMachineId });
+    }
+    if (!enabled) {
+      // The kill switch stops REQUESTING and INSTALLING — never observing. The §1.1 lease
+      // rule reads this round's observations: without them an unprovisioned machine could
+      // never see a live provisioned sibling and would keep the serving lease with no relay.
+      await this.observeSiblings();
+      this.transition('adoption-disabled', 'adoption is disabled by agentIdentity.adoption.enabled:false');
+      this.maybeEscalate('adoption-disabled', 'adoption is switched off on this machine (agentIdentity.adoption.enabled:false)');
+      return null;
+    }
     if (posture.state === 'invalid') {
       // A present-but-unloadable file: adoption never writes over it (§1.1). Refuse every
       // round with the named reason; the lever is the CLI, which moves the file aside.
@@ -796,21 +843,7 @@ export class AgentIdentityAdoptionLoop {
       return null;
     }
 
-    const siblings = this.d.listActiveSiblings();
-    const nonce = (this.d.mintNonce ?? (() => crypto.randomBytes(12).toString('hex')))();
-    const observations = await Promise.all(
-      siblings.map(async (s): Promise<AdoptionObservation> => {
-        let r: Awaited<ReturnType<AgentIdentityAdoptionLoopDeps['observe']>>;
-        try {
-          r = await this.d.observe(s, { type: 'agent-identity-observe', agentName: this.d.agentName, requesterNonce: nonce });
-        } catch {
-          r = { ok: false, reason: 'transport' };
-        }
-        if (!r.ok) return { machineId: s.machineId, nickname: s.nickname, state: 'unreachable', fingerprint: null, reason: r.reason };
-        return verifyObserveResponse(r.result, { machineId: s.machineId, requesterNonce: nonce, nickname: s.nickname }, this.d.verifySig);
-      }),
-    );
-    this.lastObservations = observations;
+    const { siblings, observations } = await this.observeSiblings();
     const lastKnown = readLastKnownFingerprint(this.d.stateDir);
     const decision = decideAdoption({ observations, lastKnownFingerprint: lastKnown, revokedCount: this.d.revokedSiblingCount?.() ?? 0 });
     this.lastDecision = decision;
@@ -875,7 +908,10 @@ export class AgentIdentityAdoptionLoop {
         if (typeof opened.retryAfterMs === 'number' && opened.retryAfterMs > 0) {
           this.lastRequestAt = now - (this.d.requestIntervalMs ?? 10 * 60_000) + opened.retryAfterMs;
         }
-      } else this.consecutiveFleetRefusals += 1;
+        this.transition(reason, `${target.nickname ?? target.machineId} asked this machine to wait before asking again`);
+        return decision; // benign pacing — audited, never an operator-facing refusal
+      }
+      this.consecutiveFleetRefusals += 1;
       this.transition(reason, `envelope from ${target.nickname ?? target.machineId} rejected: ${reason}`);
       this.maybeEscalate(reason, `${target.nickname ?? target.machineId} answered ${reason}`);
       return decision;
@@ -923,6 +959,27 @@ export class AgentIdentityAdoptionLoop {
       this.d.audit?.append('identity-reloaded', { machineId: this.d.selfMachineId, ok: false, error: err instanceof Error ? err.message : String(err) });
     }
     return decision;
+  }
+
+  /** One signed observe per active sibling; the result is what the §1.1 lease rule reads. */
+  private async observeSiblings(): Promise<{ siblings: ReturnType<AgentIdentityAdoptionLoopDeps['listActiveSiblings']>; observations: AdoptionObservation[] }> {
+    const siblings = this.d.listActiveSiblings();
+    const nonce = (this.d.mintNonce ?? (() => crypto.randomBytes(12).toString('hex')))();
+    const observations = await Promise.all(
+      siblings.map(async (s): Promise<AdoptionObservation> => {
+        let r: Awaited<ReturnType<AgentIdentityAdoptionLoopDeps['observe']>>;
+        try {
+          r = await this.d.observe(s, { type: 'agent-identity-observe', agentName: this.d.agentName, requesterNonce: nonce });
+        } catch {
+          // @silent-fallback-ok — a sibling whose observe throws is `unreachable` for the round (typed, counted, named in the item), never agreement.
+          r = { ok: false, reason: 'transport' };
+        }
+        if (!r.ok) return { machineId: s.machineId, nickname: s.nickname, state: 'unreachable', fingerprint: null, reason: r.reason };
+        return verifyObserveResponse(r.result, { machineId: s.machineId, requesterNonce: nonce, nickname: s.nickname }, this.d.verifySig);
+      }),
+    );
+    this.lastObservations = observations;
+    return { siblings, observations };
   }
 
   private describeRefusal(decision: Extract<AdoptionDecision, { ok: false }>, noHandler: string[]): string {
@@ -974,7 +1031,7 @@ export class AgentIdentityAdoptionLoop {
       title: `${this.d.agentName} has no agent identity on this machine`,
       priority,
       body:
-        `This machine is paired but holds no agent identity, so it stays off the agent network and never serves (identity-not-provisioned). ` +
+        `This machine is paired but holds no agent identity, so it stays off the agent network (identity-not-provisioned). It hands serving to a sibling that has the identity whenever one is awake, and keeps serving only while it is the one machine that can reach you. ` +
         `Reason: ${detail}` +
         (flapping ? ' This machine has adopted and lost its identity three times in 24 h — something keeps removing the file.' : '') +
         ' I keep trying to adopt it from a sibling; this clears itself the moment that works.',

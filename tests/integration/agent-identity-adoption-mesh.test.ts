@@ -18,7 +18,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { MeshRpcDispatcher, type MeshCommand } from '../../src/core/MeshRpc.js';
 import { MeshRpcClient } from '../../src/core/MeshRpcClient.js';
 import { generateSigningKeyPair, generateEncryptionKeyPair, pemToBase64, sign, verify } from '../../src/core/MachineIdentity.js';
-import { AgentIdentityServer, AgentIdentityAdoptionLoop, readAgentIdentityOnDisk, verifyObserveResponse, type AdoptionAttentionItem, type ObserveCommand, type RequestCommand } from '../../src/core/AgentIdentityAdoption.js';
+import { AgentIdentityServer, AgentIdentityAdoptionLoop, identityLeaseEligible, readAgentIdentityOnDisk, verifyObserveResponse, type AdoptionAttentionItem, type ObserveCommand, type RequestCommand } from '../../src/core/AgentIdentityAdoption.js';
 import { AgentIdentityAudit } from '../../src/core/AgentIdentityAudit.js';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../src/threadline/client/MessageEncryptor.js';
@@ -185,6 +185,31 @@ describe('agent-identity adoption over the real /mesh/rpc (two servers)', () => 
       expect(audit).toContain(idA.fingerprint);
     }
     expect(fs.readFileSync(path.join(a.stateDir, 'logs', 'agent-identity.jsonl'), 'utf-8')).toContain('identity-served');
+  });
+
+  it('§1.1 lease rule over the real wire: unprovisioned B yields the lease to live provisioned A, keeps it when A is asleep, and is eligible again once adopted', async () => {
+    const a = machine('m_a', 'mini');
+    const b = machine('m_b', 'studio');
+    const kp = generateIdentityKeyPair();
+    writeIdentity(a.stateDir, kp);
+    await boot(a); await boot(b);
+    const items: AdoptionAttentionItem[] = [];
+    const loop = loopOn(b, [a], items, []);
+    // One witness and no local memory → `single-witness`: B stays unprovisioned, but it HAS
+    // observed (signed) that A holds the identity.
+    const d = await loop.runOnce();
+    expect(d).toMatchObject({ ok: false, reason: 'single-witness' });
+    expect(readAgentIdentityOnDisk(b.stateDir)).toBeNull();
+    const notProvisioned = () => readAgentIdentityOnDisk(b.stateDir) === null;
+    const eligible = (online: boolean | null) => identityLeaseEligible({ notProvisioned: notProvisioned(), observations: loop.lastObservations, isOnline: () => online });
+    expect(eligible(true)).toBe(false); // A is awake and provisioned → B yields
+    expect(eligible(false)).toBe(true); // A asleep → B keeps serving so the item can reach the operator
+    expect(eligible(null)).toBe(true); // presence unknown is not "live"
+    // The operator's yes: local memory is written (what `adopt --from` pins) and B adopts.
+    fs.mkdirSync(path.join(b.stateDir, 'threadline'), { recursive: true });
+    fs.writeFileSync(path.join(b.stateDir, 'threadline', 'agent-info.json'), JSON.stringify({ name: AGENT, fingerprint: computeFingerprint(kp.publicKey) }));
+    expect(await loop.runOnce()).toMatchObject({ ok: true, mode: 'one-witness+pin' });
+    expect(eligible(true)).toBe(true); // provisioned → never yields
   });
 
   it('a stub peer publishing a DIFFERENT fingerprint → B refuses `disagree` and the item names both; nothing is written', async () => {

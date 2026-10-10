@@ -858,7 +858,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // a2a-single-agent-identity §1.2 — post-pairing adoption of the agent identity from a
   // sibling. FLEET-LIVE (not dev-gated): a joined machine with no identity must never mint,
   // and adoption is the path that fills the void. `enabled:false` is the kill switch (the
-  // machine then stays unprovisioned, lease-ineligible and loud). Backfilled on update by
+  // machine then stays unprovisioned and loud, still yielding the lease to a live provisioned sibling). Backfilled on update by
   // applyDefaults add-missing + an explicit existence check in migrateConfig.
   agentIdentity: {
     adoption: { enabled: true },
