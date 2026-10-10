@@ -7,7 +7,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test test/",
+    "test": "tsc && node --test test/*.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": ["ai-agents", "trust", "attestation", "ed25519", "did-web", "threadline", "instar"],
