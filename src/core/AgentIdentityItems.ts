@@ -85,11 +85,16 @@ export class IdentityAttentionItems {
     return open.length;
   }
 
-  /** Base ids with an OPEN row under `prefix` (a restarted detector re-adopts these). */
+  /**
+   * Base ids under `prefix` whose condition may still be live: an OPEN row, or a WONT_DO row
+   * (dismissed, but the condition is not known to have cleared). A restarted detector
+   * re-adopts both — a dismissed item is not raised again, but it IS retired when its
+   * condition clears, so a later recurrence is raised.
+   */
   openBaseIds(prefix: string): string[] {
     const out = new Set<string>();
     for (const r of this.store.list()) {
-      if (!TERMINAL.has(r.status) && r.id.startsWith(prefix)) out.add(identityItemBaseId(r.id));
+      if ((!TERMINAL.has(r.status) || r.status === 'WONT_DO') && r.id.startsWith(prefix)) out.add(identityItemBaseId(r.id));
     }
     return [...out];
   }

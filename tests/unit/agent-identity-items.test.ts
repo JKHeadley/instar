@@ -87,12 +87,17 @@ describe('IdentityAttentionItems', () => {
   });
 
   it('openBaseIds lists OPEN items under a prefix by base id — what a restarted detector re-adopts', () => {
-    const { s } = store();
+    const { s, rows } = store();
     s.raise(item('a', 'agent-identity-split:echo:aa+bb'));
     s.resolve('agent-identity-split:echo:aa+bb');
     s.raise(item('a', 'agent-identity-split:echo:aa+bb')); // recurrence → #2
     s.raise(item('x', 'agent-identity-cannot-tell:echo:m_x'));
     expect(s.openBaseIds('agent-identity-split:echo:')).toEqual(['agent-identity-split:echo:aa+bb']);
+    // A dismissed item is re-adopted too (so it is retired when its condition clears); a DONE one is not.
+    rows.get('agent-identity-split:echo:aa+bb#2')!.status = 'WONT_DO';
+    expect(s.openBaseIds('agent-identity-split:echo:')).toEqual(['agent-identity-split:echo:aa+bb']);
+    s.resolve('agent-identity-split:echo:aa+bb');
+    expect(s.openBaseIds('agent-identity-split:echo:')).toEqual([]);
     expect(identityItemBaseId('agent-identity-split:echo:aa+bb#2')).toBe('agent-identity-split:echo:aa+bb');
   });
 
