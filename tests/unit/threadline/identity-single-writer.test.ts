@@ -47,7 +47,7 @@ function findIdentityFileWrites(source: string): string[] {
   const assignments = [...source.matchAll(assign)]
     .map(m => ({ name: (m[1] ?? m[3])!, expr: m[2] ?? m[4] ?? '' }))
     .filter(a => !/readFile|JSON\.parse|existsSync|statSync/.test(a.expr));
-  const direct = new Set(assignments.filter(a => /identity\.json/.test(a.expr)).map(a => a.name));
+  const direct = new Set(assignments.filter(a => /identity\.json(?![\w])/.test(a.expr)).map(a => a.name));
   const derived = new Set(direct);
   for (const a of assignments) {
     if ([...direct].some(n => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`).test(a.expr))) derived.add(a.name);
@@ -56,7 +56,7 @@ function findIdentityFileWrites(source: string): string[] {
   for (const m of source.matchAll(WRITE_CALL)) {
     const target = m[2].trim();
     const bare = target.replace(/^this\./, '');
-    if (/identity\.json/.test(target) || derived.has(bare)) hits.push(`${m[1]}(${target})`);
+    if (/identity\.json(?![\w])/.test(target) || derived.has(bare)) hits.push(`${m[1]}(${target})`);
   }
   return hits;
 }
@@ -98,7 +98,8 @@ describe('single writer for identity key files', () => {
       const rel = path.relative(SRC, file).split(path.sep).join('/');
       if (rel === KEY_FILE_MODULE || rel in UNRELATED_IDENTITY_JSON) continue;
       const source = fs.readFileSync(file, 'utf-8');
-      if (!source.includes('identity.json')) continue;
+      // `identity.json` the FILE — not `agent-identity.jsonl`, the key-free audit log.
+      if (!/identity\.json(?![\w])/.test(source)) continue;
       for (const hit of findIdentityFileWrites(source)) offenders.push(`${rel}: ${hit}`);
     }
     expect(offenders).toEqual([]);
@@ -119,7 +120,7 @@ describe('single writer for identity key files', () => {
     expect(findIdentityFileWrites(aliased)).toEqual(['WriteFileSync(target)']);
   });
 
-  it('only three modules both reach the write primitive and name the legacy threadline path', () => {
+  it('only five modules both reach the write primitive and name the legacy threadline path', () => {
     const LEGACY_PATH = /'threadline',\s*'identity\.json'|threadline\/identity\.json'/;
     const namers: string[] = [];
     for (const file of listTs(SRC)) {
@@ -128,6 +129,8 @@ describe('single writer for identity key files', () => {
       if (LEGACY_PATH.test(source) && /IdentityKeyFile\.js'/.test(source)) namers.push(rel);
     }
     expect(namers.sort()).toEqual([
+      'commands/identity.ts',          // `instar identity adopt`: moves BOTH files aside through the key-file module (a2a-single-agent-identity §1.4)
+      'core/AgentIdentityAdoption.ts', // adoption install: canonical write + legacy mirror, both through the key-file module (§1.2)
       'core/AgentIdentityHandover.ts', // READS the legacy file for a handover; see next test
       'identity/Migration.ts',         // repairs it through the validating reader
       'threadline/client/IdentityManager.ts',
@@ -152,6 +155,8 @@ describe('single writer for identity key files', () => {
       if (/from\s+'[^']*IdentityKeyFile\.js'/.test(fs.readFileSync(file, 'utf-8'))) importers.push(rel);
     }
     expect(importers.sort()).toEqual([
+      'commands/identity.ts',          // a2a-single-agent-identity §1.4: operator adopt / init --standalone
+      'core/AgentIdentityAdoption.ts', // a2a-single-agent-identity §1.2: the void-fill install
       'core/AgentIdentityHandover.ts',
       'identity/IdentityManager.ts',
       'identity/Migration.ts',

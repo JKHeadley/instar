@@ -150,6 +150,28 @@ export function createFileExclusiveOwnerOnly(filePath: string, data: string): bo
   }
 }
 
+/**
+ * Move an identity key file aside to `backupPath` (a rename — never an unlink; L12). The ONLY
+ * way an agent identity file leaves its path: the single-writer ratchet
+ * (tests/unit/threadline/identity-single-writer.test.ts) keeps every raw rename of an
+ * identity file inside this module. Returns false when there is nothing at `filePath`.
+ */
+export function moveIdentityKeyFileAside(filePath: string, backupPath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  fs.renameSync(filePath, backupPath);
+  return true;
+}
+
+/**
+ * Put a moved-aside identity key file back — only while its original path is still empty
+ * (a present file, whoever wrote it, is never written over). Returns true when restored.
+ */
+export function restoreIdentityKeyFileFromBackup(backupPath: string, filePath: string): boolean {
+  if (!fs.existsSync(backupPath) || fs.existsSync(filePath)) return false;
+  fs.renameSync(backupPath, filePath);
+  return true;
+}
+
 export interface IdentityKeyFileContents {
   /** The parsed file. After a repair this is the repaired object. */
   raw: Record<string, unknown>;

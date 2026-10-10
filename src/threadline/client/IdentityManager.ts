@@ -28,6 +28,8 @@ import {
   createFileExclusiveOwnerOnly,
   readIdentityKeyFile,
   writeFileAtomicOwnerOnly,
+  moveIdentityKeyFileAside,
+  restoreIdentityKeyFileFromBackup,
 } from '../../identity/IdentityKeyFile.js';
 import { withIdentityLock } from '../../core/AgentIdentityLock.js';
 import type { AgentFingerprint } from '../relay/types.js';
@@ -300,7 +302,7 @@ export class IdentityManager {
         const now = readIdentityKeyFile(this.legacyKeyFile, { repair: false });
         if (!now) return null;
         if (now.publicKey.equals(canonical.publicKey)) return { backupPath: '' };
-        fs.renameSync(this.legacyKeyFile, backupPath);
+        moveIdentityKeyFileAside(this.legacyKeyFile, backupPath);
         const data = JSON.stringify({
           fingerprint: canonical.fingerprint,
           publicKey: canonical.publicKey.toString('base64'),
@@ -319,7 +321,7 @@ export class IdentityManager {
       console.warn(`[identity] legacy mirror repair skipped: ${err instanceof Error ? err.message : String(err)}`);
       try {
         // If the rename happened but the write failed, put the original back.
-        if (fs.existsSync(backupPath) && !fs.existsSync(this.legacyKeyFile)) fs.renameSync(backupPath, this.legacyKeyFile);
+        restoreIdentityKeyFileFromBackup(backupPath, this.legacyKeyFile);
       } catch { /* nothing more to do */ }
       return null;
     }

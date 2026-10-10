@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-10T22:59:12.283Z",
+  "slug": "a2a-single-agent-identity-part-a",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/identity/IdentityKeyFile.ts",
+      "src/threadline/client/IdentityManager.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registry entries agent-identity-adoption and agent-identity-coherence-detector are driven by the ratchet at N and 2N ticks under the never-clears fixture: at most elapsed/10min requests, one item per refusal reason, one split item per sorted-set episode, one cannot-tell item per peer."
+    }
+  },
+  "verdict": "pass"
+}

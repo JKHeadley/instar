@@ -406,18 +406,35 @@ describe('identity key file — validate on read, repair hex, refuse the rest', 
       }));
     };
 
-    it('reports a disagreement, keeps the canonical identity, and rewrites nothing', () => {
+    it('reports a disagreement, keeps the canonical identity, and repairs the legacy file to mirror it with the old file kept beside (a2a-single-agent-identity §1.5)', () => {
       const legacyId = new IdentityManager(stateDir).getOrCreate();
       const other = generateIdentityKeyPair();
       writeCanonical(other);
-      const before = [fs.readFileSync(canonicalFile, 'utf-8'), fs.readFileSync(legacyFile, 'utf-8')];
+      const canonicalBefore = fs.readFileSync(canonicalFile, 'utf-8');
+      const legacyBefore = fs.readFileSync(legacyFile, 'utf-8');
 
       const mgr = new IdentityManager(stateDir);
       const id = mgr.get();
-      expect(mgr.identityFilesDisagree).toBe(true);
+      // The disagreement was found AND repaired in the same load, so the files no longer
+      // disagree; `legacyMirrorRepaired` is the record of what happened.
+      expect(mgr.identityFilesDisagree).toBe(false);
+      expect(mgr.legacyMirrorRepaired).not.toBeNull();
       expect(id!.fingerprint).toBe(computeFingerprint(other.publicKey));
       expect(id!.fingerprint).not.toBe(legacyId.fingerprint);
-      expect([fs.readFileSync(canonicalFile, 'utf-8'), fs.readFileSync(legacyFile, 'utf-8')]).toEqual(before);
+      // The canonical file wins and is untouched; the legacy file now mirrors it; the old
+      // legacy file is renamed beside it (never deleted) and named by the manager.
+      expect(fs.readFileSync(canonicalFile, 'utf-8')).toBe(canonicalBefore);
+      const repaired = mgr.legacyMirrorRepaired;
+      expect(repaired?.backupPath).toMatch(/identity\.json\.superseded-/);
+      expect(fs.readFileSync(repaired!.backupPath, 'utf-8')).toBe(legacyBefore);
+      const mirrored = JSON.parse(fs.readFileSync(legacyFile, 'utf-8')) as { publicKey: string; mirrorOf?: string };
+      expect(Buffer.from(mirrored.publicKey, 'base64').equals(other.publicKey)).toBe(true);
+      expect(mirrored.mirrorOf).toBe('identity.json');
+      // A second load finds the two files agreeing and repairs nothing.
+      const again = new IdentityManager(stateDir);
+      again.get();
+      expect(again.identityFilesDisagree).toBe(false);
+      expect(again.legacyMirrorRepaired).toBeNull();
     });
 
     it('is quiet when both files hold the same identity, or only one exists', () => {
