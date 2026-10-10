@@ -71,6 +71,13 @@ export interface AgentTrustProfile {
   blockedOperations: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set when the relay unknown-sender path wrote this profile on a first contact
+   * while its trust check was observing (docs/specs/a2a-relay-unknown-sender-trust.md).
+   * While `source` is still `setup-default`, that check treats the profile as
+   * absent: a first contact is not a grant. Absent on every other profile.
+   */
+  relayFirstContact?: boolean;
 
   // ── Verified-Pairing state (Secure A2A Verified Pairing, §3.7) ──
   // Stored ON the trust profile so there is no cross-file torn state. The
@@ -216,13 +223,31 @@ export class AgentTrustManager {
   private pairingReplication?: PairingReplicationEmitter;
   /** This machine's id (stamped into a replicated `verifiedOnMachine`). Absent ⇒ '?'. */
   private machineId: string;
+  /**
+   * Live reader: the level a NEW fingerprint profile is created at
+   * (docs/specs/a2a-relay-unknown-sender-trust.md). Absent ⇒ `verified`, today's
+   * behaviour byte-for-byte.
+   */
+  private readonly newFingerprintProfileLevel: (() => AgentTrustLevel) | null;
+  /** Told the level of every fingerprint profile this manager creates (counters only). */
+  private readonly onFingerprintProfileCreated: ((level: AgentTrustLevel) => void) | null;
 
   constructor(options: {
     stateDir: string;
     onTrustChange?: TrustChangeCallback;
     /** This machine's id, stamped into a replicated verified-identity result (§3.8). */
     machineId?: string;
+    /**
+     * The level a new fingerprint profile is created at, read per creation.
+     * Absent ⇒ `verified`. Only `verified` or `untrusted` are honoured; any other
+     * answer (or a throw) falls back to `verified`, so this can only ever LOWER
+     * the default, never raise it.
+     */
+    newFingerprintProfileLevel?: () => AgentTrustLevel;
+    onFingerprintProfileCreated?: (level: AgentTrustLevel) => void;
   }) {
+    this.newFingerprintProfileLevel = options.newFingerprintProfileLevel ?? null;
+    this.onFingerprintProfileCreated = options.onFingerprintProfileCreated ?? null;
     this.threadlineDir = path.join(options.stateDir, 'threadline');
     fs.mkdirSync(this.threadlineDir, { recursive: true });
     this.profilesPath = path.join(this.threadlineDir, 'trust-profiles.json');
@@ -310,14 +335,21 @@ export class AgentTrustManager {
   /**
    * Get or create a trust profile keyed by fingerprint.
    * For relay agents, the fingerprint IS the identity.
-   * Relay agents default to 'verified' (can send messages) rather than
-   * 'untrusted' (probes only), since they've already authenticated with the relay.
+   * New profiles default to 'verified' (can send messages); while the relay
+   * unknown-sender check is enforcing they start 'untrusted' (probes only) —
+   * the relay proves key possession, not identity
+   * (docs/specs/a2a-relay-unknown-sender-trust.md).
    *
    * IMPORTANT: Always keys by fingerprint to avoid collisions between
    * same-named agents on different machines. Display name is stored in
    * the profile's `agent` field for human readability.
    */
-  getOrCreateProfileByFingerprint(fingerprint: string, displayName?: string): AgentTrustProfile {
+  getOrCreateProfileByFingerprint(
+    fingerprint: string,
+    displayName?: string,
+    /** Stamp a NEW profile as a relay first contact in its first (atomic) write. */
+    createOpts?: { relayFirstContact?: boolean },
+  ): AgentTrustProfile {
     // Check if profile already exists by fingerprint
     const existing = this.getProfileByFingerprint(fingerprint);
     if (existing) {
@@ -329,12 +361,20 @@ export class AgentTrustManager {
       return existing;
     }
 
-    // Create new profile keyed by fingerprint to prevent same-name collisions
+    // Create new profile keyed by fingerprint to prevent same-name collisions.
+    // The level is `verified` unless the relay unknown-sender check is enforcing
+    // (a first contact proves key possession, not a grant) — then `untrusted`.
+    let level: AgentTrustLevel = 'verified';
+    if (this.newFingerprintProfileLevel) {
+      try {
+        if (this.newFingerprintProfileLevel() === 'untrusted') level = 'untrusted';
+      } catch { /* @silent-fallback-ok — an unreadable mode keeps today's default */ }
+    }
     const now = new Date().toISOString();
     this.profiles[fingerprint] = {
       agent: displayName ?? fingerprint,
       fingerprint,
-      level: 'verified',
+      level,
       source: 'setup-default',
       history: {
         messagesReceived: 0,
@@ -344,12 +384,14 @@ export class AgentTrustManager {
         lastInteraction: '',
         streakSinceIncident: 0,
       },
-      allowedOperations: [...DEFAULT_ALLOWED_OPS.verified],
+      allowedOperations: [...DEFAULT_ALLOWED_OPS[level]],
       blockedOperations: [],
       createdAt: now,
       updatedAt: now,
+      ...(createOpts?.relayFirstContact ? { relayFirstContact: true } : {}),
     };
     this.save();
+    try { this.onFingerprintProfileCreated?.(level); } catch { /* @silent-fallback-ok — counters never break trust */ }
     return this.profiles[fingerprint];
   }
 
@@ -358,7 +400,24 @@ export class AgentTrustManager {
    */
   getTrustLevelByFingerprint(fingerprint: string): AgentTrustLevel {
     const profile = this.getProfileByFingerprint(fingerprint);
+    if (profile && this.isUngrantedFirstContact(profile)) return 'untrusted';
     return profile?.level ?? 'untrusted';
+  }
+
+  /**
+   * A profile the relay unknown-sender path wrote at first contact while its
+   * check was observing, never since decided by anyone (source still
+   * `setup-default`). While that check ENFORCES, it counts as no grant on every
+   * path — the relay gate included — so a soak period hands out nothing that
+   * outlives it (docs/specs/a2a-relay-unknown-sender-trust.md).
+   */
+  private isUngrantedFirstContact(profile: AgentTrustProfile): boolean {
+    if (!profile.relayFirstContact || profile.source !== 'setup-default' || !this.newFingerprintProfileLevel) return false;
+    try {
+      return this.newFingerprintProfileLevel() === 'untrusted';
+    } catch {
+      return false; // @silent-fallback-ok — an unreadable mode keeps today's answer
+    }
   }
 
   /**
@@ -366,7 +425,7 @@ export class AgentTrustManager {
    */
   getAllowedOperationsByFingerprint(fingerprint: string): string[] {
     const profile = this.getProfileByFingerprint(fingerprint);
-    if (!profile) return [...DEFAULT_ALLOWED_OPS.untrusted];
+    if (!profile || this.isUngrantedFirstContact(profile)) return [...DEFAULT_ALLOWED_OPS.untrusted];
     const base = profile.allowedOperations.length > 0
       ? [...profile.allowedOperations]
       : [...DEFAULT_ALLOWED_OPS[profile.level]];

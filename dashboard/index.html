@@ -10557,8 +10557,9 @@
       }
       const M = __ftModule;
       const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
-      const [summary, queue, proposal] = await Promise.all([
+      const [summary, queue, proposal, execute] = await Promise.all([
         get('/feedback-factory/triage/summary'), get('/feedback-factory/triage/queue'), get('/feedback-factory/triage/authority/proposal'),
+        get('/feedback-factory/execute/status'),
       ]);
       const post = async (url, body) => {
         const response = await fetch(url, {
@@ -10568,7 +10569,7 @@
         });
         return { ok: response.ok, data: await response.json().catch(() => ({})) };
       };
-      M.renderTriageSection(document, root, { summary, queue, proposal }, {
+      M.renderTriageSection(document, root, { summary, queue, proposal, execute }, {
         submitAuthority: async (action, pin) => {
           const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
           const note = M.triageResultNote(r.ok, r.data);
@@ -10579,9 +10580,16 @@
           const r = await post('/feedback-factory/triage/plan', { action: 'ignore-live', enabled });
           return r.ok ? r.data : null;
         },
+        planExecutorAction: async (request) => {
+          const r = await post('/feedback-factory/triage/plan', request);
+          return r.ok ? r.data : null;
+        },
         commitPlan: async (plan, pin) => {
           const r = await post('/feedback-factory/triage/commit', { pin, planId: plan.planId, nonce: plan.nonce });
-          const note = r.ok ? (r.data.ignoreLive ? 'Done: ignores are live.' : 'Done: ignores are back in practice mode.') : M.triageResultNote(false, r.data);
+          const note = !r.ok ? M.triageResultNote(false, r.data)
+            : r.data.action === 'accept-approver-dependence' ? 'Done: the fix worker may run. Every fix still needs your GitHub approval to merge.'
+            : r.data.action === 'publish-secret-shape' ? `Done: published as pull request #${r.data.prNumber}.`
+            : (r.data.ignoreLive ? 'Done: ignores are live.' : 'Done: ignores are back in practice mode.');
           if (r.ok) await loadFeedbackTriage(note);
           return note;
         },

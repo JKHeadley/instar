@@ -117,3 +117,8 @@ These records are machine-local by design: they describe the executor and eviden
 one machine and must not be merged with another machine's observations. At the window ceiling,
 the authority freezes a final snapshot and refuses later ticks or registrations from reviving
 the run.
+
+Overlapping ticks are serialized by `TickSerializer`: an explicit tick that arrives while a
+background tick is running waits for a fresh evaluation instead of receiving the stale
+mid-flight snapshot. At most one evaluation runs and one more is queued; later callers share
+the queued one.

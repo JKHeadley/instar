@@ -63,6 +63,25 @@ function resolveDistCli(): string {
   return path.resolve(here, '..', 'cli.js');
 }
 
+/**
+ * Locate the deterministic step-6 verifier. Resolved from THIS module's own
+ * location first (dist/commands → package root → .claude/skills/…), so the
+ * harness works from any cwd (ACT-064: it used to resolve against cwd and failed
+ * unless run from the repo root). Falls back to the canonical agent home for an
+ * install whose package does not carry the skill. Exported + pure for tests.
+ */
+export function resolveVerifierPath(
+  moduleDir: string,
+  canonicalHome: string,
+  exists: (p: string) => boolean = fs.existsSync,
+): string {
+  const rel = path.join('.claude', 'skills', 'test-as-self', 'scripts', 'verify.mjs');
+  const candidates = [path.resolve(moduleDir, '..', '..', rel), path.join(canonicalHome, rel)];
+  const found = candidates.find((c) => exists(c));
+  if (!found) throw new Error(`verify.mjs not found (looked in: ${candidates.join(', ')})`);
+  return found;
+}
+
 /** The canonical (running) agent home — never a valid target. */
 function resolveCanonicalHome(): string {
   return process.env.INSTAR_PROJECT_DIR || process.cwd();
@@ -183,7 +202,12 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
   if (!tokenGuard.ok) { console.error(pc.red(`  ${tokenGuard.reason}`)); return { report: { error: tokenGuard.code }, exitCode: 12 }; }
 
   const target = opts.target || path.join(os.homedir(), '.instar', 'test-deploys', new Date().toISOString().replace(/[:.]/g, '-'));
-  const targetGuard = validateTarget(target, { canonicalHome, protectedNames });
+  const agentsRoot = path.join(os.homedir(), '.instar', 'agents');
+  let agentHomes: string[] = [];
+  try {
+    agentHomes = fs.readdirSync(agentsRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(agentsRoot, d.name));
+  } catch { /* no agents dir */ }
+  const targetGuard = validateTarget(target, { canonicalHome, protectedNames, agentHomes });
   if (!targetGuard.ok) { console.error(pc.red(`  ${targetGuard.reason}`)); return { report: { error: targetGuard.code }, exitCode: 11 }; }
 
   const ctx: RunContext = { target, distCli: resolveDistCli(), steps: [] };
@@ -259,14 +283,27 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
 
     // Step 6 — crash + lease verification (deterministic verify.mjs).
     if (!await runStep('6. verify', async () => {
-      const verifier = path.join(canonicalHome, '.claude', 'skills', 'test-as-self', 'scripts', 'verify.mjs');
-      const out = execFileSync('node', [verifier, '--dir', ctx.target, '--quiet'], { encoding: 'utf-8' });
-      return `verify.mjs PASS (${out.trim().slice(0, 60)}…)`;
+      const verifier = resolveVerifierPath(path.dirname(fileURLToPath(import.meta.url)), canonicalHome);
+      const args = [verifier, '--dir', ctx.target, ...(ctx.botToken ? [] : ['--no-lease'])];
+      try {
+        execFileSync('node', args, { encoding: 'utf-8' });
+      } catch (err) {
+        // Name the failing checks instead of a bare "Command failed".
+        // RULE 3: EXEMPT — parses Instar's own verify.mjs JSON report (a contract we ship), not provider/CLI state; a parse failure only drops the check names from the error.
+        const stdout = (err as { stdout?: string }).stdout ?? '';
+        let failed = '';
+        try {
+          const rep = JSON.parse(stdout) as { checks?: Record<string, { pass: boolean }> };
+          failed = Object.entries(rep.checks ?? {}).filter(([, c]) => !c.pass).map(([k]) => k).join(', ');
+        } catch { /* non-JSON output */ }
+        throw new Error(`verify.mjs FAIL${failed ? ` (${failed})` : ''}`);
+      }
+      return `verify.mjs PASS${ctx.botToken ? '' : ' (crash checks; lease skipped: no lifeline)'}`;
     })) return finish(ctx, opts, 6);
 
     return finish(ctx, opts, 0);
   } finally {
-    if (!opts.keep) teardown(ctx);
+    if (!opts.keep) await teardown(ctx, canonicalHome);
   }
 }
 
@@ -333,18 +370,111 @@ export async function runTestAsSelfSlack(opts: { reportJson?: string } = {}): Pr
   return { report, exitCode: allOk ? 0 : 1 };
 }
 
-/** Signal-safe teardown: stop processes, remove the throwaway home. */
-function teardown(ctx: RunContext): void {
+/**
+ * Processes that belong to the throwaway: any whose command line names the
+ * throwaway home (its server, boot wrapper, lifeline, MCP children, and the
+ * public quick tunnel, which runs `cloudflared … --config <target>/.instar/cloudflared-quick.yml`).
+ * The target is guard-validated (validateTarget refuses a target that is, contains,
+ * or shares a basename with any agent home), so matching on it cannot select a real agent. The harness's OWN ancestor chain is always
+ * excluded — the shell that launched `test-as-self --target <path>` names the
+ * path too. Input is `ps -axo pid=,ppid=,command=`. Exported + pure for tests.
+ */
+export function selectTargetPids(psOutput: string, target: string, selfPid: number): number[] {
+  const root = path.resolve(target);
+  const needle = new RegExp(`${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[/\\s'"]|$)`);
+  const rows: Array<{ pid: number; ppid: number; cmd: string }> = [];
+  for (const line of psOutput.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), cmd: m[3] });
+  }
+  const parent = new Map(rows.map((r) => [r.pid, r.ppid]));
+  const ancestors = new Set<number>();
+  for (let p: number | undefined = selfPid; p !== undefined && p > 1 && !ancestors.has(p); p = parent.get(p)) ancestors.add(p);
+  return rows.filter((r) => r.pid > 1 && !ancestors.has(r.pid) && needle.test(r.cmd)).map((r) => r.pid);
+}
+
+/**
+ * tmux sessions the throwaway spawned (SessionManager names them
+ * `<basename(projectDir)>-<name>`, e.g. a dispatch session). Exported + pure.
+ */
+export function selectTargetTmuxSessions(sessionNames: string[], target: string): string[] {
+  const prefix = `${path.basename(path.resolve(target))}-`;
+  return sessionNames.filter((n) => n.startsWith(prefix));
+}
+
+function targetPidsNow(target: string): number[] {
+  try {
+    const ps = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf-8', timeout: 5_000, maxBuffer: 32 * 1024 * 1024 });
+    return selectTargetPids(ps, target, process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function signalAll(pids: number[], sig: NodeJS.Signals): void {
+  for (const pid of pids) {
+    try { process.kill(pid, sig); } catch { /* gone */ }
+  }
+}
+
+/**
+ * Signal-safe teardown (ACT-064: the launchd job, the public tunnel and the
+ * dispatch sessions all used to survive it). Order matters, because a server
+ * that is still shutting down keeps self-healing: it re-installs its autostart
+ * plist and restarts its tunnel. So: boot out the autostart (no KeepAlive
+ * respawn), stop every throwaway process and WAIT until none is left (SIGKILL
+ * after a deadline), and only then remove the autostart again, reap the tmux
+ * sessions, and sweep anything still naming the home.
+ */
+async function teardown(ctx: RunContext, canonicalHome: string): Promise<void> {
+  let uninstall: (() => void) | null = null;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(ctx.target, '.instar', 'config.json'), 'utf-8')) as { projectName?: string };
+    let canonicalName: string | undefined;
+    try {
+      canonicalName = (JSON.parse(fs.readFileSync(path.join(canonicalHome, '.instar', 'config.json'), 'utf-8')) as { projectName?: string }).projectName;
+    } catch { /* no canonical config — the name guard below still holds */ }
+    const name = cfg.projectName;
+    if (name && name !== canonicalName) {
+      const { uninstallAutoStart } = await import('./setup.js');
+      uninstall = () => { try { uninstallAutoStart(name); } catch { /* best-effort */ } };
+    }
+  } catch { /* no config — nothing was installed */ }
+
+  // 1. Boot out + remove the throwaway's autostart (launchctl bootout + plist removal).
+  uninstall?.();
+
+  // 2. Stop the processes, then wait until every throwaway process has exited.
   try { ctx.lifelineProc?.kill('SIGTERM'); } catch { /* */ }
   try { ctx.serverProc?.kill('SIGTERM'); } catch { /* */ }
-  // Best-effort: stop any launchd/lifeline the deploy self-installed, then remove the home.
   try {
     execFileSync('node', [ctx.distCli, 'server', 'stop', '--dir', ctx.target], { encoding: 'utf-8', timeout: 15_000, env: sanitizedSpawnEnv(process.env) });
   } catch { /* may not be running */ }
+  signalAll(targetPidsNow(ctx.target), 'SIGTERM');
+  const deadline = nowMs() + 20_000;
+  while (nowMs() < deadline && targetPidsNow(ctx.target).length > 0) await sleep(500);
+  signalAll(targetPidsNow(ctx.target), 'SIGKILL');
+
+  // 3. The dying server may have re-installed its autostart: remove it again.
+  uninstall?.();
+
+  // 4. Reap the throwaway's tmux sessions (dispatch/job sessions).
+  try {
+    const list = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const name of selectTargetTmuxSessions(list.split('\n').filter(Boolean), ctx.target)) {
+      try { execFileSync('tmux', ['kill-session', '-t', `=${name}`], { stdio: 'ignore', timeout: 5_000 }); } catch { /* gone */ }
+    }
+  } catch { /* no tmux server */ }
+
+  // 5. Final sweep: anything still naming the home (a late-started tunnel).
+  await sleep(500);
+  signalAll(targetPidsNow(ctx.target), 'SIGKILL');
+
   // NOTE: the throwaway home removal is intentionally left to the caller / --keep
   // semantics rather than an rm here — SafeFsExecutor is the only sanctioned
   // deletion path and the home is under ~/.instar/test-deploys, safe to leave for inspection.
-  console.log(pc.dim(`  teardown: processes signaled; home left at ${ctx.target} (remove manually or it's a dated test-deploys dir)`));
+  const left = targetPidsNow(ctx.target).length;
+  console.log(pc.dim(`  teardown: autostart removed, processes + tunnel + sessions stopped${left ? ` (${left} process(es) still exiting)` : ''}; home left at ${ctx.target}`));
 }
 
 function finish(ctx: RunContext, opts: TestAsSelfOptions, failedStep: number): { report: object; exitCode: number } {

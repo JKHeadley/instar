@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 import {
   triageStatusLine, triageAuthorityRequest, triageResultNote, summaryText, queueRowText, renderTriageSection, newTriageDecisionRef,
+  executorText, heldSecretAttempts,
 } from '../../dashboard/feedback-triage.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -68,10 +69,49 @@ describe('renderTriageSection', () => {
   });
 });
 
+describe('executor card', () => {
+  const EXEC = { reason: 'approver-not-independent', live: 0, openPrs: 1, startsToday: 0, attempts: [{ attemptId: 'i1:a1', state: 'held', reason: 'needs-review-secret-shape', secretFiles: ['tests/fixtures/<b>x</b>.ts'] }] };
+  it('plain words for every executor state', () => {
+    expect(executorText(null)).toMatch(/not available on this machine/);
+    expect(executorText(EXEC)).toMatch(/waiting for you: this agent could approve its own fixes/);
+    expect(executorText({ reason: 'dry-run', live: 0 })).toMatch(/practice mode/);
+    expect(executorText({ reason: 'ok', live: 2, openPrs: 3, startsToday: 4 })).toMatch(/2 attempt\(s\) running, 3 fix\(es\) waiting for review, 4 started today/);
+    expect(heldSecretAttempts(EXEC)).toHaveLength(1);
+    expect(queueRowText({ rank: 1, severity: 'high', title: 'Crash', executionState: 'pr-open' })).toBe('1. [high] Crash (fix waiting for your approval)');
+  });
+  it('the two PIN-only executor actions render the server plan, then commit with the PIN; values via textContent', async () => {
+    const calls = [];
+    const target = doc.getElementById('t');
+    renderTriageSection(doc, target, { summary: SUMMARY, proposal: PROPOSAL, queue: { items: [] }, execute: EXEC }, {
+      planExecutorAction: async (request) => { calls.push(['plan', request]); return { planId: 'p2', nonce: 'n2', renderedText: `plan for ${request.action}` }; },
+      commitPlan: async (plan, pin) => { calls.push(['commit', plan.planId, pin]); return 'done'; },
+    });
+    expect(target.querySelector('b')).toBeNull();
+    expect(target.textContent).toContain('tests/fixtures/<b>x</b>.ts');
+    doc.getElementById('ftPin').value = '4242';
+    target.querySelector('[data-ft-action="plan-accept-approver-dependence"]').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(target.textContent).toContain('plan for accept-approver-dependence');
+    target.querySelector('[data-ft-action="commit-accept-approver-dependence"]').click();
+    await new Promise((r) => setTimeout(r, 0));
+    target.querySelector('[data-ft-action="plan-publish-secret-shape"]').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual([['plan', { action: 'accept-approver-dependence' }], ['commit', 'p2', '4242'], ['plan', { action: 'publish-secret-shape', attemptId: 'i1:a1' }]]);
+  });
+  it('no executor buttons when nothing needs the operator', () => {
+    const target = doc.getElementById('t');
+    renderTriageSection(doc, target, { summary: SUMMARY, proposal: PROPOSAL, queue: { items: [] }, execute: { reason: 'ok', attempts: [] } }, { planExecutorAction: async () => null, commitPlan: async () => '' });
+    expect(target.querySelector('[data-ft-action^="plan-accept"]')).toBeNull();
+    expect(target.querySelector('[data-ft-action^="plan-publish"]')).toBeNull();
+  });
+});
+
 describe('page wiring', () => {
   it('index.html mounts the Triage section and loads the module', () => {
     expect(HTML).toContain('id="fdTriage"');
     expect(HTML).toContain("import('/dashboard/feedback-triage.js')");
     expect(HTML).toContain('/feedback-factory/triage/commit');
+    expect(HTML).toContain('/feedback-factory/execute/status');
+    expect(HTML).toContain('planExecutorAction');
   });
 });

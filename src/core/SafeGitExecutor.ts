@@ -1029,6 +1029,15 @@ export interface SafeGitOptions {
    * `isSourceTreeWorktreeManagerInvocation`.
    */
   sourceTreeWorktreeManagerOk?: boolean;
+  /**
+   * Opt-in: allow the feedback executor's trusted git operations inside its OWN throwaway
+   * attempt clones (docs/specs/feedback-triage-and-execution.md §4). Those clones are copies
+   * of the instar source, so SourceTreeGuard would refuse every write; this narrow carve-out
+   * admits only an enumerated verb set, and only when EVERY target is inside a directory named
+   * `feedback-<slug>-a<n>[-publish|-base]` directly under a `.worktrees` directory. It never
+   * applies to the agent's own checkout or any other tree.
+   */
+  feedbackAttemptCloneOk?: boolean;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -1065,7 +1074,7 @@ export class SafeGitExecutor {
     // explicitly opted into the narrow data-pull allowlist (fetch / etc.)
     // for the documented LAYER B + LAYER C canonical-ref read path. See
     // SafeGitOptions.sourceTreeReadOk for the rationale.
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1116,7 +1125,7 @@ export class SafeGitExecutor {
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
     const verbArgs = sliceAfterVerb(args, verb);
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1167,7 +1176,7 @@ export class SafeGitExecutor {
         `SafeGitExecutor.readStream called with destructive verb '${verb}' — use SafeGitExecutor.spawn instead.`,
       );
     }
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1215,7 +1224,7 @@ export class SafeGitExecutor {
     // caller opted into the narrow read-tier allowlist (the LAYER B/C
     // canonical-ref read path that legitimately operates against the agent's
     // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1269,12 +1278,35 @@ function isSourceTreeCheckBypassed(
   verb: string,
   verbArgs: readonly string[],
   opts: SafeGitOptions,
+  targets: readonly string[] = [],
 ): boolean {
   if (opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb)) return true;
+  if (opts.feedbackAttemptCloneOk && isFeedbackAttemptCloneInvocation(verb, verbArgs, targets)) return true;
   if (opts.sourceTreeWorktreeManagerOk && isSourceTreeWorktreeManagerInvocation(verb, verbArgs)) {
     return true;
   }
   return false;
+}
+
+const FEEDBACK_ATTEMPT_CLONE_DIR = /^feedback-[a-z0-9-]+-a\d+(-publish|-base)?$/;
+const FEEDBACK_ATTEMPT_CLONE_VERBS: ReadonlySet<string> = new Set([
+  'checkout', 'add', 'commit', 'push', 'status', 'diff', 'rev-parse', 'ls-files', 'log', 'show', 'cat-file',
+]);
+
+/** True when `target` is an executor attempt clone (or inside one): `<…>/.worktrees/feedback-<slug>-a<n>[-publish|-base]/…`. */
+export function isFeedbackAttemptClonePath(target: string): boolean {
+  const parts = path.resolve(target).split(path.sep);
+  for (let i = parts.length - 1; i > 0; i--) {
+    if (FEEDBACK_ATTEMPT_CLONE_DIR.test(parts[i]) && parts[i - 1] === '.worktrees') return true;
+  }
+  return false;
+}
+
+function isFeedbackAttemptCloneInvocation(verb: string, verbArgs: readonly string[], targets: readonly string[]): boolean {
+  if (targets.length === 0 || !targets.every((t) => isFeedbackAttemptClonePath(t))) return false;
+  if (verb === 'config') return isWorktreeIdentityConfigWrite(verbArgs);
+  if (verb === 'checkout') return verbArgs.includes('--detach') && !verbArgs.some((a) => a === '--' || a.startsWith('-b') || a === '-B' || a === '--orphan');
+  return FEEDBACK_ATTEMPT_CLONE_VERBS.has(verb);
 }
 
 function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly string[]): boolean {

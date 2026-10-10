@@ -80,3 +80,11 @@ cap makes a flapping detector give up loudly rather than kill-loop.
 - Audit: `logs/enforced-termination.jsonl`.
 
 Constitutional anchor: **The User Experience Is the Product** → sub-standard #2 Enforced Termination.
+
+## Tick overlap — `TickSerializer`
+
+The window-run liveness authority and its cadence executor both run on a background tick and
+also accept an explicit tick request. `TickSerializer` (`src/core/TickSerializer.ts`) keeps
+those from overlapping: one evaluation runs at a time, at most one more is queued behind it,
+and every caller gets the result of an evaluation that started at or after its call. A failed
+in-flight evaluation does not reject the queued callers.

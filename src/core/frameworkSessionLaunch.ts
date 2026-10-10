@@ -1355,9 +1355,15 @@ export function claudeHeadlessExtraFlags(opts: {
   framework: IntelligenceFramework | string;
   allowedTools?: string[];
   disableProjectMcp?: boolean;
+  /** Feedback executor confinement adapter: the policy `--settings` file, loaded with only the
+   *  `local` setting source so no user or project hooks run in the confined session. */
+  confinementSettingsPath?: string;
 }): string[] {
   if (opts.framework !== 'claude-code') return [];
   const flags: string[] = [];
+  if (opts.confinementSettingsPath) {
+    flags.push('--settings', opts.confinementSettingsPath, '--setting-sources', 'local');
+  }
   if (opts.allowedTools && opts.allowedTools.length > 0) {
     flags.push('--allowedTools', opts.allowedTools.join(','));
   }

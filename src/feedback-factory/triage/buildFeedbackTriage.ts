@@ -28,6 +28,8 @@ const execFileAsync = promisify(execFile);
 export interface FeedbackTriageRouteContext {
   service: FeedbackTriageService;
   store: FeedbackTriageStore;
+  /** The shared audit log (logs/feedback-triage.jsonl); the executor appends its transitions here too. */
+  audit: FeedbackTriageAuditLog;
   ownerMachineId: () => string | null;
   isCanonicalOwner: () => boolean;
   /** Fetch a GET route from the owner over the authenticated peer transport; null when unreachable or no transport. */
@@ -172,5 +174,5 @@ export function buildFeedbackTriage(input: {
     } catch { return null; }
   };
 
-  return { service, store, ownerMachineId: input.ownerMachineId, isCanonicalOwner: input.isCanonicalOwner, fetchFromOwner, ownerCache: new Map() };
+  return { service, store, audit, ownerMachineId: input.ownerMachineId, isCanonicalOwner: input.isCanonicalOwner, fetchFromOwner, ownerCache: new Map() };
 }

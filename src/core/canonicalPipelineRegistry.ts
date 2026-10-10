@@ -86,6 +86,21 @@ export const CANONICAL_INTAKE_SURFACES = [
     jobSlug: 'Feedback-Factory Triage',
     canonicalPipelineId: 'feedback-factory',
   },
+  {
+    id: 'feedback-factory-execute-route',
+    kind: 'route',
+    sourcePath: 'src/server/routes.ts',
+    method: 'POST',
+    route: '/feedback-factory/execute/tick',
+    canonicalPipelineId: 'feedback-factory',
+  },
+  {
+    id: 'feedback-factory-execute-job',
+    kind: 'job',
+    sourcePath: 'src/scaffold/templates/jobs/instar/feedback-factory-execute.md',
+    jobSlug: 'Feedback-Factory Execute',
+    canonicalPipelineId: 'feedback-factory',
+  },
 ] as const satisfies readonly IntakeSurfaceDeclaration[];
 
 export const CANONICAL_PIPELINE_IDS = [
