@@ -284,7 +284,7 @@ describe('§2.2 the detector — raise/resolve rules', () => {
     const id = `agent-identity-split:echo:${[FP_A, FP_B].sort().join('+')}`;
     const world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_mini: { nick: 'mini', fp: FP_A, online: true, active: true }, m_laptop: { nick: 'laptop', fp: FP_A, online: false, active: true } } };
     const open = new Set([id]);
-    const { d, items, resolved } = detector(world, { openSplitItemIds: () => [...open], resolveItem: (i) => { resolved.push(i); open.delete(i); } });
+    const { d, items, resolved } = detector(world, { openItemIds: (prefix) => [...open].filter((i) => i.startsWith(prefix)), resolveItem: (i) => { resolved.push(i); open.delete(i); } });
     await d.runOnce(); await d.runOnce(); await d.runOnce();
     expect(items).toEqual([]); // healed while the server was down: nothing new to raise
     expect(resolved).toEqual([]); // the laptop is asleep — the conservative member set waits for it
@@ -292,6 +292,35 @@ describe('§2.2 the detector — raise/resolve rules', () => {
     world.peers.m_laptop.online = true;
     await d.runOnce(); await d.runOnce();
     expect(resolved).toEqual([id]);
+  });
+
+  it('a cannot-tell item never strands: re-adopted after a restart and closed when the peer answers, goes offline, or is removed', async () => {
+    const prefix = 'agent-identity-cannot-tell:echo:';
+    const mk = (world: World, open: Set<string>, resolved: string[]) =>
+      detector(world, { openItemIds: (p) => [...open].filter((i) => i.startsWith(p)), resolveItem: (i) => { resolved.push(i); open.delete(i); } });
+    // (a) raised before a restart; the peer answers afterwards.
+    let open = new Set([`${prefix}m_laptop`]);
+    let resolved: string[] = [];
+    let world: World = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_laptop: { nick: 'laptop', fp: FP_A, online: true, active: true } } };
+    await mk(world, open, resolved).d.runOnce();
+    expect(resolved).toEqual([`${prefix}m_laptop`]);
+    // (b) the peer goes offline by presence: "online but not answering" is no longer true.
+    open = new Set([`${prefix}m_laptop`]); resolved = [];
+    world = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_laptop: { nick: 'laptop', fp: null, online: false, active: true } } };
+    await mk(world, open, resolved).d.runOnce();
+    expect(resolved).toEqual([`${prefix}m_laptop`]);
+    // (c) the peer was removed from the registry and never appears in a round again.
+    open = new Set([`${prefix}m_gone`]); resolved = [];
+    world = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: {} };
+    await mk(world, open, resolved).d.runOnce();
+    expect(resolved).toEqual([`${prefix}m_gone`]);
+    // (d) still online and still silent: the item stays open.
+    open = new Set([`${prefix}m_laptop`]); resolved = [];
+    world = { selfDisk: FP_A, connectedAs: FP_A, holdsLease: true, peers: { m_laptop: { nick: 'laptop', fp: null, online: true, active: true } } };
+    const still = mk(world, open, resolved);
+    await still.d.runOnce(); await still.d.runOnce();
+    expect(resolved).toEqual([]);
+    expect(still.items).toEqual([]); // and it is not raised a second time
   });
 
   it('the cannot-tell item is raised by the lease holder only; a machine that becomes the holder later still raises it once', async () => {

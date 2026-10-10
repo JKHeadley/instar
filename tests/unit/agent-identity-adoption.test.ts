@@ -469,12 +469,67 @@ describe('§1.2 the adoption loop — end to end over signed fakes', () => {
     expect(loop.status()).toMatchObject({ provisioned: true, requests: 0 });
     expect(fleet.audits.get('m_b')!.read({}).some((r) => r.event === 'posture-not-provisioned')).toBe(false); // never claimed for a provisioned boot
     fs.renameSync(path.join(b.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json.gone'));
+    // One void sighting is not a loss (`instar identity adopt` leaves the slot empty for a
+    // few seconds between move-aside and install): nothing is counted, audited or reloaded.
     await loop.runOnce();
+    expect(lost).toBe(0);
+    expect(loop.status().adoptLoseCycles24h).toBe(0);
+    expect(fleet.audits.get('m_b')!.read({}).some((r) => r.event === 'identity-lost')).toBe(false);
+    await loop.runOnce(); // still void → confirmed
     expect(lost).toBe(1);
     expect(loop.status().adoptLoseCycles24h).toBe(1);
     expect(readAgentIdentityOnDisk(b.stateDir)?.fingerprint).toBe(id.fingerprint); // adopted back
     const events = fleet.audits.get('m_b')!.read({}).map((r) => r.event);
     expect(events).toEqual(expect.arrayContaining(['identity-lost', 'posture-not-provisioned', 'adoption-installed']));
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
+  it('a void that the CLI fills before the next round is never a loss; a file restored by hand after a confirmed loss reloads the process', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    writeAgentIdentity(a.stateDir);
+    fs.copyFileSync(path.join(a.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json'));
+    let lost = 0;
+    const reloaded: string[] = [];
+    const base = fleet.loop(b, { onInstalled: (fp) => { reloaded.push(fp); } });
+    const d = (base as unknown as { d: ConstructorParameters<typeof AgentIdentityAdoptionLoop>[0] }).d;
+    // Siblings unreachable, so the loop itself can never re-install: any reload below is the
+    // externally-restored path.
+    const loop = new AgentIdentityAdoptionLoop({ ...d, listActiveSiblings: () => [], onIdentityLost: () => { lost += 1; } });
+    const file = path.join(b.stateDir, 'identity.json');
+    await loop.runOnce();
+    // (1) the CLI window: gone for one round, back before the next.
+    fs.renameSync(file, `${file}.aside`);
+    await loop.runOnce();
+    fs.renameSync(`${file}.aside`, file);
+    await loop.runOnce();
+    expect(lost).toBe(0);
+    expect(reloaded).toEqual([]);
+    // (2) a real loss, then the operator restores the backup by hand.
+    fs.renameSync(file, `${file}.aside`);
+    await loop.runOnce(); await loop.runOnce();
+    expect(lost).toBe(1);
+    fs.renameSync(`${file}.aside`, file);
+    await loop.runOnce();
+    expect(reloaded).toHaveLength(1); // the process picks the identity back up without a restart
+    await loop.runOnce();
+    expect(reloaded).toHaveLength(1); // once
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
+  it('an unusable identity file still OBSERVES, so the machine yields the lease to a live provisioned sibling', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    const id = writeAgentIdentity(a.stateDir);
+    fs.writeFileSync(path.join(b.stateDir, 'identity.json'), '{ not json');
+    const loop = fleet.loop(b);
+    await loop.runOnce();
+    expect(loop.status().lastRefusal).toBe('identity-file-invalid');
+    expect(loop.lastObservations).toMatchObject([{ machineId: 'm_a', state: 'provisioned', fingerprint: id.fingerprint }]);
+    expect(identityLeaseEligible({ notProvisioned: true, observations: loop.lastObservations, isOnline: () => true })).toBe(false);
+    expect(fs.readFileSync(path.join(b.stateDir, 'identity.json'), 'utf-8')).toBe('{ not json'); // never written over
     rm(a.stateDir); rm(b.stateDir);
   });
 

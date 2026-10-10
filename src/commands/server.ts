@@ -27427,22 +27427,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         // and a corrupt registry is one of the postures this feature exists to serve (§1.1
         // `unreadable` → refuse to mint, stay loud, keep serving). An unreadable registry reads
         // as "no siblings known", logged once per distinct error.
-        let lastRegistryError: string | null = null;
-        const registryMachines = (): Record<string, { nickname?: string; name?: string }> => {
-          try {
-            const machines = idMgr.loadRegistry().machines ?? {};
-            lastRegistryError = null;
-            return machines as Record<string, { nickname?: string; name?: string }>;
-          } catch (err) {
-            // @silent-fallback-ok — an unreadable registry is the typed `unreadable` posture (mint refused, item raised by the mint guard); here it reads as no known siblings rather than crashing the round.
-            const message = err instanceof Error ? err.message : String(err);
-            if (message !== lastRegistryError) {
-              lastRegistryError = message;
-              console.warn(`[agent-identity] machine registry unreadable (${message}); treating the sibling list as empty`);
-            }
-            return {};
-          }
-        };
+        const runtimeMod = await import('../core/AgentIdentityRuntime.js');
+        const registryMachines = runtimeMod.tolerantRegistryMachines<{ nickname?: string; name?: string }>(
+          () => idMgr.loadRegistry().machines as Record<string, { nickname?: string; name?: string }> | undefined,
+          (message) => console.warn(`[agent-identity] machine registry unreadable (${message}); treating the sibling list as empty`),
+        );
         const activeSiblings = () => Object.entries(registryMachines())
           .filter(([id, e]) => id !== selfId && idMod2.isRegistryEntryActive(e as never))
           .map(([id, e]) => ({ machineId: id, nickname: nick(id, e) }));
@@ -27490,8 +27479,23 @@ export async function startServer(options: StartOptions): Promise<void> {
         // otherwise be silent.
         const itemsMod = await import('../core/AgentIdentityItems.js');
         const identityItems = new itemsMod.IdentityAttentionItems({
-          list: () => (telegram?.getAttentionItems() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.description })),
-          create: (i) => { _meshAttentionRaise?.({ id: i.id, title: i.title, body: i.body, priority: i.priority, sourceContext: 'agent-identity' }); },
+          list: () => (telegram?.getAttentionItems() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.summary })),
+          // Raised DIRECTLY, not through `_meshAttentionRaise`: that helper files items in the
+          // calm agent-health lane, which posts the title only and suppresses a repeat of the
+          // same key — an identity split would arrive as a bare title with no machines, no
+          // fingerprints and no proposal. These are operator decisions, so they go to the
+          // Attention hub with the WHOLE text carried in `summary` (the hub truncates
+          // `description` at 500 characters; the proposal sits at the end of the text).
+          create: (i) => {
+            void telegram?.createAttentionItem({
+              id: i.id,
+              title: i.title,
+              summary: i.body,
+              category: 'agent-identity',
+              priority: i.priority === 'high' ? 'HIGH' : 'NORMAL',
+              sourceContext: 'agent-identity',
+            });
+          },
           resolve: (id) => { void telegram?.updateAttentionStatus(id, 'DONE', { silent: true }); },
         });
         const resolveItem = (id: string) => { identityItems.resolve(id); };
@@ -27567,7 +27571,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           refreshPresence: async () => { await _identityPresencePull?.(); },
           raiseItem,
           resolveItem,
-          openSplitItemIds: () => identityItems.openBaseIds(`agent-identity-split:${config.projectName}:`),
+          openItemIds: (prefix) => identityItems.openBaseIds(prefix),
         };
       }
     } catch (err) {

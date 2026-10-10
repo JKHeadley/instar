@@ -168,11 +168,12 @@ export interface IdentityCoherenceDetectorDeps {
   raiseItem: (item: CoherenceAttentionItem) => void;
   resolveItem: (id: string) => void;
   /**
-   * Base ids of split items still OPEN in this machine's attention store. The detector holds
-   * its open episodes in memory; after a restart it re-adopts these so an item raised before
-   * the restart is still resolved once the split heals (it would otherwise stay open forever).
+   * Base ids of items still OPEN in this machine's attention store under `prefix`. The
+   * detector holds its open split episodes and its escalated cannot-tell peers in memory;
+   * after a restart it re-adopts these so an item raised before the restart is still resolved
+   * once its condition clears (it would otherwise stay open forever).
    */
-  openSplitItemIds?: () => string[];
+  openItemIds?: (prefix: string) => string[];
   reportDegradation?: (row: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
   audit?: AgentIdentityAudit;
   now?: () => number;
@@ -295,7 +296,7 @@ export class IdentityCoherenceDetector {
     // Re-adopt split items this machine raised before a restart. Their contributor set was not
     // persisted, so the required re-observe set is the conservative one: self plus every
     // sibling active now (a sleeping one blocks resolution until it is seen — the safe side).
-    for (const itemId of this.d.openSplitItemIds?.() ?? []) {
+    for (const itemId of this.d.openItemIds?.(`agent-identity-split:${this.d.agentName}:`) ?? []) {
       if (this.episodes.some((e) => e.itemId === itemId)) continue;
       const values = itemId.slice(itemId.lastIndexOf(':') + 1).split('+');
       this.episodes.push({ itemId, values, members: [this.d.selfMachineId, ...active.map((s) => s.machineId)], raisedAt: this.now(), cleanRounds: 0 });
@@ -428,6 +429,20 @@ export class IdentityCoherenceDetector {
 
   private trackCannotTell(peerRows: CoherenceObservation[]): void {
     const limit = this.d.cannotTellEscalateAfter ?? 10;
+    const prefix = `agent-identity-cannot-tell:${this.d.agentName}:`;
+    // Re-adopt cannot-tell items raised before a restart, so they are resolved below.
+    for (const id of this.d.openItemIds?.(prefix) ?? []) this.cannotTellEscalated.add(id.slice(prefix.length));
+    // An escalated peer that is no longer in the round at all (removed from the registry) or
+    // that presence now reports OFFLINE is no longer "online but not answering": the item's
+    // claim has stopped being true, so it is closed rather than left open forever.
+    for (const machineId of [...this.cannotTellEscalated]) {
+      const row = peerRows.find((o) => o.machineId === machineId);
+      if (!row || row.status === 'unobserved') {
+        this.cannotTellEscalated.delete(machineId);
+        this.cannotTellRounds.delete(machineId);
+        this.d.resolveItem(`${prefix}${machineId}`);
+      }
+    }
     for (const o of peerRows) {
       if (o.status === 'cannot-tell' && o.reason !== 'offline-by-presence' && this.d.isOnline(o.machineId) === true) {
         const n = (this.cannotTellRounds.get(o.machineId) ?? 0) + 1;

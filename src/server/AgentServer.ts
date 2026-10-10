@@ -3017,13 +3017,13 @@ export class AgentServer {
       // Single-machine fallback store (no mesh deps): the same episode-aware raise/resolve the
       // multi-machine wiring uses, over this server's own attention store.
       const localItems = new IdentityAttentionItems({
-        list: () => (this.telegramAdapter?.getAttentionItems?.() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.description })),
+        list: () => (this.telegramAdapter?.getAttentionItems?.() ?? []).map((i) => ({ id: i.id, status: i.status, description: i.summary })),
         create: (i) => {
           void this.telegramAdapter?.createAttentionItem?.({
             id: i.id,
             title: i.title,
-            description: i.body,
-            summary: i.title,
+            // The whole text rides `summary`: the hub truncates `description` at 500 chars.
+            summary: i.body,
             priority: i.priority === 'high' ? 'HIGH' : 'NORMAL',
             category: 'monitoring',
             sourceContext: 'agent-identity:split',
@@ -3053,7 +3053,7 @@ export class AgentServer {
           if (deps) return deps.resolveItem(id);
           localItems.resolve(id);
         },
-        openSplitItemIds: () => deps?.openSplitItemIds?.() ?? localItems.openBaseIds(`agent-identity-split:${agentName}:`),
+        openItemIds: (prefix) => deps?.openItemIds?.(prefix) ?? localItems.openBaseIds(prefix),
         reportDegradation: (row) => DegradationReporter.getInstance().report(row),
         audit,
       });

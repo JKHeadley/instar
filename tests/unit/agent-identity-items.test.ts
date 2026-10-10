@@ -8,6 +8,7 @@
  * a changed refusal reason replaces the open item's text.
  */
 import { describe, it, expect } from 'vitest';
+import { tolerantRegistryMachines } from '../../src/core/AgentIdentityRuntime.js';
 import { IdentityAttentionItems, identityItemBaseId, type IdentityItemRow } from '../../src/core/AgentIdentityItems.js';
 
 /** A store with the production semantics: create is a no-op for a known id; nothing is deleted. */
@@ -57,6 +58,15 @@ describe('IdentityAttentionItems', () => {
     expect(s.raise(item('lost')).id).toBe('agent-identity-missing:echo:m_b#3');
   });
 
+  it('an operator WONT_DO on this exact text stands (no re-post per restart); a CHANGED text is a new fact and is raised', () => {
+    const { s, rows, created } = store();
+    s.raise(item('split aa/bb', 'agent-identity-split:echo:aa+bb'));
+    rows.get('agent-identity-split:echo:aa+bb')!.status = 'WONT_DO';
+    expect(s.raise(item('split aa/bb', 'agent-identity-split:echo:aa+bb')).outcome).toBe('unchanged');
+    expect(created).toHaveLength(1);
+    expect(s.raise(item('split aa/bb — now the laptop too', 'agent-identity-split:echo:aa+bb'))).toEqual({ outcome: 'created', id: 'agent-identity-split:echo:aa+bb#2' });
+  });
+
   it('resolve closes every open episode of the base id and nothing else; an unknown id is a no-op', () => {
     const { s, rows } = store();
     s.raise(item('a', 'agent-identity-split:echo:aa+bb'));
@@ -87,5 +97,33 @@ describe('IdentityAttentionItems', () => {
     expect(afterRestart.raise(item('still split', 'agent-identity-split:echo:aa+bb')).outcome).toBe('unchanged');
     expect(created).toHaveLength(1);
     expect(afterRestart.resolve('agent-identity-split:echo:aa+bb')).toBe(1);
+  });
+});
+
+describe('tolerantRegistryMachines — a corrupt registry never crashes an identity round', () => {
+  it('reads through when healthy; an unreadable registry reads as no machines and is reported once per distinct error, again after a recovery', () => {
+    let mode: 'ok' | 'corrupt' | 'denied' | 'undefined' = 'ok';
+    const reported: string[] = [];
+    const read = tolerantRegistryMachines<{ nickname: string }>(() => {
+      if (mode === 'corrupt') throw new Error('REGISTRY_CORRUPT');
+      if (mode === 'denied') throw new Error('EACCES');
+      if (mode === 'undefined') return undefined;
+      return { m_a: { nickname: 'mini' } };
+    }, (m) => reported.push(m));
+    expect(read()).toEqual({ m_a: { nickname: 'mini' } });
+    mode = 'corrupt';
+    expect(read()).toEqual({});
+    expect(read()).toEqual({});
+    expect(reported).toEqual(['REGISTRY_CORRUPT']); // not once per tick
+    mode = 'denied';
+    expect(read()).toEqual({});
+    expect(reported).toEqual(['REGISTRY_CORRUPT', 'EACCES']);
+    mode = 'ok';
+    expect(read()).toEqual({ m_a: { nickname: 'mini' } });
+    mode = 'corrupt';
+    read();
+    expect(reported).toEqual(['REGISTRY_CORRUPT', 'EACCES', 'REGISTRY_CORRUPT']); // broken anew is reported anew
+    mode = 'undefined';
+    expect(read()).toEqual({});
   });
 });

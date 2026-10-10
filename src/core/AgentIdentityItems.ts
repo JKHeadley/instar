@@ -59,6 +59,11 @@ export class IdentityAttentionItems {
     const open = rows.filter((r) => !TERMINAL.has(r.status));
     const same = open.find((r) => (r.description ?? '') === item.body);
     if (same) return { outcome: 'unchanged', id: same.id };
+    // The operator's explicit "won't do" on this exact text stands: the same item is not
+    // raised again (a restart would otherwise re-post it once per boot while the state lasts).
+    // A changed text is a new fact and is raised.
+    const dismissed = rows.find((r) => r.status === 'WONT_DO' && (r.description ?? '') === item.body);
+    if (dismissed && open.length === 0) return { outcome: 'unchanged', id: dismissed.id };
     for (const r of open) this.store.resolve(r.id);
     const taken = new Set(rows.map((r) => r.id));
     let id = item.id;

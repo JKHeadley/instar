@@ -1,0 +1,28 @@
+# One agent identity on every machine: adopt, never mint, and say so loudly when machines disagree
+
+<!-- bump: minor -->
+
+## What Changed
+
+Sections 1 and 2 of `docs/specs/a2a-single-agent-identity.md` (CMT-706).
+
+**Adoption.** An agent has one Threadline identity (one key, one routing fingerprint). A machine that joined the agent, or was rebuilt, and found no identity file used to be able to create a brand-new one, which split the agent into two addresses that share a name. Both places that can create an identity now refuse on a machine that carries a machine registry, including an unreadable one. Such a machine starts in a named state, `identity-not-provisioned`: it does not connect to the relay, and it gives up the serving lease only to a sibling that is awake and holds the identity. It then asks its sibling machines for the identity over two new signed mesh messages. It accepts the identity only when every sibling it can reach publishes the same one, and needs two such siblings unless this machine already remembers its own address. The key travels sealed to this machine's registered encryption key, is installed only into an empty slot, and the running server picks it up without a restart (`POST /agent-identity/reload`). Replacing an identity that already exists is never automatic: it is `instar identity adopt --from <sibling>`, run by the agent after the operator says yes, and the old files are moved aside, never deleted. `agentIdentity.adoption.enabled` (default on) is the kill switch.
+
+**Mismatch alert.** The check that compares machines used two different fingerprint formulas and ran once at boot. It now uses one formula, runs every five minutes, and counts this machine twice: the file on disk and the identity its relay connection is actually using. When machines disagree on two checks in a row, the machine holding the serving lease raises one high-priority Attention item for that set of fingerprints, names which machine publishes which, and proposes a fix only when a strict majority exists. The item clears itself once every machine in the split has been seen publishing one value. A machine that is offline is reported as not observed, never as agreeing. `GET /threadline/health` carries the result as `identityCoherence`, and `GET /agent-identity/audit` (`?scope=pool` for every machine) is a log of identity events that never contains key material.
+
+## What to Tell Your User
+
+If you run me on more than one computer, a computer you add or rebuild now takes on my existing address on the agent network instead of inventing a new one. That is what went wrong before: other agents kept writing to an address one of my computers no longer answered. If two of my computers ever do end up with different addresses, you get one clear alert that says which computer has which, and I ask you before changing anything. With one computer nothing changes.
+
+## Summary of New Capabilities
+
+- A joined or rebuilt machine adopts the agent's identity from its siblings; it never creates a second one.
+- `instar identity adopt --from <sibling>` and `instar identity init --standalone --i-understand-peers-must-repin` for the cases that need an operator's yes.
+- `GET /agent-identity/audit`, `POST /agent-identity/reload`, and `identityCoherence` on `GET /threadline/health`.
+- One deduplicated alert when machines of the same agent publish different fingerprints.
+
+## Evidence
+
+- Unit: `agent-identity-mint-guard`, `agent-identity-adoption`, `agent-identity-fingerprint-formula`, `agent-identity-items`, `agent-identity-operator-cli`, `agent-identity-legacy-mirror`, `LeaseCoordinator-identityEligibility`, `joined-mesh-mint-refusal`, and the `self-action-convergence` ratchet over the two new registry entries.
+- Integration: `tests/integration/agent-identity-adoption-mesh.test.ts` runs two servers over the real signed mesh endpoint: a machine with no identity adopts the same key, refuses when siblings disagree, ignores a forged answer, and yields the lease to a live sibling that holds the identity.
+- End to end: `tests/e2e/agent-identity-alive.test.ts` on the production server start path: the routes answer 200, `/provenance` shows a replaced identity without a restart, and the config and CLAUDE.md migrations land once.

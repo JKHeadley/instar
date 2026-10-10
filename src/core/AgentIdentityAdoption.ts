@@ -706,6 +706,11 @@ export class AgentIdentityAdoptionLoop {
   private readonly loseCycleTimes: number[] = [];
   private requestedMachineRotation = 0;
   private postureAudited = false;
+  /** A void seen once after a provisioned round — confirmed lost only if still void next round. */
+  private voidSeenOnce = false;
+  /** True from a confirmed loss until the process has reloaded an identity again. */
+  private lostSinceLoad = false;
+  private lastRoundError: string | null = null;
   /** The latest observe round's verified observations (§1.1 lease rule reads `provisioned` here). */
   lastObservations: AdoptionObservation[] = [];
 
@@ -734,7 +739,8 @@ export class AgentIdentityAdoptionLoop {
         const base = this.d.observeIntervalMs ?? 30_000;
         const floor = this.d.observeFloorMs ?? 5 * 60_000;
         const after = this.d.backoffAfterMs ?? 60 * 60_000;
-        const next = this.installedFingerprint ? floor : elapsed >= after ? floor : base;
+        // A void seen once is re-checked at the fast cadence (it is confirmed or cleared then).
+        const next = this.voidSeenOnce ? base : this.installedFingerprint ? floor : elapsed >= after ? floor : base;
         this.timer = setTimeout(tick, next);
         this.timer.unref?.();
       });
@@ -759,6 +765,7 @@ export class AgentIdentityAdoptionLoop {
         // @silent-fallback-ok — the lost-identity hook (the reload lever) is best-effort; the loop itself keeps adopting and the audit row above records the loss.
       }
     }
+    if (this.installedFingerprint) this.lostSinceLoad = true;
     this.installedFingerprint = null;
     this.escalated = false;
     this.lastEscalatedReason = null;
@@ -795,8 +802,12 @@ export class AgentIdentityAdoptionLoop {
       // round must never take the server down: the machine stays loud-but-serving, the error
       // is audited once per distinct message, and the next tick tries again.
       const message = err instanceof Error ? err.message : String(err);
-      console.warn('[agent-identity-adoption] round failed (non-fatal):', message);
-      this.transition('round-error', message);
+      if (message !== this.lastRoundError) {
+        this.lastRoundError = message;
+        this.lastReason = 'round-error';
+        console.warn('[agent-identity-adoption] round failed (non-fatal):', message);
+        this.d.audit?.append('adoption-refused', { machineId: this.d.selfMachineId, reason: 'round-error', detail: message });
+      }
       return null;
     } finally {
       this.inFlight = false;
@@ -810,15 +821,38 @@ export class AgentIdentityAdoptionLoop {
     // Already provisioned (installed by us, or by the CLI meanwhile)? Nothing to do.
     const posture = readAgentIdentityPosture(this.d.stateDir);
     if (posture.state === 'provisioned') {
+      this.voidSeenOnce = false;
       if (this.installedFingerprint !== posture.fingerprint) {
         this.installedFingerprint = posture.fingerprint;
         this.postureAudited = false;
         this.lastObservations = [];
         this.d.resolveItem(this.itemId);
+        if (this.lostSinceLoad) {
+          // The file came back by a hand other than this loop's (a superseded backup
+          // restored, the CLI). The process dropped its identity when the loss was confirmed,
+          // so it must reload now or it stays off the network until a restart.
+          this.lostSinceLoad = false;
+          this.d.audit?.append('adoption-resolved', { machineId: this.d.selfMachineId, fingerprint: posture.fingerprint, restoredExternally: true });
+          try {
+            await this.d.onInstalled(posture.fingerprint);
+          } catch (err) {
+            this.d.audit?.append('identity-reloaded', { machineId: this.d.selfMachineId, ok: false, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
       }
       return null;
     }
-    if (this.installedFingerprint) this.noteIdentityLost();
+    if (this.installedFingerprint) {
+      // `instar identity adopt` moves the files aside and installs the new ones a few seconds
+      // later. One void sighting is therefore not a loss: it is re-checked on the next (fast)
+      // round and only a void that is still there is counted, audited and acted on.
+      if (!this.voidSeenOnce) {
+        this.voidSeenOnce = true;
+        return null;
+      }
+      this.voidSeenOnce = false;
+      this.noteIdentityLost();
+    }
     if (!this.postureAudited) {
       this.postureAudited = true;
       this.d.audit?.append('posture-not-provisioned', { machineId: this.d.selfMachineId });
@@ -835,6 +869,9 @@ export class AgentIdentityAdoptionLoop {
     if (posture.state === 'invalid') {
       // A present-but-unloadable file: adoption never writes over it (§1.1). Refuse every
       // round with the named reason; the lever is the CLI, which moves the file aside.
+      // Still OBSERVE: this machine has no usable identity, and the lease rule must be able
+      // to see a live provisioned sibling to yield to.
+      await this.observeSiblings();
       const detail = `${posture.path} is present but unusable (${posture.reason}); adoption never writes over a file`;
       this.transition('identity-file-invalid', detail);
       this.consecutiveFleetRefusals += 1;
@@ -930,6 +967,7 @@ export class AgentIdentityAdoptionLoop {
       return decision;
     }
     this.installedFingerprint = installed.fingerprint;
+    this.lostSinceLoad = false; // onInstalled below reloads the process
     this.consecutiveFleetRefusals = 0;
     this.lastReason = null;
     this.d.audit?.append('adoption-installed', {

@@ -26,7 +26,7 @@ export interface AgentIdentityRuntime {
    * answer the resulting fingerprint. Local effect only; carries no key; installs nothing.
    */
   reload: () => Promise<AgentIdentityReloadResult>;
-  /** The adoption loop's status, or null when no loop runs here (provisioned at boot). */
+  /** The adoption loop's status, or null when no loop runs here (a machine that is not part of a joined mesh). */
   adoptionStatus: () => AdoptionLoopStatus | null;
   /** Every other active machine with a known URL — backs `?scope=pool` on the audit read. */
   resolvePeerUrls: () => Array<{ machineId: string; url: string }>;
@@ -55,6 +55,36 @@ export interface AgentIdentityRuntimeDeps {
   refreshPresence?: (machineId: string) => Promise<void> | void;
   raiseItem: (item: { id: string; title: string; body: string; priority: 'high' | 'medium'; metadata?: Record<string, unknown> }) => void;
   resolveItem: (id: string) => void;
-  /** Base ids of split items still open in this machine's attention store (re-adopted after a restart). */
-  openSplitItemIds?: () => string[];
+  /** Base ids of items still open in this machine's attention store under a prefix (re-adopted after a restart). */
+  openItemIds?: (prefix: string) => string[];
+}
+
+/**
+ * A registry reader that never throws. `loadRegistry()` throws on a corrupt file, and a
+ * corrupt registry is one of the postures this feature serves (§1.1 `unreadable`: refuse to
+ * mint, stay loud, KEEP SERVING) — so the readers behind the adoption loop and the detector
+ * must not turn it into a crash. An unreadable registry reads as "no machines known"; the
+ * failure is reported once per distinct message, and again after it has recovered and broken
+ * anew.
+ */
+export function tolerantRegistryMachines<E>(
+  load: () => Record<string, E> | undefined,
+  onUnreadable: (message: string) => void,
+): () => Record<string, E> {
+  let lastError: string | null = null;
+  return () => {
+    try {
+      const machines = load() ?? {};
+      lastError = null;
+      return machines;
+    } catch (err) {
+      // @silent-fallback-ok — an unreadable registry is the typed `unreadable` posture (mint refused, item raised by the mint guard); here it reads as no known machines rather than crashing the round, and is reported through onUnreadable.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== lastError) {
+        lastError = message;
+        onUnreadable(message);
+      }
+      return {};
+    }
+  };
 }
