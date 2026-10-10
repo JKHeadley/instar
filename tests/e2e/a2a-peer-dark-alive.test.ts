@@ -87,7 +87,7 @@ describe('§3 dark peer — E2E lifecycle (feature is alive)', () => {
   it('the per-peer route carries the §3 fields with honest nulls (no relay client → connectedNow null)', async () => {
     const res = await request(app).get(`/threadline/peers/${FP}/health`).set(auth());
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ peerFp: FP, dark: false, darkSince: null, queuedCount: 0, queuedExpiresAt: null, lastDeliveredAt: null, connectedNow: null });
+    expect(res.body).toMatchObject({ peerFp: FP, dark: false, darkSince: null, queuedCount: 0, queuedExpiresAt: null, lastDeliveredAt: null, connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf: null });
   });
 
   it('a row queued past the threshold in the REAL on-disk ledger reads dark on the route (threshold from config)', async () => {
@@ -101,7 +101,13 @@ describe('§3 dark peer — E2E lifecycle (feature is alive)', () => {
       t.recordRelayStatus({ messageId: 'e2e-old', status: 'queued', ttlSec: 3600 }, sentAt);
       const res = await request(app).get(`/threadline/peers/${FP}/health`).set(auth());
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ dark: true, darkSince: sentAt, queuedCount: 1, connectedNow: null });
+      expect(res.body).toMatchObject({ dark: true, darkSince: sentAt, queuedCount: 1, connectedNow: null, connectedNowReason: 'relay-down' });
+      // A relay `delivered` verdict on a LATER send does not clear it (only an ack or an inbound does).
+      const later = new Date(Date.now() - 60_000).toISOString();
+      t.recordSent({ messageId: 'e2e-delivered', peerFp: FP, peerName: 'luna', transport: 'relay', sentAt: later });
+      t.recordRelayStatus({ messageId: 'e2e-delivered', status: 'delivered' }, later);
+      const still = await request(app).get(`/threadline/peers/${FP}/health`).set(auth());
+      expect(still.body).toMatchObject({ dark: true, darkSince: sentAt, lastDeliveredAt: later });
       const all = await request(app).get('/threadline/peers/health').set(auth());
       expect(all.body.darkCount).toBe(1);
       expect(all.body.peers.find((p: { peerFp: string }) => p.peerFp === FP)).toMatchObject({ dark: true, connectedNow: null });

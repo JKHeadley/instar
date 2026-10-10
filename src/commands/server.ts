@@ -19306,6 +19306,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             reconnectRelay: threadlineRelayClient ? () => threadlineRelayClient!.reconnectRelay() : undefined,
             refreshPresence: threadlineRelayClient ? () => threadlineRelayClient!.refreshPresence() : undefined,
             peerConnectedNow: threadlineRelayClient ? (fp) => threadlineRelayClient!.peerConnectedNow(fp) : undefined,
+            peerPresence: threadlineRelayClient ? (fp) => threadlineRelayClient!.peerPresence(fp) : undefined,
             // identitySelfCheck (§2) is wired by the identity-coherence check once
             // it lands; absent, the heal records `unknown` and never supersedes.
             poolPeerHealth,
@@ -19318,6 +19319,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               enabled: peerDarkCfg.enabled,
               dryRun: peerDarkCfg.dryRun,
               queuedDarkAfterMs: peerDarkCfg.queuedDarkAfterMs,
+              perPeer: peerDarkCfg.perPeer,
               cooldownMs: peerDarkCfg.cooldownMs,
             },
           },

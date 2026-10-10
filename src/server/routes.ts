@@ -202,7 +202,10 @@ import {
   createPeerDarkAuditWriter,
   resolvePeerDarkAuditPath,
   resolvePeerDarkNoticeConfig,
+  queuedDarkAfterMsFor,
+  PRESENCE_RELAY_DOWN,
   type PeerDarkReport,
+  type PeerPresenceRead,
 } from '../threadline/peerDark.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
@@ -18130,10 +18133,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     ctx.config as { developmentAgent?: boolean; threadline?: { peerDarkNotice?: Record<string, unknown> } },
     ctx.liveConfig?.get<boolean | undefined>('threadline.peerDarkNotice.enabled', undefined),
   );
-  const peerConnectedNow = (fp: string): boolean | null => {
-    try { return ctx.threadlineRelayClient?.peerConnectedNow(fp) ?? null; } catch { return null; } // @silent-fallback-ok: unknown is the honest read
+  // No relay client (a standby, or relay off) reads as `relay-down`: my side, not the peer's.
+  const peerPresence = (fp: string): PeerPresenceRead => {
+    try { return ctx.threadlineRelayClient?.peerPresence(fp) ?? PRESENCE_RELAY_DOWN; } catch { return PRESENCE_RELAY_DOWN; } // @silent-fallback-ok: unknown is the honest read
   };
-  const withConnectedNow = <T extends { peerFp: string }>(p: T): T & { connectedNow: boolean | null } => ({ ...p, connectedNow: peerConnectedNow(p.peerFp) });
+  const withConnectedNow = <T extends { peerFp: string }>(p: T): T & PeerPresenceRead => ({ ...p, ...peerPresence(p.peerFp) });
+  // The dark threshold for ONE peer: its `perPeer` entry, else the default.
+  const darkAfterFor = (fp: string): number => queuedDarkAfterMsFor(peerDarkNotice(), fp);
   const peerDarkAudit = createPeerDarkAuditWriter(resolvePeerDarkAuditPath(ctx.config.stateDir), (l) => console.warn(l));
   const poolPeerRows = (peers: ReaperPoolPeer[], pick: (body: Record<string, unknown>) => unknown[]) => {
     const local = peerHealthInstarVersion();
@@ -18157,7 +18163,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
       ? Number(req.query.staleAfterMs)
       : undefined;
-    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ staleAfterMs, queuedDarkAfterMs: peerDarkNotice().queuedDarkAfterMs })?.map(withConnectedNow) ?? null;
+    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ staleAfterMs, queuedDarkAfterMsFor: darkAfterFor })?.map(withConnectedNow) ?? null;
     const localBody = peers
       ? { peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length, darkCount: peers.filter((p) => p.dark).length, instarVersion: peerHealthInstarVersion() }
       : null;
@@ -18240,7 +18246,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? Number(req.query.staleAfterMs)
       : undefined;
     const local = ctx.a2aDeliveryTracker
-      ? { ...withConnectedNow(ctx.a2aDeliveryTracker.peerHealth(fp, { staleAfterMs, queuedDarkAfterMs: peerDarkNotice().queuedDarkAfterMs })), instarVersion: peerHealthInstarVersion() }
+      ? { ...withConnectedNow(ctx.a2aDeliveryTracker.peerHealth(fp, { staleAfterMs, queuedDarkAfterMs: darkAfterFor(fp) })), instarVersion: peerHealthInstarVersion() }
       : null;
     if (req.query.scope !== 'pool') {
       if (!local) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
@@ -37528,13 +37534,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // §3.2 (a2a-single-agent-identity): a send to a DARK peer carries
       // `peerDark` (a read of my own ledger + the presence map, never an inline
       // discover) and — when the notice is on and not dry-run — a deliveryOutcome
-      // worded to the evidence. A `delivered` verdict is a sign of life, so the
-      // peer is not dark on this send by construction.
+      // worded to the evidence. A send the relay just `delivered` is not "still
+      // queued", so it carries no `peerDark` — but `delivered` alone does NOT
+      // clear the peer's dark state (only an ack or an inbound does), so the
+      // health read keeps saying `dark` until the peer actually answers.
       let peerDark: PeerDarkReport | undefined;
       if (ctx.a2aDeliveryTracker && relayStatus !== 'delivered') {
         try {
           const notice = peerDarkNotice();
-          const h = ctx.a2aDeliveryTracker.peerHealth(resolvedId, { queuedDarkAfterMs: notice.queuedDarkAfterMs });
+          const h = ctx.a2aDeliveryTracker.peerHealth(resolvedId, { queuedDarkAfterMs: queuedDarkAfterMsFor(notice, resolvedId) });
           if (h.dark) {
             // This send's own row joins the set once its `queued` verdict is
             // recorded; count it now so "this and K other" is right either way.
@@ -37544,14 +37552,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               since: h.darkSince,
               queuedCount: h.queuedCount + (relayStatus === 'queued' && !thisRowCounted ? 1 : 0),
               expiresAt: h.queuedExpiresAt,
-              connectedNow: peerConnectedNow(resolvedId),
+              ...(h.handedUnackedCount > 0 ? { handedUnackedCount: h.handedUnackedCount } : {}),
+              ...peerPresence(resolvedId),
             };
             const sentence = buildPeerDarkSentence(peerDark, { peerFp: resolvedId, peerName: targetAgent });
             if (notice.enabled && !notice.dryRun) {
               deliveryOutcome = sentence;
-              peerDarkAudit({ ts: new Date().toISOString(), kind: 'sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, dryRun: false });
+              peerDarkAudit({ ts: new Date().toISOString(), kind: 'sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, connectedNowReason: peerDark.connectedNowReason, connectedAsOf: peerDark.connectedAsOf, dryRun: false });
             } else if (notice.enabled) {
-              peerDarkAudit({ ts: new Date().toISOString(), kind: 'would-sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, dryRun: true });
+              peerDarkAudit({ ts: new Date().toISOString(), kind: 'would-sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, connectedNowReason: peerDark.connectedNowReason, connectedAsOf: peerDark.connectedAsOf, dryRun: true });
             }
           }
         } catch (err) {

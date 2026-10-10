@@ -4,7 +4,8 @@
  * reporting of a send that stays queued.
  *
  *  - A2ADeliveryTracker: the `dark` classification (threshold, the unanswered
- *    set, relay expiry never clears it, ack / inbound / delivered clear it, an
+ *    set, relay expiry never clears it, ack / inbound clear it (a `delivered`
+ *    verdict alone does not), a per-peer threshold, an
  *    `escalated` row never suppresses it), `queuedCount` / `queuedExpiresAt`,
  *    the 30-day retention in every state, the bounded `allPeerHealth`.
  *  - ThreadlineClient: `connectedNow` from the presence map (presence-change
@@ -35,6 +36,7 @@ import {
   peerLabel,
   relayUnreachableItemId,
   resolvePeerDarkNoticeConfig,
+  queuedDarkAfterMsFor,
   createPeerDarkAuditWriter,
   DEFAULT_QUEUED_DARK_AFTER_MS,
   MIN_QUEUED_DARK_AFTER_MS,
@@ -106,7 +108,7 @@ describe('A2ADeliveryTracker — §3.1 dark classification', () => {
     expect(h.queuedExpiresAt).toBeNull(); // nothing still queued
   });
 
-  it('an ack on a LATER message clears dark; so does an inbound; so does a `delivered` verdict', () => {
+  it('an ack on a LATER message clears dark; so does an inbound; a `delivered` verdict ALONE does not', () => {
     queued(tracker, 'm1', NOW - 5 * H);
     expect(tracker.peerHealth(PEER, { nowMs: NOW }).dark).toBe(true);
     // ack newer than the queued row
@@ -126,7 +128,39 @@ describe('A2ADeliveryTracker — §3.1 dark classification', () => {
     tracker.recordRelayStatus({ messageId: 'm3', status: 'delivered' }, iso(NOW - 10 * 60_000));
     const h = tracker.peerHealth(PEER, { nowMs: NOW });
     expect(h.lastDeliveredAt).toBe(iso(NOW - 10 * 60_000));
-    expect(h.dark).toBe(false);
+    // `delivered` proves a connection under the peer's fingerprint took m3 — a split or a
+    // non-serving holder produces exactly that. The peer is still dark, since the same instant.
+    expect(h.dark).toBe(true);
+    expect(h.darkSince).toBe(iso(NOW - 5 * H));
+    expect(h.queuedCount).toBe(1);
+    // The ack that follows the delivered verdict is what clears it.
+    tracker.recordAck('m3', iso(NOW - 5 * 60_000));
+    expect(tracker.peerHealth(PEER, { nowMs: NOW }).dark).toBe(false);
+  });
+
+  it('a relay queue FLUSH (queued → delivered, no ack) does not clear dark; the handed rows are counted apart', () => {
+    queued(tracker, 'q1', NOW - 5 * H);
+    queued(tracker, 'q2', NOW - 4 * H);
+    expect(tracker.peerHealth(PEER, { nowMs: NOW })).toMatchObject({ dark: true, queuedCount: 2, handedUnackedCount: 0 });
+    // Something holding the peer's fingerprint connects; the relay flushes its queue.
+    tracker.recordRelayStatus({ messageId: 'q1', status: 'delivered' }, iso(NOW - 60_000));
+    tracker.recordRelayStatus({ messageId: 'q2', status: 'delivered' }, iso(NOW - 60_000));
+    const h = tracker.peerHealth(PEER, { nowMs: NOW });
+    expect(h).toMatchObject({ dark: true, darkSince: iso(NOW - 5 * H), queuedCount: 2, handedUnackedCount: 2, queuedExpiresAt: null });
+    // One ack is a real sign of life: it clears the rows sent before it.
+    tracker.recordAck('q2', iso(NOW - 30_000));
+    expect(tracker.peerHealth(PEER, { nowMs: NOW })).toMatchObject({ dark: false, queuedCount: 0, handedUnackedCount: 0 });
+  });
+
+  it('per-peer threshold: allPeerHealth applies `queuedDarkAfterMsFor` per peer and falls back to the default', () => {
+    queued(tracker, 'fast', NOW - 45 * 60_000, PEER);
+    queued(tracker, 'slow', NOW - 45 * 60_000, PEER2);
+    const all = tracker.allPeerHealth({ nowMs: NOW, queuedDarkAfterMs: DARK_AFTER, queuedDarkAfterMsFor: (fp) => (fp === PEER ? 30 * 60_000 : undefined) });
+    expect(all.find((p) => p.peerFp === PEER)).toMatchObject({ dark: true, darkSince: iso(NOW - 45 * 60_000) });
+    expect(all.find((p) => p.peerFp === PEER2)).toMatchObject({ dark: false, queuedCount: 1 });
+    // Both sides of the per-peer boundary for the fast pair.
+    expect(tracker.peerHealth(PEER, { nowMs: NOW, queuedDarkAfterMs: 30 * 60_000 }).dark).toBe(true);
+    expect(tracker.peerHealth(PEER, { nowMs: NOW, queuedDarkAfterMs: 60 * 60_000 }).dark).toBe(false);
   });
 
   it('an ack OLDER than the queued row does not clear it (the silence started after the last sign of life)', () => {
@@ -256,6 +290,26 @@ describe('ThreadlineClient — §3.2 connectedNow from the presence map', () => 
     expect(client.peerConnectedNow(PEER2)).toBeNull(); // no row for PEER2
   });
 
+  it('peerPresence names WHY connectedNow is null and how old the record is (relay-down / no-row / stale)', () => {
+    // My relay is down: my side, not the peer's — even though a row exists.
+    p.knownAgents.set(PEER, { agentId: PEER, name: 'luna', online: true, presenceAt: NOW - 60_000 } as never);
+    expect(client.peerPresence(PEER)).toEqual({ connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf: iso(NOW - 60_000) });
+    p.relayClient = { connectionState: 'connected' };
+    // No record of this peer at all.
+    expect(client.peerPresence(PEER2)).toEqual({ connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null });
+    // A fresh record: a boolean, no reason, and its age.
+    p.ingestPresenceChange({ agentId: PEER, status: 'online' });
+    expect(client.peerPresence(PEER)).toEqual({ connectedNow: true, connectedNowReason: null, connectedAsOf: iso(NOW) });
+    fakeNow += 3 * 60_000;
+    expect(client.peerPresence(PEER)).toEqual({ connectedNow: true, connectedNowReason: null, connectedAsOf: iso(NOW) }); // as of 3 min ago
+    p.ingestPresenceChange({ agentId: PEER, status: 'offline' });
+    expect(client.peerPresence(PEER)).toEqual({ connectedNow: false, connectedNowReason: null, connectedAsOf: iso(NOW + 3 * 60_000) });
+    // Past the freshness bound: unknown, and the record's age is still reported.
+    fakeNow += 16 * 60_000;
+    expect(client.peerPresence(PEER)).toEqual({ connectedNow: null, connectedNowReason: 'stale', connectedAsOf: iso(NOW + 3 * 60_000) });
+    expect(client.peerConnectedNow(PEER)).toBeNull();
+  });
+
   it('a presence-change frame merges — it never strips a keyed row', () => {
     p.relayClient = { connectionState: 'connected' };
     p.knownAgents.set(PEER, { agentId: PEER, name: 'luna', online: false, publicKey: Buffer.from('pk'), x25519PublicKey: Buffer.from('xk') } as never);
@@ -308,7 +362,7 @@ interface Harness {
   set: { relay: A2ARelayState; awake: boolean; pool: A2APoolPeerRow[]; selfCheck: 'ok' | 'split' | 'unknown'; now: number };
 }
 
-function harness(opts: { dryRun?: boolean; cooldownMs?: number; legacy?: boolean } = {}): Harness {
+function harness(opts: { dryRun?: boolean; cooldownMs?: number; legacy?: boolean; perPeer?: Record<string, { queuedDarkAfterMs: number }> } = {}): Harness {
   const set = { relay: 'connected' as A2ARelayState, awake: true, pool: [] as A2APoolPeerRow[], selfCheck: 'ok' as const, now: NOW };
   const h: Harness = {
     sentinel: undefined as unknown as A2ARedeliverySentinel,
@@ -342,7 +396,7 @@ function harness(opts: { dryRun?: boolean; cooldownMs?: number; legacy?: boolean
     log: { log: () => {}, warn: () => {} },
   }, {
     enabled: opts.legacy ?? false,
-    peerDark: { enabled: true, dryRun: opts.dryRun ?? false, queuedDarkAfterMs: DARK_AFTER, cooldownMs: opts.cooldownMs ?? 12 * H, healPassDelayMs: 40_000 },
+    peerDark: { enabled: true, dryRun: opts.dryRun ?? false, queuedDarkAfterMs: DARK_AFTER, perPeer: opts.perPeer, cooldownMs: opts.cooldownMs ?? 12 * H, healPassDelayMs: 40_000 },
   });
   return h;
 }
@@ -405,6 +459,65 @@ describe('A2ARedeliverySentinel — §3 reworked dark path', () => {
     expect(r.darkPeers).toEqual([]);
     expect(h.raised).toHaveLength(0);
     expect(h.audit.some((x) => x.kind === 'pool-cleared' && x.peerFp === PEER)).toBe(true);
+  });
+
+  it('a `delivered` verdict on another machine ALONE does not clear the raise (only an ack or an inbound does)', async () => {
+    const h = harness();
+    queued(tracker, 'a', NOW - 3 * H);
+    h.set.pool = [{ machineId: 'mini', lastAckedAt: null, lastInboundAt: null, lastDeliveredAt: iso(NOW - 10 * 60_000) }];
+    const r = await h.sentinel.tick();
+    expect(r.darkPeers).toEqual([PEER]);
+    expect(h.raised).toHaveLength(1);
+    expect(h.audit.some((x) => x.kind === 'pool-cleared')).toBe(false);
+    // …and a later delivered verdict does not resolve the open item either.
+    h.set.now = NOW + 30 * 60_000;
+    h.set.pool = [{ machineId: 'mini', lastAckedAt: null, lastInboundAt: null, lastDeliveredAt: iso(NOW + 20 * 60_000) }];
+    await h.sentinel.tick();
+    expect(h.resolved).toHaveLength(0);
+  });
+
+  it('per-peer threshold: a fast pair is raised at its own 30 min; another peer at the same age is not', async () => {
+    const h = harness({ perPeer: { [PEER]: { queuedDarkAfterMs: 30 * 60_000 } } });
+    queued(tracker, 'fast', NOW - 45 * 60_000, PEER);
+    queued(tracker, 'slow', NOW - 45 * 60_000, PEER2);
+    const r = await h.sentinel.tick();
+    expect(r.darkPeers).toEqual([PEER]);
+    expect(h.raised.map((x) => x.id)).toEqual([peerDarkItemId('echo', PEER)]);
+  });
+
+  it('a queue flush with no ack keeps the peer a candidate and the item open; the body names the handed rows', async () => {
+    const h = harness();
+    queued(tracker, 'a', NOW - 3 * H);
+    tracker.recordRelayStatus({ messageId: 'a', status: 'delivered' }, iso(NOW - 60_000));
+    const r = await h.sentinel.tick();
+    expect(r.darkPeers).toEqual([PEER]);
+    expect(h.raised).toHaveLength(1);
+    expect(h.raised[0].body).toContain('1 queued since 2026-10-09T09:00:00Z, none acknowledged — 1 of these was handed to a connection under its address and never acknowledged.');
+    h.set.now = NOW + 30 * 60_000;
+    await h.sentinel.tick();
+    expect(h.resolved).toHaveLength(0);
+    // The peer's first real answer resolves it.
+    tracker.recordInboundFrom(PEER, 'luna', iso(NOW + 40 * 60_000));
+    h.set.now = NOW + 45 * 60_000;
+    await h.sentinel.tick();
+    expect(h.resolved.map((x) => x.id)).toEqual([peerDarkItemId('echo', PEER)]);
+  });
+
+  it('the boolean-only presence reader never has a side guessed for it', async () => {
+    const h = harness({ dryRun: true });
+    (h.sentinel as unknown as { deps: { peerConnectedNow: () => boolean | null } }).deps.peerConnectedNow = () => null;
+    queued(tracker, 'a', NOW - 3 * H);
+    await h.sentinel.tick();
+    expect(h.audit.find((x) => x.kind === 'would-raise')).toMatchObject({ connectedNow: null, connectedNowReason: null, connectedAsOf: null });
+  });
+
+  it('the audit row carries the presence reason and age when the full presence reader is wired', async () => {
+    const h = harness({ dryRun: true });
+    (h.sentinel as unknown as { deps: { peerPresence: (fp: string) => unknown } }).deps.peerPresence =
+      () => ({ connectedNow: null, connectedNowReason: 'stale', connectedAsOf: iso(NOW - 40 * 60_000) });
+    queued(tracker, 'a', NOW - 3 * H);
+    await h.sentinel.tick();
+    expect(h.audit.find((x) => x.kind === 'would-raise')).toMatchObject({ connectedNow: null, connectedNowReason: 'stale', connectedAsOf: iso(NOW - 40 * 60_000) });
   });
 
   it('an inbound on another machine AFTER the raise resolves the item; the line names the expired count', async () => {
@@ -569,7 +682,7 @@ describe('A2ARedeliverySentinel — §3 reworked dark path', () => {
 describe('peerDark helpers', () => {
   it('resolver: enabled omitted → the dev gate; dryRun default true; floors applied; explicit values win', () => {
     const dev = resolvePeerDarkNoticeConfig({ developmentAgent: true });
-    expect(dev).toEqual({ enabled: true, dryRun: true, queuedDarkAfterMs: DEFAULT_QUEUED_DARK_AFTER_MS, cooldownMs: 12 * H });
+    expect(dev).toEqual({ enabled: true, dryRun: true, queuedDarkAfterMs: DEFAULT_QUEUED_DARK_AFTER_MS, perPeer: {}, cooldownMs: 12 * H });
     expect(resolvePeerDarkNoticeConfig({ developmentAgent: false }).enabled).toBe(false);
     expect(resolvePeerDarkNoticeConfig({ developmentAgent: true, threadline: { peerDarkNotice: { enabled: false } } }).enabled).toBe(false);
     expect(resolvePeerDarkNoticeConfig({ developmentAgent: false, threadline: { peerDarkNotice: { enabled: true, dryRun: false } } })).toMatchObject({ enabled: true, dryRun: false });
@@ -587,6 +700,39 @@ describe('peerDark helpers', () => {
     const unk = buildPeerDarkSentence({ ...base, connectedNow: null, queuedCount: 1, expiresAt: null }, { peerFp: PEER, peerName: null }, NOW);
     expect(unk).toBe('no acknowledgement from 8c7928aa9f04 for 3 h; this message is still queued; whether 8c7928aa9f04 is connected right now is unknown.');
     for (const s of [off, on, unk]) expect(s).not.toMatch(/nothing will arrive/);
+  });
+
+  it('sentence: a boolean carries its age; an unknown says which side it is on', () => {
+    const base = { since: iso(NOW - 3 * H), queuedCount: 1, expiresAt: null };
+    const peer = { peerFp: PEER, peerName: 'luna' };
+    const on = buildPeerDarkSentence({ ...base, connectedNow: true, connectedNowReason: null, connectedAsOf: iso(NOW - 3 * 60_000) }, peer, NOW);
+    expect(on).toContain('luna (8c7928aa9f04) IS connected to the relay (as of 3 min ago) but has not acknowledged anything');
+    const off = buildPeerDarkSentence({ ...base, connectedNow: false, connectedNowReason: null, connectedAsOf: iso(NOW - 9 * 60_000) }, peer, NOW);
+    expect(off).toContain('is not connected to the relay right now (as of 9 min ago) — it may be offline');
+    const down = buildPeerDarkSentence({ ...base, connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf: null }, peer, NOW);
+    expect(down).toContain('whether luna (8c7928aa9f04) is connected right now is unknown (my own relay connection is down).');
+    const noRow = buildPeerDarkSentence({ ...base, connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null }, peer, NOW);
+    expect(noRow).toContain('is unknown (the relay has given me no presence record for it).');
+    const handed = buildPeerDarkSentence({ since: iso(NOW - 3 * H), queuedCount: 3, expiresAt: null, handedUnackedCount: 2, connectedNow: true, connectedNowReason: null, connectedAsOf: iso(NOW) }, peer, NOW);
+    expect(handed).toContain('this and 2 other messages are still queued — 2 of these were handed to a connection under its address and never acknowledged; luna');
+    const stale = buildPeerDarkSentence({ ...base, connectedNow: null, connectedNowReason: 'stale', connectedAsOf: iso(NOW - 40 * 60_000) }, peer, NOW);
+    expect(stale).toContain('is unknown (my last presence record for it is 40 min old).');
+  });
+
+  it('config: `perPeer` sets one peer\'s threshold by fingerprint (case-insensitive), floored; junk entries are dropped', () => {
+    const cfg = resolvePeerDarkNoticeConfig({ threadline: { peerDarkNotice: { perPeer: {
+      [PEER.toUpperCase()]: { queuedDarkAfterMs: 30 * 60_000 },
+      [PEER2]: { queuedDarkAfterMs: 1 },
+      junk: { queuedDarkAfterMs: 'soon' as never },
+      empty: undefined,
+    } } } });
+    expect(cfg.perPeer).toEqual({ [PEER]: { queuedDarkAfterMs: 30 * 60_000 }, [PEER2]: { queuedDarkAfterMs: MIN_QUEUED_DARK_AFTER_MS } });
+    expect(queuedDarkAfterMsFor(cfg, PEER)).toBe(30 * 60_000);
+    expect(queuedDarkAfterMsFor(cfg, PEER.toUpperCase())).toBe(30 * 60_000);
+    expect(queuedDarkAfterMsFor(cfg, 'ffffffff')).toBe(DEFAULT_QUEUED_DARK_AFTER_MS);
+    for (const inherited of ['constructor', 'toString', '__proto__']) expect(queuedDarkAfterMsFor(cfg, inherited)).toBe(DEFAULT_QUEUED_DARK_AFTER_MS);
+    expect(resolvePeerDarkNoticeConfig({ threadline: { peerDarkNotice: { perPeer: [] as never } } }).perPeer).toEqual({});
+    expect(resolvePeerDarkNoticeConfig(undefined).perPeer).toEqual({});
   });
 
   it('peer label: fingerprint prefix + clamped, HTML-escaped name; a fingerprint-as-name collapses to the prefix', () => {
@@ -643,7 +789,9 @@ describe('Migration parity — §3', () => {
     expect(r1.upgraded).toContain('CLAUDE.md: added A2A dark peers section');
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(after).toContain('### A2A dark peers (did my message arrive?)');
-    expect(after).toContain('`peerDark` (`since`, `queuedCount`, `expiresAt`, `connectedNow`)');
+    expect(after).toContain('`peerDark` (`since`, `queuedCount`, `expiresAt`, `connectedNow`, `connectedNowReason`, `connectedAsOf`)');
+    expect(after).toContain('A relay `delivered` verdict alone does NOT clear it');
+    expect(after).toContain('`threadline.peerDarkNotice.perPeer`');
     expect(after).toContain('**When to use** (PROACTIVE): a user asks "did <peer> get my message?"');
     const r2 = run();
     expect(r2.upgraded).not.toContain('CLAUDE.md: added A2A dark peers section');

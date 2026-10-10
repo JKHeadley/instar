@@ -93,7 +93,7 @@ export async function sendMessageViaHttp(
       advisory?: string;
       forwardedTo?: string;
       replyArrivesIn?: string;
-      peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null };
+      peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
     } = {};
     if (raw) {
       try {

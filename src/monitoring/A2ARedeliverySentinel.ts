@@ -50,7 +50,10 @@ import {
   peerDarkItemId,
   peerLabel,
   relayUnreachableItemId,
+  queuedDarkAfterMsFor,
+  PRESENCE_RELAY_DOWN,
   type PeerDarkAuditRow,
+  type PeerPresenceRead,
 } from '../threadline/peerDark.js';
 
 /** A redelivery attempt: re-send the message body to the peer. Returns whether
@@ -92,6 +95,8 @@ export interface A2APeerDarkConfig {
   /** Default true: would-raise rows only. */
   dryRun: boolean;
   queuedDarkAfterMs: number;
+  /** Per-peer dark thresholds by full fingerprint (lowercased); wins over the default. */
+  perPeer?: Record<string, { queuedDarkAfterMs: number }>;
   cooldownMs: number;
   /** Delay between the two self-heal passes (§3.3: 40 s inside the 120 s ceiling). */
   healPassDelayMs: number;
@@ -151,6 +156,8 @@ export interface A2ARedeliveryDeps {
   reconnectRelay?: () => Promise<unknown> | unknown;
   /** §3.3 heal step 2: one discover; false when the call was rejected (no relay client). */
   refreshPresence?: () => Promise<boolean> | boolean;
+  /** §3.2 presence read with its reason and age (never an inline discover). Preferred over `peerConnectedNow`. */
+  peerPresence?: (peerFp: string) => PeerPresenceRead;
   /** §3.2 `connectedNow` from the presence map (never an inline discover). */
   peerConnectedNow?: (peerFp: string) => boolean | null;
   /** §3.3 heal step 3: the §2 identity self-check. 'split' supersedes a per-peer item. */
@@ -392,7 +399,7 @@ export class A2ARedeliverySentinel {
   }
 
   private localHealth(nowMs: number): PeerHealth[] {
-    return this.deps.tracker.allPeerHealth({ nowMs, queuedDarkAfterMs: this.peerDark.queuedDarkAfterMs });
+    return this.deps.tracker.allPeerHealth({ nowMs, queuedDarkAfterMsFor: (fp) => queuedDarkAfterMsFor(this.peerDark, fp) });
   }
 
   /** Pool rows for a peer; a failing pool read answers [] (local evidence only — fail toward the local verdict). */
@@ -409,10 +416,15 @@ export class A2ARedeliverySentinel {
     }
   }
 
-  /** Newest sign of life for a peer across local + pool rows (ms, -Infinity when none). */
+  /**
+   * Newest sign of life for a peer across local + pool rows (ms, -Infinity when
+   * none). An ack or an inbound only: a relay `delivered` verdict alone shows a
+   * connection took the message, not that the peer answered, so it never
+   * resolves a dark item.
+   */
   private static lifeAt(local: PeerHealth | undefined, pool: A2APoolPeerRow[]): number {
-    let best = newest(local?.lastAckedAt, local?.lastInboundAt, local?.lastDeliveredAt);
-    for (const r of pool) best = Math.max(best, newest(r.lastAckedAt, r.lastInboundAt, r.lastDeliveredAt));
+    let best = newest(local?.lastAckedAt, local?.lastInboundAt);
+    for (const r of pool) best = Math.max(best, newest(r.lastAckedAt, r.lastInboundAt));
     return best;
   }
 
@@ -468,16 +480,29 @@ export class A2ARedeliverySentinel {
     void nowMs;
   }
 
+  /** The presence read for an audit row; a missing or throwing reader is `relay-down` (my side). */
+  private presenceOf(peerFp: string): PeerPresenceRead {
+    try {
+      const full = this.deps.peerPresence?.(peerFp);
+      if (full) return full;
+      if (this.deps.peerConnectedNow) {
+        // The boolean-only reader cannot say why it is unknown; never guess a side.
+        return { connectedNow: this.deps.peerConnectedNow(peerFp) ?? null, connectedNowReason: null, connectedAsOf: null };
+      }
+    } catch { /* @silent-fallback-ok — an unreadable presence map is audited as unknown, never a guessed boolean */ }
+    return PRESENCE_RELAY_DOWN;
+  }
+
   private async raiseEpisode(peerFp: string, h: PeerHealth, nowMs: number): Promise<void> {
     const itemId = peerDarkItemId(this.agentId, peerFp);
-    const connectedNow = this.deps.peerConnectedNow?.(peerFp) ?? null;
-    const row = { peerFp, itemId, queuedCount: h.queuedCount, darkSince: h.darkSince, connectedNow };
+    const presence = this.presenceOf(peerFp);
+    const row = { peerFp, itemId, queuedCount: h.queuedCount, darkSince: h.darkSince, ...presence };
     if (this.peerDark.dryRun) {
       this.audit({ kind: 'would-raise', ...row });
       this.lastRaiseAt.set(peerFp, nowMs);
       return;
     }
-    const body = buildPeerDarkItemBody({ peerFp, peerName: h.peerName }, h.queuedCount, h.darkSince);
+    const body = buildPeerDarkItemBody({ peerFp, peerName: h.peerName }, h.queuedCount, h.darkSince, h.handedUnackedCount);
     try {
       await Promise.resolve(this.deps.raiseAttention?.({
         id: itemId,
@@ -561,7 +586,7 @@ export class A2ARedeliverySentinel {
     const poolDark: PeerHealth[] = [];
     for (const h of candidates) {
       const pool = await this.poolRows(h.peerFp);
-      const poolLife = pool.length ? Math.max(...pool.map((r) => newest(r.lastAckedAt, r.lastInboundAt, r.lastDeliveredAt))) : Number.NEGATIVE_INFINITY;
+      const poolLife = pool.length ? Math.max(...pool.map((r) => newest(r.lastAckedAt, r.lastInboundAt))) : Number.NEGATIVE_INFINITY;
       const sinceMs = h.darkSince ? Date.parse(h.darkSince) : Number.POSITIVE_INFINITY;
       if (poolLife > sinceMs) {
         this.audit({ kind: 'pool-cleared', peerFp: h.peerFp, darkSince: h.darkSince, queuedCount: h.queuedCount });

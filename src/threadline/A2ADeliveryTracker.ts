@@ -118,19 +118,34 @@ export interface PeerHealth {
   stale: boolean;
   /**
    * Dark (a2a-single-agent-identity §3.1): the oldest row that is queued at the
-   * relay, `unconfirmed`, or `failed`+`expired` — AND newer than the last ack,
-   * last inbound and last `delivered` verdict from this peer — is older than
-   * `queuedDarkAfterMs`. A PROXY: "nothing from this peer for N h"; it cannot
-   * tell offline from wrong-address. Relay expiry alone never clears it.
+   * relay, `unconfirmed`, or `failed`+`expired` — AND newer than the last ack
+   * and last inbound from this peer — is older than `queuedDarkAfterMs`. A
+   * PROXY: "nothing from this peer for N h"; it cannot tell offline from
+   * wrong-address. Relay expiry alone never clears it, and neither does a
+   * relay `delivered` verdict alone: `delivered` proves only that SOMETHING
+   * holding the peer's fingerprint took the message, not that the peer read it
+   * (a split or non-serving holder looks exactly like that). Only an ack or an
+   * inbound message clears it.
    */
   dark: boolean;
   /** Send time of the oldest unanswered row when `dark`; null otherwise. */
   darkSince: string | null;
   /** Rows in the unanswered set (queued / unconfirmed / expired-unacknowledged, newer than the last sign of life). */
   queuedCount: number;
+  /**
+   * Of `queuedCount`, the rows the relay first queued and later handed to a
+   * connection under the peer's fingerprint (a queue flush) that were never
+   * acknowledged. They are no longer queued at the relay — and nothing shows
+   * the peer read them.
+   */
+  handedUnackedCount: number;
   /** Earliest relay expiry among the still-queued rows in that set; null when none. */
   queuedExpiresAt: string | null;
-  /** Newest `delivered` relay verdict for this peer — a sign of life that clears `dark` (§3.1). */
+  /**
+   * Newest `delivered` relay verdict for this peer. Informational only: it does
+   * NOT clear `dark` (§3.1) — a reader can compare it with `lastAckedAt` to see
+   * "a connection took my messages and nothing acknowledged them".
+   */
   lastDeliveredAt: string | null;
 }
 
@@ -629,29 +644,37 @@ export class A2ADeliveryTracker {
     // §3.1 dark: the unanswered set = rows queued at the relay (awaiting-ack +
     // relay `queued`), `unconfirmed`, `escalated` (not delivered), or
     // `failed`+`expired`, sent AFTER the last sign of life from this peer — an
-    // ack, an inbound, or a relay `delivered` verdict (the peer's relay
-    // connection took a message). The set survives relay expiry (an expired
-    // row stays in it) — so a persistently dark peer is ONE episode, not one
-    // per day.
+    // ack or an inbound. A relay `delivered` verdict is deliberately NOT a
+    // sign of life: it shows a connection under the peer's fingerprint took a
+    // message, which a split or a non-serving holder also produces. The set
+    // survives relay expiry (an expired row stays in it) — so a persistently
+    // dark peer is ONE episode, not one per day. It also survives a relay queue
+    // FLUSH: a row the relay queued and later handed to a connection
+    // (`delivered` with `relay_expires_at` still set — only a queued verdict
+    // writes that column) stays in the set until an ack or an inbound, or the
+    // flush itself would clear dark with nothing from the peer. A row delivered
+    // at send time (never queued) is silence, not darkness, and stays out.
     const lastDelivered = this.db
       .prepare(`SELECT relay_status_at FROM a2a_delivery WHERE peer_fp = ? AND relay_status = 'delivered' AND relay_status_at IS NOT NULL ORDER BY relay_status_at DESC LIMIT 1`)
       .get(peerFp) as { relay_status_at: string } | undefined;
-    const lifeBound = [lastAcked?.acked_at, inbound?.last_accepted_at, lastDelivered?.relay_status_at]
+    const lifeBound = [lastAcked?.acked_at, inbound?.last_accepted_at]
       .filter((v): v is string => typeof v === 'string')
       .sort()
       .pop() ?? '';
     const unanswered = this.db
       .prepare(
         `SELECT COUNT(*) AS n, MIN(sent_at) AS oldest,
-                MIN(CASE WHEN state = 'awaiting-ack' AND relay_status = 'queued' THEN relay_expires_at END) AS expires
+                MIN(CASE WHEN state = 'awaiting-ack' AND relay_status = 'queued' THEN relay_expires_at END) AS expires,
+                SUM(CASE WHEN relay_status = 'delivered' THEN 1 ELSE 0 END) AS handed
          FROM a2a_delivery
          WHERE peer_fp = ? AND sent_at > ?
            AND ((state = 'awaiting-ack' AND relay_status = 'queued')
              OR state = 'unconfirmed'
              OR (state = 'escalated' AND (relay_status IS NULL OR relay_status = 'queued'))
-             OR (state = 'failed' AND relay_status = 'expired'))`,
+             OR (state = 'failed' AND relay_status = 'expired')
+             OR (state IN ('awaiting-ack','escalated') AND relay_status = 'delivered' AND relay_expires_at IS NOT NULL))`,
       )
-      .get(peerFp, lifeBound) as { n: number; oldest: string | null; expires: string | null };
+      .get(peerFp, lifeBound) as { n: number; oldest: string | null; expires: string | null; handed: number | null };
     let dark = false;
     let darkSince: string | null = null;
     if (unanswered.n > 0 && unanswered.oldest) {
@@ -686,6 +709,7 @@ export class A2ADeliveryTracker {
       darkSince,
       queuedCount: unanswered.n,
       queuedExpiresAt: unanswered.expires ?? null,
+      handedUnackedCount: unanswered.handed ?? 0,
       lastDeliveredAt: lastDelivered?.relay_status_at ?? null,
     };
   }
@@ -706,13 +730,21 @@ export class A2ADeliveryTracker {
    * (default 30 days — §3.1 bounds this published read; a peer quiet that long
    * is re-listed by its next send or inbound).
    */
-  allPeerHealth(opts: { nowMs?: number; staleAfterMs?: number; queuedDarkAfterMs?: number; activeWithinMs?: number } = {}): PeerHealth[] {
+  allPeerHealth(opts: {
+    nowMs?: number; staleAfterMs?: number; queuedDarkAfterMs?: number; activeWithinMs?: number;
+    /** Per-peer dark threshold (§3.1); wins over `queuedDarkAfterMs` when it answers a number. */
+    queuedDarkAfterMsFor?: (peerFp: string) => number | undefined;
+  } = {}): PeerHealth[] {
     const nowMs = opts.nowMs ?? Date.now();
     const cutoff = new Date(nowMs - (opts.activeWithinMs ?? RETENTION_MS)).toISOString();
     const fps = new Set<string>();
     for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_delivery WHERE sent_at > ?`).all(cutoff) as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
     for (const r of this.db.prepare(`SELECT DISTINCT peer_fp FROM a2a_peer_inbound WHERE last_accepted_at > ?`).all(cutoff) as Array<{ peer_fp: string }>) fps.add(r.peer_fp);
-    return [...fps].map((fp) => this.peerHealth(fp, { ...opts, nowMs }));
+    return [...fps].map((fp) => this.peerHealth(fp, {
+      nowMs,
+      staleAfterMs: opts.staleAfterMs,
+      queuedDarkAfterMs: opts.queuedDarkAfterMsFor?.(fp) ?? opts.queuedDarkAfterMs,
+    }));
   }
 
   close(): void {

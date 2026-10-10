@@ -169,7 +169,7 @@ export interface SendMessageResult {
    * `connectedNow` is the presence map's answer (null = unknown). A proxy — it
    * cannot tell offline from wrong-address.
    */
-  peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null };
+  peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
 }
 
 export interface RequestSecretParams {

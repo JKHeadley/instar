@@ -5467,8 +5467,13 @@ export interface ThreadlineConfig {
    * logs/a2a-peer-dark.jsonl, no item and no sentence; the raw health fields
    * (`dark`, `darkSince`, `queuedCount`, `connectedNow`) are live regardless.
    * `queuedDarkAfterMs` default 2 h (floor 5 min); `cooldownMs` default 12 h.
+   * `perPeer` sets the threshold for ONE peer by its full fingerprint, e.g.
+   * `{ "<fp>": { queuedDarkAfterMs: 1800000 } }` for a pair that answers in minutes.
    */
-  peerDarkNotice?: { enabled?: boolean; dryRun?: boolean; queuedDarkAfterMs?: number; cooldownMs?: number };
+  peerDarkNotice?: {
+    enabled?: boolean; dryRun?: boolean; queuedDarkAfterMs?: number; cooldownMs?: number;
+    perPeer?: Record<string, { queuedDarkAfterMs?: number }>;
+  };
   /**
    * Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md).
    * Read live per unknown-sender relay message. `enabled` omitted ⇒ the

@@ -49,7 +49,7 @@ let tracker: A2ADeliveryTracker;
 let listener: ListenerSessionManager;
 let server: Server;
 let port: number;
-let config: InstarConfig & { threadline: { peerDarkNotice: { enabled: boolean; dryRun: boolean; queuedDarkAfterMs: number } } };
+let config: InstarConfig & { threadline: { peerDarkNotice: { enabled: boolean; dryRun: boolean; queuedDarkAfterMs: number; perPeer: Record<string, { queuedDarkAfterMs: number }> } } };
 
 const post = async (body: Record<string, unknown>) => {
   const res = await fetch(`http://127.0.0.1:${port}/threadline/relay-send`, {
@@ -106,7 +106,7 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
 
     config = {
       projectDir, stateDir, projectName: 'echo-dark', port: 4042, authToken: TOKEN,
-      threadline: { peerDarkNotice: { enabled: true, dryRun: true, queuedDarkAfterMs: 2 * H } },
+      threadline: { peerDarkNotice: { enabled: true, dryRun: true, queuedDarkAfterMs: 2 * H, perPeer: {} as Record<string, { queuedDarkAfterMs: number }> } },
     } as typeof config;
     const router = createRoutes({
       config,
@@ -137,7 +137,9 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
   it('a live recipient: health not dark, connectedNow true from the presence map (the discover that resolved the name)', async () => {
     const h = await get(`/threadline/peers/${recipientFp}/health`);
     expect(h.status).toBe(200);
-    expect(h.body).toMatchObject({ dark: false, darkSince: null, queuedCount: 0, queuedExpiresAt: null, lastDeliveredAt: null, connectedNow: true });
+    expect(h.body).toMatchObject({ dark: false, darkSince: null, queuedCount: 0, queuedExpiresAt: null, lastDeliveredAt: null, connectedNow: true, connectedNowReason: null });
+    // "connected" always carries its age: when the presence record was written.
+    expect(Date.now() - Date.parse(String(h.body.connectedAsOf))).toBeLessThan(60_000);
     const all = await get('/threadline/peers/health');
     expect(all.body.darkCount).toBe(0);
   });
@@ -156,7 +158,8 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
     const { status, body } = await post({ targetAgent: 'luna-dark', message: 'are you there?' });
     expect(status).toBe(200);
     expect(body.relayStatus).toBe('queued');
-    expect(body.peerDark).toMatchObject({ since: oldSent, queuedCount: 2, connectedNow: false });
+    expect(body.peerDark).toMatchObject({ since: oldSent, queuedCount: 2, connectedNow: false, connectedNowReason: null });
+    expect(typeof (body.peerDark as { connectedAsOf: unknown }).connectedAsOf).toBe('string');
     expect(typeof (body.peerDark as { expiresAt: unknown }).expiresAt).toBe('string');
     // dry-run: the legacy sentence stands; the would-sentence row is recorded.
     expect(String(body.deliveryOutcome)).toContain('peer offline; the relay holds it');
@@ -181,7 +184,7 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
     const s = String(body.deliveryOutcome);
     expect(s).toMatch(/^no acknowledgement from luna-dark \(/);
     expect(s).toContain('this and 2 other messages are still queued (oldest expires ');
-    expect(s).toContain('is not connected to the relay right now — it may be offline, or listening under a different address.');
+    expect(s).toMatch(/is not connected to the relay right now \(as of \d+ min ago\) — it may be offline, or listening under a different address\.$/);
     expect(s).not.toContain('nothing will arrive');
     expect(auditRows().some((r) => r.kind === 'sentence' && r.dryRun === false)).toBe(true);
   });
@@ -202,7 +205,36 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
     config.threadline.peerDarkNotice.queuedDarkAfterMs = 2 * H;
   });
 
-  it('the recipient reconnecting clears dark on the next delivered verdict (a sign of life) — a live peer never carries peerDark', async () => {
+  it('a per-peer threshold wins over the default for that peer only (read live)', async () => {
+    config.threadline.peerDarkNotice.queuedDarkAfterMs = 48 * H; // default: not dark yet
+    config.threadline.peerDarkNotice.perPeer = { [recipientFp]: { queuedDarkAfterMs: 30 * 60_000 } };
+    const h = await get(`/threadline/peers/${recipientFp}/health`);
+    expect(h.body).toMatchObject({ dark: true });
+    const all = await get('/threadline/peers/health');
+    expect((all.body.peers as Array<Record<string, unknown>>).find((p) => p.peerFp === recipientFp)).toMatchObject({ dark: true });
+    // An entry for some OTHER peer leaves this one on the default.
+    config.threadline.peerDarkNotice.perPeer = { ['f'.repeat(32)]: { queuedDarkAfterMs: 30 * 60_000 } };
+    expect((await get(`/threadline/peers/${recipientFp}/health`)).body).toMatchObject({ dark: false });
+    config.threadline.peerDarkNotice.perPeer = {};
+    config.threadline.peerDarkNotice.queuedDarkAfterMs = 2 * H;
+  });
+
+  it('with my own relay down, connectedNow is null and the reason says it is MY side', async () => {
+    const state = sender as unknown as { relayClient: { connectionState: string } };
+    const real = state.relayClient;
+    (sender as unknown as { relayClient: unknown }).relayClient = { connectionState: 'disconnected' };
+    try {
+      const h = await get(`/threadline/peers/${recipientFp}/health`);
+      expect(h.body).toMatchObject({ connectedNow: null, connectedNowReason: 'relay-down' });
+      const unknownPeer = await get(`/threadline/peers/${'e'.repeat(32)}/health`);
+      expect(unknownPeer.body).toMatchObject({ connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf: null });
+    } finally {
+      (sender as unknown as { relayClient: unknown }).relayClient = real;
+    }
+    expect((await get(`/threadline/peers/${'e'.repeat(32)}/health`)).body).toMatchObject({ connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null });
+  });
+
+  it('the recipient reconnecting: a `delivered` verdict ALONE does not clear dark; the peer\'s first inbound does', async () => {
     await recipient.connect();
     await new Promise((r) => setTimeout(r, 200));
     const { status, body } = await post({ targetAgent: 'luna-dark', message: 'back?' });
@@ -210,9 +242,21 @@ describe('§3 dark peer — /threadline/relay-send + peers/health (real relay)',
     expect(body.relayStatus).toBe('delivered');
     expect(body.peerDark).toBeUndefined();
     expect(String(body.deliveryOutcome)).toContain("handed to the peer's relay connection");
+    // The relay handed this one to a connection under the peer's fingerprint, so THIS send
+    // is not "still queued" (no peerDark) — but nothing has acknowledged the earlier ones,
+    // and a split or a non-serving holder looks exactly like this. Still dark.
     const h = await get(`/threadline/peers/${recipientFp}/health`);
-    expect(h.body).toMatchObject({ dark: false, darkSince: null, queuedCount: 0 });
     expect(h.body.lastDeliveredAt).not.toBeNull();
+    expect(h.body).toMatchObject({ dark: true });
+    // The reconnect drained the relay's queue: those rows now read `delivered`, and they
+    // STAY in the unanswered set (counted apart) because nothing acknowledged them.
+    expect(h.body.queuedCount).toBeGreaterThanOrEqual(4);
+    expect(h.body.handedUnackedCount).toBeGreaterThanOrEqual(1);
+    expect((await get('/threadline/peers/health')).body.darkCount).toBe(1);
+    // The peer actually answering is what clears it.
+    tracker.recordInboundFrom(recipientFp, 'luna-dark');
+    const after = await get(`/threadline/peers/${recipientFp}/health`);
+    expect(after.body).toMatchObject({ dark: false, darkSince: null, queuedCount: 0 });
     expect((await get('/threadline/peers/health')).body.darkCount).toBe(0);
   });
 });

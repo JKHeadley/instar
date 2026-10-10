@@ -32,8 +32,14 @@ export interface PeerDarkNoticeConfig {
   enabled: boolean;
   /** Default true: would-raise / would-sentence rows are logged, no item, no sentence. */
   dryRun: boolean;
-  /** The dark threshold (§3.1). */
+  /** The default dark threshold (§3.1). */
   queuedDarkAfterMs: number;
+  /**
+   * Per-peer dark thresholds, keyed by the peer's full fingerprint (lowercased).
+   * A pair that normally answers in minutes can sit at 30 min while the default
+   * stays 2 h. Same 5-min floor as the default.
+   */
+  perPeer: Record<string, { queuedDarkAfterMs: number }>;
   cooldownMs: number;
 }
 
@@ -41,7 +47,33 @@ export interface PeerDarkNoticeRawConfig {
   enabled?: boolean;
   dryRun?: boolean;
   queuedDarkAfterMs?: number;
+  perPeer?: Record<string, { queuedDarkAfterMs?: number } | undefined>;
   cooldownMs?: number;
+}
+
+/** Bound on configured per-peer entries (a config map, not a ledger). */
+export const PEER_DARK_PER_PEER_MAX = 200;
+
+function resolvePerPeer(raw: unknown): Record<string, { queuedDarkAfterMs: number }> {
+  // Null-prototype: a fingerprint is peer-chosen text and must never hit an inherited key.
+  const out: Record<string, { queuedDarkAfterMs: number }> = Object.create(null) as Record<string, { queuedDarkAfterMs: number }>;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  let n = 0;
+  for (const [fp, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (n >= PEER_DARK_PER_PEER_MAX) break;
+    const ms = (v as { queuedDarkAfterMs?: unknown } | null | undefined)?.queuedDarkAfterMs;
+    if (typeof fp !== 'string' || !fp.trim() || typeof ms !== 'number' || !Number.isFinite(ms)) continue;
+    out[fp.trim().toLowerCase()] = { queuedDarkAfterMs: Math.max(MIN_QUEUED_DARK_AFTER_MS, ms) };
+    n++;
+  }
+  return out;
+}
+
+/** The dark threshold that applies to ONE peer: its per-peer entry, else the default. */
+export function queuedDarkAfterMsFor(cfg: Pick<PeerDarkNoticeConfig, 'queuedDarkAfterMs'> & { perPeer?: PeerDarkNoticeConfig['perPeer'] }, peerFp: string): number {
+  const key = String(peerFp ?? '').trim().toLowerCase();
+  const entry = cfg.perPeer && Object.prototype.hasOwnProperty.call(cfg.perPeer, key) ? cfg.perPeer[key] : undefined;
+  return entry && typeof entry.queuedDarkAfterMs === 'number' ? entry.queuedDarkAfterMs : cfg.queuedDarkAfterMs;
 }
 
 function finiteOr(v: unknown, fallback: number, floor: number): number {
@@ -64,6 +96,7 @@ export function resolvePeerDarkNoticeConfig(
     enabled: resolveDevAgentGate(explicit, config),
     dryRun: raw.dryRun ?? true,
     queuedDarkAfterMs: finiteOr(raw.queuedDarkAfterMs, DEFAULT_QUEUED_DARK_AFTER_MS, MIN_QUEUED_DARK_AFTER_MS),
+    perPeer: resolvePerPeer(raw.perPeer),
     cooldownMs: finiteOr(raw.cooldownMs, DEFAULT_PEER_DARK_COOLDOWN_MS, MIN_PEER_DARK_COOLDOWN_MS),
   };
 }
@@ -74,6 +107,8 @@ export interface PeerDarkReport {
   since: string | null;
   /** Rows still queued / unconfirmed / expired-unacknowledged for this peer, including this send. */
   queuedCount: number;
+  /** Of those, rows the relay handed to a connection under the peer's address after queueing them, never acknowledged. */
+  handedUnackedCount?: number;
   /** The earliest relay expiry among the still-queued rows (ISO), or null. */
   expiresAt: string | null;
   /**
@@ -82,6 +117,38 @@ export interface PeerDarkReport {
    * connected, or no presence frame arrived within the freshness bound.
    */
   connectedNow: boolean | null;
+  /**
+   * WHY `connectedNow` is null — so "the peer is unknown" is never confused with
+   * "my side is broken": `no-row` (the presence map has no record of this peer),
+   * `relay-down` (my own relay is not connected, or there is no relay client),
+   * `stale` (there is a record but nothing fresh enough to trust). Null when
+   * `connectedNow` is a boolean.
+   */
+  connectedNowReason: ConnectedNowReason | null;
+  /**
+   * When this peer's presence record was last written (ISO), or null when there
+   * is none. A boolean `connectedNow` is "as of" this instant, never "right now".
+   */
+  connectedAsOf: string | null;
+}
+
+export type ConnectedNowReason = 'no-row' | 'relay-down' | 'stale';
+
+/** One presence read: the boolean, why it is unknown, and how old the record is. */
+export interface PeerPresenceRead {
+  connectedNow: boolean | null;
+  connectedNowReason: ConnectedNowReason | null;
+  connectedAsOf: string | null;
+}
+
+/** The read when there is no relay client at all (a standby, or relay off). */
+export const PRESENCE_RELAY_DOWN: PeerPresenceRead = { connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf: null };
+
+function ageMinutes(iso: string | null | undefined, nowMs: number): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.round((nowMs - t) / 60_000));
 }
 
 export function escapeHtml(text: string): string {
@@ -122,14 +189,27 @@ function shortIso(iso: string | null): string {
 }
 
 /** The connectivity clause (§3.2), worded to the evidence — never "nothing will arrive". */
-export function connectedNowClause(label: string, connectedNow: boolean | null): string {
+export function connectedNowClause(
+  label: string,
+  connectedNow: boolean | null,
+  detail: { reason?: ConnectedNowReason | null; asOf?: string | null; nowMs?: number } = {},
+): string {
+  const mins = ageMinutes(detail.asOf, detail.nowMs ?? Date.now());
+  const asOf = mins === null ? '' : ` (as of ${mins} min ago)`;
   if (connectedNow === false) {
-    return `${label} is not connected to the relay right now — it may be offline, or listening under a different address`;
+    return `${label} is not connected to the relay right now${asOf} — it may be offline, or listening under a different address`;
   }
   if (connectedNow === true) {
-    return `${label} IS connected to the relay but has not acknowledged anything — it may be listening under a different address, or not reading`;
+    return `${label} IS connected to the relay${asOf} but has not acknowledged anything — it may be listening under a different address, or not reading`;
   }
-  return `whether ${label} is connected right now is unknown`;
+  const why = detail.reason === 'relay-down'
+    ? ' (my own relay connection is down)'
+    : detail.reason === 'stale'
+      ? ` (my last presence record for it is ${mins === null ? 'too old' : `${mins} min old`})`
+      : detail.reason === 'no-row'
+        ? ' (the relay has given me no presence record for it)'
+        : '';
+  return `whether ${label} is connected right now is unknown${why}`;
 }
 
 /**
@@ -149,7 +229,18 @@ export function buildPeerDarkSentence(
     ? 'this message is still queued'
     : `this and ${others} other message${others === 1 ? '' : 's'} are still queued`;
   const expiry = report.expiresAt ? ` (oldest expires ${shortIso(report.expiresAt)})` : '';
-  return `no acknowledgement from ${label} for ${h} h; ${queuedPart}${expiry}; ${connectedNowClause(label, report.connectedNow)}.`;
+  return `no acknowledgement from ${label} for ${h} h; ${queuedPart}${expiry}${handedClause(report.handedUnackedCount)}; ${connectedNowClause(label, report.connectedNow, { reason: report.connectedNowReason, asOf: report.connectedAsOf, nowMs })}.`;
+}
+
+/**
+ * Names the rows a relay queue flush handed to a connection under the peer's
+ * address with no acknowledgement after — they are not "queued" any more, and
+ * calling them that would be a false statement.
+ */
+function handedClause(handed: number | undefined): string {
+  const n = typeof handed === 'number' && handed > 0 ? Math.floor(handed) : 0;
+  if (n === 0) return '';
+  return ` — ${n} of these ${n === 1 ? 'was' : 'were'} handed to a connection under its address and never acknowledged`;
 }
 
 /** Attention-item body for the per-peer dark item (spec §3.2). */
@@ -157,9 +248,10 @@ export function buildPeerDarkItemBody(
   peer: { peerFp: string; peerName?: string | null },
   queuedCount: number,
   since: string | null,
+  handedUnackedCount?: number,
 ): string {
   const label = peerLabel(peer.peerFp, peer.peerName);
-  return `Messages to ${label} are stuck: ${queuedCount} queued since ${shortIso(since)}, none acknowledged. ${label} may be offline, or listening under a different address.`;
+  return `Messages to ${label} are stuck: ${queuedCount} queued since ${shortIso(since)}, none acknowledged${handedClause(handedUnackedCount)}. ${label} may be offline, or listening under a different address.`;
 }
 
 /** Resolve line for the per-peer dark item (spec §3.2 iv). */
@@ -191,6 +283,8 @@ export interface PeerDarkAuditRow {
   queuedCount?: number;
   darkSince?: string | null;
   connectedNow?: boolean | null;
+  connectedNowReason?: ConnectedNowReason | null;
+  connectedAsOf?: string | null;
   reason?: string;
   itemId?: string;
   expiredUnacknowledged?: number;

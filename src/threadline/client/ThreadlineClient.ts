@@ -15,6 +15,7 @@ import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { AUTO_ACK_TYPE, encodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
+import type { PeerPresenceRead } from '../peerDark.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
 import {
   clampRelayReason, mapRelayReason, RELAY_BANNED_CODE,
@@ -776,16 +777,29 @@ export class ThreadlineClient extends EventEmitter {
    * as it was, so a stale map answers null, never a stale boolean).
    */
   peerConnectedNow(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): boolean | null {
-    if (this.connectionState !== 'connected') return null;
+    return this.peerPresence(agentId, opts).connectedNow;
+  }
+
+  /**
+   * The full presence read behind `connectedNow` (§3.2): the boolean, WHY it is
+   * null when it is (`relay-down` — my relay is not connected; `no-row` — the
+   * map has no record of this peer; `stale` — a record exists but no presence
+   * frame arrived within the freshness bound), and `connectedAsOf` — when this
+   * peer's own record was last written, so "connected" always carries its age.
+   */
+  peerPresence(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): PeerPresenceRead {
     const row = this.knownAgents.get(agentId);
-    if (!row || typeof row.online !== 'boolean') return null;
+    const hasRow = !!row && typeof row.online === 'boolean';
+    const connectedAsOf = hasRow && typeof row!.presenceAt === 'number' ? new Date(row!.presenceAt).toISOString() : null;
+    if (this.connectionState !== 'connected') return { connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf };
+    if (!hasRow) return { connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null };
     const maxAge = opts.maxFrameAgeMs ?? ThreadlineClient.PRESENCE_FRESH_MS;
     // Freshness is the LAST presence frame of any kind (§3.2: "no frame since
     // the last sentinel tick" ⇒ null) — a connected relay with a silent map
     // answers null, never a stale boolean.
     const stamp = this.lastPresenceFrameAt;
-    if (stamp === null || this.nowFn() - stamp > maxAge) return null;
-    return row.online;
+    if (stamp === null || this.nowFn() - stamp > maxAge) return { connectedNow: null, connectedNowReason: 'stale', connectedAsOf };
+    return { connectedNow: row!.online as boolean, connectedNowReason: null, connectedAsOf };
   }
 
   /** When the last presence frame arrived (ms epoch), or null before any. */
