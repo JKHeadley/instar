@@ -17,7 +17,18 @@
  *
  * Next to the content-addressed files the store keeps a first-seen time for
  * every item. Holds, revocation clamps and fork cut-offs are judged from these
- * LOCAL receipt times, never from a time the item claims for itself.
+ * LOCAL receipt times, never from a time the item claims for itself. Two
+ * stores can therefore disagree, and not only briefly: a store that was
+ * offline through a whole hold and then receives a recovery together with its
+ * veto counts the veto and stays conflicted, while a store that watched the
+ * hold run out matured the recovery. That fails closed, in the cautious
+ * direction.
+ *
+ * Bindings and binding revocations carry signature SETS that their identity
+ * hash leaves out, so a relay could strip one signature and produce a second
+ * valid copy of the same statement. The store files every copy under the hash
+ * of the whole object (copyHash) and counts the union of valid signers across
+ * copies, so a stripped copy delivered first can never shadow the full one.
  *
  * Conflicts (two contradicting bindings at one seq, or a vetoed recovery) stop
  * the agent's chain at that seq. Records made under earlier bindings that this
@@ -38,6 +49,7 @@ import {
   RECOVERY_HOLD_MS,
   bindingHash,
   bindingRevocationHash,
+  copyHash,
   successorVetoHash,
   verifyBinding,
   verifyBindingRevocation,
@@ -45,6 +57,7 @@ import {
   verifySuccessorVeto,
   type BindingRevocation,
   type KeyBinding,
+  type KeyRole,
   type SuccessorVeto,
 } from './binding.js';
 import { MAX_CLOCK_SKEW_MS, recordHash, verifyRecord, type WitnessRecord } from './record.js';
@@ -102,30 +115,31 @@ export class WitnessStore {
     if (!check.ok) return { status: 'rejected', reason: check.reason };
     if (tooFarAhead(binding.issued_at, now)) return { status: 'rejected', reason: 'issued_at is in the future' };
     if (binding.seq > 0) {
-      const previous = this.items<KeyBinding>('bindings', bindingHash).find(b => bindingHash(b) === binding.supersedes);
+      const previous = this.bindings().find(b => bindingHash(b) === binding.supersedes);
       if (!previous) return { status: 'rejected', reason: 'superseded binding not known yet' };
       const link = verifySuccessor(previous, binding);
       if (!link.ok) return { status: 'rejected', reason: link.reason };
     }
-    return this.write('bindings', bindingHash(binding), binding, now);
+    return this.write('bindings', copyHash(binding), binding, now);
   }
 
   addBindingRevocation(rev: BindingRevocation, now: Date = new Date()): AddResult {
-    const target = this.items<KeyBinding>('bindings', bindingHash).find(b => bindingHash(b) === rev?.binding);
+    const target = this.bindings().find(b => bindingHash(b) === rev?.binding);
     if (!target) return { status: 'rejected', reason: 'revoked binding not known yet' };
     const check = verifyBindingRevocation(rev, target);
     if (!check.ok) return { status: 'rejected', reason: check.reason };
     if (tooFarAhead(rev.issued_at, now)) return { status: 'rejected', reason: 'issued_at is in the future' };
-    return this.write('revocations', bindingRevocationHash(rev), rev, now);
+    return this.write('revocations', copyHash(rev), rev, now);
   }
 
   addVeto(veto: SuccessorVeto, now: Date = new Date()): AddResult {
-    const all = this.items<KeyBinding>('bindings', bindingHash);
-    const successor = all.find(b => bindingHash(b) === veto?.successor);
-    if (!successor) return { status: 'rejected', reason: 'vetoed successor not known yet' };
-    const previous = all.find(b => bindingHash(b) === successor.supersedes);
+    const all = this.bindings();
+    const copies = all.filter(b => bindingHash(b) === veto?.successor);
+    if (!copies.length) return { status: 'rejected', reason: 'vetoed successor not known yet' };
+    const previous = all.find(b => bindingHash(b) === copies[0].supersedes);
     if (!previous) return { status: 'rejected', reason: 'superseded binding not known' };
-    const check = verifySuccessorVeto(veto, successor, previous);
+    // Judge the veto against every signer seen on ANY copy, so a stripped copy cannot make a signer look absent.
+    const check = verifySuccessorVeto(veto, merge(copies, previous), previous);
     if (!check.ok) return { status: 'rejected', reason: check.reason };
     if (tooFarAhead(veto.issued_at, now)) return { status: 'rejected', reason: 'issued_at is in the future' };
     return this.write('vetoes', successorVetoHash(veto), veto, now);
@@ -137,7 +151,7 @@ export class WitnessStore {
    * the contradicting bindings at that seq; the others are ignored from now on.
    */
   resolveConflict(agent: string, seq: number, keep: string, note: string, now: Date = new Date()): AddResult {
-    const candidate = this.items<KeyBinding>('bindings', bindingHash).find(
+    const candidate = this.bindings().find(
       b => b.agent === agent && b.seq === seq && bindingHash(b) === keep,
     );
     if (!candidate) return { status: 'rejected', reason: `no stored binding ${keep} for ${agent} at seq ${seq}` };
@@ -150,18 +164,28 @@ export class WitnessStore {
 
   /** The agent's effective chain at `now`. */
   chain(agent: string, now: Date = new Date()): Chain {
-    const all = this.items<KeyBinding>('bindings', bindingHash).filter(b => b.agent === agent);
+    const copies = this.bindings().filter(b => b.agent === agent);
+    // Earliest first-seen across every copy of a statement.
+    const seenByHash = new Map<string, number>();
+    for (const c of copies) {
+      const h = bindingHash(c);
+      seenByHash.set(h, Math.min(seenByHash.get(h) ?? Infinity, this.firstSeen(copyHash(c))));
+    }
     const vetoes = this.items<SuccessorVeto>('vetoes', successorVetoHash).filter(v => v.agent === agent);
     const links: ChainLink[] = [];
     for (let seq = 0; ; seq++) {
       const prev = links[links.length - 1];
-      let cands = all.filter(b => b.seq === seq && (seq === 0 || b.supersedes === prev.hash));
+      const atSeq = copies.filter(b => b.seq === seq && (seq === 0 || b.supersedes === prev.hash));
+      let cands = [...new Set(atSeq.map(bindingHash))].map(h => {
+        const group = atSeq.filter(b => bindingHash(b) === h);
+        return seq === 0 ? group[0] : merge(group, prev.binding);
+      });
       if (!cands.length) return { links };
       const kept = this.resolution(agent, seq);
       const resolved = kept !== undefined && cands.some(b => bindingHash(b) === kept);
       if (resolved) cands = cands.filter(b => bindingHash(b) === kept);
 
-      const seen = (b: KeyBinding) => this.firstSeen(bindingHash(b));
+      const seen = (b: KeyBinding) => seenByHash.get(bindingHash(b)) ?? Infinity;
       const secondSeen = (bs: KeyBinding[]) => bs.map(seen).sort((a, b) => a - b)[1];
 
       if (seq === 0) {
@@ -237,14 +261,21 @@ export class WitnessStore {
     }
     if (i < 0) return { error: `no binding of ${agent} covers key ${keyId} at ${at}`, status: 'unknown' };
     const l = links[i];
-    for (const rev of this.items<BindingRevocation>('revocations', bindingRevocationHash)) {
+    // Group revocation copies by statement; a statement is two-key if ANY copies together carry both valid signatures.
+    const revs = new Map<string, { rev: BindingRevocation; signers: Set<KeyRole>; seen: number }>();
+    for (const rev of this.items<BindingRevocation>('revocations', copyHash)) {
       if (rev.binding !== l.hash) continue;
       const check = verifyBindingRevocation(rev, l.binding);
       if (!check.ok) continue;
+      const h = bindingRevocationHash(rev);
+      const entry = revs.get(h) ?? { rev, signers: new Set<KeyRole>(), seen: Infinity };
+      check.signers.forEach(r => entry.signers.add(r));
+      entry.seen = Math.min(entry.seen, this.firstSeen(copyHash(rev)));
+      revs.set(h, entry);
+    }
+    for (const { rev, signers, seen } of revs.values()) {
       const requested = Date.parse(rev.effective_from);
-      const effective = check.signers.length === 2
-        ? requested
-        : Math.max(requested, this.firstSeen(bindingRevocationHash(rev)) - MAX_CLOCK_SKEW_MS);
+      const effective = signers.size === 2 ? requested : Math.max(requested, seen - MAX_CLOCK_SKEW_MS);
       if (t >= effective) return { error: `binding for key ${keyId} was revoked as of ${at}`, status: 'key-revoked' };
     }
     return { key: l.binding.witness_public_key };
@@ -366,6 +397,10 @@ export class WitnessStore {
     }
   }
 
+  private bindings(): KeyBinding[] {
+    return this.items<KeyBinding>('bindings', copyHash);
+  }
+
   /** Read every hash-named file of a kind, dropping any whose content no longer matches its name. */
   private items<T>(kind: Kind, hashOf: (item: T) => string): T[] {
     const dir = this.dirs[kind];
@@ -381,6 +416,23 @@ export class WitnessStore {
     }
     return out;
   }
+}
+
+/**
+ * One view of a successor statement with every valid previous signature found on
+ * any of its copies. Invalid signatures on a copy are dropped, never counted.
+ */
+function merge(copies: KeyBinding[], previous: KeyBinding): KeyBinding {
+  const sigs: { witness?: string; threadline?: string } = {};
+  for (const c of copies) {
+    for (const role of ['witness', 'threadline'] as const) {
+      const sig = c.previous_signatures?.[role];
+      if (sig === undefined || sigs[role]) continue;
+      const one = { ...c, previous_signatures: { [role]: sig } };
+      if (verifySuccessor(previous, one).ok) sigs[role] = sig;
+    }
+  }
+  return { ...copies[0], previous_signatures: sigs };
 }
 
 function link(binding: KeyBinding, start: number): ChainLink {

@@ -245,6 +245,19 @@ export function verifyBindingRevocation(
   return checkRoleSignatures(binding, signatures, Buffer.from(REVOCATION_CONTEXT + canonicalize(unsigned)), 'signatures');
 }
 
+/**
+ * Storage key for one COPY of a binding or revocation: the hash of the whole
+ * object, signatures included. bindingHash/bindingRevocationHash leave the
+ * multi-signature sets out (they identify the statement), so a relay could
+ * strip a signature and produce a second valid copy with the same identity.
+ * Stores keep every copy under this key and count the union of valid signers
+ * across copies (Echo's review of b6e3234), so a stripped copy delivered first
+ * can never shadow the full one.
+ */
+export function copyHash(item: KeyBinding | BindingRevocation): string {
+  return sha256('instar-witness-copy-v0\n' + canonicalize(item));
+}
+
 export function bindingRevocationHash(rev: BindingRevocation): string {
   const { signatures: _ignored, ...unsigned } = rev;
   return sha256(REVOCATION_CONTEXT + canonicalize(unsigned));

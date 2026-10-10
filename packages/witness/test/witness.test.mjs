@@ -332,6 +332,58 @@ test('conflict resolution: a person picks which binding to keep, and the chain c
   assert.equal(store.add(r, at(12 * HOUR)).status, 'added');
 });
 
+test('signature stripping: a stripped two-key rotation delivered first cannot be held or vetoed', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const owner = successor(dawn, ['witness', 'threadline'], at(10 * HOUR));
+  const { threadline: _dropped, ...kept } = owner.binding.previous_signatures;
+  const stripped = { ...owner.binding, previous_signatures: kept }; // now looks like a witness-only recovery
+  assert.equal(bindingHash(stripped), bindingHash(owner.binding), 'same statement, different copy');
+
+  assert.equal(store.addBinding(stripped, {}, at(10 * HOUR)).status, 'added');
+  assert.equal(store.addBinding(owner.binding, {}, at(10 * HOUR + 1)).status, 'added', 'the full copy is kept, not a duplicate');
+  // The thief holds the threadline key and vetoes as "the key that didn't sign": refused, it did sign another copy.
+  const veto = createSuccessorVeto({ successor: stripped, signer: 'threadline', key: dawn.threadline, reason: 'x', issuedAt: at(10 * HOUR + 2) });
+  assert.match(store.addVeto(veto, at(10 * HOUR + 2)).reason, /did not sign/);
+
+  const c = store.chain(DAWN, at(10 * HOUR + 3));
+  assert.equal(c.conflict, undefined);
+  assert.equal(c.pending, undefined);
+  assert.equal(c.links.length, 2, 'the rotation takes effect at once');
+  assert.equal(store.add(sample(dawn, { issuedAt: at(11 * HOUR) }), at(11 * HOUR)).status, 'rejected', 'the old key is cut off');
+});
+
+test('signature stripping: a veto accepted before the full copy arrived stops counting once it does', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const owner = successor(dawn, ['witness', 'threadline'], at(10 * HOUR));
+  const { threadline: _dropped, ...kept } = owner.binding.previous_signatures;
+  store.addBinding({ ...owner.binding, previous_signatures: kept }, {}, at(10 * HOUR));
+  const veto = createSuccessorVeto({ successor: owner.binding, signer: 'threadline', key: dawn.threadline, reason: 'x', issuedAt: at(10 * HOUR + 1) });
+  assert.equal(store.addVeto(veto, at(10 * HOUR + 1)).status, 'added');
+  assert.equal(store.chain(DAWN, at(10 * HOUR + 1)).conflict.reason, 'recovery was vetoed');
+  store.addBinding(owner.binding, {}, at(10 * HOUR + 2));
+  const c = store.chain(DAWN, at(10 * HOUR + 3));
+  assert.equal(c.conflict, undefined);
+  assert.equal(c.links.length, 2);
+});
+
+test('signature stripping: a stripped two-key revocation does not lose its backdating', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const mid = sample(dawn, { issuedAt: at(3 * HOUR) });
+  store.add(mid, at(3 * HOUR));
+  const full = createBindingRevocation({
+    binding: dawn.binding, keys: { witness: dawn.witness, threadline: dawn.threadline },
+    reason: 'compromised since hour 2', effectiveFrom: at(2 * HOUR), issuedAt: at(10 * HOUR),
+  });
+  const stripped = { ...full, signatures: { witness: full.signatures.witness } };
+  assert.equal(store.addBindingRevocation(stripped, at(10 * HOUR)).status, 'added');
+  assert.equal(store.status(recordHash(mid), at(10 * HOUR)), 'valid', 'one key alone cannot reach back');
+  assert.equal(store.addBindingRevocation(full, at(10 * HOUR + 1)).status, 'added', 'the full copy is kept');
+  assert.equal(store.status(recordHash(mid), at(10 * HOUR + 2)), 'key-revoked');
+});
+
 // ── store: binding revocation ────────────────────────────────────────
 
 test('one-key revocation cannot reach back further than first-seen minus clock skew', () => {
