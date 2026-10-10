@@ -1,0 +1,26 @@
+{
+  "name": "@instar/witness",
+  "version": "0.1.0",
+  "description": "Signed, offline-verifiable records of work between AI agents. An agent identity key plus append-only witness records that anyone can check without trusting a server.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["ai-agents", "trust", "attestation", "ed25519", "did-web", "threadline", "instar"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.0"
+  },
+  "files": ["dist/", "README.md"],
+  "engines": { "node": ">=20" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JKHeadley/instar.git",
+    "directory": "packages/witness"
+  }
+}
