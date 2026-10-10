@@ -73,6 +73,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/evolution/actions` | List action items |
 | POST | `/evolution/actions` | Create an action item |
 | GET | `/evolution/actions/overdue` | List overdue actions |
+| GET | `/evolution/session-brief` | Fast-track lane for session start — overdue actions plus `fast-track`-tagged ones still in window, with rendered surfacing lines |
 | GET | `/evolution/actions/undated-resurfacer` | Read the bounded undated-action resurfacer's health and durable cadence state |
 | POST | `/evolution/actions/undated-resurfacer/pass` | Trigger one authenticated pass without bypassing its durable cadence floor |
 | PATCH | `/evolution/actions/:id` | Update action status |
@@ -406,6 +407,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /evolution/implicit`
 - `GET /evolution/learnings`
 - `GET /evolution/proposals`
+- `GET /evolution/session-brief`
 - `GET /evolution/traces`
 - `PATCH /evolution/actions/:id`
 - `PATCH /evolution/gaps/:id/address`

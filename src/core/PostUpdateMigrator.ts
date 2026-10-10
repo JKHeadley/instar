@@ -14117,6 +14117,40 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
   fi
 fi
 
+# EVOLUTION FAST-TRACK — the forcing function for slipped commitments.
+# A missed deadline already reaches the 4-hourly evolution-overdue-check job,
+# which can complete, cancel or escalate it out of band. It never reached the
+# session that could actually resolve it. This block is that half: overdue
+# action items are auto-enrolled (no tag needed), items tagged 'fast-track'
+# surface before their deadline too, and both re-appear every session until
+# resolved. The surfacing text is rendered server-side so the hook carries no
+# formatting logic. Silent when the lane is empty — a block that prints
+# "all clear" every session teaches you to skip it. Fail-open: a dead server,
+# a timeout or a parse error prints nothing.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  TOKEN="\${INSTAR_AUTH_TOKEN:-\$(grep -o '"authToken":"[^"]*"' "$INSTAR_DIR/config.json" | head -1 | sed 's/"authToken":"//;s/"\$//')}"
+  if [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+    FAST_TRACK_BRIEF=\$(curl -sf --max-time 5 -H "Authorization: Bearer \$TOKEN" "http://localhost:\${PORT}/evolution/session-brief" 2>/dev/null)
+    if [ -n "\$FAST_TRACK_BRIEF" ]; then
+      python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    lines = d.get('lines') or []
+    if isinstance(lines, list) and lines:
+        print('')
+        for line in lines[:12]:
+            if isinstance(line, str):
+                print(line.replace(chr(10), ' ').replace(chr(13), ' '))
+        print('')
+except Exception:
+    pass
+" <<< "\$FAST_TRACK_BRIEF" 2>/dev/null
+    fi
+  fi
+fi
+
 # ORG-INTENT injection — Phase 2 of the ORG-INTENT runtime project.
 # Fetches the parsed three-rule contract (constraints / goals / values /
 # tradeoff hierarchy) from /intent/org/session-context and injects it at

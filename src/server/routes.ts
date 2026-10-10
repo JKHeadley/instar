@@ -25739,6 +25739,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ overdue: ctx.evolution.getOverdueActions() });
   });
 
+  /**
+   * The session-start forcing function's source of truth.
+   *
+   * Sibling of `/evolution/actions/overdue`, which answers the same question for
+   * the out-of-band 4-hourly overdue-check job. This one answers it for the
+   * session about to do work, adds the pre-deadline rows that job's gate cannot
+   * see, and returns the surfacing text already rendered so the hook carries no
+   * formatting logic of its own. Empty brief (200, not 503) when the evolution
+   * system is not configured — matching its GET siblings, and keeping the hook
+   * silent on an agent that does not use the evolution queue.
+   */
+  router.get('/evolution/session-brief', (_req, res) => {
+    if (!ctx.evolution) {
+      res.json({ overdueCount: 0, inWindowCount: 0, datedPendingCount: 0, items: [], onTimeRate: null, lines: [] });
+      return;
+    }
+    res.json(ctx.evolution.getSessionBrief());
+  });
+
   /** Readable proof that the undated-action cadence is constructed and healthy. */
   router.get('/evolution/actions/undated-resurfacer', (_req, res) => {
     if (!ctx.undatedActionResurfacer) {

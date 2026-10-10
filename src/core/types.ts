@@ -1652,6 +1652,64 @@ export interface ActionItem {
 }
 
 /**
+ * One row of the evolution fast-track lane — a dated action item that the
+ * session-start forcing function surfaces until it is resolved.
+ *
+ * Two populations share the lane:
+ *   - `overdue`   — auto-enrolled. Any pending/in_progress action whose `dueBy`
+ *                   has passed. No tag required: a missed deadline earns the nag
+ *                   by itself, which is what keeps the lane from being a tag
+ *                   nobody ever writes.
+ *   - `in-window` — opt-in. Carries the `fast-track` tag, deadline still ahead.
+ *                   This is the "nag me BEFORE it slips" mark.
+ */
+export interface FastTrackItem {
+  /** Action id (e.g. "ACT-014"). */
+  id: string;
+  title: string;
+  priority: ActionItem['priority'];
+  status: ActionItem['status'];
+  /** ISO deadline. Rows without one are not in the lane. */
+  dueBy: string;
+  state: 'overdue' | 'in-window';
+  /** Whole hours past the deadline. Present on `overdue` rows only. */
+  hoursOverdue?: number;
+  /** Whole hours left before the deadline. Present on `in-window` rows only. */
+  hoursRemaining?: number;
+  /** Why this cannot wait, read from `ActionItem.source.context`. */
+  blocking?: string;
+  /** True when the row carries the explicit `fast-track` tag. */
+  marked: boolean;
+}
+
+/**
+ * What the session-start hook reads. `lines` is rendered here rather than in
+ * bash so the surfacing text has one home and cannot drift per hook copy.
+ */
+export interface EvolutionSessionBrief {
+  /** Rows past their deadline. Always the FULL count, never the capped one. */
+  overdueCount: number;
+  /** Fast-track-marked rows still inside their window. Full count. */
+  inWindowCount: number;
+  /**
+   * Pending/in_progress actions that carry a `dueBy` at all. Liveness signal:
+   * it separates "nothing is overdue" from "nothing has a deadline, so this
+   * lane could never fire" — a zero that means NEVER ATTEMPTED.
+   */
+  datedPendingCount: number;
+  /** Every lane row, overdue first. Uncapped — the cap lives in `lines`. */
+  items: FastTrackItem[];
+  /**
+   * Deadline follow-through over completed, dated actions: did past deadlines
+   * mean anything? `null` when none have completed yet — an honest absence
+   * rather than a 0% or 100% computed from nothing.
+   */
+  onTimeRate: { met: number; total: number; rate: number } | null;
+  /** Pre-rendered surfacing text. Empty when the lane is empty. */
+  lines: string[];
+}
+
+/**
  * Evolution manager configuration.
  */
 export interface EvolutionManagerConfig {
