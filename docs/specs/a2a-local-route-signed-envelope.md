@@ -6,11 +6,20 @@ author: echo
 parent-spec: a2a-local-route-trust.md
 depends-on: a2a-inbound-id-ledger.md
 parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
-parent-principle-fit: "The same-machine route takes the sender's name from the request body and acts on it. This change makes the route prove that name before anything downstream reads it: the envelope must carry an Ed25519 signature that verifies against the public key this agent has on record for that name, and the identity every downstream consumer reads is derived from that verified key. An envelope that cannot prove its sender is refused before it is recorded anywhere, and a refusal is terminal on every sender path, including the offline drop directory."
-binding-standards: ["A Refusal Stays a Refusal — conservation of negative outcomes", "Structure > Willpower", "No Manual Work (user or agent)", "The Agent Is Always Reachable", "Verify the State, Not Its Symbol"]
+parent-principle-fit: "The same-machine route takes the sender's name from the request body and acts on it. This change lets the route prove that name before anything downstream reads it: the envelope carries an Ed25519 signature that must verify against the public key this agent has on record for that name. When the check is enforcing, an envelope that cannot prove its sender is refused before it is recorded anywhere, and that refusal is terminal on every sender path, including the offline drop directory."
+binding-standards: ["A Refusal Stays a Refusal — conservation of negative outcomes", "Structure > Willpower", "No Manual Work (user or agent)", "The Agent Is Always Reachable", "Verify the State, Not Its Symbol", "A Dark Feature Guards Nothing"]
 eli16-overview: a2a-local-route-signed-envelope.eli16.md
 approved: true
-approved-by: "operator directive for CMT-706 — Justin, Telegram topic 9210, 2026-10-09 (“please proceed as you recommend” / “go”)"
+approved-by: "operator directive for CMT-706 — Justin, Telegram topic 9210, 2026-10-09 (“please proceed as you recommend” / “go”); rollout shape (dev-gated, dry-run first) set by the supervising session's builder brief for ACT-067, 2026-10-10"
+review-convergence: "2026-10-10T20:53:27.395Z"
+review-iterations: 6
+review-completed-at: "2026-10-10T20:53:27.395Z"
+review-report: "docs/specs/reports/a2a-local-route-signed-envelope-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 12
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Spec — A2A local-route signed envelope
@@ -38,7 +47,9 @@ the caller is. The sender's name (`message.from.agent`) and fingerprint
 (`message.from.fingerprint`) are text in the request body, and every
 downstream consumer — the local-route trust check, the inbound-id ledger's
 `registry:` key, the thread-owner attribution, the warrants-reply gate, the
-trust level stated to the receiving session — acts on that text.
+trust level stated to the receiving session — acts on that text. This spec
+proves the name for the first two (the ones that admit or refuse); the
+others are listed in "What it does not do".
 
 The relay path does not have this gap. A relay envelope is signed with the
 sender's Ed25519 identity key over its canonical fields, and the receiving
@@ -52,7 +63,7 @@ Dawn's same-machine backup route (the-portal,
 `docs/specs/threadline-same-machine-route.md`) is switched off until the local
 route proves its sender. This spec is that proof.
 
-## What exists (verified on `main` = 3068301f5)
+## What exists (verified on `main` = c5a0f2563)
 
 - **The route** (`src/server/routes.ts`, `router.post('/messages/relay-agent')`)
   checks, in order: the bearer token (`verifyAgentToken`), the envelope shape
@@ -81,8 +92,8 @@ route proves its sender. This spec is that proof.
   `running` entry's `/threadline/health` on loopback, and records the
   answer's `identityPub` (hex Ed25519 public key) as `publicKey` and its
   `fingerprint` field VERBATIM (it does not derive it from the key). The
-  write REPLACES the whole file with the agents reachable at that instant: a
-  peer that is down during a discover is dropped (changed by this spec, §3). `discoverLocal()` runs
+  write REPLACES the whole file with the agents reachable at that instant.
+  `discoverLocal()` runs
   only from the `threadline_discover` MCP tool; the presence heartbeat
   refreshes status for entries already recorded and never adds, removes or
   re-keys an entry. So the name→key binding is "whatever process answered on
@@ -97,7 +108,18 @@ route proves its sender. This spec is that proof.
 - **The primitives exist.** `ThreadlineCrypto.sign` / `verify` (raw 32-byte
   keys, 64-byte signatures) are the functions the relay envelope uses.
   `AgentTokenManager` carries a deep-key-sorting `canonicalJSON` (JCS-style)
-  used for the drop HMAC.
+  used for the drop HMAC; `MessageRouter.ts` carries an identical second
+  copy (exported, used for the cross-machine signature). Neither is bounded
+  in depth or size, and `express.json` accepts 12 MB.
+- **The presence heartbeat rewrites the registry from a stale snapshot.**
+  `heartbeatTick` loads `known-agents.json`, awaits one ping per entry, then
+  saves the list it loaded. Anything another writer added in between is
+  lost. This spec therefore never writes that file.
+- **A drop is not always preceded by a POST.** `routeCrossAgentLocal` calls
+  `dropMessage` directly when the target has no `running` AgentRegistry
+  entry, and `relayToAgent` returns before the POST when the target's token
+  is missing. `MessageRouter.send` sets `transport.nonce` to
+  `<random UUID>:<ISO time>`.
 - **A 401 from the local route is already in the backup-routes
   non-admission set** (`backupRoutes.ts`, `NON_ADMISSION_STATUSES`): a
   relay-send fall-through after a 401 is unmarked, because the receiver
@@ -112,363 +134,496 @@ route proves its sender. This spec is that proof.
 
 ## Design
 
-### 1. The signed envelope
+### 1. The signed envelope (wire format)
 
-The sender adds one field to the envelope: `signature`, a base64 string of
-the 64-byte Ed25519 signature over
+The sender adds ONE top-level field to the envelope: `signature`, a base64
+string (88 characters) of the 64-byte Ed25519 signature, made with the
+sender's identity private key, over
 
 ```
-UTF-8( "instar-a2a-local-envelope-v1\n" + canonicalJSON({ message, transport: { nonce, timestamp, relayChain } }) )
+UTF-8( "instar-a2a-local-envelope-v1\n" + canonicalJSON({ message, transport: { nonce, timestamp, relayChain, originServer, originTopicId } }) )
 ```
 
-`canonicalJSON` is the ONE deep-key-sorting canonicaliser already in
-`AgentTokenManager` (exported, not duplicated): object keys sorted by UTF-16
-code unit at every level, no whitespace, `undefined` members omitted from
-objects and rendered `null` inside arrays, strings and numbers exactly as
-`JSON.stringify` renders them (non-finite numbers become `null`). The signed
-value is the JSON-round-tripped envelope: the sender signs the object it is
-about to serialise, the receiver canonicalises the object `express.json`
-parsed (so a duplicate wire key resolves last-wins on both ends and a
-`__proto__` key is an own property, never a prototype write). Two bounds,
-both answered `malformed`: nesting deeper than 64 levels, and a signed set
-over 1 MB serialised.
+`canonicalJSON` is the deep-key-sorting canonicaliser exported from
+`AgentTokenManager` (object keys sorted by UTF-16 code unit at every level,
+no whitespace, `undefined` members omitted from objects and rendered `null`
+inside arrays, strings and numbers exactly as `JSON.stringify` renders
+them). The module does not add a third copy; it wraps that one:
+`localEnvelopeSignedBytes` first JSON-round-trips the signed set
+(`JSON.parse(JSON.stringify(...))`), so the sender signs exactly what the
+wire will carry (a `Date` or a `toJSON` object is already a string) and the
+receiver canonicalises what `express.json` parsed. Two bounds, both
+answered `malformed`: nesting deeper than 64 levels (checked BEFORE the
+round-trip, so a hostile body never reaches a recursive serialiser) and a
+signed set over 1 MB of UTF-8.
 
-The prefix is domain separation. The three other preimages signed with the
-same identity key are the relay envelope (begins `{`, `MessageEncryptor.
-canonicalizeEnvelope`), the agent-signature-provenance message (begins
-`asp1\n`) and pair-verify (`threadline-pair-verify-v1`); none can begin with
-`instar-a2a-local-envelope-v1\n`, so a signature made for this route verifies
-nowhere else and vice versa. The signed set covers the whole `message` (id,
-from, to, type, priority, subject, body, threadId, createdAt, resend), the
-transport nonce and timestamp, and the relay chain (both senders set it
-before the POST; it decides a 409). `delivery` and the top-level
-`threadSync` stay unsigned: `delivery` is the receiver's own bookkeeping
-after admission, and `threadSync` is advisory (a symmetry hint the receiver
-cross-checks, never acts on). `schemaVersion` stays `1`: the field is
-additive and a receiver that predates this spec ignores it.
+`transport.nonce` must be a non-empty string of at most 256 characters,
+fresh per POST; both senders build it from a random UUID (122 random bits).
+**A retry is a new envelope:** a new nonce, a new timestamp and a new
+signature, even for the same `message.id`. Re-posting the same signed bytes
+is `replay` once the first copy passed verification (whatever happened to it
+afterwards), so a sender never relies on re-posting; `retryable` in §6 is
+permission to retry the message as a new envelope.
 
-Module: `src/threadline/localEnvelopeSignature.ts` — `localEnvelopeSignedBytes`,
-`signLocalEnvelope(envelope, privateKey)`, `verifyLocalEnvelope(envelope,
-publicKey)`, `lookupRegistryKeyByName`, `verifyLocalRouteEnvelope` (the
-route's whole verdict, including self-discovery), the replay cache, the
-counters, the log line and the degradation reports.
+The prefix is domain separation: the other preimages signed with the identity
+key (the relay envelope, which begins `{`; agent-signature provenance, which
+begins `asp1\n`; pair-verify, `threadline-pair-verify-v1`) cannot begin with
+it, so a signature made for this route verifies nowhere else and vice versa.
+The signed set covers the whole `message` (id, from, to, type, priority,
+subject, body, threadId, createdAt, resend) and every transport field a
+sender sets: the nonce, the timestamp, the relay chain (it decides a 409),
+`originServer` and `originTopicId` (absent members are omitted, as
+`canonicalJSON` omits `undefined`). Unsigned: `delivery` (the receiver's own
+bookkeeping after admission), the top-level `threadSync` (an advisory hint
+the receiver cross-checks and never acts on), and `transport.hmac` /
+`hmacBy` / the cross-machine `signature` fields, which are added after
+signing. `schemaVersion` stays `1`: the field is additive and a receiver
+that predates this spec ignores it.
 
-### 2. Key source: the registry, by name; identity derived from the key
+**Test vector.** A second implementation (Dawn's sender is a separate
+codebase) must reproduce the signed bytes exactly. The unit test file
+carries a fixed vector — a fixed 32-byte private key, a fixed envelope with
+non-ASCII text, a nested object body and an absent `originTopicId`, the
+exact signed bytes as hex and the resulting signature — and the PR report
+quotes it. Numbers and string escapes are whatever ECMAScript
+`JSON.stringify` produces; a sender in another language must match that
+(integers and ordinary strings in practice — the envelope carries no
+floats).
+
+A complete signed envelope on the wire:
+
+```json
+{
+  "schemaVersion": 1,
+  "message": {
+    "id": "…", "from": { "agent": "echo", "session": "…", "machine": "…", "fingerprint": "<32 hex, optional>" },
+    "to": { "agent": "dawn", "session": "best", "machine": "local" },
+    "type": "request", "priority": "medium", "subject": "…", "body": "…",
+    "threadId": "…", "createdAt": "<ISO-8601>"
+  },
+  "transport": { "relayChain": [], "originServer": "…", "nonce": "<string>", "timestamp": "<ISO-8601>" },
+  "delivery": { "phase": "sent", "transitions": [], "attempts": 0 },
+  "signature": "<base64 of 64 bytes>"
+}
+```
+
+Why a bespoke format and not RFC 9421 HTTP Message Signatures or a
+unix-socket peer credential: the signature has to survive outside HTTP (the
+same envelope is parked as a file in the drop directory and checked there),
+and a peer credential identifies a user id, which every agent on the machine
+shares. Signing the raw request bytes instead of a canonical form would
+avoid canonicalisation but could not be re-checked on a drop file, whose
+bytes the sender rewrites (`delivery`, `hmac`).
+
+Module: `src/threadline/localEnvelopeSignature.ts` — the signed bytes, sign,
+verify, the registry key lookup, the first-contact key cache, the verdict,
+the replay cache, the mode resolver, the log line, and ONE process-level
+counter object (the route, `MessageRouter` and drop pickup all write to it;
+`/health` reads it).
+
+### 2. Configuration: dev-gated, dry-run first
+
+One block, read live per request (no restart), the same shape as
+`threadline.localRouteTrust`:
+
+```
+threadline.localRouteSignature: { enabled?: boolean, dryRun?: boolean }
+```
+
+- `enabled` omitted ⇒ the development-agent gate decides: live on a
+  development agent, off on the fleet. Registered in `DEV_GATED_FEATURES`.
+- `dryRun` defaults TRUE; only an explicit `false` leaves it.
+
+| Mode | When | Receiver behaviour |
+|---|---|---|
+| `off` | `enabled` resolves false | The route does not look at `signature`. Today's behaviour, with one exception: a request that carries the requirement header (§4) is refused `not-enforcing`. |
+| `dry-run` | enabled, `dryRun` not `false` | Every envelope is verified (§3–§5) and the verdict is counted and logged (`would-refuse`). Nothing downstream reads the verdict, nothing is refused (except a request carrying the requirement header, §4), and no durable state is written (only the audit log, §9). The in-memory caches (first-contact keys, probe backoff, replay) fill exactly as they would when enforcing and carry across a flip to enforcing, since both modes run the same check. The one observable difference from `off`: a SIGNED envelope from a name with no key on record can wait up to 2.5 s on the first-contact probe (§3). |
+| `enforcing` | enabled, `dryRun: false` | An envelope that fails is refused pre-admission (§6). An envelope that passes hands its PROVEN fingerprint downstream (§4). |
+
+**The config key that turns verification on is
+`threadline.localRouteSignature.enabled: true`, and the one that makes it
+refuse is `threadline.localRouteSignature.dryRun: false`.**
+
+**Senders are not gated.** Both senders always sign when they have an
+identity (§7), on every agent, whatever the mode: the field is additive, an
+old receiver ignores it, and a receiver in dry-run needs signed traffic to
+measure anything. The mode is resolved once per request.
+
+### 3. Key source: the registry, by name; identity derived from the key
 
 The receiver resolves `message.from.agent` (compared lower-cased) through the
-registry to the entries with that name. Each entry must carry a 64-hex
-`publicKey`; entries without one are set aside. Exactly one distinct public
-key must remain: zero → `unknown-sender` (after self-discovery, §3); more
-than one distinct key under the name → `ambiguous-sender`; one key that ALSO
-appears under a different name (a cloned agent home) → `ambiguous-sender`,
-because that key could sign as either name. An entry whose stored
-`fingerprint` field disagrees with `computeFingerprint(publicKey)` is
-`registry-entry-invalid` (stale or hand-edited; a verifying key must never
-be attributed to a fingerprint it does not derive to).
+registry to the entries with that name that carry a 64-hex `publicKey`.
+Exactly one distinct key must remain: zero → `unknown-sender` (after the
+first-contact probe, below); more than one distinct key under the name, or the one
+key also recorded under a different name (a cloned agent home) →
+`ambiguous-sender`.
 
-The entry's public key is the verification key. The **proven fingerprint is
-always `computeFingerprint(publicKey)`** — the stored `fingerprint` field is
-checked for consistency and never consumed. There is no other key source:
-the body's `from.fingerprint` is never used to pick a key.
-
-When the body carries `from.fingerprint`, it must equal the proven
-fingerprint in full (32 hex, compared lower-cased; a prefix is a mismatch).
-A body that names one agent and claims another's fingerprint is refused.
+The entry's public key is the verification key, and the **proven fingerprint
+is always `computeFingerprint(publicKey)`**; the entry's stored `fingerprint`
+field is never read. The body never picks the key. When the body carries
+`from.fingerprint` it must equal the proven fingerprint in full (32 hex,
+lower-cased; a prefix is a mismatch), else `fingerprint-mismatch`.
 
 **What this proves, stated honestly.** The key on record was taken on
 trust-on-first-use from an unauthenticated loopback endpoint at the port the
-AgentRegistry named for that name. The signature therefore proves
-continuity with the process that answered on that port when the key was
-recorded — not identity in any stronger sense. That is the same anchor the
-relay's discovery rests on, and it is the right one within the threat model
-(§What it does not do): the floor closes misattribution by construction (a
-wrong `from`, a stale body fingerprint, a process holding the token but no
-key) and gives every downstream check a value derived from a verified key.
+AgentRegistry named for that name. The signature proves continuity with the
+process that answered there when the key was recorded, not identity in a
+stronger sense. That is the anchor same-machine discovery already rests on.
+It closes misattribution by construction (a wrong `from`, a process holding
+the token but no key) and gives downstream checks a value derived from a
+verified key.
 
-### 3. Self-discovery: the receiver fetches the key it is missing
+**First contact: the receiver fetches the key it is missing, into memory.**
+A receiver that has no key on record for a sender does not wait for someone
+to run `threadline_discover`. When the registry holds no usable key for the
+name, the verifier consults a process-local *first-contact cache* (name →
+public key), and if that is empty too it fills it with one bounded probe,
+then verifies once:
 
-A receiver that has never discovered a sender does not wait for a human to
-run `threadline_discover`. On `unknown-sender` ONLY — no entry under the name
-carries a usable key — the route performs ONE bounded discovery step itself,
-in the request path, then re-verifies once. **The route only ever ADDS a key
-it does not have; it never replaces one.** A `signature-invalid` or
-`fingerprint-mismatch` against a key on record is refused as such and is
-never a trigger: adopting whatever process currently answers on the port
-would let a new process inherit a known principal's standing (Know Your
-Principal). A rotated identity reaches the registry only through an explicit
-`threadline_discover` (the operator's or the agent's deliberate action):
+1. Exactly one `running` AgentRegistry entry must match the name (none →
+   `unknown-sender`; two → `ambiguous-sender`). Only such a name gets a slot
+   in the probe table, so made-up names cost one AgentRegistry read and no
+   state.
+2. `GET http://localhost:<port>/threadline/health`, 2.5 s for the whole
+   exchange. The answer must say `protocol: 'threadline'`, carry a 64-hex
+   `identityPub`, name the same agent (`agent` equals the sender name,
+   lower-cased) and, when it carries `fingerprint`, that must equal
+   `computeFingerprint(identityPub)`. Anything else is a failed probe.
+3. The key goes into the first-contact cache, with one log line
+   (`[relay-agent-signature] first-contact key for <name> fp=<12 hex>`), so
+   a key taken on first contact is always visible. The cache records what
+   the name's registered port ADVERTISED; it is the envelope's signature
+   that then proves the sender holds it. An envelope that does not verify
+   against a cached key is `signature-invalid` and changes nothing: it does
+   not evict the key, does not trigger a probe and does not count against
+   the name, so a forged envelope cannot lock the real sender out. **Nothing is written to
+   `known-agents.json`**: the probe mutates no registry, routing or
+   trust-profile state and cannot race the heartbeat. (When enforcing, the
+   fingerprint proven with that key does feed the current request's trust
+   check and ledger key, §4.)
+4. One probe per name at a time: concurrent requests for the same name await
+   the same probe.
 
-1. Look the sender name up in the AgentRegistry (`listAgents({status:
-   'running'})`). Exactly one running entry must match the name (none → the
-   refusal stands; two → `ambiguous-sender`).
-2. `GET http://localhost:<port>/threadline/health` with a 2.5 s timeout
-   (inside both senders' POST budgets, 10 s and 5 s). The answer must say
-   `protocol: 'threadline'` and carry a 32-byte `identityPub`; anything else
-   fails the step. This is exactly what `discoverLocal` reads, from the same
-   source, so the trust anchor does not move.
-3. Add the entry (name, port, `publicKey`, `fingerprint` =
-   `computeFingerprint(publicKey)`) to the registry — merged by name (a
-   key-less entry under that name is completed, every other entry kept),
-   written atomically. The step re-reads the file first: if an entry with a
-   usable key for the name exists by then (a concurrent discover), nothing
-   is written and that key is used.
-4. Verify the envelope once more against the new key. The verdict of that
-   second pass is final; the step never runs twice for one request.
+The registry always wins: the cache is read only when the registry has no
+usable key for the name, so a later `threadline_discover` supersedes it.
+The "one key under two names" rule covers both sources: a key is
+`ambiguous-sender` if the registry or the cache holds it under any other
+name, checked when a probed key is about to be cached and at every verify.
+A probe whose answer is well-formed but whose key is already held under
+another name is a FAILED probe (not cached, backoff, counts toward the
+five), so a colliding name cannot be probed on every message.
+**The verifier never replaces a key it holds** — not one in the registry and
+not one in the cache. `signature-invalid` and `fingerprint-mismatch` are
+never a trigger to probe: adopting whatever answers on the port today would
+let a new process inherit a known name. How long the pin lasts, stated
+plainly: a registry key lasts until the next `threadline_discover` (which
+re-reads every peer's key from its port); a cached key lasts until this
+process restarts.
 
-Brakes (No Unbounded Loops / Capacity Safety): the total number of probes
-CONVERGES. A probe is attempted only for a name that matches exactly one
-RUNNING AgentRegistry entry (anything else costs one registry read and no
-network), with a backoff that DOUBLES after each failure for that name —
-60 s, 2 min, 4 min, 8 min, 16 min — and at most FIVE failed probes per name
-per process; after the fifth failure the name is closed — the route answers
-`unknown-sender` without probing until the process restarts or the entry
-arrives through `threadline_discover`. So the ceiling is five probes per
-registered running agent per process (the last ~31 minutes after the first),
-not a rate that continues forever. Counted `selfDiscovered`, `selfDiscoveryFailed`, `probeClosed`
-(names closed). When a name closes the receiver files ONE degradation
-report naming the sender — so a peer that is registered but never answers
-is visible to the operator, not just to a counter. The state is in memory
-and per process; a restart resets it, which is the safe direction (one
-fresh ladder of at most five probes per name).
+Brakes: a successful probe ends probing for that name. After a failure the
+name backs off, doubling (60 s, 2, 4, 8, 16 min), at most five failed probes
+per process; then the name is closed until restart or until the key arrives
+through `threadline_discover`, and ONE degradation report names it
+(`Threadline.localRouteSignature`). The probe table holds at most 64 names;
+past that, no probe. A receiver whose peer does not serve
+`/threadline/health` at all (no handshake manager) ends in the five-probe
+close and its one report. Cheap checks run first (`unsigned`, `malformed`,
+`wrong-recipient`, `stale` — no I/O), so unsigned traffic never probes.
 
-`discoverLocal` changes in ONE way: it MERGES into the registry instead of
-replacing the file. An entry for a peer that did not answer during the sweep
-is KEPT (its key stays on record; its status is left as it was), and an
-entry for a peer that did answer is updated — including its key, which is
-the one deliberate re-key path. Without this, a discover run while a peer is
-briefly down would erase its established key, and the add-only self-discovery
-above could then bind that name to whatever process next answered on its port
-(the gate's finding). Entries are never removed by discovery. When a discover
-REPLACES the key of a name already on record, that is logged
-(`[threadline-discover] key changed for <name>`), counted (`discoverKeyChanged`)
-and reported once per name (`Threadline.localRouteSignature`), so a re-key is
-never silent. It still records the new key: explicit discovery is this
-machine's trust-on-first-use anchor (§2), and a re-key that needs a verified
-authorization is the verified pairing spec's job, stated in "What it does
-not do" — this spec narrows the unauthenticated re-key to the ONE deliberate
-path and makes it visible; it does not remove it.
+### 4. Placement, and what reads the verdict
 
-### 4. Placement: after the token check, before anything reads the sender
+The check runs after the bearer-token check and the envelope-shape check, and
+before the relay-chain loop check, the trust check, the content window and
+the ledger commit. Auth stays first: a wrong token answers `401 Invalid or
+missing agent token` whether or not the envelope is signed. The registry file
+is read once per request for this check.
 
-The verification runs after the bearer-token check and the envelope-shape
-check, and before the relay-chain loop check, the trust check, the content
-window and the ledger commit. A refused envelope therefore leaves no ledger
-row, holds no content window, reaches no inbox and is never attributed to a
-thread. Auth stays first: a wrong token answers `401 Invalid or missing agent
-token` whether or not the envelope is signed. Ordering before the loop check
-is for refusal conservation (a loop envelope with a bad signature is refused
-for the signature), not for cost.
+- **dry-run:** nothing downstream changes.
+- **enforcing:** a refused envelope leaves no ledger row, holds no content
+  window, reaches no inbox and is attributed to no thread. For an admitted
+  envelope the proven fingerprint replaces the name-resolved registry
+  fingerprint (`senderRegistryFp`) — the value the local-route trust check
+  and the inbound-id ledger's `registry:` key already consume. The ledger
+  namespace does not change.
+- **both live modes:** the route's success answer gains
+  `signature: { mode, verified: <bool> }`, so a sender holding the token
+  learns from the answer itself whether its envelope was proven and whether
+  the receiver would have refused it otherwise.
 
-The proven fingerprint replaces every body-derived identity downstream, in
-one read of the registry per request (the two existing reads go away):
+**A sender can require the proof.** A request carrying the header
+`X-Instar-Require-Signature: v1` is refused before admission unless this
+receiver is enforcing: in `off` or `dry-run` it answers `401 bad-signature`
+with reason `not-enforcing` (retryable, remedy receiver) and records
+nothing. So a consumer that must never deliver an unproven message (Dawn's
+backup route) sends the header on every POST and gets either a proven
+delivery or a refusal, whatever the receiver's mode did between its health
+read and its send. A receiver that predates this spec ignores the header,
+which is why the consumer first checks that `/threadline/health` carries
+`localEnvelopeSignature` at all (§8). The header check sits right after the
+token check and the envelope-shape check. `not-enforcing` is always a real
+refusal: it counts in `refused` and `byReason` in every mode, and writes an
+audit row when the mode is not `off`. One limit, stated: if the receiver is
+replaced by an older release between the consumer's health read and its
+POST, that release ignores the header and delivers; the consumer sees it in
+the answer (no `signature` block) and switches off. Closing that needs a
+separate endpoint old releases do not have, which this spec does not add.
+Instar's own two senders do not send the header: their messages are meant
+to arrive in every mode.
 
-- the trust check's `registryFingerprint`;
-- the inbound-id ledger key — **promoted to the verified namespace** (the
-  bare fingerprint, the key the relay path uses), because the sender is now
-  proven; a local copy and a relay copy of one message now dedupe against
-  each other, which the ledger spec names as the purpose of proving the
-  local sender;
-- the thread-attribution fingerprint read after the response;
-- the warrants-reply gate's `senderFingerprint` and the ack recorder's
-  `senderFingerprint` (today both receive the body NAME; they receive the
-  proven fingerprint, with the name beside it where a name is displayed).
+### 5. Recipient, freshness, replay
 
-The body's asserted fingerprint is no longer consulted anywhere on this
-route (it has been checked for equality and is otherwise dead).
+- **Recipient.** `message.to.agent` is required and must equal the receiver's
+  `projectName` (lower-cased), else `wrong-recipient`. `to` is inside the
+  signed bytes; without the check a holder of C's token could replay A's
+  envelope for B to C. Both real senders set it.
+- **Freshness.** `transport.timestamp` (signed) must parse as an instant no
+  more than 10 minutes in the past and 2 minutes in the future of the
+  receiver's clock (one machine, one clock), else `stale`.
+- **Replay.** An in-memory cache of `(proven fingerprint, nonce)`, recorded
+  when an envelope passes verification (in both live modes, whatever happens
+  to it downstream), with a 12-minute lifetime (longer than any fresh
+  envelope can live). A second envelope with the same pair is `replay`.
+  Bounds: 512 entries per fingerprint inside 4,096 overall. At either bound
+  the receiver does not evict: that sender (or, at the overall bound, every
+  sender) is `replay-cache-full` until entries age out. That is the bound
+  doing its job, so it is counted (`byReason`) and logged, not reported as a
+  degradation. A sender needs about 0.7 messages a second
+  for twelve minutes to fill its own share, and fills only its own. The
+  cache is per process: an envelope captured in the ten minutes before a
+  restart can be admitted once in the ten minutes after it. Stated, not
+  fixed: a durable write per message to close a minutes-long window is not
+  worth it inside the threat model. No real sender re-POSTs the same nonce
+  (the relay-send fall-through goes over the relay; `MessageRouter` does not
+  retry), so a retry the ledger asked for arrives with a new nonce.
+- **Across machines.** A paired agent has one identity key on every machine,
+  and the replay cache is per machine, so an envelope from A to B is valid
+  at B on each of B's machines for ten minutes — to a caller who also holds
+  that machine's token for B.
 
-### 5. Freshness, replay, recipient
+### 6. Refusal (enforcing only)
 
-- **Recipient.** `message.to.agent` is REQUIRED and must equal the
-  receiver's `projectName` (lower-cased); absent or different →
-  `wrong-recipient`. A signature proves "A wrote this for B" only if B is
-  named inside the signed bytes; without the check (or with the field
-  optional) any holder of C's token could replay A's envelope to C, where it
-  would verify. `to` is inside the signed bytes, so the check is one
-  comparison. Both real senders already set it.
-- **Freshness.** `transport.timestamp` is signed. It must parse as an
-  instant no more than 10 minutes in the past and no more than 2 minutes in
-  the future of the receiver's clock (sender and receiver share one machine
-  clock); otherwise `stale`.
-- **Replay.** The receiver keeps an in-memory cache of
-  `(proven fingerprint, nonce)` with a 12-minute lifetime — longer than any
-  fresh envelope can live, so an entry never expires while its envelope is
-  still admissible — bounded to 4,096 entries. A second envelope with the
-  same pair inside the lifetime is `replay`. At the bound the receiver does
-  not evict silently: it refuses new admissions `replay-cache-full`
-  (retryable, receiver) until entries age out — refusing is the safe
-  direction; 4,096 same-machine sends in twelve minutes is not a real load.
-  Together with the freshness bound this stops a byte-identical re-POST on
-  every agent, including the fleet where the inbound-id ledger is dark and
-  the content window is 60 s. **The one gap, stated:** the cache is
-  per-process. A receiver restart empties it, so an envelope captured in the
-  last ten minutes before a restart can be admitted once in the ten minutes
-  after it; the inbound-id ledger (where on) still labels that copy by id.
-  Persisting the cache would buy a replay window measured in minutes at the
-  cost of a durable write per message; not worth it inside the stated
-  threat model. A legitimate resend from the relay-send fall-through goes
-  over the relay, not this route; a `MessageRouter` send has no retry; so no
-  real sender hits the replay check.
-
-### 6. Failure codes
-
-Every failure is HTTP 401 with the body
+HTTP 401 with
 
 ```
-{ error: "bad-signature", refused: true, retryable: <bool>, remedy: "sender" | "receiver", reason: <reason> }
+{ "error": "bad-signature", "refused": true, "retryable": <bool>, "remedy": "sender" | "receiver", "reason": "<reason>" }
 ```
 
 | `reason` | When | `retryable` | `remedy` |
 |---|---|---|---|
 | `unsigned` | no `signature` field | false | sender |
-| `malformed` | `signature` is not base64 of 64 bytes (or over 128 characters), `transport.nonce` / `transport.timestamp` is not a string, `message.from.agent` is not a non-empty string, or a canonicalisation bound (§1) is exceeded | false | sender |
-| `stale` | `transport.timestamp` is not an instant within ±10 minutes | false | sender |
-| `replay` | the (fingerprint, nonce) pair was seen inside the cache lifetime | false | sender |
-| `replay-cache-full` | the replay cache is at its bound and no entry has aged out | true | receiver |
-| `wrong-recipient` | `message.to.agent` is absent or is not this agent | false | sender |
-| `unknown-sender` | no registry entry with a usable 64-hex key for the name, and self-discovery could not add one (not registered as running, health did not answer, or the name is closed after five failed probes) | true | receiver |
-| `ambiguous-sender` | two distinct keys under the name, the key under two names, or two running AgentRegistry entries with the name | false | receiver |
-| `registry-entry-invalid` | the matching entry's stored `fingerprint` disagrees with `computeFingerprint(publicKey)` (stale or hand-edited); never repaired by the route — a re-discover is the remedy | true | receiver |
-| `registry-unavailable` | the registry file exists but is unreadable, unparseable or over the 1 MB bound | true | receiver |
+| `malformed` | `signature` is not base64 of 64 bytes, `transport.nonce` is not a non-empty string of at most 256 characters, `transport.timestamp` is not a string, `message.from.agent` is not a non-empty string, or a canonicalisation bound is exceeded | false | sender |
+| `stale` | timestamp outside −10 min / +2 min | false | sender |
+| `wrong-recipient` | `message.to.agent` absent or not this agent | false | sender |
+| `unknown-sender` | no usable key on record for the name and the first-contact probe could not fetch one | true | receiver |
+| `ambiguous-sender` | two keys under the name, the key under two names, or two running AgentRegistry entries with the name | true | receiver |
+| `registry-unavailable` | the registry file exists but is unreadable, unparseable or over 1 MB | true | receiver |
 | `fingerprint-mismatch` | the body's `from.fingerprint` differs from the proven fingerprint | false | sender |
-| `signature-invalid` | Ed25519 verification fails against the key on record (a sender signing with a key other than the one recorded — including a rotated identity — is refused, never re-keyed by the route) | false | sender |
+| `signature-invalid` | Ed25519 verification fails against the key on record | false | sender |
+| `replay` | the (fingerprint, nonce) pair was already admitted | false | sender |
+| `replay-cache-full` | the replay cache is at a bound (§5) | true | receiver |
+| `not-enforcing` | the request carries `X-Instar-Require-Signature: v1` and this receiver is `off` or `dry-run` (answered in every mode, the one refusal that does not need the check enabled) | true | receiver |
 
-`retryable` means: a later identical envelope may succeed because the
-RECEIVER's state can change (its registry, its view of the peer); `false`
-means the sender must change something. `remedy` names which side. The body
-carries no key material and no registry contents; the five receiver-side
-reasons do reveal whether the receiver knows a name, which any token holder
-could learn from the AgentRegistry anyway.
+`retryable` means the same message, sent as a new envelope, may succeed
+later because the receiver's state can change. The body carries no key material and no registry
+contents. A 401 from this route is already in the backup-routes
+non-admission set, so a relay-send fall-through after it is unmarked
+(nothing was recorded) and the message takes the relay, judged there.
 
-### 7. The senders sign, and a refusal is terminal on every sender path
+If the verifier itself throws: dry-run counts `errors` and delivers; enforcing
+answers `503 { error: "signature-check-unavailable", refused: true,
+retryable: true }`. A 503 is not in the non-admission set, so that
+fall-through copy is marked as a resend; over-marking is the direction the
+backup-routes spec calls safe.
 
-- **The relay-send name path** signs with the identity it already reads for
-  the sender fingerprint (`IdentityManager.get()`, a raw 32-byte private
-  key). When no identity resolves (none on disk, or locked-encrypted), the
-  envelope is sent unsigned and the receiver refuses it `unsigned`; the
-  sender's existing fall-through then takes the relay, which also needs an
-  identity, so such an agent gains and loses nothing. A 401 is non-admission
-  (unchanged), so the fall-through is unmarked.
-- **`MessageRouter`** takes an optional `envelopeSigner` in its config
-  (`(envelope) => string | null`); `server.ts` wires one over the same
-  `IdentityManager` instance the server already holds (the instance caches
-  the loaded identity, so signing is one Ed25519 operation per send, and an
-  identity provisioned after boot is picked up on the next `get()`).
-  `relayToAgent` signs immediately before the POST, after the relay chain is
-  final. **The signer never rewrites `from`, and never lends this agent's
-  signature to another name:** `from.agent` must equal the router's
-  `localAgent` (lower-cased) or the envelope is sent unsigned, counted
-  `signRefusedForeignFrom`. On this route `from` means the signing agent;
-  `POST /messages/send` with a foreign `from` to a same-machine target is
-  refused by the receiver as `unsigned` — the misattribution the floor
-  exists to stop.
-- **A refusal does not drop.** `relayToAgent` returns a classified outcome:
-  `accepted`, `refused` (any 4xx: the receiver answered and said no — the
-  body's `error`/`reason` are recorded on the envelope's delivery
-  transition and in one log line, and the send FAILS, phase `failed`) or
-  `unreachable` (network error, timeout, 5xx). Only `unreachable` and
-  "agent not registered" write to the drop directory. A refused envelope
-  never reaches the drop directory, so a refusal cannot be laundered into a
-  later unsigned delivery.
-- **The drop directory verifies the same signature.** An envelope that does
-  reach the drop directory was signed at send time (the signature rides
-  with it; the drop HMAC covers the same fields and is unchanged).
-  `pickupDroppedMessages` verifies the signature with
-  `verifyLocalRouteEnvelope` against the receiver's registry (same reasons,
-  same self-discovery, same proven fingerprint) before saving, and rejects
-  an unsigned or unverifiable drop with the reason in its rejection list —
-  the same floor on the offline path. Cost, stated: drops written by a
-  sender from before this release carry no signature and are rejected at the
-  first boot after the update (counted and logged; the sender's send already
-  reported them as parked). The drop pickup is one boot-time pass, as today;
-  bounding the drop directory's growth is outside this change.
+### 7. The senders sign, and a refusal is terminal
 
-A sender always signs, whatever the receiver's version: an older receiver
-ignores the field, so senders and receivers update in any order.
+- **One signer.** `createAgentLocalEnvelopeSigner(localAgent, stateDir)` in
+  the module builds the signer over the Threadline identity
+  (`src/threadline/client/IdentityManager`, constructed with the agent's
+  state directory — NOT the machine identity, which is a different key),
+  and reads the identity at each sign, because `MessageRouter` is built
+  before the Threadline bootstrap that may first create it.
+  `server.ts`, the relay-send name path and the tests all use it.
+- **The relay-send name path** signs immediately before the POST.
+- **`MessageRouter`** takes an optional `envelopeSigner` in its config.
+  `routeCrossAgentLocal` signs ONCE, before it looks the target up — so the
+  envelope is signed whether it is then POSTed or goes straight to the drop
+  directory (target not registered, token missing). `dropMessage` changes
+  only `delivery` and `transport.hmac` / `hmacBy`, all outside the signed
+  set. The signer never rewrites `from` and never lends this agent's
+  signature to another name: `from.agent` must equal the router's
+  `localAgent` (lower-cased) or the envelope is sent unsigned (counted
+  `signRefusedForeignFrom`).
+- **No identity** (none on disk, or locked): the envelope goes unsigned,
+  counted `signFailures`, with one degradation report per process — an
+  enforcing peer will refuse everything this agent sends locally.
+- **An explicit refusal does not drop.** Today `relayToAgent` returns
+  `response.ok`, and any `false` writes the envelope to the drop directory,
+  where the target ingests it at its next boot with no check — a refusal
+  laundered into a delivery. `relayToAgent` now returns `accepted`,
+  `refused` (ANY status whose JSON body says `refused: true`: this route's
+  401 and 503, the local-route trust 403 and 503) or `unreachable`
+  (everything else, exactly as today — including an answered error without
+  that flag, such as the token 401 or a 500). A `refused` send fails: phase
+  `failed`, the receiver's `error` / `reason` / `retryable` on the delivery
+  transition, one log line, counted `localRefused`, nothing in the drop
+  directory. That holds for retryable refusals too: the receiver answered
+  and said no; the caller sees the failure and can send again. Only
+  receivers with an enforcing check send `refused: true`, so nothing changes
+  for anyone else.
+- **Drop pickup applies the signature check, after its own.** The existing
+  checks run first and delete as today (bad structure, an id already in the
+  store, a missing or invalid HMAC). Then, by mode — `server.ts` resolves it
+  from config and passes it with the state directory and the agent name:
+  - `off`: as today.
+  - `dry-run`: each drop is verified and counted (`dropsVerified`, or
+    `wouldRefuse` + `byReason`), then ingested as today.
+  - `enforcing`: a drop is ingested only if its signature verifies — the
+    route's rule without the freshness bound and the replay cache (a drop is
+    old by nature; pickup already skips an id in the store). An unproven
+    drop is left in place, counted `dropsHeld`; the check never deletes a
+    drop on its first look.
+- **Two passes per boot, the second one able to fetch keys.** The boot pass
+  runs before any peer is listening (after a reboot every agent is `running`
+  in the AgentRegistry and none answers yet), so it verifies against the
+  registry only and never probes: a boot-time probe would fail for a reason
+  that says nothing about the peer and would start that peer's backoff
+  against its live traffic. If the boot pass holds anything, ONE more pass
+  runs five minutes later, with the first-contact probe allowed. Only that
+  second pass expires: a drop still unproven and older than 7 days (file
+  modification time) is deleted, counted `dropsExpired`. The second pass
+  files one degradation report when it leaves anything held or expires
+  anything: the counts and up to 16 sender names, each reduced as in §9. So
+  a held drop is reported at most once per boot — including after a long
+  outage, when it is already days old the first time this agent sees it.
+  A verifier error at pickup counts `errors`, holds the drop when enforcing
+  and ingests it in dry-run; it never reaches pickup's deleting catch.
+  Deletion goes through the existing `unlinkSafe` (`SafeFsExecutor`). The
+  second pass is the same pickup function on an `unref`'d timer that is
+  cleared at shutdown. Nothing is retried after it until the next boot. The
+  registry is read once per pass. The cost, stated: the registry is filled
+  only by `threadline_discover`, so on an ordinary restart most senders are
+  known only through first contact, and an enforcing receiver ingests their
+  parked messages five minutes after boot, not at boot. In dry-run no second
+  pass runs, so a boot-pass `unknown-sender` count for drops does not predict
+  what enforcing would hold.
 
 ### 8. Capability advertisement
 
-The unauthenticated `GET /threadline/health` (the endpoint discovery already
-reads) gains `localEnvelopeSignature: "v1"`. A same-machine consumer — Dawn's
-backup route in the-portal — can key its switch-on on that field instead of
-inferring it from a 401 that is shared with a token failure.
+The unauthenticated `GET /threadline/health` gains
 
-### 9. Counters, logging, degradation
+```
+"localEnvelopeSignature": { "version": "v1", "mode": "off" | "dry-run" | "enforcing" }
+```
+
+`ThreadlineEndpointsConfig` gains an optional mode callback, passed where
+the routes build the endpoints; an agent with no handshake manager mounts no
+`/threadline/health` and so advertises nothing (a consumer treats that as
+`off`).
+
+A same-machine consumer (Dawn's backup route) reads the field's presence as
+"this receiver understands the requirement header" and `mode ===
+"enforcing"` as the hint to switch on, then sends
+`X-Instar-Require-Signature: v1` on every POST (§4), which makes the
+guarantee per request; the token-authenticated answer also carries
+`signature.mode` — the health endpoint is
+served to anyone who can reach the port and the mode can change between the
+read and the send. The mode is not a secret; on a mesh-bound agent the
+health endpoint shows it to LAN and tailnet peers without a token.
+
+### 9. Counters and logging
 
 In memory, per machine, on the authed `/health` under
-`threadline.localRouteSignature`:
+`threadline.localRouteSignature`: `mode`; receiver — `verified`,
+`verifiedBySender` (name → count, at most 64 names), `wouldRefuse`,
+`refused`, `byReason` (the twelve reasons; would-refuse and refused share
+it, the mode says which), `errors`, `probed`, `probeFailed`, `probeClosed`,
+`firstContactKeys`, `replayCacheSize`, `dropsVerified`, `dropsHeld`,
+`dropsExpired`; sender — `signerAvailable` (evaluated at read time),
+`signed`, `signFailures`, `signRefusedForeignFrom`, `localRefused`; and
+`auditWriteFailures`. The
+counters are one process-level object in the module, because the route,
+`MessageRouter` and boot-time drop pickup all write to it. The block also
+carries `since` (when this process started counting).
 
-- receiver: `verified`, `verifiedBySender` (name → count, bounded to 64
-  names), `lastVerifiedAt`, `refused`, `refusedByReason` keyed on the twelve
-  reasons, `recentRefusals` (the bounded ring, below), `selfDiscovered`,
-  `selfDiscoveryFailed`, `probeClosed`, `discoverKeyChanged`, `replayCacheSize`;
-- sender: `signerAvailable` (evaluated at read time: `IdentityManager.get()
-  !== null`), `signed`, `signFailures`, `signRefusedForeignFrom`,
-  `lastSignedAt`, `localRefused` (the `MessageRouter` path's refusals by
-  reason).
+The counters do not survive a restart, a development agent restarts on
+every update, and the server log is cut to its last megabyte at boot (a few
+hours on Echo). So the rollout evidence has its own carrier: while the mode
+is not `off`, every verdict — route and drop pickup, pass and non-pass —
+appends one row to `{stateDir}/logs/relay-agent-signature.jsonl`:
 
-`verified` alone measures traffic, not the floor: a route that admitted
-everything would show the same rising count. The state the floor claims is
-read from `refusedByReason` (every refusal explained) and from
-`verifiedBySender` — a live same-machine peer with a zero there while it is
-sending is the alarm. Not merged across machines (`?scope=pool` leaves this
-block per machine; a same-machine route has nothing to merge).
+```
+{ "ts": "<ISO>", "source": "route" | "drop", "mode": "dry-run" | "enforcing", "outcome": "verified" | "would-refuse" | "refused" | "held" | "expired", "from": "<reduced name>", "reason": "<reason, when not verified>" }
+```
 
-One server-log line per refusal, rate-limited to one per (name, reason)
-per minute so a token holder cannot flood the log at zero cost:
-`[relay-agent-signature] refuse from=<name> reason=<reason>`, the name
-reduced to printable ASCII and cut to 48 characters. No message text, no key
-material. The counters are not rate-limited, and neither is the trace:
-every refusal — including one whose log line was suppressed — lands in a
-bounded in-memory ring (`recentRefusals`, last 200: time, name, reason,
-whether the log line was written), served in the same `/health` block, so a
-refusal that the log did not print is still a recorded decision, never a
-counter increment with no row behind it. The 401 body itself is the
-refusal's primary record to the caller.
+Metadata only (no message text, no key, no nonce), mode 0600 (re-applied
+after each rotation, because the rotation helper rewrites the file at the
+default mode), appended with the existing `maybeRotateJsonl` bound (2 MB,
+keep the newer half — about 6,000 rows), never throwing into the verdict. A
+verifier error writes a row too (`reason: "error"`). A failed append is
+counted (`auditWriteFailures` on `/health`).
 
-Degradation reports (`DegradationReporter`, feature
-`Threadline.localRouteSignature`, each deduped as stated): one per
-`registry-unavailable` episode (cleared when a later read succeeds); one per
-sender name when its probe ladder closes (the fifth failed probe); one per
-name when an explicit discover replaces its key. These ride
-the existing degradation digest; the spec adds no notice source of its own,
-so there is no first-detection escalation to gate — the self-discovery step
-IS the heal, and every report follows five attempted heals.
+A 24-hour reading is a count of rows whose `ts` falls in the window. The
+reading is UNKNOWN, and blocks the flip, when the file's oldest row is newer
+than the start of the window (sustained traffic above roughly four verdicts
+a minute rotates a day out of the file) or when `auditWriteFailures` is not
+zero. Rows are only written while the agent is up and the mode is not
+`off`, so "no bad row" alone could pass on silence; the per-peer floor of
+20 `verified` rows in the same window is what makes the zero-criteria
+mean something. This is the one file the check writes; it is an audit log, not state,
+and nothing reads it back at runtime.
+
+One server-log line per non-passing verdict, rate-limited to one per (name,
+reason) per minute: `[relay-agent-signature] would-refuse|refuse from=<name>
+reason=<reason>`, the name reduced to printable ASCII and cut to 48
+characters. The limiter is keyed on that reduced name and holds at most 256
+keys (past that, lines share one bucket). No message text, no key material.
+Counters are never rate-limited.
 
 ## Frontloaded Decisions
 
-1. **Signed set and prefix** — `message` + `transport.{nonce,timestamp,relayChain}`
-   under `instar-a2a-local-envelope-v1\n`; `delivery` and `threadSync`
-   unsigned, with their effects named (§1).
-2. **Canonicalisation** — the existing `AgentTokenManager.canonicalJSON`,
-   exported, with the rules and the two bounds listed in §1; signature is
-   base64, ≤ 128 characters.
-3. **Key source** — the registry entry for the NAME; proven fingerprint =
-   `computeFingerprint(publicKey)`, never the stored field; ambiguity = two
-   keys under a name or one key under two names (§2).
-4. **Self-discovery in the request path, add-only** — one bounded step on
-   `unknown-sender` only; a key on record is never replaced by the route;
-   doubling backoff 60 s → 16 min, five failed probes per name per process,
-   then closed and reported (§3). `discoverLocal` merges instead of
-   replacing, so an offline peer's key is never erased by a sweep.
-5. **Placement and downstream** — before the loop check; the proven
-   fingerprint feeds the trust check, the ledger (verified namespace), the
-   thread attribution, the warrants gate and the ack recorder; one registry
-   read per request (§4).
-6. **Recipient, freshness, replay** — `to.agent` required and must be this agent (`wrong-recipient`); −10 min / +2 min;
-   a 12-minute, 4,096-entry nonce cache that refuses at its bound instead of
-   evicting; per-process, restart gap stated (§5).
-7. **Twelve reasons under one `401 bad-signature`**, with `retryable` and
-   `remedy` per row (§6).
-8. **Signer never rewrites or lends `from`** — a foreign `from.agent` is sent
-   unsigned and refused (§7).
-9. **A refusal is terminal on the `MessageRouter` path** — 4xx never drops;
-   the drop directory verifies the same signature on pickup; pre-release
-   unsigned drops are rejected once, counted (§7).
-10. **Capability advertisement** on the unauthenticated threadline health
-    (§8).
-11. **Live, no flag** — a security floor; the ladder is evidence stages on
-    one release, with the operator's acceptance of the mixed-version cost
-    recorded in the frontmatter directive (§Rollout, §Maturation plan).
+1. **Signed set, prefix, encoding** — `message` +
+   `transport.{nonce,timestamp,relayChain,originServer,originTopicId}` under
+   `instar-a2a-local-envelope-v1\n`; the `AgentTokenManager.canonicalJSON`
+   export behind a bounded JSON round-trip; base64 in a top-level
+   `signature`; non-empty nonce; a fixed test vector in the unit tests (§1).
+2. **Gate** — `threadline.localRouteSignature.{enabled,dryRun}`, dev-gated,
+   dry-run default, read live, resolved once per request; three modes (§2).
+   Senders always sign.
+3. **Key source** — the registry entry for the name; proven fingerprint
+   derived from the key; ambiguity rules (§3).
+4. **First contact** — a probe into a process-local cache, never a registry
+   write; the answer must name the agent; only an absent, ill-formed or
+   colliding answer counts as a failed probe, never a bad signature; key uniqueness across registry and
+   cache; single-flight; five-probe doubling ladder, 64 names; in both live
+   modes and in the second drop-pickup pass, never the boot pass (§3, §7).
+5. **Placement and downstream** — before the loop check; enforcing replaces
+   `senderRegistryFp` with the proven fingerprint; the ledger namespace is
+   unchanged; the success answer carries `signature: { mode, verified }` (§4).
+6. **Recipient, freshness, replay** — required `to.agent`; −10 / +2 min;
+   nonce recorded at verification; 12-minute cache, 512 per sender inside
+   4,096, refuses at a bound (counted, not a degradation) (§5).
+7. **Twelve reasons under one `401 bad-signature`** (eleven verdicts and
+   `not-enforcing` for the requirement header), `retryable` + `remedy`
+   per row; a throwing verifier is a retryable 503 when enforcing (§6).
+8. **`refused: true` is terminal on the `MessageRouter` path at any status,
+   retryable or not**; any other answered error drops as today;
+   `routeCrossAgentLocal` signs before the POST-or-drop branch; one signer
+   factory over the Threadline identity (§7).
+9. **Drop pickup** — existing checks first; enforcing holds every unproven
+   drop; a boot pass without probes and one second pass five minutes later
+   with them; only the second pass expires, at 7 days (§7).
+10. **Advertisement and requirement** — `localEnvelopeSignature: { version,
+    mode }` on the unauthenticated threadline health; a sender that needs
+    the proof sends `X-Instar-Require-Signature: v1` and is refused
+    `not-enforcing` otherwise (§4, §8).
+11. **Counters and evidence** — one process-level counter object with
+    `since`; one metadata-only row per verdict in
+    `logs/relay-agent-signature.jsonl` as the evidence that survives
+    restarts; an uncovered window reads as unknown (§9).
+12. **This build ends with Echo in dry-run.** The flip to enforcing on Echo
+    is Echo's to make on the dev-agent-live numbers, tracked as ACT-074
+    (Maturation plan).
 
 ## Open questions
 
@@ -476,183 +631,198 @@ IS the heal, and every report follows five attempted heals.
 
 ## What it does not do
 
-- It does not bound the drop directory's growth or add a timer to drop
-  pickup; pickup stays a boot-time pass. A `MessageRouter` sender whose
-  target is unreachable parks envelopes as today, now signed.
-- It does not make the presence heartbeat refresh keys; only
-  `threadline_discover` (merge, §3) and the add-only self-discovery write
-  keys.
-- It does not prune the registry. Entries are upserted by name and never
-  removed; at ~480 bytes each the 1 MB bound
-  is ~2,000 entries, far from today's three. Past the bound every sender is
-  `registry-unavailable` (one degradation report), never a silent cliff.
+- It does not enforce on the fleet, or anywhere, until someone sets
+  `dryRun: false`. Until then the route proves nothing to a consumer, and
+  the advertisement says so (`mode`).
+- It does not give the drop directory the local-route trust check. Pickup
+  ingests a parked envelope without it today, so a sender the trust check
+  would refuse online is admitted after a receiver outage. That is a fault
+  of the foundation this spec builds on, found in its review; so is
+  `dropMessage` joining an unsanitised `to.agent` into a path. (recorded on ACT-064)
+- It does not tell the sender what happened to a parked message. This is
+  this spec's own cost, not the foundation's: today every valid drop is
+  ingested, and enforcing pickup creates two new outcomes — held, and
+  expired after 7 days — while the sender's store still says `queued`. The
+  receiver reports them (§7); the sender learns nothing. (recorded on ACT-064)
+- It does not carry the proven fingerprint to the thread-attribution read,
+  the warrants-reply gate or the ack recorder (they keep today's inputs),
+  does not promote a proven local sender into the inbound-id ledger's
+  verified namespace, and does not change `discoverLocal`, which still
+  replaces every recorded key on any `threadline_discover`. (recorded on ACT-072)
 - It does not re-key a peer. A same-machine peer that rotates its identity
-  is refused `signature-invalid` on this route until `threadline_discover`
-  records the new key; its messages take the relay meanwhile.
-- It does not cover `/a2a/inbox`, the other same-machine transport, which
-  has its own accept boundary (`a2a-inbox-accept-boundary.md`).
-- It does not defend against a process running as the same user. Such a
-  process can read every agent's identity file on the machine and sign as
-  any of them. The floor closes misattribution by construction (a bug, a
-  stale registry, a wrong `from` field, a token holder with no key) and gives
-  downstream checks a proven identity; it is not an OS boundary.
-- It does not make the key on record stronger than trust-on-first-use over
-  loopback (§2): an explicit `threadline_discover` still records whatever
-  key the registered port answers with, including a replacement for a name
-  already on record (now logged, counted and reported, never silent). The
-  standards gate flags this as a Know-Your-Principal exposure, and that is
-  accurate; closing it needs a verified re-key authorization, which is the
-  verified pairing spec's job (`secure-a2a-verified-pairing.md`), not a
-  change this route can make alone. What this spec does is confine the
-  unauthenticated re-key to that one deliberate path — the request path can
-  only add, never replace.
+  is `signature-invalid` until `threadline_discover` records the new key;
+  when enforcing, its relay-send messages take the relay meanwhile and its
+  `MessageRouter` sends fail until then (that path has no relay fallback;
+  the caller sends again after the fix).
+- It does not bound the drop directory beyond the 7-day expiry of held
+  drops, and adds no recurring timer to pickup (one second pass per boot).
+- It does not cover `/a2a/inbox`, which has its own accept boundary
+  (`a2a-inbox-accept-boundary.md`).
+- It does not defend against a process running as the same user, which can
+  read every agent's identity file and sign as any of them. It is not an OS
+  boundary, and the key on record is no stronger than trust-on-first-use
+  over loopback; a verified re-key is the verified pairing spec's job
+  (`secure-a2a-verified-pairing.md`).
 
 ## Decision points touched
 
 | Decision point | Class | Floor + arbiter |
 |---|---|---|
-| Admit or refuse a local-route envelope by signature | invariant | Admitted only when the Ed25519 signature verifies against the registry key for the body's sender name, the signed `to.agent` names this agent, the timestamp is fresh, the nonce is unseen and any body fingerprint equals the proven fingerprint. No mode, no override, no flag. |
-| Which key verifies | invariant | The registry entry for the sender name, exactly one distinct 64-hex public key, not also held under another name. Never a key from the body. |
-| What downstream reads as the sender | invariant | `computeFingerprint(verifyingPublicKey)`. Every consumer takes it in place of the body-derived value. |
-| Whether to self-discover a missing key | invariant | Deterministic: only when no usable key is on record for the name, exactly one running AgentRegistry entry with the name, one loopback health read, one re-verify, doubling backoff from one minute, five failures per name per process. A key on record is never replaced. No judgment call; the anchor is the one discovery already uses. |
-| What a `MessageRouter` sender does with a refusal | invariant | A 4xx is terminal (`failed`, reason recorded); only unreachability drops. |
-| Whether a dropped envelope is ingested | invariant | Only when its signature verifies under the same rule as the route. |
+| Refuse a request that requires the proof when not enforcing | invariant | Header present and mode is not `enforcing` → 401 `not-enforcing`, before admission. No judgment. |
+| Admit or refuse a local-route envelope by signature (enforcing) | invariant | Deterministic: the Ed25519 signature verifies against the one registry key for the sender name, the signed `to.agent` names this agent, the timestamp is fresh, the nonce is unseen, any body fingerprint equals the proven one. No judgment among competing signals: a signature verifies or it does not. |
+| Which mode applies | invariant | Config only: the development-agent gate for `enabled`, an explicit `false` for `dryRun`. |
+| Which key verifies | invariant | The registry entry for the sender name, exactly one distinct 64-hex key, not held under another name. Never a key from the body. |
+| Whether to probe for a missing key | invariant | Only when neither the registry nor the cache holds a key for the name, exactly one running AgentRegistry entry, one loopback read whose answer names the agent, the five-probe ladder. A held key is never replaced. |
+| What a `MessageRouter` sender does with `refused: true` | invariant | Terminal (`failed`, reason recorded) at any status; only an outcome classified `unreachable` drops (no answer, or an answered error without the flag, as today). |
+| Whether a dropped envelope is ingested (enforcing) | invariant | Only when its signature verifies; otherwise held in place, deleted by the second pass once older than 7 days. |
 
 ## Multi-machine posture
 
-Three surfaces, each with its own posture:
+- **The signing identity is unified.** On a paired agent the identity key is
+  carried to every machine by the pairing exchange, so the key that signs on
+  machine A signs on machine B. Nothing here copies or replicates it.
+- **The registry entry, the first-contact cache, the replay cache, the
+  probe table, the counters and held drops are machine-local.** The route is
+  a same-machine route: each of these describes processes and files on this
+  host.
+- machine-local-justification: hardware-bound-resource impossible-because="the name-to-port binding, the per-machine agent token, the drop directory and the in-memory caches describe processes and files on one host and cannot be served from another machine" permanence=permanent
+- **The config block is per machine**, like `localRouteTrust`. Two machines
+  of one agent may be in different modes; each advertises its own `mode`,
+  and a same-machine consumer reads the machine it is on.
+- Nothing here produces a notice, a URL or durable state that could
+  double-fire or strand on a topic transfer.
 
-- **The signing identity is unified.** On a paired agent the identity key
-  is carried to every machine by the pairing exchange (`IdentityManager`
-  refuses to mint a second one), so the key that signs on machine A is the
-  key that signs on machine B. Nothing in this spec copies or replicates it.
-- **The registry entry is machine-local.** Its port and liveness are a
-  binding to a process on this host, and the key fact in it was taken from
-  that process over this host's loopback. The same-machine route and the
-  self-discovery step read the registry of the machine they run on.
-- machine-local-justification: physical-credential-locality impossible-because="a loopback port binding, and the per-agent token file that gates it, exist only on the host that owns the process; no vault or replication can make host A's loopback reachable from host B" permanence=permanent
-- A unified name→key source (the identity is already unified) would let a
-  machine verify a peer it has never discovered locally; that would widen
-  the anchor beyond loopback and is deliberately not part of this change.
-- **Counters and the replay cache are per-machine operational state**, not
-  merged by `?scope=pool`. Nothing here produces a notice, a URL or durable
-  state that could double-fire or strand on a topic transfer; a refusal on
-  one machine says nothing about another.
+## Verify the State, Not Its Symbol
 
-The route is token-gated and loopback- or mesh-bound (mesh agents bind the
-Tailscale/LAN interfaces); the signature check is the same on both.
+| Symbol | State it claims | Corroboration | When unmeasurable |
+|---|---|---|---|
+| A valid signature under the key held for the name | The envelope was written by the holder of the key recorded for that name, for this agent, in the last ten minutes | The key is the receiver's own record (registry, else a probe whose answer named the agent), never the body's; `to` and the timestamp are inside the signed bytes; the nonce cache | Registry unreadable → `registry-unavailable`; verifier throws → dry-run delivers and counts `errors`, enforcing refuses retryable (a relay-send falls through to the relay; a `MessageRouter` send fails and the caller sends again) |
+| `mode: "enforcing"` on the health endpoint | This receiver refuses unproven envelopes | The authenticated answer to the consumer's own POST carries `signature.mode`, resolved for that request | Field absent → the receiver predates this spec; a consumer treats absent as `off` |
+| `verified` rows in the audit log over 24 hours | Signed traffic from that peer was checked and passed in that window | Each row is written when the verdict is made and carries its own time; `signed` on the sender counts the same messages from the other end | The file's oldest row is newer than the window start → unknown, blocks the flip. Feature off → no rows, and `/health` reports `mode: "off"` |
+| A key in the first-contact cache | The named agent's registered port advertises that key | The answer named the agent and its fingerprint agreed; the key is not held under another name; the log line records it. Holding the key is proven per envelope, by the signature | Probe fails → `unknown-sender`, backoff, at most five tries, one report |
+| `signerAvailable: true` | This agent's local sends leave signed | `signed` rising with sends; `signFailures` and `signRefusedForeignFrom` count the ones that did not | No identity → `false`, one degradation report |
+| The mode drop pickup used | Drops were checked under the advertised mode | Each pass resolves the mode when it runs and logs it; the advertised mode is live per request | A flip after the second pass applies to pickup at the next boot |
 
-## Rollout
+## Maturation plan
 
-Live, no flag, on every agent from the release that carries it. A security
-floor that ships dark guards nothing, and the route's consumers (Dawn's
-route among them) need the proof to be unconditional to rely on it. The
-operator accepted this in the directive recorded in the frontmatter. What it
-costs, stated:
+- **test-agent-live:** the e2e tier (two real servers booted the production
+  way): dry-run delivers an unsigned envelope and counts it; enforcing
+  refuses it with the 401; the production sender delivers signed; a receiver
+  with no key on record probes and delivers.
+- **dev-agent-live:** this release puts Echo in dry-run. After 24 hours with
+  live same-machine traffic, read from `logs/relay-agent-signature.jsonl`
+  (rows in the window; an uncovered window is unknown and blocks): at least
+  20 `verified` rows for each peer that will be enforced against, no
+  `signature-invalid` / `fingerprint-mismatch` row from a known peer, and no
+  `unsigned` row in those 24 hours — or
+  each remaining unsigned sender named in the ACT-074 record as accepted
+  (enforcing applies to every sender, so an unsigned one moves to the relay
+  or fails). This is a precondition of the flip, not advice. Dawn's
+  sender is a separate codebase (the-portal): her route signs with the wire
+  format in §1 before Echo enforces, or her messages show as `unsigned`.
+  Then Echo sets `dryRun: false` on itself (its own inbound route; the relay
+  still carries anything refused) and Dawn's backup route switches on
+  against `mode: "enforcing"`.
+- **fleet:** `off`. A later release turns the fleet default to dry-run and
+  then enforcing, after a week of Echo enforcing with no degradation report
+  from this feature. That is its own change with its own review.
+- **graduation criterion:** the dev-agent-live numbers above for the Echo
+  flip; one clean week of enforcing on Echo for the fleet decision.
+- **dark-window:** the fleet stays `off` until that decision. A dark feature
+  guards nothing: this spec claims the floor only where `mode` reads
+  `enforcing`. The dev-agent-live review, the Echo flip and the fleet
+  decision are one tracked action, owned by Echo, reviewed first on the day
+  after this release reaches Echo; where that action's own text differs from
+  this section, this section governs. (recorded on ACT-074)
 
-- **A mixed-version machine during an update.** Agents on one host update
-  independently (the auto-updater ticks every 30 minutes per agent server,
-  plus restart dampening), so an updated receiver can face an older
-  sender's unsigned envelope for up to one updater interval; an agent that
-  does not auto-update (running from source, or pinned) stays unsigned until
-  it is updated by hand. For a relay-send sender the message takes the relay
-  (judged there under the relay's rules). For a `MessageRouter` sender the
-  send fails, is logged with `unsigned`, and is NOT parked — the caller sees
-  the failure. The window closes when the sender updates.
-- **A receiver that has never discovered the sender** self-discovers on
-  first contact (§3). The standing `unknown-sender` cases are a peer the
-  AgentRegistry does not list as running, one whose health does not answer,
-  or one whose five probes are used up — and the last is reported, not just
-  counted. A peer that rotated its identity is refused `signature-invalid`
-  until someone re-discovers it deliberately.
+**Mixed versions.** Senders sign whatever the receiver's version, and a
+receiver only refuses when someone has set `dryRun: false`, so agents update
+in any order. Against an ENFORCING receiver, a sender on an older release
+does not sign: its relay-send messages take the relay; its `MessageRouter`
+sends get the 401, which the old sender treats as an outage and parks in the
+drop directory, where the enforcing receiver holds it (not ingested, not
+deleted) for 7 days. That sender's store says `queued` throughout. The
+dev-agent-live `unsigned` count is the check for this before any flip.
 
 ## Rollback
 
-None in configuration: a floor with an off switch is not a floor. Rolling
-back is reverting the release. The only durable write is the self-discovery
-upsert into the registry, which is the same shape a discover writes and
-needs no repair.
+`threadline.localRouteSignature.dryRun: true` (or removing the key) stops
+refusing at the next request; `enabled: false` stops verifying. No durable
+state to repair: the check writes only its audit log, and a held drop is
+ingested at the next boot once the mode is no longer enforcing. Reverting the release removes the sender signing too, which an
+enforcing receiver on a newer release would then refuse as `unsigned` —
+set receivers back to dry-run first.
 
 ## Migration parity
 
-- No config field is added. Nothing to migrate.
-- CLAUDE.md: one section "A2A local-route signed envelope" in the template
-  and in `migrateClaudeMd` (sniff key `A2A local-route signed envelope`),
-  listed among the framework-shadowed sections (a Codex or Gemini agent must
-  know the 401, its `remedy` field and the self-discovery behaviour).
-- Counters on the authed `/health` under `threadline.localRouteSignature`;
-  `localEnvelopeSignature: "v1"` on the unauthenticated threadline health.
+- **Config:** no default is written (`enabled` must stay omitted for the
+  gate to decide). The block is added to the config type.
+- **CLAUDE.md:** one section "A2A local-route signed envelope" in the
+  template and in `migrateClaudeMd` (sniff key `A2A local-route signed
+  envelope`), listed among the framework-shadowed sections.
+- **Drops written before this release** carry no signature. They are
+  ingested as today in `off` and `dry-run`; an enforcing receiver holds
+  them and expires them at 7 days (counted).
 
 ## Agent awareness
 
 | Section | Content |
 |---|---|
-| A2A local-route signed envelope | The same-machine route now refuses an envelope that does not carry a valid signature from the key on record for its sender name (`401 bad-signature`; `reason` names which check failed, `remedy` says whether the sender or the receiver must change, `retryable` says whether an identical resend can ever succeed). A receiver that has not met the sender fetches its key itself on first contact (at most five tries per peer per process), so `unknown-sender` now means the peer is not registered as running on this machine, its health did not answer, or those tries are used up. `signature-invalid` or `fingerprint-mismatch` from a known peer means it is signing with a key other than the one on record; the receiver never swaps the key on its own — look at why the peer's identity moved, then run `threadline_discover` deliberately if it should be re-keyed. A `POST /messages/send` to a same-machine agent with a `from` that is not me is refused, by design, and a refused send is never parked in the drop directory. Counters: authed `/health` → `threadline.localRouteSignature`. |
+| A2A local-route signed envelope | Messages I send to another agent on this machine carry a signature made with my identity key. With `threadline.localRouteSignature` on, my same-machine route checks each incoming message's signature against the key I have on record for the sender's name. It starts watch-only (`dryRun`, the default): everything is delivered as before and each message that would be refused is logged (`[relay-agent-signature] would-refuse`) and counted by reason. With `dryRun: false` such a message is refused before it is recorded, with HTTP 401 `{ error: 'bad-signature', refused: true, reason, remedy, retryable }`; a relay-send then falls back to the relay. If I have no key on record for the sender I fetch it myself on first contact, into memory (at most five tries per peer). `signature-invalid` from a peer I know means it signs with a different key than the one I hold; I never swap a key on my own — find out why its identity moved first, and know that `threadline_discover` re-reads EVERY peer's key, not just that one. A message another agent parked for me while I was down is held, not ingested, if I cannot prove it, and expires after 7 days (`dropsHeld`, `dropsExpired`). Live on a development agent, off on the fleet. Mode and counters: authed `/health` → `threadline.localRouteSignature`. A sender that must never deliver an unproven message adds the header `X-Instar-Require-Signature: v1`; unless I am enforcing I refuse that request with reason `not-enforcing`. **When to use** (PROACTIVE): before turning `dryRun` off, read the last 24 hours of `logs/relay-agent-signature.jsonl` (one row per check), not the `/health` counters, which reset at every restart: at least 20 `verified` rows per peer, and no `unsigned`, `signature-invalid` or `fingerprint-mismatch` row. If the file's oldest row is newer than 24 hours, or `auditWriteFailures` is not zero, the answer is unknown and the flip waits. If `signerAvailable` is false, an enforcing peer refuses everything I send it locally. |
 
 ## Tests
 
-- **Unit** (`tests/unit/a2a-local-route-signed-envelope.test.ts`):
-  canonicalisation (key order at every level, `undefined` dropped, arrays
-  kept, depth and size bounds → `malformed`); sign then verify with the real
-  key pair; every reason against a real registry file and a real clock
-  (unsigned, malformed, stale past and future, replay, replay-cache-full at
-  the bound, wrong-recipient, unknown sender,
-  ambiguous by two keys, ambiguous by one key under two names, entry without
-  a key, entry with a disagreeing fingerprint, registry unreadable,
-  fingerprint mismatch incl. prefix, wrong key, tampered body, tampered
-  nonce, tampered relay chain); the proven fingerprint derives from the key,
-  not the stored field; self-discovery against a stub health server
-  (adds the entry and verifies; merges rather than replaces; a key on
-  record is NEVER replaced on a signature failure; doubling backoff; the
-  five-probe cap closes the name and files one report); `discoverLocal`
-  keeps an offline peer's entry and key and updates an answering peer's; the signer helper with and without an
-  identity and with a foreign `from`; the log line reduces the name and is
-  rate-limited; migration parity (template section present, migrator adds
-  it once).
+- **Unit** (`tests/unit/a2a-local-route-signed-envelope.test.ts`): the signed
+  bytes (key order, `undefined`, a `Date` member, both bounds); sign then
+  verify with a real key pair; every reason against a real registry file and
+  an injected clock, both sides of each boundary (fresh/stale past and
+  future, right/wrong recipient, one key/two keys/key under two names, full
+  vs prefix fingerprint, empty nonce, tampered body / nonce / relay chain /
+  `to`); the proven fingerprint derives from the key, not the stored field;
+  the replay cache, its per-sender and overall bounds;
+  mode resolution (omitted on a dev agent and on a fleet agent, explicit
+  values, `dryRun` only left by `false`); the first-contact probe against a
+  stub health server (fetches and verifies; writes no file; refuses an
+  answer naming another agent or a disagreeing fingerprint; a forged
+  envelope under a cached name is `signature-invalid` and the next genuine
+  one still verifies; never replaces a
+  held key on a signature failure; single-flight; doubling backoff;
+  five-probe close and its one report; no slot for a name with no running
+  entry; two names answering with one key, which counts as a failed
+  probe); the fixed test vector; the
+  production signer factory signs with the Threadline identity and its
+  output verifies against that identity's public key; with no identity and
+  with a foreign `from` it does not sign; the rate-limited, bounded log line; `MessageRouter` with a stub
+  fetch and a redirected home directory (accepted / refused at 401, 403 and
+  503 / unreachable; signed before a drop when the target is not
+  registered; an answered 500 without the flag drops as today); drop pickup
+  in each mode (existing deletes unchanged; ingest; held; the boot pass
+  never probes or expires; the second pass probes, expires at 7 days and
+  reports once when anything is held or expired; a verifier error holds);
+  the audit log (one metadata-only row per verdict, none when off, never
+  message text, mode 0600 after a forced rotation, a failed append
+  counted); the per-request requirement header in each mode; migration
+  parity.
 - **Integration** (`tests/integration/threadline/a2a-local-route-signed-envelope.test.ts`):
-  the real route on a real `AgentServer` with a real ledger and registry:
-  auth first; each refusal is `401 bad-signature` with its reason and leaves
-  no inbox entry, no ledger row and no content window; a signed envelope is
-  delivered and the trust check, the ledger (verified namespace) and the
-  thread attribution see the proven fingerprint; a real `MessageRouter` with
-  the production signer delivers to a second real server, and on a refusal
-  fails without writing the drop directory; `pickupDroppedMessages` rejects
-  an unsigned drop and ingests a signed one; counters and the health
-  advertisement.
+  the real route on a real `AgentServer` with a real ledger and registry, in
+  each mode: `off` ignores the field; dry-run delivers an unsigned envelope,
+  counts `wouldRefuse` / `byReason.unsigned` and answers `signature.verified:
+  false`; enforcing refuses each reason with its 401 body and leaves no
+  inbox entry, no ledger row and no content window, with auth still first; a
+  signed envelope is delivered, answers `signature: { mode: "enforcing",
+  verified: true }` and the ledger key carries the proven fingerprint; a
+  request with the requirement header is refused `not-enforcing` in `off`
+  and dry-run (no inbox entry) and handled normally when enforcing; a
+  real `MessageRouter` with the production signer delivers to a second real
+  server and on a refusal fails without writing the drop directory; the
+  health block and the advertisement.
 - **E2E** (`tests/e2e/threadline/a2a-local-route-signed-envelope-alive.test.ts`):
-  two real servers booted the production way (`bootstrapThreadline`, a real
-  relay): `/health` reports the floor alive with a signer; the sender's real
-  relay-send name path delivers locally and `verified` counts one; a
-  hand-rolled unsigned POST is refused and never reaches the router; a
-  receiver that has not recorded the sender's key self-discovers it from the
-  sender's live health and delivers.
-- **Existing tests that post to the route** (23 files) are updated to sign
-  through one shared helper (`tests/helpers/localEnvelope.ts`: mint a sender
-  key pair, record it in the receiver's registry, sign) — the same thing
-  every real sender does.
-
-## Maturation plan
-
-- **test-agent-live:** the e2e tier above (two real servers, real relay, the
-  production sender paths) plus a `test-as-self` deploy of the release
-  candidate before merge: a same-machine send between the throwaway agent
-  and the development agent verifies; an unsigned hand-rolled POST is
-  refused; a never-discovered receiver self-discovers.
-- **dev-agent-live:** the release lands on the development agent (Echo)
-  first by the normal update path; over the following 24 hours the authed
-  `/health` block must show `verified` rising per live same-machine peer in
-  `verifiedBySender`, every `refused` explained by a reason, and zero
-  `signature-invalid` / `fingerprint-mismatch` from a known peer.
-- **fleet:** the same release, no separate flip — the verification is the
-  same code on every agent class. The fleet evidence is the degradation
-  digest: no `registry-unavailable` or repeated self-discovery failure
-  reports in the first week.
-- **graduation criterion:** 24 hours on the development agent with the
-  dev-agent-live numbers as stated, then one week on the fleet with no
-  degradation report attributable to this feature. A `signature-invalid` or
-  `fingerprint-mismatch` from a known same-machine agent at any point is a
-  bug to fix, not a tuning question.
-- **dark-window:** none. There is no dark or dry-run phase: a dark floor
-  guards nothing, and the operator's directive (frontmatter) accepted the
-  mixed-version cost in exchange for Dawn's route switching on against a
-  real proof. What is graduated is evidence, not enforcement.
+  two real servers booted the production way: `/threadline/health` reports
+  the mode; the sender's real relay-send name path delivers locally to an
+  enforcing receiver and `verified` counts one; `POST /messages/send` on
+  the sender (the production `MessageRouter` signer) delivers to the same
+  receiver; a hand-rolled unsigned POST is refused; a receiver with no key on record for the sender probes the
+  sender's live health and delivers, and its `known-agents.json` is
+  unchanged.
+- Existing tests that post to the route run with the feature off and are
+  not changed.
