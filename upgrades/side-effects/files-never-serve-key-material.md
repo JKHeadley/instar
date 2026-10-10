@@ -185,6 +185,12 @@ enumerable (a listed path, an equal inode) — an invariant, not a judgment.
 - **`IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS`** already denied `.instar/machine/` and
   `.instar/identity.json` on the routes; the new list overlaps it for those two and extends to
   the rest. Overlap is additive, never contradictory.
+- **Classifier label for `origin-sessions-*`:** these files were classified `exclude`
+  (generated, via `ORIGIN_LOCAL_PROJECT_GLOBS`); the secret check runs first, so they are now
+  `never-sync`. `GitSync` treats the two strategies identically at both callsites (staging skip
+  and conflict resolution), so behaviour is unchanged; only the label and the degradation
+  reason text differ. `tests/unit/telegram-origin/local-custody.test.ts` pinned the old label
+  and is updated to pin the new one for those two files (found by CI shard 4/4).
 
 ---
 
