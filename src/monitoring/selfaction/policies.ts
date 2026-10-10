@@ -195,6 +195,20 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Feedback executor fix attempts (feedback-triage-and-execution §4). Telemetry only: the
+    // executor enforces its own caps (2 concurrent, 6 starts/day, 4 open PRs) in code.
+    controllerId: 'feedback-execute',
+    actionVerb: 'spawn-fix-attempt',
+    direction: 'amplifying',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 4,
+    totalCountCeiling: 6,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 6, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Crash-loop respawn (amplifying) — distinct from respawn-recovery.
     controllerId: 'respawn-crashloop',
     actionVerb: 'session-respawn',

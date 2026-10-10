@@ -1141,6 +1141,9 @@ describe('standards-coverage ratchet script', () => {
       projectDir: realRoot,
     });
 
+    // Name the cause when the protected oracle is unavailable (ACT-075) instead
+    // of surfacing only a downstream null ratio.
+    expect(cli.measurement.status, `measurement errors: ${JSON.stringify(cli.measurement.errors)}`).toBe('proven');
     expect(cli.total).toBe(library.summary.total);
     expect(cli.danglingCount).toBe(library.summary.danglingCount);
     expect(cli.enforcementScope).toEqual(library.summary.registry.enforcementScope);
@@ -1184,6 +1187,7 @@ describe('standards-coverage ratchet script', () => {
     })) as {
       total: number;
       enforcedRatio: number;
+      measurement: { status: string; errors: string[] };
       areaAudit: { status: string; currentCount: number; totalAreas: number; errors: string[] };
       areaModelAudit: { status: string; currentAreaSetSha256: string; auditCurrent: boolean };
       areas: Record<string, {
@@ -1249,6 +1253,7 @@ describe('standards-coverage ratchet script', () => {
     // refreshed by a review that genuinely accepts
     // (docs/specs/reports/standards-building-occam-addition-2026-09-24.md),
     // with its 34/40 floor unchanged.
+    expect(report.measurement.status, `measurement errors: ${JSON.stringify(report.measurement.errors)}`).toBe('proven');
     expect(report.total).toBe(92);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([

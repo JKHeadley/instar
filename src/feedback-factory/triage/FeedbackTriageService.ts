@@ -88,7 +88,7 @@ export interface FeedbackTriageServiceOptions {
   quotaUsedPercent: (framework: string) => Promise<number | null>;
   /** Merged PRs of the last 30 days (one `gh` call); null on error. */
   listMergedPrs: () => Promise<MergedPr[] | null>;
-  /** Phase 1 ships no executor: it is always unavailable (`not-built`). */
+  /** Executor availability before an executor is attached (`not-built` when none is constructed). */
   executorStatus: () => { available: boolean; reason: string };
   raiseAttention: (item: AttentionInput) => Promise<void>;
   reportDegradation: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
@@ -96,6 +96,15 @@ export interface FeedbackTriageServiceOptions {
   dashboardLink: () => string;
   maxWallClockMs?: number;
   clock?: () => number;
+}
+
+/** The executor's surface the triage service reads (docs/specs/feedback-triage-and-execution.md §3–§5). */
+export interface TriageExecutorHooks {
+  status(): { available: boolean; reason: string };
+  executionStateFor(initiativeId: string): { state: string; prLink: string | null };
+  actionItems(): Array<{ line: string; metaKey: string }>;
+  /** True while the executor owns the item (a live attempt, a PR awaiting review, or a merged fix being verified). */
+  holdsItem(initiativeId: string): boolean;
 }
 
 export interface TriageTickResult {
@@ -131,9 +140,18 @@ export class FeedbackTriageService {
   private lastStartedAt = 0;
   /** Wall-clock deadline of the tick in flight; every model call checks it first. */
   private tickDeadline = 0;
+  /** The executor (§4), attached after construction; null → the options' executorStatus. */
+  private executor: TriageExecutorHooks | null = null;
 
   constructor(private readonly opts: FeedbackTriageServiceOptions) {
     this.now = opts.clock ?? Date.now;
+  }
+
+  /** Attach the executor so the summary, queue, work-queue ceiling clock and action list see it. */
+  attachExecutor(hooks: TriageExecutorHooks): void { this.executor = hooks; }
+
+  private executorAvailability(): { available: boolean; reason: string } {
+    return this.executor ? this.executor.status() : this.opts.executorStatus();
   }
 
   // ── authority ────────────────────────────────────────────────────────────────
@@ -246,7 +264,7 @@ export class FeedbackTriageService {
     const initiativeById = new Map(initiatives.map((i) => [i.id, i]));
 
     // Work-queue ceiling clock pauses while the executor is unavailable (Phase 1: always).
-    const executor = this.opts.executorStatus();
+    const executor = this.executorAvailability();
     this.opts.store.pauseWorkClock(epoch, !executor.available);
 
     // Ignore-rate brake (floor 8) and its episode transitions.
@@ -466,7 +484,7 @@ export class FeedbackTriageService {
       expectedInitiativeStatus: expectedStatus, modelDisposition: row.disposition, wouldIgnore: outcome.countedAsIgnore,
       shadow: outcome.reason === 'ignore-shadow', keywordFloor: built.keywordFloor,
       duplicateReports: outcome.duplicateApplied ? reportCount : undefined,
-      workClockPaused: !this.opts.executorStatus().available,
+      workClockPaused: !this.executorAvailability().available,
     });
     // A later work decision after new reports supersedes an earlier hold/ignore; it is not "wrong".
     if (priorDecision && state === 'work' && priorDecision.disposition !== 'work' && candidate.row.requeueReason === 'new-reports') {
@@ -539,7 +557,8 @@ export class FeedbackTriageService {
       else if (row.state === 'hold' && row.reason === 'ignore-rate-brake' && !brakeEngaged) reason = 'brake-ended';
       else if (row.state === 'hold' && row.reason !== 'ignore-rate-brake' && row.nextReviewAt !== null && row.nextReviewAt <= now) reason = 'review-due';
       else if (row.state === 'hold' && row.reason === 'evidence-truncated' && !row.floors.includes('f4-retried-alone')) reason = 'truncated-retry';
-      else if (row.state === 'work' && row.workSince !== null) {
+      else if (row.state === 'work' && row.workSince !== null && (!this.executor || !this.executor.holdsItem(row.initiativeId))) {
+        // The ceiling is for items the executor is not working on; an item it holds is the executor's to finish.
         const pausedNow = row.workPausedSince !== null ? now - row.workPausedSince : 0;
         if (now - row.workSince - row.workPausedMs - pausedNow > WORK_QUEUE_CEILING_MS) reason = 'work-queue-ceiling';
       }
@@ -727,7 +746,8 @@ export class FeedbackTriageService {
         rank: index + 1, initiativeId: row.initiativeId, clusterId: row.clusterId,
         title: initiatives.get(row.initiativeId)?.title ?? null, summary: row.summary, severity: row.severity, priority: row.priority,
         effectiveRecurrence: rank.effectiveRecurrence, evidenceComplete: row.evidenceComplete, needsSpec: row.needsSpec,
-        executionState: 'queued', prLink: null, decidedAt: row.decidedAt,
+        ...(this.executor ? (() => { const e = this.executor!.executionStateFor(row.initiativeId); return { executionState: e.state, prLink: e.prLink }; })() : { executionState: 'queued', prLink: null }),
+        decidedAt: row.decidedAt,
       }));
   }
 
@@ -789,7 +809,7 @@ export class FeedbackTriageService {
       ignoreLiveRecommended: evidence.recommended,
       ignoreLiveEvidence: evidence,
       grades,
-      executor: this.opts.executorStatus(),
+      executor: this.executorAvailability(),
     };
   }
 
@@ -821,6 +841,11 @@ export class FeedbackTriageService {
     if (this.ignoreLiveEvidence().recommended && !this.ignoreLive() && !this.opts.store.meta('action_list:ignore-live-recommended')) {
       const e = this.ignoreLiveEvidence();
       entries.push({ line: `Ignore decisions look ready to go live: ${e.graded} checked (${e.strong} strong, ${e.medium} medium), ${e.wrong} wrong. Turn on with your PIN: ${link}`, metaKey: 'action_list:ignore-live-recommended' });
+    }
+    // Executor items (§5): PRs awaiting approval, PIN questions, parked change sets — each once.
+    for (const item of this.executor?.actionItems() ?? []) {
+      if (this.opts.store.meta(item.metaKey)) continue;
+      entries.push({ line: item.line, metaKey: item.metaKey });
     }
     if (entries.length === 0) return null;
     const sent = entries.slice(0, 10);

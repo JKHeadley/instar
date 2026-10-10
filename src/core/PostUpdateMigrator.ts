@@ -7623,9 +7623,26 @@ setTimeout(() => process.exit(0), 2000);
     // Feedback triage and execution (docs/specs/feedback-triage-and-execution.md, Phase 1):
     // the triage queue/summary routes and the operator-only approval path. Own marker, idempotent.
     if (!content.includes('Feedback triage and execution (operated feedback factory)')) {
-      content += `\n**Feedback triage and execution (operated feedback factory)** — Feedback work items (Initiatives the drain created) are read by a registered frontier model that decides **work**, **hold** or **ignore**, with a severity, a priority and a stated reason, inside deterministic floors (low confidence → hold; serious, security-shaped or truncated items are never ignored without a second model family agreeing; duplicates and "already fixed" must cite real evidence; a rising ignore rate brakes itself). Hold and ignore only PAUSE the Initiative — never archive it — and items come back on a timer or when new reports arrive. Ignore starts in a "would ignore" practice mode until the operator turns it on with the dashboard PIN. Triage does nothing until the operator approves the triage authority on the dashboard **Feedback Drain** tab (Triage section) — you can never approve it yourself. Dev-gated (\`feedbackFactory.triage\`): live on a development agent, 503 on the fleet. The executor that turns work items into pull requests is not built yet.\n- Ranked work queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/queue\` → \`{ items: [{ rank, initiativeId, title, summary, severity, priority, executionState, prLink }] }\`.\n- Summary: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/summary\` → counts by disposition and reason, \`authority\` (\`awaiting-approval\` / \`active\` / \`paused\` / \`self-healing\` / \`exhausted\`), last tick, quota pause, brake, calls used today, \`ignoreLiveRecommended\`.\n- **When to use** (PROACTIVE): "what are we working on from feedback?" → the queue; "why was this report ignored / held?" → the summary's reasons (and the item's row in the queue/summary); \`authority: awaiting-approval\` → send the operator to the dashboard Feedback Drain tab, Triage section, for the one PIN tap. Turning ignores live goes through \`POST /feedback-factory/triage/plan\` (\`{"action":"ignore-live"}\`) and the operator's PIN on the dashboard — never a chat confirmation.\n`;
+      content += `\n**Feedback triage and execution (operated feedback factory)** — Feedback work items (Initiatives the drain created) are read by a registered frontier model that decides **work**, **hold** or **ignore**, with a severity, a priority and a stated reason, inside deterministic floors (low confidence → hold; serious, security-shaped or truncated items are never ignored without a second model family agreeing; duplicates and "already fixed" must cite real evidence; a rising ignore rate brakes itself). Hold and ignore only PAUSE the Initiative — never archive it — and items come back on a timer or when new reports arrive. Ignore starts in a "would ignore" practice mode until the operator turns it on with the dashboard PIN. Triage does nothing until the operator approves the triage authority on the dashboard **Feedback Drain** tab (Triage section) — you can never approve it yourself. Dev-gated (\`feedbackFactory.triage\`): live on a development agent, 503 on the fleet. The executor (next section) turns work items into pull requests.\n- Ranked work queue: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/queue\` → \`{ items: [{ rank, initiativeId, title, summary, severity, priority, executionState, prLink }] }\`.\n- Summary: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/triage/summary\` → counts by disposition and reason, \`authority\` (\`awaiting-approval\` / \`active\` / \`paused\` / \`self-healing\` / \`exhausted\`), last tick, quota pause, brake, calls used today, \`ignoreLiveRecommended\`.\n- **When to use** (PROACTIVE): "what are we working on from feedback?" → the queue; "why was this report ignored / held?" → the summary's reasons (and the item's row in the queue/summary); \`authority: awaiting-approval\` → send the operator to the dashboard Feedback Drain tab, Triage section, for the one PIN tap. Turning ignores live goes through \`POST /feedback-factory/triage/plan\` (\`{"action":"ignore-live"}\`) and the operator's PIN on the dashboard — never a chat confirmation.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feedback triage and execution section');
+    }
+    // Phase 2 (§4): the triage section's "not built yet" sentence becomes a pointer, and the
+    // executor gets its own section. Content-sniffed, idempotent.
+    const executorNotBuilt = 'The executor that turns work items into pull requests is not built yet.';
+    if (content.includes(executorNotBuilt)) {
+      content = content.replace(executorNotBuilt, 'The executor (next section) turns work items into pull requests.');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Feedback triage section (executor built)');
+    }
+    if (!content.includes('Feedback executor (operated feedback factory)')) {
+      content += `\n**Feedback executor (operated feedback factory)** — The executor takes the highest-ranked **work** items and turns each into a pull request. Each attempt runs a Claude Code build session locked in an OS sandbox (no network, no credentials, no reads outside its own copy of the code), proven by a must-fail/must-succeed canary before every attempt; the session reproduces the problem with a failing test and fixes it (or drafts a spec when the item needs a design). Trusted code then re-checks the fix in the sandbox (fails before, passes after, lint and related tests pass), refuses changes to build tooling or anything that looks like a secret, and pushes from its own clone to a FORK (\`feedbackFactory.execute.publishRepo\`, \`owner/name\`), opening a cross-repository PR with the \`hold\` label — CI on a fork PR gets no repository secrets, and without a fork (or with the canonical repository itself) nothing is published. It merges ONLY the exact version the repository owner approved on GitHub (\`safe-merge --auto --match-head-commit\`), and refuses to run while this agent could itself act as that approver unless the operator accepted that once with the dashboard PIN. A merged fix is verified only after it ships in a release and the reports stay quiet for 30 days. Dev-gated (\`feedbackFactory.execute\`), dry-run until \`feedbackFactory.execute.dryRun\` is false; 503 without a source checkout.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/feedback-factory/execute/status\` → \`{ available, reason, dryRun, counts, live, openPrs, startsToday, limits, canary, deps, attempts }\` (\`reason\`: \`approver-not-independent\` / \`auto-merge-disabled\` / \`profile-unenforceable\` / \`deps-unavailable\` / \`publish-fork-unset\` / \`dry-run\` / \`no-source-repo\`).
+- Operator instructions given in conversation: stop an item's attempts (also disarms an armed merge) \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'X-Instar-Request: 1' -H 'Content-Type: application/json' http://localhost:${port}/feedback-factory/execute/stop -d '{"initiativeId":"..."}'\`; let a parked item be tried again \`.../feedback-factory/execute/release\` with the same body; withdraw the approver acceptance \`.../feedback-factory/execute/revoke-acceptance\` (no body).
+- **When to use** (PROACTIVE): "is anything being fixed from feedback?" → the status and the queue's \`executionState\`/\`prLink\`; \`reason: approver-not-independent\` → send the operator to the dashboard Feedback Drain tab, Triage section, to accept or decline with the PIN (\`POST /feedback-factory/triage/plan\` \`{"action":"accept-approver-dependence"}\` renders it); a fix held as \`needs-review-secret-shape\` is published only through the same PIN plan/commit (\`{"action":"publish-secret-shape","attemptId":"..."}\`) — never a chat confirmation. You never merge an executor PR yourself.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feedback executor section');
     }
     // 2026-10-01: a single timeout no longer demotes and same-machine restarts keep the approval.
     // 2026-10-02: one rejected answer no longer demotes either, and the status route names the failed check.
@@ -8345,6 +8362,17 @@ Messages from another agent on this machine arrive on a direct route that used t
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added A2A local-route trust section');
+    }
+
+    // A2A relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md,
+    // Agent awareness). OWN sniff key `A2A relay unknown-sender trust`.
+    if (!content.includes('A2A relay unknown-sender trust')) {
+      content += '\n\n' + `### A2A relay unknown-sender trust
+
+Messages that reach me over the relay from an agent whose keys I do not hold (it could not encrypt to me) used to be handed on at trust level \`verified\`, with an automatic ack, and the first one created a trust profile for that fingerprint at \`verified\` — so any agent on the relay could start a full session here. The relay proves the sender holds its key, not who it is. With \`threadline.relayUnknownSenderTrust\` on, such a message is judged at the level my trust profiles actually hold for that fingerprint, with the same operation table the relay gate uses: a sender with no profile is dropped, except its delivery acks, and a credential never passes this plaintext path. It starts in watch-only mode (\`dryRun\`, the default): every message is delivered as before, and each one that would be refused is logged (\`[relay-unknown-sender-trust] would-refuse\`) and counted. With \`dryRun: false\` such a message is dropped before it reaches a session (no ack, no inbox entry), an admitted one carries its real level, and a new fingerprint profile starts \`untrusted\` instead of \`verified\`. A profile a stranger's first message writes during watch-only is marked (\`relayFirstContact\`) and grants nothing once enforcing; other existing profiles are not changed. Live on a development agent, dark on the fleet (omitted \`enabled\`). Counters and the current mode: authed \`/health\` → \`threadline.relayUnknownSenderTrust\`. **When to use** (PROACTIVE): before turning \`dryRun\` off, read \`wouldRefuse\` and \`firstContactProfiles\` — each would-refuse is a relay peer that would stop reaching me; grant the ones I work with trust first (\`threadline_trust\`). A peer says its relay messages go unanswered → check this mode and its trust profile.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A relay unknown-sender trust section');
     }
 
     // Own relay state (displaced vs retrying). Existing agents need to check their
@@ -11329,6 +11357,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
       '### A2A local-route trust',
+      // A2A relay unknown-sender trust: a server-side check on the relay inbound
+      // path, framework-agnostic — a Codex/Gemini agent must know the counters.
+      '### A2A relay unknown-sender trust',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the
@@ -11437,6 +11468,8 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Feedback triage: framework-agnostic HTTP — any agent on the operated machine reads the queue/summary
       // and must know the triage authority and live ignores are PIN-only.
       '**Feedback triage and execution (operated feedback factory)**',
+      // Feedback executor: framework-agnostic HTTP status + operator levers; PIN-only authorities.
+      '**Feedback executor (operated feedback factory)**',
       // Subscription Pool (Subscription & Auth Standard): a framework-agnostic
       // capability — a Codex/Gemini agent should also know it can manage a
       // multi-account subscription pool, swap to keep a session alive, and drive

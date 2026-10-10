@@ -853,6 +853,9 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Feedback triage (tick, action-list, authority, PIN plan/commit) writes the same
   // owner-fenced feedback-drain.db as the drain; a non-owner answers 409 naming the owner.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/triage/', domain: 'cluster-shared' });
+  // Feedback executor (tick, operator stop/release): the same owner-fenced feedback-drain.db
+  // (execution table); a non-owner answers 409 naming the owner.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/execute/', domain: 'cluster-shared' });
 
   // ── Decision-Quality deterministic grading pass (llm-decision-quality-meter §5.5, §Multi-machine) ──
   // Machine-local by construction: POST /decision-quality/grade-pass upserts grade

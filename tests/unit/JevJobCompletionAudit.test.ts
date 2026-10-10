@@ -531,3 +531,38 @@ describe('claimed effects — batch treatment', () => {
     expect(byRun['b-claimed'].minConfidence).toBeCloseTo(0.5, 2); // claimed+fresh: both questions in play
   });
 });
+
+describe('flush waits on every in-flight capture (ACT-074)', () => {
+  it('an earlier, slower capture is on disk when flush() resolves', async () => {
+    // Force the FIRST capture to settle after the second. Before the fix,
+    // flush() awaited only the latest capture and returned with the first
+    // pack still unwritten — the CI-only race behind the batch-treatment flake.
+    const proto = JevJobCompletionAudit.prototype as unknown as {
+      captureDetached: (...args: unknown[]) => Promise<void>;
+    };
+    const real = proto.captureDetached;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const spy = vi.spyOn(proto, 'captureDetached').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      if (calls++ === 0) await gate;
+      return real.apply(this, args);
+    });
+    try {
+      const a = make({});
+      a.capture(input({ runId: 'slow-first' }));
+      a.capture(input({ runId: 'fast-second' }));
+      let flushed = false;
+      const f = a.flush().then(() => (flushed = true));
+      await a.lastCapture; // the second capture has settled
+      await new Promise((r) => setTimeout(r, 10));
+      expect(flushed).toBe(false); // still waiting on the first
+      release();
+      await f;
+      expect(readPack('slow-first').runId).toBe('slow-first');
+      expect(readPack('fast-second').runId).toBe('fast-second');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
