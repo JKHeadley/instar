@@ -6,22 +6,28 @@
  * the Witness signature proves whoever published the binding holds the
  * Witness private key, so nobody can bind a key they merely found.
  *
- * Bindings form a chain per agent. seq 0 starts it. Every later binding names
- * the hash of the one it supersedes and carries one more signature, made by
- * either key of the PREVIOUS binding: the Threadline key when the Witness key
- * is being replaced, the Witness key when identity recovery rotated the
- * Threadline key. A record is judged against the binding that was current at
- * its issued_at: binding k covers [k.issued_at, (k+1).issued_at).
+ * Bindings form a chain per agent: seq 0 starts it, and every later binding
+ * names the hash of the one it supersedes and is ALSO signed by keys of that
+ * previous binding (previous_signatures).
  *
- * A binding can also be revoked (for compromise) by either of its own keys,
- * with an effective_from time. Records it covered from that time on stop
- * counting; records before it stay valid.
+ * The rules rest on one fact (Echo, PR 2161 review): theft COPIES a key, it
+ * does not remove it. When a key is stolen, the real owner still holds both.
+ *  - A successor signed by BOTH previous keys is a normal rotation and takes
+ *    effect at once. A one-key thief cannot produce one.
+ *  - A successor signed by ONE previous key is the recovery path, for a key
+ *    that is actually lost. A store holds it pending for RECOVERY_HOLD_MS from
+ *    when it first saw it. During the hold the other previous key can veto it
+ *    (SuccessorVeto), which leaves the agent conflicted until a person
+ *    re-pairs. When it matures, its window starts no earlier than first-seen,
+ *    so it can never reach back over records already made.
+ *  - A binding revocation signed by ONE of the binding's keys takes effect no
+ *    earlier than first-seen minus the clock skew: an instant kill switch for
+ *    the future, and at worst a fail-closed denial of service in a thief's
+ *    hands. Backdating effective_from needs BOTH keys.
  *
- * Known v0 limit: if one key of a binding is stolen, the thief can publish a
- * successor too. Two different bindings at the same seq are a FORK; a store
- * that sees one refuses the second and marks the agent conflicted, which stops
- * new records from that agent counting until a human resolves it (re-pair and
- * compare the SAS words).
+ * The time-dependent parts (hold, first-seen) are judged by each store from
+ * its own receipt times, so two stores can briefly disagree during a hold.
+ * That is by design: the hold is what gives a veto time to spread.
  */
 
 import crypto from 'node:crypto';
@@ -31,13 +37,20 @@ import { isIsoDate } from './record.js';
 
 export const BINDING_TYPE = 'WitnessKeyBinding/v0';
 export const BINDING_REVOCATION_TYPE = 'WitnessKeyRevocation/v0';
+export const SUCCESSOR_VETO_TYPE = 'WitnessSuccessorVeto/v0';
+/** How long a one-key successor waits, from first-seen, before it counts. */
+export const RECOVERY_HOLD_MS = 72 * 3_600_000;
+
 const THREADLINE_CONTEXT = 'instar-witness-binding-v0/threadline\n';
 const WITNESS_CONTEXT = 'instar-witness-binding-v0/witness\n';
 const PREVIOUS_CONTEXT = 'instar-witness-binding-v0/previous\n';
 const REVOCATION_CONTEXT = 'instar-witness-binding-revocation-v0\n';
+const VETO_CONTEXT = 'instar-witness-successor-veto-v0\n';
 const HASH_CONTEXT = 'instar-witness-binding-v0/hash\n';
 
 export type KeyRole = 'witness' | 'threadline';
+export type RoleSignatures = { witness?: string; threadline?: string };
+export type RoleKeys = { witness?: KeyPairHex; threadline?: KeyPairHex };
 
 export interface UnsignedBinding {
   type: typeof BINDING_TYPE;
@@ -55,9 +68,8 @@ export interface UnsignedBinding {
 export interface KeyBinding extends UnsignedBinding {
   threadline_signature: string;
   witness_signature: string;
-  /** Which key of the previous binding signed this one. Present exactly when seq > 0. */
-  previous_signer?: KeyRole;
-  previous_signature?: string;
+  /** Signatures by the PREVIOUS binding's keys. Present exactly when seq > 0. */
+  previous_signatures?: RoleSignatures;
 }
 
 export interface BindingRevocation {
@@ -65,8 +77,18 @@ export interface BindingRevocation {
   agent: string;
   /** Hash of the binding being revoked. */
   binding: string;
-  /** Records the binding covered from this time on stop counting. May be earlier than issued_at (compromised since). */
+  /** Requested start. With one signature a store clamps it to no earlier than first-seen minus clock skew. */
   effective_from: string;
+  issued_at: string;
+  reason: string;
+  signatures: RoleSignatures;
+}
+
+export interface SuccessorVeto {
+  type: typeof SUCCESSOR_VETO_TYPE;
+  agent: string;
+  /** Hash of the one-key successor being objected to. */
+  successor: string;
   issued_at: string;
   reason: string;
   signer: KeyRole;
@@ -84,7 +106,7 @@ export function threadlineFingerprint(threadlinePublicKeyHex: string): string {
 }
 
 export function bindingHash(binding: UnsignedBinding | KeyBinding): string {
-  return crypto.createHash('sha256').update(HASH_CONTEXT + canonicalize(unsignedPart(binding))).digest('hex');
+  return sha256(HASH_CONTEXT + canonicalize(unsignedPart(binding)));
 }
 
 /** Start an agent's chain (seq 0). */
@@ -99,30 +121,19 @@ export function createBinding(input: {
 
 /**
  * Replace `previous` with a binding for new keys (either or both may change).
- * `previousKey` must be one of previous's keys; say which with `previousSigner`.
+ * Sign with BOTH of previous's keys for a normal rotation; with one only when the
+ * other is genuinely lost (that successor is held for RECOVERY_HOLD_MS).
  */
 export function createSuccessorBinding(input: {
   previous: KeyBinding;
   threadline: KeyPairHex;
   witness: KeyPairHex;
-  previousSigner: KeyRole;
-  previousKey: KeyPairHex;
+  previousKeys: RoleKeys;
   issuedAt?: Date;
 }): KeyBinding {
-  const b = body(
-    input.previous.agent,
-    input.previous.seq + 1,
-    bindingHash(input.previous),
-    input.threadline,
-    input.witness,
-    input.issuedAt,
-  );
-  const signed = sign(b, input.threadline, input.witness);
-  return {
-    ...signed,
-    previous_signer: input.previousSigner,
-    previous_signature: signBytes(input.previousKey.privateKey, Buffer.from(PREVIOUS_CONTEXT + canonicalize(b))),
-  };
+  const b = body(input.previous.agent, input.previous.seq + 1, bindingHash(input.previous), input.threadline, input.witness, input.issuedAt);
+  const msg = Buffer.from(PREVIOUS_CONTEXT + canonicalize(b));
+  return { ...sign(b, input.threadline, input.witness), previous_signatures: signAs(input.previousKeys, msg) };
 }
 
 export type BindingResult = { ok: true; binding: KeyBinding } | { ok: false; reason: string };
@@ -139,8 +150,7 @@ export function verifyBinding(binding: unknown, expectedFingerprint?: string): B
   const full = binding as Record<string, unknown>;
   const allowed = [
     'type', 'agent', 'seq', 'supersedes', 'threadline_fingerprint', 'threadline_public_key',
-    'witness_public_key', 'key_id', 'issued_at', 'threadline_signature', 'witness_signature',
-    'previous_signer', 'previous_signature',
+    'witness_public_key', 'key_id', 'issued_at', 'threadline_signature', 'witness_signature', 'previous_signatures',
   ];
   const unknown = Object.keys(full).find(k => !allowed.includes(k));
   if (unknown) return { ok: false, reason: `unknown field ${unknown}` };
@@ -149,15 +159,14 @@ export function verifyBinding(binding: unknown, expectedFingerprint?: string): B
   if (typeof b.agent !== 'string' || !/^did:[a-z0-9]+:\S+$/.test(b.agent)) return { ok: false, reason: 'agent must be a did: URI' };
   if (!Number.isSafeInteger(b.seq) || b.seq < 0) return { ok: false, reason: 'seq must be a non-negative integer' };
   if (b.seq === 0) {
-    if (b.supersedes !== undefined || b.previous_signer !== undefined || b.previous_signature !== undefined) {
+    if (b.supersedes !== undefined || b.previous_signatures !== undefined) {
       return { ok: false, reason: 'a seq 0 binding cannot supersede anything' };
     }
   } else {
     if (!isHex(b.supersedes, 32)) return { ok: false, reason: 'a successor must name the superseded binding hash' };
-    if (b.previous_signer !== 'witness' && b.previous_signer !== 'threadline') {
-      return { ok: false, reason: 'a successor must say which previous key signed it' };
+    if (!roleSignaturesShapeOk(b.previous_signatures)) {
+      return { ok: false, reason: 'a successor must carry previous_signatures from one or both previous keys' };
     }
-    if (!isHex(b.previous_signature, 64)) return { ok: false, reason: 'a successor must carry previous_signature' };
   }
   if (!isHex(b.threadline_public_key, 32) || !isHex(b.witness_public_key, 32)) {
     return { ok: false, reason: 'keys must be 32 bytes of hex' };
@@ -180,26 +189,28 @@ export function verifyBinding(binding: unknown, expectedFingerprint?: string): B
   return { ok: true, binding: b };
 }
 
-/** Is `next` a valid successor of `previous`? Both must already pass verifyBinding. */
-export function verifySuccessor(previous: KeyBinding, next: KeyBinding): { ok: true } | { ok: false; reason: string } {
+/**
+ * Is `next` a successor of `previous`, and which of previous's keys signed it?
+ * Both must already pass verifyBinding. Every signature present must be valid —
+ * a bad one is a rejection, never silently ignored.
+ */
+export function verifySuccessor(
+  previous: KeyBinding,
+  next: KeyBinding,
+): { ok: true; signers: KeyRole[] } | { ok: false; reason: string } {
   if (next.agent !== previous.agent) return { ok: false, reason: 'successor names a different agent' };
   if (next.seq !== previous.seq + 1) return { ok: false, reason: 'successor seq must be previous seq + 1' };
   if (next.supersedes !== bindingHash(previous)) return { ok: false, reason: 'successor does not name this binding' };
   if (Date.parse(next.issued_at) <= Date.parse(previous.issued_at)) {
     return { ok: false, reason: 'successor must be issued after the binding it supersedes' };
   }
-  const key = next.previous_signer === 'witness' ? previous.witness_public_key : previous.threadline_public_key;
   const msg = Buffer.from(PREVIOUS_CONTEXT + canonicalize(unsignedPart(next)));
-  if (!next.previous_signature || !verifyBytes(key, msg, next.previous_signature)) {
-    return { ok: false, reason: `bad previous_signature from the previous ${next.previous_signer} key` };
-  }
-  return { ok: true };
+  return checkRoleSignatures(previous, next.previous_signatures, msg, 'previous_signatures');
 }
 
 export function createBindingRevocation(input: {
   binding: KeyBinding;
-  signer: KeyRole;
-  key: KeyPairHex;
+  keys: RoleKeys;
   reason: string;
   effectiveFrom: Date;
   issuedAt?: Date;
@@ -211,40 +222,85 @@ export function createBindingRevocation(input: {
     effective_from: input.effectiveFrom.toISOString(),
     issued_at: (input.issuedAt ?? new Date()).toISOString(),
     reason: input.reason,
-    signer: input.signer,
   } as const;
-  return {
-    ...unsigned,
-    signature: signBytes(input.key.privateKey, Buffer.from(REVOCATION_CONTEXT + canonicalize(unsigned))),
-  };
+  return { ...unsigned, signatures: signAs(input.keys, Buffer.from(REVOCATION_CONTEXT + canonicalize(unsigned))) };
 }
 
-/** Verify a binding revocation against the binding it names. Either of that binding's keys may sign it. */
-export function verifyBindingRevocation(rev: unknown, binding: KeyBinding): { ok: true } | { ok: false; reason: string } {
+/** Verify a binding revocation against the binding it names; returns which of that binding's keys signed. */
+export function verifyBindingRevocation(
+  rev: unknown,
+  binding: KeyBinding,
+): { ok: true; signers: KeyRole[] } | { ok: false; reason: string } {
   if (!rev || typeof rev !== 'object') return { ok: false, reason: 'not an object' };
-  const { signature, ...unsigned } = rev as BindingRevocation;
-  const allowed = ['type', 'agent', 'binding', 'effective_from', 'issued_at', 'reason', 'signer'];
+  const { signatures, ...unsigned } = rev as BindingRevocation;
+  const allowed = ['type', 'agent', 'binding', 'effective_from', 'issued_at', 'reason'];
   if (Object.keys(unsigned).some(k => !allowed.includes(k))) return { ok: false, reason: 'unknown field' };
   if (unsigned.type !== BINDING_REVOCATION_TYPE) return { ok: false, reason: `type must be ${BINDING_REVOCATION_TYPE}` };
   if (unsigned.agent !== binding.agent || unsigned.binding !== bindingHash(binding)) {
     return { ok: false, reason: 'revocation does not name this binding' };
   }
   if (!isIsoDate(unsigned.effective_from) || !isIsoDate(unsigned.issued_at)) return { ok: false, reason: 'bad timestamp' };
-  if (typeof unsigned.reason !== 'string' || unsigned.reason.length === 0 || unsigned.reason.length > 2000) {
-    return { ok: false, reason: 'reason must be a non-empty string' };
+  if (!validReason(unsigned.reason)) return { ok: false, reason: 'reason must be a non-empty string' };
+  if (!roleSignaturesShapeOk(signatures)) return { ok: false, reason: 'signatures must hold one or both keys' };
+  return checkRoleSignatures(binding, signatures, Buffer.from(REVOCATION_CONTEXT + canonicalize(unsigned)), 'signatures');
+}
+
+export function bindingRevocationHash(rev: BindingRevocation): string {
+  const { signatures: _ignored, ...unsigned } = rev;
+  return sha256(REVOCATION_CONTEXT + canonicalize(unsigned));
+}
+
+/** An objection to a one-key successor, by the PREVIOUS binding's key that did not sign it. */
+export function createSuccessorVeto(input: {
+  successor: KeyBinding;
+  signer: KeyRole;
+  key: KeyPairHex;
+  reason: string;
+  issuedAt?: Date;
+}): SuccessorVeto {
+  const unsigned = {
+    type: SUCCESSOR_VETO_TYPE,
+    agent: input.successor.agent,
+    successor: bindingHash(input.successor),
+    issued_at: (input.issuedAt ?? new Date()).toISOString(),
+    reason: input.reason,
+    signer: input.signer,
+  } as const;
+  return { ...unsigned, signature: signBytes(input.key.privateKey, Buffer.from(VETO_CONTEXT + canonicalize(unsigned))) };
+}
+
+/** A veto counts only if signed by the previous binding's key that did NOT sign the successor. */
+export function verifySuccessorVeto(
+  veto: unknown,
+  successor: KeyBinding,
+  previous: KeyBinding,
+): { ok: true } | { ok: false; reason: string } {
+  if (!veto || typeof veto !== 'object') return { ok: false, reason: 'not an object' };
+  const { signature, ...unsigned } = veto as SuccessorVeto;
+  const allowed = ['type', 'agent', 'successor', 'issued_at', 'reason', 'signer'];
+  if (Object.keys(unsigned).some(k => !allowed.includes(k))) return { ok: false, reason: 'unknown field' };
+  if (unsigned.type !== SUCCESSOR_VETO_TYPE) return { ok: false, reason: `type must be ${SUCCESSOR_VETO_TYPE}` };
+  if (unsigned.agent !== successor.agent || unsigned.successor !== bindingHash(successor)) {
+    return { ok: false, reason: 'veto does not name this successor' };
   }
+  if (!isIsoDate(unsigned.issued_at) || !validReason(unsigned.reason)) return { ok: false, reason: 'bad timestamp or reason' };
   if (unsigned.signer !== 'witness' && unsigned.signer !== 'threadline') return { ok: false, reason: 'bad signer' };
-  const key = unsigned.signer === 'witness' ? binding.witness_public_key : binding.threadline_public_key;
-  if (!verifyBytes(key, Buffer.from(REVOCATION_CONTEXT + canonicalize(unsigned)), signature)) {
+  if (successor.previous_signatures?.[unsigned.signer] !== undefined) {
+    return { ok: false, reason: 'a veto must come from the previous key that did not sign the successor' };
+  }
+  const key = unsigned.signer === 'witness' ? previous.witness_public_key : previous.threadline_public_key;
+  if (!verifyBytes(key, Buffer.from(VETO_CONTEXT + canonicalize(unsigned)), signature)) {
     return { ok: false, reason: 'bad signature' };
   }
   return { ok: true };
 }
 
-export function bindingRevocationHash(rev: BindingRevocation): string {
-  const { signature: _ignored, ...unsigned } = rev;
-  return crypto.createHash('sha256').update(REVOCATION_CONTEXT + canonicalize(unsigned)).digest('hex');
+export function successorVetoHash(veto: SuccessorVeto): string {
+  const { signature: _ignored, ...unsigned } = veto;
+  return sha256(VETO_CONTEXT + canonicalize(unsigned));
 }
+
+// ── helpers ──────────────────────────────────────────────────────────
 
 function body(
   agent: string,
@@ -276,13 +332,47 @@ function sign(b: UnsignedBinding, threadline: KeyPairHex, witness: KeyPairHex): 
   };
 }
 
+function signAs(keys: RoleKeys, msg: Buffer): RoleSignatures {
+  const out: RoleSignatures = {};
+  if (keys.witness) out.witness = signBytes(keys.witness.privateKey, msg);
+  if (keys.threadline) out.threadline = signBytes(keys.threadline.privateKey, msg);
+  if (!out.witness && !out.threadline) throw new TypeError('at least one key is required');
+  return out;
+}
+
+function roleSignaturesShapeOk(s: unknown): s is RoleSignatures {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return false;
+  const keys = Object.keys(s);
+  return keys.length >= 1 && keys.every(k => (k === 'witness' || k === 'threadline') && isHex((s as Record<string, unknown>)[k], 64));
+}
+
+function checkRoleSignatures(
+  signer: KeyBinding,
+  sigs: RoleSignatures | undefined,
+  msg: Buffer,
+  field: string,
+): { ok: true; signers: KeyRole[] } | { ok: false; reason: string } {
+  const signers: KeyRole[] = [];
+  for (const role of ['witness', 'threadline'] as const) {
+    const sig = sigs?.[role];
+    if (sig === undefined) continue;
+    const key = role === 'witness' ? signer.witness_public_key : signer.threadline_public_key;
+    if (!verifyBytes(key, msg, sig)) return { ok: false, reason: `bad ${role} signature in ${field}` };
+    signers.push(role);
+  }
+  if (!signers.length) return { ok: false, reason: `${field} is empty` };
+  return { ok: true, signers };
+}
+
+function validReason(r: unknown): boolean {
+  return typeof r === 'string' && r.length > 0 && r.length <= 2000;
+}
+
 function unsignedPart(b: UnsignedBinding | KeyBinding): UnsignedBinding {
-  const {
-    threadline_signature: _t,
-    witness_signature: _w,
-    previous_signer: _ps,
-    previous_signature: _pg,
-    ...rest
-  } = b as KeyBinding;
+  const { threadline_signature: _t, witness_signature: _w, previous_signatures: _p, ...rest } = b as KeyBinding;
   return rest;
+}
+
+function sha256(s: string): string {
+  return crypto.createHash('sha256').update(s).digest('hex');
 }

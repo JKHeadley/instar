@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  RECOVERY_HOLD_MS,
   bindingHash,
   canonicalize,
   createBinding,
@@ -11,6 +12,7 @@ import {
   createRecord,
   createRevocation,
   createSuccessorBinding,
+  createSuccessorVeto,
   generateWitnessKey,
   loadOrCreateWitnessKey,
   recordHash,
@@ -25,6 +27,7 @@ const ECHO = 'did:web:api.moltbridge.ai:agents:echo';
 const T0 = new Date('2026-10-10T12:00:00.000Z');
 const at = ms => new Date(T0.getTime() + ms);
 const HOUR = 3_600_000;
+const HOLD = RECOVERY_HOLD_MS;
 
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'witness-test-'));
@@ -55,8 +58,15 @@ function sample(a, over = {}) {
 
 function storeWith(...agents) {
   const store = new WitnessStore({ dir: tmpdir() });
-  for (const a of agents) assert.equal(store.addBinding(a.binding).status, 'added');
+  for (const a of agents) assert.equal(store.addBinding(a.binding, {}, T0).status, 'added');
   return store;
+}
+
+/** A successor of `a`'s binding with fresh keys, signed by the given previous roles. */
+function successor(a, roles, issuedAt, previous = a.binding) {
+  const next = { threadline: generateWitnessKey(), witness: generateWitnessKey() };
+  const previousKeys = Object.fromEntries(roles.map(r => [r, a[r]]));
+  return { ...next, binding: createSuccessorBinding({ previous, ...next, previousKeys, issuedAt }) };
 }
 
 // ── canonical form ───────────────────────────────────────────────────
@@ -146,6 +156,7 @@ test('revocations never lapse: they carry no valid_until, and one with valid_unt
   );
 });
 
+
 // ── bindings ─────────────────────────────────────────────────────────
 
 test('binding: both signatures and the fingerprint rule are enforced', () => {
@@ -162,29 +173,21 @@ test('binding: both signatures and the fingerprint rule are enforced', () => {
   assert.match(verifyBinding({ ...b, supersedes: 'a'.repeat(64) }).reason, /seq 0/);
 });
 
-test('successor: linked by hash and signed by a key of the previous binding', () => {
+test('successor: reports which previous keys signed; a stranger or a bad signature fails', () => {
   const a = agent(DAWN);
-  const newWitness = generateWitnessKey();
-  const next = createSuccessorBinding({
-    previous: a.binding, threadline: a.threadline, witness: newWitness,
-    previousSigner: 'threadline', previousKey: a.threadline, issuedAt: at(10 * HOUR),
+  assert.deepEqual(verifySuccessor(a.binding, successor(a, ['witness', 'threadline'], at(10 * HOUR)).binding), {
+    ok: true, signers: ['witness', 'threadline'],
   });
-  assert.equal(verifyBinding(next).ok, true);
-  assert.deepEqual(verifySuccessor(a.binding, next), { ok: true });
-  assert.equal(next.supersedes, bindingHash(a.binding));
-
-  // Signed by a key that was never in the previous binding.
-  const stranger = generateWitnessKey();
-  const forged = createSuccessorBinding({
-    previous: a.binding, threadline: stranger, witness: stranger,
-    previousSigner: 'witness', previousKey: stranger, issuedAt: at(10 * HOUR),
-  });
-  assert.match(verifySuccessor(a.binding, forged).reason, /bad previous_signature/);
-  // Flipping which previous key it claims to be signed by fails too.
-  assert.equal(verifySuccessor(a.binding, { ...next, previous_signer: 'witness' }).ok, false);
+  assert.deepEqual(verifySuccessor(a.binding, successor(a, ['threadline'], at(10 * HOUR)).binding), { ok: true, signers: ['threadline'] });
+  const stranger = { did: DAWN, binding: a.binding, witness: generateWitnessKey(), threadline: generateWitnessKey() };
+  assert.match(verifySuccessor(a.binding, successor(stranger, ['witness'], at(10 * HOUR)).binding).reason, /bad witness signature/);
+  // One good signature plus one bad one is a rejection, not a one-key successor.
+  const good = successor(a, ['witness', 'threadline'], at(10 * HOUR)).binding;
+  const mixed = { ...good, previous_signatures: { ...good.previous_signatures, threadline: 'f'.repeat(128) } };
+  assert.match(verifySuccessor(a.binding, mixed).reason, /bad threadline signature/);
 });
 
-// ── store ────────────────────────────────────────────────────────────
+// ── store: chain rules ───────────────────────────────────────────────
 
 test('store: a record counts only through a binding naming its issuer', () => {
   const dawn = agent(DAWN);
@@ -197,88 +200,178 @@ test('store: a record counts only through a binding naming its issuer', () => {
   assert.equal(store.add(JSON.parse(JSON.stringify(r)), at(HOUR)).status, 'duplicate');
   assert.equal(store.status(added.hash, at(HOUR)), 'valid');
 
-  // Echo's genuine key, but the record claims to be from Dawn: no Dawn binding has that key.
   const impostor = createRecord(
     { issuer: DAWN, subject: ECHO, claim: 'completed', context: 'x', confidence: 100, issuedAt: at(HOUR) },
     echo.witness,
   );
   assert.match(store.add(impostor, at(HOUR)).reason, /no binding of .*dawn covers key/);
-
-  // A record dated before the binding existed is not covered by it.
-  assert.equal(store.add(sample(dawn, { issuedAt: at(-1) }), at(HOUR)).status, 'rejected');
+  assert.equal(store.add(sample(dawn, { issuedAt: at(-1) }), at(HOUR)).status, 'rejected', 'before the binding existed');
   assert.equal(store.add({ ...r, confidence: 1 }, at(HOUR)).status, 'rejected');
   assert.equal(store.list().length, 1, 'nothing rejected reaches disk');
 });
 
-test('store: rotation — old records stay valid, the old key stops counting after the successor', () => {
+test('store: bindings, revocations and vetoes dated in the future are refused', () => {
+  const dawn = agent(DAWN);
+  const store = new WitnessStore({ dir: tmpdir() });
+  assert.match(store.addBinding(dawn.binding, {}, at(-5 * 60_000 - 1)).reason, /future/);
+  assert.equal(store.addBinding(dawn.binding, {}, at(-5 * 60_000)).status, 'added');
+  const rev = createBindingRevocation({
+    binding: dawn.binding, keys: { threadline: dawn.threadline }, reason: 'x', effectiveFrom: at(HOUR), issuedAt: at(HOUR),
+  });
+  assert.match(store.addBindingRevocation(rev, at(0)).reason, /future/);
+});
+
+test('two-key rotation takes effect at once; old records stay valid, old key stops after it', () => {
   const dawn = agent(DAWN);
   const store = storeWith(dawn);
   const before = sample(dawn, { issuedAt: at(HOUR) });
-  assert.equal(store.add(before, at(HOUR)).status, 'added');
-
-  const newWitness = generateWitnessKey();
-  const next = createSuccessorBinding({
-    previous: dawn.binding, threadline: dawn.threadline, witness: newWitness,
-    previousSigner: 'threadline', previousKey: dawn.threadline, issuedAt: at(10 * HOUR),
-  });
-  assert.equal(store.addBinding(next).status, 'added');
-
+  store.add(before, at(HOUR));
+  const next = successor(dawn, ['witness', 'threadline'], at(10 * HOUR));
+  assert.equal(store.addBinding(next.binding, {}, at(10 * HOUR)).status, 'added');
+  assert.equal(store.chain(DAWN, at(10 * HOUR)).links.length, 2);
   assert.equal(store.status(recordHash(before), at(11 * HOUR)), 'valid');
   assert.equal(store.add(sample(dawn, { issuedAt: at(11 * HOUR) }), at(11 * HOUR)).status, 'rejected');
-  assert.equal(store.add(sample({ ...dawn, witness: newWitness }, { issuedAt: at(11 * HOUR) }), at(11 * HOUR)).status, 'added');
+  assert.equal(store.add(sample({ ...dawn, witness: next.witness }, { issuedAt: at(11 * HOUR) }), at(11 * HOUR)).status, 'added');
 });
 
-test('store: a successor arriving before its predecessor is refused, then accepted in order', () => {
-  const dawn = agent(DAWN);
-  const next = createSuccessorBinding({
-    previous: dawn.binding, threadline: dawn.threadline, witness: generateWitnessKey(),
-    previousSigner: 'threadline', previousKey: dawn.threadline, issuedAt: at(10 * HOUR),
-  });
-  const store = new WitnessStore({ dir: tmpdir() });
-  assert.match(store.addBinding(next).reason, /predecessor/);
-  assert.equal(store.addBinding(dawn.binding).status, 'added');
-  assert.equal(store.addBinding(next).status, 'added');
-});
-
-test('store: a fork marks the agent conflicted and stops its records counting', () => {
+test('one-key successor is held for the full hold, measured from first-seen', () => {
   const dawn = agent(DAWN);
   const store = storeWith(dawn);
-  const r = sample(dawn);
-  const { hash } = store.add(r, at(HOUR));
-  const mk = () => createSuccessorBinding({
-    previous: dawn.binding, threadline: dawn.threadline, witness: generateWitnessKey(),
-    previousSigner: 'witness', previousKey: dawn.witness, issuedAt: at(10 * HOUR),
-  });
-  assert.equal(store.addBinding(mk()).status, 'added');
-  assert.equal(store.addBinding(mk()).status, 'conflict');
-  assert.equal(store.isConflicted(DAWN), true);
-  assert.equal(store.status(hash, at(HOUR)), 'conflicted');
-  assert.equal(store.add(sample(dawn, { context: 'new' }), at(HOUR)).status, 'rejected');
+  const seenAt = 10 * HOUR;
+  const thief = successor(dawn, ['witness'], at(seenAt));
+  store.addBinding(thief.binding, {}, at(seenAt));
+  const c = store.chain(DAWN, at(seenAt + HOLD - 1));
+  assert.equal(c.links.length, 1);
+  assert.equal(c.pending.maturesAt, T0.getTime() + seenAt + HOLD);
+  // While pending, the owner's key keeps working.
+  assert.equal(store.add(sample(dawn, { issuedAt: at(seenAt + HOUR) }), at(seenAt + HOUR)).status, 'added');
+  assert.equal(store.chain(DAWN, at(seenAt + HOLD)).links.length, 2);
 });
 
-test('store: binding revocation cuts off records from effective_from, keeps earlier ones', () => {
+test('backdating: a matured one-key successor cannot reach back past first-seen', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const ownerRecord = sample(dawn, { issuedAt: at(5 * HOUR) });
+  store.add(ownerRecord, at(5 * HOUR));
+  // The thief claims a time one second after the owner's binding, but this store first sees it at hour 10.
+  const thief = successor(dawn, ['witness'], at(1000));
+  store.addBinding(thief.binding, {}, at(10 * HOUR));
+  const later = at(10 * HOUR + HOLD);
+  assert.equal(store.chain(DAWN, later).links[1].start, T0.getTime() + 10 * HOUR);
+  assert.equal(store.status(recordHash(ownerRecord), later), 'valid');
+});
+
+test('veto: the unsigned key can veto during the hold; the signing key cannot; a late veto is ignored', () => {
   const dawn = agent(DAWN);
   const store = storeWith(dawn);
   const early = sample(dawn, { issuedAt: at(HOUR) });
-  const late = sample(dawn, { issuedAt: at(3 * HOUR) });
-  store.add(early, at(3 * HOUR));
-  store.add(late, at(3 * HOUR));
-  const rev = createBindingRevocation({
-    binding: dawn.binding, signer: 'threadline', key: dawn.threadline,
-    reason: 'witness key leaked', effectiveFrom: at(2 * HOUR), issuedAt: at(4 * HOUR),
-  });
-  assert.equal(store.addBindingRevocation(rev).status, 'added');
-  assert.equal(store.status(recordHash(early), at(4 * HOUR)), 'valid');
-  assert.equal(store.status(recordHash(late), at(4 * HOUR)), 'key-revoked');
-  assert.match(store.add(sample(dawn, { issuedAt: at(2 * HOUR) }), at(4 * HOUR)).reason, /revoked/);
+  store.add(early, at(HOUR));
+  const thief = successor(dawn, ['witness'], at(10 * HOUR));
+  store.addBinding(thief.binding, {}, at(10 * HOUR));
 
-  const stranger = generateWitnessKey();
-  const forged = createBindingRevocation({
-    binding: dawn.binding, signer: 'witness', key: stranger,
-    reason: 'x', effectiveFrom: at(0), issuedAt: at(4 * HOUR),
-  });
-  assert.match(store.addBindingRevocation(forged).reason, /bad signature/);
+  const selfVeto = createSuccessorVeto({ successor: thief.binding, signer: 'witness', key: dawn.witness, reason: 'x', issuedAt: at(11 * HOUR) });
+  assert.match(store.addVeto(selfVeto, at(11 * HOUR)).reason, /did not sign/);
+
+  const veto = createSuccessorVeto({ successor: thief.binding, signer: 'threadline', key: dawn.threadline, reason: 'not me', issuedAt: at(11 * HOUR) });
+  assert.equal(store.addVeto(veto, at(11 * HOUR)).status, 'added');
+  const c = store.chain(DAWN, at(11 * HOUR));
+  assert.equal(c.conflict.seq, 1);
+  assert.equal(c.conflict.reason, 'recovery was vetoed');
+  // Records this store had before the conflict keep counting; new ones do not.
+  assert.equal(store.status(recordHash(early), at(12 * HOUR)), 'valid');
+  assert.match(store.add(sample(dawn, { issuedAt: at(12 * HOUR) }), at(12 * HOUR)).reason, /conflicting/);
+
+  // Same shape, but the veto lands after the hold: it does not count.
+  const dawn2 = agent(DAWN);
+  const store2 = storeWith(dawn2);
+  const thief2 = successor(dawn2, ['witness'], at(10 * HOUR));
+  store2.addBinding(thief2.binding, {}, at(10 * HOUR));
+  const late = createSuccessorVeto({ successor: thief2.binding, signer: 'threadline', key: dawn2.threadline, reason: 'late', issuedAt: at(10 * HOUR + HOLD) });
+  store2.addVeto(late, at(10 * HOUR + HOLD));
+  const c2 = store2.chain(DAWN, at(10 * HOUR + HOLD));
+  assert.equal(c2.conflict, undefined);
+  assert.equal(c2.links.length, 2);
 });
+
+test('a two-key rotation during the hold beats the pending one-key successor', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const thief = successor(dawn, ['witness'], at(10 * HOUR));
+  store.addBinding(thief.binding, {}, at(10 * HOUR));
+  const owner = successor(dawn, ['witness', 'threadline'], at(11 * HOUR));
+  store.addBinding(owner.binding, {}, at(11 * HOUR));
+  const c = store.chain(DAWN, at(10 * HOUR + HOLD + HOUR));
+  assert.equal(c.conflict, undefined);
+  assert.equal(c.links[1].hash, bindingHash(owner.binding));
+});
+
+test('a two-key rotation after a recovery already took effect is a fork', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const thief = successor(dawn, ['witness'], at(10 * HOUR));
+  store.addBinding(thief.binding, {}, at(10 * HOUR));
+  const owner = successor(dawn, ['witness', 'threadline'], at(10 * HOUR + HOLD + HOUR));
+  store.addBinding(owner.binding, {}, at(10 * HOUR + HOLD + HOUR));
+  assert.equal(store.chain(DAWN, at(10 * HOUR + HOLD + HOUR)).conflict.reason, 'rotation arrived after a recovery had taken effect');
+});
+
+test('conflict resolution: a person picks which binding to keep, and the chain continues', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const a1 = successor(dawn, ['witness', 'threadline'], at(10 * HOUR));
+  const a2 = successor(dawn, ['witness', 'threadline'], at(10 * HOUR));
+  store.addBinding(a1.binding, {}, at(10 * HOUR));
+  store.addBinding(a2.binding, {}, at(10 * HOUR + 1));
+  assert.equal(store.chain(DAWN, at(11 * HOUR)).conflict.reason, 'two different rotations');
+  const r = sample({ ...dawn, witness: a1.witness }, { issuedAt: at(12 * HOUR) });
+  assert.match(store.add(r, at(12 * HOUR)).reason, /conflicting/);
+
+  assert.match(store.resolveConflict(DAWN, 1, 'f'.repeat(64), 'SAS compared', at(12 * HOUR)).reason, /no stored binding/);
+  assert.equal(store.resolveConflict(DAWN, 1, bindingHash(a1.binding), 'SAS words compared with Dawn over Threadline', at(12 * HOUR)).status, 'added');
+  assert.equal(store.chain(DAWN, at(12 * HOUR)).conflict, undefined);
+  assert.equal(store.add(r, at(12 * HOUR)).status, 'added');
+});
+
+// ── store: binding revocation ────────────────────────────────────────
+
+test('one-key revocation cannot reach back further than first-seen minus clock skew', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const early = sample(dawn, { issuedAt: at(HOUR) });
+  const late = sample(dawn, { issuedAt: at(9 * HOUR + 56 * 60_000) });
+  store.add(early, at(HOUR));
+  store.add(late, at(9 * HOUR + 56 * 60_000));
+  // Asks to void everything since T0, but is first seen at hour 10: clamp to 9:55.
+  const rev = createBindingRevocation({
+    binding: dawn.binding, keys: { witness: dawn.witness }, reason: 'key leaked', effectiveFrom: at(0), issuedAt: at(10 * HOUR),
+  });
+  assert.equal(store.addBindingRevocation(rev, at(10 * HOUR)).status, 'added');
+  assert.equal(store.status(recordHash(early), at(11 * HOUR)), 'valid');
+  assert.equal(store.status(recordHash(late), at(11 * HOUR)), 'key-revoked');
+});
+
+test('two-key revocation may backdate effective_from', () => {
+  const dawn = agent(DAWN);
+  const store = storeWith(dawn);
+  const early = sample(dawn, { issuedAt: at(HOUR) });
+  const mid = sample(dawn, { issuedAt: at(3 * HOUR) });
+  store.add(early, at(3 * HOUR));
+  store.add(mid, at(3 * HOUR));
+  const rev = createBindingRevocation({
+    binding: dawn.binding, keys: { witness: dawn.witness, threadline: dawn.threadline },
+    reason: 'compromised since hour 2', effectiveFrom: at(2 * HOUR), issuedAt: at(10 * HOUR),
+  });
+  store.addBindingRevocation(rev, at(10 * HOUR));
+  assert.equal(store.status(recordHash(early), at(11 * HOUR)), 'valid');
+  assert.equal(store.status(recordHash(mid), at(11 * HOUR)), 'key-revoked');
+
+  const forged = createBindingRevocation({
+    binding: dawn.binding, keys: { witness: generateWitnessKey() }, reason: 'x', effectiveFrom: at(0), issuedAt: at(10 * HOUR),
+  });
+  assert.match(store.addBindingRevocation(forged, at(10 * HOUR)).reason, /bad witness signature/);
+});
+
+// ── store: records ───────────────────────────────────────────────────
 
 test('store: only the original issuer can revoke a record, and a revocation cannot be revoked', () => {
   const dawn = agent(DAWN);
@@ -295,8 +388,7 @@ test('store: only the original issuer can revoke a record, and a revocation cann
   assert.equal(store.status(hash, at(HOUR)), 'valid');
 
   const rev = createRevocation(r, 'filed in error', dawn.witness, at(2 * HOUR));
-  const revAdded = store.add(rev, at(2 * HOUR));
-  assert.equal(revAdded.status, 'added');
+  assert.equal(store.add(rev, at(2 * HOUR)).status, 'added');
   assert.equal(store.status(hash, at(2 * HOUR)), 'revoked');
   assert.equal(store.status(hash, at(1000 * 86_400_000)), 'revoked', 'revocations never lapse');
 
@@ -309,11 +401,10 @@ test('store: a file whose content no longer matches its name is not returned', (
   const dawn = agent(DAWN);
   const dir = tmpdir();
   const store = new WitnessStore({ dir });
-  store.addBinding(dawn.binding);
+  store.addBinding(dawn.binding, {}, T0);
   const { hash } = store.add(sample(dawn), at(HOUR));
   const file = path.join(dir, 'records', `${hash}.json`);
-  const tampered = { ...JSON.parse(fs.readFileSync(file, 'utf8')), context: 'edited on disk' };
-  fs.writeFileSync(file, JSON.stringify(tampered));
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), context: 'edited on disk' }));
   assert.equal(store.get(hash), undefined);
   assert.equal(store.list().length, 0);
   assert.equal(store.status(hash, at(HOUR)), 'unknown');

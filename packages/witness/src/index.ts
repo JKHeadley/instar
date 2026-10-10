@@ -27,18 +27,26 @@ export {
 export {
   BINDING_REVOCATION_TYPE,
   BINDING_TYPE,
+  RECOVERY_HOLD_MS,
+  SUCCESSOR_VETO_TYPE,
   bindingHash,
   bindingRevocationHash,
   createBinding,
   createBindingRevocation,
   createSuccessorBinding,
+  createSuccessorVeto,
+  successorVetoHash,
   threadlineFingerprint,
   verifyBinding,
   verifyBindingRevocation,
   verifySuccessor,
+  verifySuccessorVeto,
   type BindingResult,
   type BindingRevocation,
   type KeyBinding,
   type KeyRole,
+  type RoleKeys,
+  type RoleSignatures,
+  type SuccessorVeto,
 } from './binding.js';
-export { WitnessStore, type AddResult, type RecordStatus } from './store.js';
+export { WitnessStore, type AddResult, type Chain, type ChainLink, type RecordStatus } from './store.js';
