@@ -63,12 +63,12 @@ async function replyApp() {
 }
 
 describe('a held Telegram reply does not count as already delivered', () => {
-  it('held (destination-not-authorized), then the identical resend goes out; a genuine repeat is still suppressed', async () => {
+  it('held (lease-not-held: the lease gate refused), then the identical resend goes out; a genuine repeat is still suppressed', async () => {
     const { gate, wire, reply } = await replyApp();
     gate.holds = false;
     const held = await reply();
     expect(held.status, JSON.stringify(held.body)).toBe(409);
-    expect(held.body).toMatchObject({ error: 'telegram-origin-held', reason: 'destination-not-authorized' });
+    expect(held.body).toMatchObject({ error: 'telegram-origin-held', reason: 'lease-not-held' });
     expect(wire).not.toHaveBeenCalled();
 
     gate.holds = true;
