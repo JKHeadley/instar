@@ -853,6 +853,10 @@ export class AgentIdentityAdoptionLoop {
       this.voidSeenOnce = false;
       this.noteIdentityLost();
     }
+    // From here on this process holds no usable identity. If the file is later placed by any
+    // hand other than this loop's (a backup restored, the CLI), the provisioned branch above
+    // must reload the process — including on a machine that BOOTED unprovisioned.
+    this.lostSinceLoad = true;
     if (!this.postureAudited) {
       this.postureAudited = true;
       this.d.audit?.append('posture-not-provisioned', { machineId: this.d.selfMachineId });

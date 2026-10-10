@@ -72,10 +72,16 @@ export class IdentityAttentionItems {
     return { outcome: open.length ? 'replaced' : 'created', id };
   }
 
-  /** Resolve every open row of `baseId`. Returns how many were closed. */
+  /**
+   * Resolve every open row of `baseId`. Returns how many were closed. The condition is over,
+   * so an operator's WONT_DO on it is retired too (flipped to DONE): a dismissal stands only
+   * while the condition it dismissed lasts, and a later recurrence with the same text is raised.
+   */
   resolve(baseId: string): number {
-    const open = this.rowsFor(baseId).filter((r) => !TERMINAL.has(r.status));
+    const rows = this.rowsFor(baseId);
+    const open = rows.filter((r) => !TERMINAL.has(r.status));
     for (const r of open) this.store.resolve(r.id);
+    for (const r of rows) if (r.status === 'WONT_DO') this.store.resolve(r.id);
     return open.length;
   }
 

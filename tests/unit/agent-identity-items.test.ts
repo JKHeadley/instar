@@ -67,6 +67,16 @@ describe('IdentityAttentionItems', () => {
     expect(s.raise(item('split aa/bb — now the laptop too', 'agent-identity-split:echo:aa+bb'))).toEqual({ outcome: 'created', id: 'agent-identity-split:echo:aa+bb#2' });
   });
 
+  it('a WONT_DO stands only while its condition lasts: once resolved, the same text recurring is raised again', () => {
+    const { s, rows } = store();
+    s.raise(item('split aa/bb', 'agent-identity-split:echo:aa+bb'));
+    rows.get('agent-identity-split:echo:aa+bb')!.status = 'WONT_DO';
+    expect(s.raise(item('split aa/bb', 'agent-identity-split:echo:aa+bb')).outcome).toBe('unchanged'); // still dismissed
+    s.resolve('agent-identity-split:echo:aa+bb'); // the split healed
+    expect(rows.get('agent-identity-split:echo:aa+bb')!.status).toBe('DONE');
+    expect(s.raise(item('split aa/bb', 'agent-identity-split:echo:aa+bb'))).toEqual({ outcome: 'created', id: 'agent-identity-split:echo:aa+bb#2' });
+  });
+
   it('resolve closes every open episode of the base id and nothing else; an unknown id is a no-op', () => {
     const { s, rows } = store();
     s.raise(item('a', 'agent-identity-split:echo:aa+bb'));

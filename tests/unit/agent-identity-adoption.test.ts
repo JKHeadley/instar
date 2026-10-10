@@ -518,6 +518,23 @@ describe('§1.2 the adoption loop — end to end over signed fakes', () => {
     rm(a.stateDir); rm(b.stateDir);
   });
 
+  it('a machine that BOOTED unprovisioned reloads when the file is placed by hand (no sibling could serve it)', async () => {
+    const fleet = new Fleet();
+    const a = fleet.add(machine('m_a'));
+    const b = fleet.add(machine('m_b'));
+    writeAgentIdentity(a.stateDir);
+    const reloaded: string[] = [];
+    const base = fleet.loop(b, { onInstalled: (fp) => { reloaded.push(fp); } });
+    const d = (base as unknown as { d: ConstructorParameters<typeof AgentIdentityAdoptionLoop>[0] }).d;
+    const loop = new AgentIdentityAdoptionLoop({ ...d, listActiveSiblings: () => [] });
+    await loop.runOnce(); // unprovisioned, nobody reachable
+    expect(reloaded).toEqual([]);
+    fs.copyFileSync(path.join(a.stateDir, 'identity.json'), path.join(b.stateDir, 'identity.json'));
+    await loop.runOnce();
+    expect(reloaded).toHaveLength(1);
+    rm(a.stateDir); rm(b.stateDir);
+  });
+
   it('an unusable identity file still OBSERVES, so the machine yields the lease to a live provisioned sibling', async () => {
     const fleet = new Fleet();
     const a = fleet.add(machine('m_a'));
