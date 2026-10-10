@@ -2,9 +2,14 @@
  * Canonical JSON for signing.
  *
  * Two parties must produce the same bytes for the same record, or a valid
- * signature fails to verify. Object keys are sorted, there is no whitespace,
- * and values JSON cannot represent exactly (undefined, NaN, Infinity,
- * functions, symbols, bigint) are rejected instead of silently dropped —
+ * signature fails to verify. This is the RFC 8785 (JCS) form restricted to
+ * the subset every language serialises identically: object keys sorted by
+ * UTF-16 code unit, no whitespace, strings escaped as JSON.stringify does,
+ * and numbers limited to safe integers. Floats are where implementations
+ * disagree (1e21, 0.1+0.2, -0), so signed data never contains one.
+ *
+ * Values JSON cannot represent exactly (undefined, functions, symbols,
+ * bigint, non-plain objects) are rejected instead of silently dropped —
  * a field that vanishes during signing is a field the signature never covered.
  */
 
@@ -19,8 +24,10 @@ function encode(value: unknown, at: string): string {
     case 'boolean':
       return JSON.stringify(value);
     case 'number':
-      if (!Number.isFinite(value)) throw new TypeError(`canonicalize: non-finite number at ${at}`);
-      return JSON.stringify(value);
+      if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
+        throw new TypeError(`canonicalize: only safe integers are allowed in signed data, got ${value} at ${at}`);
+      }
+      return String(value);
     case 'object': {
       if (Array.isArray(value)) {
         return '[' + value.map((v, i) => encode(v, `${at}[${i}]`)).join(',') + ']';

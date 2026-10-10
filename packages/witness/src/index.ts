@@ -11,6 +11,7 @@ export { loadOrCreateWitnessKey, KEY_FILE_NAME } from './keyfile.js';
 export {
   CLAIMS,
   DEFAULT_VALIDITY_DAYS,
+  MAX_CLOCK_SKEW_MS,
   RECORD_TYPE,
   createRecord,
   createRevocation,
@@ -24,11 +25,20 @@ export {
   type WitnessRecord,
 } from './record.js';
 export {
+  BINDING_REVOCATION_TYPE,
   BINDING_TYPE,
+  bindingHash,
+  bindingRevocationHash,
   createBinding,
+  createBindingRevocation,
+  createSuccessorBinding,
   threadlineFingerprint,
   verifyBinding,
+  verifyBindingRevocation,
+  verifySuccessor,
   type BindingResult,
+  type BindingRevocation,
   type KeyBinding,
+  type KeyRole,
 } from './binding.js';
-export { WitnessStore, type AddResult, type KeyResolver, type RecordStatus } from './store.js';
+export { WitnessStore, type AddResult, type RecordStatus } from './store.js';
