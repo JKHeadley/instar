@@ -8245,6 +8245,24 @@ Every loop I open — a promise to a user, a feature shipped dark, a gate I depl
     // me" source is the routing fingerprint (relay registration / health
     // fingerprint), not the legacy publicKey hex — this is exactly the bug that
     // made a peer's sends vanish. Content-sniffed on a distinctive marker.
+    // a2a-single-agent-identity (§Agent awareness, rows §1 + §2): one identity across
+    // machines (adoption, the not-provisioned posture, the operator-yes replacement path)
+    // and the continuous coherence check. Content-sniffed on the heading for idempotency.
+    if (!content.includes('One identity across my machines (agent identity)')) {
+      const agentIdentitySection = `
+### One identity across my machines (agent identity)
+
+I am ONE agent on every machine I run on, and the agent network knows me by ONE routing fingerprint. A machine that joins or is rebuilt ADOPTS that identity from its siblings (signed, sealed to its own registry key, only when every reachable sibling agrees); it never invents one. A paired machine with no identity boots \`identity-not-provisioned\`: off the relay, yielding the serving lease only to a live provisioned sibling, with ONE \`agent-identity-missing\` item naming the refusal reason and the lever.
+- **"Are my machines the same me on the agent network?"** → \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/threadline/health\` → \`identityCoherence.state\` (\`agree\` / \`partial-agree\` / \`disagree\` / \`cannot-tell\`) plus \`connectedAs\` and \`siblingsPublish\`. The check runs every 5 min on every machine; a \`disagree\` means peers' messages to the other address are queued and lost, and the lease holder raises ONE \`agent-identity-split\` item naming the machine, the majority value and the source to adopt from. \`cannot-tell\` is honest insufficient observation, never a verdict.
+- **On \`identity-not-provisioned\`** (\`relay.state: not-provisioned\`), read the health and the item; name the refusal reason (\`single-witness\`, \`last-known-mismatch\`, \`disagree\`, \`identity-file-invalid\`, …) — never guess. Adoption keeps retrying and clears the item itself.
+- **Replacing an EXISTING identity is MY action, after the operator's yes.** I move the conversation to the named machine (\`POST /pool/transfer {"topic":N,"to":"<nick>"}\`), run \`instar identity adopt --from <sibling>\` there (it moves the old files aside — never deletes — installs, reloads the running server and restarts a live listener), report the outcome in one line, then \`POST /pool/unpin\`. Never a file copy, never a command handed to the operator. A 409 (machine offline) means the item stays open — say so. Where the pool is dark (503) the yes is recorded on the item and that machine runs the command from its next session. A fleet with no usable candidate mints with \`instar identity init --standalone --i-understand-peers-must-repin\`; a decommissioned machine is removed with \`instar machines remove\` (it still holds a copy of the identity until rotation).
+- **Audit + lever:** \`GET /agent-identity/audit\` (\`?scope=pool\` merges every online machine; never key material). \`POST /agent-identity/reload\` re-reads THIS machine's own disk and rebuilds its relay client — local effect only, carries no key, installs nothing (429 inside 60 s).
+`;
+      content += '\n' + agentIdentitySection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added One identity across my machines (agent identity) section');
+    }
+
     if (!content.includes('What address reaches me (Threadline routing fingerprint)')) {
       const routingFingerprintSection = `
 ### What address reaches me (Threadline routing fingerprint)
@@ -11264,6 +11282,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Telegram message origin',
+      // a2a-single-agent-identity: the agent identity + coherence check are server-side and
+      // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
+      // not-provisioned posture and the adopt-from-a-sibling path honestly too).
+      '### One identity across my machines (agent identity)',
       // Jev job-completion audit: framework-agnostic server behavior (capture
       // happens in the scheduler), so a Codex/Gemini agent must be able to
       // explain it honestly too — especially that it is dark by default.
@@ -12603,6 +12625,18 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     if (migrateTelegramOriginDisplay(config)) {
       patched = true;
       result.upgraded.push('config.json: added missing Telegram origin display and outage-notice defaults');
+    }
+
+    // a2a-single-agent-identity §1.2: the FLEET-LIVE adoption kill switch. Add the missing
+    // nested default only; an operator's explicit value (true or false) is never overwritten.
+    {
+      const ai: Record<string, unknown> = (config.agentIdentity && typeof config.agentIdentity === 'object') ? config.agentIdentity as Record<string, unknown> : {};
+      if (!ai.adoption || typeof ai.adoption !== 'object') {
+        ai.adoption = { enabled: true };
+        config.agentIdentity = ai;
+        patched = true;
+        result.upgraded.push('config.json: added agentIdentity.adoption default (enabled: true)');
+      }
     }
 
     // Codex lifecycle reliability rollout. Stage B becomes pending only when

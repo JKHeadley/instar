@@ -1653,6 +1653,129 @@ const passkeyRevokeOutbox: SelfActionController = {
   },
 };
 
+
+// ── a2a-single-agent-identity (§1.2 adoption loop, §2.2 coherence detector) ──
+
+/**
+ * agent-identity-adoption — the §1.2 adoption loop, a DECLARED Eternal Sentinel
+ * (P19): a paired machine with no agent identity observes its siblings every
+ * round (constant cost: one signed read per active sibling) and sends at most
+ * ONE `agent-identity-request` per 10 min, one in flight, rotating on a typed
+ * refusal; it escalates ONCE (4 consecutive fleet refusals or 120 s → one `high`
+ * item, re-raised only when the refusal REASON changes) and keeps healing at the
+ * 5-min observe floor after 1 h. Under the pinned fixture (every sibling refuses
+ * forever — `targetAlwaysRejects`), the emits are the paced requests + the single
+ * escalation: never faster than the 10-min floor, never a second item.
+ */
+function makeAgentIdentityAdoptionLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const REQUEST_INTERVAL_MS = 10 * 60_000;
+  const ESCALATE_AFTER_MS = 120_000;
+  const ESCALATE_AFTER_REFUSALS = 4;
+  // The responder's per-requester share interval is SERVER-side state (durable across
+  // the requester's restarts): a restarted requester's first request is refused
+  // `rate-limited` with retryAfterMs and the requester paces off it.
+  const key = 'agent-identity-adoption:responder-last-share-at';
+  const startedAt = f.clock.nowMs();
+  let refusals = 0;
+  let escalated = false;
+  return {
+    tick() {
+      sink.considered += 1;
+      // Observe round (constant per-round cost; not an emit — a signed read).
+      const lastShare = (f.durableState.get(key) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - lastShare < REQUEST_INTERVAL_MS) {
+        // Paced (locally, or by the responder's retryAfterMs after a restart).
+      } else {
+        sink.emit({ verb: 'retry', target: 'sibling-request' });
+        sink.emitTimesMs.push(f.clock.nowMs());
+        f.durableState.set(key, f.clock.nowMs());
+        if (f.targetAlwaysRejects()) refusals += 1;
+      }
+      const byRefusals = refusals >= ESCALATE_AFTER_REFUSALS;
+      const byTime = f.clock.nowMs() - startedAt >= ESCALATE_AFTER_MS;
+      if (!escalated && (byRefusals || byTime)) {
+        // ONE item per machine; re-raised only when the refusal reason changes (never here).
+        escalated = true;
+        // Counted in the audit, not as a paced emit: a single constant-cost line.
+      }
+    },
+  };
+}
+
+const agentIdentityAdoption: SelfActionController = {
+  id: 'agent-identity-adoption',
+  actionVerb: 'adoption-retry',
+  models: 'src/core/AgentIdentityAdoption.ts (AgentIdentityAdoptionLoop — ≤1 request per 10 min, one in flight, ONE escalation per reason, 5-min observe floor)',
+  modelsPath: 'src/core/AgentIdentityAdoption.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeAgentIdentityAdoptionLoop(f, sink),
+  },
+  delegatedGiveUp: 'the responder-side share rate-limit (one share per requester per 10 min, carried as retryAfterMs) + the ONE-item escalation after 4 fleet refusals / 120 s — the heal continues at the 5-min floor, never a second item for the same reason',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the 10-min request floor, not a total count
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48,
+  tickMs: 5 * 60_000, // 5 min/tick (the observe floor) — 4 h of sustained refusal
+  eternalSentinel: { reason: 'declared Eternal Sentinel (spec §Watchers, P19): healer-only, constant per-round cost, escalates once', rateFloorMs: 10 * 60_000 },
+  makeUnderPressure(f, sink) {
+    return makeAgentIdentityAdoptionLoop(f, sink);
+  },
+};
+
+/**
+ * agent-identity-coherence-detector — the §2.2 continuous identity check. Under a
+ * split that NEVER repairs (the pinned fixture), it raises exactly ONE `high`
+ * item per sorted-fingerprint-set episode (after 2 consecutive `disagree`
+ * reads, lease holder only) and at most ONE `medium` cannot-tell item per
+ * online-but-unanswering peer; the attention store dedupes by id, so a restart
+ * re-raising the same episode id never posts a second message.
+ */
+function makeAgentIdentityCoherenceDetector(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const RAISE_AFTER = 2;
+  const key = 'agent-identity-coherence:raised-ids'; // the per-machine attention store (dedupe by id)
+  const raised = (f.durableState.get(key) as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set(key, raised);
+  let consecutiveDisagree = 0;
+  let cannotTellRounds = 0;
+  return {
+    tick() {
+      sink.considered += 1;
+      // The pressure: every round reads `disagree` on the SAME sorted set, and one online
+      // peer never answers /provenance.
+      consecutiveDisagree += 1;
+      const episodeId = 'agent-identity-split:echo:A+B';
+      if (consecutiveDisagree >= RAISE_AFTER && !raised.has(episodeId)) {
+        raised.add(episodeId);
+        sink.emit({ verb: 'escalate', target: episodeId });
+      }
+      cannotTellRounds += 1;
+      const ctId = 'agent-identity-cannot-tell:echo:m_slow';
+      if (cannotTellRounds >= 10 && !raised.has(ctId)) {
+        raised.add(ctId);
+        sink.emit({ verb: 'escalate', target: ctId });
+      }
+    },
+  };
+}
+
+const agentIdentityCoherenceDetector: SelfActionController = {
+  id: 'agent-identity-coherence-detector',
+  actionVerb: 'split-escalate',
+  models: 'src/core/AgentIdentityCoherence.ts (IdentityCoherenceDetector — one item per sorted-set episode after 2 consecutive disagree reads, holder-only; one cannot-tell item per peer after 10 online rounds)',
+  modelsPath: 'src/core/AgentIdentityCoherence.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeAgentIdentityCoherenceDetector(f, sink),
+  },
+  boundK: 2, // one split item + one cannot-tell item while the episode persists
+  perTargetBoundK: 1,
+  ticks: 60,
+  tickMs: 5 * 60_000, // 5 min/tick — 5 h of a split that never repairs
+  makeUnderPressure(f, sink) {
+    return makeAgentIdentityCoherenceDetector(f, sink);
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageTick,
   feedbackTriageActionList,
@@ -1692,4 +1815,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackGeneratedDefaultsHeal,
   mutualSshRepairSweep,
   followMeEnrollmentConsumer,
+  agentIdentityAdoption,
+  agentIdentityCoherenceDetector,
 ];

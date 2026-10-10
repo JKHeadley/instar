@@ -33,6 +33,7 @@ import { addUser, listUsers } from './commands/user.js';
 import { addJob, listJobs } from './commands/job.js';
 import { listRelationships, importRelationships, exportRelationships } from './commands/relationship.js';
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
+import { identityAdopt, identityInit, identityStatus } from './commands/identity.js';
 import pc from 'picocolors';
 import { getInstarVersion } from './core/Config.js';
 import { resolveAgentDir } from './core/Config.js';
@@ -2146,6 +2147,32 @@ machineCmd
   .description('Revoke a machine from the mesh')
   .option('-d, --dir <path>', 'Project directory')
   .action(removeMachine);
+
+// ── Agent identity (a2a-single-agent-identity §1.4) ──────────────────
+const identityCmd = program
+  .command('identity')
+  .description('This machine\'s AGENT identity: adopt it from a sibling, or mint a standalone one');
+
+identityCmd
+  .command('status')
+  .description('The on-disk posture + routing fingerprint (never key material)')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityStatus);
+
+identityCmd
+  .command('adopt')
+  .description('Move this machine\'s existing identity aside and adopt the one a named sibling publishes (run ON the affected machine, after the operator\'s yes)')
+  .requiredOption('--from <machine-name-or-id>', 'The sibling to adopt the identity from')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityAdopt);
+
+identityCmd
+  .command('init')
+  .description('Mint a NEW agent identity on a fleet with no usable candidate (peers must re-pin)')
+  .option('--standalone', 'Required: this is a standalone recovery mint')
+  .option('--i-understand-peers-must-repin', 'Required: acknowledge every peer must re-pin the new address')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityInit);
 
 program
   .command('whoami')

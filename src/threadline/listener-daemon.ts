@@ -131,18 +131,23 @@ export class ListenerDaemon extends EventEmitter {
     this.pidPath = path.join(config.stateDir, 'listener-daemon.pid');
     this.log = new DaemonLogger(config.logPath, config.logMaxBytes);
 
-    // Load identity
-    const identityMgr = new IdentityManager(path.join(config.stateDir, 'threadline'));
+    // Load identity — CANONICAL `.instar/identity.json` FIRST, legacy `threadline/identity.json`
+    // as its fallback (a2a-single-agent-identity §1.5). The manager rooted at the state dir
+    // reads exactly that order. Until §1.5 the daemon rooted its PRIMARY manager at the
+    // threadline dir, i.e. it loaded the legacy key first, so after the 2026-10-09 manual
+    // repair of the canonical file the daemon kept speaking under the superseded key.
+    const identityMgr = new IdentityManager(config.stateDir);
     const identity = identityMgr.get();
     if (!identity) {
-      // Try legacy path
-      const legacyMgr = new IdentityManager(config.stateDir);
-      const legacyIdentity = legacyMgr.get();
-      if (!legacyIdentity) {
+      // A home whose ONLY key file sits at threadline/threadline/identity.json (pre-canonical
+      // layout rooted one level deeper) is still honoured.
+      const nestedMgr = new IdentityManager(path.join(config.stateDir, 'threadline'));
+      const nestedIdentity = nestedMgr.get();
+      if (!nestedIdentity) {
         this.log.error('No identity found. Server must generate identity first.');
         process.exit(1);
       }
-      this.identity = legacyIdentity;
+      this.identity = nestedIdentity;
     } else {
       this.identity = identity;
     }

@@ -182,11 +182,10 @@ import {
   readLaunchdPlistCeilingsForSelf,
   launchdPlistExistsForSelf,
 } from '../core/ProcessCeilingCheck.js';
-import {
-  evaluateDivergence,
-  divergenceNotice,
-} from '../core/AgentIdentityDivergenceDetector.js';
-import { fingerprintOf as identityFingerprintOf } from '../core/AgentIdentityHandover.js';
+import { IdentityCoherenceDetector } from '../core/AgentIdentityCoherence.js';
+import { AgentIdentityAudit } from '../core/AgentIdentityAudit.js';
+import { readAgentIdentityOnDisk } from '../core/AgentIdentityAdoption.js';
+import type { AgentIdentityRuntime, AgentIdentityRuntimeDeps } from '../core/AgentIdentityRuntime.js';
 import { MoneyLayerAuditLog } from '../core/MoneyLayerAuditLog.js';
 import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
 import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
@@ -567,6 +566,8 @@ export class AgentServer {
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
+  /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
+  private agentIdentityRuntime: AgentIdentityRuntime | null = null;
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
@@ -877,6 +878,12 @@ export class AgentServer {
     kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
+    /**
+     * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
+     * (coherence detector, posture, reload lever, adoption status). Absent on a single
+     * machine — the runtime is still constructed from this machine's own disk.
+     */
+    agentIdentity?: AgentIdentityRuntimeDeps;
     /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
     guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry;
     /**
@@ -2906,106 +2913,85 @@ export class AgentServer {
       console.warn('[process-ceiling] check skipped (non-fatal):', err);
     }
 
-    // Agent-identity divergence check (docs/specs/agent-identity-continuity-on-expansion.md §4).
-    //
-    // The 2026-08-19 split went FOUR DAYS unreported and surfaced only while investigating an
-    // unrelated request. A repair path with no detector only fixes the splits somebody happens
-    // to notice, so this is the part that makes the failure visible at all.
-    //
-    // EVERY machine observes — not only the lease holder, which fails in the two cases that
-    // matter most (the holder may BE the diverged machine, and it may be the isolated one).
-    // The single-notice property comes from the episode dedupe key, not from restricting who
-    // is allowed to look.
-    //
-    // Deliberately DELAYED and fire-and-forget: it reaches peers over the network, and a boot
-    // path must never block on that. SIGNAL ONLY — it raises one attention item and repairs
-    // nothing; repair needs an operator decision (§3).
-    if (options.resolvePeerUrls) {
-      const divergenceTimer = setTimeout(() => {
-        void (async () => {
-          try {
-            const peers = options.resolvePeerUrls!();
-            if (peers.length === 0) return; // single machine — nothing to compare
-            // Read the SELF fingerprint from the same canonical identity the verifier uses —
-            // the STATE this machine publishes, not a cached copy that could drift from it.
-            const selfFp = (() => {
-              try {
-                const id = JSON.parse(
-                  fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf-8'),
-                ) as { publicKey?: string };
-                return id.publicKey ? identityFingerprintOf(id.publicKey) : null;
-              } catch {
-                // @silent-fallback-ok: no readable identity → null → the detector counts this
-                // machine as unreadable, which is `cannot-tell`, never agreement.
-                return null;
-              }
-            })();
-            const agentName = options.config.projectName;
-            const observations = [
-              {
-                machineId: 'self',
-                machineName:
-                  (options.config as { machineNickname?: string }).machineNickname ?? 'this machine',
-                publishedFingerprint: selfFp,
-                ...(selfFp ? {} : { unreachableReason: 'no-local-fingerprint' }),
-              },
-              ...(await Promise.all(
-                peers.map(async (p) => {
-                  try {
-                    const r = await fetch(`${p.url.replace(/\/+$/, '')}/provenance`, {
-                      headers: {
-                        Authorization: `Bearer ${options.config.authToken ?? ''}`,
-                        'X-Instar-AgentId': agentName,
-                      },
-                      signal: AbortSignal.timeout(8000),
-                    });
-                    const j = (await r.json()) as { fingerprint?: string };
-                    return {
-                      machineId: p.machineId,
-                      machineName: p.machineId,
-                      publishedFingerprint: j?.fingerprint ?? null,
-                      ...(j?.fingerprint ? {} : { unreachableReason: 'no-fingerprint-reported' }),
-                    };
-                  } catch {
-                    // Unreachable is UNKNOWN, never agreement — the detector's whole point.
-                    return {
-                      machineId: p.machineId,
-                      machineName: p.machineId,
-                      publishedFingerprint: null,
-                      unreachableReason: 'unreachable',
-                    };
-                  }
-                }),
-              )),
-            ];
-            const verdict = evaluateDivergence({ agentName, observations });
-            if (verdict.state === 'cannot-tell') {
-              console.warn(
-                `[identity-divergence] cannot-tell — ${verdict.unreadable.length} machine(s) unreadable; ` +
-                  'no claim made (this is NOT agreement)',
-              );
-              return;
-            }
-            if (!verdict.shouldNotify || !verdict.episodeKey) return;
-            const notice = divergenceNotice(verdict, agentName);
-            console.warn(`[identity-divergence] SPLIT: ${verdict.fingerprints.join(' vs ')}`);
-            void this.telegramAdapter?.createAttentionItem?.({
-              id: verdict.episodeKey,
-              title: notice.title,
-              description: notice.body,
-              summary: notice.title,
-              priority: 'HIGH',
-              category: 'monitoring',
-              sourceContext: 'agent-identity:split',
-            });
-          } catch (err) {
-            // @silent-fallback-ok: a detector that can take a boot down is worse than the split
-            // it detects. Logged so a broken detector is visible rather than quietly inert.
-            console.warn('[identity-divergence] check skipped (non-fatal):', err);
+    // Agent-identity coherence (docs/specs/a2a-single-agent-identity.md §2.2) — the
+    // continuous cross-machine identity check. ALWAYS ON, every machine, no flag (a dark
+    // identity check checks nothing). It replaces the parent's one-shot boot task, which
+    // compared two different fingerprint formulas and so fired identically on healthy and
+    // broken fleets. ONE formula (the routing fingerprint); SELF contributes the on-disk
+    // value AND the fingerprint the running relay client is connected as; every 5 min with an
+    // in-flight guard; an offline-by-presence peer is `unobserved`; the item is raised and
+    // resolved by the lease holder only. Deliberately DELAYED and fire-and-forget: it reaches
+    // peers over the network, and a boot path must never block on that. SIGNAL ONLY — it
+    // raises one item per episode and repairs nothing (repair is §1.4's CLI after a yes).
+    {
+      const stateDir = options.config.stateDir;
+      const deps = options.agentIdentity;
+      const agentName = options.config.projectName;
+      const audit = new AgentIdentityAudit(stateDir);
+      const peerFetch = async (sibling: { machineId: string }): Promise<string | null> => {
+        const peers = options.resolvePeerUrls?.() ?? [];
+        const p = peers.find((x) => x.machineId === sibling.machineId);
+        if (!p) return null;
+        const r = await fetch(`${p.url.replace(/\/+$/, '')}/provenance`, {
+          headers: { Authorization: `Bearer ${options.config.authToken ?? ''}`, 'X-Instar-AgentId': agentName },
+          signal: AbortSignal.timeout(8000),
+        });
+        const j = (await r.json()) as { fingerprint?: unknown };
+        return typeof j?.fingerprint === 'string' ? j.fingerprint : null;
+      };
+      const coherence = new IdentityCoherenceDetector({
+        agentName,
+        selfMachineId: deps?.selfMachineId() ?? 'self',
+        selfNickname: deps?.selfNickname() ?? ((options.config as { machineNickname?: string }).machineNickname ?? 'this machine'),
+        // The on-disk value through the single reader — never the in-process cache.
+        readSelfDisk: () => readAgentIdentityOnDisk(stateDir)?.fingerprint ?? null,
+        connectedAs: () => deps?.connectedAs() ?? options.threadlineRelayClient?.connectedAs ?? null,
+        listActiveSiblings: () => deps?.listActiveSiblings() ?? (options.resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: p.machineId })),
+        listRevokedSiblings: () => deps?.listRevokedSiblings() ?? [],
+        isMachineActive: (id) => deps?.isMachineActive(id) ?? (options.resolvePeerUrls?.() ?? []).some((p) => p.machineId === id),
+        isOnline: (id) => deps?.isOnline(id) ?? null,
+        fetchPeerFingerprint: peerFetch,
+        refreshPresence: deps?.refreshPresence,
+        holdsLease: () => deps?.holdsLease() ?? true,
+        raiseItem: (item) => {
+          if (deps) return deps.raiseItem(item);
+          void this.telegramAdapter?.createAttentionItem?.({
+            id: item.id,
+            title: item.title,
+            description: item.body,
+            summary: item.title,
+            priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+            category: 'monitoring',
+            sourceContext: 'agent-identity:split',
+          });
+        },
+        resolveItem: (id) => {
+          if (deps) return deps.resolveItem(id);
+          void this.telegramAdapter?.updateAttentionStatus?.(id, 'DONE', { silent: true });
+        },
+        reportDegradation: (row) => DegradationReporter.getInstance().report(row),
+        audit,
+      });
+      this.agentIdentityRuntime = {
+        coherence,
+        audit,
+        notProvisioned: () => deps?.notProvisioned() ?? false,
+        reload: async () => {
+          if (deps) {
+            const r = await deps.reload();
+            coherence.noteLocalRepair();
+            return r;
           }
-        })();
-      }, 90_000);
-      divergenceTimer.unref?.();
+          // Single machine, no relay bootstrap handed in: re-read disk, report the value.
+          const fp = readAgentIdentityOnDisk(stateDir)?.fingerprint ?? null;
+          coherence.noteLocalRepair();
+          return { fingerprint: fp, connected: false, reason: fp ? 'reloaded' : 'no-identity' };
+        },
+        adoptionStatus: () => deps?.adoptionStatus() ?? null,
+        resolvePeerUrls: () => options.resolvePeerUrls?.() ?? [],
+        selfMachineId: deps?.selfMachineId() ?? null,
+      };
+      coherence.start(90_000);
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
@@ -4465,6 +4451,7 @@ export class AgentServer {
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
+      agentIdentity: this.agentIdentityRuntime,
       getLastRelayEvent: options.getLastRelayEvent ?? null,
       a2aRelayForward: options.a2aRelayForward ?? null,
       listenerManager: options.listenerManager ?? null,
@@ -6636,6 +6623,7 @@ export class AgentServer {
   async stop(): Promise<void> {
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
+    try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
     if (this.windowLifecycleTimer) {
       clearInterval(this.windowLifecycleTimer);
       this.windowLifecycleTimer = null;

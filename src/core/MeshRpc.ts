@@ -123,6 +123,10 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  // a2a-single-agent-identity §1.2 — the two AGENT-identity verbs. Structurally separate from
+  // `secret-share` (credential-class payload, signed responses, own serving refusals).
+  | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
+  | { type: 'agent-identity-request'; agentName: string; expectedFingerprint: string; requesterNonce: string }
   | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
   | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
@@ -498,6 +502,15 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
     case 'a2a-topic-reply-inject':
+    case 'agent-identity-observe':
+    case 'agent-identity-request':
+      // agent-identity-observe / agent-identity-request (a2a-single-agent-identity
+      // §1.2): registered-peer class — verifyEnvelope already proved a signed,
+      // recipient-bound, replay-safe ACTIVE sibling. The HANDLER is the real gate
+      // for `request` (typed serving refusals: not-registered, no-usable-identity,
+      // fingerprint-mismatch, requester-publishes-identity, rate-limited) and it
+      // seals the payload to the requester's REGISTRY encryption key — a key named
+      // in the body is never used.
       // a2a-relay-forward / a2a-topic-reply-inject (a2a-cross-machine-route):
       // registered-peer class. Both handlers are the real gate — the forward
       // handler refuses when the feature is off or this machine is a relay

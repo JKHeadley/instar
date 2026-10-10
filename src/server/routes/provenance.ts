@@ -33,8 +33,13 @@ export interface RegisterProvenanceRoutesOpts {
   app: Express;
   /** This agent's id as it appears in signed tags. */
   agentId: string;
-  /** Raw 32-byte Ed25519 public key for this agent, or null when unavailable. */
-  publicKey: Buffer | null;
+  /**
+   * Raw 32-byte Ed25519 public key for this agent, or null when unavailable. A FUNCTION is
+   * resolved on every read (a2a-single-agent-identity §1.2): after an identity reload the
+   * published fingerprint must change without a server restart — `/provenance` is what the
+   * §2 detector on every sibling compares.
+   */
+  publicKey: Buffer | null | (() => Buffer | null);
   /** Resolve any agent id to its raw public key. Unknown ids MUST return null. */
   resolvePublicKey: (agentId: string) => Buffer | null | undefined;
   /** Durable replay store. When absent, replay defence is reported as unavailable. */
@@ -47,11 +52,21 @@ export interface RegisterProvenanceRoutesOpts {
 const MAX_BODY_BYTES = 64 * 1024;
 
 export function registerProvenanceRoutes(opts: RegisterProvenanceRoutesOpts): void {
-  const { app, agentId, publicKey, resolvePublicKey, seenNonces } = opts;
+  const { app, agentId, resolvePublicKey, seenNonces } = opts;
   const now = opts.now ?? (() => Date.now());
+  const readPublicKey = (): Buffer | null => {
+    try {
+      return typeof opts.publicKey === 'function' ? opts.publicKey() : opts.publicKey;
+    } catch {
+      // @silent-fallback-ok: a throwing key reader must not fail the STATUS route; null reads
+      // as `enabled:false` / fingerprint null, which the detector counts as unreadable.
+      return null;
+    }
+  };
 
   app.get('/provenance', (_req: Request, res: Response) => {
     try {
+      const publicKey = readPublicKey();
       let nonceCount: number | null = null;
       try {
         nonceCount = opts.nonceCount ? opts.nonceCount() : null;

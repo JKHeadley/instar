@@ -97,6 +97,18 @@ export interface ThreadlineEndpointsConfig {
   inboundIdLedger?: () => InboundIdLedger | null;
   /** True while the listener daemon owns inbound relay handling (no capability then). */
   inboundIdLedgerDaemonDeferred?: () => boolean;
+  /**
+   * a2a-single-agent-identity §1.1: true while this machine boots in the
+   * `identity-not-provisioned` posture (a joined machine with no agent identity — the relay
+   * connection is not attempted; `fingerprint` is absent). Reported as relay state
+   * `not-provisioned` so a reader never mistakes it for a dropped connection.
+   */
+  identityNotProvisioned?: () => boolean;
+  /**
+   * a2a-single-agent-identity §2.2: the continuous cross-machine identity check's health —
+   * `{state, connectedAs, siblingsPublish, cannotTellRounds, lastCheckedAt}`. Absent → omitted.
+   */
+  identityCoherence?: () => Record<string, unknown> | null;
 }
 
 /**
@@ -120,7 +132,9 @@ export type RelayHealthState =
   | 'disconnected'
   | 'displaced'
   | 'never-connected'
-  | 'not-configured';
+  | 'not-configured'
+  /** a2a-single-agent-identity §1.1: no agent identity on this joined machine; adoption is running. */
+  | 'not-provisioned';
 
 /**
  * Map live relay state onto the health response. Extracted as a pure function so
@@ -139,10 +153,19 @@ export type RelayHealthState =
  */
 export function resolveRelayHealth(
   relayStatus: ThreadlineEndpointsConfig['relayStatus'],
+  identityNotProvisioned?: ThreadlineEndpointsConfig['identityNotProvisioned'],
 ): {
   status: 'ok' | 'degraded' | 'error';
   report: { state: RelayHealthState; recoverable: boolean; since?: string };
 } {
+  // §1.1: an unprovisioned machine never attempted the connection. That is a NAMED posture
+  // (adoption is running, the item names the lever), not a drop — reported before the live
+  // state so a stale client object can never make it read as `never-connected`.
+  try {
+    if (identityNotProvisioned?.()) return { status: 'degraded', report: { state: 'not-provisioned', recoverable: true } };
+  } catch {
+    /* a throwing posture probe falls through to the live relay state */
+  }
   let live: ReturnType<NonNullable<ThreadlineEndpointsConfig['relayStatus']>> = null;
   try {
     live = relayStatus?.() ?? null;
@@ -269,7 +292,13 @@ export function createThreadlineRoutes(
     // relay was displaced and the agent could neither send nor receive — 131
     // messages queued behind a route that said everything was fine. Every input
     // needed was already in-process; nothing asked for it.
-    const relay = resolveRelayHealth(config.relayStatus);
+    const relay = resolveRelayHealth(config.relayStatus, config.identityNotProvisioned);
+    let identityCoherence: Record<string, unknown> | null = null;
+    try {
+      identityCoherence = config.identityCoherence?.() ?? null;
+    } catch {
+      identityCoherence = null; // a throwing probe must not take the health route down
+    }
     res.json({
       // `status` now reflects the relay. Deliberately still HTTP 200 with
       // protocol/identityPub/fingerprint unchanged: AgentDiscovery.verifyAgent
@@ -297,6 +326,8 @@ export function createThreadlineRoutes(
       ...(inboundIdLedgerAdvertised(config)
         ? { capabilities: ['inbound-id-ledger'], protocolVersion: 2 }
         : {}),
+      // a2a-single-agent-identity §2.2: are my machines the same me on the agent network?
+      ...(identityCoherence ? { identityCoherence } : {}),
       timestamp: new Date().toISOString(),
     });
   });

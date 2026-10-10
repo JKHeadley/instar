@@ -4928,6 +4928,17 @@ export interface InstarConfig {
   inputGuard?: InputGuardConfig;
   /** Threadline relay — cloud relay connection for inter-agent communication */
   threadline?: ThreadlineConfig;
+  /**
+   * Agent identity (a2a-single-agent-identity). `adoption.enabled` is the FLEET-LIVE kill
+   * switch for post-pairing adoption (§1.2): off, a joined identity-less machine stays
+   * `identity-not-provisioned`, lease-ineligible and loud — strictly better than minting.
+   * The CLI (`instar identity adopt --from`) works regardless. Default true.
+   */
+  agentIdentity?: {
+    adoption?: {
+      enabled?: boolean;
+    };
+  };
   /** Dashboard configuration */
   dashboard?: DashboardConfig;
   /**

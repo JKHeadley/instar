@@ -210,6 +210,40 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * The fingerprint this client is CONNECTED as right now, or null when there is no live
+   * relay connection in this process (a2a-single-agent-identity §2.2: SELF contributes the
+   * on-disk value AND this one; a difference is itself a split — a file repaired while the
+   * process still speaks under the old key must never read as healthy).
+   */
+  get connectedAs(): AgentFingerprint | null {
+    return this.relayClient?.connectionState === 'connected' ? (this.identity?.fingerprint ?? null) : null;
+  }
+
+  /**
+   * The reload lever (a2a-single-agent-identity §1.2): drop the relay client built with the
+   * OLD key, re-read the identity from disk (the cache is invalidated, not reused), and — when
+   * `connect` is true — rebuild + connect a new relay client under the NEW key. Today's
+   * `reconnectRelay()` reuses the client built at construction and cannot change identity;
+   * this is the one path that can. Returns the fingerprint now on disk (null when none).
+   */
+  async reloadIdentity(opts: { connect: boolean }): Promise<AgentFingerprint | null> {
+    if (this.relayClient) {
+      try {
+        this.relayClient.disconnect();
+      } catch {
+        /* a client that cannot disconnect cleanly is dropped regardless */
+      }
+      this.relayClient = null;
+      this.encryptor = null;
+    }
+    this.identity = this.identityManager.reload();
+    if (!this.identity) return null;
+    this.encryptor = new MessageEncryptor(this.identity.privateKey, this.identity.publicKey);
+    if (opts.connect) await this.connect();
+    return this.identity.fingerprint;
+  }
+
+  /**
    * Connect to the relay and start communicating.
    */
   async connect(): Promise<string> {

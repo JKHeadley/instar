@@ -272,6 +272,25 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
+  // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
+  // to this machine's key-free audit log. Local effect only; carries no key; installs
+  // nothing. The identity itself is `unified` (one keypair, replicated by the sealed
+  // handover + adoption and verified equal by the §2 detector every 5 min); the pool read of
+  // the audit is GET /agent-identity/audit?scope=pool.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/agent-identity/',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'the lever acts on the key COPY on this disk and this process\'s relay connection (physical-credential-locality); the identity is unified by adoption + the every-5-min coherence detector; audit rows merge at GET /agent-identity/audit?scope=pool',
+    },
+  });
+
   // POST /jev-audit/batch — the Jev job-completion audit batch
   // (jev-job-supervision spec). Writes ONLY this machine's evidence packs
   // (state/jev-supervision-evidence), verdict rows (logs/) and retention

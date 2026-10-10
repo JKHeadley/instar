@@ -166,6 +166,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'agentIdentity',
+    prefixes: ['/agent-identity'],
+    description: 'Agent identity across machines (a2a-single-agent-identity §1–§2): one agent, one routing fingerprint, on every machine. A joined or rebuilt machine ADOPTS the identity its siblings publish (signed observe/request mesh verbs, sealed to its registry key, reachable-agree + local-memory pin) and never mints one; a paired machine with no identity boots identity-not-provisioned (relay not attempted, lease yielded only to a live provisioned sibling, ONE agent-identity-missing item naming the refusal and the lever). GET /agent-identity/audit is the key-free audit (?scope=pool merges every online machine); POST /agent-identity/reload re-reads THIS machine\'s own disk and rebuilds its relay client (local effect only, carries no key, 429 inside 60 s). The continuous coherence check (one formula, every 5 min, self = disk AND connectedAs) is read on GET /threadline/health → identityCoherence; the lease holder raises ONE agent-identity-split item per episode. Replacing an EXISTING identity is the agent\'s action after the operator\'s yes: `instar identity adopt --from <sibling>` on that machine. Always on; a single machine reads cannot-tell.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.agentIdentity,
+      posture: ctx.agentIdentity?.notProvisioned() ? 'identity-not-provisioned' : 'provisioned',
+      endpoints: ['GET /agent-identity/audit', 'GET /agent-identity/audit?scope=pool', 'POST /agent-identity/reload', 'GET /threadline/health (identityCoherence)'],
+    }),
+  },
+  {
     key: 'judgmentProvenance',
     prefixes: ['/judgment-provenance'],
     description: 'Judgment-call decision provenance (ownership-gated-spawn-and-judgment-within-floors §3.5 + llm-decision-quality-meter §5.2 — the Decision Provenance & Outcome Review standard). Every judgment call the ownership layer makes (SpawnAdmission verdicts, duplicate-reconciler intended-owner determinations) AND every ENROLLED LLM decision the router-settlement seam records (correlation-id-keyed, content-class-enveloped, volume-class-valved) is durably logged — machine-local under .instar/state/judgment-provenance/ (0700/0600, gitignored, backup-excluded, 14-day retention, NEVER HTTP-served raw: a hardcoded NEVER_SERVED_PREFIXES deny in the file routes covers read/download/edit/link incl. symlink evasion). GET /judgment-provenance serves REDACTED rows only (write-time credential-shape scrub + omission of the machine-local full context); ?limit / ?sinceHours filter; ?scope=pool merges peers\' redacted rows as clamped untrusted data. The log is constructed UNCONDITIONALLY at boot on every agent, single-machine included (FD9) — a 503 here means construction FAILED (see server log), never "single-machine so not built". When asked "why did the system decide machine X owns this conversation?" / "what did the duplicate healer see?" / "what context did that gate judge?" → read this, never guess.',

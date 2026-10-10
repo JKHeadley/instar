@@ -1224,6 +1224,8 @@ export interface RouteContext {
   topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null;
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
+  /** a2a-single-agent-identity §1–§2: the agent-identity runtime (detector, audit, posture, reload lever). */
+  agentIdentity?: import('../core/AgentIdentityRuntime.js').AgentIdentityRuntime | null;
   /** Relay connection-LOSS reader. Null when no relay client exists in this
    *  process (relay disabled, or the listener daemon owns it). */
   getLastRelayEvent?: (() => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null) | null;
@@ -35952,6 +35954,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // Inbound-id ledger (late-bound; live flips handled by the controller).
         inboundIdLedger: () => ctx.inboundIdLedger?.current() ?? null,
         inboundIdLedgerDaemonDeferred: () => ctx.inboundIdLedgerDaemonDeferred?.() ?? false,
+        // a2a-single-agent-identity §1.1 / §2.2: the posture and the coherence verdict.
+        identityNotProvisioned: () => ctx.agentIdentity?.notProvisioned() ?? false,
+        identityCoherence: () => {
+          const h = ctx.agentIdentity?.coherence.health();
+          if (!h) return null;
+          return {
+            state: h.state,
+            connectedAs: h.connectedAs,
+            selfDisk: h.selfDisk,
+            siblingsPublish: h.siblingsPublish,
+            cannotTellRounds: h.cannotTellRounds,
+            lastCheckedAt: h.lastCheckedAt,
+            openEpisode: h.openEpisode,
+          };
+        },
       },
       // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
       // relay inbound path records the implicit ack (the one path that lacked it).
@@ -36163,6 +36180,70 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         error: `channel registry could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
         generatedAt: new Date().toISOString(),
       });
+    }
+  });
+
+  // ── Agent identity (a2a-single-agent-identity §1.2 / §Multi-machine posture) ──
+  // GET /agent-identity/audit — the key-free audit rows (machine-local; `?scope=pool`
+  // merges online machines' rows tagged by machineId, dark-peer tolerant). Read-only.
+  router.get('/agent-identity/audit', async (req, res) => {
+    const rt = ctx.agentIdentity;
+    if (!rt) return res.status(503).json({ error: 'agent-identity runtime not constructed' });
+    const limit = Math.max(1, Math.min(2000, parseInt(String(req.query.limit ?? '200'), 10) || 200));
+    const since = typeof req.query.since === 'string' ? req.query.since : undefined;
+    const own = rt.audit.read({ limit, since }).map((r) => ({ ...r, machineId: r.machineId ?? rt.selfMachineId }));
+    if (req.query.scope !== 'pool') {
+      return res.json({ scope: 'local', machineId: rt.selfMachineId, count: own.length, rows: own, adoption: rt.adoptionStatus(), posture: rt.notProvisioned() ? 'identity-not-provisioned' : 'provisioned' });
+    }
+    const peers = rt.resolvePeerUrls();
+    const failed: Array<{ machineId: string; reason: string }> = [];
+    const rows = [...own];
+    await Promise.all(peers.map(async (p) => {
+      try {
+        const r = await fetch(`${p.url.replace(/\/+$/, '')}/agent-identity/audit?limit=${limit}${since ? `&since=${encodeURIComponent(since)}` : ''}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, reason: `http-${r.status}` }); return; }
+        const j = (await r.json()) as { rows?: Array<Record<string, unknown>> };
+        for (const row of j.rows ?? []) rows.push({ ...row, machineId: p.machineId } as (typeof own)[number]);
+      } catch (err) {
+        // @silent-fallback-ok — the dark peer becomes a NAMED `pool.failed` row in the response; the read never 500s and never pretends the peer answered.
+        // A dark peer is a NAMED row, never a 500 (pool-scope reads are dark-peer tolerant).
+        failed.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'unreachable' });
+      }
+    }));
+    rows.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+    return res.json({ scope: 'pool', machineId: rt.selfMachineId, count: rows.length, rows: rows.slice(-limit), pool: { peersQueried: peers.length, peersOk: peers.length - failed.length, failed } });
+  });
+
+  // POST /agent-identity/reload — the reload lever (§1.2): re-read THIS machine's own
+  // identity from disk, rebuild its relay client under the new key, answer the resulting
+  // fingerprint. Local effect only; carries no key; installs nothing. Single-flight with a
+  // 60 s per-machine cooldown (429) — shared by the CLI (§1.4) and the mirror repair (§1.5).
+  let identityReloadInFlight: Promise<unknown> | null = null;
+  let identityReloadLastAt = 0;
+  router.post('/agent-identity/reload', async (_req, res) => {
+    const rt = ctx.agentIdentity;
+    if (!rt) return res.status(503).json({ error: 'agent-identity runtime not constructed' });
+    const now = Date.now();
+    if (identityReloadInFlight) return res.status(429).json({ error: 'reload already in flight', retryAfterMs: 1000 });
+    if (now - identityReloadLastAt < 60_000) {
+      const retryAfterMs = 60_000 - (now - identityReloadLastAt);
+      res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      return res.status(429).json({ error: 'reload cooldown (one per 60 s per machine)', retryAfterMs });
+    }
+    identityReloadLastAt = now;
+    identityReloadInFlight = rt.reload();
+    try {
+      const r = (await identityReloadInFlight) as { fingerprint: string | null; connected: boolean; reason: string };
+      rt.audit.append('identity-reloaded', { machineId: rt.selfMachineId, fingerprint: r.fingerprint, connected: r.connected, reason: r.reason });
+      return res.json({ ok: true, ...r, posture: rt.notProvisioned() ? 'identity-not-provisioned' : 'provisioned' });
+    } catch (err) {
+      // @silent-fallback-ok — the lever's failure is returned to the caller as a 500 with the message; nothing is swallowed.
+      return res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      identityReloadInFlight = null;
     }
   });
 

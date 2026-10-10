@@ -280,7 +280,9 @@ export async function removeMachine(nameOrId: string, options: RemoveMachineOpti
   mgr.revokeMachine(machineId, localIdentity.machineId, 'Removed via CLI');
 
   console.log(pc.green(`Machine "${entry.name}" has been revoked.`));
-  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate.'));
+  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate to the mesh with its machine key.'));
+  // a2a-single-agent-identity §1.4: true of the MACHINE key, false of the AGENT key — say so.
+  console.log(pc.yellow(`${entry.name} is revoked for the mesh but still holds a copy of the agent identity and can sign as ${config.projectName} until the identity is rotated fleet-wide.`));
 }
 
 // ── instar whoami ────────────────────────────────────────────────

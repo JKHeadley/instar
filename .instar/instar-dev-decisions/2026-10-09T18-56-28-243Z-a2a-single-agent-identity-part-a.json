@@ -1,0 +1,49 @@
+{
+  "ts": "2026-10-09T18:56:28.243Z",
+  "slug": "a2a-single-agent-identity-part-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 2646,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/AgentIdentityAdoption.ts",
+      "src/core/AgentIdentityAudit.ts",
+      "src/core/AgentIdentityCoherence.ts",
+      "src/core/AgentIdentityHandover.ts",
+      "src/core/AgentIdentityLock.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/types.ts",
+      "src/server/routes/provenance.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/UnifiedTrustWiring.ts",
+      "src/threadline/client/IdentityManager.ts",
+      "src/threadline/client/JoinedMeshDetector.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/listener-daemon.ts"
+    ],
+    "addedLines": 2563,
+    "deletedLines": 83
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Two controllers registered in src/testing/selfActionRegistry.ts: agent-identity-adoption (declared Eternal Sentinel: one signed observe per sibling per round at a 5-min floor after 1 h, requests paced at a 10-min floor that survives restart via the responder's server-side share rate-limit + retryAfterMs, ONE escalation per refusal reason) and agent-identity-coherence-detector (one high item per sorted-set episode after 2 consecutive disagree reads, lease holder only; one medium cannot-tell item per peer after 10 online rounds; attention-store id dedupe makes a restart re-raise a no-op). The ratchet drives both under the pinned never-repairs fixture: the adoption loop never exceeds elapsed/10min emits and the detector settles at 2, horizon-independent."
+    }
+  },
+  "verdict": "blocked"
+}

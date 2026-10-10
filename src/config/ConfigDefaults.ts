@@ -855,6 +855,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       dryRun: false,
     },
   },
+  // a2a-single-agent-identity §1.2 — post-pairing adoption of the agent identity from a
+  // sibling. FLEET-LIVE (not dev-gated): a joined machine with no identity must never mint,
+  // and adoption is the path that fills the void. `enabled:false` is the kill switch (the
+  // machine then stays unprovisioned, lease-ineligible and loud). Backfilled on update by
+  // applyDefaults add-missing + an explicit existence check in migrateConfig.
+  agentIdentity: {
+    adoption: { enabled: true },
+  },
   threadline: {
     relayEnabled: false,
     visibility: 'public',

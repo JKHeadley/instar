@@ -105,6 +105,14 @@ export interface LeaseCoordinatorDeps {
   tunnel?: LeaseTransport;
   /** Machines presumed dead (lastSeen older than failoverThresholdMs). */
   presumedDeadHolders: (opts?: { liveness?: boolean }) => ReadonlySet<string>;
+  /**
+   * a2a-single-agent-identity §1.1 — lease ELIGIBILITY, read live on every acquire tick. A
+   * machine in `identity-not-provisioned` posture answers false: it declines to acquire the
+   * serving lease and RELINQUISHES one it holds (an unprovisioned lease holder would take the
+   * whole fleet off the agent network — it holds the one relay connection and cannot use it).
+   * Absent ⇒ eligible (single-machine installs and every pre-existing caller are unchanged).
+   */
+  isLeaseEligible?: () => boolean;
   /** Live switch getters; absent means enabled. */
   getLivenessEnabled?: () => boolean;
   getUnconfirmedWriteAlertEnabled?: () => boolean;
@@ -771,6 +779,18 @@ export class LeaseCoordinator {
   }
 
   async acquireIfEligible(): Promise<boolean> {
+    // §1.1 lease-ineligibility: an unprovisioned machine never acquires, and releases what it
+    // holds at this (the next) tick. Read live so adoption lifting the posture needs no restart.
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
+      const view = this.effectiveView();
+      if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
+        this.relinquish();
+        this.log('released the serving lease: this machine has no agent identity (identity-not-provisioned)');
+      } else {
+        this.log('acquire skipped: identity-not-provisioned (lease-ineligible until the agent identity is adopted)');
+      }
+      return false;
+    }
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
