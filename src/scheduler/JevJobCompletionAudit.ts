@@ -205,6 +205,12 @@ export class JevJobCompletionAudit {
   private readonly audit: BoundedJsonlAudit;
   /** Test seam: resolves when the latest detached capture settles. */
   lastCapture: Promise<void> = Promise.resolve();
+  /**
+   * Every detached capture still in flight. flush() must wait on ALL of them —
+   * awaiting only the latest let an earlier, slower capture land after flush()
+   * returned (ACT-074: a batch run right after flush() missed that pack).
+   */
+  private readonly pendingCaptures = new Set<Promise<void>>();
 
   constructor(deps: JevAuditDeps) {
     this.deps = deps;
@@ -266,11 +272,14 @@ export class JevJobCompletionAudit {
       }
       const rawTail = input.output.slice(-(TAIL_CAP_BYTES * 2)); // O(1)-ish pre-slice; exact clamp is detached
       this.capturesInFlight++;
-      this.lastCapture = this.captureDetached(input, rawTail)
+      const p: Promise<void> = this.captureDetached(input, rawTail)
         .catch(() => this.metric('capture-failed', { reason: 'error' }))
         .finally(() => {
           this.capturesInFlight--;
+          this.pendingCaptures.delete(p);
         });
+      this.pendingCaptures.add(p);
+      this.lastCapture = p;
     } catch {
       // @silent-fallback-ok — the audit must never touch the completion path; a lost capture surfaces in the reconciliation.
     }
@@ -700,7 +709,7 @@ export class JevJobCompletionAudit {
 
   /** Test/shutdown seam. */
   async flush(): Promise<void> {
-    await this.lastCapture;
+    await Promise.all([...this.pendingCaptures, this.lastCapture]);
     await this.audit.flush?.();
   }
 }

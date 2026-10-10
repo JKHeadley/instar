@@ -35,6 +35,12 @@ import { IdentityManager, IdentityNotProvisionedError } from './client/IdentityM
 import { IdentityFileInvalidError } from '../identity/IdentityKeyFile.js';
 import { detectMachineName } from '../core/MachineIdentity.js';
 import { decodePlaintextPayload } from './autoAck.js';
+import {
+  handleRelayUnknownSender,
+  newFingerprintProfileLevel,
+  relayUnknownSenderTrustCounters,
+  type RelayUnknownSenderTrustMode,
+} from './relayUnknownSenderTrust.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -84,6 +90,12 @@ export interface ThreadlineBootstrapConfig {
    * complete pass-through (byte-identical legacy behavior).
    */
   getVerifiedPairingConfig?: () => { enabled: boolean; dryRun: boolean; credentialShareEnforced: boolean };
+  /**
+   * Live reader for the relay unknown-sender trust check
+   * (docs/specs/a2a-relay-unknown-sender-trust.md). Supplied by server.ts. When
+   * omitted the check is off: every unknown sender is handled as before.
+   */
+  getRelayUnknownSenderTrustMode?: () => RelayUnknownSenderTrustMode;
 }
 
 export interface ThreadlineBootstrapResult {
@@ -287,11 +299,27 @@ export async function bootstrapThreadline(
   let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
+  // Relay unknown-sender trust: the live mode (off when server.ts supplies no reader).
+  const relayUnknownSenderTrustMode = (): RelayUnknownSenderTrustMode => {
+    try {
+      return config.getRelayUnknownSenderTrustMode?.() ?? { enabled: false, dryRun: true };
+    } catch {
+      return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
+    }
+  };
 
   // Always create trust manager when relay is enabled — needed for processing
   // inbox entries even when the daemon handles the relay connection.
   if (relayEnabled) {
-    trustManager = new AgentTrustManager({ stateDir: config.stateDir });
+    trustManager = new AgentTrustManager({
+      stateDir: config.stateDir,
+      // A first contact is not a grant: while the unknown-sender check is
+      // enforcing, a new fingerprint profile starts `untrusted`.
+      newFingerprintProfileLevel: () => newFingerprintProfileLevel(relayUnknownSenderTrustMode()),
+      onFingerprintProfileCreated: (level) => {
+        if (level === 'untrusted') relayUnknownSenderTrustCounters.profilesCreatedUntrusted++;
+      },
+    });
   }
 
   if (relayEnabled) {
@@ -361,31 +389,34 @@ export async function bootstrapThreadline(
         // inbound-id ledger §1: no fabricated `msg-<now>` id — a message with no
         // id is UNKEYED (admitted, never deduplicated, counted).
         messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
-        content: { content: textContent, type: msgType, ...(resend ? { resend: true } : {}) },
+        // No `type` key when the payload carries none: a present-but-undefined
+        // key reads as an operation name downstream.
+        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
         envelope: envelope as never,
       };
 
-      // Relay-authenticated unknown senders bypass the trust manager gate.
-      // The relay already verified their Ed25519 identity via challenge-response.
-      // We still run payload size checks but skip trust/rate checks.
+      // Payload size check, as in the gate.
       const payloadSize = Buffer.byteLength(JSON.stringify(received.content), 'utf-8');
       if (payloadSize > 64 * 1024) {
         console.log(`Threadline: relay message from ${received.from.slice(0, 8)} blocked (payload too large: ${payloadSize})`);
         return;
       }
 
-      // Record the interaction for trust building
-      trustManager!.recordMessageReceivedByFingerprint(received.from);
-
-      // Emit gate-passed with relay-authenticated trust level
-      relayClient!.emit('gate-passed', {
-        action: 'pass' as const,
-        reason: 'relay-authenticated',
-        trustLevel: 'verified',
-        fingerprint: received.from,
-        message: received,
-      });
+      // Trust (docs/specs/a2a-relay-unknown-sender-trust.md, ACT-066). The relay
+      // proves the sender holds its fingerprint's key, not who it is. With the
+      // check on, the level comes from the trust manager the gate reads and the
+      // gate's operation table applies; off, today's `verified` handling stands.
+      handleRelayUnknownSender(
+        {
+          trustManager: trustManager!,
+          mode: relayUnknownSenderTrustMode,
+          counters: relayUnknownSenderTrustCounters,
+          emit: (decision) => { relayClient!.emit('gate-passed', decision); },
+        },
+        received,
+        msgType,
+      );
     });
 
     // Log auto-discovery results

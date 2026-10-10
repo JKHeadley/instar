@@ -1,0 +1,69 @@
+{
+  "ts": "2026-10-09T12:42:19.098Z",
+  "slug": "feedback-execute-phase2",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 33,
+  "loc": 4123,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SafeGitExecutor.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/canonicalPipelineRegistry.ts",
+      "src/core/credentialEnvNames.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/feedback-factory/execute/ConfinedRunner.ts",
+      "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/attemptFs.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/feedback-factory/execute/depsCache.ts",
+      "src/feedback-factory/execute/executePolicy.ts",
+      "src/feedback-factory/execute/executorPorts.ts",
+      "src/feedback-factory/execute/executorSession.ts",
+      "src/feedback-factory/execute/reviewGate.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/feedback-factory/triage/FeedbackTriageStore.ts",
+      "src/feedback-factory/triage/buildFeedbackTriage.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/feedback-factory-execute.md",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 4085,
+    "deletedLines": 38
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "feedback-execute attempts each item at most twice per failure episode and stops taking it after two episodes (durable per-item count in feedback-drain.db), under a durable 6-starts/day cap plus concurrency and open-PR caps; registered in SELF_ACTION_CONTROLLERS so the ratchet proves the count is horizon-independent, including across restarts"
+    }
+  },
+  "verdict": "pass"
+}

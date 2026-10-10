@@ -100,6 +100,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Inert until the operator approves the triage authority with the dashboard PIN; every disposition is reversible (hold/ignore pause the Initiative, never archive), ignore ships in shadow until a separate PIN approval, model calls are capped per day and pause on subscription quota, and it never writes cluster or report status or takes an external action.',
   },
   {
+    name: 'feedbackFactoryExecute',
+    configPath: 'feedbackFactory.execute.enabled',
+    description: 'Feedback executor: confined build sessions turn top-ranked feedback work items into pull requests that merge only at the exact head the repository owner approves.',
+    justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',
@@ -791,6 +797,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'threadline.peerDarkNotice.enabled',
     description: 'Honest sender-side reporting of a send that stays queued: a per-peer `dark` classification on the delivery ledger, a `peerDark` object + worded deliveryOutcome on a send to a dark peer, and ONE per-peer attention item (deterministic id, pool-scope raise/resolve, 12 h cooldown) through the reworked A2ARedeliverySentinel after the awake machine has healed its own side.',
     justification: 'Ships dryRun:true: on a dev agent the sentinel runs the full dark pass and LOGS would-raise / would-sentence rows to logs/a2a-peer-dark.jsonl, but raises no item and changes no deliveryOutcome until a deliberate dryRun:false. Reads the local SQLite ledger and the presence map only (no inline discover, no new relay calls); the self-heal re-arms an already-built relay client and runs one discover on the awake machine only. Signal-only: never gates a send; a local relay outage collapses to ONE aggregated item; no LLM, no spend.',
+  },
+  {
+    name: 'a2aRelayUnknownSenderTrust',
+    configPath: 'threadline.relayUnknownSenderTrust.enabled',
+    description: 'Relay unknown-sender trust: a relay message from a sender whose keys this agent does not hold is judged at the trust level the trust manager holds for its fingerprint, with the relay gate\'s operation table, instead of being passed as verified; a new fingerprint profile is no longer created at verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
   },
   {
     name: 'blockerLifecycleLedger',

@@ -60,11 +60,12 @@ function ctxFor(projectDir: string, opts: { developmentAgent?: boolean } = {}): 
   } as unknown as RouteContext;
 }
 
-function appWith(projectDir: string, opts: { developmentAgent?: boolean; seatFile?: string; operatorProof?: string } = {}): express.Express {
+function appWith(projectDir: string, opts: { developmentAgent?: boolean; seatFile?: string; operatorProof?: string; runningSessions?: Array<{ name: string; tmuxSession: string; triggeredBy?: string }> } = {}): express.Express {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware(AUTH_TOKEN));
   const ctx = ctxFor(projectDir, opts);
+  if (opts.runningSessions) ctx.sessionManager = { listRunningSessions: () => opts.runningSessions } as any;
   ctx.verifyDashboardOperatorSession = (proof) => proof === opts.operatorProof;
   if (opts.seatFile) ctx.playwrightSeatLease = () => new PlaywrightSeatLease({ filePath: opts.seatFile, ttlMs: 10_000 });
   app.use('/', createRoutes(ctx));
@@ -365,6 +366,26 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     // A repeat activate is now already-active → no further write, no refresh.
     const again = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'sess-1' });
     expect(again.body.alreadyActive).toBe(true);
+  });
+
+  it('refuses to activate a profile for a session the feedback executor started (it could hold the approver account), before any write', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ playwrightRegistry: { enabled: true, dryRun: false } }, null, 2) + '\n');
+    seedPlaywrightSettings(['@playwright/mcp@latest']);
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    const app = appWith(projectDir, { developmentAgent: true, runningSessions: [
+      { name: 'feedback-specconverge-x', tmuxSession: 'proj-feedback-specconverge-x', triggeredBy: 'feedback-executor' },
+      { name: 'ordinary', tmuxSession: 'proj-ordinary', triggeredBy: 'telegram' },
+    ] });
+    await request(app).post('/playwright-profiles').set(auth()).send({ id: 'custom' });
+    const refused = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'proj-feedback-specconverge-x' });
+    expect(refused.status).toBe(403);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before);
+    // Addressed by its logical name too.
+    expect((await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'feedback-specconverge-x' })).status).toBe(403);
+    // Any other session is unaffected.
+    const ok = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'proj-ordinary' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.activated).toBe(true);
   });
 
   it('writes an audit line per write to logs/playwright-profiles.jsonl (NAMES only)', async () => {

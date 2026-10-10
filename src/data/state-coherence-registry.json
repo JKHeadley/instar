@@ -1574,6 +1574,25 @@
         "maxAgeMs": 7776000000,
         "note": "Audit log rotated at 20 MB with 90-day retention of rotated segments; evidence packets kept 14 days (pruned each triage tick)."
       }
+    },
+    {
+      "category": "feedback-execute-scratch",
+      "description": "Feedback executor working state (docs/specs/feedback-triage-and-execution.md §4): per-attempt confinement settings files, canary nonces, parked secret-shaped change sets awaiting the operator's PIN-approved publication, live-proof result files, and a trash directory the executor empties after moving finished attempt clones out of the source tree. Written only by the drain's fenced canonical owner; the execution table itself lives inside the backed-up feedback-drain.db. Held change sets are never served over HTTP.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/feedback-factory/execute/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 268435456,
+        "maxAgeMs": 2592000000,
+        "note": "Trash is emptied every executor tick; a held change set is removed when it is published; settings and canary files are small and per attempt."
+      }
     }
   ]
 }
