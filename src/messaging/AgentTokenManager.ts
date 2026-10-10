@@ -155,8 +155,10 @@ export function computeDropHmac(
 /**
  * Serialize an object to canonical JSON (RFC 8785 / JCS).
  * Recursively sorts keys at all nesting levels for deterministic output.
+ * Exported: the A2A local-route signed envelope (localEnvelopeSignature.ts)
+ * signs over exactly this serialisation — one canonicaliser, never two.
  */
-function canonicalJSON(value: unknown): string {
+export function canonicalJSON(value: unknown): string {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
   if (typeof value === 'string') return JSON.stringify(value);

@@ -793,6 +793,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Reads in-memory trust profiles only: no writes, no LLM, no spend, no outbound messages; with no trust manager wired it is a counted no-op.',
   },
   {
+    name: 'a2aLocalRouteSignature',
+    configPath: 'threadline.localRouteSignature.enabled',
+    description: 'Local-route signed envelope: the same-machine A2A route verifies the sender\'s Ed25519 signature against the key held for its name, instead of taking the name in the request body on faith.',
+    justification: 'Ships dryRun:true: a dev agent verifies each inbound same-machine envelope, LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Writes no file and no durable state (the first-contact key cache, replay cache and counters are in memory). Its only outbound traffic is one loopback GET of a same-machine peer\'s /threadline/health when a SIGNED envelope arrives from a name with no key on record (at most 2.5 s on that request, five tries per peer per process). No LLM, no spend, no messages.',
+  },
+  {
     name: 'a2aRelayUnknownSenderTrust',
     configPath: 'threadline.relayUnknownSenderTrust.enabled',
     description: 'Relay unknown-sender trust: a relay message from a sender whose keys this agent does not hold is judged at the trust level the trust manager holds for its fingerprint, with the relay gate\'s operation table, instead of being passed as verified; a new fingerprint profile is no longer created at verified.',

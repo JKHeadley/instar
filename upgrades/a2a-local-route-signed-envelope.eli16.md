@@ -1,4 +1,4 @@
-# The same-machine route proves who is sending — plain-English overview
+# Same-machine agent messages are signed and can be checked (ELI16)
 
 Two agents on the same computer can talk in two ways. One goes out over the internet through a relay server. The other is a shortcut: one agent hands the message straight to the other agent's server on the same machine.
 

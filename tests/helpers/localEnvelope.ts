@@ -1,15 +1,16 @@
 /**
- * Shared helper for tests that POST to `/messages/relay-agent`
+ * Shared helper for tests of the A2A local-route signed envelope
  * (docs/specs/a2a-local-route-signed-envelope.md).
  *
- * The route refuses an envelope whose Ed25519 signature does not verify
- * against the public key the RECEIVER's registry holds for the sender NAME,
- * so every test sender does what every real sender does: it owns a key pair,
- * its key is recorded in the receiver's `known-agents.json`, and it signs.
+ * A test sender does what a real sender does: it owns an Ed25519 key pair and
+ * signs. A receiver knows the key either from its registry
+ * (`known-agents.json`, the way `threadline_discover` records it) or from a
+ * first-contact probe.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../src/threadline/client/MessageEncryptor.js';
 import { signLocalEnvelope } from '../../src/threadline/localEnvelopeSignature.js';
@@ -64,15 +65,33 @@ export function registerKnownAgent(
 
 /** Return a copy of the envelope carrying the sender's signature. */
 export function signEnvelope<T extends LocalEnvelopeLike>(envelope: T, sender: Pick<LocalSender, 'privateKey'>): T & { signature: string } {
-  return { ...envelope, signature: signLocalEnvelope(envelope, sender.privateKey) };
+  const signature = signLocalEnvelope(envelope, sender.privateKey);
+  if (!signature) throw new Error('test envelope exceeds a canonicalisation bound');
+  return { ...envelope, signature };
 }
 
-/**
- * One-call setup: mint a sender, record it in the receiver's registry, and
- * hand back a `sign` that stamps envelopes for it.
- */
-export function provisionLocalSender(name: string, receiverStateDir: string): LocalSender & { sign: <T extends LocalEnvelopeLike>(e: T) => T & { signature: string } } {
-  const sender = createLocalSender(name);
-  registerKnownAgent(receiverStateDir, sender);
-  return { ...sender, sign: (e) => signEnvelope(e, sender) };
+/** A well-formed envelope from `from` to `to`, fresh nonce and timestamp. */
+export function makeLocalEnvelope(from: string, to: string, overrides: { body?: unknown; threadId?: string; id?: string; at?: number; fingerprint?: string } = {}) {
+  const now = new Date(overrides.at ?? Date.now()).toISOString();
+  return {
+    schemaVersion: 1,
+    message: {
+      id: overrides.id ?? crypto.randomUUID(),
+      from: { agent: from, session: 'threadline', machine: 'local', ...(overrides.fingerprint ? { fingerprint: overrides.fingerprint } : {}) },
+      to: { agent: to, session: 'best', machine: 'local' },
+      type: 'request',
+      priority: 'medium',
+      subject: 'signed envelope test',
+      body: overrides.body ?? 'hello from a signed sender',
+      threadId: overrides.threadId ?? crypto.randomUUID(),
+      createdAt: now,
+    },
+    transport: {
+      relayChain: [] as string[],
+      originServer: 'http://localhost:1',
+      nonce: `${crypto.randomUUID()}:${now}`,
+      timestamp: now,
+    },
+    delivery: { phase: 'sent', transitions: [] as unknown[], attempts: 0 },
+  };
 }

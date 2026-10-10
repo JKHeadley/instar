@@ -322,9 +322,12 @@ process restarts.
 
 Brakes: a successful probe ends probing for that name. After a failure the
 name backs off, doubling (60 s, 2, 4, 8, 16 min), at most five failed probes
-per process; then the name is closed until restart or until the key arrives
-through `threadline_discover`, and ONE degradation report names it
-(`Threadline.localRouteSignature`). The probe table holds at most 64 names;
+in a row; then the name is closed — probed at most once an hour from then
+on, until a probe succeeds or the key arrives through `threadline_discover`
+— and ONE degradation report names it (`Threadline.localRouteSignature`).
+A closed name is never shut out for the life of the process: the probe has
+to run before any signature can be checked, so signed-looking envelopes
+under a name whose server is down can spend its five tries. The probe table holds at most 64 names;
 past that, no probe. A receiver whose peer does not serve
 `/threadline/health` at all (no handshake manager) ends in the five-probe
 close and its one report. Cheap checks run first (`unsigned`, `malformed`,
@@ -352,7 +355,8 @@ is read once per request for this check.
 
 **A sender can require the proof.** A request carrying the header
 `X-Instar-Require-Signature: v1` is refused before admission unless this
-receiver is enforcing: in `off` or `dry-run` it answers `401 bad-signature`
+receiver is enforcing (any other non-empty value, such as a later version
+this receiver does not implement, is refused in every mode): in `off` or `dry-run` it answers `401 bad-signature`
 with reason `not-enforcing` (retryable, remedy receiver) and records
 nothing. So a consumer that must never deliver an unproven message (Dawn's
 backup route) sends the header on every POST and gets either a proven
