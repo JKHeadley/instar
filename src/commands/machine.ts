@@ -803,17 +803,31 @@ interface WakeupOptions {
 /**
  * The machine currently in charge: the live lease holder when this machine's
  * own server answers, else the registry's awake role (which can lag).
+ *
+ * The read carries the agent's auth token: an unauthenticated /health omits the
+ * multiMachine block, so without it the live lease was never seen and the lookup
+ * always fell through to the registry (ACT-1306, instar#2122 step 5).
  */
 export async function resolveAwakeMachine(
   mgr: MachineIdentityManager,
   port: number,
   fetchFn: typeof fetch = fetch,
+  authToken?: string,
 ): Promise<{ machineId: string; entry: import('../core/types.js').MachineRegistryEntry } | null> {
   try {
-    const resp = await fetchFn(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(3000) });
+    const resp = await fetchFn(`http://localhost:${port}/health`, {
+      signal: AbortSignal.timeout(3000),
+      headers: typeof authToken === 'string' && authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
     if (resp.ok) {
       const health = await resp.json() as { multiMachine?: { syncStatus?: { leaseHolder?: string | null } } };
       const holder = health.multiMachine?.syncStatus?.leaseHolder;
+      if (authToken && !health.multiMachine) {
+        // A token was sent but the answer is the anonymous one: the token is
+        // stale (e.g. a literal in config.json while the server uses the vault).
+        // Say so, rather than silently falling back to the lagging registry.
+        console.log('  Live lease lookup was not authorized by the local server (auth token rejected or stale); using the registry instead.');
+      }
       if (holder) {
         const entry = mgr.loadRegistry().machines[holder];
         if (entry && entry.status === 'active' && !entry.revokedAt) return { machineId: holder, entry };
@@ -876,7 +890,7 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   // registry's role field can lag (and once held a removed identity — Luna's
   // Studio reported "Current location: mac-studio" while the laptop held the
   // lease, instar#2122). Ask the local server first; fall back to the registry.
-  const awake = await resolveAwakeMachine(mgr, config.port);
+  const awake = await resolveAwakeMachine(mgr, config.port, fetch, config.authToken);
 
   // Signing key for claiming the lease (canonical MachineIdentity name).
   const wakeupSigningKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');

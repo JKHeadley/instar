@@ -588,6 +588,23 @@ describe('MachineIdentityManager', () => {
         .toThrow(/already revoked/);
     });
 
+    it('completes a half-revoked row (revokedAt stamped, status still active) instead of refusing it', async () => {
+      const idA = await manager.generateIdentity({ name: 'machine-a' });
+      const idB: any = { machineId: generateMachineId(), name: 'machine-b' };
+      manager.registerMachine(idB as any, 'awake');
+      const reg = manager.loadRegistry();
+      reg.machines[idB.machineId].revokedAt = '2026-10-05T00:00:00.000Z';
+      manager.saveRegistry(reg);
+
+      manager.revokeMachine(idB.machineId, idA.machineId, 'finish revoke');
+
+      const entry = manager.loadRegistry().machines[idB.machineId];
+      expect(entry.status).toBe('revoked');
+      expect(entry.role).toBe('standby');
+      expect(entry.revokedAt).toBe('2026-10-05T00:00:00.000Z'); // original time kept
+      expect(entry.revokeReason).toBe('finish revoke');
+    });
+
     it('throws for unknown machine', async () => {
       await manager.generateIdentity();
       expect(() => manager.revokeMachine('m_unknown', 'm_self', 'test'))

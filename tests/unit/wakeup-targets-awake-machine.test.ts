@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { resolveAwakeMachine, resolveAwakeServerUrl } from '../../src/commands/machine.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -53,6 +53,33 @@ describe('resolveAwakeMachine', () => {
     const fetchFn = (async () => okJson({ multiMachine: { syncStatus: { leaseHolder: 'm_ghost' } } })) as unknown as typeof fetch;
     const awake = await resolveAwakeMachine(mgr, 6060, fetchFn);
     expect(awake?.machineId).toBe('m_laptop'); // registry fallback, not the revoked ghost
+  });
+
+  it('sends the agent auth token, since an unauthenticated /health omits the live lease (ACT-1306)', async () => {
+    const mgr = registry();
+    const seen: Array<Record<string, string>> = [];
+    const fetchFn = (async (_url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      seen.push(headers);
+      // Mirror the server: the multiMachine block is only on the authed branch.
+      return headers.Authorization === 'Bearer tok-123'
+        ? okJson({ multiMachine: { syncStatus: { leaseHolder: 'm_laptop' } } })
+        : okJson({ status: 'ok' });
+    }) as unknown as typeof fetch;
+    const awake = await resolveAwakeMachine(mgr, 6060, fetchFn, 'tok-123');
+    expect(seen[0].Authorization).toBe('Bearer tok-123');
+    expect(awake?.machineId).toBe('m_laptop');
+  });
+
+  it('says so when a sent token gets the anonymous answer, then uses the registry', async () => {
+    const mgr = registry();
+    mgr.updateRole('m_laptop', 'awake');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const fetchFn = (async () => okJson({ status: 'ok' })) as unknown as typeof fetch;
+    const awake = await resolveAwakeMachine(mgr, 6060, fetchFn, 'stale-token');
+    expect(awake?.machineId).toBe('m_laptop');
+    expect(log.mock.calls.some(c => String(c[0]).includes('Live lease lookup was not authorized'))).toBe(true);
+    log.mockRestore();
   });
 });
 

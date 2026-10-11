@@ -258,6 +258,15 @@ export class LeaseCoordinator {
   private markRenewOk(): void {
     this.lastRenewOkMonoMs = this.monotonicNow();
   }
+  /**
+   * ACT-1308 — milliseconds since the last CONFIRMED renewal/acquisition on the
+   * monotonic self-fence clock. renew() returns true inside the grace window even
+   * when the broadcast went unconfirmed, so a caller that wants to retry an
+   * unconfirmed renewal before the fence lapses reads this instead.
+   */
+  msSinceConfirmedRenewal(): number {
+    return this.monotonicNow() - this.lastRenewOkMonoMs;
+  }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
   }

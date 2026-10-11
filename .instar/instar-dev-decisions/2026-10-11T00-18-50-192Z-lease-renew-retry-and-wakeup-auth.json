@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-11T00:18:50.192Z",
+  "slug": "lease-renew-retry-and-wakeup-auth",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 92,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/machine.ts",
+      "src/core/IdentityStore.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MultiMachineCoordinator.ts"
+    ],
+    "addedLines": 86,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "renew() keeps the old expiry on an unconfirmed broadcast; with TTL = 2 x interval the next tick lands on that expiry plus drift. Surfaced in Luna's two-machine trial, instar#2122."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
