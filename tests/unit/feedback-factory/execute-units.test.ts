@@ -510,7 +510,17 @@ describe('dependency cache', () => {
     expect((await cache.ensure('/src', 'b'.repeat(40))).ok).toBe(true);
     expect(installs).toHaveLength(1); // same manifests → same hash → reused
     for (const v of ['1', '2', '3']) { files['package-lock.json'] = `{"v":${v}}`; await cache.ensure('/src', 'c'.repeat(40)); }
-    expect(fs.readdirSync(path.join(root, 'deps')).filter((n) => /^[0-9a-f]{20}$/.test(n))).toHaveLength(4);
+    const cacheDirs = fs.readdirSync(path.join(root, 'deps')).filter((n) => /^[0-9a-f]{20}$/.test(n));
+    expect(cacheDirs).toHaveLength(4);
+    // Eviction orders by the `.ready` mtime. The four caches above are built within a few
+    // milliseconds, so on a fast filesystem their mtimes can tie and the order falls back to
+    // directory-name order (the hash differs per Node version). Pin distinct mtimes with the
+    // in-use cache oldest, so the assertion tests the rule and not the clock.
+    const others = cacheDirs.filter((n) => n !== a.hash);
+    [a.hash, ...others].forEach((name, i) => {
+      const t = new Date(Date.UTC(2026, 0, 1, 0, i));
+      fs.utimesSync(path.join(root, 'deps', name, '.ready'), t, t);
+    });
     expect(cache.evict(new Set([a.hash]))).toBe(1);
     expect(cache.sizeBytes()).toBeGreaterThan(0);
   });

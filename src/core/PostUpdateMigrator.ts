@@ -8359,6 +8359,17 @@ When this machine is a standby and another of my machines holds my relay connect
       result.upgraded.push('CLAUDE.md: added A2A relay forward section');
     }
 
+    // A2A dark peers (docs/specs/a2a-single-agent-identity.md §3, Agent
+    // awareness). OWN sniff key `A2A dark peers` — content-sniffed for idempotency.
+    if (!content.includes('A2A dark peers')) {
+      content += '\n\n' + `### A2A dark peers (did my message arrive?)
+
+A peer is \`dark\` when my own delivery ledger shows messages to it queued at the relay, unconfirmed, or expired for hours with nothing back — no acknowledgement and no inbound since. A relay \`delivered\` verdict alone does NOT clear it: it shows only that something holding the peer's address took the message, not that the peer read it. Messages the relay queued and later handed over stay counted until the peer acknowledges or replies (\`handedUnackedCount\`). It is a proxy read from my ledger: it means "nothing from this peer for N h" and cannot by itself tell offline from a wrong address. A send to a dark peer answers with \`peerDark\` (\`since\`, \`queuedCount\`, \`expiresAt\`, \`connectedNow\`, \`connectedNowReason\`, \`connectedAsOf\`) beside \`relayStatus\`; \`connectedNow\` is the presence map's answer (\`true\` / \`false\` / \`null\` = unknown — never a fresh discover on the send path). When it is \`null\`, \`connectedNowReason\` says why: \`no-row\` (the relay gave me no record of this peer), \`relay-down\` (my own relay is not connected — my side, not theirs) or \`stale\` (my record is too old to trust). \`connectedAsOf\` is when that record was written, so "connected" always means "as of N minutes ago", never "right now". \`GET /threadline/peers/health\` and the per-peer route (\`?scope=pool\` across my machines) carry \`dark\`, \`darkSince\`, \`queuedCount\`, \`connectedNow\`, \`connectedNowReason\`, \`connectedAsOf\`. The wait before a peer counts as dark is 2 h by default and can be set for one peer by its fingerprint (\`threadline.peerDarkNotice.perPeer\`, e.g. 30 min for a peer that normally answers in minutes). Before blaming the peer I read my own \`relay.state\` first: a disconnected sender makes every peer look queued. The operator hears about it ONCE per peer (item \`a2a-peer-dark:<agent>:<peer>\`, 12 h cooldown) only after the awake machine reconnected its relay, refreshed the presence map and re-checked; a peer that answered on any of my machines is not dark, and the item resolves naming the messages that expired unacknowledged. Ships dry-run (\`threadline.peerDarkNotice\`): the fields are live, the worded sentence and the item wait for \`dryRun: false\`. **When to use** (PROACTIVE): a user asks "did <peer> get my message?" → read the send's \`relayStatus\` AND \`peerDark\`; "is <peer> there?" → \`GET /threadline/peers/<fingerprint>/health\` → \`dark\`, \`darkSince\`, \`queuedCount\`, \`connectedNow\`. It may be offline, or listening under a different address — I say which evidence I have, never "nothing will arrive".
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A dark peers section');
+    }
+
     // A2A local-route trust (docs/specs/a2a-local-route-trust.md, Agent awareness).
     // OWN sniff key `A2A local-route trust` — content-sniffed for idempotency.
     if (!content.includes('A2A local-route trust')) {
@@ -11339,6 +11350,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
       '### A2A local-route trust',
+      // A2A dark peers: server-side send-response + health-read fields,
+      // framework-agnostic — a Codex/Gemini agent must know `peerDark` and the
+      // `dark` health fields to answer "did <peer> get my message?" honestly.
+      '### A2A dark peers',
       // A2A relay unknown-sender trust: a server-side check on the relay inbound
       // path, framework-agnostic — a Codex/Gemini agent must know the counters.
       '### A2A relay unknown-sender trust',
