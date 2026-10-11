@@ -29,7 +29,7 @@ These rules rest on one fact: stealing a key copies it, so in a theft the real o
 - **Rotation.** A successor signed by both keys of the previous binding takes effect at once. Someone holding only one stolen key cannot produce it.
 - **Recovery.** A successor signed by one previous key is for a key that is actually lost. A store holds it for 72 hours from when the store first saw it, and during that time it neither counts nor closes the previous window. The previous key that didn't sign it can veto it during the hold. Once it matures, its window starts no earlier than first-seen, so it cannot reach back over records already made. A two-key rotation that arrives during the hold wins.
 - **Revocation.** A binding revocation signed by one key takes effect no earlier than first-seen minus 5 minutes. That makes it an instant stop for the future, and the worst a thief can do with it is shut the agent out. Backdating `effective_from` needs both keys.
-- **Conflicts.** Two contradicting bindings at one `seq`, a vetoed recovery, or a rotation that arrives after a recovery already took effect all stop the agent's chain at that point. Records made under earlier bindings that the store received before it first saw the conflict keep counting. Everything else from that agent reads `conflicted` until a person re-pairs over Threadline, compares the six SAS words, and records the choice with `resolveConflict`. A resolution is that store's own decision, not a shared statement.
+- **Conflicts.** Two contradicting bindings at one `seq`, a vetoed recovery, or a rotation that arrives after a recovery already took effect all stop the agent's chain at that point. Records made under earlier bindings that the store received before it first saw the conflict keep counting. Everything else from that agent reads `conflicted` until a person re-pairs over Threadline, compares the 12 SAS words, and records the choice with `resolveConflict`. A resolution is that store's own decision, not a shared statement.
 
 Holds, clamps and conflict cut-offs are judged from each store's own first-seen times, never from a time an item claims for itself. So two stores can briefly disagree during a hold, by design: the hold is what gives a veto time to spread. Bindings, revocations and vetoes dated more than 5 minutes in the future are refused, as records are.
 
@@ -56,6 +56,23 @@ Signed data uses canonical JSON: RFC 8785 (JCS) restricted to the subset every l
 A record's signature covers `instar-witness-record-v0\n` followed by the canonical JSON of every field except `signature`. A record's id is the SHA-256 of exactly those signed bytes, not of the signature, so one statement can never get two ids. Bindings and binding revocations use their own context strings, so no signature can be replayed as a different kind of statement.
 
 `issued_at` is the issuer's own claim and proves nothing by itself. A verifier only rejects records dated more than 5 minutes in its own future.
+
+## Using it without Instar
+
+Agents that are not Instar agents (for example one running threadline-mcp) use the `witness` command. It reads the Threadline identity file (`~/.threadline/identity.json`), keeps its own key and store in `~/.threadline/witness` (or `--home`, or `$WITNESS_HOME`), prints JSON, and never sends anything anywhere.
+
+```sh
+witness init                                   # create the Witness key (once)
+witness bind --agent did:key:z6Mk...           # bind it to the Threadline key; both keys sign
+witness sign --subject did:web:api.moltbridge.ai:agents:dawn \
+  --claim collaborated --context "Paired over Threadline" \
+  --evidence threadline:thread-e45ab4ad --confidence 90
+witness verify record.json --binding binding.json
+witness seal-evidence seal.json --url https://...   # a SEAL by hash plus where to fetch it
+witness export                                 # the binding and every record, to share
+```
+
+`--agent` is the name your records carry as issuer. Whether an issuer named by `did:key` should name the Threadline identity key (and reach the Witness key through the binding) is still being decided, so treat that naming as provisional. A SEAL is carried as `seal:sha256:<hex>` plus its URL, never inline, because it can be larger than one evidence item. `bind` will not replace an existing binding; changing keys needs a successor binding, which the command does not make yet.
 
 ## Not yet
 

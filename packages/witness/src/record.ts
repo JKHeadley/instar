@@ -29,7 +29,7 @@ const SIGNING_CONTEXT = 'instar-witness-record-v0\n';
 
 /**
  * `verified-by-sas` is RESERVED for the Threadline pairing hook (an agent
- * recording that a human confirmed the 6-word SAS for a fingerprint). It is
+ * recording that a human confirmed the 12-word SAS for a fingerprint). It is
  * in the format now so adding the hook later is not a format change; until
  * the hook exists nothing issues it automatically.
  */
