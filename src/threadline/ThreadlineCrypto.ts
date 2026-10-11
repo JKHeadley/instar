@@ -227,6 +227,120 @@ export function derivePairingId(sharedSecret: Buffer, identityPubA: Buffer, iden
   ).toString('hex');
 }
 
+// ── Verified pairing v2: static identity-key SAS (spec §3.1 / FD2 / FD4, amended 2026-10-10) ──
+//
+// v1 derived the SAS from a per-handshake ephemeral shared secret, but no live path ever
+// ran that handshake between relay agents (issue #2117 gap G). v2 derives the words from
+// the two Ed25519 IDENTITY keys alone, so both sides compute them independently with no
+// round trip. The words are therefore PUBLIC values: anyone who knows both keys can
+// compute them. Security rests on the human comparison (§3.9) and on the LENGTH of the
+// compared value: a relay substituting keys controls both substitutes and can search
+// offline for a pair whose words collide, which costs about 2^(bits/2) key generations.
+// 6 words (66 bits) → ~2^33, hours of compute. 12 words (132 bits) → ~2^66, out of reach.
+
+const SAS_V2_WORDS = 12;
+
+/** Sorted raw 32-byte keys concatenated — the order-independent pair identity (FD2 v2). */
+function sortedPair(identityPubA: Buffer, identityPubB: Buffer): Buffer {
+  if (identityPubA.length !== 32 || identityPubB.length !== 32) {
+    throw new Error('identity public keys must be 32 raw bytes');
+  }
+  return sasSalt(identityPubA, identityPubB);
+}
+
+/** 17 bytes (136 bits ≥ 132) of v2 SAS material: HKDF-SHA256(ikm = sorted keys, info = "threadline-sas-v2"). */
+export function deriveSasBitsV2(identityPubA: Buffer, identityPubB: Buffer): Buffer {
+  return Buffer.from(
+    crypto.hkdfSync('sha256', sortedPair(identityPubA, identityPubB), Buffer.alloc(0), 'threadline-sas-v2', 17),
+  );
+}
+
+/** The 12-word v2 SAS: the leading 132 bits, big-endian, as 12 × 11-bit wordlist indices. */
+export function deriveSASv2(identityPubA: Buffer, identityPubB: Buffer): string[] {
+  const bits = deriveSasBitsV2(identityPubA, identityPubB);
+  const words = loadSasWordlist();
+  let acc = 0n;
+  for (let i = 0; i < 17; i++) acc = (acc << 8n) | BigInt(bits[i]);
+  acc >>= 4n; // 136 bits → keep the leading 132
+  const out: string[] = [];
+  for (let i = SAS_V2_WORDS - 1; i >= 0; i--) {
+    out.push(words[Number((acc >> BigInt(i * 11)) & 0x7ffn)]);
+  }
+  return out;
+}
+
+/** v2 sasFingerprint = first 8 bytes (hex) of SHA-256("threadline-sas-fp-v2" ‖ sasBits). */
+export function deriveSasFingerprintV2(sasBitsV2: Buffer): string {
+  return crypto
+    .createHash('sha256')
+    .update(Buffer.concat([Buffer.from('threadline-sas-fp-v2', 'utf-8'), sasBitsV2]))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * v2 pairingId: identifies the KEY PAIR, not a handshake. It changes exactly when either
+ * identity key rotates, which is when a pairing must reset to pending (FD4 v2).
+ */
+export function derivePairingIdV2(identityPubA: Buffer, identityPubB: Buffer): string {
+  return Buffer.from(
+    crypto.hkdfSync('sha256', sortedPair(identityPubA, identityPubB), Buffer.alloc(0), 'threadline-pairing-id-v2', 16),
+  ).toString('hex');
+}
+
+// ── Ed25519 public key → X25519 public key (RFC 7748 birational map) ──
+//
+// Our X25519 private key is the clamped first half of SHA-512(Ed25519 seed)
+// (MessageEncryptor.edPrivateToX25519), the standard conversion, so the X25519 public key
+// is a fixed function of the Ed25519 public key: u = (1 + y) / (1 - y) mod p. A receiver
+// can therefore compute a peer's encryption key from the PINNED identity key instead of
+// trusting whatever X25519 key the relay handed over (issue #2117 gap I).
+
+const P25519 = (1n << 255n) - 19n;
+
+function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  let result = 1n;
+  let b = ((base % mod) + mod) % mod;
+  let e = exp;
+  while (e > 0n) {
+    if (e & 1n) result = (result * b) % mod;
+    b = (b * b) % mod;
+    e >>= 1n;
+  }
+  return result;
+}
+
+/** Convert a raw 32-byte Ed25519 public key to its raw 32-byte X25519 public key. Throws on an invalid encoding. */
+export function edPublicToX25519(edPublicKey: Buffer): Buffer {
+  if (edPublicKey.length !== 32) throw new Error('Ed25519 public key must be 32 bytes');
+  // y is the little-endian integer with the sign bit (top bit of the last byte) cleared.
+  const le = Buffer.from(edPublicKey);
+  le[31] &= 0x7f;
+  let y = 0n;
+  for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(le[i]);
+  if (y >= P25519) throw new Error('Ed25519 public key y coordinate out of range');
+  const denom = (1n - y + P25519) % P25519;
+  if (denom === 0n) throw new Error('Ed25519 public key maps to the point at infinity');
+  const u = ((1n + y) * modPow(denom, P25519 - 2n, P25519)) % P25519;
+  const out = Buffer.alloc(32);
+  let v = u;
+  for (let i = 0; i < 32; i++) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
+}
+
+/** True iff `x25519PublicKey` is exactly the key derived from `edPublicKey` (never throws). */
+export function isX25519BoundToIdentity(edPublicKey: Buffer, x25519PublicKey: Buffer): boolean {
+  try {
+    const derived = edPublicToX25519(edPublicKey);
+    return x25519PublicKey.length === 32 && crypto.timingSafeEqual(derived, x25519PublicKey);
+  } catch {
+    return false;
+  }
+}
+
 // ── Challenge Response ───────────────────────────────────────────────
 
 /**

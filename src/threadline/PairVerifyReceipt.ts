@@ -23,7 +23,7 @@
  */
 
 import { Buffer } from 'node:buffer';
-import { verify } from './ThreadlineCrypto.js';
+import { sign, verify } from './ThreadlineCrypto.js';
 import type { AgentTrustManager } from './AgentTrustManager.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -31,8 +31,16 @@ import type { AgentTrustManager } from './AgentTrustManager.js';
 /** The `pair-verify` control-plane message kind (gate-exempt, like 'probe'). */
 export const PAIR_VERIFY_OP = 'pair-verify';
 
-/** The signing context string bound into the receipt (spec §3.4). */
-const RECEIPT_CONTEXT = 'threadline-pair-verify-v1';
+/**
+ * The signing context string bound into the receipt (spec §3.4). v2 (2026-10-10): the
+ * receipt also signs `issuedAt`. Under v2 the SAS is a function of the two identity keys,
+ * so pairingId + sasFingerprint no longer change per handshake; freshness moves into the
+ * receipt instead (FD4 v2).
+ */
+const RECEIPT_CONTEXT = 'threadline-pair-verify-v2';
+
+/** Allowed clock skew between the sender's issuedAt and our clock / record time. */
+export const RECEIPT_CLOCK_SKEW_MS = 5 * 60_000;
 
 /** Defensive payload field caps (a malformed/oversized receipt is dropped). */
 const MAX_HEX_LEN = 4096;
@@ -49,6 +57,8 @@ export interface PairVerifyPayload {
   /** The SENDER's view of the peer fingerprint (== our ownFp). */
   peerFp: string;
   sasFingerprint: string;
+  /** ISO-8601 UTC time the sender signed the receipt (v2). */
+  issuedAt: string;
   /** Hex-encoded Ed25519 signature over the bound message. */
   signature: string;
 }
@@ -75,12 +85,14 @@ export function parsePairVerifyPayload(raw: unknown): PairVerifyPayload | null {
   if (!isHexString(p.peerFp, 256)) return null;
   if (!isHexString(p.sasFingerprint, 256)) return null;
   if (!isHexString(p.signature)) return null;
+  if (typeof p.issuedAt !== 'string' || p.issuedAt.length > 64 || Number.isNaN(Date.parse(p.issuedAt))) return null;
   return {
     type: typeof p.type === 'string' ? p.type : PAIR_VERIFY_OP,
     pairingId: p.pairingId,
     ownFp: p.ownFp.toLowerCase(),
     peerFp: p.peerFp.toLowerCase(),
     sasFingerprint: p.sasFingerprint.toLowerCase(),
+    issuedAt: p.issuedAt,
     signature: p.signature,
   };
 }
@@ -91,14 +103,39 @@ export function receiptMessageBytes(
   senderOwnFp: string,
   senderPeerFp: string,
   sasFingerprint: string,
+  issuedAt: string,
 ): Buffer {
+  // Length-prefixed fields so no two field tuples can produce the same bytes.
+  const field = (v: string) => {
+    const b = Buffer.from(v, 'utf-8');
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(b.length);
+    return Buffer.concat([len, b]);
+  };
   return Buffer.concat([
     Buffer.from(RECEIPT_CONTEXT, 'utf-8'),
-    Buffer.from(pairingId, 'utf-8'),
-    Buffer.from(senderOwnFp, 'utf-8'),
-    Buffer.from(senderPeerFp, 'utf-8'),
-    Buffer.from(sasFingerprint, 'utf-8'),
+    field(pairingId),
+    field(senderOwnFp),
+    field(senderPeerFp),
+    field(sasFingerprint),
+    field(issuedAt),
   ]);
+}
+
+/** Build a signed v2 `pair-verify` receipt (the sender side). */
+export function buildPairVerifyReceipt(
+  identityPrivateKey: Buffer,
+  args: { pairingId: string; ownFp: string; peerFp: string; sasFingerprint: string; issuedAt?: string },
+): PairVerifyPayload {
+  const issuedAt = args.issuedAt ?? new Date().toISOString();
+  const ownFp = args.ownFp.toLowerCase();
+  const peerFp = args.peerFp.toLowerCase();
+  const sasFingerprint = args.sasFingerprint.toLowerCase();
+  const signature = sign(
+    identityPrivateKey,
+    receiptMessageBytes(args.pairingId, ownFp, peerFp, sasFingerprint, issuedAt),
+  ).toString('hex');
+  return { type: PAIR_VERIFY_OP, pairingId: args.pairingId, ownFp, peerFp, sasFingerprint, issuedAt, signature };
 }
 
 // ── Receipt processing (the inbound control-plane handler) ────────────
@@ -119,6 +156,7 @@ export function processPairVerifyReceipt(
   senderFp: string,
   rawPayload: unknown,
   ownFp?: string,
+  now: Date = new Date(),
 ): PairVerifyOutcome {
   try {
     const payload = parsePairVerifyPayload(rawPayload);
@@ -160,12 +198,21 @@ export function processPairVerifyReceipt(
       return { processed: false, reason: 'recipient-fingerprint-mismatch' };
     }
 
+    // Freshness (FD4 v2). The SAS no longer changes per handshake, so a receipt must be
+    // newer than the pairing it answers. Allow clock skew; a too-old or future receipt
+    // is dropped with no state change and the sender may retry (it only sets peerAcked).
+    const issuedMs = Date.parse(payload.issuedAt);
+    if (issuedMs > now.getTime() + RECEIPT_CLOCK_SKEW_MS) return { processed: false, reason: 'receipt-from-future' };
+    const recordedMs = profile.pairingRecordedAt ? Date.parse(profile.pairingRecordedAt) : NaN;
+    if (Number.isNaN(recordedMs)) return { processed: false, reason: 'no-pairing' };
+    if (issuedMs < recordedMs - RECEIPT_CLOCK_SKEW_MS) return { processed: false, reason: 'receipt-stale' };
+
     // Ed25519 signature verification against the BOUND identity key (spec §3.4).
     let sigOk = false;
     try {
       const idPub = Buffer.from(profile.peerIdentityPub, 'hex');
       const sig = Buffer.from(payload.signature, 'hex');
-      const msg = receiptMessageBytes(payload.pairingId, payload.ownFp, payload.peerFp, payload.sasFingerprint);
+      const msg = receiptMessageBytes(payload.pairingId, payload.ownFp, payload.peerFp, payload.sasFingerprint, payload.issuedAt);
       sigOk = verify(idPub, msg, sig);
     } catch {
       sigOk = false;

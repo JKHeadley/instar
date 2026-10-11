@@ -28,7 +28,8 @@ import type { AgentTrustManager } from './AgentTrustManager.js';
 
 export type CredentialShareRefusalReason =
   | 'peer-not-mutually-verified'
-  | 'credential-requires-encrypted-path';
+  | 'credential-requires-encrypted-path'
+  | 'encryption-key-not-bound';
 
 export interface CredentialShareDecision {
   /** True = the sanctioned credential path is authorized for this peer. */
@@ -45,6 +46,13 @@ export interface CredentialShareDecision {
 export interface EncryptedPathProbe {
   /** True iff this recipient's keys are known so MessageEncryptor.encrypt is used. */
   hasEncryptedSendPath(recipientFp: string): boolean;
+  /**
+   * True iff the channel is bound to the verified pairing: the peer's current identity key
+   * is the pinned one, its encryption key is derived from it, and the pairingId still
+   * matches our current key (FD4 v2). Implemented by ThreadlineClient.isChannelBoundToPairing.
+   * Optional so older probes compile; an absent method REFUSES (fail-closed).
+   */
+  isChannelBoundToPairing?(recipientFp: string, pinnedIdentityPubHex: string, pairingId: string): boolean;
 }
 
 // ── Agent-facing READ helper (the guarantee lives at the funnel) ──────
@@ -81,17 +89,19 @@ export function assertCanShareCredential(
  * the feature flag is enabled; NOT gated by dryRun (FD10 — a leak gate has no
  * allow-by-default soak).
  *
- * Refuses unless BOTH hold:
+ * Refuses unless ALL hold:
  *   1. the recipient peer is `mutual-verified` (peer-not-mutually-verified), AND
  *   2. the encrypted+signed send path is available for that recipient — a credential
- *      must NEVER traverse the plaintext fallback (credential-requires-encrypted-path).
+ *      must NEVER traverse the plaintext fallback (credential-requires-encrypted-path), AND
+ *   3. that path's encryption key is derived from the pinned, human-verified identity key
+ *      and the pairing still matches our current key (encryption-key-not-bound, FD4 v2).
  *
  * Fail-closed (FD9): any thrown error → refuse with peer-not-mutually-verified.
  *
  * @param recipientFp the peer's RESOLVED full routing fingerprint (never a name).
  */
 export function evaluateOutboundCredentialShare(
-  trustManager: Pick<AgentTrustManager, 'isCredentialShareAllowedByFingerprint'>,
+  trustManager: Pick<AgentTrustManager, 'isCredentialShareAllowedByFingerprint' | 'getProfileByFingerprint'>,
   encryptedPath: EncryptedPathProbe | null | undefined,
   recipientFp: string,
 ): CredentialShareDecision {
@@ -107,6 +117,20 @@ export function evaluateOutboundCredentialShare(
     // If we cannot probe the path, or the path is plaintext-only, fail closed.
     if (!encryptedPath || !encryptedPath.hasEncryptedSendPath(recipientFp)) {
       return { allow: false, reason: 'credential-requires-encrypted-path' };
+    }
+
+    // (3) The encryption key must be bound to the identity key the human verified
+    // (FD4 v2, issue #2117 gap I). The SAS proves the Ed25519 identity key only; if the
+    // X25519 key were whatever the relay handed over, a relay could pass the SAS check
+    // and then read the credential.
+    const profile = trustManager.getProfileByFingerprint(recipientFp);
+    if (
+      !profile?.peerIdentityPub ||
+      !profile.pairingId ||
+      typeof encryptedPath.isChannelBoundToPairing !== 'function' ||
+      !encryptedPath.isChannelBoundToPairing(recipientFp, profile.peerIdentityPub, profile.pairingId)
+    ) {
+      return { allow: false, reason: 'encryption-key-not-bound' };
     }
 
     return { allow: true };

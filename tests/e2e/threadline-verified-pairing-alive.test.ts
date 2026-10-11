@@ -43,9 +43,10 @@ import {
 } from '../../src/threadline/CredentialShareGate.js';
 import {
   generateIdentityKeyPair,
-  deriveSAS,
-  deriveSasBits,
-  deriveSasFingerprint,
+  deriveSASv2,
+  deriveSasBitsV2,
+  deriveSasFingerprintV2,
+  derivePairingIdV2,
 } from '../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../src/threadline/client/MessageEncryptor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -70,7 +71,9 @@ function makePeer(): Peer {
 }
 
 // Encrypted-path probe stub (the §3.5 "this peer has an encrypted+signed channel" oracle).
-const encryptedPath = (known: boolean) => ({ hasEncryptedSendPath: () => known });
+// `isChannelBoundToPairing` stands in for the real X25519-binding check (exercised for real in
+// threadline-pairing-v2-relay-agents.test.ts).
+const encryptedPath = (known: boolean) => ({ hasEncryptedSendPath: () => known, isChannelBoundToPairing: () => known });
 
 const AUTH = 'test-e2e-verified-pairing';
 const DASHBOARD_PIN = '654321';
@@ -90,10 +93,9 @@ describe('Secure A2A Verified Pairing E2E lifecycle (feature is alive)', () => {
 
   // Shared-secret-derived SAS for the self↔peer handshake (computed inline at
   // handshake completion per FD4 — never persisted).
-  const sharedSecret = crypto.randomBytes(32);
-  const sasWords = deriveSAS(sharedSecret, self.idPub, peer.idPub);
-  const sasFingerprint = deriveSasFingerprint(deriveSasBits(sharedSecret, self.idPub, peer.idPub));
-  const pairingId = crypto.randomBytes(16).toString('hex');
+  const sasWords = deriveSASv2(self.idPub, peer.idPub);
+  const sasFingerprint = deriveSasFingerprintV2(deriveSasBitsV2(self.idPub, peer.idPub));
+  const pairingId = derivePairingIdV2(self.idPub, peer.idPub);
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'verified-pairing-e2e-'));
@@ -145,7 +147,7 @@ describe('Secure A2A Verified Pairing E2E lifecycle (feature is alive)', () => {
     // ── Step 3: the two in-process agents complete a handshake. Both ends derive
     // the SAME SAS from the same shared secret (deterministic, FD2). Record the
     // pending pairing on the REAL trust manager (the post-handshake state).
-    const peerSas = deriveSAS(sharedSecret, peer.idPub, self.idPub);
+    const peerSas = deriveSASv2(peer.idPub, self.idPub);
     // SAS is order-independent (salt = sort(idPubA‖idPubB)) — both sides agree.
     expect(peerSas).toEqual(sasWords);
     trustManager.recordPendingVerification(peer.fp, {

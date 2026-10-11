@@ -8471,6 +8471,26 @@ Before I send another agent a credential, that peer must be **mutually verified*
       result.upgraded.push('CLAUDE.md: added Secure A2A Verified Pairing awareness section');
     }
 
+    // Secure A2A Verified Pairing v2 (spec §3.0, 2026-10-10): agents that received the
+    // v1 section above were told "6 words" and given no way to START a pairing (nothing
+    // ever created a pending pairing between relay agents, issue #2117 gap G). This
+    // supplement teaches the start step, the 12 words, and the encryption-key binding.
+    // Content-sniffed on its own marker so it reaches agents that already have v1.
+    // New agents get the v2 text from the template, which names the start route; skip them.
+    if (!content.includes('Verified Pairing v2 — starting a pairing') && !content.includes('/threadline/pairing/:peerFp/start')) {
+      const verifiedPairingV2Section = `
+### Verified Pairing v2 — starting a pairing (supersedes "6 words" above)
+
+- **Start it:** \`threadline_pair\` with \`action: "start"\` and the peer's fingerprint (or \`POST /threadline/pairing/:peerFp/start\`). The peer starts from their side too. Both sides derive the same **12 words** from the two identity keys, so no handshake is needed; I must have exchanged a Threadline message with the peer first so their key is known.
+- **Compare and confirm:** each operator reads their own 12 words (PIN-gated) and compares them with the other side over a channel the relay cannot touch. Confirm only if every word matches, in order. The words are not secret; the human comparison is what protects us.
+- **A denied match stays denied:** starting again is refused until an operator clears it with the dashboard PIN (\`clearFailed: true\`). A rotated identity key resets the pairing to pending.
+- **Credentials:** even with a verified peer, a credential is refused unless the encryption key in use is the one derived from that peer's verified identity key (\`encryption-key-not-bound\`).
+`;
+      content += '\n' + verifiedPairingV2Section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Verified Pairing v2 (start + 12 words) section');
+    }
+
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents
     // need to know threadline notices route parent-or-hub (never per-event topics)
     // and that "open this" / "tie this to X" in the hub means calling the bind

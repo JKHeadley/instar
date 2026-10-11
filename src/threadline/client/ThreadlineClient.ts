@@ -15,6 +15,7 @@ import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { AUTO_ACK_TYPE, encodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
+import { derivePairingIdV2, isX25519BoundToIdentity } from '../ThreadlineCrypto.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
 import {
   clampRelayReason, mapRelayReason, RELAY_BANNED_CODE,
@@ -460,6 +461,30 @@ export class ThreadlineClient extends EventEmitter {
   hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
     const known = this.knownAgents.get(recipientId);
     return Boolean(known?.publicKey && known?.x25519PublicKey);
+  }
+
+  /**
+   * Whether the channel a credential would travel on is bound to the pairing a human
+   * verified (spec §3.5 / FD4 v2, issue #2117 gap I). TRUE only when ALL hold:
+   *  - the peer's currently-known Ed25519 key is exactly the pinned key the human verified;
+   *  - the peer's X25519 key (the one encrypt() would use) is the key DERIVED from that
+   *    identity key — a relay-supplied encryption key that does not match is never trusted;
+   *  - the pairingId recomputed from OUR current identity key and the pinned key equals the
+   *    recorded one, so a rotation of our own key since verification invalidates it.
+   * Never throws; any doubt is false (fail-closed, FD9).
+   */
+  isChannelBoundToPairing(recipientId: AgentFingerprint, pinnedIdentityPubHex: string, pairingId: string): boolean {
+    try {
+      const known = this.knownAgents.get(recipientId);
+      const own = this.identity?.publicKey;
+      if (!known?.publicKey || !known?.x25519PublicKey || !own || !pinnedIdentityPubHex || !pairingId) return false;
+      const pinned = Buffer.from(pinnedIdentityPubHex, 'hex');
+      if (pinned.length !== 32 || !crypto.timingSafeEqual(pinned, known.publicKey)) return false;
+      if (!isX25519BoundToIdentity(pinned, known.x25519PublicKey)) return false;
+      return derivePairingIdV2(own, pinned) === pairingId;
+    } catch {
+      return false;
+    }
   }
 
   /**

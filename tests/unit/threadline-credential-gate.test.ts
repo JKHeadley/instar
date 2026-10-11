@@ -26,15 +26,17 @@ import {
 import {
   processPairVerifyReceipt,
   receiptMessageBytes,
+  buildPairVerifyReceipt,
   parsePairVerifyPayload,
   PAIR_VERIFY_OP,
 } from '../../src/threadline/PairVerifyReceipt.js';
 import {
   generateIdentityKeyPair,
   sign,
-  deriveSAS,
-  deriveSasBits,
-  deriveSasFingerprint,
+  deriveSASv2,
+  deriveSasBitsV2,
+  deriveSasFingerprintV2,
+  derivePairingIdV2,
 } from '../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../src/threadline/client/MessageEncryptor.js';
 import { InboundMessageGate, type VerifiedPairingGateConfig } from '../../src/threadline/InboundMessageGate.js';
@@ -64,11 +66,11 @@ function setUpPairing(
   peer: PeerKeys,
   opts: { verify?: boolean } = {},
 ): { pairingId: string; sasFingerprint: string; sasWords: string[] } {
-  const sharedSecret = crypto.randomBytes(32);
-  const sasBits = deriveSasBits(sharedSecret, self.idPub, peer.idPub);
-  const sasWords = deriveSAS(sharedSecret, self.idPub, peer.idPub);
-  const sasFingerprint = deriveSasFingerprint(sasBits);
-  const pairingId = crypto.randomBytes(16).toString('hex');
+  // v2 (FD4 amended 2026-10-10): words + pairingId are functions of the two identity keys.
+  const sasBits = deriveSasBitsV2(self.idPub, peer.idPub);
+  const sasWords = deriveSASv2(self.idPub, peer.idPub);
+  const sasFingerprint = deriveSasFingerprintV2(sasBits);
+  const pairingId = derivePairingIdV2(self.idPub, peer.idPub);
 
   tm.recordPendingVerification(peer.fp, {
     pairingId,
@@ -92,16 +94,7 @@ function makeReceipt(
   sasFingerprint: string,
 ): Record<string, unknown> {
   // From the SENDER's perspective: ownFp = sender, peerFp = recipient (us).
-  const msg = receiptMessageBytes(pairingId, sender.fp, recipientFp, sasFingerprint);
-  const sig = sign(sender.idPriv, msg);
-  return {
-    type: PAIR_VERIFY_OP,
-    pairingId,
-    ownFp: sender.fp,
-    peerFp: recipientFp,
-    sasFingerprint,
-    signature: sig.toString('hex'),
-  };
+  return buildPairVerifyReceipt(sender.idPriv, { pairingId, ownFp: sender.fp, peerFp: recipientFp, sasFingerprint }) as unknown as Record<string, unknown>;
 }
 
 function vpConfig(over: Partial<VerifiedPairingGateConfig> = {}): VerifiedPairingGateConfig {
@@ -119,9 +112,11 @@ function makeMessage(fromFp: string, content: unknown): ReceivedMessage {
   } as ReceivedMessage;
 }
 
-// Encrypted-path probe stub.
-function encryptedPath(known: boolean) {
-  return { hasEncryptedSendPath: () => known };
+// Encrypted-path probe stub. `bound` stands in for ThreadlineClient.isChannelBoundToPairing
+// (the encryption key derived from the pinned identity key; exercised for real in
+// threadline-pairing-v2.test.ts).
+function encryptedPath(known: boolean, bound = true) {
+  return { hasEncryptedSendPath: () => known, isChannelBoundToPairing: () => bound };
 }
 
 // ── Outbound credential-share gate ────────────────────────────────────
@@ -144,6 +139,20 @@ describe('CredentialShareGate — outbound (load-bearing, §3.5/FD9)', () => {
     const d = evaluateOutboundCredentialShare(tm, encryptedPath(true), peer.fp);
     expect(d.allow).toBe(true);
     expect(d.reason).toBeUndefined();
+  });
+
+  it('REFUSES a credential to a VERIFIED peer when the encryption key is not bound to the pinned identity key (FD4 v2, #2117 gap I)', () => {
+    setUpPairing(tm, self, peer, { verify: true });
+    const d = evaluateOutboundCredentialShare(tm, encryptedPath(true, false), peer.fp);
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('encryption-key-not-bound');
+  });
+
+  it('REFUSES when the path probe cannot check the binding at all (fail-closed)', () => {
+    setUpPairing(tm, self, peer, { verify: true });
+    const d = evaluateOutboundCredentialShare(tm, { hasEncryptedSendPath: () => true }, peer.fp);
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('encryption-key-not-bound');
   });
 
   it('REFUSES a credential to an UNVERIFIED peer (fail-closed)', () => {
@@ -245,9 +254,10 @@ describe('PairVerifyReceipt — control-plane receipt (§3.4/FD8)', () => {
     const { pairingId, sasFingerprint } = setUpPairing(tm, self, peer, { verify: false });
     const imposter = makePeer();
     // Imposter signs but presents the real peer's fingerprint claims.
-    const msg = receiptMessageBytes(pairingId, peer.fp, self.fp, sasFingerprint);
+    const issuedAt = new Date().toISOString();
+    const msg = receiptMessageBytes(pairingId, peer.fp, self.fp, sasFingerprint, issuedAt);
     const payload = {
-      type: PAIR_VERIFY_OP, pairingId, ownFp: peer.fp, peerFp: self.fp, sasFingerprint,
+      type: PAIR_VERIFY_OP, pairingId, ownFp: peer.fp, peerFp: self.fp, sasFingerprint, issuedAt,
       signature: sign(imposter.idPriv, msg).toString('hex'),
     };
     const outcome = processPairVerifyReceipt(tm, peer.fp, payload, self.fp);

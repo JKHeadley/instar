@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { PairingPendingStore, type PendingPairingRecord } from './PairingPendingStore.js';
+import { deriveSASv2, deriveSasBitsV2, deriveSasFingerprintV2, derivePairingIdV2 } from './ThreadlineCrypto.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -95,6 +96,9 @@ export interface AgentTrustProfile {
   verifiedAt?: string;
   /** Optional liveness flag (FD8): a signature-verified inbound peer receipt arrived. */
   peerAcked?: boolean;
+  /** When the current pairing was recorded on THIS machine (ISO-8601). Receipts older
+   *  than this (minus clock skew) are stale (FD4 v2: the SAS no longer changes per handshake). */
+  pairingRecordedAt?: string;
   /** When the pairingState is `identity-verified` (§3.8), the machine id whose operator
    *  SAS-compared (carried by the replicated record). Audit/observability only. */
   inheritedFromMachine?: string;
@@ -582,6 +586,7 @@ export class AgentTrustManager {
     profile.sasFingerprint = args.sasFingerprint;
     profile.verifiedAt = undefined;
     profile.peerAcked = undefined;
+    profile.pairingRecordedAt = now;
     profile.updatedAt = now;
 
     const record: PendingPairingRecord = {
@@ -694,6 +699,62 @@ export class AgentTrustManager {
     }
 
     return true;
+  }
+
+  /**
+   * Start (or re-check) a v2 static-key pairing with a peer (spec §3.2, FD4 v2).
+   *
+   * Both sides call this independently with the two Ed25519 identity keys; the 12 SAS
+   * words are a function of those keys alone, so no round trip is needed. The pairingId
+   * identifies the KEY PAIR, so it changes exactly when either key rotates. Rules:
+   *  - a changed pairingId (either key rotated, or first time) → pending-verification;
+   *  - same pairingId and already mutual/identity-verified → unchanged ('already-verified');
+   *  - same pairingId and verification-failed → refused unless `clearFailed` (an
+   *    operator-PIN-gated clear at the route): a denied match must NOT silently return to
+   *    pending, because the same static words would be shown again (spec §3.2);
+   *  - same pairingId and pending → unchanged ('already-pending'), re-recording the
+   *    machine-local words if they were lost (e.g. the 0600 store was cleared).
+   * The peer fingerprint must be the first 16 bytes of the supplied peer key.
+   */
+  startStaticPairing(
+    peerFp: string,
+    args: { ownIdentityPub: Buffer; peerIdentityPub: Buffer; ownFp: string; displayName?: string; clearFailed?: boolean },
+  ):
+    | { outcome: 'started' | 'already-pending' | 'already-verified'; pairingId: string; sasFingerprint: string }
+    | { outcome: 'self-pair' | 'fingerprint-mismatch' | 'refused-failed' } {
+    const fp = (peerFp || '').toLowerCase();
+    if (!fp || fp === (args.ownFp || '').toLowerCase()) return { outcome: 'self-pair' };
+    if (args.peerIdentityPub.length !== 32 || args.peerIdentityPub.subarray(0, 16).toString('hex') !== fp) {
+      return { outcome: 'fingerprint-mismatch' };
+    }
+    const pairingId = derivePairingIdV2(args.ownIdentityPub, args.peerIdentityPub);
+    const sasBits = deriveSasBitsV2(args.ownIdentityPub, args.peerIdentityPub);
+    const sasFingerprint = deriveSasFingerprintV2(sasBits);
+    const peerPubHex = args.peerIdentityPub.toString('hex');
+
+    const existing = this.getProfileByFingerprint(fp);
+    const samePair = !!existing && existing.pairingId === pairingId && existing.peerIdentityPub === peerPubHex;
+    if (existing && samePair) {
+      if (existing.pairingState === 'mutual-verified' || existing.pairingState === 'identity-verified') {
+        return { outcome: 'already-verified', pairingId, sasFingerprint };
+      }
+      if (existing.pairingState === 'verification-failed' && !args.clearFailed) {
+        return { outcome: 'refused-failed' };
+      }
+      if (existing.pairingState === 'pending-verification' && this.pendingStore.get(fp)) {
+        return { outcome: 'already-pending', pairingId, sasFingerprint };
+      }
+    }
+    const recorded = this.recordPendingVerification(fp, {
+      pairingId,
+      peerIdentityPub: peerPubHex,
+      sasWords: deriveSASv2(args.ownIdentityPub, args.peerIdentityPub),
+      sasFingerprint,
+      ownFp: args.ownFp,
+      displayName: args.displayName,
+    });
+    if (!recorded) return { outcome: 'self-pair' };
+    return { outcome: 'started', pairingId, sasFingerprint };
   }
 
   /**

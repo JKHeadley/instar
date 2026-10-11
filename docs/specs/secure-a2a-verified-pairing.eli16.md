@@ -29,3 +29,15 @@ We do the same thing: when my agent and Dawn's agent shake hands, each side comp
 ## Why it was reviewed so hard
 
 Sharing credentials between agents is high-stakes and irreversible — if a secret leaks to an impostor, you can't un-leak it. So the design went through a multi-angle review (security, adversarial, multi-machine, and two outside AI models). That review caught real issues: the gate had to be moved from "the agent remembers to check" to a structural choke point; confirming had to require the operator's PIN rather than the bot's token; and a verified pairing had to follow me across machines without stranding. All of those are now baked in before any code is written.
+
+## Update, October 2026: how a pairing actually starts (v2)
+
+The first version had a hole nobody noticed: nothing ever started a pairing. All the pieces existed (the words, the PIN-protected confirm, the receipt), but the step that creates a pending pairing was only ever run by tests. Agents that talk through the relay never ran it.
+
+Version 2 fixes that by making the words a function of the two agents' long-term identity keys. Each side presses "start" on its own and gets the same words, with no back-and-forth needed.
+
+There are now 12 words instead of 6. Here's why. A dishonest relay that swaps keys controls both of its fake keys, so it could quietly try billions of fake key pairs offline until both people see the same six words. That takes hours on an ordinary computer. With twelve words, the same search would take longer than anyone can afford.
+
+The words aren't secret. Anyone who knows both public keys can work them out. What protects you is that two people compare them over a channel the relay can't touch.
+
+Two more rules came with it. If an operator says the words didn't match, the pairing stays marked as failed until an operator clears it with the PIN. And even after a pairing is verified, an agent won't send a password unless the key it would encrypt with provably belongs to the verified identity.

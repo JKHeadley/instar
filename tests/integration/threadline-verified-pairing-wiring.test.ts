@@ -44,9 +44,10 @@ import {
 import {
   generateIdentityKeyPair,
   sign,
-  deriveSAS,
-  deriveSasBits,
-  deriveSasFingerprint,
+  deriveSASv2,
+  deriveSasBitsV2,
+  deriveSasFingerprintV2,
+  derivePairingIdV2,
 } from '../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../src/threadline/client/MessageEncryptor.js';
 
@@ -65,14 +66,15 @@ function makePeer(): Peer {
   const kp = generateIdentityKeyPair();
   return { idPub: kp.publicKey, idPriv: kp.privateKey, fp: computeFingerprint(kp.publicKey) };
 }
-const encryptedPath = (known: boolean) => ({ hasEncryptedSendPath: () => known });
+// `isChannelBoundToPairing` stands in for the real X25519-binding check (exercised for real in
+// threadline-pairing-v2-relay-agents.test.ts).
+const encryptedPath = (known: boolean) => ({ hasEncryptedSendPath: () => known, isChannelBoundToPairing: () => known });
 
 /** Record a pending pairing on a real trust manager and (optionally) verify it. */
 function seedPairing(tm: AgentTrustManager, self: Peer, peer: Peer, verify: boolean): { pairingId: string; sasWords: string[]; sasFingerprint: string } {
-  const sharedSecret = crypto.randomBytes(32);
-  const sasWords = deriveSAS(sharedSecret, self.idPub, peer.idPub);
-  const sasFingerprint = deriveSasFingerprint(deriveSasBits(sharedSecret, self.idPub, peer.idPub));
-  const pairingId = crypto.randomBytes(16).toString('hex');
+  const sasWords = deriveSASv2(self.idPub, peer.idPub);
+  const sasFingerprint = deriveSasFingerprintV2(deriveSasBitsV2(self.idPub, peer.idPub));
+  const pairingId = derivePairingIdV2(self.idPub, peer.idPub);
   tm.recordPendingVerification(peer.fp, {
     pairingId, peerIdentityPub: peer.idPub.toString('hex'), sasWords, sasFingerprint, ownFp: self.fp,
   });
@@ -203,11 +205,12 @@ describe('Verified Pairing — wiring integrity (deps are real, not null/no-op)'
     const self = makePeer(); const peer = makePeer();
     const { pairingId, sasFingerprint } = seedPairing(tm, self, peer, false);
     // A receipt with a TAMPERED signature must be rejected (no peerAcked set).
-    const msg = receiptMessageBytes(pairingId, peer.fp, self.fp, sasFingerprint);
+    const issuedAt = new Date().toISOString();
+    const msg = receiptMessageBytes(pairingId, peer.fp, self.fp, sasFingerprint, issuedAt);
     const badSig = sign(makePeer().idPriv, msg); // signed by the WRONG key
     const payload = {
       type: PAIR_VERIFY_OP, pairingId, ownFp: peer.fp, peerFp: self.fp,
-      sasFingerprint, signature: badSig.toString('hex'),
+      sasFingerprint, issuedAt, signature: badSig.toString('hex'),
     };
     // senderFp = the PEER (the receipt's author); ownFp = us (self).
     const outcome = processPairVerifyReceipt(tm, peer.fp, payload, self.fp);

@@ -18429,6 +18429,73 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ pairing: detail });
   });
 
+  // Start (or re-check) a v2 static-key pairing with a peer (spec §3.2, FD4 v2 — 2026-10-10).
+  // Both sides call this independently: the 12 SAS words are a function of the two
+  // Ed25519 identity keys, so no handshake round trip is needed and it works between
+  // relay-only agents (issue #2117 gap G). Starting needs only the agent Bearer token,
+  // because it records a PENDING pairing and grants nothing; the words are still shown
+  // only to a PIN-authed operator on the detail route, and confirming still needs the
+  // PIN. The one PIN-gated path here is `clearFailed`: a denied match stays
+  // verification-failed until an operator explicitly clears it (spec §3.2).
+  // The peer's identity key comes from the relay client's known-agent cache — never
+  // from the request — so a caller cannot choose which key gets bound.
+  router.post('/threadline/pairing/:peerFp/start', (req, res) => {
+    if (!verifiedPairingRouteEnabled()) {
+      res.status(503).json({ error: 'verified pairing not enabled' });
+      return;
+    }
+    const trustManager = ctx.unifiedTrust?.trustManager;
+    if (!trustManager) {
+      res.status(503).json({ error: 'trust manager unavailable' });
+      return;
+    }
+    const relay = ctx.threadlineRelayClient;
+    const ownPub = relay?.publicKey ?? null;
+    const ownFp = relay?.fingerprint ?? null;
+    if (!relay || !ownPub || !ownFp) {
+      res.status(503).json({ error: 'this machine does not hold the Threadline relay identity; start the pairing on the machine that does' });
+      return;
+    }
+    const peerFp = String(req.params.peerFp || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(peerFp)) {
+      res.status(400).json({ error: 'peerFp must be a 32-hex-char Threadline fingerprint' });
+      return;
+    }
+    const clearFailed = (req.body ?? {}).clearFailed === true;
+    if (clearFailed && !checkMandatePin(req, res)) return; // clearing a denied match is an operator act
+    const known = relay.getKnownAgents().find((a) => a.agentId === peerFp);
+    if (!known?.publicKey) {
+      res.status(409).json({ error: `no identity key known for "${peerFp}" — exchange a Threadline message with the peer first, then start again` });
+      return;
+    }
+    const result = trustManager.startStaticPairing(peerFp, {
+      ownIdentityPub: ownPub,
+      peerIdentityPub: known.publicKey,
+      ownFp,
+      displayName: known.name,
+      clearFailed,
+    });
+    switch (result.outcome) {
+      case 'self-pair':
+        res.status(400).json({ error: 'cannot pair with yourself' });
+        return;
+      case 'fingerprint-mismatch':
+        res.status(409).json({ error: 'the cached identity key does not match that fingerprint' });
+        return;
+      case 'refused-failed':
+        res.status(409).json({ error: 'this pairing was denied by an operator; clearing it requires the dashboard PIN (clearFailed: true)' });
+        return;
+      default:
+        res.json({
+          outcome: result.outcome,
+          peerFp,
+          pairingId: result.pairingId,
+          sasFingerprint: result.sasFingerprint,
+          next: 'Compare the 12 words with the other side out of band: GET /threadline/pairing/' + peerFp + ' with the dashboard PIN shows them; POST /threadline/pairing/' + peerFp + '/verify with the PIN confirms or denies.',
+        });
+    }
+  });
+
   // Operator confirm/deny of a pairing — PIN-GATED (FD7). The local human SAS
   // comparison is the load-bearing security event; the agent Bearer token CANNOT
   // confirm. checkMandatePin is the EXACT mechanism /mandate/issue uses.
@@ -18476,7 +18543,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       void ctx.telegram?.createAttentionItem?.({
         id: `threadline-pairing-verification-failed:${peerFp}`,
         title: 'Threadline pairing verification FAILED — possible MITM',
-        summary: `The SAS for peer ${peerFp.slice(0, 12)}… was asserted NOT to match. The peer was forced to untrusted and credential-share revoked. Re-handshake before retrying.`,
+        summary: `The SAS for peer ${peerFp.slice(0, 12)}… was asserted NOT to match. The peer was forced to untrusted and credential-share revoked. The pairing stays failed until an operator clears it with the dashboard PIN (POST /threadline/pairing/${peerFp}/start with clearFailed: true); the words will be the same unless a key changes, so find out why they differed first.`,
         category: 'general',
         priority: 'HIGH',
         sourceContext: 'threadline-verified-pairing',

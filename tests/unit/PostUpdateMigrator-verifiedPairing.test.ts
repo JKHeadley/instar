@@ -131,3 +131,38 @@ describe('migrateClaudeMd — Verified Pairing awareness reaches EXISTING agents
     expect(afterSecond.match(/Verified Pairing — is my channel to a peer mutually verified/g)!.length).toBe(1);
   });
 });
+
+describe('migrateClaudeMd — Verified Pairing v2 supplement (spec §3.0, 2026-10-10)', () => {
+  let projectDir: string;
+  let claudeMdPath: string;
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-vp2-md-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-verifiedPairing.test.ts:v2-cleanup' });
+  });
+
+  it('reaches an agent that ALREADY has the v1 section, exactly once', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\n### Verified Pairing — is my channel to a peer mutually verified before I share a secret?\n\nv1 text: each side renders 6 words.\n');
+    const first = runClaudeMdMigration(projectDir);
+    expect(first.upgraded.some((u) => u.includes('Verified Pairing v2'))).toBe(true);
+    const afterFirst = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(afterFirst).toContain('Verified Pairing v2 — starting a pairing');
+    expect(afterFirst).toContain('12 words');
+    expect(afterFirst).toContain('action: "start"');
+    runClaudeMdMigration(projectDir);
+    const afterSecond = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(afterSecond.match(/Verified Pairing v2 — starting a pairing/g)!.length).toBe(1);
+  });
+
+  it('does NOT add the supplement to a new agent whose template already teaches v2', () => {
+    const md = generateClaudeMd('test', 'TestAgent', 4042, false);
+    expect(md).toContain('/threadline/pairing/:peerFp/start');
+    expect(md).toContain('12 words');
+    fs.writeFileSync(claudeMdPath, md);
+    const r = runClaudeMdMigration(projectDir);
+    expect(r.upgraded.some((u) => u.includes('Verified Pairing v2'))).toBe(false);
+  });
+});

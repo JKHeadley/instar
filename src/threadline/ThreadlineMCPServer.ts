@@ -114,6 +114,12 @@ export interface ThreadlineMCPDeps {
    * locally-cached known-agents file and marks the response source=cache.
    */
   relayClient?: RelayDiscoverer | null;
+  /**
+   * Verified pairing v2: start (or re-check) a pending static-key pairing on the agent
+   * server (POST /threadline/pairing/:peerFp/start). Optional; absent on transports
+   * that cannot reach the local server, in which case `threadline_pair start` reports so.
+   */
+  startPairing?: (peerFp: string) => Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }>;
 }
 
 export interface SendMessageParams {
@@ -1206,15 +1212,16 @@ export class ThreadlineMCPServer {
     this.mcpServer.tool(
       'threadline_pair',
       'Inspect and drive Secure A2A verified pairings (mutual SAS identity verification). ' +
-      'status: list pairings and show the local SAS words for a pending peer so the operator can ' +
-      'compare them out-of-band against the peer\'s SAS. verify/deny: the actual confirmation is ' +
-      'PIN-gated — these return the dashboard path the operator must use (the agent cannot self-confirm a pairing).',
+      'start: begin a pairing with a peer (records it as pending; both sides start independently and ' +
+      'see the same 12 words). status: list pairings and show the local SAS words for a pending peer so ' +
+      'the operator can compare them out-of-band against the peer\'s SAS. verify/deny: the actual ' +
+      'confirmation is PIN-gated — these return the dashboard path the operator must use (the agent cannot self-confirm a pairing).',
       {
-        action: z.enum(['status', 'verify', 'deny']).describe(
-          'status: list pairings (+ SAS for a pending peer). verify/deny: guidance to the PIN-gated dashboard flip.'
+        action: z.enum(['start', 'status', 'verify', 'deny']).describe(
+          'start: begin a pending pairing with a peer. status: list pairings (+ SAS for a pending peer). verify/deny: guidance to the PIN-gated dashboard flip.'
         ),
         fingerprint: z.string().optional().describe(
-          'Peer fingerprint — required for verify/deny; for status, scopes to one pairing (+ its SAS words if pending).'
+          'Peer fingerprint — required for start/verify/deny; for status, scopes to one pairing (+ its SAS words if pending).'
         ),
       },
       async (args) => {
@@ -1227,6 +1234,22 @@ export class ThreadlineMCPServer {
         const { trustManager } = this.deps;
 
         switch (args.action) {
+          case 'start': {
+            if (!args.fingerprint) return errorResult('fingerprint is required for start');
+            if (!this.deps.startPairing) {
+              return errorResult('starting a pairing needs the local agent server, which this transport cannot reach');
+            }
+            const r = await this.deps.startPairing(args.fingerprint);
+            if (!r.success) return errorResult(`Could not start the pairing: ${r.error ?? 'unknown error'}`);
+            return jsonResult({
+              ...r.body,
+              instruction:
+                'The pairing is pending. Ask the peer to start it from their side too, then have each operator ' +
+                'compare their 12 words IN ORDER over a channel the relay cannot touch. Confirm on the dashboard ' +
+                '(PIN-gated) only if every word matches.',
+            });
+          }
+
           case 'status': {
             if (args.fingerprint) {
               const profile = trustManager.getProfileByFingerprint(args.fingerprint);
@@ -1250,7 +1273,7 @@ export class ThreadlineMCPServer {
                 if (pending) {
                   detail.sasWords = pending.sasWords;
                   detail.instruction =
-                    'Compare these 6 SAS words IN ORDER with the peer\'s locally-rendered SAS over an ' +
+                    'Compare these 12 SAS words IN ORDER with the peer\'s locally-rendered SAS over an ' +
                     'out-of-band channel. If they match exactly, confirm via the dashboard Threadline ' +
                     'pairing panel (PIN-gated). If they differ, deny — that is a MITM signal.';
                 }

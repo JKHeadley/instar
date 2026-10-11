@@ -283,3 +283,38 @@ export async function requestSecretViaHttp(
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * Start (or re-check) a v2 static-key verified pairing via the agent server's
+ * `/threadline/pairing/:peerFp/start` route (spec §3.2, FD4 v2). Records a PENDING
+ * pairing only; the words are shown to a PIN-authed operator and confirming needs the PIN.
+ */
+export async function startPairingViaHttp(
+  peerFp: string,
+  serverPort: number,
+  agentToken: string,
+): Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }> {
+  try {
+    const response = await fetch(
+      `http://localhost:${serverPort}/threadline/pairing/${encodeURIComponent(peerFp)}/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+        body: JSON.stringify({}),
+      },
+    );
+    const raw = await response.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      /* tolerate a non-JSON body */
+    }
+    if (!response.ok) {
+      return { success: false, status: response.status, error: (parsed.error as string) || `HTTP ${response.status}` };
+    }
+    return { success: true, status: response.status, body: parsed };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

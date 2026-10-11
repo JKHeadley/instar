@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-11T00:21:47.954Z",
+  "slug": "threadline-verified-pairing-v2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 464,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/CredentialShareGate.ts",
+      "src/threadline/PairVerifyReceipt.ts",
+      "src/threadline/ThreadlineCrypto.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/mcp-stdio-entry.ts"
+    ],
+    "addedLines": 441,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
