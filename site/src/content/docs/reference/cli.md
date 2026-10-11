@@ -153,6 +153,9 @@ instar git commit [message]     # Create a commit
 instar machines                 # List all paired machines and their roles
 instar machines remove <name-or-id>  # Revoke a machine from the mesh
 instar whoami                   # Show this machine's identity and role
+instar identity status          # This machine's AGENT identity posture + routing fingerprint (never key material)
+instar identity adopt --from <sibling>  # Move this machine's identity aside and adopt the one a sibling publishes (after the operator's yes)
+instar identity init --standalone --i-understand-peers-must-repin  # Mint a NEW agent identity when no sibling can serve one
 instar pair                     # Generate a pairing code for a new machine
 instar join <url>               # Join an existing agent mesh (--code <code>, --name <name>)
 instar wakeup                   # Move the agent to this machine (transfer awake role)
@@ -224,6 +227,7 @@ Stop event may probe immediately.
 instar pair                     # Initiate pairing on a new machine
 instar join <code>              # Complete pairing using a code from `pair`
 instar whoami                   # Show local machine identity
+instar identity status          # The agent identity on this machine (posture + fingerprint)
 instar machines                 # List paired machines and their state
 instar wakeup [machine]         # Wake a paired machine (where supported)
 instar leave                    # Remove this machine from the multi-machine cluster

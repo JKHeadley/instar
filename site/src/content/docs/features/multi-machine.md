@@ -50,12 +50,15 @@ Primary-machine-writes-only enforcement prevents conflicts. Secondary machines q
 
 ```bash
 instar whoami               # Show this machine's identity
+instar identity status      # The AGENT identity this machine holds (a joined machine adopts it from siblings, never mints one)
 instar machines             # List all paired machines
 instar wakeup               # Transfer awake role to this machine
 instar leave                # Remove this machine from the mesh
 ```
 
 Note: `whoami`, `pair`, `join`, `wakeup`, and `leave` are top-level commands, not subcommands of `machines`.
+
+One agent, one identity: every machine of an agent holds the same Threadline identity (one key, one routing fingerprint). A machine that joins or is rebuilt adopts that identity from its siblings over signed mesh messages and never mints a second one; if two machines ever publish different fingerprints, the lease holder raises one Attention item naming which machine has which. Replacing an existing identity is a deliberate step after the operator's yes: `instar identity adopt --from <sibling>` on the affected machine (the old files are moved aside, never deleted). `GET /threadline/health` carries the live comparison as `identityCoherence`.
 
 ## Capability Registry
 
