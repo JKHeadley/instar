@@ -5460,6 +5460,14 @@ export interface ThreadlineConfig {
    */
   localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
   /**
+   * A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md):
+   * the same-machine route verifies the sender's Ed25519 signature against the
+   * key held for its name. `enabled` OMITTED ⇒ the developmentAgent gate decides
+   * (live on a dev agent, off on the fleet). `dryRun` defaults TRUE (verify,
+   * count, log; deliver as today); only an explicit `false` refuses.
+   */
+  localRouteSignature?: { enabled?: boolean; dryRun?: boolean };
+  /**
    * Honest sender-side reporting of a send that stays queued
    * (docs/specs/a2a-single-agent-identity.md §3). `enabled` omitted ⇒ the
    * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`

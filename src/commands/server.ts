@@ -250,6 +250,9 @@ import type { TmuxOperations } from '../messaging/MessageDelivery.js';
 import { MessageRouter } from '../messaging/MessageRouter.js';
 import { generateAgentToken } from '../messaging/AgentTokenManager.js';
 import { pickupDroppedMessages } from '../messaging/DropPickup.js';
+import { createAgentLocalEnvelopeSigner, resolveLocalRouteSignatureMode } from '../threadline/localEnvelopeSignature.js';
+/** The one second drop-pickup pass per boot (signed envelope §7); cleared at shutdown. */
+let dropSecondPassTimer: ReturnType<typeof setTimeout> | null = null;
 import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
@@ -17300,12 +17303,53 @@ export async function startServer(options: StartOptions): Promise<void> {
       localAgent: config.projectName,
       localMachine: machineId,
       serverUrl: `http://localhost:${config.port}`,
+      // A2A local-route signed envelope §7: THE production signer, over the
+      // Threadline identity (not the machine identity). It reads the identity
+      // at each sign, so one created later by the Threadline bootstrap is used.
+      envelopeSigner: createAgentLocalEnvelopeSigner(config.projectName, config.stateDir),
     }, crossMachineDeps);
     // Generate/persist agent token for cross-agent auth (idempotent — reuses existing token)
     const agentToken = generateAgentToken(config.projectName);
 
     // Pick up any messages dropped while this agent was offline
-    const dropResult = await pickupDroppedMessages(config.projectName, messageStore);
+    // A2A local-route signed envelope §7: pickup applies the signature check
+    // by mode. The boot pass runs before any peer is listening, so it never
+    // probes and never expires; if it holds anything, ONE second pass runs
+    // five minutes later with the first-contact probe allowed.
+    const dropSignatureMode = () => resolveLocalRouteSignatureMode(
+      {
+        enabled: liveConfig.get<boolean | undefined>('threadline.localRouteSignature.enabled', undefined),
+        dryRun: liveConfig.get<boolean | undefined>('threadline.localRouteSignature.dryRun', undefined),
+      },
+      config as { developmentAgent?: boolean; threadline?: { localRouteSignature?: { enabled?: boolean; dryRun?: boolean } } },
+    );
+    const bootDropMode = dropSignatureMode();
+    if (bootDropMode !== 'off') console.log(`[relay-agent-signature] drop pickup (boot pass) mode=${bootDropMode}`);
+    const dropResult = await pickupDroppedMessages(config.projectName, messageStore, { mode: bootDropMode, stateDir: config.stateDir, pass: 'boot' });
+    if (dropResult.held > 0) {
+      console.log(`[relay-agent-signature] holding ${dropResult.held} unproven dropped message(s); second pass in 5 minutes`);
+      dropSecondPassTimer = setTimeout(() => {
+        dropSecondPassTimer = null;
+        const mode = dropSignatureMode();
+        console.log(`[relay-agent-signature] drop pickup (second pass) mode=${mode}`);
+        pickupDroppedMessages(config.projectName, messageStore, { mode, stateDir: config.stateDir, pass: 'second' })
+          .then((second) => {
+            if (second.ingested > 0) console.log(`[relay-agent-signature] second pass ingested ${second.ingested} dropped message(s)`);
+            if (second.held > 0 || second.expired > 0) {
+              console.warn(`[relay-agent-signature] second pass: ${second.held} held, ${second.expired} expired (senders: ${second.heldSenders.join(', ') || 'unknown'})`);
+              DegradationReporter.getInstance().report({
+                feature: 'Threadline.localRouteSignature',
+                primary: 'Ingest messages other agents parked for this agent while it was down',
+                fallback: 'Unproven parked messages are held in the drop directory and deleted once older than 7 days',
+                reason: `${second.held} parked message(s) held and ${second.expired} expired: their signature could not be verified (senders: ${second.heldSenders.join(', ') || 'unknown'})`,
+                impact: 'Those messages were not delivered to this agent; their senders still show them as queued',
+              });
+            }
+          })
+          .catch((err) => console.warn(`[relay-agent-signature] second pass failed: ${err instanceof Error ? err.message : String(err)}`));
+      }, 5 * 60_000);
+      dropSecondPassTimer.unref();
+    }
     const dropSummary = dropResult.ingested > 0
       ? ` | picked up ${dropResult.ingested} dropped message(s)`
       : '';
@@ -28819,6 +28863,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         process.exit(1);
       }
       _shuttingDown = true;
+      if (dropSecondPassTimer) { clearTimeout(dropSecondPassTimer); dropSecondPassTimer = null; }
       // Hard deadline: the teardown below awaits many subsystems in sequence and
       // any one of them (an origin worker, a tunnel, a Threadline relay, a server
       // with an open long-poll) can hang; without a bound the process never

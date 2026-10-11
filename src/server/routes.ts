@@ -547,6 +547,21 @@ import {
   statedLocalTrustLevel,
 } from '../threadline/localRouteTrust.js';
 import {
+  REQUIRE_SIGNATURE_HEADER,
+  appendLocalRouteSignatureAudit,
+  countLocalEnvelopeVerdict,
+  createAgentLocalEnvelopeSigner,
+  localEnvelopeRefusalBody,
+  localEnvelopeRefusalLogLine,
+  localEnvelopeSignerAvailable,
+  localEnvelopeVerifier,
+  localRouteSignatureCounters,
+  localRouteSignatureCountersSince,
+  requiresUnmetSignature,
+  resolveLocalRouteSignatureMode,
+  verifyLocalRouteEnvelope,
+} from '../threadline/localEnvelopeSignature.js';
+import {
   relayUnknownSenderTrustCounters,
   resolveRelayUnknownSenderTrustMode,
 } from '../threadline/relayUnknownSenderTrust.js';
@@ -3197,6 +3212,16 @@ export function createRoutes(ctx: RouteContext): Router {
   const backupRouteCounters = createBackupRouteCounters();
   // Local-route trust counters (docs/specs/a2a-local-route-trust.md): in memory,
   // surfaced on the AUTHED /health — the evidence the wider rollout is decided on.
+  // A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md).
+  // The mode is read live; the signer is THE production signer (Threadline identity).
+  const localRouteSignatureMode = () => resolveLocalRouteSignatureMode(
+    {
+      enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.localRouteSignature.enabled', undefined),
+      dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.localRouteSignature.dryRun', undefined),
+    },
+    ctx.config as { developmentAgent?: boolean; threadline?: { localRouteSignature?: { enabled?: boolean; dryRun?: boolean } } },
+  );
+  const localEnvelopeSigner = createAgentLocalEnvelopeSigner(ctx.config.projectName, ctx.config.stateDir);
   const localRouteTrustCounters = createLocalRouteTrustCounters();
   const localRouteTrustMode = () => resolveLocalRouteTrustMode(
     {
@@ -4903,6 +4928,16 @@ export function createRoutes(ctx: RouteContext): Router {
       base.threadline = {
         ...(base.threadline as object ?? {}),
         localRouteTrust: { ...localRouteTrustMode(), trustManagerWired: !!ctx.unifiedTrust?.trustManager, ...localRouteTrustCounters },
+        // A2A local-route signed envelope: mode + in-memory counters. The
+        // rollout evidence is logs/relay-agent-signature.jsonl, not this block.
+        localRouteSignature: {
+          mode: localRouteSignatureMode(),
+          since: localRouteSignatureCountersSince,
+          ...localRouteSignatureCounters,
+          firstContactKeys: localEnvelopeVerifier.firstContact.size,
+          replayCacheSize: localEnvelopeVerifier.replay.size,
+          signerAvailable: localEnvelopeSignerAvailable(ctx.config.stateDir),
+        },
         // Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md):
         // the live mode and the process-wide verdict counters. AUTHED only.
         relayUnknownSenderTrust: {
@@ -35061,6 +35096,61 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
+      // Local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md,
+      // ACT-067): PRE-ADMISSION — after auth and the shape check, before the loop
+      // check, the trust check, the content window and the ledger commit. The
+      // mode is resolved once for this request.
+      const sigMode = localRouteSignatureMode();
+      // A sender that must never deliver an unproven message says so; a receiver
+      // that is not enforcing refuses it, in every mode, and records nothing.
+      if (requiresUnmetSignature(req.headers[REQUIRE_SIGNATURE_HEADER], sigMode)) {
+        const from = typeof envelope.message?.from?.agent === 'string' && envelope.message.from.agent ? envelope.message.from.agent : null;
+        countLocalEnvelopeVerdict(sigMode, { ok: false, reason: 'not-enforcing', senderName: from }, sigMode === 'off' ? undefined : ctx.config.stateDir);
+        res.status(401).json(localEnvelopeRefusalBody('not-enforcing'));
+        return;
+      }
+      // Enforcing and proven: the fingerprint derived from the verified key.
+      let provenSenderFp: string | null = null;
+      if (sigMode !== 'off') {
+        let sigVerdict: Awaited<ReturnType<typeof verifyLocalRouteEnvelope>> | null = null;
+        try {
+          sigVerdict = await verifyLocalRouteEnvelope(envelope, { stateDir: ctx.config.stateDir, selfName: ctx.config.projectName });
+        } catch (sigErr) {
+          localRouteSignatureCounters.errors++;
+          console.warn(`[relay-agent-signature] check failed: ${sigErr instanceof Error ? sigErr.message : String(sigErr)}`);
+          appendLocalRouteSignatureAudit(ctx.config.stateDir, {
+            source: 'route', mode: sigMode, outcome: sigMode === 'enforcing' ? 'refused' : 'would-refuse',
+            from: typeof envelope.message?.from?.agent === 'string' ? envelope.message.from.agent : null, reason: 'error',
+          });
+          if (sigMode === 'enforcing') {
+            res.status(503).json({ error: 'signature-check-unavailable', refused: true, retryable: true });
+            return;
+          }
+        }
+        if (sigVerdict) {
+          countLocalEnvelopeVerdict(sigMode, sigVerdict, ctx.config.stateDir);
+          if (!sigVerdict.ok) {
+            const line = localEnvelopeRefusalLogLine(sigMode === 'enforcing' ? 'refuse' : 'would-refuse', sigVerdict.senderName, sigVerdict.reason);
+            if (line) console.log(line);
+            if (sigMode === 'enforcing') {
+              res.status(401).json(localEnvelopeRefusalBody(sigVerdict.reason));
+              return;
+            }
+          } else if (sigMode === 'enforcing') {
+            provenSenderFp = sigVerdict.fingerprint;
+          }
+          // Every success answer of this request says whether the envelope was
+          // proven and under which mode (the sender holds our token).
+          const signatureInfo = { mode: sigMode, verified: sigVerdict.ok };
+          const plainJson = res.json.bind(res);
+          res.json = ((body: unknown) => plainJson(
+            res.statusCode < 400 && body && typeof body === 'object' && !Array.isArray(body)
+              ? { ...(body as Record<string, unknown>), signature: signatureInfo }
+              : body,
+          )) as typeof res.json;
+        }
+      }
+
       // One relay-chain-loop predicate (inbound-id ledger §1): a loop envelope is
       // refused through the existing refusal answer and writes no ledger row.
       {
@@ -35080,9 +35170,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const relayFromAgent: string = typeof envelope.message?.from?.agent === 'string' ? envelope.message.from.agent : 'unknown';
       const trustMode = localRouteTrustMode();
       // One registry read serves both the trust check and the ledger key.
-      const senderRegistryFp = (relayLedger || trustMode.enabled)
+      // Signed envelope, enforcing: the PROVEN fingerprint replaces the
+      // name-resolved one for the trust check and the ledger's registry: key.
+      const senderRegistryFp = provenSenderFp ?? ((relayLedger || trustMode.enabled)
         ? (resolvePeerFingerprintByName(ctx.config.stateDir, relayFromAgent) ?? null)
-        : null;
+        : null);
       const relayRegistryFp = relayLedger ? senderRegistryFp : null;
       const relayAssertedFp = typeof envelope.message?.from?.fingerprint === 'string' && /^[0-9a-f]{6,64}$/i.test(envelope.message.from.fingerprint)
         ? envelope.message.from.fingerprint as string
@@ -36100,6 +36192,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+        // Signed envelope §8: advertise the live mode on /threadline/health.
+        localEnvelopeSignatureMode: localRouteSignatureMode,
         // Secure A2A Verified Pairing (§3.6): surface mutualVerifiedCount on
         // /threadline/health. The count is the number of profiles whose pairing
         // reached 'mutual-verified'. Gated on the verified-pairing flag so a dark
@@ -37060,6 +37154,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 // §1: the POST is issued from here on; its own fetch is wrapped so
                 // only ITS error code can prove non-admission (an error from anywhere
                 // else in the shared catch below never counts).
+                // Signed envelope (§7): sign immediately before the POST. Senders
+                // are not gated — an older receiver ignores the field.
+                {
+                  const signature = localEnvelopeSigner(envelope);
+                  if (signature) (envelope as { signature?: string }).signature = signature;
+                }
                 const postBody = JSON.stringify(envelope);
                 localPostPeerFp = resolvePeerFingerprint(localTarget) ?? '';
                 localPostOutcome = { kind: 'issued' };

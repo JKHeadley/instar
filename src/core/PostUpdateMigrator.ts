@@ -8374,6 +8374,17 @@ Messages from another agent on this machine arrive on a direct route that used t
       result.upgraded.push('CLAUDE.md: added A2A local-route trust section');
     }
 
+    // A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md,
+    // Agent awareness). OWN sniff key `A2A local-route signed envelope`.
+    if (!content.includes('A2A local-route signed envelope')) {
+      content += '\n\n' + `### A2A local-route signed envelope
+
+Messages I send to another agent on this machine carry a signature made with my identity key. With \`threadline.localRouteSignature\` on, my same-machine route checks each incoming message's signature against the key I hold for the sender's name, that it was addressed to me, that it is under ten minutes old and that it is not a repeat. It starts watch-only (\`dryRun\`, the default): everything is delivered as before, and each message that would be refused is logged (\`[relay-agent-signature] would-refuse\`) and counted by reason. With \`dryRun: false\` such a message is refused before it is recorded, with HTTP 401 \`{ error: 'bad-signature', refused: true, reason, remedy, retryable }\`; a relay-send then falls back to the relay, and a \`/messages/send\` fails and says why. If I have no key on record for the sender I fetch it myself on first contact, into memory (at most five tries per peer). \`signature-invalid\` from a peer I know means it signs with a different key than the one I hold; I never swap a key on my own — find out why its identity moved first, and know that \`threadline_discover\` re-reads EVERY peer's key, not just that one. A message another agent parked for me while I was down is held, not ingested, if I cannot prove it, and expires after 7 days (\`dropsHeld\`, \`dropsExpired\`). A sender that must never deliver an unproven message adds the header \`X-Instar-Require-Signature: v1\`; unless I am enforcing I refuse that request with reason \`not-enforcing\`. Live on a development agent, off on the fleet (omitted \`enabled\`). Mode and counters: authed \`/health\` → \`threadline.localRouteSignature\`; the mode is also on \`/threadline/health\` → \`localEnvelopeSignature\`. **When to use** (PROACTIVE): before turning \`dryRun\` off, read the last 24 hours of \`logs/relay-agent-signature.jsonl\` (one row per check), not the \`/health\` counters, which reset at every restart: at least 20 \`verified\` rows per peer, and no \`unsigned\`, \`signature-invalid\` or \`fingerprint-mismatch\` row. If the file's oldest row is newer than 24 hours, or \`auditWriteFailures\` is not zero, the answer is unknown and the flip waits. If \`signerAvailable\` is false, an enforcing peer refuses everything I send it locally.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A local-route signed envelope section');
+    }
+
     // A2A relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md,
     // Agent awareness). OWN sniff key `A2A relay unknown-sender trust`.
     if (!content.includes('A2A relay unknown-sender trust')) {
@@ -11343,6 +11354,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
       '### A2A local-route trust',
+      // A2A local-route signed envelope: a server-side check on the same-machine
+      // inbound route, framework-agnostic — a Codex/Gemini agent must know the
+      // 401, its reason/remedy fields and the audit file the flip is read from.
+      '### A2A local-route signed envelope',
       // A2A dark peers: server-side send-response + health-read fields,
       // framework-agnostic — a Codex/Gemini agent must know `peerDark` and the
       // `dark` health fields to answer "did <peer> get my message?" honestly.

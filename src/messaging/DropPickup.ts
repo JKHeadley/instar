@@ -20,6 +20,36 @@ import type { MessageEnvelope } from './types.js';
 import type { MessageStore } from './MessageStore.js';
 import { verifyDropHmac } from './AgentTokenManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  appendLocalRouteSignatureAudit,
+  countLocalEnvelopeVerdict,
+  localRouteSignatureCounters,
+  readRegistrySnapshot,
+  verifyLocalRouteEnvelope,
+  type LocalEnvelopeVerifier,
+  type LocalRouteSignatureMode,
+} from '../threadline/localEnvelopeSignature.js';
+
+/** A held drop older than this (file modification time) is deleted by the second pass. */
+export const HELD_DROP_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md §7):
+ * the signature check drop pickup applies AFTER its own checks.
+ */
+export interface DropSignatureCheck {
+  mode: LocalRouteSignatureMode;
+  /** The receiver's state directory (its registry lives under it). */
+  stateDir: string;
+  /**
+   * 'boot': peers are not listening yet — verify against the registry only,
+   * never probe, never expire. 'second': the first-contact probe is allowed,
+   * and an unproven drop older than 7 days is deleted.
+   */
+  pass: 'boot' | 'second';
+  now?: number;
+  verifier?: LocalEnvelopeVerifier;
+}
 
 export interface DropPickupResult {
   /** Number of messages successfully ingested */
@@ -30,6 +60,12 @@ export interface DropPickupResult {
   duplicates: number;
   /** Details of rejected messages for logging */
   rejections: Array<{ file: string; reason: string }>;
+  /** Enforcing: unproven drops left in place this pass. */
+  held: number;
+  /** Enforcing, second pass: unproven drops older than 7 days, deleted. */
+  expired: number;
+  /** Sender names behind held/expired drops (bounded, log-safe). */
+  heldSenders: string[];
 }
 
 /**
@@ -42,6 +78,7 @@ export interface DropPickupResult {
 export async function pickupDroppedMessages(
   agentName: string,
   store: MessageStore,
+  signature?: DropSignatureCheck,
 ): Promise<DropPickupResult> {
   const dropDir = path.join(os.homedir(), '.instar', 'messages', 'drop', agentName);
 
@@ -50,6 +87,17 @@ export async function pickupDroppedMessages(
     rejected: 0,
     duplicates: 0,
     rejections: [],
+    held: 0,
+    expired: 0,
+    heldSenders: [],
+  };
+  const sigMode: LocalRouteSignatureMode = signature?.mode ?? 'off';
+  const now = signature?.now ?? Date.now();
+  // One registry read for the whole pass.
+  const registry = sigMode !== 'off' && signature ? readRegistrySnapshot(signature.stateDir) : undefined;
+  const noteSender = (name: string | null) => {
+    const safe = (name ?? 'unknown').replace(/[^\x21-\x7e]/g, '?').slice(0, 48) || 'unknown';
+    if (!result.heldSenders.includes(safe) && result.heldSenders.length < 16) result.heldSenders.push(safe);
   };
 
   // No drop directory = nothing to pick up
@@ -113,14 +161,71 @@ export async function pickupDroppedMessages(
         continue;
       }
 
+      // Signature check (after the existing checks, which delete as before).
+      // dry-run: verify + count, ingest as today. enforcing: an unproven drop
+      // is HELD in place — never deleted on its first look, because the cause
+      // may be the receiver's (a key it has not fetched yet) or an older sender.
+      if (sigMode !== 'off' && signature) {
+        let proven = false;
+        let senderName: string | null = typeof envelope.message?.from?.agent === 'string' ? envelope.message.from.agent : null;
+        let reason: Parameters<typeof appendLocalRouteSignatureAudit>[1]['reason'] = 'error';
+        try {
+          const verdict = await verifyLocalRouteEnvelope(envelope, {
+            stateDir: signature.stateDir,
+            selfName: agentName,
+            now,
+            offline: true,
+            registry,
+            allowProbe: signature.pass === 'second',
+            verifier: signature.verifier,
+          });
+          proven = verdict.ok;
+          senderName = verdict.senderName ?? senderName;
+          if (!verdict.ok) reason = verdict.reason;
+          // dry-run counts like the route (verified / wouldRefuse + byReason);
+          // enforcing drops have their own outcomes, counted below.
+          if (sigMode === 'dry-run') countLocalEnvelopeVerdict(sigMode, verdict);
+        } catch {
+          // A verifier error never reaches the deleting catch below: it holds
+          // (enforcing) or ingests (dry-run).
+          localRouteSignatureCounters.errors++;
+        }
+        const audit = (outcome: 'verified' | 'would-refuse' | 'held' | 'expired') => appendLocalRouteSignatureAudit(
+          signature.stateDir,
+          { source: 'drop', mode: sigMode, outcome, from: senderName, ...(outcome === 'verified' ? {} : { reason }) },
+          now,
+        );
+        if (proven) {
+          localRouteSignatureCounters.dropsVerified++;
+          audit('verified');
+        } else if (sigMode === 'enforcing') {
+          let ageMs = 0;
+          try { ageMs = now - fs.statSync(filePath).mtimeMs; } catch { /* @silent-fallback-ok — age unknown: treat as new, hold */ }
+          noteSender(senderName);
+          if (signature.pass === 'second' && ageMs > HELD_DROP_MAX_AGE_MS) {
+            result.expired++;
+            localRouteSignatureCounters.dropsExpired++;
+            audit('expired');
+            unlinkSafe(filePath);
+          } else {
+            result.held++;
+            localRouteSignatureCounters.dropsHeld++;
+            audit('held');
+          }
+          continue;
+        } else {
+          audit('would-refuse');
+        }
+      }
+
       // Update delivery phase to 'received'
-      const now = new Date().toISOString();
+      const nowIso = new Date(now).toISOString();
       envelope.delivery = {
         ...envelope.delivery,
         phase: 'received',
         transitions: [
           ...envelope.delivery.transitions,
-          { from: envelope.delivery.phase, to: 'received', at: now, reason: 'picked up from drop directory' },
+          { from: envelope.delivery.phase, to: 'received', at: nowIso, reason: 'picked up from drop directory' },
         ],
       };
 

@@ -73,6 +73,13 @@ export interface ThreadlineEndpointsConfig {
    */
   mutualVerifiedCount?: () => number;
   /**
+   * A2A local-route signed envelope §8: the receiver's live mode, advertised
+   * on /threadline/health as `localEnvelopeSignature: { version, mode }`. A
+   * same-machine sender reads the field's presence as "this receiver
+   * understands X-Instar-Require-Signature". Absent ⇒ the field is omitted.
+   */
+  localEnvelopeSignatureMode?: () => 'off' | 'dry-run' | 'enforcing';
+  /**
    * Live relay connection state for `/threadline/health`.
    *
    * Returns null when NO relay client exists in this process — relay disabled, or
@@ -292,6 +299,9 @@ export function createThreadlineRoutes(
       // Omitted when no count callback is wired (legacy behavior).
       ...(config.mutualVerifiedCount
         ? { mutualVerifiedCount: config.mutualVerifiedCount() }
+        : {}),
+      ...(config.localEnvelopeSignatureMode
+        ? { localEnvelopeSignature: { version: 'v1', mode: config.localEnvelopeSignatureMode() } }
         : {}),
       // Inbound-id ledger §3: a HINT for senders; the per-message answer is the truth.
       ...(inboundIdLedgerAdvertised(config)

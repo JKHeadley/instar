@@ -55,12 +55,27 @@ import { sign, verify } from '../core/MachineIdentity.js';
 import { signRequest } from '../server/machineAuth.js';
 import type { NonceStore } from '../core/NonceStore.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
+import { localRouteSignatureCounters, logSafe, type LocalEnvelopeSigner } from '../threadline/localEnvelopeSignature.js';
 
 export interface MessageRouterConfig {
   localAgent: string;
   localMachine: string;
   serverUrl: string;
+  /**
+   * A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md §7):
+   * signs a same-machine envelope with this agent's identity key. Returns null
+   * when it cannot (no identity, or `from.agent` is not this agent).
+   */
+  envelopeSigner?: LocalEnvelopeSigner;
 }
+
+/** What the target's server said to a same-machine relay POST. */
+export type LocalRelayOutcome =
+  | { kind: 'accepted' }
+  /** The receiver answered with an explicit `refused: true` body — terminal, never dropped. */
+  | { kind: 'refused'; status: number; error: string; reason: string | null; retryable: boolean }
+  /** Everything else, exactly as before: no token, a network error, any other answered error. */
+  | { kind: 'unreachable' };
 
 /** Optional cross-machine crypto dependencies. Only needed when multi-machine is enabled. */
 export interface CrossMachineDeps {
@@ -462,6 +477,15 @@ export class MessageRouter implements IMessageRouter {
   private async routeCrossAgentLocal(envelope: MessageEnvelope): Promise<void> {
     const targetAgent = envelope.message.to.agent;
 
+    // Sign ONCE, before the POST-or-drop branch: the envelope carries its
+    // signature whether it is relayed now or parked in the drop directory
+    // (dropMessage only touches `delivery` and `transport.hmac/hmacBy`, all
+    // outside the signed set).
+    if (this.config.envelopeSigner) {
+      const signature = this.config.envelopeSigner(envelope);
+      if (signature) envelope.signature = signature;
+    }
+
     // Look up target agent in registry
     const agents = listAgents({ status: 'running' });
     const targetEntry = agents.find(a => a.name === targetAgent);
@@ -473,8 +497,28 @@ export class MessageRouter implements IMessageRouter {
     }
 
     // Try HTTP relay first
-    const relaySuccess = await this.relayToAgent(envelope, targetEntry);
-    if (relaySuccess) {
+    const outcome = await this.relayToAgent(envelope, targetEntry);
+    if (outcome.kind === 'refused') {
+      // A Refusal Stays a Refusal: the receiver answered and said no. Parking
+      // the envelope would launder that into a delivery at its next boot.
+      localRouteSignatureCounters.localRefused++;
+      const why = outcome.reason ? `${outcome.error}/${outcome.reason}` : outcome.error;
+      console.log(`[message-router] ${targetAgent} refused ${envelope.message.id}: ${why} (HTTP ${outcome.status}, retryable=${outcome.retryable}) — not dropped`);
+      const now = new Date().toISOString();
+      envelope.delivery = {
+        ...envelope.delivery,
+        phase: 'failed',
+        transitions: [
+          ...envelope.delivery.transitions,
+          { from: 'sent', to: 'failed', at: now, reason: `refused by ${targetAgent}: ${why}${outcome.retryable ? ' (retryable)' : ''}` },
+        ],
+        attempts: envelope.delivery.attempts + 1,
+        failureReason: `refused by ${targetAgent}: ${why}`,
+      };
+      await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      return;
+    }
+    if (outcome.kind === 'accepted') {
       // Update delivery phase to 'received' (both store and in-memory envelope)
       const now = new Date().toISOString();
       envelope.delivery = {
@@ -495,14 +539,13 @@ export class MessageRouter implements IMessageRouter {
   }
 
   /**
-   * Relay an envelope to another agent's server via HTTP.
-   * Returns true if the target accepted the message.
+   * Relay an envelope to another agent's server via HTTP and classify the answer.
    */
-  private async relayToAgent(envelope: MessageEnvelope, target: AgentRegistryEntry): Promise<boolean> {
+  private async relayToAgent(envelope: MessageEnvelope, target: AgentRegistryEntry): Promise<LocalRelayOutcome> {
     // Read target agent's token for Bearer auth
     const targetToken = getAgentToken(target.name);
     if (!targetToken) {
-      return false; // No token — can't authenticate
+      return { kind: 'unreachable' }; // No token — can't authenticate
     }
 
     try {
@@ -517,10 +560,25 @@ export class MessageRouter implements IMessageRouter {
         signal: AbortSignal.timeout(5000),
       });
 
-      return response.ok;
+      if (response.ok) return { kind: 'accepted' };
+      // An explicit refusal is a JSON body saying `refused: true`, at any status.
+      try {
+        const body = await response.json() as { refused?: unknown; error?: unknown; reason?: unknown; retryable?: unknown } | null;
+        if (body && body.refused === true) {
+          return {
+            kind: 'refused',
+            status: response.status,
+            // The receiver's words go into our log and store: printable ASCII, bounded.
+            error: typeof body.error === 'string' && body.error ? logSafe(body.error) : 'refused',
+            reason: typeof body.reason === 'string' && body.reason ? logSafe(body.reason) : null,
+            retryable: body.retryable === true,
+          };
+        }
+      } catch { /* @silent-fallback-ok — not JSON: an answered error without the flag, handled as before */ }
+      return { kind: 'unreachable' };
     } catch {
       // @silent-fallback-ok — network failure, will fall back to drop directory
-      return false;
+      return { kind: 'unreachable' };
     }
   }
 
