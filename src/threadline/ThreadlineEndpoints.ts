@@ -89,6 +89,12 @@ export interface ThreadlineEndpointsConfig {
   relayStatus?: () => {
     connectionState: string;
     lastEvent: { event: string; ts: string; terminal: boolean } | null;
+    /**
+     * True while this machine is deliberately off the relay because another of
+     * its machines holds the serving lease (ACT-1306 a). Not a fault: nothing
+     * retries, and the awake machine holds the connection.
+     */
+    standby?: boolean;
   } | null;
   /**
    * The live inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md), late-bound.
@@ -118,6 +124,7 @@ export function inboundIdLedgerAdvertised(config: Pick<ThreadlineEndpointsConfig
 export type RelayHealthState =
   | 'connected'
   | 'disconnected'
+  | 'standby'
   | 'displaced'
   | 'never-connected'
   | 'not-configured';
@@ -161,6 +168,14 @@ export function resolveRelayHealth(
   // by a stale loss event — the safe direction is refusing to cry wolf.
   if (live.connectionState === 'connected') {
     return { status: 'ok', report: { state: 'connected', recoverable: true } };
+  }
+
+  // Deliberately off the relay while another of this agent's machines holds the
+  // serving lease. Reported before the loss states: a release disconnects
+  // without a loss event, which would otherwise read as "disconnected,
+  // retrying" when nothing retries (Echo's review of ACT-1306 a).
+  if (live.standby === true) {
+    return { status: 'ok', report: { state: 'standby', recoverable: true } };
   }
 
   const last = live.lastEvent;

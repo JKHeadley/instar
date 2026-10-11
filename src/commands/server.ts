@@ -18151,6 +18151,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         // connection per agent identity, and two machines displaced each other
         // (instar#2122). Same per-machine flag the lifeline uses for the poll.
         relayStandby: !shouldOwnTelegramPoll(config),
+        // ACT-1306 a — with the flag unset, the relay follows the serving lease
+        // (the live fact the Telegram poll follows), so a standby that never set
+        // telegramPolling:false no longer displaces the awake machine's relay.
+        // Dev-gated: `threadline.relayFollowsLease.enabled` omitted rides the
+        // developmentAgent gate. Single-machine agents (no lease) always own it.
+        ...(resolveDevAgentGate(
+          (config.threadline as { relayFollowsLease?: { enabled?: boolean } } | undefined)?.relayFollowsLease?.enabled,
+          config,
+        )
+          ? {
+              relayOwner: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+              onRelayStandbyChange: (standby: boolean) => {
+                if (_a2aRelayForwardCtx) _a2aRelayForwardCtx.relaySuppressedByStandby = standby;
+              },
+            }
+          : {}),
         relayUrl: config.threadline?.relayUrl,
         visibility: config.threadline?.visibility,
         capabilities: config.threadline?.capabilities,
@@ -18181,7 +18197,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       threadlineRelayClient = threadline.relayClient;
       threadlineGetLastRelayEvent = threadline.getLastRelayEvent;
       // A2A cross-machine route §1: the boot-time standby fact, threaded from
-      // the bootstrap to the relay-send route. Never recomputed from live config.
+      // the bootstrap to the relay-send route. Never recomputed from live config;
+      // with relayFollowsLease on, onRelayStandbyChange above keeps it current
+      // as the serving lease moves (ACT-1306 a).
       if (_a2aRelayForwardCtx) _a2aRelayForwardCtx.relaySuppressedByStandby = threadline.relaySuppressedByStandby === true;
       // Inbound-id ledger §3/§6: daemon-inbox mode is not covered — never advertise there.
       _inboundIdLedgerDaemonDeferred = threadline.daemonHandlingRelay === true;
