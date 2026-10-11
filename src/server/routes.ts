@@ -36099,6 +36099,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return {
             connectionState: rc.connectionState,
             lastEvent: ctx.getLastRelayEvent?.() ?? null,
+            standby: ctx.a2aRelayForward?.relaySuppressedByStandby === true,
           };
         },
         // Inbound-id ledger (late-bound; live flips handled by the controller).
