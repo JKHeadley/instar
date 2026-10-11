@@ -1,0 +1,47 @@
+{
+  "ts": "2026-10-09T18:46:25.352Z",
+  "slug": "a2a-peer-dark-reporting",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 1258,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/monitoring/A2ARedeliverySentinel.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/peerDark.ts"
+    ],
+    "addedLines": 1219,
+    "deletedLines": 39
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A2ARedeliverySentinel dark pass: one item per (peer, episode) latched by the open episode; 12 h per-peer cooldown brakes re-raise; restart rebuilds the episode from the durable OPEN item instead of raising again; registry model a2a-peer-dark-raise proves the count settles at one per peer over 24 h and is horizon-independent"
+    },
+    "component": "A2ARedeliverySentinel"
+  },
+  "verdict": "pass"
+}

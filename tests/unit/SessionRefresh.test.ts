@@ -86,6 +86,52 @@ describe('SessionRefresh', () => {
     vi.clearAllMocks();
   });
 
+  describe('precheckRefusal (EVO-025 — refusals answered before the 202)', () => {
+    it('returns null for a bound, running, idle session', () => {
+      const { refresh } = makeDeps();
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+    });
+
+    it('refuses an unbound name with not_telegram_bound', () => {
+      const { refresh } = makeDeps({ topicId: null });
+      expect(refresh.precheckRefusal('echo-qalatra')).toMatchObject({ ok: false, code: 'not_telegram_bound' });
+    });
+
+    it('names the tmux session when given a display name, without remapping it', async () => {
+      const { refresh, sessionManager } = makeDeps({
+        topicId: null,
+        stateSession: { id: 'state-id-1', tmuxSession: 'echo-jev', name: 'Jev' } as { id: string; tmuxSession: string },
+      });
+      const refusal = refresh.precheckRefusal('Jev');
+      expect(refusal?.code).toBe('not_telegram_bound');
+      expect(refusal?.message).toContain('"echo-jev"');
+      expect(refusal?.message).toMatch(/display name/);
+      // The authoritative path gives the same answer and kills nothing.
+      const result = await refresh.refreshSession({ sessionName: 'Jev' });
+      expect(result).toMatchObject({ ok: false, code: 'not_telegram_bound' });
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+    });
+
+    it('adds no hint when the name matches no running session', () => {
+      const { refresh } = makeDeps({ topicId: null });
+      expect(refresh.precheckRefusal('nobody')?.message).not.toMatch(/display name/);
+    });
+
+    it('refuses a bound name with no running session as session_not_found', () => {
+      const { refresh } = makeDeps({ stateSession: null });
+      expect(refresh.precheckRefusal('echo-qalatra')?.code).toBe('session_not_found');
+    });
+
+    it('reports rate_limited without consuming rate budget', async () => {
+      const { refresh } = makeDeps({ rateLimit: { maxPerWindow: 1, windowMs: 60_000 } });
+      // Repeated prechecks record nothing: the one allowed refresh still runs.
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+      expect((await refresh.refreshSession({ sessionName: 'echo-qalatra' })).ok).toBe(true);
+      expect(refresh.precheckRefusal('echo-qalatra')?.code).toBe('rate_limited');
+    });
+  });
+
   describe('fresh mode (ContextWedgeSentinel re-wedge defense)', () => {
     it('clears the topic resume UUID AFTER kill and BEFORE respawn', async () => {
       const { refresh, topicResumeMap, callOrder } = makeDeps();

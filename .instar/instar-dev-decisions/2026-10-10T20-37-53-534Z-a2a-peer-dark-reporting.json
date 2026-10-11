@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-10T20:37:53.534Z",
+  "slug": "a2a-peer-dark-reporting",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 281,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/monitoring/A2ARedeliverySentinel.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/peerDark.ts"
+    ],
+    "addedLines": 231,
+    "deletedLines": 50
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -93,6 +93,7 @@ export async function sendMessageViaHttp(
       advisory?: string;
       forwardedTo?: string;
       replyArrivesIn?: string;
+      peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
     } = {};
     if (raw) {
       try {
@@ -124,6 +125,8 @@ export async function sendMessageViaHttp(
         advisory: parsed.advisory,
         ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
         ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
+        // §3.2: a send to a dark peer carries the evidence object, additively.
+        ...(parsed.peerDark && typeof parsed.peerDark === 'object' ? { peerDark: parsed.peerDark } : {}),
       };
     }
 

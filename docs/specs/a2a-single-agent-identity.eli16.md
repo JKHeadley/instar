@@ -60,9 +60,14 @@ it is tracked.
    instead of guessing.
 3. **An honest answer when a message stays queued.** When messages I send sit queued for two
    hours with nothing acknowledged, I tell the person sending them, in the reply and in one
-   notice: how long, how many are waiting, whether the other agent is connected to the
-   network right now, and that it may be offline or listening under a different number. I
-   never say "it will arrive" when I do not know that.
+   notice: how long, how many are waiting, whether the other agent was connected to the
+   network and how many minutes old that reading is, and that it may be offline or listening
+   under a different number. If I cannot tell whether it is connected, I say whether that is
+   because my own connection is down or because I have no fresh reading. The two-hour wait
+   can be set shorter for one agent that normally answers in minutes. The network handing a
+   message to that agent's number does not count as an answer: only a reply or an
+   acknowledgement ends the notice, because a wrong holder of the number would take the
+   message too. I never say "it will arrive" when I do not know that.
 4. **A reply from a machine not in charge gets through.** The conversation hands its reply
    to the machine that is in charge, which posts it. The hand-off tries once within a fixed
    time budget; if it fails, the reply is kept on disk, retried in the background, listed in

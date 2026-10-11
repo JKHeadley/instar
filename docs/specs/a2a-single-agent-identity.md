@@ -493,10 +493,10 @@ always on, every machine, no flag (a dark identity check checks nothing) — wit
 **3.1 Classification.** `A2ADeliveryTracker.peerHealth()` gains `dark` and `darkSince`: a peer
 is `dark` when its oldest row that is `awaiting-ack` (relay `queued`), `unconfirmed`, or
 `failed`+`expired` — and NEWER than the last ack and last inbound from that peer — is older
-than `queuedDarkAfterMs` (default 2 h, below the 6 h `stale` window so the sender hears first).
-A peer leaves `dark` ONLY on an ack, an inbound, or a `delivered` verdict (the existing
-`expiredNewer` shape; relay expiry alone never clears it, so a persistently dark peer is one
-episode, not one per day). `dark` is a PROXY read from my own ledger: it means "nothing from
+than `queuedDarkAfterMs` (default 2 h, below the 6 h `stale` window so the sender hears first; `perPeer` sets it for one peer by fingerprint, same 5-min floor).
+A peer leaves `dark` ONLY on an ack or an inbound (the existing `expiredNewer` shape). Relay expiry never clears it, so a persistently dark peer is one
+episode, not one per day; a relay `delivered` verdict ALONE never clears it either — it shows only that a connection under the peer's fingerprint took the
+message, which a split or a non-serving holder also produces (`lastDeliveredAt` stays on the read, informational). A queued row the relay later flushes to a connection stays in the unanswered set until an ack or an inbound, counted apart as `handedUnackedCount` and named in the sentence and the item body. `dark` is a PROXY read from my own ledger: it means "nothing from
 this peer for N h", and it cannot by itself tell offline from wrong-address — the data model
 carries no cause, only the duration, and the wording says so. `allPeerHealth` is bounded to
 peers active in the last 30 days (a narrowing of a published read, decided here). Retention:
@@ -512,16 +512,16 @@ already left `allPeerHealth`, and its `dark` state is re-established by the next
 
 - **In the send response.** `POST /threadline/relay-send` (and the `threadline_send` tool
   result, additive) answers a send to a dark peer with `peerDark: {since, queuedCount,
-  expiresAt, connectedNow}`, computed from THIS machine's ledger and presence map only (the
+  expiresAt, connectedNow, connectedNowReason, connectedAsOf}`, computed from THIS machine's ledger and presence map only (the
   pool-scope merge belongs to the sentinel and the health reads — never a peer fan-out inside
   a send). `connectedNow` is read from the client's EXISTING `knownAgents`
   presence map — fed today by `discover-result` frames and, with this spec, also by the
   `presence-change` frames the relay already pushes (today only re-emitted) — never from an
   inline `discover` on the send path (a slow relay must not cost a reply 10 s, and discovery
   is rate-limited; no new relay calls are added). Values: `true` when the peer's row has
-  `online === true`, `false` when its row says `offline`, `null` when there is no row, when
-  my relay is not `connected`, or when no discover/presence frame has arrived since the last
-  sentinel tick (15 min). A refresh that REJECTS (`Not connected` — no relay client, the
+  `online === true`, `false` when its row says `offline`, `null` when there is no row (`connectedNowReason: no-row`), when
+  my relay is not `connected` (`relay-down`), or when no discover/presence frame has arrived since the last
+  sentinel tick, 15 min (`stale`); `connectedAsOf` is when the peer's row was written, and the sentence states that age. A refresh that REJECTS (`Not connected` — no relay client, the
   standby case) yields an empty snapshot → `null`; on a standby every send is forwarded, so
   the relay holder computes the field. The
   `deliveryOutcome` SENTENCE branches on it — "no acknowledgement from <peer> for N h; this
@@ -534,7 +534,7 @@ already left `allPeerHealth`, and its `dark` state is re-established by the next
   sentence AND in every attention item body (§2.2, §3.2); relay-supplied free text never
   reaches an item my sessions read.
 - **On the health read.** `GET /threadline/peers/health` and the per-peer route carry `dark`,
-  `darkSince`, `queuedCount`, `connectedNow`; pool scope merges as today.
+  `darkSince`, `queuedCount`, `connectedNow`, `connectedNowReason`, `connectedAsOf`; pool scope merges as today.
 - **To the operator, once — through the REWORKED sentinel.** `A2ARedeliverySentinel` is today
   per-message with no resolve, cooldown or per-peer state, so it is reworked rather than
   re-triggered: (i) it is constructed when EITHER `monitoring.a2aRedelivery.enabled` OR the
@@ -547,9 +547,9 @@ already left `allPeerHealth`, and its `dark` state is re-established by the next
   `a2a-peer-dark:<agent>:<peerFp>` (no episode stamp — rows live on whichever machine carried
   the send, and a lease move would otherwise strand one machine's item forever); (iv) it
   RESOLVES — on EVERY machine over its OWN item store, awake or not (the heal stays
-  awake-only) — from pool-scope `peers/health` (any machine's ack, inbound or `delivered`
-  verdict from that peer newer
-  than the item's raise time), its resolve line names the count of messages that were never
+  awake-only) — from pool-scope `peers/health` (any machine's ack or inbound from that
+  peer newer than the item's raise time;
+  a `delivered` verdict alone resolves nothing), its resolve line names the count of messages that were never
   acknowledged and have expired ("<peer> is back; N messages from the dark window expired
   unacknowledged — resend what still matters"), and it carries a per-peer cooldown of 12 h.
   Accepted cost, stated: a peer that goes dark again INSIDE the cooldown is reported only
@@ -570,7 +570,7 @@ reconnecting it would displace the live holder: (1) if my relay is `disconnected
 the heal is skipped with reason `standby`. Two passes 40 s apart inside the 120 s ceiling.
 
 **3.4 Rollout.** `threadline.peerDarkNotice: {dryRun: true, queuedDarkAfterMs: 7200000,
-cooldownMs: 43200000}`, `enabled` OMITTED (dev-gate; in `DEV_GATED_FEATURES`); delivered by
+cooldownMs: 43200000}` (+ optional `perPeer`), `enabled` OMITTED (dev-gate; in `DEV_GATED_FEATURES`); delivered by
 the `ConfigDefaults` deep-merge. Dry-run logs would-raise/would-sentence rows to
 `logs/a2a-peer-dark.jsonl`; the raw health fields are live from the first build (reads), but
 no item and no sentence until the flip.
@@ -978,8 +978,8 @@ action at build time with this spec as origin, unless a carrier already exists:
   `agent-identity-rotation-and-device-certs`, `agent-identity-at-rest-passphrase`. Trigger: a
   THIRD identity incident, a revoked machine suspected compromised, a fifth machine joining,
   or ANY further spec touching the adoption rules (the bridge must not keep growing).
-- **A signed `agent-identity-adopt-trigger` mesh verb** (no key in the body) — rejected, not
-  deferred: a compromised active sibling could make a healthy machine replace its good key.
+- **A signed `agent-identity-adopt-trigger` mesh verb** (no key in the body) — rejected outright (it
+  is not postponed work): a compromised active sibling could make a healthy machine replace its good key.
 - **The pool ownership-record divergence** also named in ACT-058 — stays with ACT-058 (WS1.3
   reconciler).
 
