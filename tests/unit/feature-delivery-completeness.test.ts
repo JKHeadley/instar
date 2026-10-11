@@ -279,6 +279,7 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      'replies are forwarded to the holder', // a2a-single-agent-identity §4 (ACT-058): generateClaudeMd and migrateClaudeMd both append the shared telegramOriginForwardAwareness(port) helper, so templates.ts holds the function reference rather than this literal; the migrator sniffs the helper's own sentence so it lands exactly once.
       'Authoritative Window Run Liveness', // W32 shared helper: generateClaudeMd invokes WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port), so templates.ts contains the function reference rather than this literal; the helper supplies fresh-install + migration parity and the framework-shadow marker is tracked directly.
       'W32 cadence executor:', // W32 cadence addendum lives inside the same shared helper; migrateClaudeMd also sniffs it independently to upgrade an earlier liveness section without duplication.
       'Permission-Prompt Floor',  // framework-permission-prompt-robustness: migrateClaudeMd adds a `### Permission-Prompt Floor` awareness section so existing agents learn the always-on resolver; the generateClaudeMd (new-agent template) counterpart is a tracked minor follow-up, so for now this is migrator-only awareness, not template-shadow parity.

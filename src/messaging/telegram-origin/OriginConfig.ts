@@ -24,6 +24,20 @@ export function originOutageNoticeEnabled(origin: unknown): boolean {
   return enabled ?? true;
 }
 
+/** a2a-single-agent-identity §4.3 — forward-to-holder kill switch. Omitted
+ * means enabled (reachability is a safety floor; it ships live). Only the
+ * FORWARD is switchable: a hold stays durable and reported either way. */
+export function originForwardToHolderEnabled(origin: unknown): boolean {
+  if (origin === undefined) return true;
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) throw new Error('invalid-origin-forward-config');
+  const forward = (origin as { forwardToHolder?: unknown }).forwardToHolder;
+  if (forward === undefined) return true;
+  if (!forward || typeof forward !== 'object' || Array.isArray(forward)) throw new Error('invalid-origin-forward-config');
+  const enabled = (forward as { enabled?: unknown }).enabled;
+  if (enabled !== undefined && typeof enabled !== 'boolean') throw new Error('invalid-origin-forward-config');
+  return enabled ?? true;
+}
+
 /** Add only missing presentation/notice defaults. Never changes an operator's false,
  * creates an audit-off switch, or activates a writer without enrollment.
  */
@@ -42,6 +56,10 @@ export function migrateTelegramOriginDisplay(config: Record<string, unknown>): b
     if (origin.outageNotice === undefined) { origin.outageNotice = { enabled: true }; changed = true; }
     else if (origin.outageNotice && typeof origin.outageNotice === 'object' && !Array.isArray(origin.outageNotice) && origin.outageNotice.enabled === undefined) {
       origin.outageNotice.enabled = true; changed = true;
+    }
+    if (origin.forwardToHolder === undefined) { origin.forwardToHolder = { enabled: true }; changed = true; }
+    else if (origin.forwardToHolder && typeof origin.forwardToHolder === 'object' && !Array.isArray(origin.forwardToHolder) && origin.forwardToHolder.enabled === undefined) {
+      origin.forwardToHolder.enabled = true; changed = true;
     }
     if (origin.display === undefined) { origin.display = {}; changed = true; }
     if (!origin.display || typeof origin.display !== 'object' || Array.isArray(origin.display)) continue;

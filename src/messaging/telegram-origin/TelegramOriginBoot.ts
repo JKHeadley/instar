@@ -169,6 +169,7 @@ export async function bootTelegramOrigin(options: {
     },
     onNoticeState: options.onNoticeState,
     ownsCapacityLease: options.holdsLease,
+    holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });
   const close = async () => { closed = true; if (timer) clearTimeout(timer); if (configTimer) clearTimeout(configTimer);
@@ -264,6 +265,9 @@ export async function bootTelegramOrigin(options: {
     catch { /* Origin health/status remains unavailable; no notice permit is granted. */ }
     await inspectEnrollment(storageHealthy);
     await runtime.maintainRetention();
+    // §4.2 — keep `/health → telegramOrigin.heldForward` current and report a
+    // held forward's expiry once; bounded to one store read per 30 s.
+    if (storageHealthy) { await runtime.runForwardLadder(); await runtime.refreshHeldForward(); }
     if (!closed) { timer = setTimeout(() => void tick(), 5000); timer.unref(); }
   };
   timer = setTimeout(() => void tick(), 5000); timer.unref();

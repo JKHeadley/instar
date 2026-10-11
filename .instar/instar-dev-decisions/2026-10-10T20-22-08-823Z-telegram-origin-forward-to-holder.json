@@ -1,0 +1,47 @@
+{
+  "ts": "2026-10-10T20:22:08.823Z",
+  "slug": "telegram-origin-forward-to-holder",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/messaging/telegram-origin/OriginMeshRelay.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1223,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginConfig.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginMeshRelay.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/messaging/telegram-origin/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1155,
+    "deletedLines": 68
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
