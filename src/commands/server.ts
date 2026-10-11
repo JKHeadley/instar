@@ -19231,18 +19231,55 @@ export async function startServer(options: StartOptions): Promise<void> {
     // backoff (body recovered from the canonical outbox), and after the attempt
     // cap raises ONE aggregated attention item per dark peer. Recording/sending
     // only — no blocking authority. Ships OFF (it re-sends + escalates).
+    // REWORKED (a2a-single-agent-identity §3): constructed when EITHER
+    // `monitoring.a2aRedelivery.enabled` OR the resolved `threadline.peerDarkNotice`
+    // gate is on; `redeliver` only under the former (escalate-only otherwise).
+    // Under the peer-dark gate the operator notice is per PEER with the
+    // deterministic id `a2a-peer-dark:<agent>:<peerFp>`, raised by the AWAKE
+    // machine after it healed its own side, resolved from pool-scope evidence,
+    // 12 h cooldown; a local relay outage collapses to ONE aggregated item.
+    // Dry-run (default) logs would-raise rows to logs/a2a-peer-dark.jsonl.
     try {
       const a2aDelivCfg = config.monitoring?.a2aRedelivery ?? {};
-      if (a2aDelivCfg.enabled && a2aDeliveryTracker) {
+      const { resolvePeerDarkNoticeConfig, createPeerDarkAuditWriter, resolvePeerDarkAuditPath } = await import('../threadline/peerDark.js');
+      const peerDarkCfg = resolvePeerDarkNoticeConfig(config as { developmentAgent?: boolean; threadline?: { peerDarkNotice?: Record<string, unknown> } });
+      if ((a2aDelivCfg.enabled || peerDarkCfg.enabled) && a2aDeliveryTracker) {
         const { A2ARedeliverySentinel, DEFAULT_A2A_REDELIVERY_CONFIG } = await import('../monitoring/A2ARedeliverySentinel.js');
+        const priorityMap: Record<string, 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'> = {
+          high: 'HIGH', medium: 'NORMAL', low: 'LOW',
+        };
+        // Pool-scope read of one peer's health on my OTHER machines (raise AND
+        // resolve both read it — a peer that answered on another machine is not
+        // dark). Bounded per peer; a dark/slow peer machine is simply absent.
+        const poolPeerHealth = async (peerFp: string) => {
+          const urls = _resolvePeerUrls?.() ?? [];
+          if (urls.length === 0) return [];
+          const rows = await Promise.allSettled(urls.map(async ({ machineId, url }) => {
+            const ac = new AbortController();
+            const t = setTimeout(() => ac.abort(), 5000);
+            try {
+              const r = await fetch(`${url}/threadline/peers/${encodeURIComponent(peerFp)}/health`, {
+                headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-AgentId': config.projectName ?? '' },
+                signal: ac.signal,
+              });
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              const b = await r.json() as { lastAckedAt?: string | null; lastInboundAt?: string | null; lastDeliveredAt?: string | null };
+              return { machineId, lastAckedAt: b.lastAckedAt ?? null, lastInboundAt: b.lastInboundAt ?? null, lastDeliveredAt: b.lastDeliveredAt ?? null };
+            } finally {
+              clearTimeout(t);
+            }
+          }));
+          return rows.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+        };
         const a2aRedeliverySentinel = new A2ARedeliverySentinel(
           {
             tracker: a2aDeliveryTracker,
+            agentId: config.projectName,
             // Re-send: recover the body from the canonical outbox by messageId,
             // then re-emit via the relay. Body missing → return false (the
             // sentinel leaves it awaiting-ack and escalates at the cap, never
-            // fabricating a send).
-            redeliver: (threadlineRelayClient && listenerManager)
+            // fabricating a send). Only under the legacy gate.
+            redeliver: (a2aDelivCfg.enabled && threadlineRelayClient && listenerManager)
               ? (entry) => {
                   const stored = listenerManager!.readCanonicalOutboxEntry(entry.messageId);
                   if (!stored) return false;
@@ -19252,28 +19289,93 @@ export async function startServer(options: StartOptions): Promise<void> {
               : undefined,
             raiseAttention: telegram
               ? async (item) => {
-                  const priorityMap: Record<string, 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'> = {
-                    high: 'HIGH', medium: 'NORMAL', low: 'LOW',
-                  };
-                  return telegram!.createAttentionItem({
-                    id: `a2a-redelivery-${Date.now()}`,
+                  // Legacy per-message escalation keeps its stamped id; the §3
+                  // items carry a deterministic id and REOPEN on a later episode.
+                  if (!item.id) {
+                    return telegram!.createAttentionItem({
+                      id: `a2a-redelivery-${Date.now()}`,
+                      title: item.title,
+                      summary: item.body.slice(0, 160),
+                      description: item.body,
+                      category: 'a2a-redelivery',
+                      priority: priorityMap[item.priority ?? 'medium'] ?? 'NORMAL',
+                      sourceContext: item.source ?? 'a2a-redelivery',
+                    });
+                  }
+                  return telegram!.upsertAttentionItem({
+                    id: item.id,
                     title: item.title,
                     summary: item.body.slice(0, 160),
                     description: item.body,
-                    category: 'a2a-redelivery',
+                    category: 'a2a-peer-dark',
                     priority: priorityMap[item.priority ?? 'medium'] ?? 'NORMAL',
-                    sourceContext: item.source ?? 'a2a-redelivery',
+                    sourceContext: item.source ?? 'a2a-peer-dark',
                   });
                 }
               : undefined,
+            // Resolve: the resolve line lands on the hub through the same upsert
+            // (body changed → re-posted), then the item is closed silently.
+            resolveAttention: telegram
+              ? async (id, line) => {
+                  const existing = telegram!.getAttentionItem(id);
+                  if (!existing) return false;
+                  await telegram!.upsertAttentionItem({
+                    id,
+                    title: existing.title,
+                    summary: line.slice(0, 160),
+                    description: line,
+                    category: existing.category,
+                    priority: existing.priority,
+                    sourceContext: existing.sourceContext,
+                  });
+                  return telegram!.updateAttentionStatus(id, 'DONE', { silent: true });
+                }
+              : undefined,
+            attentionState: telegram
+              ? (id) => {
+                  const it = telegram!.getAttentionItem(id);
+                  return it ? { status: it.status, updatedAt: it.updatedAt, createdAt: it.createdAt } : null;
+                }
+              : undefined,
+            relayState: () => {
+              const rc = threadlineRelayClient;
+              if (!rc) return 'not-configured';
+              if (rc.connectionState === 'connected') return 'connected';
+              return threadlineGetLastRelayEvent?.()?.terminal === true ? 'displaced' : 'disconnected';
+            },
+            // §3.3: a standby's relay is disconnected BY DESIGN; only the awake
+            // (telegram-polling) machine may heal or raise. The boot-time standby
+            // fact is the same one the relay-forward route reads.
+            isAwake: () => !(_a2aRelayForwardCtx?.relaySuppressedByStandby === true),
+            reconnectRelay: threadlineRelayClient ? () => threadlineRelayClient!.reconnectRelay() : undefined,
+            refreshPresence: threadlineRelayClient ? () => threadlineRelayClient!.refreshPresence() : undefined,
+            peerConnectedNow: threadlineRelayClient ? (fp) => threadlineRelayClient!.peerConnectedNow(fp) : undefined,
+            peerPresence: threadlineRelayClient ? (fp) => threadlineRelayClient!.peerPresence(fp) : undefined,
+            // identitySelfCheck (§2) is wired by the identity-coherence check once
+            // it lands; absent, the heal records `unknown` and never supersedes.
+            poolPeerHealth,
+            audit: createPeerDarkAuditWriter(resolvePeerDarkAuditPath(config.stateDir), (l) => console.warn(l)),
           },
-          { ...mergeDefaults(DEFAULT_A2A_REDELIVERY_CONFIG, a2aDelivCfg), enabled: true },
+          {
+            ...mergeDefaults(DEFAULT_A2A_REDELIVERY_CONFIG, a2aDelivCfg),
+            enabled: a2aDelivCfg.enabled === true,
+            peerDark: {
+              enabled: peerDarkCfg.enabled,
+              dryRun: peerDarkCfg.dryRun,
+              queuedDarkAfterMs: peerDarkCfg.queuedDarkAfterMs,
+              perPeer: peerDarkCfg.perPeer,
+              cooldownMs: peerDarkCfg.cooldownMs,
+            },
+          },
         );
         a2aRedeliverySentinel.start();
         (globalThis as Record<string, unknown>).__instarA2ARedeliverySentinel = a2aRedeliverySentinel;
-        console.log(pc.green('  A2ARedeliverySentinel: armed (A2A redelivery + dark-peer escalation)'));
+        console.log(pc.green(
+          `  A2ARedeliverySentinel: armed (redelivery ${a2aDelivCfg.enabled ? 'on' : 'off'}; ` +
+          `peer-dark notice ${peerDarkCfg.enabled ? (peerDarkCfg.dryRun ? 'dry-run' : 'LIVE') : 'off'})`,
+        ));
       } else {
-        console.log(pc.dim('  A2ARedeliverySentinel: disabled (monitoring.a2aRedelivery.enabled=false; the ship-OFF default)'));
+        console.log(pc.dim('  A2ARedeliverySentinel: disabled (monitoring.a2aRedelivery.enabled=false and threadline.peerDarkNotice dark; the ship-OFF default)'));
       }
     } catch (err) {
       // @silent-fallback-ok: cascade-isolation — a sentinel init failure must never

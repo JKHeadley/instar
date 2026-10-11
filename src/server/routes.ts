@@ -197,6 +197,16 @@ import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
+import {
+  buildPeerDarkSentence,
+  createPeerDarkAuditWriter,
+  resolvePeerDarkAuditPath,
+  resolvePeerDarkNoticeConfig,
+  queuedDarkAfterMsFor,
+  PRESENCE_RELAY_DOWN,
+  type PeerDarkReport,
+  type PeerPresenceRead,
+} from '../threadline/peerDark.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
@@ -11393,6 +11403,18 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // ── EVO-025: target refusals run PRE-202 ──
+    // A name the resolver cannot bind (e.g. the display name "Jev" instead of
+    // the tmux name "echo-jev"), a missing session, an in-flight refresh or an
+    // exhausted rate budget used to be answered 202 "Refresh scheduled" and
+    // then refused only in server.log. Answer them synchronously instead.
+    // refreshSession() still re-checks everything authoritatively post-202.
+    const refusal = ctx.sessionRefresh.precheckRefusal(sessionName);
+    if (refusal) {
+      res.status(refusal.code === 'rate_limited' ? 429 : 409).json({ code: refusal.code, error: refusal.message });
+      return;
+    }
+
     // ── swap-continuity-antithrash §4.5: the work gate runs PRE-202 ──
     // Busy → synchronous 409 `session-busy` with the live work summary
     // (counts and ages only — no titles, no transcript paths, no message
@@ -18150,6 +18172,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   };
   const isPeerHealthBody = (b: Record<string, unknown>): boolean => Array.isArray(b.peers) && typeof b.count === 'number';
   const isPeerHealthOne = (b: Record<string, unknown>): boolean => typeof b.peerFp === 'string' && typeof b.stale === 'boolean';
+  // §3 (a2a-single-agent-identity): the dark threshold is config (read live when
+  // a live config exists); `connectedNow` comes from the presence map — never an
+  // inline discover. Both are reads, live from the first build regardless of the
+  // notice gate (only the item + the sentence ride the gate/dry-run).
+  const peerDarkNotice = () => resolvePeerDarkNoticeConfig(
+    ctx.config as { developmentAgent?: boolean; threadline?: { peerDarkNotice?: Record<string, unknown> } },
+    ctx.liveConfig?.get<boolean | undefined>('threadline.peerDarkNotice.enabled', undefined),
+  );
+  // No relay client (a standby, or relay off) reads as `relay-down`: my side, not the peer's.
+  const peerPresence = (fp: string): PeerPresenceRead => {
+    try { return ctx.threadlineRelayClient?.peerPresence(fp) ?? PRESENCE_RELAY_DOWN; } catch { return PRESENCE_RELAY_DOWN; } // @silent-fallback-ok: unknown is the honest read
+  };
+  const withConnectedNow = <T extends { peerFp: string }>(p: T): T & PeerPresenceRead => ({ ...p, ...peerPresence(p.peerFp) });
+  // The dark threshold for ONE peer: its `perPeer` entry, else the default.
+  const darkAfterFor = (fp: string): number => queuedDarkAfterMsFor(peerDarkNotice(), fp);
+  const peerDarkAudit = createPeerDarkAuditWriter(resolvePeerDarkAuditPath(ctx.config.stateDir), (l) => console.warn(l));
   const poolPeerRows = (peers: ReaperPoolPeer[], pick: (body: Record<string, unknown>) => unknown[]) => {
     const local = peerHealthInstarVersion();
     let mixedVersion = false;
@@ -18172,9 +18210,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const staleAfterMs = typeof req.query.staleAfterMs === 'string' && Number.isFinite(Number(req.query.staleAfterMs))
       ? Number(req.query.staleAfterMs)
       : undefined;
-    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ staleAfterMs }) ?? null;
+    const peers = ctx.a2aDeliveryTracker?.allPeerHealth({ staleAfterMs, queuedDarkAfterMsFor: darkAfterFor })?.map(withConnectedNow) ?? null;
     const localBody = peers
-      ? { peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length, instarVersion: peerHealthInstarVersion() }
+      ? { peers, count: peers.length, staleCount: peers.filter((p) => p.stale).length, darkCount: peers.filter((p) => p.dark).length, instarVersion: peerHealthInstarVersion() }
       : null;
     if (req.query.scope !== 'pool') {
       if (!localBody) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
@@ -18194,6 +18232,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       peers: all,
       count: all.length,
       staleCount: all.filter((p) => (p as { stale?: boolean }).stale).length,
+      darkCount: all.filter((p) => (p as { dark?: boolean }).dark === true).length,
       mixedVersion,
       pool: { selfMachineId: selfId, peersQueried, peersOk: pool.length, failed },
     });
@@ -18254,7 +18293,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? Number(req.query.staleAfterMs)
       : undefined;
     const local = ctx.a2aDeliveryTracker
-      ? { ...ctx.a2aDeliveryTracker.peerHealth(fp, { staleAfterMs }), instarVersion: peerHealthInstarVersion() }
+      ? { ...withConnectedNow(ctx.a2aDeliveryTracker.peerHealth(fp, { staleAfterMs, queuedDarkAfterMs: darkAfterFor(fp) })), instarVersion: peerHealthInstarVersion() }
       : null;
     if (req.query.scope !== 'pool') {
       if (!local) { res.status(503).json({ error: 'A2A delivery tracker not initialized' }); return; }
@@ -37597,17 +37636,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       if (ctx.listenerManager && typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
 
-      const deliveryOutcome = relayStatus === 'delivered'
+      let deliveryOutcome = relayStatus === 'delivered'
         ? "handed to the peer's relay connection; not yet confirmed read"
         : relayStatus === 'queued'
           ? `peer offline; the relay holds it for up to ${relayHoldHours(verdict?.ttlSec)} h`
           : banSuspected
             ? 'submitted to relay; the relay reports this sender banned'
             : `submitted to relay; no relay acknowledgement within ${RELAY_ACK_WAIT_MS / 1000}s`;
+      // §3.2 (a2a-single-agent-identity): a send to a DARK peer carries
+      // `peerDark` (a read of my own ledger + the presence map, never an inline
+      // discover) and — when the notice is on and not dry-run — a deliveryOutcome
+      // worded to the evidence. A send the relay just `delivered` is not "still
+      // queued", so it carries no `peerDark` — but `delivered` alone does NOT
+      // clear the peer's dark state (only an ack or an inbound does), so the
+      // health read keeps saying `dark` until the peer actually answers.
+      let peerDark: PeerDarkReport | undefined;
+      if (ctx.a2aDeliveryTracker && relayStatus !== 'delivered') {
+        try {
+          const notice = peerDarkNotice();
+          const h = ctx.a2aDeliveryTracker.peerHealth(resolvedId, { queuedDarkAfterMs: queuedDarkAfterMsFor(notice, resolvedId) });
+          if (h.dark) {
+            // This send's own row joins the set once its `queued` verdict is
+            // recorded; count it now so "this and K other" is right either way.
+            // A rejected/unconfirmed verdict is not a queued row — no +1.
+            const thisRowCounted = ctx.a2aDeliveryTracker.get(relayMsgId)?.relayStatus === 'queued';
+            peerDark = {
+              since: h.darkSince,
+              queuedCount: h.queuedCount + (relayStatus === 'queued' && !thisRowCounted ? 1 : 0),
+              expiresAt: h.queuedExpiresAt,
+              ...(h.handedUnackedCount > 0 ? { handedUnackedCount: h.handedUnackedCount } : {}),
+              ...peerPresence(resolvedId),
+            };
+            const sentence = buildPeerDarkSentence(peerDark, { peerFp: resolvedId, peerName: targetAgent });
+            if (notice.enabled && !notice.dryRun) {
+              deliveryOutcome = sentence;
+              peerDarkAudit({ ts: new Date().toISOString(), kind: 'sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, connectedNowReason: peerDark.connectedNowReason, connectedAsOf: peerDark.connectedAsOf, dryRun: false });
+            } else if (notice.enabled) {
+              peerDarkAudit({ ts: new Date().toISOString(), kind: 'would-sentence', peerFp: resolvedId, queuedCount: peerDark.queuedCount, darkSince: peerDark.since, connectedNow: peerDark.connectedNow, connectedNowReason: peerDark.connectedNowReason, connectedAsOf: peerDark.connectedAsOf, dryRun: true });
+            }
+          }
+        } catch (err) {
+          // @silent-fallback-ok: a dark read must never break the send — the
+          // ledger is observability; the message was already submitted. Logged.
+          console.warn(`[relay-send] peer-dark read failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
       const honest = {
         relayStatus,
         ...(relayReasonCode ? { relayReasonCode } : {}),
         ...(banSuspected ? { banSuspected: true } : {}),
+        ...(peerDark ? { peerDark } : {}),
       };
 
       if (waitForReply) {

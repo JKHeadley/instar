@@ -799,6 +799,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent verifies each inbound same-machine envelope, LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Writes no file and no durable state (the first-contact key cache, replay cache and counters are in memory). Its only outbound traffic is one loopback GET of a same-machine peer\'s /threadline/health when a SIGNED envelope arrives from a name with no key on record (at most 2.5 s on that request, five tries per peer per process). No LLM, no spend, no messages.',
   },
   {
+    name: 'a2aPeerDarkNotice',
+    configPath: 'threadline.peerDarkNotice.enabled',
+    description: 'Honest sender-side reporting of a send that stays queued: a per-peer `dark` classification on the delivery ledger, a `peerDark` object + worded deliveryOutcome on a send to a dark peer, and ONE per-peer attention item (deterministic id, pool-scope raise/resolve, 12 h cooldown) through the reworked A2ARedeliverySentinel after the awake machine has healed its own side.',
+    justification: 'Ships dryRun:true: on a dev agent the sentinel runs the full dark pass and LOGS would-raise / would-sentence rows to logs/a2a-peer-dark.jsonl, but raises no item and changes no deliveryOutcome until a deliberate dryRun:false. Reads the local SQLite ledger and the presence map only (no inline discover, no new relay calls); the self-heal re-arms an already-built relay client and runs one discover on the awake machine only. Signal-only: never gates a send; a local relay outage collapses to ONE aggregated item; no LLM, no spend.',
+  },
+  {
     name: 'a2aRelayUnknownSenderTrust',
     configPath: 'threadline.relayUnknownSenderTrust.enabled',
     description: 'Relay unknown-sender trust: a relay message from a sender whose keys this agent does not hold is judged at the trust level the trust manager holds for its fingerprint, with the relay gate\'s operation table, instead of being passed as verified; a new fingerprint profile is no longer created at verified.',
