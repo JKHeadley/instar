@@ -231,6 +231,14 @@ export interface MessageEnvelope {
   transport: TransportMetadata;
   /** Delivery tracking — updated by each hop */
   delivery: DeliveryState;
+  /**
+   * A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md):
+   * base64 Ed25519 signature by the sender's identity key over the canonical
+   * `message` + `transport.{nonce,timestamp,relayChain,originServer,originTopicId}`. Set by the sender
+   * immediately before a same-machine POST; verified by the receiver against
+   * the public key ITS registry holds for `message.from.agent`.
+   */
+  signature?: string;
 }
 
 // ── Injection Safety ───────────────────────────────────────────────

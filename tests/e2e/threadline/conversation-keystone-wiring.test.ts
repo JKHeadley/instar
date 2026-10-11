@@ -79,7 +79,9 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     // commit point + outcome recording to this route (spawn moved to ~17k).
     // Widened 22000 → 27000 after local-route trust added its pre-admission
     // check to the top of this route (spawn moved to ~21.9k).
-    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 27000);
+    // Widened 27000 → 32000 after the local-route signed-envelope check was
+    // added above the trust check (spawn moved to ~28.7k).
+    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 32000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
     // Match the call by method+first-arg so the assertion survives formatting of
     // the `ctx.threadlineRouter` receiver AND extra args (the local-attribution fix
