@@ -43,6 +43,7 @@ import {
 } from './slackRefreshBinding.js';
 import type { SessionManager } from './SessionManager.js';
 import type { StateManager } from './StateManager.js';
+import type { Session } from './types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { TopicResumeMap } from './TopicResumeMap.js';
 import {
@@ -325,26 +326,59 @@ export class SessionRefresh {
   }
 
   /**
-   * Refresh a session: kill its tmux session (which fires beforeSessionKill
-   * so the existing listener persists the Claude UUID via TopicResumeMap),
-   * then respawn via the injected respawner which spawns a fresh tmux that
-   * runs `claude --resume <uuid>` — picking up newly installed MCPs/skills
-   * while preserving the full conversation.
-   *
-   * Returns a structured result; never throws on the expected failure modes
-   * (rate-limit, session-not-found, non-Telegram-bound). Throws only on
-   * unexpected internal errors from the respawner callback.
+   * EVO-025: the synchronous refusals a caller can be told about BEFORE any
+   * acknowledgement — binding, session existence, in-flight, and the rate
+   * guard (read-only: nothing is recorded against the budget). The route
+   * answers these with a 409 instead of a 202 that is later refused only in
+   * the server log. refreshSession() re-runs every check authoritatively, so
+   * this is an early answer, never a substitute. The work gate is excluded —
+   * it has its own precheck (precheckInteractiveBusy).
    */
-  async refreshSession(opts: RefreshOptions): Promise<RefreshResult> {
-    const { sessionName, followUpPrompt, reason, fresh } = opts;
+  precheckRefusal(sessionName: string): Extract<RefreshResult, { ok: false }> | null {
+    const target = this.resolveTarget(sessionName);
+    if (!target.ok) return target.refusal;
+    if (this.inFlight.has(sessionName)) {
+      return {
+        ok: false,
+        code: 'refresh_in_progress',
+        message: `A refresh is already in progress for "${sessionName}".`,
+      };
+    }
+    if (!this.checkRateLimit(sessionName)) {
+      return {
+        ok: false,
+        code: 'rate_limited',
+        message: `Refresh rate limit exceeded (${this.maxPerWindow} per ${Math.round(this.windowMs / 60000)} minutes) for session "${sessionName}".`,
+      };
+    }
+    return null;
+  }
 
+  /**
+   * EVO-025: when a caller passed a session's display name (e.g. "Jev")
+   * rather than its tmux name ("echo-jev"), name the tmux name in the
+   * refusal. Deliberately a hint, not a silent remap: display names are not
+   * unique, and restarting the wrong session is worse than a clear refusal.
+   */
+  private displayNameHint(sessionName: string): string {
+    const matches = this.deps.state.listSessions({ status: 'running' })
+      .filter(s => s.name === sessionName && s.tmuxSession && s.tmuxSession !== sessionName)
+      .map(s => s.tmuxSession);
+    if (matches.length === 0) return '';
+    return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${matches.map(m => `"${m}"`).join(', ')}; see tmuxSession in GET /sessions).`;
+  }
+
+  /** Detect phase shared by refreshSession() and precheckRefusal(). */
+  private resolveTarget(sessionName: string):
+    | { ok: false; refusal: Extract<RefreshResult, { ok: false }> }
+    | { ok: true; topicId: number | null; slackRoutingKey: string | null; stateSession: Session } {
     // ── detect ─────────────────────────────────────────────────────────
     if (!this.deps.telegram && !this.deps.slack) {
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'no_telegram_adapter',
         message: 'No Telegram adapter wired (and no Slack binding either) — self-refresh requires a platform-bound session.',
-      };
+      } };
     }
 
     let topicId: number | null = null;
@@ -383,11 +417,11 @@ export class SessionRefresh {
       // sessions remain a follow-up — the respawn path is built around
       // conversation-key → context routing. Code kept as 'not_telegram_bound'
       // for back-compat with existing consumers/log greps.
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'not_telegram_bound',
-        message: `Session "${sessionName}" is not bound to a Telegram topic${this.deps.slack ? ' or Slack conversation' : ''} (checked in-memory + disk registry); cannot self-refresh.`,
-      };
+        message: `Session "${sessionName}" is not bound to a Telegram topic${this.deps.slack ? ' or Slack conversation' : ''} (checked in-memory + disk registry); cannot self-refresh.${this.displayNameHint(sessionName)}`,
+      } };
     }
 
     if (topicId === null && slackRoutingKey !== null && !this.deps.slackRespawner) {
@@ -395,11 +429,11 @@ export class SessionRefresh {
       // Structured refusal (NOT a throw) so the caller can degrade honestly —
       // §10.5: "a respawn-requiring change on a Slack topic degrades to
       // CONTINUATION-on-next-message, disclosed honestly."
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'slack_respawner_unwired',
         message: `Session "${sessionName}" is Slack-bound (${slackConversationKey(slackRoutingKey)}) but no Slack respawner is wired — the session will resume via CONTINUATION on the next message instead of an immediate respawn.`,
-      };
+      } };
     }
 
     // Look up the state session by tmux name — needed for killSession,
@@ -407,12 +441,33 @@ export class SessionRefresh {
     const stateSession = this.deps.state.listSessions({ status: 'running' })
       .find(s => s.tmuxSession === sessionName);
     if (!stateSession) {
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'session_not_found',
-        message: `No running session found for tmux name "${sessionName}".`,
-      };
+        message: `No running session found for tmux name "${sessionName}".${this.displayNameHint(sessionName)}`,
+      } };
     }
+
+    return { ok: true, topicId, slackRoutingKey, stateSession };
+  }
+
+  /**
+   * Refresh a session: kill its tmux session (which fires beforeSessionKill
+   * so the existing listener persists the Claude UUID via TopicResumeMap),
+   * then respawn via the injected respawner which spawns a fresh tmux that
+   * runs `claude --resume <uuid>` — picking up newly installed MCPs/skills
+   * while preserving the full conversation.
+   *
+   * Returns a structured result; never throws on the expected failure modes
+   * (rate-limit, session-not-found, non-Telegram-bound). Throws only on
+   * unexpected internal errors from the respawner callback.
+   */
+  async refreshSession(opts: RefreshOptions): Promise<RefreshResult> {
+    const { sessionName, followUpPrompt, reason, fresh } = opts;
+
+    const target = this.resolveTarget(sessionName);
+    if (!target.ok) return target.refusal;
+    const { topicId, slackRoutingKey, stateSession } = target;
 
     // ── in-flight guard ────────────────────────────────────────────────
     if (this.inFlight.has(sessionName)) {

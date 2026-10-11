@@ -15,6 +15,7 @@ import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { AUTO_ACK_TYPE, encodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
+import type { PeerPresenceRead } from '../peerDark.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
 import {
   clampRelayReason, mapRelayReason, RELAY_BANNED_CODE,
@@ -70,6 +71,8 @@ export interface KnownAgent {
    * that never came through discovery).
    */
   online?: boolean;
+  /** When this row's presence (`online`) was last written (ms epoch) — the freshness stamp `peerConnectedNow` applies. */
+  presenceAt?: number;
 }
 
 export interface ReceivedMessage {
@@ -129,6 +132,13 @@ export class ThreadlineClient extends EventEmitter {
   private readonly lastRediscoverByName = new Map<string, number>();
   /** Test seam: override `Date.now()` for deterministic TTL tests. */
   private readonly nowFn: () => number;
+  /**
+   * When the last presence evidence (a `discover-result` or `presence-change`
+   * frame) arrived — the freshness bound `peerConnectedNow` applies (§3.2).
+   */
+  private lastPresenceFrameAt: number | null = null;
+  /** Monotonic count of presence frames ingested (a refresh is proven by a new frame, not by a clock tick). */
+  private presenceFrameSeq = 0;
 
   // ── Relay verdict dispatcher (honest delivery, spec §1) ────────────────
   /** Recent verdicts by messageId — closes the "relay answered before anyone waited" race. */
@@ -269,10 +279,16 @@ export class ThreadlineClient extends EventEmitter {
 
     this.relayClient.on('discover-result', (result: { agents: Array<KnownAgent & { status?: 'online' | 'offline' }> }) => {
       this.ingestDiscoveredAgents(result.agents);
+      this.lastPresenceFrameAt = this.nowFn();
+      this.presenceFrameSeq++;
       this.emit('discover-result', result);
     });
 
-    this.relayClient.on('presence-change', (change: { agentId: string; status: string }) => {
+    // §3.2: the relay already pushes presence changes; they now feed the SAME
+    // presence map `discover-result` fills (merge — never strip a keyed row), so
+    // `connectedNow` can be read without an inline discover on the send path.
+    this.relayClient.on('presence-change', (change: { agentId: string; status: string; metadata?: { name?: string } }) => {
+      this.ingestPresenceChange(change);
       this.emit('presence-change', change);
     });
 
@@ -725,8 +741,88 @@ export class ThreadlineClient extends EventEmitter {
         publicKey: agent.publicKey ?? existing?.publicKey,
         x25519PublicKey: agent.x25519PublicKey ?? existing?.x25519PublicKey,
         online: agent.status === 'online',
+        presenceAt: this.nowFn(),
       } as KnownAgent);
     }
+  }
+
+  /**
+   * Apply a relay `presence_change` frame to the presence map. Same merge rule
+   * as `ingestDiscoveredAgents`: an existing row keeps its keys; an unknown
+   * agent gets a keyless row (name from the frame's metadata when present).
+   */
+  private ingestPresenceChange(change: { agentId: string; status: string; metadata?: { name?: string } }): void {
+    if (!change || typeof change.agentId !== 'string' || !change.agentId) return;
+    if (change.status !== 'online' && change.status !== 'offline') return;
+    const existing = this.knownAgents.get(change.agentId);
+    this.knownAgents.set(change.agentId, {
+      ...existing,
+      agentId: change.agentId,
+      name: existing?.name ?? change.metadata?.name ?? change.agentId,
+      online: change.status === 'online',
+      presenceAt: this.nowFn(),
+    } as KnownAgent);
+    this.lastPresenceFrameAt = this.nowFn();
+    this.presenceFrameSeq++;
+  }
+
+  /** Default freshness bound for `peerConnectedNow`: the sentinel's 15-min tick (§3.2). */
+  static readonly PRESENCE_FRESH_MS = 15 * 60 * 1000;
+
+  /**
+   * §3.2 `connectedNow`, read from the presence map — never an inline discover.
+   * `true` when the peer's row says online, `false` when it says offline, `null`
+   * when there is no row, when my relay is not connected, or when no presence
+   * frame has arrived within `maxFrameAgeMs` (a rejected refresh leaves the map
+   * as it was, so a stale map answers null, never a stale boolean).
+   */
+  peerConnectedNow(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): boolean | null {
+    return this.peerPresence(agentId, opts).connectedNow;
+  }
+
+  /**
+   * The full presence read behind `connectedNow` (§3.2): the boolean, WHY it is
+   * null when it is (`relay-down` — my relay is not connected; `no-row` — the
+   * map has no record of this peer; `stale` — a record exists but no presence
+   * frame arrived within the freshness bound), and `connectedAsOf` — when this
+   * peer's own record was last written, so "connected" always carries its age.
+   */
+  peerPresence(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): PeerPresenceRead {
+    const row = this.knownAgents.get(agentId);
+    const hasRow = !!row && typeof row.online === 'boolean';
+    const connectedAsOf = hasRow && typeof row!.presenceAt === 'number' ? new Date(row!.presenceAt).toISOString() : null;
+    if (this.connectionState !== 'connected') return { connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf };
+    if (!hasRow) return { connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null };
+    const maxAge = opts.maxFrameAgeMs ?? ThreadlineClient.PRESENCE_FRESH_MS;
+    // Freshness is the LAST presence frame of any kind (§3.2: "no frame since
+    // the last sentinel tick" ⇒ null) — a connected relay with a silent map
+    // answers null, never a stale boolean.
+    const stamp = this.lastPresenceFrameAt;
+    if (stamp === null || this.nowFn() - stamp > maxAge) return { connectedNow: null, connectedNowReason: 'stale', connectedAsOf };
+    return { connectedNow: row!.online as boolean, connectedNowReason: null, connectedAsOf };
+  }
+
+  /** When the last presence frame arrived (ms epoch), or null before any. */
+  get presenceFrameAt(): number | null {
+    return this.lastPresenceFrameAt;
+  }
+
+  /**
+   * Refresh the presence map with ONE discover (§3.3 heal step 2). A rejected
+   * call (no relay client — the standby case) leaves the map untouched and
+   * answers `false`; a resolved call (even an empty/rate-limited `[]`) answers
+   * `true` only when a frame actually landed.
+   */
+  async refreshPresence(): Promise<boolean> {
+    const before = this.presenceFrameSeq;
+    try {
+      await this.discover();
+    } catch {
+      // @silent-fallback-ok — `Not connected` (no relay client, the standby case): the map
+      // is left untouched and the caller reads `false`; connectedNow then answers null.
+      return false;
+    }
+    return this.presenceFrameSeq !== before;
   }
 
   /** True if the per-name re-discovery cooldown (§C) has elapsed. */

@@ -1702,6 +1702,72 @@ const passkeyRevokeOutbox: SelfActionController = {
   },
 };
 
+/**
+ * a2a-peer-dark-raise — the reworked A2ARedeliverySentinel's §3 dark pass
+ * (docs/specs/a2a-single-agent-identity.md §3.2–3.3). The pressure: two peers
+ * whose queued messages never get acknowledged (the relay queues forever, no
+ * inbound, no delivered verdict), while my own relay stays connected on the
+ * awake machine. Each 15-min tick re-reads the ledger, heals (reconnect is a
+ * no-op while connected; one presence refresh; self-check `ok`) and would raise
+ * the per-peer item. Convergence shape: ONE item per (peer, episode) — the open
+ * episode is the latch (deterministic id `a2a-peer-dark:<agent>:<peerFp>`), the
+ * per-peer 12 h cooldown brakes a re-raise after a resolve, and a restart
+ * REBUILDS the episode from the durable OPEN item (attentionState) instead of
+ * raising again. Sustained pressure converges to exactly one emit per peer; a
+ * longer horizon adds nothing while the episode persists.
+ */
+const a2aPeerDarkRaise: SelfActionController = {
+  id: 'a2a-peer-dark-raise',
+  actionVerb: 'escalate-dark-peer',
+  models: 'src/monitoring/A2ARedeliverySentinel.ts (darkPass — episode latch + inCooldown + episodeFor restart rebuild)',
+  modelsPath: 'src/monitoring/A2ARedeliverySentinel.ts',
+  boundK: 2, // 2 dark peers → at most one item each while the episode persists
+  perTargetBoundK: 1,
+  ticks: 96,
+  tickMs: 15 * 60_000, // 15-min sweep — 24 h of a peer that never answers
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeA2aPeerDarkRaise(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeA2aPeerDarkRaise(f, sink);
+  },
+};
+
+function makeA2aPeerDarkRaise(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const PEERS = ['peer-A', 'peer-B'];
+  const COOLDOWN_MS = 12 * 60 * 60_000;
+  // Durable per-peer item state (the attention store the real sentinel reads
+  // through `attentionState`): 'OPEN' while the episode persists, plus the last
+  // raise time for the cooldown. A fresh instance holds NO in-memory episodes.
+  const itemKey = (p: string) => `a2a-peer-dark:item:${p}`;
+  const raisedAtKey = (p: string) => `a2a-peer-dark:raisedAt:${p}`;
+  const episodes = new Set<string>();
+  return {
+    tick() {
+      sink.considered += 1;
+      // The relay stays connected: no aggregate, no reconnect; the heal's
+      // presence refresh and self-check are side-effect-free here.
+      for (const peer of PEERS) {
+        // The pressure: the peer is dark with queued rows every tick
+        // (targetAlwaysRejects — nothing ever acknowledges).
+        if (!f.targetAlwaysRejects()) continue;
+        if (episodes.has(peer)) continue; // open in-process episode — the latch
+        // Restart rebuild (episodeFor): a durable OPEN item re-arms the latch
+        // without a second raise.
+        if (f.durableState.get(itemKey(peer)) === 'OPEN') { episodes.add(peer); continue; }
+        // Cooldown (inCooldown): a resolved item's last update inside 12 h brakes a re-raise.
+        const lastRaisedAt = (f.durableState.get(raisedAtKey(peer)) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+        if (f.clock.nowMs() - lastRaisedAt < COOLDOWN_MS) continue;
+        sink.emit({ verb: 'escalate-dark-peer', target: peer });
+        episodes.add(peer);
+        f.durableState.set(itemKey(peer), 'OPEN');
+        f.durableState.set(raisedAtKey(peer), f.clock.nowMs());
+      }
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageTick,
   feedbackTriageActionList,
@@ -1742,4 +1808,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackExecute,
   mutualSshRepairSweep,
   followMeEnrollmentConsumer,
+  a2aPeerDarkRaise,
 ];
