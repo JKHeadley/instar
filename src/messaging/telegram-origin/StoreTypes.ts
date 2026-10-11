@@ -141,7 +141,9 @@ export interface OriginAuditRecord {
   diagnostic?: { state: string; reason: string; createdAt: number; resolvedAt: number | null; diagnosis: string | null };
   sequence: number;
   record: StoredOriginInput;
-  operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string } | null;
+  operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string;
+    /** a2a-single-agent-identity §4.2 — present only while a named hold is recorded. */
+    holdReason?: string; holdDetail?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
   attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; reason?: string | null; nextAttemptAt?: number | null }>;
 }
@@ -185,3 +187,18 @@ export interface StoredChild {
   materializations: StoredMaterializationInput[];
 }
 export type OutcomeWriteResult = { recorded: true } | { recorded: false; reason: 'stale-fence' | 'not-dispatched' | 'receipt-required' | 'invalid-transition' };
+
+/** a2a-single-agent-identity §4.2 — one durable held (or expired-while-held) row. */
+export interface HeldOperationRow {
+  operationId: string;
+  originId: string;
+  state: 'held' | 'expired';
+  holdReason: string | null;
+  holdDetail: Record<string, unknown> | null;
+  preparedAt: number;
+  deadlineAt: number;
+  executionOwnerMachineId: string | null;
+  destination: { accountId: string | null; chatId: string | null; topicId: string | null };
+  recovery: { attempts: number; nextAttemptAt: number } | null;
+  expiryReportedAt: number | null;
+}

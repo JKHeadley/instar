@@ -20,7 +20,7 @@ describe('Telegram origin installation parity', () => {
     const origin = config.messaging[0].config.messageOrigin as { display: Record<string, boolean> };
     expect(origin.display).toEqual({ enabled: true, machine: true, harness: true, model: true });
     expect(resolveOriginDisplay()).toMatchObject(origin.display);
-    expect(Object.keys(origin).sort()).toEqual(['detectorCanary', 'display', 'outageNotice']);
+    expect(Object.keys(origin).sort()).toEqual(['detectorCanary', 'display', 'forwardToHolder', 'outageNotice']);
     expect(originOutageNoticeEnabled(origin)).toBe(true);
     expect(originOutageNoticeEnabled(undefined)).toBe(true);
   });

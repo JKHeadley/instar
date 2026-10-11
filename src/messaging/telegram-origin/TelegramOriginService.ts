@@ -45,7 +45,8 @@ export interface OriginServiceStore {
   markDispatched(fence: ClaimFence): Promise<boolean>;
   releaseUndispatchedClaim?(fence: ClaimFence & { detail?: 'content-reservation-held' }): Promise<boolean>;
   recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult>;
-  recordOperationState(input: {operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number}): Promise<boolean>;
+  recordOperationState(input: {operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
+    holdReason?: string; holdDetail?: Record<string, unknown> | null}): Promise<boolean>;
   getOrigin(originId: string): Promise<OriginAuditRecord | null>;
   listOrigins(query?: OriginListQuery): Promise<OriginListPage>;
   getMetrics(): Promise<OriginMetrics>;
@@ -64,6 +65,11 @@ export interface OriginServiceOptions {
     agent?: Partial<OriginDisplaySettings>; conversation?: Partial<OriginDisplaySettings>;
   };
   authorize: (request: Readonly<SealedBotRequest>) => boolean | Promise<boolean>;
+  /** a2a-single-agent-identity §4.2 — names WHY `authorize` refused. When this
+   * machine does not hold the serving lease, a refused request is held as
+   * `lease-not-held` (durable, forwardable, notifiable) instead of
+   * `destination-not-authorized` (a foreign chat — never forwarded). */
+  holdsLease?: () => boolean;
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
   spoolEvidence: (record: StoredOriginInput) => Promise<unknown>;
   peerEvidence?: (record: StoredOriginInput) => Promise<unknown>;
@@ -385,6 +391,19 @@ export class TelegramOriginService {
     this.options.onHold({ operationId: id, reason, destination: operation.record.destination });
     throw new TelegramOriginHoldError(reason, id);
   }
+  /** §4.2 — a refused destination is one of two facts: a foreign chat
+   * (`destination-not-authorized`, never forwarded or notified) or a chat this
+   * machine may address but cannot serve right now because it does not hold the
+   * lease (`lease-not-held`). The second is recorded durably through the
+   * existing operation-state writer so a restart, a status read and the
+   * recovery tick all see the same reason. */
+  async #holdUnauthorized(operation: OriginPreparedBotOperation): Promise<never> {
+    if (!this.options.holdsLease || this.options.holdsLease()) return this.#hold(operation, 'destination-not-authorized');
+    try { await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'held', holdReason: 'lease-not-held' }); }
+    catch { /* The in-memory hold below still carries the reason; the durable row keeps its prior state. */ }
+    return this.#hold(operation, 'lease-not-held');
+  }
+  static readonly RECOVERABLE_HOLD_REASONS: readonly string[] = Object.freeze(['all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held']);
   /** Bounded recovery candidates. Unknown acceptance never enters this list.
    * During a total storage outage these bytes are memory-only; expose that
    * limitation rather than pretending a successful durable queue admission.
@@ -394,7 +413,7 @@ export class TelegramOriginService {
     const result: OriginPreparedBotOperation[] = [];
     const selected: Array<[string, { reason: string; since: number; operation: OriginPreparedBotOperation | null }]> = [];
     for (const [id, held] of this.#held) {
-      if (held.operation && ['all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized'].includes(held.reason)) {
+      if (held.operation && TelegramOriginService.RECOVERABLE_HOLD_REASONS.includes(held.reason)) {
         result.push(structuredClone(held.operation));
         selected.push([id, held]);
         if (result.length >= Math.max(1, Math.min(100, limit))) break;
@@ -552,7 +571,7 @@ export class TelegramOriginService {
           const body = JSON.parse(request.body);
           if (!await this.options.reviewLegacyRecovery(String(body.text ?? ''))) return this.#hold(operation, 'legacy-review-rejected');
         }
-        if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
+        if (!await this.options.authorize(request)) return this.#holdUnauthorized(operation);
         await this.authorizeOriginDispatch(operation.record);
         this.authorizeSendPolicyDispatch(operation.record);
         let prepared: Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>> | undefined;
@@ -570,7 +589,7 @@ export class TelegramOriginService {
         });
         reservedBy = claim.child.claimToken;
         // Ownership may be revoked while the durable claim transaction runs.
-        if (!await this.options.authorize(request)) return this.#hold(operation, 'destination-not-authorized');
+        if (!await this.options.authorize(request)) return this.#holdUnauthorized(operation);
         this.authorizeSendPolicyDispatch(operation.record);
         if (prepared && !prepared.valid()) {
           prepared.cancel();

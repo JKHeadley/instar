@@ -129,6 +129,10 @@ export interface OriginConfig {
   /** Application permission for the pre-recorded operator-hub outage notice.
    * Omitted means enabled; this never disables ordinary origin recording. */
   outageNotice?: { enabled?: boolean };
+  /** a2a-single-agent-identity §4.3 — a reply from a machine that does not hold
+   * the lease is FORWARDED to the holder (omitted ⇒ enabled). The durable held
+   * state, its reason and the notice are NOT behind this switch. */
+  forwardToHolder?: { enabled?: boolean };
   limits?: Partial<OriginLimits>;
 }
 export type BotParameters = { [key: string]: OriginJson };
@@ -140,4 +144,10 @@ export class TelegramOriginHoldError extends Error {
     super(`Telegram message held: ${reason}`);
     this.name = 'TelegramOriginHoldError';
   }
+}
+/** a2a-single-agent-identity §4.2 — the forward-to-holder path found, during
+ * its lease-settling window, that THIS machine holds the lease after all. The
+ * caller sends locally; nothing was forwarded, recorded or held. */
+export class OriginForwardSettledLocallyError extends Error {
+  constructor() { super('telegram origin forward settled to this machine; send locally'); this.name = 'OriginForwardSettledLocallyError'; }
 }

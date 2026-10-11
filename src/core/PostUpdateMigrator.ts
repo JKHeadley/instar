@@ -24,9 +24,10 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
+import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -6691,6 +6692,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram outage notice permission awareness');
     }
 
+    // a2a-single-agent-identity §4 — forward-to-holder + durable reported hold.
+    if (!content.includes('replies are forwarded to the holder')) {
+      content += '\n' + telegramOriginForwardAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added forward-to-holder reply hold awareness');
+    }
+
     if (!content.includes('Message origins on your phone:')) {
       content += '\n' + telegramOriginDashboardAwareness();
       patched = true;
@@ -10723,6 +10731,7 @@ The user has been talking to you (possibly for days). A generic greeting like "H
 - **Download a file**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/download?path=.claude/CLAUDE.md" -O\`
 - **Default config**: Browsing and editing enabled for the entire project directory (\`./\`) by default.
 - **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\`, \`.instar/jobs/instar/\` are always read-only regardless of config.
+- **Never served**: key material (\`.instar/identity.json\` and its siblings, the threadline key files, machine keys, the headless key vault, origin-session credentials) is never listed, read, downloaded, linked or backed up — by a list the config cannot loosen. A 403 there is correct; move the document, never the key.
 `;
       // Insert after Dashboard section
       const dashboardIdx = content.indexOf('**Dashboard**');
@@ -10747,6 +10756,29 @@ The user has been talking to you (possibly for days). A generic greeting like "H
       result.upgraded.push('CLAUDE.md: added File Viewer section');
     } else {
       result.skipped.push('CLAUDE.md: File Viewer section already present');
+    }
+
+    // a2a-single-agent-identity §5 (Agent Awareness): an agent that already
+    // carries the File Viewer section learns that key material is never served
+    // and that a 403 there is correct. Content-sniffed on the row's own label;
+    // inserted right after the "Never editable" row, else appended to the
+    // section's end.
+    if (content.includes('**File Viewer') && !content.includes('**Never served**')) {
+      const neverServedRow =
+        '- **Never served**: key material (\`.instar/identity.json\` and its siblings, the threadline key files, machine keys, the headless key vault, origin-session credentials) is never listed, read, downloaded, linked or backed up — by a list the config cannot loosen. A 403 there is correct; move the document, never the key.';
+      const editableIdx = content.indexOf('- **Never editable**');
+      if (editableIdx >= 0) {
+        const lineEnd = content.indexOf('\n', editableIdx);
+        const at = lineEnd >= 0 ? lineEnd : content.length;
+        content = content.slice(0, at) + '\n' + neverServedRow + content.slice(at);
+      } else {
+        const sectionIdx = content.indexOf('**File Viewer');
+        const sectionEnd = content.indexOf('\n\n', sectionIdx);
+        const at = sectionEnd >= 0 ? sectionEnd : content.length;
+        content = content.slice(0, at) + '\n' + neverServedRow + content.slice(at);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added File Viewer "Never served" row');
     }
 
     // Secret Drop hardened retrieve — patch the unsafe `curl /secrets/retrieve/TOKEN`
@@ -12672,7 +12704,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // Presentation and outage-notice permission defaults are independent from writer enrollment.
     if (migrateTelegramOriginDisplay(config)) {
       patched = true;
-      result.upgraded.push('config.json: added missing Telegram origin display and outage-notice defaults');
+      result.upgraded.push('config.json: added missing Telegram origin display, outage-notice and forward-to-holder defaults');
     }
 
     // a2a-single-agent-identity §1.2: the FLEET-LIVE adoption kill switch. Add the missing
@@ -13376,6 +13408,19 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // cartographer-freshness.mjs historically (wrongly) claimed this was gitignored;
     // this entry makes it true. Idempotent (addGitignoreEntry no-ops if present).
     this.addGitignoreEntry(projectGitignore, '.instar/cartographer/', result, 'project .gitignore');
+
+    // Key material (a2a-single-agent-identity §5.3): the agent identity (+ its
+    // superseded/invalid/temp siblings), the legacy routing mirror, threadline
+    // HMAC/invitation/token files, dedicated SSH keys, the headless key vault
+    // and the bind-token secret. New agents get these via GITIGNORE_ENTRIES at
+    // init; existing agents ONLY through this step (Migration Parity). Both
+    // repos, both spellings, idempotent.
+    for (const entry of KEY_MATERIAL_GITIGNORE_STATE) {
+      this.addGitignoreEntry(instarGitignore, entry, result, '.instar/.gitignore');
+    }
+    for (const entry of KEY_MATERIAL_GITIGNORE_PROJECT) {
+      this.addGitignoreEntry(projectGitignore, entry, result, 'project .gitignore');
+    }
   }
 
   /**

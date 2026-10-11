@@ -5,6 +5,8 @@ import { TelegramOriginHoldError } from './types.js';
 import { ORIGIN_MESH_PROTOCOL } from './OriginMesh.js';
 import type { OriginMeshCommand } from './OriginMesh.js';
 import type { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
+import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
+import { submitOriginToHolder } from './OriginForwardToHolder.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 
 export async function relayOriginBot(input: {
@@ -12,7 +14,12 @@ export async function relayOriginBot(input: {
   formatMode?: FormatMode;
   kindMetadata?: Record<string, unknown>;
   send: (command: OriginMeshCommand) => Promise<{ ok: boolean; result?: unknown }>;
-}): Promise<{ messageId: number; topicId: number; destinationStoreConfirmed: true }> {
+  /** §4.1 — pin the execution owner to a resolved holder (defaults to whatever answers `capabilities`). */
+  executionOwnerMachineId?: string;
+  /** Reuse an operation id across holders (the holder dedupes on it). */
+  operationId?: string;
+  onPrepared?: (operation: OriginPreparedBotOperation) => void;
+}): Promise<{ messageId: number; topicId: number; destinationStoreConfirmed: true; operationId: string }> {
   const base = { type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL } as const;
   let capabilities;
   try { capabilities = await input.send({ ...base, action: 'capabilities' }); }
@@ -25,8 +32,11 @@ export async function relayOriginBot(input: {
   const params = applyTelegramFormatter('sendMessage', { chat_id: input.chatId, text: input.text, parse_mode: 'Markdown',
     ...(input.topicId > 1 ? { message_thread_id: input.topicId } : {}), ...(input.silent ? { disable_notification: true } : {}) }, input.formatMode).outgoingParams as BotParameters;
   const service = input.runtime.service;
+  if (input.executionOwnerMachineId !== undefined && cap.executionOwnerMachineId !== input.executionOwnerMachineId) {
+    throw new TelegramOriginHoldError('execution-owner-mismatch');
+  }
   const prepare = () => service.prepareBot({ method: 'sendMessage', accountId: cap.accountId!, params,
-    executionOwnerMachineId: cap.executionOwnerMachineId,
+    executionOwnerMachineId: cap.executionOwnerMachineId, ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
     policyInput: service.currentSendPolicyInput(input.text, input.kindMetadata) });
   const operation = service.hasProducerContext() ? prepare() : service.runAsUnboundAutomation('telegram-server', prepare);
   if (service.hasLogicalSendContext()) {
@@ -44,17 +54,15 @@ export async function relayOriginBot(input: {
   service.authorizeSendPolicyDispatch(operation.record);
   await service.recordIntent(operation);
   service.authorizeSendPolicyDispatch(operation.record);
-  let result;
-  try { result = await input.send({ ...base, action: 'submit', operation }); }
-  catch { throw new TelegramOriginHoldError('origin-relay-acceptance-unknown', operation.record.operationId, 'outcome-unknown'); }
-  const response = result.result as { ok?: boolean; messageId?: number; originId?: string; originReceiptConfirmed?: boolean;
-    reason?: string; outcome?: string; policyRefusal?: import('./OriginSendPolicy.js').OriginSendPolicyDecision } | undefined;
-  if (response?.policyRefusal && response.policyRefusal.ok === false) throw new OriginSendPolicyRefusal(response.policyRefusal, operation.record.operationId);
-  if (!result.ok || !response?.ok || response.originId !== operation.record.originId ||
-    !Number.isSafeInteger(response.messageId) || Number(response.messageId) <= 0 || response.originReceiptConfirmed !== true) {
-    throw new TelegramOriginHoldError(response?.reason ?? 'origin-relay-acceptance-unknown', operation.record.operationId,
-      response?.outcome === 'held' || response?.outcome === 'known-failed' ? response.outcome : 'outcome-unknown');
+  input.onPrepared?.(operation);
+  // One holder transport for the request-time relay and the §4.2 recovery
+  // re-forward (OriginForwardToHolder.ts), so a refusal means one thing.
+  const submitted = await submitOriginToHolder({ operation, send: input.send, expectedOwner: cap.executionOwnerMachineId });
+  if (!submitted.ok) {
+    if (submitted.policyRefusal) throw new OriginSendPolicyRefusal(submitted.policyRefusal, operation.record.operationId);
+    throw new TelegramOriginHoldError(submitted.reason, operation.record.operationId, submitted.outcome);
   }
+  const response = { messageId: submitted.messageId };
   // The credential owner's origin outbox has committed a correlated receipt.
-  return { messageId: response.messageId!, topicId: input.topicId, destinationStoreConfirmed: true };
+  return { messageId: response.messageId, topicId: input.topicId, destinationStoreConfirmed: true, operationId: operation.record.operationId };
 }

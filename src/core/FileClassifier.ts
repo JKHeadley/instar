@@ -13,6 +13,7 @@ import { ORIGIN_LOCAL_PROJECT_GLOBS } from '../messaging/telegram-origin/OriginL
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { KEY_MATERIAL_SECRET_PATTERNS } from './keyMaterialPaths.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from './IdentityStore.js';
 import { mergeDefaults } from './mergeDefaults.js';
@@ -202,6 +203,11 @@ const DEFAULT_SECRET_PATTERNS = [
   '.instar/machine/identity.json',
   '.instar/machine/*key*',
   '.instar/secrets/',
+  // Key material as PREFIXES (a2a-single-agent-identity §5.3): the exact
+  // `.instar/identity.json` match above left `identity.json.superseded-*`
+  // syncable; these cover every sibling and the other key files by the same
+  // list the file routes, backup and gitignore use.
+  ...KEY_MATERIAL_SECRET_PATTERNS,
 ];
 
 const SOURCE_CODE_EXTENSIONS = new Set([

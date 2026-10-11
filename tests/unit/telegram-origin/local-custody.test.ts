@@ -17,7 +17,13 @@ const files = ['origin-sessions-host.json', 'origin-sessions-host.json.temporary
 describe('origin custody remains machine local', () => {
   it('excludes every custody file and SQLite companion from sync and fresh state tracking', () => {
     const classifier = new FileClassifier({ projectDir: '/fixture' });
-    for (const file of files) expect(classifier.classify(`.instar/${file}`).strategy).toBe('exclude');
+    // GitSync keeps both 'exclude' and 'never-sync' out of every commit. The
+    // session-credential files are 'never-sync' (key material,
+    // a2a-single-agent-identity §5.3); the rest are 'exclude'.
+    for (const file of files) {
+      const expected = file.startsWith('origin-sessions-') ? 'never-sync' : 'exclude';
+      expect(classifier.classify(`.instar/${file}`).strategy, file).toBe(expected);
+    }
     for (const pattern of ORIGIN_LOCAL_GITIGNORE) expect(DEFAULT_GITIGNORE).toContain(pattern);
     expect(classifier.classify('src/feature.ts').strategy).toBe('llm');
   });

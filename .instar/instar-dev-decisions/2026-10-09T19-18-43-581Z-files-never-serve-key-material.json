@@ -1,0 +1,34 @@
+{
+  "ts": "2026-10-09T19:18:43.581Z",
+  "slug": "files-never-serve-key-material",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 484,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/BackupManager.ts",
+      "src/core/FileClassifier.ts",
+      "src/core/MachineIdentity.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/scaffold/templates.ts",
+      "src/server/fileRoutes.ts"
+    ],
+    "addedLines": 429,
+    "deletedLines": 55
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

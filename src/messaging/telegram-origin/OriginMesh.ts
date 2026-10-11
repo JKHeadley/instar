@@ -51,7 +51,12 @@ export async function handleOriginMesh(options: {
       const audit = await runtime.store.getOperation(command.operationId);
       const live = activeKey();
       if (!live || live.publicKey !== authorized.publicKey || live.keyEpoch !== authorized.keyEpoch) return { ok: false, reason: 'origin-peer-unavailable' };
-      if (!audit) return { ok: false, reason: 'origin-receipt-unavailable' };
+      // A verified peer asking about an id this machine never saw gets a
+      // DISTINCT answer from a store failure: `no-record` is a definite
+      // non-admission (a forwarding standby may re-forward); `origin-receipt-
+      // unavailable` is an unknown (it must keep waiting).
+      if (!audit) return { ok: true, operationId: command.operationId, state: 'no-record', originReceiptConfirmed: false,
+        executionOwnerMachineId: runtime.options.identity.originMachineId };
       const record = JSON.parse(audit.record.envelopeJson) as TelegramOriginRecord;
       if (record.originMachineId !== options.authenticatedSender || record.agentId !== runtime.options.identity.agentId ||
         record.operationId !== command.operationId || record.originId !== audit.record.originId ||
@@ -112,6 +117,15 @@ export async function handleOriginMesh(options: {
   if (record.executionOwnerMachineId !== runtime.options.identity.originMachineId) {
     return { ok: false, reason: 'execution-owner-mismatch', outcome: 'held' };
   }
+  // a2a-single-agent-identity §4.1 — the holder-side submit runs the SAME lease
+  // check the direct path runs (it used to execute unchecked). A typed,
+  // retryable refusal lets the forwarding standby re-resolve the holder.
+  if (runtime.options.holdsLease && !runtime.options.holdsLease()) {
+    // No `operationId` here on purpose: a refusal naming the operation id means
+    // this machine took custody of it; this one never did.
+    return { ok: false, reason: 'not-lease-holder', outcome: 'held', retryable: true,
+      executionOwnerMachineId: runtime.options.identity.originMachineId };
+  }
   const operation = command.operation;
   if (!validOriginAdmission(operation) || canonicalOrigin(operation.record) !== stored.envelopeJson || operation.admission.operationId !== record.operationId ||
     record.destination.transport !== 'bot-api' || record.destination.accountId !== runtime.options.bot.accountId) {
@@ -125,7 +139,8 @@ export async function handleOriginMesh(options: {
       { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
         networkTimeoutMs: 10_000 }, undefined, operation);
     const body = await response.json() as { result?: { message_id?: number } };
-    return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true };
+    return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
+      deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
     if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
       operationId: record.operationId, policyRefusal: error.decision };
