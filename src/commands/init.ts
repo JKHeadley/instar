@@ -1152,6 +1152,14 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   try {
     const machineIdentityManager = new MachineIdentityManager(stateDir);
     const machineIdentity = await machineIdentityManager.generateIdentity({ name: agentName });
+    // The entries are PROJECT-relative (`.instar/machine/signing-key.pem`,
+    // `.instar/identity.json*`), so they belong in the project `.gitignore`
+    // next to the one written above — the stateDir call alone put them in
+    // `.instar/.gitignore` where they match nothing (found by the §5.4 walk
+    // of a2a-single-agent-identity; the other two init paths already pass
+    // projectDir). Both are kept: the stateDir file still carries the
+    // stateDir-relative entries it always did.
+    ensureGitignore(projectDir);
     ensureGitignore(stateDir);
     console.log(`  ${pc.green('✓')} Generated machine identity: ${machineIdentity.machineId.slice(0, 12)}...`);
   } catch {

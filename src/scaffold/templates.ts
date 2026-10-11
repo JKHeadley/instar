@@ -887,6 +887,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - **Generate a file link**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/link?path=.claude/CLAUDE.md"\`
 - **Default config**: Browsing enabled for \`.claude/\` and \`docs/\`. Editing disabled by default — prompt the user to enable it for safe paths.
 - **Never editable**: \`.claude/hooks/\`, \`.claude/scripts/\`, \`node_modules/\` are always read-only regardless of config.
+- **Never served**: key material (\`.instar/identity.json\` and its siblings, the threadline key files, machine keys, the headless key vault, origin-session credentials) is never listed, read, downloaded, linked or backed up — by a list the config cannot loosen. A 403 there is correct; move the document, never the key.
 - **Tunnel URL awareness**: Quick tunnel URLs change on restart. Frame file links as session-scoped unless using a named tunnel. Don't promise permanent URLs with quick tunnels.
 
 **Process Health (Dashboard Tab)** — A calm, human-readable window into the Failure-Learning Loop. The loop's findings are otherwise invisible (API-only); this tab shows, in plain English and large type, what's being watched, any patterns surfaced, and where the rollout sits.
