@@ -666,9 +666,12 @@ export class IdentityStore {
       catch { throw new IdentityStoreRefusal('registry-unreadable', 'Machine registry is unreadable'); }
       const entry = registry.machines?.[machineId];
       if (!entry) throw new IdentityStoreRefusal('machine-not-found', `Machine not found: ${machineId}`);
-      if (entry.status === 'revoked' || entry.revokedAt) throw new IdentityStoreRefusal('already-revoked', 'Machine is already revoked');
-
-      const at = new Date(this.now()).toISOString();
+      if (entry.status === 'revoked') throw new IdentityStoreRefusal('already-revoked', 'Machine is already revoked');
+      // A half-revoked row (revokedAt stamped, status still 'active' — a hand edit
+      // or partial merge) used to be refused here as already revoked, so nothing
+      // could ever rewrite it (instar#2122 step 6). Complete the revocation instead,
+      // keeping the original revocation time.
+      const at = entry.revokedAt ?? new Date(this.now()).toISOString();
       const epochs = this.loadEpochs();
       const prior = epochs.machines[machineId] ?? this.getEpoch(machineId);
       const identity = this.loadIdentity(machineId, 'remote') ?? this.loadIdentity(machineId, 'local');

@@ -54,6 +54,22 @@ describe('resolveRelayHealth', () => {
     expect(r.report.recoverable).toBe(true);
   });
 
+  it('reports standby (ok) when the machine released the relay to the lease holder, even with a stale loss event', () => {
+    const r = resolveRelayHealth((() => ({
+      connectionState: 'disconnected',
+      lastEvent: lossEvent(false),
+      standby: true,
+    })) as RelayStatus);
+    expect(r.status).toBe('ok');
+    expect(r.report.state).toBe('standby');
+    expect(r.report.recoverable).toBe(true);
+  });
+
+  it('a connected relay is never reported as standby', () => {
+    const r = resolveRelayHealth((() => ({ connectionState: 'connected', lastEvent: null, standby: true })) as RelayStatus);
+    expect(r.report.state).toBe('connected');
+  });
+
   it('reports disconnected as DEGRADED and recoverable — backoff will retry', () => {
     const r = resolveRelayHealth((() => ({
       connectionState: 'disconnected',

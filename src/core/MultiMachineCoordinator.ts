@@ -119,6 +119,15 @@ const RENEW_SAFETY_FACTOR = 0.5;
 const MIN_RENEW_INTERVAL_MS = 5_000;
 const MAX_RENEW_INTERVAL_MS = 60_000;
 /**
+ * ACT-1308 — after an UNCONFIRMED renewal, retry after this fraction of the renew
+ * interval instead of waiting a full interval. renew() keeps the old expiry when a
+ * broadcast goes unconfirmed, so with TTL = 2 × interval the next regular tick
+ * lands exactly on that expiry (plus timer drift) and finds the lease already
+ * lapsed. A retry at interval/4 (7.5s at the default 30s) lands well inside it.
+ */
+const RENEW_RETRY_FRACTION = 0.25;
+const MIN_RENEW_RETRY_MS = 1_000;
+/**
  * B1 — how often an UNCHANGED lease-derived poll intent is rewritten so its `ts`
  * stays inside the consumer's staleness bound (TelegramLifeline reads it with
  * `maxStaleMs: 90_000`; past that the record is treated as "no current opinion").
@@ -196,6 +205,10 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   private leaseRenewing: boolean = false;
+  /** ACT-1308 — one-shot retry armed after an unconfirmed renewal. */
+  private leaseRenewRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ACT-1308 — logged once per episode when the renew tick skips while we are still the named holder. */
+  private leaseRenewSkipLogged = false;
   private leaseRenewStartLogged: boolean = false;
   private readonly originLeaseRenewalOwners = new Set<symbol>();
   private leaseRenewStopped = false;
@@ -546,6 +559,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.leaseRenewTimer);
       this.leaseRenewTimer = null;
     }
+    this.clearLeaseRenewRetry();
     this.nonceStore.destroy();
   }
 
@@ -1003,7 +1017,18 @@ export class MultiMachineCoordinator extends EventEmitter {
     // up to ~TTL, fighting the silent-standby-relinquish self-heal. (2nd-pass.)
     if (this.isLeaseObserveOnly) return;
     // Only a current holder renews. A lapsed/non-holder is acquireIfEligible's job.
-    if (!this.leaseCoordinator.holdsLease()) return;
+    if (!this.leaseCoordinator.holdsLease()) {
+      // ACT-1308 — this skip used to be silent. When the lease still names us,
+      // skipping means our own lease lapsed between renewals: say so once.
+      const lease = this.leaseCoordinator.currentLease();
+      if (!this.leaseRenewSkipLogged && lease && !lease.released && lease.holder === this._identity?.machineId) {
+        this.leaseRenewSkipLogged = true;
+        console.log(`[MultiMachine] lease renew skipped: still the named holder at epoch ${lease.epoch}, but the lease lapsed (last confirmed renewal ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
+      }
+      return;
+    }
+    this.leaseRenewSkipLogged = false;
+    this.clearLeaseRenewRetry();
     this.leaseRenewing = true;
     try {
       await this.withTickTimeout('lease-renew', () => this.leaseCoordinator!.renew());
@@ -1011,6 +1036,35 @@ export class MultiMachineCoordinator extends EventEmitter {
       console.log(`[MultiMachine] lease renew tick error (non-fatal): ${(err as Error).message}`);
     } finally {
       this.leaseRenewing = false;
+    }
+    this.armLeaseRenewRetryIfUnconfirmed();
+  }
+
+  /**
+   * ACT-1308 — renew() returns true inside the grace window even when the
+   * broadcast went unconfirmed, keeping the OLD expiry. If this attempt was not
+   * confirmed and we still hold the lease, try again shortly rather than at the
+   * next regular tick, which would land on that expiry and find it lapsed.
+   */
+  private armLeaseRenewRetryIfUnconfirmed(): void {
+    if (this.leaseRenewStopped || !this.leaseCoordinator || this.leaseRenewRetryTimer) return;
+    if (!this.leaseCoordinator.holdsLease()) return;
+    const interval = this.renewIntervalMs();
+    // A confirmation from this attempt is newer than any part of the interval.
+    if (this.leaseCoordinator.msSinceConfirmedRenewal() < interval / 2) return;
+    const delay = Math.max(MIN_RENEW_RETRY_MS, Math.round(interval * RENEW_RETRY_FRACTION));
+    console.log(`[MultiMachine] lease renewal unconfirmed; retrying in ${delay}ms (last confirmed ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
+    this.leaseRenewRetryTimer = setTimeout(() => {
+      this.leaseRenewRetryTimer = null;
+      void this.leaseRenewTick();
+    }, delay);
+    if (this.leaseRenewRetryTimer.unref) this.leaseRenewRetryTimer.unref();
+  }
+
+  private clearLeaseRenewRetry(): void {
+    if (this.leaseRenewRetryTimer) {
+      clearTimeout(this.leaseRenewRetryTimer);
+      this.leaseRenewRetryTimer = null;
     }
   }
 

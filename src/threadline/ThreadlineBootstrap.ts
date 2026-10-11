@@ -68,6 +68,23 @@ export interface ThreadlineBootstrapConfig {
    */
   relayStandby?: boolean;
   /**
+   * Live relay ownership (ACT-1306 a). When supplied, the relay connection
+   * follows this predicate instead of being fixed at boot: the machine connects
+   * while it returns true and releases the connection after it has returned
+   * false for `relayReleaseAfterChecks` consecutive checks. Multi-machine agents
+   * pass "this machine holds the serving lease", the same live fact the Telegram
+   * poll follows, so a standby that never set `telegramPolling: false` no longer
+   * displaces the awake machine, and a standby that takes over also takes the
+   * relay. Ignored when `relayStandby` is true (the operator's explicit flag wins).
+   */
+  relayOwner?: () => boolean;
+  /** Called whenever live relay ownership releases (true) or takes (false) the connection. */
+  onRelayStandbyChange?: (standby: boolean) => void;
+  /** How often live relay ownership is checked. Default 5 s. */
+  relayOwnerCheckMs?: number;
+  /** Consecutive non-owner checks before releasing the connection. Default 3 (hysteresis). */
+  relayReleaseAfterChecks?: number;
+  /**
    * After this machine is displaced from the relay by another connection using
    * the same identity, wait this long, then reclaim the connection. This machine
    * is the configured relay owner (a standby never connects), so reclaiming is
@@ -155,6 +172,12 @@ export interface ThreadlineBootstrapResult {
    * mirror repair.
    */
   reloadIdentity: () => Promise<{ fingerprint: string | null; connected: boolean; reason: string }>;
+  /**
+   * Live (ACT-1306 a): true while `config.relayOwner` has this machine off the
+   * relay because another machine holds the serving lease. Unlike the boot-time
+   * fact above, this changes as the lease moves.
+   */
+  isRelayReleasedForStandby?: () => boolean;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -375,6 +398,13 @@ export async function bootstrapThreadline(
 
   let relayClient: ThreadlineClient | undefined;
   let relayRearmTimer: NodeJS.Timeout | null = null;
+  let relayOwnerTimer: NodeJS.Timeout | null = null;
+  /** True while live relay ownership (config.relayOwner) has this machine off the relay. */
+  let relayReleasedForStandby = false;
+  const relayOwnerSays = (): boolean => {
+    try { return config.relayOwner ? config.relayOwner() !== false : true; }
+    catch { return true; } // @silent-fallback-ok — an unreadable owner keeps today's behaviour (connect)
+  };
   let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
@@ -530,6 +560,12 @@ export async function bootstrapThreadline(
       if (rearmMs <= 0 || relayRearmTimer) return;
       relayRearmTimer = setTimeout(() => {
         relayRearmTimer = null;
+        // A machine that no longer owns the relay does not reclaim it: the
+        // displacement was the awake machine taking its connection (ACT-1306 a).
+        if (!relayOwnerSays()) {
+          console.log('Threadline: relay reclaim skipped — this machine is not the relay owner (standby)');
+          return;
+        }
         displacedClient.reconnectRelay().then(
           () => console.log('Threadline: relay connection reclaimed after displacement'),
           (err: unknown) => console.error(`Threadline: relay reclaim failed — ${err instanceof Error ? err.message : err}; the client keeps retrying with backoff`),
@@ -538,10 +574,54 @@ export async function bootstrapThreadline(
       relayRearmTimer.unref?.();
     });
 
+    const ownerAtBoot = relayOwnerSays();
+    if (!ownerAtBoot) {
+      relayReleasedForStandby = true;
+      config.onRelayStandbyChange?.(true);
+      console.log('Threadline: relay connection deferred — this machine does not hold the serving lease (standby); it connects if it takes over');
+    }
+    if (config.relayOwner) {
+      // ACT-1306 a — the relay follows the serving lease, like the Telegram poll.
+      const checkMs = config.relayOwnerCheckMs ?? 5_000;
+      const releaseAfter = Math.max(1, config.relayReleaseAfterChecks ?? 3);
+      const ownedClient = relayClient;
+      let notOwnerStreak = 0;
+      relayOwnerTimer = setInterval(() => {
+        const owner = relayOwnerSays();
+        if (owner) {
+          notOwnerStreak = 0;
+          if (!relayReleasedForStandby) return;
+          relayReleasedForStandby = false;
+          config.onRelayStandbyChange?.(false);
+          if (identityNotProvisioned) {
+            // a2a-single-agent-identity §1.1: no usable agent identity → no relay socket to
+            // open; the reload lever connects once adoption lands (and re-checks ownership).
+            console.warn('Threadline: this machine now holds the serving lease but has no agent identity (identity-not-provisioned) — relay connection not attempted');
+            return;
+          }
+          console.log('Threadline: this machine now holds the serving lease — taking the relay connection');
+          ownedClient.connect().then(
+            () => console.log(`Threadline: relay connected (fingerprint: ${ownedClient.fingerprint})`),
+            (err: unknown) => console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; retrying in the background with backoff`),
+          );
+          return;
+        }
+        if (relayReleasedForStandby) return;
+        if (++notOwnerStreak < releaseAfter) return;
+        relayReleasedForStandby = true;
+        config.onRelayStandbyChange?.(true);
+        if (relayRearmTimer) {
+          clearTimeout(relayRearmTimer);
+          relayRearmTimer = null;
+        }
+        console.log('Threadline: this machine no longer holds the serving lease — releasing the relay connection to the awake machine');
+        ownedClient.disconnect();
+      }, checkMs);
+      relayOwnerTimer.unref?.();
+    }
     if (identityNotProvisioned) {
       console.warn('Threadline: relay connection NOT attempted (identity-not-provisioned); it connects on the tick after the identity is adopted');
-    } else {
-    try {
+    } else if (ownerAtBoot) try {
       await relayClient.connect();
       console.log(`Threadline: relay connected (fingerprint: ${relayClient.fingerprint})`);
     } catch (err) {
@@ -552,7 +632,6 @@ export async function bootstrapThreadline(
       // identity no relay socket was ever opened, so nothing will retry — say so.
       const attempted = relayClient.connectionState !== 'disconnected' || !(err instanceof IdentityFileInvalidError || err instanceof IdentityNotProvisionedError);
       console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; ${attempted ? 'retrying in the background with backoff' : 'NOT retrying: there is no usable identity to connect with (fix the identity, then restart)'}`);
-    }
     }
     } else {
       // Daemon handles the relay connection (both inbound and outbound).
@@ -574,7 +653,9 @@ export async function bootstrapThreadline(
      *  is — the distinction the 2026-07-26 incident turned on. */
     getLastRelayEvent: () => relayObservability?.getLastEvent() ?? null,
     daemonHandlingRelay,
-    relaySuppressedByStandby: relayWanted && config.relayStandby === true,
+    relaySuppressedByStandby: relayWanted && (config.relayStandby === true || relayReleasedForStandby),
+    /** Live: true while live relay ownership has this machine off the relay. */
+    isRelayReleasedForStandby: () => relayReleasedForStandby,
     inboundGate,
     identityNotProvisioned: () => identityNotProvisioned,
     connectedAs: () => relayClient?.connectedAs ?? null,
@@ -605,6 +686,9 @@ export async function bootstrapThreadline(
       // usually a standby, and a connect from it would displace the awake machine.
       if (decideDaemonHandlingRelay()) return { fingerprint, connected: false, reason: 'daemon-handles-relay' };
       if (!relayClient) return { fingerprint, connected: false, reason: 'no-relay-client' };
+      // ACT-1306 a: the relay follows the serving lease. A machine that does not hold it
+      // stays off the relay; the owner timer connects it if it takes over.
+      if (!relayOwnerSays()) return { fingerprint, connected: false, reason: 'not-relay-owner' };
       try {
         await relayClient.connect();
         console.log(`Threadline: relay reconnected under the reloaded identity (fingerprint: ${relayClient.fingerprint})`);
@@ -616,6 +700,10 @@ export async function bootstrapThreadline(
     },
     shutdown: async () => {
       stopHeartbeat();
+      if (relayOwnerTimer) {
+        clearInterval(relayOwnerTimer);
+        relayOwnerTimer = null;
+      }
       if (relayRearmTimer) {
         clearTimeout(relayRearmTimer);
         relayRearmTimer = null;
