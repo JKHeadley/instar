@@ -81,6 +81,13 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(handler.slice(router, settle)).toContain('if (relayAckInput.deferSend)');
   });
 
+  it('ACT-091: the warrants-gate suppress exit settles a deferred ack as no-reply BEFORE it returns', () => {
+    const suppress = handler.indexOf('if (decision.suppress) {');
+    expect(suppress).toBeGreaterThan(-1);
+    const branch = handler.slice(suppress, handler.indexOf('return; // short-circuit ALL three routing branches', suppress));
+    expect(branch).toContain("settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: false, noReply: true })");
+  });
+
   it('sends its own ack only as a typed ack — never as a chat message', () => {
     expect(handler).toContain('threadlineRelayClient!.sendAck(');
     expect(handler).not.toContain('threadlineRelayClient!.sendPlaintext(');

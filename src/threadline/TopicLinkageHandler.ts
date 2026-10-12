@@ -44,6 +44,7 @@ import type { MessageStore } from '../messaging/MessageStore.js';
 import type { TelegramOriginService } from '../messaging/telegram-origin/TelegramOriginService.js';
 import { withThreadlineForwardedAuthor } from './TelegramOriginAttribution.js';
 import { TOPIC_REPLY_BUDGET_MS, type TopicOwnerAskResult } from './relayForward.js';
+import type { TopicRespawnResult } from './topicRespawnHook.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -76,11 +77,14 @@ export interface TopicLinkageDeps {
    * message. Resolves `respawned: true` ONLY when the payload reached the new
    * session. Absent ⇒ the legacy `resume-pending` (no wake, no replay).
    */
-  respawnTopicSession?: (args: {
-    topicId: number;
-    sessionName: string | null;
-    text: string;
-  }) => Promise<{ respawned: boolean; sessionName?: string; reason?: string }>;
+  respawnTopicSession?: (args: { topicId: number; text: string }) => Promise<TopicRespawnResult>;
+  /**
+   * ACT-091: is a spawn for this topic in flight right now? A session can be
+   * `alive` (tmux up, process started) while it is still booting; a reply typed
+   * into it then is unconfirmed. When true the reply goes through
+   * `respawnTopicSession`, which waits for the spawn and then types it in.
+   */
+  isTopicSpawning?: (topicId: number) => boolean;
   /** Local-agent name, for sender filtering. */
   localAgent: string;
   /**
@@ -491,7 +495,10 @@ export class TopicLinkageHandler {
     // payload inline; otherwise fall through to the resume-pending mode where
     // the next user message into the topic (or beacon-driven resume) will
     // surface the awaited reply through the topic's existing wake path.
-    if (sessionName && this.deps.isSessionAlive(sessionName)) {
+    const spawning = (() => {
+      try { return this.deps.isTopicSpawning?.(topicId) === true; } catch { return false; /* @silent-fallback-ok — an unreadable spawn flag is "not spawning" */ }
+    })();
+    if (sessionName && !(spawning && this.deps.respawnTopicSession) && this.deps.isSessionAlive(sessionName)) {
       try {
         const ok = await this.deps.injectIntoSession(sessionName, payload);
         if (ok) {
@@ -510,11 +517,11 @@ export class TopicLinkageHandler {
       // with the reply as its first message. A refusal or failure is
       // `failure-visible` (always surfaced), never a silent pending.
       try {
-        const r = await this.deps.respawnTopicSession({ topicId, sessionName, text: payload });
-        if (r.respawned) {
-          deliveryMode = 'respawn-inject';
+        const r = await this.deps.respawnTopicSession({ topicId, text: payload });
+        if (r.delivered) {
+          deliveryMode = r.mode;
           console.log(
-            `[TopicLinkageHandler] Respawned topic ${topicId} session${r.sessionName ? ` "${r.sessionName}"` : ''} for reply on thread ${threadId}`,
+            `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} delivered by ${r.mode}${r.sessionName ? ` into "${r.sessionName}"` : ''}`,
           );
         } else {
           console.warn(

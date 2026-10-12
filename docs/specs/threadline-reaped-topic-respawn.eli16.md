@@ -16,7 +16,8 @@ Agents talk to each other over Threadline. When I start a thread from a Telegram
 
 - **Wake instead of wait.** If the topic's session is not running, the reply now goes through the same respawn path a Telegram message uses, with the reply as the first thing the woken session reads. If the respawn is refused (another machine owns the topic, or a respawn is already under way) or fails, the reply is posted in the topic so it is never silent.
 - **Honest reporting.** The router only says "resumed" when a session actually received the reply. An accepted-but-undelivered message is logged as exactly that.
-- **No false promise.** For replies on topic-bound threads, the "Composing response..." ack is held until routing finishes, and is sent only if a live session got the message.
+- **A follow-up during the restart is not lost.** If the peer sends a second reply while the topic is still restarting, that reply waits for the restart to finish and is then typed into the live session, once. Only a restart that hangs past its time limit falls back to posting the reply in the topic.
+- **No false promise.** For replies on topic-bound threads, the "Composing response..." ack is held until routing finishes, and is sent only if a live session got the message. A reply I decide not to answer at all still gets a short "Message received." so the other agent's delivery record is closed honestly instead of looking stuck.
 
 ## Safeguards
 

@@ -23,25 +23,26 @@ describe('server.ts wires the ACT-091 topic respawn', () => {
     expect(deps).toContain('? _threadlineTopicRespawn(args)');
   });
 
-  it('the hook is assigned inside wireTelegramRouting, using the Telegram respawn path', () => {
+  it('the hook is built inside wireTelegramRouting from the Telegram respawn primitives', () => {
     const wire = src.slice(src.indexOf('export function wireTelegramRouting('));
-    const body = wire.slice(wire.indexOf('_threadlineTopicRespawn = async ('));
-    expect(wire.indexOf('_threadlineTopicRespawn = async (')).toBeGreaterThan(-1);
-    const fn = body.slice(0, body.indexOf('\n  };\n'));
-    expect(fn).toContain('respawnSessionForTopic(');
-    expect(fn).toContain('awaitInitialInjection: true');
-    expect(fn).toContain('spawningTopics.has(topicId)');
-    expect(fn).toContain('spawningTopics.clear(topicId, tok)');
-    // never spawn a topic another machine owns (double-session guard)
+    const start = wire.indexOf('_threadlineTopicRespawn = createThreadlineTopicRespawn({');
+    expect(start).toBeGreaterThan(-1);
+    const fn = wire.slice(start, wire.indexOf('\n  }\n', start));
+    expect(fn).toContain('spawning: spawningTopics');
     expect(fn).toContain("ownRec.ownerMachineId !== _meshSelfId");
-    // the same spawn checks the Telegram dead-session path runs
+    expect(fn).toContain('registeredSession: (topicId) => telegram.getSessionForTopic(topicId)');
+    expect(fn).toContain('sessionManager.injectPasteNotificationConfirmed(name, text)');
     expect(fn).toContain('g3ShouldSpawnLocally(topicId)');
-    expect(fn).toContain("callsite: 'threadline-topic-respawn'");
     expect(fn).toContain('classifySessionDeath(output');
-    expect(fn).toContain("death.cause === 'quota_exhaustion'");
-    // never kill-by-name from the thread record: only the registry's session
-    expect(fn).toContain('const registered = telegram.getSessionForTopic(topicId)');
-    expect(fn).not.toContain('?? sessionName');
+    expect(fn).toContain("callsite: 'threadline-topic-respawn'");
+    expect(fn).toContain('await respawnSessionForTopic(');
+    expect(fn).toContain('awaitInitialInjection: true');
+    expect(fn).toContain('if (fresh) _topicResumeMap?.remove(topicId)');
+    expect(fn).toContain('telegram.registerTopicSession(topicId, newSessionName, topicName)');
+    // the handler's "spawn in flight?" read is the same registry
+    expect(wire).toContain('_threadlineTopicSpawning = (topicId: number) => spawningTopics.has(topicId)');
+    const ctor = src.slice(src.indexOf('topicLinkageHandler = new TopicLinkageHandler({'));
+    expect(ctor.slice(0, ctor.indexOf('threadlineRouter.setTopicLinkageHandler'))).toContain('isTopicSpawning: (topicId: number) => _threadlineTopicSpawning?.(topicId) === true');
   });
 
   it('the relay log claims "Resumed" only from result.resumed, and reports undelivered messages', () => {

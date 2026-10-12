@@ -117,4 +117,49 @@ describe('ThreadlineRouter — ledger path discriminator', () => {
     expect(body.startsWith(`[server notice: ${RESENT_COPY_NOTICE}]`)).toBe(true);
     expect(body.endsWith('peer body text')).toBe(true);
   });
+
+  describe('ACT-091: the per-thread spawn guard and topic-linked threads', () => {
+    function topicLinked(handler: { tryRouteReplyToTopic: ReturnType<typeof vi.fn> }) {
+      const threadId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      resumeMap.save(threadId, { uuid: crypto.randomUUID(), sessionName: 'topic-sess', createdAt: now, savedAt: now, lastAccessedAt: now, remoteAgent: 'remote-agent', subject: 'S', state: 'idle', pinned: false, messageCount: 1, originTopicId: 42 } as never);
+      const router = make();
+      router.setTopicLinkageHandler(handler as never);
+      const ctx = { ...relayCtx, senderFingerprint: 'remote-agent', trust: { kind: 'plaintext-tofu' as const, senderFingerprint: 'remote-agent' } };
+      return { router, threadId, ctx };
+    }
+
+    it('a second reply on a topic-linked thread while the first is still being delivered is NOT refused as "Spawn already in progress"', async () => {
+      let finishFirst!: () => void;
+      const handler = { tryRouteReplyToTopic: vi.fn()
+        .mockImplementationOnce(() => new Promise((res) => { finishFirst = () => res({ kind: 'routed', deliveryMode: 'respawn-inject' }); }))
+        .mockResolvedValueOnce({ kind: 'routed', deliveryMode: 'live-inject' }) };
+      const { router, threadId, ctx } = topicLinked(handler);
+      const first = router.handleInboundMessage(makeEnvelope(threadId), ctx);
+      await new Promise((r) => setTimeout(r, 5));
+      const second = await router.handleInboundMessage(makeEnvelope(threadId), ctx);
+      expect(second).toMatchObject({ handled: true, delivered: true, injected: true, path: 'topic' });
+      finishFirst();
+      expect(await first).toMatchObject({ handled: true, delivered: true, resumed: true, path: 'topic' });
+      expect(handler.tryRouteReplyToTopic).toHaveBeenCalledTimes(2);
+      expect(spawn.evaluate).not.toHaveBeenCalled();
+    });
+
+    it('a topic-linked thread that falls through to the thread-worker path still takes the guard: a concurrent fall-through is refused, never a second worker', async () => {
+      let finishFirst!: () => void;
+      const handler = { tryRouteReplyToTopic: vi.fn().mockResolvedValue({ kind: 'no-linkage' }) };
+      spawn.evaluate.mockImplementationOnce(() => new Promise((res) => { finishFirst = () => res({ approved: true, sessionId: 'sid', tmuxSession: 'tmux-1', reason: 'ok' }); }));
+      const { router, threadId, ctx } = topicLinked(handler);
+      const first = router.handleInboundMessage(makeEnvelope(threadId), ctx);
+      await new Promise((r) => setTimeout(r, 5));
+      const second = await router.handleInboundMessage(makeEnvelope(threadId), ctx);
+      expect(second).toMatchObject({ handled: false, error: 'Spawn already in progress for this thread' });
+      finishFirst();
+      await first;
+      expect(spawn.evaluate).toHaveBeenCalledTimes(1);
+      // the guard is released afterwards
+      const third = await router.handleInboundMessage(makeEnvelope(threadId), ctx);
+      expect(third.error).not.toBe('Spawn already in progress for this thread');
+    });
+  });
 });

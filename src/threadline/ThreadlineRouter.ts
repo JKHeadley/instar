@@ -631,19 +631,36 @@ export class ThreadlineRouter {
     // Record affinity (no-op for non-verified trust kinds).
     this.recordAffinity(relayContext, threadId);
 
+    const spawnInProgressRefusal = (): CompleteThreadlineHandleResult => ({
+      handled: false,
+      accepted: false,
+      delivered: false,
+      threadId,
+      error: 'Spawn already in progress for this thread',
+    });
+
+    // ACT-091: a TOPIC-LINKED thread is delivered by the TopicLinkageHandler,
+    // which serializes on the topic's own spawn guard and waits for an
+    // in-flight respawn before typing a later reply in. The per-thread spawn
+    // guard below protects the THREAD-WORKER spawn paths; applying it here would
+    // refuse every reply that arrives during a topic respawn (the whole respawn
+    // is now awaited), and a refused message reaches no session and no topic.
+    // So a topic-linked thread takes the guard only if it falls through to the
+    // thread-worker path.
+    const existingEntry = this.threadResumeMap.get(threadId);
+    const topicLinked = this.topicLinkageHandler !== null && existingEntry?.originTopicId !== undefined;
+    let guardHeld = false;
+    const takeSpawnGuard = (): boolean => {
+      if (this.pendingSpawns.has(threadId)) return false;
+      this.pendingSpawns.add(threadId);
+      guardHeld = true;
+      return true;
+    };
+
     // Prevent concurrent spawns for the same thread
-    if (this.pendingSpawns.has(threadId)) {
-      return {
-        handled: false,
-        accepted: false,
-        delivered: false,
-        threadId,
-        error: 'Spawn already in progress for this thread',
-      };
-    }
+    if (!topicLinked && !takeSpawnGuard()) return spawnInProgressRefusal();
 
     try {
-      this.pendingSpawns.add(threadId);
 
       // Phase 2: Check the autonomy gate before processing
       if (this.autonomyGate) {
@@ -679,8 +696,7 @@ export class ThreadlineRouter {
         }
       }
 
-      // Check for existing resume entry
-      const existingEntry = this.threadResumeMap.get(threadId);
+      // (existingEntry — the resume entry — was read above, before the guard.)
 
       // THREAD-TOPIC-LINKAGE-SPEC.md: when the thread carries an originTopicId
       // (set on the outbound send by /threadline/relay-send), route the reply
@@ -735,6 +751,9 @@ export class ThreadlineRouter {
             `[ThreadlineRouter] TopicLinkageHandler threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling through to thread-worker path`,
           );
         }
+        // Falling through to the thread-worker path: now take the per-thread
+        // spawn guard it relies on (ACT-091 — see above).
+        if (!takeSpawnGuard()) return spawnInProgressRefusal();
       }
 
       // PR-4: If we have a live-session delivery path AND the thread has a
@@ -771,7 +790,7 @@ export class ThreadlineRouter {
         error: err instanceof Error ? err.message : 'Unknown error',
       };
     } finally {
-      this.pendingSpawns.delete(threadId);
+      if (guardHeld) this.pendingSpawns.delete(threadId);
     }
   }
 

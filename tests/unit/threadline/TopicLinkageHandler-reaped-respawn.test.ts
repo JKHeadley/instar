@@ -72,7 +72,7 @@ describe('TopicLinkageHandler — reaped topic session (ACT-091)', () => {
   }
 
   it('session ALIVE → live-inject; the respawn path is never called', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: true });
+    const respawn = vi.fn().mockResolvedValue({ delivered: true, mode: 'respawn-inject' });
     const d = deps({ isSessionAlive: vi.fn().mockReturnValue(true), respawnTopicSession: respawn });
     const out = await route(d, 't-alive');
     expect(out.kind).toBe('routed');
@@ -82,7 +82,7 @@ describe('TopicLinkageHandler — reaped topic session (ACT-091)', () => {
   });
 
   it('session REAPED → respawns the topic session with the reply as its first message (respawn-inject)', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: true, sessionName: 'echo-topic-9210' });
+    const respawn = vi.fn().mockResolvedValue({ delivered: true, mode: 'respawn-inject', sessionName: 'echo-topic-9210' });
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const d = deps({ isSessionAlive: vi.fn().mockReturnValue(false), respawnTopicSession: respawn, sendTelegramToTopic: sendTg });
     const out = await route(d, 't-reaped');
@@ -94,14 +94,13 @@ describe('TopicLinkageHandler — reaped topic session (ACT-091)', () => {
     expect(respawn).toHaveBeenCalledTimes(1);
     const arg = respawn.mock.calls[0][0];
     expect(arg.topicId).toBe(9210);
-    expect(arg.sessionName).toBe('echo-topic-9210');
     expect(arg.text).toContain('here is the answer');
     expect(d.injectIntoSession).not.toHaveBeenCalled();
     expect(sendTg).not.toHaveBeenCalled(); // the woken session relays it — no double post
   });
 
   it('session REAPED + respawn refused → failure-visible and surfaced, never a silent pending', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: false, reason: 'spawn-in-progress' });
+    const respawn = vi.fn().mockResolvedValue({ delivered: false, reason: 'spawn-in-progress' });
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const d = deps({ isSessionAlive: vi.fn().mockReturnValue(false), respawnTopicSession: respawn, sendTelegramToTopic: sendTg });
     const out = await route(d, 't-refused');
@@ -116,5 +115,25 @@ describe('TopicLinkageHandler — reaped topic session (ACT-091)', () => {
     const out = await route(d, 't-throws');
     if (out.kind === 'routed') expect(out.deliveryMode).toBe('failure-visible');
     expect(sendTg).toHaveBeenCalledTimes(1);
+  });
+
+  it('session alive but a spawn is IN FLIGHT for the topic → the hook (which waits for the spawn), not a direct paste into a booting session', async () => {
+    const respawn = vi.fn().mockResolvedValue({ delivered: true, mode: 'live-inject', sessionName: 'echo-topic-9210' });
+    const d = deps({ isSessionAlive: vi.fn().mockReturnValue(true), isTopicSpawning: () => true, respawnTopicSession: respawn });
+    const out = await route(d, 't-booting');
+    expect(d.injectIntoSession).not.toHaveBeenCalled();
+    expect(respawn).toHaveBeenCalledTimes(1);
+    if (out.kind === 'routed') {
+      // Dawn's point 3: a live inject made by the hook is reported as live-inject, not as a respawn.
+      expect(out.deliveryMode).toBe('live-inject');
+      expect(out.commitmentDelivered).toBe(true);
+    }
+  });
+
+  it('a spawn flag without a respawn path changes nothing (legacy direct inject)', async () => {
+    const d = deps({ isSessionAlive: vi.fn().mockReturnValue(true), isTopicSpawning: () => true });
+    const out = await route(d, 't-legacy');
+    expect(d.injectIntoSession).toHaveBeenCalledTimes(1);
+    if (out.kind === 'routed') expect(out.deliveryMode).toBe('live-inject');
   });
 });

@@ -23,6 +23,8 @@ import { CommitmentTracker } from '../../../src/monitoring/CommitmentTracker.js'
 import { LiveConfig } from '../../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { outcomeFromRouterResult } from '../../../src/threadline/InboundIdLedger.js';
+import { SpawningTopicsRegistry } from '../../../src/core/SpawningTopicsRegistry.js';
+import { createThreadlineTopicRespawn } from '../../../src/threadline/topicRespawnHook.js';
 import type { MessageEnvelope } from '../../../src/messaging/types.js';
 
 const PEER = 'dawn-fingerprint';
@@ -64,7 +66,7 @@ describe('ThreadlineRouter + TopicLinkageHandler — reaped topic session (ACT-0
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/threadline/topic-reaped-session-respawn.test.ts' }));
 
-  function build(opts: { alive: boolean; respawn?: ReturnType<typeof vi.fn> }) {
+  function build(opts: { alive: boolean | (() => boolean); respawn?: (args: { topicId: number; text: string }) => Promise<import('../../../src/threadline/topicRespawnHook.js').TopicRespawnResult>; spawning?: () => boolean }) {
     const inject = vi.fn().mockResolvedValue(true);
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const handler = new TopicLinkageHandler({
@@ -74,7 +76,8 @@ describe('ThreadlineRouter + TopicLinkageHandler — reaped topic session (ACT-0
       salienceGate: new SalienceGate({ classify: async () => ({ verdict: 'agent-internal' as const, reason: 'chatter' }) }),
       localAgent: 'echo',
       injectIntoSession: inject,
-      isSessionAlive: () => opts.alive,
+      isSessionAlive: () => (typeof opts.alive === 'function' ? opts.alive() : opts.alive),
+      ...(opts.spawning ? { isTopicSpawning: opts.spawning } : {}),
       sendTelegramToTopic: sendTg,
       getSessionForTopic: () => 'echo-topic-9210',
       ...(opts.respawn ? { respawnTopicSession: opts.respawn } : {}),
@@ -89,11 +92,11 @@ describe('ThreadlineRouter + TopicLinkageHandler — reaped topic session (ACT-0
   }
 
   it('reaped + respawn wired → the session is respawned with the reply; delivered, resumed, path topic', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: true, sessionName: 'echo-topic-9210' });
+    const respawn = vi.fn().mockResolvedValue({ delivered: true, mode: 'respawn-inject', sessionName: 'echo-topic-9210' });
     const { router, threadId, inject } = build({ alive: false, respawn });
     const r = await router.handleInboundMessage(envelope(threadId), relayCtx);
     expect(respawn).toHaveBeenCalledTimes(1);
-    expect(respawn.mock.calls[0][0]).toMatchObject({ topicId: TOPIC, sessionName: 'echo-topic-9210' });
+    expect(respawn.mock.calls[0][0]).toMatchObject({ topicId: TOPIC });
     expect(respawn.mock.calls[0][0].text).toContain('the answer you asked for');
     expect(inject).not.toHaveBeenCalled();
     expect(r).toMatchObject({ handled: true, delivered: true, resumed: true, path: 'topic' });
@@ -102,7 +105,7 @@ describe('ThreadlineRouter + TopicLinkageHandler — reaped topic session (ACT-0
   });
 
   it('reaped + respawn refused → accepted but NOT delivered and NOT reported as resumed', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: false, reason: 'topic-owned-by-another-machine' });
+    const respawn = vi.fn().mockResolvedValue({ delivered: false, reason: 'topic-owned-by-another-machine' });
     const { router, threadId, sendTg } = build({ alive: false, respawn });
     const r = await router.handleInboundMessage(envelope(threadId), relayCtx);
     expect(r.handled).toBe(true);
@@ -120,11 +123,53 @@ describe('ThreadlineRouter + TopicLinkageHandler — reaped topic session (ACT-0
   });
 
   it('live session → typed into the live session; respawn is never called', async () => {
-    const respawn = vi.fn().mockResolvedValue({ respawned: true });
+    const respawn = vi.fn().mockResolvedValue({ delivered: true, mode: 'respawn-inject' });
     const { router, threadId, inject } = build({ alive: true, respawn });
     const r = await router.handleInboundMessage(envelope(threadId), relayCtx);
     expect(inject).toHaveBeenCalledTimes(1);
     expect(respawn).not.toHaveBeenCalled();
     expect(r).toMatchObject({ delivered: true, injected: true, path: 'topic' });
+  });
+
+  it('two replies inside ONE respawn (real registry + real hook): the first respawns, the second waits and is typed in once — nothing lost, nothing duplicated', async () => {
+    let alive = false;
+    const spawning = new SpawningTopicsRegistry();
+    let finishRespawn!: () => void;
+    const respawnPrimitive = vi.fn(() => new Promise<void>((res) => { finishRespawn = () => { alive = true; res(); }; }));
+    const injectConfirmed = vi.fn().mockResolvedValue(true);
+    const hook = createThreadlineTopicRespawn({
+      spawning,
+      ownedElsewhere: () => false,
+      registeredSession: () => 'echo-topic-9210',
+      isSessionAlive: () => alive,
+      injectConfirmed,
+      leaseGate: () => ({ spawnLocally: true, reason: 'single-machine' }),
+      classifyDeath: () => 'other',
+      respawn: respawnPrimitive,
+      coldSpawn: vi.fn(),
+      spawnWaitPollMs: 5,
+      log: () => {},
+    });
+    // The handler's direct-inject path must not see the booting session as a live target.
+    const { router, threadId, inject, sendTg } = build({ alive: () => alive, respawn: hook, spawning: (t) => spawning.has(t) });
+
+    const first = router.handleInboundMessage(envelope(threadId), relayCtx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(spawning.has(TOPIC)).toBe(true);
+    const second = router.handleInboundMessage({ ...envelope(threadId), message: { ...envelope(threadId).message, body: 'one more thing' } } as MessageEnvelope, relayCtx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(injectConfirmed).not.toHaveBeenCalled();
+    finishRespawn();
+
+    const r1 = await first;
+    const r2 = await second;
+    expect(r1).toMatchObject({ delivered: true, resumed: true, path: 'topic' });
+    expect(r2).toMatchObject({ delivered: true, injected: true, resumed: false, path: 'topic' });
+    expect(respawnPrimitive).toHaveBeenCalledTimes(1);
+    expect(injectConfirmed).toHaveBeenCalledTimes(1);
+    expect(injectConfirmed.mock.calls[0][1]).toContain('one more thing');
+    expect(inject).not.toHaveBeenCalled(); // the handler never pasted directly into the booting session
+    expect(sendTg).not.toHaveBeenCalled(); // neither reply was posted as a failure
+    expect(spawning.has(TOPIC)).toBe(false);
   });
 });

@@ -265,6 +265,7 @@ import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, settleDeferredRelayAck } from '../threadline/autoAck.js';
+import { createThreadlineTopicRespawn } from '../threadline/topicRespawnHook.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
@@ -666,8 +667,10 @@ let _drainLocalDeliver:
 // reply — assigned inside wireTelegramRouting where the respawn primitives
 // (and the per-topic spawn guard) live in scope. Null ⇒ not wired.
 let _threadlineTopicRespawn:
-  | ((args: { topicId: number; sessionName: string | null; text: string }) => Promise<{ respawned: boolean; sessionName?: string; reason?: string }>)
+  | ((args: { topicId: number; text: string }) => Promise<import('../threadline/topicRespawnHook.js').TopicRespawnResult>)
   | null = null;
+/** ACT-091: "is a spawn for this topic in flight?" — the spawningTopics read, for the handler. */
+let _threadlineTopicSpawning: ((topicId: number) => boolean) | null = null;
 // Emergency-stop integration (§3.6): marks a topic stopped for the drain's
 // pass/batch/chokepoint consults AND settles its custody (terminal
 // operator-stop + PIS cleanup + loss report). Set with the engine.
@@ -3306,84 +3309,66 @@ export function wireTelegramRouting(
   };
 
   // ── ACT-091: topic-bound Threadline reply into a dead/reaped topic session ──
-  // The same respawn decision an inbound Telegram message gets for a dead
-  // session, through the same primitives: ownership re-check, the G3 lease
-  // gate, the death classification (no respawn after a quota death; a fresh
-  // start after a context-exhausted one), the SpawnAdmission checkpoint, the
-  // per-topic spawn guard, then respawnSessionForTopic (--resume). Resolves
-  // respawned:true ONLY after the initial injection ran (awaitInitialInjection),
-  // so the caller never reports a delivery that did not happen. Any refusal
-  // returns respawned:false and the caller surfaces the reply in the topic.
-  _threadlineTopicRespawn = async ({ topicId, text }) => {
-    if (_ownershipReadForDrain && _meshSelfId) {
-      const ownRec = _ownershipReadForDrain(String(topicId));
-      if (ownRec && ownRec.status === 'active' && ownRec.ownerMachineId !== _meshSelfId) {
-        return { respawned: false, reason: 'topic-owned-by-another-machine' };
-      }
-    }
-    // Only the session the topic registry names — never a name read from the
-    // thread record, which may be stale (respawnSessionForTopic kills by name).
-    const registered = telegram.getSessionForTopic(topicId);
-    if (registered && sessionManager.isSessionAlive(registered)) {
-      // A user message respawned it in the meantime — type the reply in.
-      try {
-        const ok = await sessionManager.injectPasteNotificationConfirmed(registered, text);
-        return ok ? { respawned: true, sessionName: registered } : { respawned: false, reason: 'inject-unconfirmed' };
-      } catch (err) {
-        return { respawned: false, reason: err instanceof Error ? err.message : String(err) };
-      }
-    }
-    const g3 = g3ShouldSpawnLocally(topicId);
-    if (!g3.spawnLocally) return { respawned: false, reason: `lease-gate: ${g3.reason}` };
-    let fresh = false;
-    if (registered) {
-      try {
-        const output = sessionManager.captureOutput(registered, 100);
-        if (output) {
+  // The decision lives in createThreadlineTopicRespawn (testable); this binds
+  // it to the REAL primitives the Telegram dead-session path uses: ownership,
+  // the G3 lease gate, the death classification, SpawnAdmission (its own
+  // journal-only callsite), the spawningTopics guard, respawnSessionForTopic
+  // (--resume) / spawnSessionForTopic, each awaited through the initial
+  // injection. A spawn already in flight is WAITED for, then the reply is typed
+  // into the live session — a second reply inside one respawn is never lost.
+  {
+    _threadlineTopicSpawning = (topicId: number) => spawningTopics.has(topicId);
+    _threadlineTopicRespawn = createThreadlineTopicRespawn({
+      spawning: spawningTopics,
+      ownedElsewhere: (topicId) => {
+        if (!_ownershipReadForDrain || !_meshSelfId) return false;
+        const ownRec = _ownershipReadForDrain(String(topicId));
+        return !!ownRec && ownRec.status === 'active' && ownRec.ownerMachineId !== _meshSelfId;
+      },
+      registeredSession: (topicId) => telegram.getSessionForTopic(topicId),
+      isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+      injectConfirmed: (name, text) => sessionManager.injectPasteNotificationConfirmed(name, text),
+      leaseGate: (topicId) => g3ShouldSpawnLocally(topicId),
+      classifyDeath: (name) => {
+        try {
+          const output = sessionManager.captureOutput(name, 100);
+          if (!output) return null;
           const death = classifySessionDeath(output, quotaTracker?.getState() ?? null);
-          if (death.cause === 'quota_exhaustion' && death.confidence !== 'low') {
-            return { respawned: false, reason: 'quota-exhausted' };
-          }
-          if (death.cause === 'context_exhausted') fresh = true;
+          if (death.cause === 'quota_exhaustion' && death.confidence !== 'low') return 'quota';
+          if (death.cause === 'context_exhausted') return 'context-exhausted';
+          return 'other';
+        } catch { return null; /* @silent-fallback-ok: classification failed — respawn as the Telegram dead path does */ }
+      },
+      admit: (topicId) => {
+        if (!_spawnAdmission) return { allow: true };
+        try {
+          const d = _spawnAdmission.admit({ sessionKey: String(topicId), callsite: 'threadline-topic-respawn' });
+          if (d.allow) _ladderDryRunConsult(d, String(topicId), topicId);
+          return { allow: d.allow, reason: d.reason };
+        } catch (err) {
+          // Same posture as the Telegram seam: an admission ERROR fails open.
+          console.warn(`[spawn-admission] threadline-topic-respawn admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+          return { allow: true };
         }
-      } catch { /* @silent-fallback-ok: classification failed — respawn as the Telegram dead path does */ }
-    }
-    if (_spawnAdmission) {
-      try {
-        const d = _spawnAdmission.admit({ sessionKey: String(topicId), callsite: 'threadline-topic-respawn' });
-        if (d.allow) _ladderDryRunConsult(d, String(topicId), topicId);
-        else return { respawned: false, reason: `spawn-admission: ${d.reason}` };
-      } catch (err) {
-        // Same posture as the Telegram seam: an admission ERROR fails open.
-        console.warn(`[spawn-admission] threadline-topic-respawn admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    if (spawningTopics.has(topicId)) return { respawned: false, reason: 'spawn-in-progress' };
-    const tok = spawningTopics.add(topicId);
-    try {
-      if (registered) {
+      },
+      respawn: async (name, topicId, text, fresh) => {
         if (fresh) _topicResumeMap?.remove(topicId);
         await respawnSessionForTopic(
-          sessionManager, telegram, registered, topicId, text,
+          sessionManager, telegram, name, topicId, text,
           topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true },
         );
-      } else {
+      },
+      coldSpawn: async (topicId, text) => {
         const topicName = telegram.getTopicName(topicId) || `topic-${topicId}`;
         const newSessionName = await spawnSessionForTopic(
           sessionManager, telegram, topicName, topicId, text,
           topicMemory, undefined, undefined, undefined, { awaitInitialInjection: true },
         );
         telegram.registerTopicSession(topicId, newSessionName, topicName);
-      }
-      return { respawned: true, sessionName: telegram.getSessionForTopic(topicId) ?? undefined };
-    } catch (err) {
-      // The spawn may have recorded a pending inject before it failed; the boot
-      // sweep can then still deliver it, so the reply may also be surfaced once.
-      return { respawned: false, reason: err instanceof Error ? err.message : String(err) };
-    } finally {
-      spawningTopics.clear(topicId, tok);
-    }
-  };
+        return newSessionName;
+      },
+    });
+  }
 }
 
 /**
@@ -17983,7 +17968,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Telegram routing is wired after this handler is constructed).
         respawnTopicSession: (args) => _threadlineTopicRespawn
           ? _threadlineTopicRespawn(args)
-          : Promise.resolve({ respawned: false, reason: 'telegram-routing-not-wired' }),
+          : Promise.resolve({ delivered: false as const, reason: 'telegram-routing-not-wired' }),
+        isTopicSpawning: (topicId: number) => _threadlineTopicSpawning?.(topicId) === true,
         // A2A cross-machine route §5: a topic-bound reply is typed into the
         // topic's live session on whichever machine has it. Late-bound: the
         // mesh client exists only after the multi-machine wiring below.
@@ -18640,6 +18626,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (decision.verdict.budgetExhausted) ledgerTicket?.recordRefused('loop-budget');
                 else ledgerTicket?.recordNoReply();
                 console.log(`[relay] warrants-reply gate suppressed reply (${decision.verdict.signal}) for ${senderName} thread ${gateThreadId.slice(0, 8)}`);
+                // ACT-091: a deferred ack on a terminal no-reply exit becomes the
+                // non-promising "Message received." — received, deliberately not
+                // answered — so the sender's tracker never reads a stuck channel.
+                if (relayAckInput.deferSend) settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: false, noReply: true });
                 // On budget exhaustion, surface ONE status notice — never silently
                 // drop. CMT-519: route it to the SILENT Threadline hub (not a
                 // per-event attention topic, not the parent topic the operator is
