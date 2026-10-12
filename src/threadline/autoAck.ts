@@ -132,10 +132,10 @@ export interface RelayAckStageInput {
   threadId?: string;
   ticket: AdmissionTicket | null;
   /**
-   * ACT-091: hold our own ack until routing reports a live delivery. Set for a
-   * topic-bound reply, whose hand-off can reach no live session; the caller
-   * then calls `settleDeferredRelayAck` with the routing outcome. An inbound
-   * ack is still consumed here either way.
+   * ACT-091: hold our own ack until routing reports its outcome. The relay
+   * handler sets it for EVERY inbound message (any hand-off can reach no live
+   * consumer, not only a topic-bound reply's) and settles through
+   * `createRelayAckSettler`. An inbound ack is still consumed here either way.
    */
   deferSend?: boolean;
 }
@@ -194,6 +194,76 @@ export function settleDeferredRelayAck(
   if (outcome.noReply) return sendRelayAckIfAllowed(deps, input, NO_REPLY_ACK_MESSAGE) ? 'sent-no-reply' : 'skipped-policy';
   if (!outcome.delivered) return 'skipped-undelivered';
   return sendRelayAckIfAllowed(deps, input, deps.autoAckMessage ?? DEFAULT_AUTO_ACK_MESSAGE) ? 'sent' : 'skipped-policy';
+}
+
+/**
+ * Where the relay inbound handler's routing ended (ACT-091). Each terminal exit
+ * of the handler names exactly one:
+ *
+ *  - `pipe-spawned`       — a pipe session was created with the message as its
+ *                           prompt. A live consumer has it.
+ *  - `listener-queued`    — the message was appended to the warm-listener inbox
+ *                           file. That write succeeds whether or not anything is
+ *                           reading the file (`ListenerSessionManager` starts in
+ *                           state `listening` and nothing in the server proves a
+ *                           reader), so it is a queue write, NOT a delivery.
+ *  - `router-delivered`   — `ThreadlineRouter` reported `delivered === true`.
+ *  - `router-undelivered` — the router accepted, queued, refused or failed
+ *                           without a live session receiving the message.
+ *  - `no-reply`           — the warrants-reply gate decided not to answer
+ *                           (a no-reply verdict or an exhausted loop budget).
+ */
+export type RelayRoutingOutcome =
+  | 'pipe-spawned'
+  | 'listener-queued'
+  | 'router-delivered'
+  | 'router-undelivered'
+  | 'no-reply';
+
+export type RelayAckSettlement =
+  | ReturnType<typeof settleDeferredRelayAck>
+  /** The stage already sent (or consumed) the ack; there is nothing to settle. */
+  | 'not-deferred'
+  /** `settle` was already called for this message; nothing more is sent. */
+  | 'already-settled';
+
+/** Did a live consumer receive the message on this outcome? */
+export function relayOutcomeDelivered(outcome: RelayRoutingOutcome): boolean {
+  return outcome === 'pipe-spawned' || outcome === 'router-delivered';
+}
+
+export interface RelayAckSettler {
+  /** Settle the deferred ack with the routing outcome. First call wins. */
+  settle(outcome: RelayRoutingOutcome): RelayAckSettlement;
+  /** The outcome `settle` was called with, or null while routing is in flight. */
+  readonly outcome: RelayRoutingOutcome | null;
+}
+
+/**
+ * ACT-091: one deferred ack for one inbound relay message. The promising ack
+ * ("Composing response...") goes out only for an outcome where a live consumer
+ * has the message; `no-reply` gets the non-promising NO_REPLY_ACK_MESSAGE; a
+ * queue write or an undelivered router result gets no ack, so the sender's
+ * delivery tracker keeps the message as unacknowledged — which is true. A
+ * handler exit that never calls `settle` (a throw) also sends nothing.
+ *
+ * One-shot: a second `settle` sends nothing, so a path that falls through to
+ * another hand-off after settling can never ack twice.
+ */
+export function createRelayAckSettler(deps: RelayAckStageDeps, input: RelayAckStageInput): RelayAckSettler {
+  let settled: RelayRoutingOutcome | null = null;
+  return {
+    get outcome() { return settled; },
+    settle(outcome: RelayRoutingOutcome): RelayAckSettlement {
+      if (settled !== null) return 'already-settled';
+      settled = outcome;
+      if (!input.deferSend) return 'not-deferred';
+      return settleDeferredRelayAck(deps, input, {
+        delivered: relayOutcomeDelivered(outcome),
+        noReply: outcome === 'no-reply',
+      });
+    },
+  };
 }
 
 // ── Plaintext wire format (shared by the sender and the receiver) ──────

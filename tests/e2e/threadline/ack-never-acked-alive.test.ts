@@ -48,6 +48,8 @@ describe('an ack is never acked — production relay path', () => {
   let fpB = '';
   /** Every plaintext frame each agent received, with its wire type. */
   const seen: Record<'A' | 'B', Array<{ type: unknown; text: string }>> = { A: [], B: [] };
+  /** ACT-091: does B's router hand the message to a live session? */
+  let bDelivers = true;
 
   async function boot(name: string): Promise<{ boot: Boot; stateDir: string }> {
     const stateDir = path.join(tmp, name, 'state');
@@ -73,6 +75,7 @@ describe('an ack is never acked — production relay path', () => {
         sendAck: (to, text, threadId) => client.sendAck(to, text, threadId),
         sendPlaintext: (to, text, threadId) => client.sendPlaintext(to, text, threadId),
       },
+      ...(which === 'B' ? { routerDelivers: () => bDelivers } : {}),
     });
     client.on('gate-passed', (decision) => {
       const c = decision?.message?.content as { content?: string; type?: unknown } | undefined;
@@ -145,5 +148,37 @@ describe('an ack is never acked — production relay path', () => {
     expect(db.prepare('SELECT disposition, thread_id, ingress FROM inbound_message_ids').all()).toEqual([
       { disposition: 'no-reply', thread_id: threadId, ingress: 'relay-unknown-sender' },
     ]);
+  });
+
+  it('ACT-091: a first message on a NEW thread that reaches no live session gets no ack; the next one, delivered, gets one', async () => {
+    const framesAtA = seen.A.length;
+    const acksFromB = nodeB.acksSent.length;
+    const routedAtB = nodeB.routed.length;
+
+    // B's router accepts the message but no session receives it (a refused or queued spawn).
+    bDelivers = false;
+    const lostThread = `thread-undelivered-${Date.now()}`;
+    const lostId = bootA.relayClient!.sendPlaintext(fpB, 'Can you look at the scheduler backlog and report what is stuck?', lostThread);
+    nodeA.tracker.recordSent({ messageId: lostId, peerFp: fpB, threadId: lostThread });
+    await waitFor(() => nodeB.routed.length === routedAtB + 1);
+    await settle(1000);
+    // Nothing was promised: no frame reached A, and A's own record says so.
+    expect(nodeB.acksSent).toHaveLength(acksFromB);
+    expect(seen.A).toHaveLength(framesAtA);
+    expect(nodeA.tracker.get(lostId)?.state).toBe('awaiting-ack');
+
+    // The same node, a live hand-off: the ack arrives, and only after routing.
+    bDelivers = true;
+    const liveThread = `thread-delivered-${Date.now()}`;
+    const liveId = bootA.relayClient!.sendPlaintext(fpB, 'Please check the deploy log for the failed migration and summarise it', liveThread);
+    nodeA.tracker.recordSent({ messageId: liveId, peerFp: fpB, threadId: liveThread });
+    await waitFor(() => nodeB.routed.length === routedAtB + 2);
+    await waitFor(() => nodeA.tracker.get(liveId)?.state === 'acked');
+    expect(nodeB.acksSent.slice(acksFromB)).toEqual([{ to: fpA, threadId: liveThread }]);
+    expect(nodeB.ackTexts.at(-1)).toBe('Message received. Composing response...');
+    expect(seen.A).toHaveLength(framesAtA + 1);
+    expect(seen.A.at(-1)?.type).toBe('ack');
+    // The undelivered message is still unacknowledged — the later ack was matched to its own thread.
+    expect(nodeA.tracker.get(lostId)?.state).toBe('awaiting-ack');
   });
 });

@@ -5,6 +5,11 @@
  *
  *   runRelayInboundWithLedger → isAutoAckInbound → runRelayAckStage
  *     → recordInboundAck → evaluateAndRecordInbound → router
+ *     → relayAck.settle(outcome)
+ *
+ * ACT-091: our own ack is deferred for every inbound and settled with the
+ * routing outcome — `no-reply` when the warrants gate suppresses, otherwise the
+ * router's delivered report (`routerDelivers`, default true: a session got it).
  *
  * The server.ts handler itself is a closure inside the server boot (it cannot be
  * imported); tests/unit/threadline/ack-stage-wiring.test.ts pins that the real
@@ -26,6 +31,8 @@ import {
   createAckRateLimiter,
   isAutoAckInbound,
   runRelayAckStage,
+  createRelayAckSettler,
+  type RelayAckSettler,
 } from '../../src/threadline/autoAck.js';
 
 /** The slice of ThreadlineClient the handler uses to answer. */
@@ -39,6 +46,8 @@ export interface RelayAckNode {
   handle(decision: RelayGatePassedDecision & { trustLevel?: string }): Promise<void>;
   /** Acks THIS node put on the wire. */
   acksSent: Array<{ to: string; threadId?: string }>;
+  /** The text of each ack in `acksSent`, in order. */
+  ackTexts: string[];
   /** Messages that reached the router (each one is a session spawn/resume). */
   routed: Array<{ from: string; text: string; threadId?: string }>;
   /** Messages that reached the warrants-a-reply gate. */
@@ -55,6 +64,8 @@ export function createRelayAckNode(opts: {
   legacy?: boolean;
   ackRateLimit?: number;
   autoAckMessage?: string;
+  /** Did the router hand the message to a live session? Default: yes. */
+  routerDelivers?: () => boolean;
 }): RelayAckNode {
   const ledger = InboundIdLedger.openMemory();
   const tracker = A2ADeliveryTracker.openMemory();
@@ -62,7 +73,7 @@ export function createRelayAckNode(opts: {
   const gate = new WarrantsReplyGate(); // deterministic signals only
   const isAckRateLimited = createAckRateLimiter(opts.ackRateLimit ?? 5, 60_000);
   const node: RelayAckNode = {
-    acksSent: [], routed: [], gated: [], ledger, tracker, store,
+    acksSent: [], ackTexts: [], routed: [], gated: [], ledger, tracker, store,
     close: () => { ledger.close(); tracker.close(); },
     handle: async (decision) => {
       await runRelayInboundWithLedger(
@@ -85,29 +96,33 @@ export function createRelayAckNode(opts: {
             { threadId: msg.threadId, senderFingerprint, senderName },
           );
 
+          let relayAck: RelayAckSettler | null = null;
           if (opts.legacy) {
             // The handler before the fix: every non-status message is acked as `chat`.
             if (trustLevel !== 'untrusted' && msgType !== 'status' && !isAckRateLimited(senderFingerprint)) {
               opts.wire.sendPlaintext(senderFingerprint, opts.autoAckMessage ?? DEFAULT_AUTO_ACK_MESSAGE, msg.threadId);
               node.acksSent.push({ to: senderFingerprint, threadId: msg.threadId });
+              node.ackTexts.push(opts.autoAckMessage ?? DEFAULT_AUTO_ACK_MESSAGE);
             }
           } else {
-            const stage = runRelayAckStage(
-              {
-                autoAckEnabled: true,
-                autoAckMessage: opts.autoAckMessage,
-                isAckRateLimited,
-                sendAck: (to, text, threadId) => {
-                  opts.wire.sendAck(to, text, threadId);
-                  node.acksSent.push({ to, threadId });
-                },
-                recordDelivery,
+            const ackDeps = {
+              autoAckEnabled: true,
+              autoAckMessage: opts.autoAckMessage,
+              isAckRateLimited,
+              sendAck: (to: string, text: string, threadId?: string) => {
+                opts.wire.sendAck(to, text, threadId);
+                node.acksSent.push({ to, threadId });
+                node.ackTexts.push(text);
               },
-              {
-                isAutoAck: isAutoAckInbound({ type: msgType, text: textContent }),
-                trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket,
-              },
-            );
+              recordDelivery,
+            };
+            const ackInput = {
+              isAutoAck: isAutoAckInbound({ type: msgType, text: textContent }),
+              trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket,
+              deferSend: true,
+            };
+            relayAck = createRelayAckSettler(ackDeps, ackInput);
+            const stage = runRelayAckStage(ackDeps, ackInput);
             if (stage === 'ack-consumed') return;
           }
 
@@ -121,9 +136,11 @@ export function createRelayAckNode(opts: {
             humanInLoop: false,
           });
           node.gated.push({ text: textContent, suppressed: verdict.suppress, signal: verdict.verdict.signal });
-          if (verdict.suppress) { ticket?.recordNoReply(); return; }
+          if (verdict.suppress) { ticket?.recordNoReply(); relayAck?.settle('no-reply'); return; }
           node.routed.push({ from: senderFingerprint, text: textContent, threadId: msg.threadId });
-          ticket?.recordHandoff('cold');
+          const delivered = opts.routerDelivers ? opts.routerDelivers() : true;
+          if (delivered) ticket?.recordHandoff('cold');
+          relayAck?.settle(delivered ? 'router-delivered' : 'router-undelivered');
         },
       );
     },

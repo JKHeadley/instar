@@ -82,8 +82,9 @@ or exact-sentence), nor with a message that merely opens like one:
   from the handler. Nothing is sent. The inbox append, the Telegram mirror, the
   warrants gate, the pipe spawner, the listener inbox and the router are all
   after this point and are not reached.
-- **Anything else** → send our own ack under the existing four conditions, then
-  continue as before.
+- **Anything else** → continue as before. Our own ack is not sent here: it is
+  held until routing has an outcome (Design §6) and then sent under the
+  existing four conditions.
 
 **How a receipt is matched to what we sent.** Unchanged, and by thread, not by
 message: `recordInboundAck` marks the oldest message still awaiting an ack on
@@ -174,6 +175,39 @@ The per-sender limiter (5 per 60 s, `threadline.ackRateLimit`) is moved into
 `createAckRateLimiter` unchanged. It still bounds how many acks a peer sending
 many real messages gets back.
 
+### 6. Our own ack waits for the routing outcome
+
+The default ack text promises a reply ("Composing response..."). A hand-off
+after the ack stage can reach no live consumer, so an ack sent before routing
+can promise a reply that never comes. The relay handler therefore defers its
+own ack for **every** inbound message (`deferSend: true`) and settles it once,
+at the exit the handler actually takes, through `createRelayAckSettler` in
+`src/threadline/autoAck.ts`. Each exit names one outcome:
+
+| Exit of the relay handler | Outcome | Ack sent |
+|---|---|---|
+| The inbound is an ack | (none — the stage returned) | none; an ack is never acked |
+| Warrants gate suppresses: a no-reply verdict or an exhausted loop budget | `no-reply` | `Message received.` (`NO_REPLY_ACK_MESSAGE`), which promises nothing |
+| A pipe session was created (`pipeSpawner.spawn` returned `spawned: true`) | `pipe-spawned` | the promising ack |
+| The message was appended to the warm-listener inbox | `listener-queued` | none |
+| `ThreadlineRouter` returned `delivered === true` (cold spawn, resumed or warm session, topic session) | `router-delivered` | the promising ack |
+| `ThreadlineRouter` returned anything else (refused, queued, failed) | `router-undelivered` | none |
+| The handler threw before any exit | (never settled) | none |
+
+The listener inbox is a queue write and not a delivery:
+`ListenerSessionManager.writeToInbox` appends to a file and succeeds whether or
+not anything reads it, and the manager reports `listening` from construction
+without proof of a reader. If a listener does answer, its reply is the sender's
+acknowledgement, as any reply on a thread is.
+
+No ack means the sender's delivery record keeps the message as unacknowledged,
+which is accurate when nothing live received it. The settler is one-shot: a
+path that settles and then falls through can never send a second ack. The four
+send conditions (trust, type, config, rate limit) apply at settle time, so the
+rate limiter is charged only for an ack that is due. The ack now arrives after
+routing finished, so for a cold spawn it follows the spawn instead of
+preceding it.
+
 ## What it does not do
 
 - It does not change trust levels for unknown relay senders. That is a
@@ -234,10 +268,11 @@ flip, by decision 4.
 
 ## Agent awareness and migration parity
 
-No agent-facing text changes: no route, config key, hook or template section is
-added or changed, so the CLAUDE.md template and `migrateClaudeMd` are not
-touched. `threadline.autoAck`, `autoAckMessage` and `ackRateLimit` keep their
-meaning.
+No route, config key or hook is added or changed. `threadline.autoAck`,
+`autoAckMessage` and `ackRateLimit` keep their meaning. Design §6 changes what
+an ack, and a missing ack, tell a peer, so the CLAUDE.md template and
+`migrateClaudeMd` carry one section, "A2A ack waits for a live session" (its own
+sniff key, framework-shadowed).
 
 ## Tests
 
@@ -254,6 +289,15 @@ meaning.
   warrants a reply while its typed ack does not; both HTTP routes.
 - **E2E** — `tests/e2e/threadline/ack-never-acked-alive.test.ts`: a real
   relay server and two agents booted with the real bootstrap; one message.
+- **Design §6** — unit: every outcome of the settler, its one-shot rule and the
+  four send conditions (`autoAck.test.ts`); every exit of the real handler
+  settles exactly once, and the inbound-ack exit never does
+  (`ack-stage-wiring.test.ts`). Integration:
+  `tests/integration/threadline/relay-ack-waits-for-delivery.test.ts` runs a
+  first message on a new thread through the real router (spawned, denied,
+  queued), the real listener inbox with no reader, and the real client wire
+  encoding. E2E: over the real relay, a message that reaches no live session
+  leaves the sender's record unacknowledged, and the next, delivered, is acked.
 
 ## Maturation plan
 

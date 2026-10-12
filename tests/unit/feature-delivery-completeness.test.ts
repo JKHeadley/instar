@@ -124,6 +124,7 @@ describe('Feature Delivery Completeness', () => {
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
       '### Telegram message origin',
+      'A2A ack waits for a live session', // ACT-091 follow-up: the ack-waits-for-delivery card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A ack waits for a live session`), framework-shadowed.
       'A2A reply into a reaped topic session', // ACT-091: the reaped-topic-session respawn card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A reply into a reaped topic session`), framework-shadowed.
       'A2A relay forward', // a2a-cross-machine-route: the standby-forward card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A relay forward`), framework-shadowed.
       'A2A relay unknown-sender trust', // a2a-relay-unknown-sender-trust: the relay inbound trust-check card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A relay unknown-sender trust`), framework-shadowed.

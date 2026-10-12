@@ -70,22 +70,63 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(handler).toMatch(/const recordRelayDelivery = \(\) => recordInboundAck\(/);
   });
 
-  it('ACT-091: a topic-bound reply defers its ack and sends it only when routing delivered to a live session', () => {
+  it('ACT-091: EVERY inbound defers its ack (not only a topic-bound reply) and the settler is built before the stage', () => {
     const stage = handler.indexOf('runRelayAckStage(relayAckDeps, relayAckInput)');
-    const decl = handler.slice(handler.indexOf('const isTopicBoundReply ='), stage);
-    expect(decl).toContain("threadResumeMap.get(msg.threadId)?.originTopicId !== undefined");
-    expect(decl).toContain('deferSend: isTopicBoundReply');
-    const router = handler.lastIndexOf('threadlineRouter.handleInboundMessage(');
-    const settle = handler.indexOf('settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: result.delivered === true })');
-    expect(settle).toBeGreaterThan(router);
-    expect(handler.slice(router, settle)).toContain('if (relayAckInput.deferSend)');
+    const decl = handler.slice(handler.indexOf('const relayAckInput = {'), stage);
+    expect(decl).toContain('deferSend: true');
+    expect(decl).not.toContain('deferSend: isTopicBoundReply');
+    expect(decl).toContain('const relayAck = createRelayAckSettler(relayAckDeps, relayAckInput);');
+    // The pre-routing send is gone from the handler: only the settler acks.
+    expect(handler).not.toContain('settleDeferredRelayAck(');
   });
 
-  it('ACT-091: the warrants-gate suppress exit settles a deferred ack as no-reply BEFORE it returns', () => {
+  it('ACT-091: the router exit settles with the router\'s own delivered report, after the last router call', () => {
+    const router = handler.lastIndexOf('threadlineRouter.handleInboundMessage(');
+    const settle = handler.indexOf("relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered')");
+    expect(settle).toBeGreaterThan(router);
+    // Unconditional: no `if (deferSend)` / topic-bound guard between the router and the settle.
+    expect(handler.slice(router, settle)).not.toMatch(/if \(relayAckInput\.deferSend\)|if \(isTopicBoundReply\)/);
+  });
+
+  it('ACT-091: the warrants-gate suppress exit (no-reply verdict or loop budget) settles as no-reply BEFORE it returns', () => {
     const suppress = handler.indexOf('if (decision.suppress) {');
     expect(suppress).toBeGreaterThan(-1);
     const branch = handler.slice(suppress, handler.indexOf('return; // short-circuit ALL three routing branches', suppress));
-    expect(branch).toContain("settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: false, noReply: true })");
+    expect(branch).toContain("relayAck.settle('no-reply');");
+    expect(branch).toContain('decision.verdict.budgetExhausted'); // the loop-gate exit shares this branch
+  });
+
+  it('ACT-091: the pipe exit settles as delivered only inside `if (result.spawned)`', () => {
+    const spawned = handler.indexOf('if (result.spawned) {', handler.indexOf('pipeSpawner.spawn('));
+    const settle = handler.indexOf("relayAck.settle('pipe-spawned');");
+    expect(spawned).toBeGreaterThan(-1);
+    expect(settle).toBeGreaterThan(spawned);
+    expect(handler.slice(spawned, settle)).not.toMatch(/^\s*\}/m); // same block as the spawned check
+  });
+
+  it('ACT-091: the listener exit settles as a queue write, never as delivered', () => {
+    const write = handler.indexOf('listenerManager.writeToInbox(');
+    const settle = handler.indexOf("relayAck.settle('listener-queued');");
+    expect(settle).toBeGreaterThan(write);
+    expect(handler.slice(write, settle)).not.toMatch(/return;/);
+  });
+
+  it('ACT-091: no exit after the ack stage leaves without settling (the audit, pinned)', () => {
+    const stage = handler.indexOf('runRelayAckStage(relayAckDeps, relayAckInput)');
+    const afterStage = handler.slice(stage);
+    // Cut the rest of the handler at every bare `return;`: each piece is the
+    // code that runs between one exit and the next.
+    const pieces = afterStage.split(/\breturn;/);
+    // ack-consumed, gate suppress, pipe spawned, listener — then the router exit, the function's end.
+    expect(pieces).toHaveLength(5);
+    const count = (piece: string) => piece.split('relayAck.settle(').length - 1;
+    // The inbound-ack exit is the one deliberate non-settle: an ack is never acked.
+    expect(pieces[0]).toContain("if (ackStage === 'ack-consumed')");
+    expect(count(pieces[0])).toBe(0);
+    // Every other exit, the final one included, settles exactly once on the way out.
+    for (const piece of pieces.slice(1)) expect(count(piece)).toBe(1);
+    // Four call sites in all: one per routed exit.
+    expect(count(afterStage)).toBe(4);
   });
 
   it('sends its own ack only as a typed ack — never as a chat message', () => {

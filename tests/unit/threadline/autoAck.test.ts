@@ -21,6 +21,9 @@ import {
   looksLikeAutoAckText,
   runRelayAckStage,
   settleDeferredRelayAck,
+  createRelayAckSettler,
+  relayOutcomeDelivered,
+  type RelayRoutingOutcome,
   NO_REPLY_ACK_MESSAGE,
   type RelayAckStageDeps,
 } from '../../../src/threadline/autoAck.js';
@@ -307,5 +310,131 @@ describe('deferred relay ack (ACT-091 — no reply promised for an undelivered m
       expect(settleDeferredRelayAck(d, input(i as Record<string, unknown>), { delivered: true })).toBe('skipped-policy');
       expect(d.sendAck).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('relay ack settler (ACT-091 — the ack waits for the routing outcome on every path)', () => {
+  function deps(over: Partial<RelayAckStageDeps> = {}) {
+    return { autoAckEnabled: true, isAckRateLimited: () => false, sendAck: vi.fn(), recordDelivery: vi.fn(), ...over } as RelayAckStageDeps & { sendAck: ReturnType<typeof vi.fn> };
+  }
+  // A first message on a brand-new thread: no topic binding, deferred like every other inbound.
+  const input = (over: Record<string, unknown> = {}) => ({
+    isAutoAck: false, trustLevel: 'trusted', msgType: 'chat', senderFingerprint: PEER, threadId: 'new-thread', ticket: null, deferSend: true, ...over,
+  });
+  function run(outcome: RelayRoutingOutcome, d = deps(), i = input()) {
+    expect(runRelayAckStage(d, i)).toBe('continue');
+    expect(d.sendAck).not.toHaveBeenCalled(); // nothing is promised before routing
+    const settler = createRelayAckSettler(d, i);
+    return { d, settler, result: settler.settle(outcome) };
+  }
+
+  it('pipe session spawned → the promising ack goes out once', () => {
+    const { d, result } = run('pipe-spawned');
+    expect(result).toBe('sent');
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+    expect(d.sendAck).toHaveBeenCalledWith(PEER, DEFAULT_AUTO_ACK_MESSAGE, 'new-thread');
+  });
+
+  it('router delivered to a live session → the promising ack goes out once', () => {
+    const { d, result } = run('router-delivered');
+    expect(result).toBe('sent');
+    expect(d.sendAck).toHaveBeenCalledWith(PEER, DEFAULT_AUTO_ACK_MESSAGE, 'new-thread');
+  });
+
+  it('router did NOT deliver (refused, queued, failed) → no ack at all', () => {
+    const { d, result } = run('router-undelivered');
+    expect(result).toBe('skipped-undelivered');
+    expect(d.sendAck).not.toHaveBeenCalled();
+  });
+
+  it('queued in the listener inbox → no ack: a file write is not a live consumer', () => {
+    const { d, result } = run('listener-queued');
+    expect(result).toBe('skipped-undelivered');
+    expect(d.sendAck).not.toHaveBeenCalled();
+  });
+
+  it('warrants-gate no-reply / loop-budget exit → the non-promising "Message received.", once', () => {
+    const { d, result } = run('no-reply');
+    expect(result).toBe('sent-no-reply');
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+    expect(d.sendAck).toHaveBeenCalledWith(PEER, NO_REPLY_ACK_MESSAGE, 'new-thread');
+  });
+
+  it('only a live hand-off counts as delivered', () => {
+    expect(relayOutcomeDelivered('pipe-spawned')).toBe(true);
+    expect(relayOutcomeDelivered('router-delivered')).toBe(true);
+    expect(relayOutcomeDelivered('listener-queued')).toBe(false);
+    expect(relayOutcomeDelivered('router-undelivered')).toBe(false);
+    expect(relayOutcomeDelivered('no-reply')).toBe(false);
+  });
+
+  it('is one-shot: a later settle (a path that fell through) never sends a second ack', () => {
+    const { d, settler } = run('pipe-spawned');
+    expect(settler.outcome).toBe('pipe-spawned');
+    expect(settler.settle('router-delivered')).toBe('already-settled');
+    expect(settler.settle('no-reply')).toBe('already-settled');
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+    expect(settler.outcome).toBe('pipe-spawned');
+  });
+
+  it('an exit that never settles sends nothing (outcome stays null)', () => {
+    const d = deps();
+    runRelayAckStage(d, input());
+    const settler = createRelayAckSettler(d, input());
+    expect(settler.outcome).toBeNull();
+    expect(d.sendAck).not.toHaveBeenCalled();
+  });
+
+  it('a non-deferred input is never acked twice: the stage sent it, settle sends nothing', () => {
+    const d = deps();
+    const i = input({ deferSend: false });
+    runRelayAckStage(d, i);
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+    expect(createRelayAckSettler(d, i).settle('router-delivered')).toBe('not-deferred');
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+  });
+
+  it('ack policy is unchanged on a delivered message (untrusted, status, disabled, rate-limited)', () => {
+    for (const [over, i] of [
+      [{}, { trustLevel: 'untrusted' }],
+      [{}, { msgType: 'status' }],
+      [{ autoAckEnabled: false }, {}],
+      [{ isAckRateLimited: () => true }, {}],
+    ] as const) {
+      for (const outcome of ['pipe-spawned', 'router-delivered', 'no-reply'] as const) {
+        const d = deps(over as Partial<RelayAckStageDeps>);
+        const inp = input(i as Record<string, unknown>);
+        runRelayAckStage(d, inp);
+        expect(createRelayAckSettler(d, inp).settle(outcome)).toBe('skipped-policy');
+        expect(d.sendAck).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('an inbound ack is still consumed by the stage and never acked by a settle', () => {
+    const d = deps();
+    const i = input({ isAutoAck: true, msgType: 'ack' });
+    expect(runRelayAckStage(d, i)).toBe('ack-consumed');
+    expect(d.recordDelivery).toHaveBeenCalledTimes(1);
+    expect(createRelayAckSettler(d, i).settle('router-delivered')).toBe('skipped-policy');
+    expect(d.sendAck).not.toHaveBeenCalled();
+  });
+
+  it('the rate limiter is charged only for an ack that is actually due', () => {
+    const limiter = vi.fn(() => false);
+    const d = deps({ isAckRateLimited: limiter });
+    runRelayAckStage(d, input());
+    createRelayAckSettler(d, input()).settle('router-undelivered');
+    createRelayAckSettler(d, input()).settle('listener-queued');
+    expect(limiter).not.toHaveBeenCalled();
+    createRelayAckSettler(d, input()).settle('router-delivered');
+    expect(limiter).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing send is swallowed and reported as policy-skipped, never thrown into the handler', () => {
+    const d = deps({ sendAck: vi.fn(() => { throw new Error('Not connected'); }) });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(createRelayAckSettler(d, input()).settle('router-delivered')).toBe('skipped-policy');
+    err.mockRestore();
   });
 });

@@ -36,6 +36,11 @@ whole new working session just to answer a receipt.
    word. A real message that merely begins with "Message received." is handled
    as a real message.
 3. The two other ways a message can arrive get the same rule.
+4. Our own receipt says "Composing response...", which is a promise. It is now
+   sent only after a running session actually has the message, on every kind
+   of conversation. A message we decide not to answer gets a plain "Message
+   received." A message that reached no running session gets no receipt, so
+   the sender's records show it as not yet acknowledged, which is true.
 
 The "does this deserve a reply?" check itself is not changed. A receipt never
 reaches it any more, so it can no longer mistake one for someone reaching out.

@@ -8389,6 +8389,17 @@ When a peer replies on a thread bound to one of my topics and that topic's sessi
       result.upgraded.push('CLAUDE.md: added A2A reply into a reaped topic session section');
     }
 
+    // A2A ack waits for a live session (ACT-091 follow-up, Agent awareness). OWN
+    // sniff key `A2A ack waits for a live session` — content-sniffed.
+    if (!content.includes('A2A ack waits for a live session')) {
+      content += '\n\n' + `### A2A ack waits for a live session
+
+The automatic "Message received. Composing response..." ack I send a peer over the relay now waits for where the message ended up, on every thread (not only topic-bound replies). It goes out only once a live session has the message: a pipe session, a spawned or resumed thread session, or a topic session. A message I decide not to answer gets the short "Message received." instead. A message that reached no live session (the spawn was refused or queued, or it was only written to the listener inbox file, which nothing is proven to read) gets no ack, so the peer's delivery record stays unacknowledged, which is the truth. **When to use** (PROACTIVE): a peer says its message was never acknowledged → check the server log for \`Auto-ack withheld\` on that thread; it names the reason. A peer says it got an ack and then no reply → a live session did receive it; look at that session, not at delivery.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A ack waits for a live session section');
+    }
+
     // A2A dark peers (docs/specs/a2a-single-agent-identity.md §3, Agent
     // awareness). OWN sniff key `A2A dark peers` — content-sniffed for idempotency.
     if (!content.includes('A2A dark peers')) {
@@ -11434,6 +11445,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // topic-bound reply, framework-agnostic — a Codex/Gemini agent must know a
       // reaped topic session is woken and when the ack is withheld.
       '### A2A reply into a reaped topic session',
+      // A2A ack waits for a live session (ACT-091 follow-up): server-side timing
+      // of the relay's automatic ack, framework-agnostic — a Codex/Gemini agent
+      // must know what an ack, and a missing ack, now mean.
+      '### A2A ack waits for a live session',
       // A2A local-route trust: a server-side check on the same-machine inbound
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.
