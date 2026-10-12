@@ -264,7 +264,7 @@ import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
-import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage } from '../threadline/autoAck.js';
+import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, settleDeferredRelayAck } from '../threadline/autoAck.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
@@ -661,6 +661,12 @@ let _sweptInboundStore: import('../core/PendingInboundStore.js').PendingInboundS
 // wireTelegramRouting where the session primitives live in scope.
 let _drainLocalDeliver:
   | ((msg: import('../core/QueueDrainLoop.js').DrainMessage, handover: import('../core/QueueDrainLoop.js').DrainHandover) => Promise<import('../core/QueueDrainLoop.js').DrainDispatchResult>)
+  | null = null;
+// ACT-091: wake a topic's dead/reaped session for a topic-bound Threadline
+// reply — assigned inside wireTelegramRouting where the respawn primitives
+// (and the per-topic spawn guard) live in scope. Null ⇒ not wired.
+let _threadlineTopicRespawn:
+  | ((args: { topicId: number; sessionName: string | null; text: string }) => Promise<{ respawned: boolean; sessionName?: string; reason?: string }>)
   | null = null;
 // Emergency-stop integration (§3.6): marks a topic stopped for the drain's
 // pass/batch/chokepoint consults AND settles its custody (terminal
@@ -3296,6 +3302,86 @@ export function wireTelegramRouting(
       return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
     } finally {
       spawningTopics.clear(topicId, _spawnTokD);
+    }
+  };
+
+  // ── ACT-091: topic-bound Threadline reply into a dead/reaped topic session ──
+  // The same respawn decision an inbound Telegram message gets for a dead
+  // session, through the same primitives: ownership re-check, the G3 lease
+  // gate, the death classification (no respawn after a quota death; a fresh
+  // start after a context-exhausted one), the SpawnAdmission checkpoint, the
+  // per-topic spawn guard, then respawnSessionForTopic (--resume). Resolves
+  // respawned:true ONLY after the initial injection ran (awaitInitialInjection),
+  // so the caller never reports a delivery that did not happen. Any refusal
+  // returns respawned:false and the caller surfaces the reply in the topic.
+  _threadlineTopicRespawn = async ({ topicId, text }) => {
+    if (_ownershipReadForDrain && _meshSelfId) {
+      const ownRec = _ownershipReadForDrain(String(topicId));
+      if (ownRec && ownRec.status === 'active' && ownRec.ownerMachineId !== _meshSelfId) {
+        return { respawned: false, reason: 'topic-owned-by-another-machine' };
+      }
+    }
+    // Only the session the topic registry names — never a name read from the
+    // thread record, which may be stale (respawnSessionForTopic kills by name).
+    const registered = telegram.getSessionForTopic(topicId);
+    if (registered && sessionManager.isSessionAlive(registered)) {
+      // A user message respawned it in the meantime — type the reply in.
+      try {
+        const ok = await sessionManager.injectPasteNotificationConfirmed(registered, text);
+        return ok ? { respawned: true, sessionName: registered } : { respawned: false, reason: 'inject-unconfirmed' };
+      } catch (err) {
+        return { respawned: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    const g3 = g3ShouldSpawnLocally(topicId);
+    if (!g3.spawnLocally) return { respawned: false, reason: `lease-gate: ${g3.reason}` };
+    let fresh = false;
+    if (registered) {
+      try {
+        const output = sessionManager.captureOutput(registered, 100);
+        if (output) {
+          const death = classifySessionDeath(output, quotaTracker?.getState() ?? null);
+          if (death.cause === 'quota_exhaustion' && death.confidence !== 'low') {
+            return { respawned: false, reason: 'quota-exhausted' };
+          }
+          if (death.cause === 'context_exhausted') fresh = true;
+        }
+      } catch { /* @silent-fallback-ok: classification failed — respawn as the Telegram dead path does */ }
+    }
+    if (_spawnAdmission) {
+      try {
+        const d = _spawnAdmission.admit({ sessionKey: String(topicId), callsite: 'threadline-topic-respawn' });
+        if (d.allow) _ladderDryRunConsult(d, String(topicId), topicId);
+        else return { respawned: false, reason: `spawn-admission: ${d.reason}` };
+      } catch (err) {
+        // Same posture as the Telegram seam: an admission ERROR fails open.
+        console.warn(`[spawn-admission] threadline-topic-respawn admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (spawningTopics.has(topicId)) return { respawned: false, reason: 'spawn-in-progress' };
+    const tok = spawningTopics.add(topicId);
+    try {
+      if (registered) {
+        if (fresh) _topicResumeMap?.remove(topicId);
+        await respawnSessionForTopic(
+          sessionManager, telegram, registered, topicId, text,
+          topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true },
+        );
+      } else {
+        const topicName = telegram.getTopicName(topicId) || `topic-${topicId}`;
+        const newSessionName = await spawnSessionForTopic(
+          sessionManager, telegram, topicName, topicId, text,
+          topicMemory, undefined, undefined, undefined, { awaitInitialInjection: true },
+        );
+        telegram.registerTopicSession(topicId, newSessionName, topicName);
+      }
+      return { respawned: true, sessionName: telegram.getSessionForTopic(topicId) ?? undefined };
+    } catch (err) {
+      // The spawn may have recorded a pending inject before it failed; the boot
+      // sweep can then still deliver it, so the reply may also be surfaced once.
+      return { respawned: false, reason: err instanceof Error ? err.message : String(err) };
+    } finally {
+      spawningTopics.clear(topicId, tok);
     }
   };
 }
@@ -17893,6 +17979,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         getSessionForTopic: telegram
           ? (topicId: number) => telegram.getSessionForTopic(topicId)
           : undefined,
+        // ACT-091: a reply into a reaped topic session wakes it (late-bound —
+        // Telegram routing is wired after this handler is constructed).
+        respawnTopicSession: (args) => _threadlineTopicRespawn
+          ? _threadlineTopicRespawn(args)
+          : Promise.resolve({ respawned: false, reason: 'telegram-routing-not-wired' }),
         // A2A cross-machine route §5: a topic-bound reply is typed into the
         // topic's live session on whichever machine has it. Late-bound: the
         // mesh client exists only after the multi-machine wiring below.
@@ -18451,16 +18542,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             { a2aDeliveryTracker },
             { threadId: msg.threadId, senderFingerprint, senderName: senderName ?? null },
           );
-          const ackStage = runRelayAckStage(
-            {
-              autoAckEnabled: config.threadline?.autoAck !== false,
-              autoAckMessage: config.threadline?.autoAckMessage,
-              isAckRateLimited,
-              sendAck: (to, text, threadId) => { threadlineRelayClient!.sendAck(to, text, threadId); },
-              recordDelivery: recordRelayDelivery,
-            },
-            { isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket },
-          );
+          // ACT-091: a topic-bound reply can reach no live session (its topic
+          // session was reaped), so its ack — which promises a reply — waits for
+          // the routing outcome (settleDeferredRelayAck below).
+          const isTopicBoundReply =
+            !!msg.threadId && threadResumeMap.get(msg.threadId)?.originTopicId !== undefined;
+          const relayAckDeps = {
+            autoAckEnabled: config.threadline?.autoAck !== false,
+            autoAckMessage: config.threadline?.autoAckMessage,
+            isAckRateLimited,
+            sendAck: (to: string, text: string, threadId?: string) => { threadlineRelayClient!.sendAck(to, text, threadId); },
+            recordDelivery: recordRelayDelivery,
+          };
+          const relayAckInput = {
+            isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket,
+            deferSend: isTopicBoundReply,
+          };
+          const ackStage = runRelayAckStage(relayAckDeps, relayAckInput);
           if (ackStage === 'ack-consumed') {
             console.log(`[relay] delivery ack from ${senderName} (thread: ${msg.threadId ?? 'none'}, by ${autoAckRecognition({ type: msgType, text: textContent })}) recorded — not acked, not routed`);
             return;
@@ -18634,8 +18732,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           // for the user even though transport succeeded. (The pipe-spawn branch
           // above is already excluded for topic-bound threads via its
           // `!threadResumeMap.get(...)` guard, now that get() no longer nulls them.)
-          const isTopicBoundReply =
-            !!msg.threadId && threadResumeMap.get(msg.threadId)?.originTopicId !== undefined;
           if (listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {
             listenerManager.writeToInbox({ from: senderFingerprint, senderName, trustLevel, threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint), text: ledgerNotice ? `[server notice: ${ledgerNotice}]\n\n${textContent}` : textContent });
             ledgerTicket?.recordHandoff('listener');
@@ -18682,6 +18778,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (result.error) console.warn(`[relay] Router error: ${result.error}`);
           if (result.spawned) console.log(`[relay] Spawned session for ${senderName} (trust: ${trustLevel}, thread: ${result.threadId})`);
           if (result.resumed) console.log(`[relay] Resumed session for ${senderName} (thread: ${result.threadId})`);
+          if (result.handled && result.delivered === false) {
+            console.warn(`[relay] Message from ${senderName} (thread: ${result.threadId}) accepted but not delivered to a live session${result.queued ? ' (queued)' : ''}`);
+          }
+          if (relayAckInput.deferSend) {
+            const ackOutcome = settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: result.delivered === true });
+            if (ackOutcome === 'skipped-undelivered') {
+              console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${result.threadId}) — no live session received the message`);
+            }
+          }
         }
 
         // Relay client is passed to AgentServer → RouteContext for the /threadline/relay-send endpoint

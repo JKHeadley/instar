@@ -708,15 +708,24 @@ export class ThreadlineRouter {
             },
           });
           if (outcome.kind === 'routed') {
-            const delivered = outcome.deliveryMode === 'live-inject';
+            // ACT-091: `delivered`/`resumed` describe what a LIVE session
+            // actually received. `resume-pending` reached no session, so it is
+            // neither delivered nor resumed — reporting `resumed: true` for it
+            // made the relay log "Resumed session" for a message that landed
+            // nowhere.
+            const delivered =
+              outcome.deliveryMode === 'live-inject' || outcome.deliveryMode === 'respawn-inject';
+            console.log(
+              `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: ${outcome.deliveryMode}${delivered ? '' : ' (no live session received it)'}`,
+            );
             return {
               handled: true,
               accepted: true,
               delivered,
               queued: delivered ? undefined : true,
               threadId,
-              injected: delivered,
-              resumed: outcome.deliveryMode === 'resume-pending',
+              injected: outcome.deliveryMode === 'live-inject',
+              resumed: outcome.deliveryMode === 'respawn-inject',
               ...(delivered ? { path: 'topic' as const } : {}),
             };
           }

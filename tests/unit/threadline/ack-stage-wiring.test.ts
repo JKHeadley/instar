@@ -59,11 +59,26 @@ describe('relay handler (src/commands/server.ts)', () => {
   });
 
   it('gives the stage the ledger ticket and the real delivery recorder', () => {
-    const stage = handler.indexOf('runRelayAckStage(');
+    // The stage's deps/input are built just above the call (ACT-091 reuses
+    // them for the deferred ack), so the window starts at their declaration.
+    const stage = handler.indexOf('const relayAckDeps = {');
+    expect(stage).toBeGreaterThan(-1);
     const call = handler.slice(stage, handler.indexOf("if (ackStage === 'ack-consumed')"));
+    expect(call).toContain('runRelayAckStage(relayAckDeps, relayAckInput)');
     expect(call).toContain('ticket: ledgerTicket');
     expect(call).toContain('recordDelivery: recordRelayDelivery');
     expect(handler).toMatch(/const recordRelayDelivery = \(\) => recordInboundAck\(/);
+  });
+
+  it('ACT-091: a topic-bound reply defers its ack and sends it only when routing delivered to a live session', () => {
+    const stage = handler.indexOf('runRelayAckStage(relayAckDeps, relayAckInput)');
+    const decl = handler.slice(handler.indexOf('const isTopicBoundReply ='), stage);
+    expect(decl).toContain("threadResumeMap.get(msg.threadId)?.originTopicId !== undefined");
+    expect(decl).toContain('deferSend: isTopicBoundReply');
+    const router = handler.lastIndexOf('threadlineRouter.handleInboundMessage(');
+    const settle = handler.indexOf('settleDeferredRelayAck(relayAckDeps, relayAckInput, { delivered: result.delivered === true })');
+    expect(settle).toBeGreaterThan(router);
+    expect(handler.slice(router, settle)).toContain('if (relayAckInput.deferSend)');
   });
 
   it('sends its own ack only as a typed ack — never as a chat message', () => {

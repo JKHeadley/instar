@@ -8378,6 +8378,17 @@ When this machine is a standby and another of my machines holds my relay connect
       result.upgraded.push('CLAUDE.md: added A2A relay forward section');
     }
 
+    // A2A reply into a reaped topic session (ACT-091, Agent awareness). OWN
+    // sniff key `A2A reply into a reaped topic session` — content-sniffed.
+    if (!content.includes('A2A reply into a reaped topic session')) {
+      content += '\n\n' + `### A2A reply into a reaped topic session
+
+When a peer replies on a thread bound to one of my topics and that topic's session was idle-reaped or died, the reply now wakes it: the session is respawned through the same path a Telegram message takes (resuming its conversation) with the reply as its first message. If the respawn is refused or fails, the reply is posted in the topic instead. The automatic "Message received" ack for such a reply is sent only after a live session actually received it, and the relay log says "Resumed session" only when one did. **When to use** (PROACTIVE): a peer says it was told a reply was coming and none came → check the server log for \`accepted but not delivered to a live session\` and \`Auto-ack withheld\` on that thread.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A reply into a reaped topic session section');
+    }
+
     // A2A dark peers (docs/specs/a2a-single-agent-identity.md §3, Agent
     // awareness). OWN sniff key `A2A dark peers` — content-sniffed for idempotency.
     if (!content.includes('A2A dark peers')) {
@@ -11404,6 +11415,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // framework-agnostic — a Codex/Gemini agent must know a forwarded send's
       // result fields and where its reply arrives.
       '### A2A relay forward',
+      // A2A reply into a reaped topic session (ACT-091): server-side routing of a
+      // topic-bound reply, framework-agnostic — a Codex/Gemini agent must know a
+      // reaped topic session is woken and when the ack is withheld.
+      '### A2A reply into a reaped topic session',
       // A2A local-route trust: a server-side check on the same-machine inbound
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.

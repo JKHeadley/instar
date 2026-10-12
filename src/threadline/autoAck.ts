@@ -122,6 +122,13 @@ export interface RelayAckStageInput {
   senderFingerprint: string;
   threadId?: string;
   ticket: AdmissionTicket | null;
+  /**
+   * ACT-091: hold our own ack until routing reports a live delivery. Set for a
+   * topic-bound reply, whose hand-off can reach no live session; the caller
+   * then calls `settleDeferredRelayAck` with the routing outcome. An inbound
+   * ack is still consumed here either way.
+   */
+  deferSend?: boolean;
 }
 
 /**
@@ -138,6 +145,12 @@ export function runRelayAckStage(deps: RelayAckStageDeps, input: RelayAckStageIn
     input.ticket?.recordNoReply();
     return 'ack-consumed';
   }
+  if (!input.deferSend) sendRelayAckIfAllowed(deps, input);
+  return 'continue';
+}
+
+/** Send our own ack when policy allows it (trust, type, config, rate limit). */
+function sendRelayAckIfAllowed(deps: RelayAckStageDeps, input: RelayAckStageInput): boolean {
   if (
     input.trustLevel !== 'untrusted'
     && input.msgType !== 'status'
@@ -146,11 +159,29 @@ export function runRelayAckStage(deps: RelayAckStageDeps, input: RelayAckStageIn
   ) {
     try {
       deps.sendAck(input.senderFingerprint, deps.autoAckMessage ?? DEFAULT_AUTO_ACK_MESSAGE, input.threadId);
+      return true;
     } catch (ackErr) {
       console.error(`[relay] Auto-ack failed: ${ackErr instanceof Error ? ackErr.message : ackErr}`);
     }
   }
-  return 'continue';
+  return false;
+}
+
+/**
+ * ACT-091: the second half of a deferred ack. The ack text promises a reply
+ * ("Composing response..."), so it goes out ONLY when routing handed the
+ * message to a live consumer. An undelivered message gets no ack: the peer's
+ * delivery tracker then keeps it awaiting-ack instead of being told a reply is
+ * on its way.
+ */
+export function settleDeferredRelayAck(
+  deps: RelayAckStageDeps,
+  input: RelayAckStageInput,
+  outcome: { delivered: boolean },
+): 'sent' | 'skipped-undelivered' | 'skipped-policy' {
+  if (input.isAutoAck) return 'skipped-policy';
+  if (!outcome.delivered) return 'skipped-undelivered';
+  return sendRelayAckIfAllowed(deps, input) ? 'sent' : 'skipped-policy';
 }
 
 // ── Plaintext wire format (shared by the sender and the receiver) ──────
