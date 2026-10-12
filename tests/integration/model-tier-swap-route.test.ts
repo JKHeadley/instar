@@ -325,6 +325,15 @@ describe('POST /sessions/spawn — fable allowlist (integration)', () => {
     expect(mockSM._spawnCount).toBe(0);
   });
 
+  it('accepts gpt-6-astra for codex-cli and delegates the exact model', async () => {
+    const res = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'astra-spawn', prompt: 'hello', model: 'gpt-6-astra', framework: 'codex-cli' });
+    expect(res.status).toBe(201);
+    expect(res.body.model).toBe('gpt-6-astra');
+    expect(mockSM._lastSpawnArgs?.model).toBe('gpt-6-astra');
+  });
+
   it('threads an explicit ultracode opt-in only to Claude spawns', async () => {
     const accepted = await request(app)
       .post('/sessions/spawn')

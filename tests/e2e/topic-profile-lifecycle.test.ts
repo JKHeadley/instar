@@ -64,6 +64,7 @@ describe('Topic Profile E2E lifecycle', () => {
       stateDir,
       port: 0,
       authToken: AUTH_TOKEN,
+      developmentAgent: true,
     } as InstarConfig;
 
     // ── Mirror of the src/commands/server.ts composition block ──
@@ -74,7 +75,7 @@ describe('Topic Profile E2E lifecycle', () => {
     });
     const resolver = new TopicProfileResolver({
       store,
-      defaultFramework: () => 'claude-code',
+      defaultFramework: () => 'codex-cli',
       configTopicFrameworks: () => ({}),
       configProfileDefaults: () => ({}),
       frameworkDefaultModels: () => ({}),
@@ -91,7 +92,7 @@ describe('Topic Profile E2E lifecycle', () => {
       // gate (no developmentAgent in this config → the shipped FLEET regime).
       regime: () => ({
         enabled: resolveDevAgentGate(undefined, config as { developmentAgent?: boolean }),
-        dryRun: true,
+        dryRun: false,
       }),
       // Late-bound to the server's OWN TopicOperatorStore — same instance the
       // /topic-operator routes write (the production _agentServerRef pattern).
@@ -125,7 +126,7 @@ describe('Topic Profile E2E lifecycle', () => {
   it('GET /topic-profile/:topicId returns 200 (route wired, bundle not null) with the resolved default', async () => {
     const res = await request(app).get(`/topic-profile/${TOPIC}`).set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.resolved.framework).toBe('claude-code');
+    expect(res.body.resolved.framework).toBe('codex-cli');
     expect(res.body.pin).toBeNull();
   });
 
@@ -143,7 +144,7 @@ describe('Topic Profile E2E lifecycle', () => {
       .post(`/topic-profile/${TOPIC}`)
       .set(auth())
       .set('X-Instar-Request', '1')
-      .send({ framework: 'codex-cli' });
+      .send({ framework: 'codex-cli', model: 'gpt-6-astra' });
     expect(write.status).toBe(200);
     expect(write.body.ok).toBe(true);
     expect(write.body.appliedLive).toContain('framework');
@@ -151,7 +152,9 @@ describe('Topic Profile E2E lifecycle', () => {
     const read = await request(app).get(`/topic-profile/${TOPIC}`).set(auth());
     expect(read.status).toBe(200);
     expect(read.body.pin.framework).toBe('codex-cli');
+    expect(read.body.pin.model).toBe('gpt-6-astra');
     expect(read.body.resolved.framework).toBe('codex-cli');
+    expect(read.body.resolved.model).toBe('gpt-6-astra');
   });
 
   it('durably persisted the pin to state/topic-profiles.json and regenerated the legacy mirror', () => {
@@ -173,6 +176,7 @@ describe('Topic Profile E2E lifecycle', () => {
       isDryRun: () => true,
     });
     expect(reloaded.get(TOPIC)?.current?.framework).toBe('codex-cli');
+    expect(reloaded.get(TOPIC)?.current?.model).toBe('gpt-6-astra');
   });
 
   // ── Phase 3: boundary invariants + the dark arm ──

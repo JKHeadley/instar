@@ -2978,11 +2978,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(options.ultracode ? { ultracode: true } : {}),
     });
 
-    // Extra claude-code headless flags, spliced before the `-p` prompt positional
-    // (argv structure: [binary, --dangerously-skip-permissions, (--model X)?, -p,
-    // prompt]). Currently Claude-only — Codex has no `--allowedTools`/MCP-config
-    // CLI equivalent (it uses sandbox modes via the headless builder), so the
-    // helper returns [] for Codex and the splice is skipped:
+    // Extra claude-code headless flags, spliced before the `-p` prompt positional.
+    // A non-empty allowlist is REAL scoping: drop `--dangerously-skip-permissions`
+    // and use Claude's permission-mode path, matching spawnTriageSession.
+    // Codex has no `--allowedTools`/MCP-config CLI equivalent (it uses sandbox
+    // modes via the headless builder), so the helper returns [] for Codex and
+    // the splice is skipped:
     //  - `--allowedTools <list>` — per-job tool-scope allowlist (INSTAR-JOBS-AS-
     //    AGENTMD §5).
     //  - `--strict-mcp-config --mcp-config {}` — no-project-MCP spawn for headless
@@ -2993,6 +2994,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       allowedTools: options.allowedTools,
       disableProjectMcp: options.disableProjectMcp,
     });
+    if (headlessFramework === 'claude-code' && options.allowedTools && options.allowedTools.length > 0) {
+      const skipIndex = headlessSpec.argv.indexOf('--dangerously-skip-permissions');
+      if (skipIndex >= 0) {
+        headlessSpec.argv.splice(skipIndex, 1);
+      }
+      if (!headlessSpec.argv.includes('--permission-mode')) {
+        const dashPIndex = headlessSpec.argv.indexOf('-p');
+        if (dashPIndex > 0) {
+          headlessSpec.argv.splice(dashPIndex, 0, '--permission-mode', 'dontAsk');
+        }
+      }
+    }
     if (extraClaudeFlags.length > 0) {
       const dashPIndex = headlessSpec.argv.indexOf('-p');
       if (dashPIndex > 0) {
@@ -4962,6 +4975,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const COMPLETED_TTL_MS = posNum(retention?.completedTtlHours, 24) * 60 * 60 * 1000;
     const MAX_FINISHED = Math.floor(posNum(retention?.maxFinished, 50));
     const cleaned: string[] = [];
+    const prunedByTtl: string[] = [];
+    const prunedByCap: string[] = [];
     const retained: { id: string; endedAt: number }[] = [];
 
     const parseTs = (iso: string | undefined): number => {
@@ -4988,6 +5003,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (age > ttl) {
         if (this.state.removeSession(session.id)) {
           cleaned.push(session.id);
+          prunedByTtl.push(session.id);
           this.idleKillBackoff?.clear(session.id); // map-leak eviction (Fix A finding 1)
         }
       } else {
@@ -5002,13 +5018,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
       for (const s of excess) {
         if (this.state.removeSession(s.id)) {
           cleaned.push(s.id);
+          prunedByCap.push(s.id);
           this.idleKillBackoff?.clear(s.id); // map-leak eviction (Fix A finding 1)
         }
       }
     }
 
-    if (cleaned.length > 0) {
-      console.log(`[SessionManager] Cleaned up ${cleaned.length} stale session(s): ${cleaned.join(', ')}`);
+    if (prunedByTtl.length > 0) {
+      console.log(`[SessionManager] TTL cleanup: ${prunedByTtl.length} session(s) exceeded retention TTL`);
+    }
+    if (prunedByCap.length > 0) {
+      console.log(`[SessionManager] Cap cleanup: ${prunedByCap.length} session(s) pruned (maxFinished cap)`);
     }
     return cleaned;
   }

@@ -32,6 +32,8 @@ export interface MemoryExporterConfig {
   minConfidence?: number;
   /** Maximum entities to include (default: 200) */
   maxEntities?: number;
+  /** Maximum words to spend on retained entity content (default: 5000) */
+  wordBudget?: number;
   /** Agent name for the header (default: 'Agent') */
   agentName?: string;
   /** Whether to include metadata footer (default: true) */
@@ -45,6 +47,22 @@ export interface ExportResult {
   entityCount: number;
   /** Number of entities excluded (below confidence threshold) */
   excludedCount: number;
+  /** Number of otherwise eligible entities excluded by maxEntities */
+  excludedByCap: number;
+  /** Number of otherwise eligible entities excluded by wordBudget */
+  excludedByBudget: number;
+  /** Share of otherwise eligible entities excluded by selection caps */
+  excludedShare: number;
+  /** Configured word budget for retained entity content */
+  wordBudget: number;
+  /** Retained entity words spent by the selector, excluding section chrome */
+  selectedEntityWords: number;
+  /** Actual rendered markdown word count */
+  actualWords: number;
+  /** Words over budget in the rendered markdown, including headings/footer */
+  wordsOverBudget: number;
+  /** Average rendered words per included entity */
+  wordsPerIncludedEntity: number;
   /** Number of domain groups */
   domainCount: number;
   /** Estimated tokens in the output */
@@ -100,6 +118,7 @@ export class MemoryExporter {
   private readonly memory: SemanticMemory;
   private readonly minConfidence: number;
   private readonly maxEntities: number;
+  private readonly wordBudget: number;
   private readonly agentName: string;
   private readonly includeFooter: boolean;
 
@@ -107,6 +126,7 @@ export class MemoryExporter {
     this.memory = config.semanticMemory;
     this.minConfidence = config.minConfidence ?? 0.2;
     this.maxEntities = config.maxEntities ?? 200;
+    this.wordBudget = config.wordBudget ?? 5000;
     this.agentName = config.agentName ?? 'Agent';
     this.includeFooter = config.includeFooter ?? true;
   }
@@ -133,22 +153,38 @@ export class MemoryExporter {
       return new Date(b.lastVerified).getTime() - new Date(a.lastVerified).getTime();
     });
 
-    // Cap at maxEntities
-    const included = eligible.slice(0, this.maxEntities);
+    const selection = this.selectWithinBudgets(eligible);
+    const included = selection.included;
     const excludedCount = allData.entities.length - included.length;
 
     // Group by domain, then by type within each domain
     const grouped = this.groupEntities(included);
 
     // Render to markdown
-    const markdown = this.renderMarkdown(grouped);
+    const markdown = this.renderMarkdown(grouped, selection);
 
+    const actualWords = this.countWords(markdown);
     const estimatedTokens = Math.ceil(markdown.length / 4);
+    const wordsPerIncludedEntity = included.length === 0
+      ? 0
+      : Math.round((selection.includedEntityWords / included.length) * 10) / 10;
+    const excludedBySelection = selection.excludedByCap + selection.excludedByBudget;
+    const excludedShare = eligible.length === 0
+      ? 0
+      : Math.round((excludedBySelection / eligible.length) * 1000) / 1000;
 
     return {
       markdown,
       entityCount: included.length,
       excludedCount,
+      excludedByCap: selection.excludedByCap,
+      excludedByBudget: selection.excludedByBudget,
+      excludedShare,
+      wordBudget: this.wordBudget,
+      selectedEntityWords: selection.includedEntityWords,
+      actualWords,
+      wordsOverBudget: Math.max(0, actualWords - this.wordBudget),
+      wordsPerIncludedEntity,
       domainCount: Object.keys(grouped).length,
       estimatedTokens,
     };
@@ -211,6 +247,7 @@ export class MemoryExporter {
    */
   private renderMarkdown(
     grouped: Record<string, Record<string, MemoryEntity[]>>,
+    selection?: SelectionMetrics,
   ): string {
     const lines: string[] = [];
 
@@ -274,10 +311,48 @@ export class MemoryExporter {
         .flatMap(d => Object.values(d))
         .reduce((sum, arr) => sum + arr.length, 0);
       lines.push(`*Auto-generated from SemanticMemory (${totalEntities} entities across ${domains.length} domains). Last generated: ${new Date().toISOString()}*`);
+      if (selection) {
+        const excludedBySelection = selection.excludedByCap + selection.excludedByBudget;
+        const excludedSharePct = selection.eligibleCount === 0
+          ? '0.0'
+          : ((excludedBySelection / selection.eligibleCount) * 100).toFixed(1);
+        lines.push(`*Selection health: ${selection.includedEntityWords}/${this.wordBudget} entity words, ${excludedSharePct}% excluded by caps (${selection.excludedByCap} count, ${selection.excludedByBudget} budget).*`);
+      }
       lines.push('');
     }
 
     return lines.join('\n');
+  }
+
+  private selectWithinBudgets(eligible: MemoryEntity[]): SelectionMetrics {
+    const included: MemoryEntity[] = [];
+    let includedEntityWords = 0;
+    let excludedByCap = 0;
+    let excludedByBudget = 0;
+
+    for (const entity of eligible) {
+      if (included.length >= this.maxEntities) {
+        excludedByCap++;
+        continue;
+      }
+
+      const entityWords = this.countWords(this.renderEntity(entity, false));
+      if (includedEntityWords + entityWords > this.wordBudget) {
+        excludedByBudget++;
+        continue;
+      }
+
+      included.push(entity);
+      includedEntityWords += entityWords;
+    }
+
+    return {
+      included,
+      eligibleCount: eligible.length,
+      includedEntityWords,
+      excludedByCap,
+      excludedByBudget,
+    };
   }
 
   /**
@@ -307,4 +382,17 @@ export class MemoryExporter {
   private capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
+
+  private countWords(s: string): number {
+    const trimmed = s.trim();
+    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+  }
+}
+
+interface SelectionMetrics {
+  included: MemoryEntity[];
+  eligibleCount: number;
+  includedEntityWords: number;
+  excludedByCap: number;
+  excludedByBudget: number;
 }

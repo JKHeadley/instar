@@ -214,6 +214,47 @@ describe('MemoryExporter', () => {
 
     expect(result.entityCount).toBe(5);
     expect(result.excludedCount).toBe(5);
+    expect(result.excludedByCap).toBe(5);
+    expect(result.excludedByBudget).toBe(0);
+    expect(result.excludedShare).toBe(0.5);
+  });
+
+  it('applies and reports the word budget independently from maxEntities', () => {
+    const longContent = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+    rem(setup.memory, {
+      name: 'Verbose Current State',
+      type: 'fact',
+      content: longContent,
+      confidence: 0.99,
+      domain: 'development',
+    });
+    rem(setup.memory, {
+      name: 'Short Durable Fact',
+      type: 'fact',
+      content: 'Still useful.',
+      confidence: 0.8,
+      domain: 'development',
+    });
+
+    const exporter = new MemoryExporter({
+      semanticMemory: setup.memory,
+      maxEntities: 10,
+      wordBudget: 12,
+    });
+    const result = exporter.generate();
+
+    expect(result.markdown).not.toContain('Verbose Current State');
+    expect(result.markdown).toContain('Short Durable Fact');
+    expect(result.entityCount).toBe(1);
+    expect(result.excludedByCap).toBe(0);
+    expect(result.excludedByBudget).toBe(1);
+    expect(result.excludedCount).toBe(1);
+    expect(result.excludedShare).toBe(0.5);
+    expect(result.wordBudget).toBe(12);
+    expect(result.selectedEntityWords).toBeLessThanOrEqual(12);
+    expect(result.actualWords).toBeGreaterThan(0);
+    expect(result.wordsPerIncludedEntity).toBeGreaterThan(0);
+    expect(result.markdown).toContain('Selection health:');
   });
 
   // 9. Sort by confidence descending
@@ -302,6 +343,11 @@ describe('MemoryExporter', () => {
 
     expect(result.entityCount).toBe(5); // 6 seeded, 1 below threshold
     expect(result.excludedCount).toBe(1);
+    expect(result.excludedByCap).toBe(0);
+    expect(result.excludedByBudget).toBe(0);
+    expect(result.wordBudget).toBe(5000);
+    expect(result.selectedEntityWords).toBeGreaterThan(0);
+    expect(result.actualWords).toBeGreaterThan(0);
     expect(result.domainCount).toBeGreaterThanOrEqual(3);
     expect(result.estimatedTokens).toBeGreaterThan(0);
     expect(result.estimatedTokens).toBe(Math.ceil(result.markdown.length / 4));

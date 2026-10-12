@@ -108,6 +108,47 @@ describe('SemanticMemory', () => {
       expect(result!.entity.tags).toContain('deployment');
     });
 
+    it('defaults session-scoped observations to expiring while durable facts remain permanent', () => {
+      const before = Date.now();
+      const sessionId = setup.memory.remember({
+        type: 'fact',
+        name: 'Current blocked status',
+        content: 'The build is currently red.',
+        confidence: 0.7,
+        lastVerified: new Date().toISOString(),
+        source: 'session:abc',
+        sourceSession: 'abc',
+        tags: ['status'],
+      });
+      const durableId = setup.memory.remember({
+        type: 'fact',
+        name: 'Stable deploy target',
+        content: 'Production deploys from main.',
+        confidence: 0.9,
+        lastVerified: new Date().toISOString(),
+        source: 'operator-note',
+        tags: ['deployment'],
+      });
+      const explicitId = setup.memory.remember({
+        type: 'fact',
+        name: 'Explicit expiry',
+        content: 'Expires when the caller says.',
+        confidence: 0.8,
+        lastVerified: new Date().toISOString(),
+        source: 'operator-note',
+        expiresAt: '2030-01-01T00:00:00.000Z',
+        tags: [],
+      });
+
+      const sessionExpiry = setup.memory.recall(sessionId)!.entity.expiresAt;
+      expect(sessionExpiry).toBeTruthy();
+      const expiresAt = Date.parse(sessionExpiry!);
+      expect(expiresAt).toBeGreaterThan(before + (71 * 60 * 60 * 1000));
+      expect(expiresAt).toBeLessThan(Date.now() + (73 * 60 * 60 * 1000));
+      expect(setup.memory.recall(durableId)!.entity.expiresAt).toBeUndefined();
+      expect(setup.memory.recall(explicitId)!.entity.expiresAt).toBe('2030-01-01T00:00:00.000Z');
+    });
+
     it('returns null for non-existent entity', () => {
       const result = setup.memory.recall('non-existent-id');
       expect(result).toBeNull();

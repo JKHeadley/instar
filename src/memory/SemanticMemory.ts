@@ -149,6 +149,24 @@ const FTS_STOPWORDS = new Set([
   'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
 ]);
 
+const EPHEMERAL_SESSION_ENTITY_TTL_MS = 72 * 60 * 60 * 1000;
+
+function defaultExpiresAtForSemanticWrite(input: {
+  source: string;
+  sourceSession?: string;
+  expiresAt?: string;
+}): string | null {
+  if (input.expiresAt !== undefined) return input.expiresAt;
+  const source = input.source.toLowerCase();
+  const sessionScoped = Boolean(input.sourceSession)
+    || source.startsWith('session:')
+    || source === 'observation'
+    || source.startsWith('activity-digest:')
+    || source.startsWith('digest:');
+  if (!sessionScoped) return null;
+  return new Date(Date.now() + EPHEMERAL_SESSION_ENTITY_TTL_MS).toISOString();
+}
+
 /**
  * Build the two FTS5 match expressions a recall query needs.
  *
@@ -1039,6 +1057,7 @@ export class SemanticMemory {
     const db = this.ensureOpen();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const expiresAt = defaultExpiresAtForSemanticWrite(input);
 
     db.prepare(`
       INSERT INTO entities (id, type, name, content, confidence, created_at, last_verified, last_accessed, expires_at, source, source_session, tags, domain, owner_id, privacy_scope)
@@ -1052,7 +1071,7 @@ export class SemanticMemory {
       now,
       input.lastVerified,
       now,
-      input.expiresAt ?? null,
+      expiresAt,
       input.source,
       input.sourceSession ?? null,
       JSON.stringify(input.tags),
@@ -1069,7 +1088,7 @@ export class SemanticMemory {
         entity: {
           id, type: input.type, name: input.name, content: input.content,
           confidence: input.confidence, createdAt: now, lastVerified: input.lastVerified,
-          lastAccessed: now, expiresAt: input.expiresAt ?? null,
+          lastAccessed: now, expiresAt,
           source: input.source, sourceSession: input.sourceSession ?? null,
           tags: input.tags, domain: input.domain ?? null,
           ownerId: input.ownerId ?? null, privacyScope: input.privacyScope ?? 'shared-project',
@@ -1079,7 +1098,7 @@ export class SemanticMemory {
     this._lastRememberedEntity = {
       id, type: input.type, name: input.name, content: input.content,
       confidence: input.confidence, createdAt: now, lastVerified: input.lastVerified,
-      lastAccessed: now, expiresAt: input.expiresAt ?? null,
+      lastAccessed: now, expiresAt,
       source: input.source, sourceSession: input.sourceSession ?? null,
       tags: input.tags, domain: input.domain ?? null,
       ownerId: input.ownerId ?? null, privacyScope: input.privacyScope ?? 'shared-project',

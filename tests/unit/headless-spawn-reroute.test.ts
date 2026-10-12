@@ -170,6 +170,23 @@ describe('headless-spawn reroute', () => {
     expect(saved.maxLifetimeMinutes).toBeUndefined();
   });
 
+  it('scoped job allowlist uses permission-mode, not skip-permissions', async () => {
+    const { manager } = makeManager({}, tmpDir);
+    await manager.spawnSession({
+      name: 'job-scoped',
+      prompt: 'read only task',
+      model: 'haiku',
+      allowedTools: ['Read'],
+    });
+
+    const launch = launchArgvFrom(lastNewSessionArgv(), CLAUDE);
+    expect(launch).not.toContain('--dangerously-skip-permissions');
+    expect(launch).toContain('--allowedTools');
+    expect(launch).toContain('Read');
+    expect(launch).toContain('--permission-mode');
+    expect(launch).toContain('dontAsk');
+  });
+
   it('V1: mode off → identical headless argv (no reroute, no -x/-y interactive geometry)', async () => {
     const { manager } = makeManager({ mode: 'off' }, tmpDir);
     await manager.spawnSession({ name: 'job-off', prompt: 'p' });

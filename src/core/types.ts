@@ -1471,6 +1471,12 @@ export interface EvolutionProposal {
   implementedAt?: string;
   /** Implementation notes */
   resolution?: string;
+  /**
+   * Durable proof that an implemented proposal exists outside the working tree.
+   * HTTP status transitions to `implemented` require at least one resolving
+   * committed object, so a dirty worktree can never satisfy completion.
+   */
+  implementationEvidence?: ProposalImplementationEvidence[];
   /** Tags for categorization */
   tags?: string[];
   /**
@@ -1501,6 +1507,62 @@ export type EvolutionStatus =
   | 'rejected'       // Evaluated and decided against
   | 'deferred';      // Good idea but not now
 
+export interface ProposalImplementationEvidence {
+  /** Git ref, branch, tag, or commit SHA that resolves at check time */
+  ref: string;
+  /** Path expected to exist in the committed tree */
+  path?: string;
+  /** Optional object SHA observed by the checker */
+  objectSha?: string;
+  /** Optional note naming the checker/instrument used */
+  note?: string;
+}
+
+export interface EvolutionEvidenceLine {
+  /** What was inspected (route, process, rendered output, store window, etc.) */
+  instrument: string;
+  /** The result that would have refuted this line */
+  disconfirmation: string;
+  /** Population/window measured; required so a zero/selected sample cannot masquerade as a verdict */
+  denominator: string | number;
+  /** What was actually observed */
+  observed: string;
+  /** For HTTP instruments, proof that known-present and known-absent probes diverged */
+  httpPreflight?: {
+    present: string;
+    absent: string;
+    presentStatus?: number;
+    absentStatus?: number;
+    presentSample?: string;
+    absentSample?: string;
+  };
+}
+
+export interface LearningConsumerEvidence {
+  /** Consumer inspected: live argv, rendered view, visible slice, route, etc. */
+  consumer: string;
+  /** What was seen at that consumer */
+  observed: string;
+  /** What result would have refuted the consequence claim */
+  disconfirmation: string;
+  /** Population/window measured when the claim is numeric or capped */
+  denominator: string | number;
+}
+
+export interface LearningRemedy {
+  /** Action or recipe the future reader may take */
+  action: string;
+  /** Preconditions that must still hold before the remedy is followed */
+  assumes: string[];
+}
+
+export interface LearningReproductionStep {
+  /** Exact command, URL+headers, or invocation; not just the path */
+  invocation: string;
+  cwd?: string;
+  note?: string;
+}
+
 /**
  * Structured learning entry — an insight captured from interaction.
  *
@@ -1516,6 +1578,10 @@ export interface LearningEntry {
   category: string;
   /** Full description of the insight */
   description: string;
+  /** Durable diagnosis separated from any perishable remedy */
+  diagnosis?: string;
+  /** Optional remedy, valid only while its assumptions still hold */
+  remedy?: LearningRemedy;
   /** Where this learning came from */
   source: LearningSource;
   /** Tags for cross-referencing */
@@ -1524,6 +1590,20 @@ export interface LearningEntry {
   applied: boolean;
   /** What it was applied to (e.g., "EVO-003", "MEMORY.md") */
   appliedTo?: string;
+  /** Explicit marker for learnings that assert a behavioral consequence */
+  consequenceAsserted?: boolean;
+  /** Consumer-side evidence required before consequence-bearing apply */
+  consumerEvidence?: LearningConsumerEvidence[];
+  /** Evidence lines with a disconfirmation condition and denominator */
+  evidenceLines?: EvolutionEvidenceLine[];
+  /** Exact reproduction commands/requests, including headers/query/cwd */
+  reproductionSteps?: LearningReproductionStep[];
+  /** Learning that refuted/superseded this one */
+  supersededBy?: string;
+  /** When supersession was recorded */
+  supersededAt?: string;
+  /** Why this learning was reopened/superseded */
+  supersedeReason?: string;
   /** How relevant this is to agent evolution (freeform) */
   evolutionRelevance?: string;
 }
@@ -7355,7 +7435,7 @@ export interface BackupSnapshot {
   /** When this snapshot was created */
   createdAt: string;
   /** What triggered this snapshot */
-  trigger: 'auto-session' | 'manual' | 'pre-update' | 'feedback-hourly' | 'feedback-promotion' | 'feedback-failover';
+  trigger: 'auto-session' | 'manual' | 'pre-update' | 'agent-hourly' | 'feedback-hourly' | 'feedback-promotion' | 'feedback-failover';
   /** Files included in this snapshot */
   files: string[];
   /** Total size in bytes */

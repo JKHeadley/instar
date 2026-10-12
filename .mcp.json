@@ -6,6 +6,16 @@
         "-y",
         "@playwright/mcp@latest"
       ]
+    },
+    "threadline": {
+      "command": "node",
+      "args": [
+        "/Users/dabombstudio/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/threadline/mcp-stdio-entry.js",
+        "--state-dir",
+        "/Users/dabombstudio/.instar/agents/echo/.instar",
+        "--agent-name",
+        "echo"
+      ]
     }
   }
 }

@@ -979,6 +979,7 @@ ${APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION(port)}
 - What is this topic pinned to? \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-profile/TOPIC_ID\` — Registry First: read it, never guess (no entry = the topic runs on defaults).
 - Why/when did a pin change? Read \`logs/topic-profile-changes.jsonl\` — the per-change audit (who set what, when, old → new).
 - A pinned model/framework that is no longer available falls back to defaults with a once-per-transition notice — the session keeps working; a pin is never a block.
+- Codex topic profiles may pin \`gpt-6-astra\`; Instar validates it as a subscription-backed Codex model and passes the exact id to the Codex CLI.
 - A baseline pin does NOT disable the heavy-work ultra escalation (\`escalationOverride: 'inherit'\` is the default); it steps aside only when the operator explicitly opts the topic out (\`'suppress'\`).
 - Config: \`.instar/config.json\` → \`topicProfiles\` (\`dryRun\`, debounce windows, stagger cap, breaker threshold; \`defaults\` = per-topic config-default model/thinking). Writes ship dark behind the dev-agent gate with \`dryRun: true\` (intended respawns are logged, not performed); resolution (reads) is always on.
 

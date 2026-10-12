@@ -84,10 +84,42 @@ describe('GET /metrics/features (integration)', () => {
       errorRate: null,
     });
     expect(res.body.features.find((f: any) => f.feature === 'UnclassifiedLlmGate')).toMatchObject({
+      classified: 0,
       unclassified: 1,
       fireRate: null,
       fireRateInsufficientEvidence: true,
     });
+  });
+
+  it('returns denominator-aware effectiveness findings', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    for (let i = 0; i < 55; i++) ledger.record({ feature: 'durable-output-scrub', outcome: 'noop' });
+    for (let i = 0; i < 55; i++) ledger.record({ feature: 'UnjustifiedStopGate', outcome: 'unclassified' });
+    for (let i = 0; i < 55; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'error' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals.classified).toBe(55);
+    expect(res.body.effectiveness).toMatchObject({
+      status: 'attention',
+      minimumCalls: 50,
+      components: [
+        expect.objectContaining({
+          feature: 'UnjustifiedStopGate',
+          verdict: 'unmeasured',
+          severity: 'high',
+          classified: 0,
+        }),
+        expect.objectContaining({
+          feature: 'durable-output-scrub',
+          verdict: 'null-effect',
+          severity: 'normal',
+          classified: 55,
+        }),
+      ],
+    });
+    expect(res.body.effectiveness.components.some((c: any) => c.feature === 'ProfileIntentClassifier')).toBe(false);
   });
 
   it('surfaces component-level reliability instead of masking it behind the aggregate', async () => {

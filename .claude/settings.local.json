@@ -47,7 +47,14 @@
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
     }
-  }
+  },
+  "enabledMcpjsonServers": [
+    "playwright",
+    "threadline"
+  ]
 }

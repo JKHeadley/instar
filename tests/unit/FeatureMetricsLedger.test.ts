@@ -39,6 +39,7 @@ describe('FeatureMetricsLedger', () => {
     expect(tone.tokensOut).toBe(50);
     expect(tone.fired).toBe(1);
     expect(tone.noop).toBe(1);
+    expect(tone.classified).toBe(2);
     expect(tone.fireRate).toBeCloseTo(0.5, 5);
     expect(tone.errorRate).toBe(0);
     expect(tone.maxLatencyMs).toBe(700);
@@ -106,6 +107,45 @@ describe('FeatureMetricsLedger', () => {
       fireRateInsufficientEvidence: true,
       errorRate: 0,
     });
+  });
+
+  it('separates null-effect from unmeasured verdict gaps by classified denominator', () => {
+    const l = newLedger();
+    for (let i = 0; i < 60; i++) l.record({ feature: 'durable-output-scrub', outcome: 'noop' });
+    for (let i = 0; i < 60; i++) l.record({ feature: 'MessagingToneGate', outcome: 'unclassified' });
+    for (let i = 0; i < 45; i++) l.record({ feature: 'TinyUnmeasured', outcome: 'unclassified' });
+    for (let i = 0; i < 55; i++) l.record({ feature: 'ProfileIntentClassifier', outcome: 'error' });
+
+    const s = l.summary();
+
+    expect(s.features.find((f) => f.feature === 'durable-output-scrub')).toMatchObject({
+      classified: 60,
+      fireRate: 0,
+    });
+    expect(s.effectiveness).toMatchObject({
+      status: 'attention',
+      minimumCalls: 50,
+    });
+    expect(s.effectiveness.components).toEqual([
+      expect.objectContaining({
+        feature: 'MessagingToneGate',
+        verdict: 'unmeasured',
+        severity: 'high',
+        safetyCritical: true,
+        classified: 0,
+        unclassified: 60,
+      }),
+      expect.objectContaining({
+        feature: 'durable-output-scrub',
+        verdict: 'null-effect',
+        severity: 'normal',
+        safetyCritical: false,
+        classified: 60,
+        fired: 0,
+      }),
+    ]);
+    expect(s.effectiveness.components.some((c) => c.feature === 'TinyUnmeasured')).toBe(false);
+    expect(s.effectiveness.components.some((c) => c.feature === 'ProfileIntentClassifier')).toBe(false);
   });
 
   it('frameworks/models are empty arrays when never recorded', () => {

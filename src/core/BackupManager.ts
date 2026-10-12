@@ -148,6 +148,31 @@ const DEFAULT_CONFIG: BackupConfig = {
   ],
 };
 
+const DISCOVERY_EXCLUDED_PREFIXES = [
+  'backups/',
+  'tmp/',
+  'sessions/',
+  'hook-events/',
+  'logs/',
+  'node_modules/',
+] as const;
+
+const DISCOVERY_EXCLUDED_BASENAMES = new Set([
+  'feature-metrics.db',
+  'feature-metrics.db-wal',
+  'feature-metrics.db-shm',
+  'resource-ledger.db',
+  'resource-ledger.db-wal',
+  'resource-ledger.db-shm',
+]);
+
+export interface BackupCoverageReport {
+  durableStores: string[];
+  includedFiles: string[];
+  uncoveredStores: string[];
+  excludedStores: string[];
+}
+
 /**
  * Expand a single glob-style entry (only trailing `*` is supported) against
  * a directory. Returns literal filenames to copy. Safe against path traversal —
@@ -169,6 +194,14 @@ function expandGlob(stateDir: string, entry: string): string[] {
   } catch {
     return [];
   }
+}
+
+function isDiscoverableDurableStore(relPath: string): boolean {
+  const normalized = path.normalize(relPath).replace(/\\/g, '/');
+  if (isDeniedForBackup(normalized)) return false;
+  if (DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return false;
+  if (DISCOVERY_EXCLUDED_BASENAMES.has(path.basename(normalized))) return false;
+  return /\.(db|sqlite)(?:-(?:wal|shm))?$/.test(normalized);
 }
 
 export class BackupManager {
@@ -231,7 +264,7 @@ export class BackupManager {
     const remediationExclusionActive = this.isRemediationEnabled
       ? this.isRemediationEnabled()
       : false;
-    for (const entry of this.config.includeFiles) {
+    for (const entry of [...this.config.includeFiles, ...this.discoverDurableStoreFiles()]) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
       // UNCONDITIONAL never-backup segments (spec §3.5) — no flag gates this.
@@ -260,6 +293,44 @@ export class BackupManager {
       }
     }
     return expanded;
+  }
+
+  discoverDurableStoreFiles(): string[] {
+    const out: string[] = [];
+    const pending = [''];
+    while (pending.length > 0) {
+      const relDir = pending.pop()!;
+      const absDir = path.join(this.stateDir, relDir);
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(absDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        const rel = relDir ? path.join(relDir, entry.name) : entry.name;
+        const normalized = path.normalize(rel).replace(/\\/g, '/');
+        if (entry.isSymbolicLink()) continue;
+        if (entry.isDirectory()) {
+          if (DISCOVERY_EXCLUDED_PREFIXES.some((prefix) => `${normalized}/`.startsWith(prefix))) continue;
+          if (isDeniedForBackup(`${normalized}/`)) continue;
+          pending.push(normalized);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (isDiscoverableDurableStore(normalized)) out.push(normalized);
+      }
+    }
+    return Array.from(new Set(out)).sort();
+  }
+
+  coverageReport(): BackupCoverageReport {
+    const durableStores = this.discoverDurableStoreFiles();
+    const includedFiles = this.resolveIncludedFiles();
+    const includedSet = new Set(includedFiles.map((p) => path.normalize(p).replace(/\\/g, '/')));
+    const uncoveredStores = durableStores.filter((p) => !includedSet.has(p));
+    const excludedStores = durableStores.filter((p) => DISCOVERY_EXCLUDED_BASENAMES.has(path.basename(p)));
+    return { durableStores, includedFiles, uncoveredStores, excludedStores };
   }
 
   /**

@@ -113,6 +113,38 @@ describe('parseUsageFromTail', () => {
     expect(snap!.primary!.usedPercent).toBe(40);
     expect(snap!.secondary).toBeNull();
   });
+
+  it('keeps the newest usable codex event when an empty premium event follows it', () => {
+    const codex = tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 100, secondaryUsed: 100 });
+    const premium = JSON.stringify({
+      timestamp: '2026-05-30T19:22:00.200Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rate_limits: {
+          limit_id: 'premium',
+          primary: null,
+          secondary: null,
+          plan_type: 'plus',
+        },
+      },
+    });
+    const snap = parseUsageFromTail(`${codex}\n${premium}`, '/x/rollout-x.jsonl', NOW_MS);
+    expect(snap).not.toBeNull();
+    expect(snap!.primary!.usedPercent).toBe(100);
+    expect(snap!.secondary!.usedPercent).toBe(100);
+    expect(snap!.capturedAt).toBe('2026-05-30T19:22:00.000Z');
+  });
+
+  it('ignores a non-codex event even when it contains unrelated windows', () => {
+    const codex = tokenCountLine({ ts: '2026-05-30T19:21:00.000Z', primaryUsed: 20, secondaryUsed: 40 });
+    const premium = tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 99, secondaryUsed: 99 });
+    const premiumRecord = premium.replace('"limit_id":"codex"', '"limit_id":"premium"');
+    const snap = parseUsageFromTail(`${codex}\n${premiumRecord}`, '/x/rollout-x.jsonl', NOW_MS);
+    expect(snap!.primary!.usedPercent).toBe(20);
+    expect(snap!.secondary!.usedPercent).toBe(40);
+    expect(snap!.capturedAt).toBe('2026-05-30T19:21:00.000Z');
+  });
 });
 
 describe('readLatestCodexUsage', () => {

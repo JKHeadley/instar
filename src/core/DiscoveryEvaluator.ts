@@ -331,7 +331,12 @@ export class DiscoveryEvaluator {
 
     // Sort by priority and cap
     eligible.sort((a, b) => a.priority - b.priority);
-    return eligible.slice(0, this.limits.maxFeaturesPerEval).map(e => e.feature);
+    const suppressedCount = Math.max(0, eligible.length - this.limits.maxFeaturesPerEval);
+    const result = eligible.slice(0, this.limits.maxFeaturesPerEval).map(e => e.feature);
+    if (suppressedCount > 0) {
+      console.log(`[DiscoveryEvaluator] Feature cap enforced: ${result.length} eligible, ${suppressedCount} suppressed (maxFeaturesPerEval=${this.limits.maxFeaturesPerEval})`);
+    }
+    return result;
   }
 
   // ── Prompt Building ──────────────────────────────────────────────

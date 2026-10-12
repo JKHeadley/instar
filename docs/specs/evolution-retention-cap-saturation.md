@@ -11,10 +11,106 @@ lessons-engaged:
   - "Close the Loop — the pending-side policy (§4) is the half that actually bounds growth; shipping §3 alone is the trap this spec exists to name."
 review-convergence: "pending"
 approved: false
-status: "draft — awaiting /spec-converge, then operator approval"
+status: "draft — 2026-09-12 design correction; preservation and replication review unresolved"
 ---
 
 # Evolution-store retention: a cap that cannot bind
+
+## Current design correction — 2026-09-12
+
+**This section supersedes conflicting assumptions in the original design below. This spec is
+not converged or approved for implementation.** Fresh upstream main
+`df491e6b8130e10014064c2733171cc1df7f2a35` (1.3.1237) still carries all four slice defects.
+The current action queue has 300 records: 15 pending, 6 in progress, 5 completed and 274
+cancelled (293,940 bytes). The historical 350-active example is a useful regression fixture,
+not today's measured state.
+
+The constitution inspection checked 91 standards and flagged **Archiving May Never Mean
+Deleting**. Applied learnings remain memory: an applied flag is not permission to erase them.
+Before activating the slice correction, preserve full content in a durable, accessible archive
+and distinguish removal from an operational view from destruction of memory. A backup promise
+or an emitted tombstone does not prove preservation. The current draft does not yet specify
+that protocol and therefore cannot authorize the destructive correction in section 3.
+
+The proposed pending-work policy is now concrete: **preserve active work and describe the
+soft total retention target honestly**. Use `retentionTargets: {proposals, learnings, gaps,
+actions}`, accepting the four existing `max*` settings as deprecated aliases. Explicit new
+values take precedence, then existing values, then the current defaults. Validate finite
+nonnegative integers; preserve zero via nullish defaulting; invalid input never authorizes
+additional removal. Migration adds only missing values. This choice is proposed for review,
+not a claim of operator approval.
+
+`maxTerminalRetained`, suggested in the original proposal, would misdescribe the algorithm:
+a target of 300 with 200 active entries allows 100 terminal entries. The target is shared
+between active and terminal records, and active work can exceed it. This policy neither
+provides a hard capacity bound nor bounds the whole-file rewrite cost.
+
+Current upstream already implements opt-in, dry-run-first `runActionAutoExpirySweep()`.
+The old assertion that nothing removes pending actions is false. Retention must not enable
+that facility or change its critical/pinned/future-due protections.
+
+Statistics must describe the population actually retained. All four save methods currently
+compute their stats before pruning. Recompute from post-retention records, preserve existing
+fields and add `total`, `active`, `terminalRetained`, `target`, `terminalAllowance` and
+`overflow`. Read-side reports must handle stale cached stats in older files. An unreadable
+store is unknown, never a healthy empty store. A read-only overflow signal is not evidence
+that the proposal's requested alarm was delivered; that delivery remains a design requirement.
+
+Initial independent review found two more foundation risks. Record allocators choose the
+first unused local number, so removing an old record can let a stale reference target new
+work. Also, local persistence precedes best-effort tombstone emission; an emission failure
+has no proven durable retry. Increased pruning requires a compatible identity/reference
+contract and crash-safe replication behavior before rollout. The original unconditional
+claim that existing tombstones make this correction safe is withdrawn.
+
+Review evidence: `.instar/reports/evolution-implementation-20260912/`, including the
+constitution response and independent findings. These are initial design reviews, not a
+completed convergence process. No source patch is authorized by this correction.
+
+## Decision points touched
+
+| Decision | Classification | Justification / conservative floor |
+|---|---|---|
+| Preserve active work during retention | invariant | A size target grants no authority to abandon a commitment. |
+| Compute terminal allowance | invariant | Deterministic arithmetic over a valid target and inspected population. |
+| Resolve aliases and validate settings | invariant | New value, old value, default; invalid data cannot license removal. |
+| Preserve content and propagate view eviction | judgment-candidate | Preserve content/references on error; protocol and arbiter require further design. |
+| Escalate overflow | judgment-candidate | A signal grants no cleanup or messaging authority; ownership and escalation floor require further design. |
+
+## Frontloaded Decisions
+
+1. Preserve active records and use an honestly named soft total target.
+2. Preserve legacy settings through explicit precedence and idempotent migration.
+3. Do not enable or modify the independent pending-action auto-expiry facility.
+4. Report post-retention counts; keep unavailable measurements explicit.
+5. Preserve memory content before evicting operational records; local write success is not replication success.
+
+These are proposed decisions for eventual review, not an approval claim.
+
+## Multi-machine posture
+
+Default to unified state. Actions and learnings already have distinct replication seams;
+local `ACT-NNN` and `LRN-NNN` labels are not their cross-machine identities. Archive content
+must remain accessible when work transfers between machines. A declaration of locality or
+a read proxy is not a substitute for a valid memory replication contract. Operational
+diagnostics may report per-machine observations with explicit coverage, without claiming
+those counts describe an unmeasured unified population.
+
+## Open questions
+
+1. Define durable archive/readback, crash recovery, backup/restore and cross-machine availability
+   before applied learnings or other memory-bearing records leave the live store.
+2. Define durable removal emission and retry behavior using the real replicated-store consumer;
+   do not rely on a successful mock emitter or treat a peer's view eviction as erasure authority.
+3. Define nonreusable identities or compatible reference validation across allocation, TaskFlow,
+   PATCH routes and materialization so a stale reference cannot act on new work.
+4. Define the overflow alarm's owner, legitimate self-heal actions, deduplication, bounded
+   retries and escalation through existing authorities. Do not invent a destructive cleanup.
+5. Complete unified read contracts for proposals, gaps and archive content, including unavailable peers.
+
+These are agent-owned design tasks. This draft is not a request for operator sign-off.
+
+## Original design (historical; subject to the correction above)
 
 ## 1. The claim, and the measurement behind it
 

@@ -139,6 +139,7 @@ describe('resolveTierModel — §5.1', () => {
   });
 
   it('codex-cli enum accepts the GA GPT-5.6 family (gpt-5.6-sol/terra/luna)', () => {
+    expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-6-astra');
     expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-sol');
     expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-terra');
     expect(KNOWN_MODEL_IDS['codex-cli']).toContain('gpt-5.6-luna');

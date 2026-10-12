@@ -119,6 +119,8 @@ export interface FeatureRollup {
   models: string[];
   fired: number;
   noop: number;
+  /** Classified verdict denominator: fired + noop. */
+  classified: number;
   /** Successful real calls with no usable verdict classifier. */
   unclassified: number;
   errors: number;
@@ -143,6 +145,8 @@ export interface FeatureRollup {
 }
 
 export type FeatureReliabilityStatus = 'ok' | 'degraded' | 'failing';
+export type FeatureEffectivenessVerdict = 'null-effect' | 'unmeasured';
+export type FeatureEffectivenessSeverity = 'normal' | 'high';
 
 export interface FeatureReliabilityComponent {
   feature: string;
@@ -160,9 +164,43 @@ export interface FeatureReliabilitySummary {
   components: FeatureReliabilityComponent[];
 }
 
+export interface FeatureEffectivenessComponent {
+  feature: string;
+  verdict: FeatureEffectivenessVerdict;
+  severity: FeatureEffectivenessSeverity;
+  safetyCritical: boolean;
+  calls: number;
+  realCalls: number;
+  classified: number;
+  fired: number;
+  noop: number;
+  unclassified: number;
+  errors: number;
+  shed: number;
+  reason: string;
+}
+
+export interface FeatureEffectivenessSummary {
+  status: 'ok' | 'attention';
+  minimumCalls: number;
+  safetyCriticalFeatures: string[];
+  components: FeatureEffectivenessComponent[];
+}
+
 export const FEATURE_RELIABILITY_MINIMUM_CALLS = 20;
 export const FEATURE_RELIABILITY_DEGRADED_ERROR_RATE = 0.2;
 export const FEATURE_RELIABILITY_FAILING_ERROR_RATE = 0.5;
+export const FEATURE_EFFECTIVENESS_MINIMUM_CALLS = 50;
+
+const SAFETY_CRITICAL_FEATURES = new Set([
+  'MessagingToneGate',
+  'UnjustifiedStopGate',
+  'messaging-tone-gate',
+  'unjustified-stop-gate',
+  'self-stop',
+  'stop-gate',
+  'StopGate',
+]);
 
 /**
  * Component-level reliability snapshot. The aggregate is deliberately not an
@@ -194,6 +232,71 @@ export function summarizeFeatureReliability(
     minimumCalls: FEATURE_RELIABILITY_MINIMUM_CALLS,
     degradedErrorRate: FEATURE_RELIABILITY_DEGRADED_ERROR_RATE,
     failingErrorRate: FEATURE_RELIABILITY_FAILING_ERROR_RATE,
+    components,
+  };
+}
+
+/**
+ * Effectiveness snapshot for components whose "fired=0" would otherwise be
+ * ambiguous. Null-effect requires classified verdicts; zero classified rows is
+ * an instrumentation gap, with safety gates ranked first.
+ */
+export function summarizeFeatureEffectiveness(
+  features: Array<Pick<FeatureRollup, 'feature' | 'calls' | 'realCalls' | 'classified' | 'fired' | 'noop' | 'unclassified' | 'errors' | 'shed'>>,
+): FeatureEffectivenessSummary {
+  const components: FeatureEffectivenessComponent[] = [];
+  for (const f of features) {
+    if (f.calls < FEATURE_EFFECTIVENESS_MINIMUM_CALLS) continue;
+    const safetyCritical = SAFETY_CRITICAL_FEATURES.has(f.feature);
+    if (f.classified >= FEATURE_EFFECTIVENESS_MINIMUM_CALLS && f.fired === 0) {
+      components.push({
+        feature: f.feature,
+        verdict: 'null-effect',
+        severity: 'normal',
+        safetyCritical,
+        calls: f.calls,
+        realCalls: f.realCalls,
+        classified: f.classified,
+        fired: f.fired,
+        noop: f.noop,
+        unclassified: f.unclassified,
+        errors: f.errors,
+        shed: f.shed,
+        reason: 'classified verdict denominator met, but no call fired',
+      });
+      continue;
+    }
+    if (f.classified === 0 && f.errors < FEATURE_EFFECTIVENESS_MINIMUM_CALLS) {
+      components.push({
+        feature: f.feature,
+        verdict: 'unmeasured',
+        severity: safetyCritical ? 'high' : 'normal',
+        safetyCritical,
+        calls: f.calls,
+        realCalls: f.realCalls,
+        classified: 0,
+        fired: f.fired,
+        noop: f.noop,
+        unclassified: f.unclassified,
+        errors: f.errors,
+        shed: f.shed,
+        reason: safetyCritical
+          ? 'safety-critical component has no classified verdict denominator'
+          : 'component has no classified verdict denominator',
+      });
+    }
+  }
+  components.sort((a, b) => {
+    const sev = (b.severity === 'high' ? 1 : 0) - (a.severity === 'high' ? 1 : 0);
+    if (sev !== 0) return sev;
+    const verdict = a.verdict.localeCompare(b.verdict);
+    if (verdict !== 0) return verdict;
+    return b.calls - a.calls || a.feature.localeCompare(b.feature);
+  });
+  return {
+    status: components.length > 0 ? 'attention' : 'ok',
+    minimumCalls: FEATURE_EFFECTIVENESS_MINIMUM_CALLS,
+    safetyCriticalFeatures: Array.from(SAFETY_CRITICAL_FEATURES).sort(),
     components,
   };
 }
@@ -418,6 +521,7 @@ export interface UsageCoverageRow {
 export interface FeatureMetricsSummary {
   sinceMs: number;
   reliability: FeatureReliabilitySummary;
+  effectiveness: FeatureEffectivenessSummary;
   totals: {
     calls: number;
     realCalls: number;
@@ -428,6 +532,7 @@ export interface FeatureMetricsSummary {
     tokensCached: number;
     fired: number;
     noop: number;
+    classified: number;
     unclassified: number;
     errors: number;
     shed: number;
@@ -1143,6 +1248,7 @@ export class FeatureMetricsLedger {
         models: Array.from(modelByFeature.get(String(a.feature)) ?? []).sort(),
         fired,
         noop,
+        classified: classifiedCalls,
         unclassified: Number(a.unclassified) || 0,
         errors: Number(a.errors) || 0,
         llmErrors: Number(a.llmErrors) || 0,
@@ -1343,6 +1449,7 @@ export class FeatureMetricsLedger {
         acc.tokensCached += f.tokensCached;
         acc.fired += f.fired;
         acc.noop += f.noop;
+        acc.classified += f.classified;
         acc.unclassified += f.unclassified;
         acc.errors += f.errors;
         acc.shed += f.shed;
@@ -1351,7 +1458,7 @@ export class FeatureMetricsLedger {
       {
         calls: 0, realCalls: 0, llmCalls: 0, events: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0,
-        fired: 0, noop: 0, unclassified: 0, errors: 0, shed: 0,
+        fired: 0, noop: 0, classified: 0, unclassified: 0, errors: 0, shed: 0,
       },
     );
 
@@ -1367,6 +1474,7 @@ export class FeatureMetricsLedger {
     return {
       sinceMs,
       reliability: summarizeFeatureReliability(features),
+      effectiveness: summarizeFeatureEffectiveness(features),
       totals: { ...totals, byModel, usageCoverage, unlabeledTokenShare, unlabeledCallShare },
       features,
     };
