@@ -31,7 +31,10 @@ describe('server.ts wires the ACT-091 topic respawn', () => {
     expect(fn).toContain('spawning: spawningTopics');
     expect(fn).toContain("ownRec.ownerMachineId !== _meshSelfId");
     expect(fn).toContain('registeredSession: (topicId) => telegram.getSessionForTopic(topicId)');
-    expect(fn).toContain('sessionManager.injectPasteNotificationConfirmed(name, text)');
+    // ACT-091: the OBSERVED paste (submitted / stuck / queued-busy), mapped so a
+    // paste into a mid-turn session is provisional, never the bare boolean.
+    expect(fn).toContain('liveInjectOutcomeFromObservation(await sessionManager.injectPasteNotificationObserved(name, text))');
+    expect(fn).not.toContain('sessionManager.injectPasteNotificationConfirmed(name, text)');
     expect(fn).toContain('g3ShouldSpawnLocally(topicId)');
     expect(fn).toContain('classifySessionDeath(output');
     expect(fn).toContain("callsite: 'threadline-topic-respawn'");
