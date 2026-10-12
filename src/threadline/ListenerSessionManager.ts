@@ -36,6 +36,12 @@ export interface ListenerConfig {
   complexTaskThreshold: number;
   /** Minimum trust level for warm-session injection (default: 'trusted') */
   minTrustForWarmInjection: string;
+  /**
+   * How recent the inbox reader's last heartbeat must be for the listener to
+   * count as live, in ms (default: 60000). Optional so existing config objects
+   * stay valid.
+   */
+  readerHeartbeatMaxAgeMs?: number;
 }
 
 export interface InboxEntry {
@@ -58,8 +64,12 @@ export interface InboxEntry {
 }
 
 export interface ListenerState {
-  /** Whether the listener is active */
+  /** Whether a live reader is proven AND the listener is not dead/parked */
   active: boolean;
+  /** Whether an inbox reader's heartbeat is within the freshness bound */
+  readerLive: boolean;
+  /** ISO time of the reader's last heartbeat, or null when none was ever recorded */
+  lastReaderHeartbeatAt: string | null;
   /** Current state */
   state: 'starting' | 'listening' | 'parked' | 'rotating' | 'dead';
   /** Messages handled in current rotation */
@@ -81,6 +91,7 @@ const DEFAULT_CONFIG: ListenerConfig = {
   pollInterval: 500,
   complexTaskThreshold: 2000,
   minTrustForWarmInjection: 'trusted',
+  readerHeartbeatMaxAgeMs: 60_000,
 };
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -94,6 +105,13 @@ export class ListenerSessionManager {
   private messagesHandled = 0;
   private rotationStartedAt: Date;
   private state: ListenerState['state'] = 'dead';
+  /**
+   * When the inbox reader last proved it is alive (ms epoch), or null when no
+   * reader ever did. NOTHING in the product starts a listener session or reads
+   * the per-rotation inbox file today, so this stays null and the listener
+   * path is never taken: see `markReaderAlive` for who is expected to set it.
+   */
+  private lastReaderHeartbeatAt: number | null = null;
   private readonly replyClaims = new Map<string, string>();
   private readonly durableReplyClaimFailures = new Set<string>();
 
@@ -119,8 +137,11 @@ export class ListenerSessionManager {
       fs.mkdirSync(inboxDir, { recursive: true });
     }
 
-    // Ready to accept messages — set state to listening
-    this.state = 'listening';
+    // The inbox files are ready, but no reader is proven: `starting` until the
+    // first reader heartbeat (markReaderAlive). Constructing the manager used
+    // to set `listening`, which made shouldUseListener route messages into a
+    // file nothing read.
+    this.state = 'starting';
     this.loadDurableReplyClaimFailures();
   }
 
@@ -498,7 +519,11 @@ export class ListenerSessionManager {
    * Determine if a message should use the warm listener or cold-spawn.
    * This is the code-level trust gate — NOT an LLM instruction.
    */
-  shouldUseListener(trustLevel: string, textLength: number): boolean {
+  shouldUseListener(trustLevel: string, textLength: number, now: number = Date.now()): boolean {
+    // No proven live reader → the inbox is a file nobody reads. The caller
+    // falls through to the router path, which reports a real delivery.
+    if (!this.hasLiveReader(now)) return false;
+
     // Only trusted+ senders get warm-session injection
     const allowedTrustLevels = ['trusted', 'autonomous'];
     if (!allowedTrustLevels.includes(trustLevel)) return false;
@@ -513,6 +538,34 @@ export class ListenerSessionManager {
     if (this.getQueueDepth() >= this.config.overflowThreshold) return false;
 
     return true;
+  }
+
+  // ── Reader liveness ───────────────────────────────────────────────
+
+  /**
+   * Record that the inbox reader is alive right now.
+   *
+   * EXPECTED CALLER: whatever starts and supervises the warm listener session
+   * — the component that launches it with `buildBootstrapPrompt()` and can
+   * observe it working (each poll of the inbox, or each entry it acks). No
+   * such component exists yet, so nothing calls this in production and the
+   * listener path stays closed. It must be called repeatedly: one heartbeat
+   * only proves a reader for `readerHeartbeatMaxAgeMs`.
+   */
+  markReaderAlive(now: number = Date.now()): void {
+    this.lastReaderHeartbeatAt = now;
+    if (this.state === 'starting') this.state = 'listening';
+  }
+
+  /**
+   * Is a live inbox reader proven? True only when a heartbeat was recorded and
+   * is no older than `readerHeartbeatMaxAgeMs`. Never inferred from `state`.
+   */
+  hasLiveReader(now: number = Date.now()): boolean {
+    if (this.lastReaderHeartbeatAt === null) return false;
+    const maxAge = this.config.readerHeartbeatMaxAgeMs ?? 60_000;
+    const age = now - this.lastReaderHeartbeatAt;
+    return age >= 0 && age <= maxAge;
   }
 
   // ── Rotation ──────────────────────────────────────────────────────
@@ -599,7 +652,9 @@ export class ListenerSessionManager {
 
   getState(): ListenerState {
     return {
-      active: this.state !== 'dead' && this.state !== 'parked',
+      active: this.hasLiveReader() && this.state !== 'dead' && this.state !== 'parked',
+      readerLive: this.hasLiveReader(),
+      lastReaderHeartbeatAt: this.lastReaderHeartbeatAt === null ? null : new Date(this.lastReaderHeartbeatAt).toISOString(),
       state: this.state,
       messagesHandled: this.messagesHandled,
       queueDepth: this.getQueueDepth(),

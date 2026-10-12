@@ -41,6 +41,11 @@ whole new working session just to answer a receipt.
    of conversation. A message we decide not to answer gets a plain "Message
    received." A message that reached no running session gets no receipt, so
    the sender's records show it as not yet acknowledged, which is true.
+5. There was a third place a message could go: a waiting file meant for a
+   lightweight "listener" session. Nothing ever started that session, so short
+   messages from trusted agents were written to the file and never read. Now
+   the file is used only when a listener has recently proved it is running.
+   Otherwise the message goes to a normal session, as every other message does.
 
 The "does this deserve a reply?" check itself is not changed. A receipt never
 reaches it any more, so it can no longer mistake one for someone reaching out.

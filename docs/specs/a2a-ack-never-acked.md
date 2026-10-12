@@ -189,16 +189,63 @@ at the exit the handler actually takes, through `createRelayAckSettler` in
 | The inbound is an ack | (none — the stage returned) | none; an ack is never acked |
 | Warrants gate suppresses: a no-reply verdict or an exhausted loop budget | `no-reply` | `Message received.` (`NO_REPLY_ACK_MESSAGE`), which promises nothing |
 | A pipe session was created (`pipeSpawner.spawn` returned `spawned: true`) | `pipe-spawned` | the promising ack |
-| The message was appended to the warm-listener inbox | `listener-queued` | none |
+| The message was appended to the warm-listener inbox and a live reader is still proven | `listener-delivered` | the promising ack |
+| The message was appended to the warm-listener inbox and the reader's heartbeat went stale in between | `listener-queued` | none |
 | `ThreadlineRouter` returned `delivered === true` (cold spawn, resumed or warm session, topic session) | `router-delivered` | the promising ack |
-| `ThreadlineRouter` returned anything else (refused, queued, failed) | `router-undelivered` | none |
+| `ThreadlineRouter` returned anything else (refused, queued, failed) | `router-undelivered` | none; a queued refusal is logged as queued |
 | The handler threw before any exit | (never settled) | none |
 
-The listener inbox is a queue write and not a delivery:
+**A queued capacity refusal gets no ack.** When the spawn manager refuses a
+spawn for a transient reason (for example `Session limit reached (5/5)`), its
+refusal funnel tries to keep the message for a later spawn, and the router
+returns `queued: true` only when the queue actually admitted it (the queue
+refuses when it is globally full, or when a held backlog is at its per-agent
+cap). Either way the result is `router-undelivered`, and no ack is sent. We do
+not send a third fixed "received, queued" text either:
+
+- The queue is in memory, bounded per agent and globally, expires entries after
+  10 minutes, and a later arrival can evict an older entry. "Queued" is a hope
+  of a later session, not a hand-off to one.
+- A new ack text is recognised as an ack only through the `ack` wire type
+  (Design §2). A peer from before the wire type routes any ack text to a session
+  as a message, so a queued receipt would spend a session on that peer exactly
+  when our side has none to spare.
+
+The server log names the case ("queued for a later session spawn: Session
+limit reached (5/5) — no live session has it yet"), so a queued message is not
+read as a lost one. The ledger records it as `handoff-failed`, not as a
+hand-off, so a resend from the peer is delivered instead of being dropped by
+message id while the original waits in that bounded, expiring queue. If the
+queued message later reaches a session, that session's reply is the sender's
+acknowledgement.
+
+**The listener path needs a proven reader.**
 `ListenerSessionManager.writeToInbox` appends to a file and succeeds whether or
-not anything reads it, and the manager reports `listening` from construction
-without proof of a reader. If a listener does answer, its reply is the sender's
-acknowledgement, as any reply on a thread is.
+not anything reads it. The manager used to report `listening` from
+construction, so `shouldUseListener` sent short messages from trusted and
+autonomous senders on non-topic threads into that file although nothing in the
+product starts a listener session or reads it: the first ten such messages per
+server run were written and never consumed. The decision now lives in the
+manager and rests on proof:
+
+- The manager starts in state `starting` with no reader proven.
+- `markReaderAlive()` records a reader heartbeat. Its expected caller is
+  whatever starts and supervises a warm listener session; none exists yet, so
+  nothing calls it in production.
+- `hasLiveReader()` is true only while the last heartbeat is no older than
+  `readerHeartbeatMaxAgeMs` (default 60 s). It is never inferred from `state`.
+- `shouldUseListener` returns false without a live reader, so the handler falls
+  through to the router path, which spawns or resumes a session and reports
+  `delivered`. The trust, size, state and overflow rules are unchanged.
+- `getState()` (served at `/threadline/status`) adds `readerLive` and
+  `lastReaderHeartbeatAt`, and `active` now also requires a live reader.
+
+When the listener path is taken, a reader proved itself alive within the
+freshness bound, which is the same strength of proof as the other live
+hand-offs, so it gets the promising ack. The handler re-reads `hasLiveReader()`
+after the write; if the heartbeat went stale in between, the entry is only
+queued and no ack is sent. The canonical inbox, queue depth and reply-claim
+logic do not read `state` and are unaffected.
 
 No ack means the sender's delivery record keeps the message as unacknowledged,
 which is accurate when nothing live received it. The settler is one-shot: a
@@ -295,8 +342,13 @@ sniff key, framework-shadowed).
   (`ack-stage-wiring.test.ts`). Integration:
   `tests/integration/threadline/relay-ack-waits-for-delivery.test.ts` runs a
   first message on a new thread through the real router (spawned, denied,
-  queued), the real listener inbox with no reader, and the real client wire
-  encoding. E2E: over the real relay, a message that reaches no live session
+  queued), the real listener manager (no proven reader → router path and no
+  inbox file; fresh heartbeat → listener path; stale heartbeat → router path),
+  the real router over the real `SpawnRequestManager` (session limit reached →
+  queued, no ack, logged as queued; a free slot → delivered and acked; refused
+  with the queue full → not queued, no ack), and the real client wire encoding.
+  `tests/unit/ListenerSessionManager.test.ts`
+  covers the heartbeat on both sides of the freshness bound. E2E: over the real relay, a message that reaches no live session
   leaves the sender's record unacknowledged, and the next, delivered, is acked.
 
 ## Maturation plan

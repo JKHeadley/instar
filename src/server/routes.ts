@@ -36691,7 +36691,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/threadline/status', (_req, res) => {
     const relayClient = ctx.threadlineRelayClient;
     const connected = relayClient?.connectionState === 'connected';
-    const listenerState = ctx.listenerManager?.getState() ?? { active: false, state: 'not-configured', messagesHandled: 0, queueDepth: 0, rotationId: '', rotationStartedAt: '' };
+    const listenerState = ctx.listenerManager?.getState() ?? { active: false, readerLive: false, lastReaderHeartbeatAt: null, state: 'not-configured', messagesHandled: 0, queueDepth: 0, rotationId: '', rotationStartedAt: '' };
 
     res.json({
       ready: connected,

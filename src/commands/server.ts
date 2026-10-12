@@ -264,7 +264,7 @@ import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
 import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
-import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler } from '../threadline/autoAck.js';
+import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult } from '../threadline/autoAck.js';
 import { createThreadlineTopicRespawn } from '../threadline/topicRespawnHook.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
@@ -18530,7 +18530,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             { threadId: msg.threadId, senderFingerprint, senderName: senderName ?? null },
           );
           // ACT-091: any hand-off can reach no live consumer (a reaped topic
-          // session, a refused or queued spawn, an inbox file nobody reads), so
+          // session, a refused or queued spawn, a listener gone stale), so
           // our ack — which promises a reply — waits for the routing outcome on
           // EVERY path. Each terminal exit below calls relayAck.settle(...) just
           // before it returns; an exit that settles nothing (a throw) sends no
@@ -18674,8 +18674,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Phase 2a: Pipe-mode session for simple queries (lightweight, auto-exit)
           // Rapid-fire same-thread guard: if an active pipe session already exists for this
-          // thread, fall through to the listener/cold-spawn path so messages queue serially
-          // via ListenerSessionManager.writeToInbox instead of killing the prior tmux session.
+          // thread, fall through to the listener/router path instead of killing the prior
+          // tmux session. With no proven listener reader that is the router, which does not
+          // know about the pipe session: a second session may answer on the same thread.
           if (
             pipeSpawner &&
             msg.threadId &&
@@ -18723,6 +18724,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
 
           // Phase 2b: Route to warm listener if available and appropriate.
+          // shouldUseListener is false unless a live inbox reader is PROVEN (a
+          // fresh heartbeat); with none, the message falls through to the router
+          // below instead of being written to a file nothing reads.
           // EXCEPT topic-bound replies: a reply on a thread bound to a Telegram
           // topic must reach handleInboundMessage → TopicLinkageHandler so it
           // surfaces in the bound topic. The listener inbox is a side-channel
@@ -18735,12 +18739,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             listenerManager.writeToInbox({ from: senderFingerprint, senderName, trustLevel, threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint), text: ledgerNotice ? `[server notice: ${ledgerNotice}]\n\n${textContent}` : textContent });
             ledgerTicket?.recordHandoff('listener');
             console.log(`[relay] Routed to listener inbox from ${senderName} (trust: ${trustLevel})`);
-            // ACT-091: writeToInbox appends to a file and succeeds whether or
-            // not anything reads it — nothing here proves a live listener — so
-            // this is a queue write, not a delivery, and the promising ack is
-            // withheld. If a listener does answer, its reply is the sender's ack.
-            relayAck.settle('listener-queued');
-            console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${msg.threadId ?? 'none'}) — queued in the listener inbox; no live listener is proven`);
+            // ACT-091: shouldUseListener is true only while a reader's heartbeat
+            // is fresh (ListenerSessionManager.hasLiveReader), so this hand-off
+            // reaches a proven live reader and gets the promising ack. Re-read
+            // after the write: if the heartbeat went stale in between, the write
+            // is only a queue entry and the ack is withheld.
+            const listenerAck = relayAck.settle(listenerManager.hasLiveReader() ? 'listener-delivered' : 'listener-queued');
+            if (listenerAck === 'skipped-undelivered') {
+              console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${msg.threadId ?? 'none'}) — queued in the listener inbox; no live listener is proven`);
+            }
             return;
           }
 
@@ -18788,9 +18795,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           // ACT-091: the last exit — the ack follows the router's own report of
           // a live hand-off (cold spawn, resumed/warm session, topic session).
+          // A capacity refusal the spawn manager queued (`queued: true`) is
+          // still undelivered: no ack, logged as queued — the decision and its
+          // reasons are at describeUndeliveredRouterResult.
           const ackOutcome = relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered');
           if (ackOutcome === 'skipped-undelivered') {
-            console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${result.threadId}) — no live session received the message`);
+            console.warn(`[relay] Auto-ack withheld for ${senderName} (thread: ${result.threadId}) — ${describeUndeliveredRouterResult(result)}`);
           }
         }
 

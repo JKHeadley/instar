@@ -202,19 +202,28 @@ export function settleDeferredRelayAck(
  *
  *  - `pipe-spawned`       — a pipe session was created with the message as its
  *                           prompt. A live consumer has it.
- *  - `listener-queued`    — the message was appended to the warm-listener inbox
- *                           file. That write succeeds whether or not anything is
- *                           reading the file (`ListenerSessionManager` starts in
- *                           state `listening` and nothing in the server proves a
- *                           reader), so it is a queue write, NOT a delivery.
+ *  - `listener-delivered` — the message was appended to the warm-listener inbox
+ *                           and `ListenerSessionManager.hasLiveReader()` is
+ *                           still true: a reader proved itself alive within the
+ *                           freshness bound, so a live consumer has it.
+ *  - `listener-queued`    — the message was appended to the inbox but no live
+ *                           reader is proven at that moment (the heartbeat went
+ *                           stale between the routing check and the write). The
+ *                           write succeeds with nobody reading, so it is a queue
+ *                           write, NOT a delivery.
  *  - `router-delivered`   — `ThreadlineRouter` reported `delivered === true`.
  *  - `router-undelivered` — the router accepted, queued, refused or failed
- *                           without a live session receiving the message.
+ *                           without a live session receiving the message. This
+ *                           includes a capacity refusal the spawn manager
+ *                           QUEUED (`queued: true`, e.g. "Session limit reached
+ *                           (5/5)"). Deliberately no ack, and no separate
+ *                           "queued" receipt: see `describeUndeliveredRouterResult`.
  *  - `no-reply`           — the warrants-reply gate decided not to answer
  *                           (a no-reply verdict or an exhausted loop budget).
  */
 export type RelayRoutingOutcome =
   | 'pipe-spawned'
+  | 'listener-delivered'
   | 'listener-queued'
   | 'router-delivered'
   | 'router-undelivered'
@@ -227,9 +236,41 @@ export type RelayAckSettlement =
   /** `settle` was already called for this message; nothing more is sent. */
   | 'already-settled';
 
+/**
+ * The log wording for a router result that reached no live session.
+ *
+ * DECISION (ACT-091, queued spawns): a capacity refusal that the spawn manager
+ * queued (`queued: true`; only reported when `SpawnRequestManager`'s queue
+ * actually admitted the payload) keeps the message for a later spawn. It still
+ * gets NO ack, and we do not send a third fixed "received, queued" text:
+ *
+ *  - The queue is in memory, bounded per agent and globally, and expires entries
+ *    after 10 minutes, and a later arrival can evict an older entry. "Queued" is
+ *    a hope of a later session, not a hand-off to one, so a receipt would claim
+ *    more than we know.
+ *  - A new ack text is recognised as an ack only through the `ack` wire type.
+ *    `isAutoAckInbound` matches untyped text only when it is exactly
+ *    DEFAULT_AUTO_ACK_MESSAGE, and `looksLikeAutoAckText` (prefix "Message
+ *    received." / "Message received,") only spares a reply waiter and stops
+ *    nothing. A peer from before the wire type routes ANY ack text to a session
+ *    as a message, so a queued receipt would spend a session on that peer at the
+ *    moment our own side is out of sessions.
+ *
+ * If the queued message later reaches a session, that session's reply is the
+ * sender's acknowledgement. The wording below names the queued case so the log
+ * says "queued", not "lost".
+ */
+export function describeUndeliveredRouterResult(result: { queued?: boolean; error?: string }): string {
+  if (result.queued === true) {
+    const why = result.error ? `: ${result.error.replace(/^Spawn denied:\s*/, '')}` : '';
+    return `queued for a later session spawn${why} — no live session has it yet`;
+  }
+  return 'no live session received the message';
+}
+
 /** Did a live consumer receive the message on this outcome? */
 export function relayOutcomeDelivered(outcome: RelayRoutingOutcome): boolean {
-  return outcome === 'pipe-spawned' || outcome === 'router-delivered';
+  return outcome === 'pipe-spawned' || outcome === 'listener-delivered' || outcome === 'router-delivered';
 }
 
 export interface RelayAckSettler {

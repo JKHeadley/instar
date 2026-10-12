@@ -86,6 +86,8 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(settle).toBeGreaterThan(router);
     // Unconditional: no `if (deferSend)` / topic-bound guard between the router and the settle.
     expect(handler.slice(router, settle)).not.toMatch(/if \(relayAckInput\.deferSend\)|if \(isTopicBoundReply\)/);
+    // A queued capacity refusal is logged as queued, through the tested helper.
+    expect(handler.slice(settle)).toContain('— ${describeUndeliveredRouterResult(result)}`');
   });
 
   it('ACT-091: the warrants-gate suppress exit (no-reply verdict or loop budget) settles as no-reply BEFORE it returns', () => {
@@ -104,11 +106,33 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(handler.slice(spawned, settle)).not.toMatch(/^\s*\}/m); // same block as the spawned check
   });
 
-  it('ACT-091: the listener exit settles as a queue write, never as delivered', () => {
+  it('ACT-091: the listener path is taken only on ListenerSessionManager\'s own decision, and its ack follows the reader\'s liveness', () => {
+    // The "is a live reader proven?" decision lives in the manager, not inline here.
+    expect(handler).toContain('if (listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {');
+    expect(handler.split('listenerManager.writeToInbox(').length - 1).toBe(1);
+    const cond = handler.indexOf('listenerManager.shouldUseListener(');
     const write = handler.indexOf('listenerManager.writeToInbox(');
-    const settle = handler.indexOf("relayAck.settle('listener-queued');");
+    const settle = handler.indexOf("relayAck.settle(listenerManager.hasLiveReader() ? 'listener-delivered' : 'listener-queued')");
+    expect(write).toBeGreaterThan(cond);
     expect(settle).toBeGreaterThan(write);
     expect(handler.slice(write, settle)).not.toMatch(/return;/);
+    // The router call comes after the listener branch: it is the fall-through.
+    expect(handler.indexOf('threadlineRouter.handleInboundMessage(')).toBeGreaterThan(settle);
+  });
+
+  it('the manager refuses the listener path without a proven reader (source of the decision)', () => {
+    const mgr = read('src/threadline/ListenerSessionManager.ts');
+    const fn = mgr.slice(mgr.indexOf('shouldUseListener(trustLevel: string'), mgr.indexOf('// ── Reader liveness'));
+    expect(fn).toContain('if (!this.hasLiveReader(now)) return false;');
+    // Construction no longer claims a listener is ready, and only a heartbeat flips it.
+    expect(mgr).toContain("this.state = 'starting';");
+    expect(mgr.split("this.state = 'listening'").length - 1).toBe(1);
+    expect(mgr).toMatch(/markReaderAlive\(now: number = Date\.now\(\)\): void \{\s*this\.lastReaderHeartbeatAt = now;\s*if \(this\.state === 'starting'\) this\.state = 'listening';/);
+  });
+
+  it('nothing in the server marks a listener reader alive (no listener session exists to do it)', () => {
+    expect(src).not.toContain('.markReaderAlive(');
+    expect(read('src/server/routes.ts')).not.toContain('.markReaderAlive(');
   });
 
   it('ACT-091: no exit after the ack stage leaves without settling (the audit, pinned)', () => {

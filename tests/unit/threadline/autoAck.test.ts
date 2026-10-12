@@ -23,6 +23,7 @@ import {
   settleDeferredRelayAck,
   createRelayAckSettler,
   relayOutcomeDelivered,
+  describeUndeliveredRouterResult,
   type RelayRoutingOutcome,
   NO_REPLY_ACK_MESSAGE,
   type RelayAckStageDeps,
@@ -347,7 +348,14 @@ describe('relay ack settler (ACT-091 — the ack waits for the routing outcome o
     expect(d.sendAck).not.toHaveBeenCalled();
   });
 
-  it('queued in the listener inbox → no ack: a file write is not a live consumer', () => {
+  it('listener inbox with a proven live reader → the promising ack goes out once', () => {
+    const { d, result } = run('listener-delivered');
+    expect(result).toBe('sent');
+    expect(d.sendAck).toHaveBeenCalledTimes(1);
+    expect(d.sendAck).toHaveBeenCalledWith(PEER, DEFAULT_AUTO_ACK_MESSAGE, 'new-thread');
+  });
+
+  it('queued in the listener inbox with no live reader → no ack: a file write is not a live consumer', () => {
     const { d, result } = run('listener-queued');
     expect(result).toBe('skipped-undelivered');
     expect(d.sendAck).not.toHaveBeenCalled();
@@ -363,6 +371,7 @@ describe('relay ack settler (ACT-091 — the ack waits for the routing outcome o
   it('only a live hand-off counts as delivered', () => {
     expect(relayOutcomeDelivered('pipe-spawned')).toBe(true);
     expect(relayOutcomeDelivered('router-delivered')).toBe(true);
+    expect(relayOutcomeDelivered('listener-delivered')).toBe(true);
     expect(relayOutcomeDelivered('listener-queued')).toBe(false);
     expect(relayOutcomeDelivered('router-undelivered')).toBe(false);
     expect(relayOutcomeDelivered('no-reply')).toBe(false);
@@ -401,7 +410,7 @@ describe('relay ack settler (ACT-091 — the ack waits for the routing outcome o
       [{ autoAckEnabled: false }, {}],
       [{ isAckRateLimited: () => true }, {}],
     ] as const) {
-      for (const outcome of ['pipe-spawned', 'router-delivered', 'no-reply'] as const) {
+      for (const outcome of ['pipe-spawned', 'listener-delivered', 'router-delivered', 'no-reply'] as const) {
         const d = deps(over as Partial<RelayAckStageDeps>);
         const inp = input(i as Record<string, unknown>);
         runRelayAckStage(d, inp);
@@ -436,5 +445,27 @@ describe('relay ack settler (ACT-091 — the ack waits for the routing outcome o
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(createRelayAckSettler(d, input()).settle('router-delivered')).toBe('skipped-policy');
     err.mockRestore();
+  });
+});
+
+describe('queued capacity refusal (ACT-091) — no ack, logged as queued', () => {
+  it('names a queued spawn as queued, with the refusal reason, never as lost', () => {
+    expect(describeUndeliveredRouterResult({ queued: true, error: 'Spawn denied: Session limit reached (5/5). Priority medium insufficient to override.' }))
+      .toBe('queued for a later session spawn: Session limit reached (5/5). Priority medium insufficient to override. — no live session has it yet');
+    expect(describeUndeliveredRouterResult({ queued: true })).toBe('queued for a later session spawn — no live session has it yet');
+  });
+
+  it('a refusal that was NOT queued says no live session received it', () => {
+    expect(describeUndeliveredRouterResult({ queued: false, error: 'Spawn denied: Session limit reached (5/5).' })).toBe('no live session received the message');
+    expect(describeUndeliveredRouterResult({})).toBe('no live session received the message');
+  });
+
+  it('why there is no "queued" receipt: an untyped new ack text would not be recognised as an ack', () => {
+    const queuedText = 'Message received; queued until a session is available.';
+    // Recognised only with the wire type; as plain text it is content to any peer.
+    expect(isAutoAckInbound({ type: 'ack', text: queuedText })).toBe(true);
+    expect(isAutoAckInbound({ type: 'chat', text: queuedText })).toBe(false);
+    expect(isAutoAckInbound({ text: queuedText })).toBe(false);
+    expect(looksLikeAutoAckText(queuedText)).toBe(false);
   });
 });

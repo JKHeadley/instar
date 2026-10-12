@@ -9,8 +9,10 @@
  *
  *  - router spawned a session            → one promising ack on the wire;
  *  - router's spawn was denied or queued → nothing on the wire;
- *  - listener inbox written, no reader   → nothing on the wire (the write
- *    succeeds and the manager still reports `listening` with nobody reading);
+ *  - no proven listener reader          → the router path is taken and the
+ *    listener inbox file is never written (this used to lose the message);
+ *  - a fresh reader heartbeat           → the listener path, one promising ack;
+ *  - a stale heartbeat                  → the router path again;
  *  - nothing is on the wire before routing finishes.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -28,10 +30,13 @@ import {
   createAckRateLimiter,
   createRelayAckSettler,
   decodePlaintextPayload,
+  describeUndeliveredRouterResult,
   runRelayAckStage,
   type RelayAckStageDeps,
 } from '../../../src/threadline/autoAck.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { SpawnRequestManager } from '../../../src/messaging/SpawnRequestManager.js';
+import { outcomeFromRouterResult } from '../../../src/threadline/InboundIdLedger.js';
 import type { MessageEnvelope } from '../../../src/messaging/types.js';
 
 const PEER = 'd'.repeat(32);
@@ -133,18 +138,85 @@ describe('relay ack waits for delivery on a non-topic-bound thread (ACT-091)', (
     expect(wire).toHaveLength(0);
   });
 
-  it('the listener inbox accepts a write with no reader → queued, NO ack', () => {
+  /**
+   * The handler's Phase 2b + router fall-through, with the real manager and the
+   * real router: listener inbox only when the manager says a reader is proven,
+   * otherwise the router path.
+   */
+  async function route(listener: ListenerSessionManager, threadId: string, evaluate: ReturnType<typeof vi.fn>, now?: number) {
+    const relayAck = begin(threadId);
+    if (listener.shouldUseListener('trusted', 30, now)) {
+      listener.writeToInbox({ from: PEER, senderName: 'dawn', trustLevel: 'trusted', threadId, text: 'a first message on a new thread' });
+      return { path: 'listener' as const, ack: relayAck.settle(listener.hasLiveReader(now) ? 'listener-delivered' : 'listener-queued') };
+    }
+    const result = await router(evaluate).handleInboundMessage(envelope(threadId), relayCtx);
+    return { path: 'router' as const, result, ack: relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered') };
+  }
+  const approve = () => vi.fn().mockResolvedValue({ approved: true, sessionId: 'sid', tmuxSession: 'thread-worker', reason: 'ok' });
+
+  it('NO proven reader (the state of every install today) → the router path is taken and nothing is written to the inbox file', async () => {
     const threadId = crypto.randomUUID();
     const listener = new ListenerSessionManager(stateDir, 'auth-token');
-    // Nothing started a listener session and nothing reads the file, yet the
-    // manager routes to it and the write succeeds: this is why the hand-off
-    // cannot count as a delivery.
-    expect(listener.getState().state).toBe('listening');
-    expect(listener.shouldUseListener('trusted', 30)).toBe(true);
-    const relayAck = begin(threadId);
-    const entryId = listener.writeToInbox({ from: PEER, senderName: 'dawn', trustLevel: 'trusted', threadId, text: 'a first message on a new thread' });
-    expect(entryId).toBeTruthy();
-    expect(listener.getQueueDepth()).toBe(1); // written, unread, unacknowledged
+    expect(listener.getState()).toMatchObject({ state: 'starting', active: false, readerLive: false, lastReaderHeartbeatAt: null });
+    const evaluate = approve();
+    const out = await route(listener, threadId, evaluate);
+    expect(out.path).toBe('router');
+    expect(evaluate).toHaveBeenCalledTimes(1); // a session was spawned for the message
+    expect(out.ack).toBe('sent');
+    expect(acks()).toEqual([{ to: PEER, threadId, text: DEFAULT_AUTO_ACK_MESSAGE, type: 'ack', resend: false }]);
+    // The message is in no listener inbox: the file was never created and the queue is empty.
+    expect(fs.existsSync(listener.inboxPath)).toBe(false);
+    expect(listener.getQueueDepth()).toBe(0);
+  });
+
+  it('state `listening` without a heartbeat is still not a reader → router path, inbox untouched', async () => {
+    const listener = new ListenerSessionManager(stateDir, 'auth-token');
+    listener.setState('listening');
+    const evaluate = approve();
+    const out = await route(listener, crypto.randomUUID(), evaluate);
+    expect(out.path).toBe('router');
+    expect(fs.existsSync(listener.inboxPath)).toBe(false);
+  });
+
+  it('a proven FRESH reader → the listener path: written to the inbox, no session spawned, promising ack', async () => {
+    const threadId = crypto.randomUUID();
+    const listener = new ListenerSessionManager(stateDir, 'auth-token');
+    const t0 = Date.now();
+    listener.markReaderAlive(t0);
+    const evaluate = approve();
+    const out = await route(listener, threadId, evaluate, t0 + 5_000);
+    expect(out.path).toBe('listener');
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(listener.getQueueDepth()).toBe(1);
+    expect(listener.readInboxEntries()[0]).toMatchObject({ threadId, from: PEER, text: 'a first message on a new thread' });
+    expect(out.ack).toBe('sent');
+    expect(acks()).toEqual([{ to: PEER, threadId, text: DEFAULT_AUTO_ACK_MESSAGE, type: 'ack', resend: false }]);
+  });
+
+  it('a STALE heartbeat → back to the router path; the inbox gets nothing new', async () => {
+    const threadId = crypto.randomUUID();
+    const listener = new ListenerSessionManager(stateDir, 'auth-token');
+    const t0 = Date.now();
+    listener.markReaderAlive(t0);
+    const evaluate = approve();
+    const out = await route(listener, threadId, evaluate, t0 + 60_001);
+    expect(out.path).toBe('router');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(listener.getQueueDepth()).toBe(0);
+    expect(out.ack).toBe('sent'); // the router delivered it to a spawned session
+  });
+
+  it('no proven reader and the spawn is denied → not delivered, no ack, and still nothing in the inbox', async () => {
+    const listener = new ListenerSessionManager(stateDir, 'auth-token');
+    const out = await route(listener, crypto.randomUUID(), vi.fn().mockResolvedValue({ approved: false, reason: 'session limit reached' }));
+    expect(out.path).toBe('router');
+    expect(out.ack).toBe('skipped-undelivered');
+    expect(wire).toHaveLength(0);
+    expect(listener.getQueueDepth()).toBe(0);
+  });
+
+  it('the heartbeat goes stale between the routing check and the write → queued, NO ack', () => {
+    const relayAck = begin(crypto.randomUUID());
     expect(relayAck.settle('listener-queued')).toBe('skipped-undelivered');
     expect(wire).toHaveLength(0);
   });
@@ -172,5 +244,68 @@ describe('relay ack waits for delivery on a non-topic-bound thread (ACT-091)', (
     const threadId = crypto.randomUUID();
     expect(begin(threadId).settle('router-delivered')).toBe('sent');
     expect(wire).toHaveLength(1);
+  });
+
+  /** The real router over the REAL SpawnRequestManager — the production refusal and queue. */
+  function routerOverRealSpawns(opts: { active: number; maxSessions?: number; maxGlobalQueued?: number }) {
+    const spawnSession = vi.fn().mockResolvedValue({ sessionId: 'sid', tmuxSession: 'thread-worker' });
+    const spawns = new SpawnRequestManager({
+      maxSessions: opts.maxSessions ?? 5,
+      getActiveSessions: () => Array.from({ length: opts.active }, (_, i) => ({ id: `s${i}` }) as never),
+      spawnSession,
+      cooldownMs: 0,
+      ...(opts.maxGlobalQueued !== undefined ? { maxGlobalQueued: opts.maxGlobalQueued } : {}),
+    });
+    const store = { getThread: vi.fn().mockResolvedValue(null), exists: vi.fn(), save: vi.fn() };
+    const r = new ThreadlineRouter({ getThread: vi.fn().mockResolvedValue(null) } as never, spawns as never, new ThreadResumeMap(stateDir, dir), store as never,
+      { localAgent: 'echo', localMachine: 'local' }, null as never, null as never);
+    return { router: r, spawns, spawnSession };
+  }
+
+  async function routeAndSettle(r: ThreadlineRouter, threadId: string) {
+    const relayAck = begin(threadId);
+    const result = await r.handleInboundMessage(envelope(threadId), relayCtx);
+    const ack = relayAck.settle(result.delivered === true ? 'router-delivered' : 'router-undelivered');
+    return { result, ack };
+  }
+
+  it('the peer\'s case: "Session limit reached (5/5)" is QUEUED — no "Composing response" ack, logged as queued, not lost', async () => {
+    const threadId = crypto.randomUUID();
+    const { router: r, spawns, spawnSession } = routerOverRealSpawns({ active: 5 });
+    const { result, ack } = await routeAndSettle(r, threadId);
+    expect(result).toMatchObject({ handled: false, delivered: false, queued: true, accepted: true });
+    expect(result.error).toContain('Spawn denied: Session limit reached (5/5)');
+    expect(spawnSession).not.toHaveBeenCalled();
+    expect(spawns.getQueuedCount(PEER)).toBe(1); // the payload really is held for a later spawn
+    expect(ack).toBe('skipped-undelivered');
+    expect(wire).toHaveLength(0);
+    expect(describeUndeliveredRouterResult(result)).toMatch(/^queued for a later session spawn: Session limit reached \(5\/5\)/);
+    // Ledger: not a hand-off, so a resend is delivered rather than dropped by id
+    // while the original waits in a bounded, expiring, in-memory queue.
+    expect(outcomeFromRouterResult(result)).toEqual({ kind: 'handoff-failed' });
+  });
+
+  it('the same message with a free session slot is delivered and gets the ack', async () => {
+    const threadId = crypto.randomUUID();
+    const { router: r, spawnSession } = routerOverRealSpawns({ active: 4 });
+    const { result, ack } = await routeAndSettle(r, threadId);
+    expect(result).toMatchObject({ handled: true, delivered: true, spawned: true });
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+    expect(ack).toBe('sent');
+    expect(acks()).toEqual([{ to: PEER, threadId, text: DEFAULT_AUTO_ACK_MESSAGE, type: 'ack', resend: false }]);
+  });
+
+  it('refused and NOT queued (the global queue is full) → queued:false, still router-undelivered, logged as not received', async () => {
+    const { router: r, spawns } = routerOverRealSpawns({ active: 5, maxGlobalQueued: 1 });
+    // Another peer's refused message takes the only queue slot.
+    const other = await r.handleInboundMessage({ ...envelope(crypto.randomUUID()), message: { ...envelope('x').message, from: { agent: 'f'.repeat(32), session: 'relay', machine: 'relay' }, threadId: crypto.randomUUID() } } as MessageEnvelope,
+      { ...relayCtx, senderFingerprint: 'f'.repeat(32), trust: { kind: 'plaintext-tofu' as const, senderFingerprint: 'f'.repeat(32) } });
+    expect(other.queued).toBe(true);
+    const { result, ack } = await routeAndSettle(r, crypto.randomUUID());
+    expect(result).toMatchObject({ handled: false, delivered: false, queued: false, accepted: false });
+    expect(spawns.getQueuedCount(PEER)).toBe(0);
+    expect(ack).toBe('skipped-undelivered');
+    expect(wire).toHaveLength(0);
+    expect(describeUndeliveredRouterResult(result)).toBe('no live session received the message');
   });
 });
