@@ -291,7 +291,7 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
-export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
+export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
 - **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
@@ -6209,7 +6209,16 @@ setTimeout(() => process.exit(0), 2000);
     // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
     // a nudge as a wall and will never produce the override evidence the whole
     // migration exists to collect. Content-sniffed for idempotency.
-    if (!content.includes('Most checks are NUDGES you may override')) {
+    const legacyToneAdvisoryLead = '**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration';
+    if (content.includes(legacyToneAdvisoryLead)) {
+      const sectionStart = content.indexOf(legacyToneAdvisoryLead);
+      const sectionEnd = content.indexOf('\n\n### ', sectionStart);
+      content = content.slice(0, sectionStart)
+        + TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION
+        + (sectionEnd >= 0 ? content.slice(sectionEnd) : '\n');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: made file-path feedback advisory on every agent');
+    } else if (!content.includes('File-path feedback is always a NUDGE')) {
       content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
@@ -9899,6 +9908,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
+    }
+
+    // Astra model awareness for existing agents. New agents receive the same
+    // line from generateClaudeMd(); content sniffing keeps this idempotent.
+    if (content.includes('Topic Profile (per-topic model') && !content.includes('Codex topic profiles may pin `gpt-6-astra`')) {
+      const anchor = '- A pinned model/framework that is no longer available falls back to defaults with a once-per-transition notice — the session keeps working; a pin is never a block.';
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, `${anchor}\n- Codex topic profiles may pin \`gpt-6-astra\`; Instar validates it as a subscription-backed Codex model and passes the exact id to the Codex CLI.`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added gpt-6-astra topic-profile awareness');
+      }
     }
 
     // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing

@@ -110,6 +110,13 @@
       },
       "topModels": [
         {
+          "id": "gpt-6-astra",
+          "role": "flagship-openai-recognized",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "2026-09-04"
+        },
+        {
           "id": "gpt-5.5",
           "role": "capable-openai",
           "frontier": true,

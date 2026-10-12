@@ -39,6 +39,143 @@ import { TaskFlowError } from '../tasks/task-flow-types.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { MemoryEvidence } from './types.js';
 
+export class LearningApplyError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number = 422,
+  ) {
+    super(message);
+    this.name = 'LearningApplyError';
+  }
+}
+
+function keepTerminalWithinBudget<T>(terminal: T[], budget: number, activeCount: number): T[] {
+  const terminalBudget = budget - activeCount;
+  if (terminalBudget <= 0) return [];
+  return terminal.slice(-terminalBudget);
+}
+
+const CONSEQUENCE_KEYWORDS =
+  /\b(cannot|can't|will not|won't|prevents?|blocks?|restricts?|enforces?|causes?|means|therefore|so that|reclaims?|excludes?|filters?|fails?|succeeds?|works?|does nothing|no-op|inert)\b/i;
+
+function learningAssertsConsequence(learning: LearningEntry): boolean {
+  if (learning.consequenceAsserted === true) return true;
+  if (learning.consequenceAsserted === false) return false;
+  return CONSEQUENCE_KEYWORDS.test(`${learning.title}\n${learning.description}\n${learning.diagnosis ?? ''}`);
+}
+
+function hasConsumerEvidence(learning: LearningEntry): boolean {
+  return Array.isArray(learning.consumerEvidence)
+    && learning.consumerEvidence.some((e) =>
+      typeof e?.consumer === 'string' && e.consumer.trim().length > 0
+      && typeof e?.observed === 'string' && e.observed.trim().length > 0
+      && typeof e?.disconfirmation === 'string' && e.disconfirmation.trim().length > 0
+      && (typeof e?.denominator === 'string' || typeof e?.denominator === 'number'));
+}
+
+function validateLearningForApply(learning: LearningEntry): void {
+  if (learningAssertsConsequence(learning) && !hasConsumerEvidence(learning)) {
+    throw new LearningApplyError(
+      'Learning asserts a behavioral consequence; consumerEvidence with consumer and observed fields is required before it can be marked applied.',
+    );
+  }
+}
+
+function normalizeLearningConsumerEvidence(raw: unknown): LearningEntry['consumerEvidence'] {
+  if (raw === undefined) return undefined;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: NonNullable<LearningEntry['consumerEvidence']> = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const consumer = typeof record.consumer === 'string' ? record.consumer.trim() : '';
+    const observed = typeof record.observed === 'string' ? record.observed.trim() : '';
+    const disconfirmation = typeof record.disconfirmation === 'string' ? record.disconfirmation.trim() : '';
+    const hasDenominator = typeof record.denominator === 'string' || typeof record.denominator === 'number';
+    if (!consumer || !observed || !disconfirmation || !hasDenominator) continue;
+    const entry: NonNullable<LearningEntry['consumerEvidence']>[number] = {
+      consumer,
+      observed,
+      disconfirmation,
+      denominator: record.denominator as string | number,
+    };
+    out.push(entry);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeEvidenceLines(raw: unknown): LearningEntry['evidenceLines'] {
+  if (raw === undefined) return undefined;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: NonNullable<LearningEntry['evidenceLines']> = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const instrument = typeof record.instrument === 'string' ? record.instrument.trim() : '';
+    const disconfirmation = typeof record.disconfirmation === 'string' ? record.disconfirmation.trim() : '';
+    const observed = typeof record.observed === 'string' ? record.observed.trim() : '';
+    const hasDenominator = typeof record.denominator === 'string' || typeof record.denominator === 'number';
+    if (!instrument || !disconfirmation || !observed || !hasDenominator) continue;
+    const entry: NonNullable<LearningEntry['evidenceLines']>[number] = {
+      instrument,
+      disconfirmation,
+      observed,
+      denominator: record.denominator as string | number,
+    };
+    const httpPreflight = boundedHttpPreflight(record.httpPreflight);
+    if (httpPreflight) entry.httpPreflight = httpPreflight;
+    out.push(entry);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function boundedHttpPreflight(raw: unknown): NonNullable<NonNullable<LearningEntry['evidenceLines']>[number]['httpPreflight']> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const present = typeof record.present === 'string' ? record.present.trim() : '';
+  const absent = typeof record.absent === 'string' ? record.absent.trim() : '';
+  if (!present || !absent) return null;
+  const out: NonNullable<NonNullable<LearningEntry['evidenceLines']>[number]['httpPreflight']> = { present, absent };
+  if (typeof record.presentStatus === 'number') out.presentStatus = record.presentStatus;
+  if (typeof record.absentStatus === 'number') out.absentStatus = record.absentStatus;
+  if (typeof record.presentSample === 'string' && record.presentSample.trim()) out.presentSample = record.presentSample.trim().slice(0, 500);
+  if (typeof record.absentSample === 'string' && record.absentSample.trim()) out.absentSample = record.absentSample.trim().slice(0, 500);
+  return out;
+}
+
+function normalizeReproductionSteps(raw: unknown): LearningEntry['reproductionSteps'] {
+  if (raw === undefined) return undefined;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: NonNullable<LearningEntry['reproductionSteps']> = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const invocation = typeof record.invocation === 'string' ? record.invocation.trim() : '';
+    if (!invocation) continue;
+    const step: NonNullable<LearningEntry['reproductionSteps']>[number] = { invocation };
+    if (typeof record.cwd === 'string' && record.cwd.trim()) step.cwd = record.cwd.trim();
+    if (typeof record.note === 'string' && record.note.trim()) step.note = record.note.trim();
+    out.push(step);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function normalizeRemedy(raw: unknown): LearningEntry['remedy'] {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new LearningApplyError('remedy must be an object with action and non-empty assumes[]', 400);
+  }
+  const record = raw as Record<string, unknown>;
+  const action = typeof record.action === 'string' ? record.action.trim() : '';
+  const assumes = Array.isArray(record.assumes)
+    ? record.assumes.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map((v) => v.trim())
+    : [];
+  if (!action || assumes.length === 0) {
+    throw new LearningApplyError('remedy requires action and at least one assumption in assumes[]', 400);
+  }
+  return { action, assumes };
+}
+
 /**
  * WS2.2 (multi-machine-replicated-store-foundation) — the learning-record replication
  * emitter seam. server.ts injects a journal-backed emitter (built from the
@@ -171,6 +308,8 @@ interface LearningState {
     pending: number;
     byCategory: Record<string, number>;
     lastUpdated: string;
+    overLimit?: boolean;
+    unprunableOpen?: number;
   };
 }
 
@@ -182,6 +321,8 @@ interface GapState {
     byCategory: Record<string, number>;
     addressed: number;
     lastUpdated: string;
+    overLimit?: boolean;
+    unprunableOpen?: number;
   };
 }
 
@@ -193,6 +334,8 @@ interface ActionState {
     completed: number;
     overdue: number;
     lastUpdated: string;
+    overLimit?: boolean;
+    unprunableOpen?: number;
   };
 }
 
@@ -870,12 +1013,11 @@ export class EvolutionManager {
     };
 
     // Archive old implemented/rejected proposals if over limit
-    const max = this.config.maxProposals || 200;
+    const max = this.config.maxProposals ?? 200;
     if (state.proposals.length > max) {
       const active = state.proposals.filter(p => !['implemented', 'rejected'].includes(p.status));
       const archived = state.proposals.filter(p => ['implemented', 'rejected'].includes(p.status));
-      // Keep most recent archived
-      const keep = archived.slice(-Math.max(0, max - active.length));
+      const keep = keepTerminalWithinBudget(archived, max, active.length);
       state.proposals = [...active, ...keep];
     }
 
@@ -930,14 +1072,24 @@ export class EvolutionManager {
     return proposal;
   }
 
-  updateProposalStatus(id: string, status: EvolutionStatus, resolution?: string): boolean {
+  updateProposalStatus(
+    id: string,
+    status: EvolutionStatus,
+    resolution?: string,
+    implementationEvidence?: EvolutionProposal['implementationEvidence'],
+  ): boolean {
     const state = this.loadEvolution();
     const proposal = state.proposals.find(p => p.id === id);
     if (!proposal) return false;
     const prevStatus = proposal.status;
     proposal.status = status;
     if (resolution) proposal.resolution = resolution;
-    if (status === 'implemented') proposal.implementedAt = this.now();
+    if (status === 'implemented') {
+      proposal.implementedAt = this.now();
+      if (implementationEvidence && implementationEvidence.length > 0) {
+        proposal.implementationEvidence = implementationEvidence;
+      }
+    }
     this.saveEvolution(state);
 
     // Feed decision to TrustElevationTracker for acceptance rate tracking
@@ -1032,13 +1184,15 @@ export class EvolutionManager {
       lastUpdated: this.now(),
     };
 
-    const max = this.config.maxLearnings || 500;
+    const max = this.config.maxLearnings ?? 500;
     const beforePrune = state.learnings;
     if (state.learnings.length > max) {
       const unapplied = state.learnings.filter(l => !l.applied);
       const appliedEntries = state.learnings.filter(l => l.applied);
-      const keep = appliedEntries.slice(-Math.max(0, max - unapplied.length));
+      const keep = keepTerminalWithinBudget(appliedEntries, max, unapplied.length);
       state.learnings = [...unapplied, ...keep];
+      state.stats.overLimit = state.learnings.length > max;
+      state.stats.unprunableOpen = unapplied.length > max ? unapplied.length : undefined;
     }
 
     this.writeFile('learning-registry', state);
@@ -1094,8 +1248,14 @@ export class EvolutionManager {
     title: string;
     category: string;
     description: string;
+    diagnosis?: string;
+    remedy?: unknown;
     source: LearningSource;
     tags?: string[];
+    consequenceAsserted?: boolean;
+    consumerEvidence?: unknown;
+    evidenceLines?: unknown;
+    reproductionSteps?: unknown;
     evolutionRelevance?: string;
   }): LearningEntry {
     const state = this.loadLearnings();
@@ -1105,9 +1265,15 @@ export class EvolutionManager {
       title: opts.title,
       category: opts.category,
       description: opts.description,
+      diagnosis: opts.diagnosis,
+      remedy: normalizeRemedy(opts.remedy),
       source: opts.source,
       tags: opts.tags || [],
       applied: false,
+      consequenceAsserted: opts.consequenceAsserted,
+      consumerEvidence: normalizeLearningConsumerEvidence(opts.consumerEvidence),
+      evidenceLines: normalizeEvidenceLines(opts.evidenceLines),
+      reproductionSteps: normalizeReproductionSteps(opts.reproductionSteps),
       evolutionRelevance: opts.evolutionRelevance,
     };
     state.learnings.push(learning);
@@ -1119,8 +1285,22 @@ export class EvolutionManager {
     const state = this.loadLearnings();
     const learning = state.learnings.find(l => l.id === id);
     if (!learning) return false;
+    validateLearningForApply(learning);
     learning.applied = true;
     learning.appliedTo = appliedTo;
+    this.saveLearnings(state);
+    return true;
+  }
+
+  supersedeLearning(id: string, supersededBy: string, reason?: string): boolean {
+    const state = this.loadLearnings();
+    const learning = state.learnings.find(l => l.id === id);
+    if (!learning) return false;
+    learning.applied = false;
+    learning.appliedTo = undefined;
+    learning.supersededBy = supersededBy;
+    learning.supersededAt = this.now();
+    learning.supersedeReason = reason;
     this.saveLearnings(state);
     return true;
   }
@@ -1163,12 +1343,14 @@ export class EvolutionManager {
       lastUpdated: this.now(),
     };
 
-    const max = this.config.maxGaps || 200;
+    const max = this.config.maxGaps ?? 200;
     if (state.gaps.length > max) {
       const open = state.gaps.filter(g => g.status === 'identified');
       const closed = state.gaps.filter(g => g.status !== 'identified');
-      const keep = closed.slice(-Math.max(0, max - open.length));
+      const keep = keepTerminalWithinBudget(closed, max, open.length);
       state.gaps = [...open, ...keep];
+      state.stats.overLimit = state.gaps.length > max;
+      state.stats.unprunableOpen = open.length > max ? open.length : undefined;
     }
 
     this.writeFile('capability-gaps', state);
@@ -1300,13 +1482,15 @@ export class EvolutionManager {
       lastUpdated: this.now(),
     };
 
-    const max = this.config.maxActions || 300;
+    const max = this.config.maxActions ?? 300;
     const beforePrune = state.actions;
     if (state.actions.length > max) {
       const active = state.actions.filter(a => !['completed', 'cancelled'].includes(a.status));
       const done = state.actions.filter(a => ['completed', 'cancelled'].includes(a.status));
-      const keep = done.slice(-Math.max(0, max - active.length));
+      const keep = keepTerminalWithinBudget(done, max, active.length);
       state.actions = [...active, ...keep];
+      state.stats.overLimit = state.actions.length > max;
+      state.stats.unprunableOpen = active.length > max ? active.length : undefined;
     }
 
     this.writeFile('action-queue', state);

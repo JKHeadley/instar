@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/external-operation-gate.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js\"",
             "blocking": true,
             "timeout": 5000
           }
@@ -33,6 +33,79 @@
             "timeout": 15000
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.instar/hooks/custom/credential-bitwarden-guard.js"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/dangerous-command-guard.sh\" \"$TOOL_INPUT\"",
+            "blocking": true
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/grounding-before-messaging.sh\" \"$TOOL_INPUT\"",
+            "blocking": false
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/self-stop-guard.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-communication-guard.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-action-reflection.js\"",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/pr-hand-lease-guard.js\"",
+            "blocking": true,
+            "timeout": 6000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/doorway-scan-guard.js\"",
+            "blocking": true,
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/slopcheck-guard.js\"",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/standdown-guard.js\"",
+            "blocking": true,
+            "timeout": 2000
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-origin-guard.js\"",
+            "blocking": true,
+            "timeout": 2000
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -41,7 +114,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/action-queue-archive.mjs",
             "timeout": 5
           }
         ]
@@ -51,7 +129,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/action-queue-archive.mjs",
             "timeout": 5
           }
         ]
@@ -61,7 +144,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .instar/hooks/instar/session-start.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/action-queue-archive.mjs",
             "timeout": 5
           }
         ]
@@ -73,7 +161,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .instar/hooks/instar/telegram-topic-context.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/telegram-topic-context.sh\"",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-reconciler.js\"",
             "timeout": 5000
           }
         ]
@@ -85,7 +183,32 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/working-set-artifact-recorder.js\"",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/skill-usage-telemetry.sh\"",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/model-tier-skill-entry.sh\"",
             "timeout": 3000
           }
         ]
@@ -97,7 +220,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -109,7 +232,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -121,7 +244,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/stop-gate-router.js\"",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -131,7 +264,37 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .instar/hooks/instar/build-stop-hook.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/build-stop-hook.sh\"",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/action-claim-followthrough.js\"",
+            "timeout": 6000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/completion-claim-observe.js\"",
+            "timeout": 6000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"/Users/dabombstudio/.instar/agents/echo/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"",
             "timeout": 10000
           }
         ]
@@ -143,7 +306,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -155,7 +318,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -167,7 +330,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -179,7 +342,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -191,7 +354,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js\"",
             "timeout": 3000
           }
         ]
@@ -203,7 +366,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .instar/hooks/instar/auto-approve-permissions.js",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js\"",
             "timeout": 5000
           }
         ]
@@ -215,8 +378,26 @@
       "command": "npx",
       "args": [
         "-y",
-        "@playwright/mcp@latest"
+        "@playwright/mcp@latest",
+        "--user-data-dir",
+        "/Users/dabombstudio/.instar/agents/echo/.instar/state/playwright-profiles/justin-github"
       ]
     }
-  }
+  },
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Task",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "TodoWrite"
+    ]
+  },
+  "cleanupPeriodDays": 14
 }

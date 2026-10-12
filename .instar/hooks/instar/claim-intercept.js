@@ -16,11 +16,17 @@
 //   - Only checks topically relevant output (skip pure code, grep, cat)
 //   - Rate-limited to prevent latency stacking
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
+//
+// ESM-SAFE: dynamic `await import(...)` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level `require(...)` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
 
-const STATE_DIR = path.join('.instar', 'state');
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+const STATE_DIR = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state');
 const RATE_FILE = path.join(STATE_DIR, '.claim-intercept-last.tmp');
 const RATE_LIMIT_MS = 10000; // 10 seconds between checks
 const LOG_FILE = path.join(STATE_DIR, 'claim-intercept.log');
@@ -146,9 +152,11 @@ function findContradictions(text, state) {
 
 // ── Main ───────────────────────────────────────────────────────
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const toolName = input.tool_name || '';
@@ -213,4 +221,5 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: warning }));
   } catch {}
   process.exit(0);
-});
+})();
+

@@ -38,6 +38,7 @@ export async function listBackups(opts: BackupOptions): Promise<void> {
   const config = loadConfig(opts.dir);
   const manager = new BackupManager(config.stateDir, config.backup);
   const snapshots = manager.listSnapshots();
+  const coverage = manager.coverageReport();
 
   if (snapshots.length === 0) {
     console.log(pc.dim('No backups found.'));
@@ -52,9 +53,22 @@ export async function listBackups(opts: BackupOptions): Promise<void> {
       ? pc.dim('auto')
       : snap.trigger === 'pre-update'
         ? pc.yellow('pre-update')
-        : pc.cyan('manual');
+        : snap.trigger === 'agent-hourly'
+          ? pc.blue('agent-hourly')
+          : snap.trigger.startsWith('feedback-')
+            ? pc.magenta(snap.trigger)
+            : pc.cyan('manual');
 
     console.log(`  ${pc.bold(snap.id)}  ${triggerLabel}  ${snap.files.length} files  ${formatBytes(snap.totalBytes)}  ${pc.dim(age)}`);
+  }
+  if (coverage.uncoveredStores.length > 0) {
+    console.log(pc.yellow(`  Uncovered durable stores: ${coverage.uncoveredStores.length}`));
+    for (const store of coverage.uncoveredStores.slice(0, 12)) {
+      console.log(`    ${store}`);
+    }
+    if (coverage.uncoveredStores.length > 12) {
+      console.log(pc.dim(`    ... ${coverage.uncoveredStores.length - 12} more`));
+    }
   }
   console.log();
 }

@@ -202,6 +202,7 @@ export const KNOWN_CLAUDE_MODEL_IDS = [
 ] as const;
 
 export const KNOWN_CODEX_MODEL_IDS = [
+  'gpt-6-astra',
   'gpt-5.2',
   'gpt-5.3-codex',
   'gpt-5.4',

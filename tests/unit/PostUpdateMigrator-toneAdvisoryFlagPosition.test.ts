@@ -4,8 +4,9 @@
  * topic id).
  *
  * This is the case that is easy to get wrong, and the reason this test exists.
- * The tone-advisory CLAUDE.md block is content-sniffed on the marker
- * 'Most checks are NUDGES you may override'. That marker has NOT changed. So
+ * The tone-advisory CLAUDE.md block was historically content-sniffed on the marker
+ * 'Most checks are NUDGES you may override'. Existing installs carrying that
+ * legacy block still need the independently-sniffed invocation guidance. So
  * appending the invocation guidance to that constant reaches NEW installs only
  * — every already-deployed agent short-circuits on the unchanged marker and
  * receives nothing. A doc fix that only lands on fresh installs is not a fix;
@@ -85,7 +86,7 @@ describe('PostUpdateMigrator — tone-advisory reaction invocation (flag positio
     // reproducing the pre-fix on-disk state rather than a file that already
     // contains the answer.
     const preFix = deployed.split(MARKER).join('(invocation guidance absent)');
-    expect(preFix).toContain('Most checks are NUDGES you may override');
+    expect(preFix).toContain('File-path feedback is always a NUDGE');
     expect(preFix).not.toContain(MARKER);
     fs.writeFileSync(claudeMdPath, preFix);
 
@@ -100,6 +101,20 @@ describe('PostUpdateMigrator — tone-advisory reaction invocation (flag positio
     expect(after).toContain('--tone-ack');
     expect(after).toContain('--tone-reason');
     expect(after).toContain('telegram-reply.sh');
+  });
+
+  it('replaces the legacy advisory block so existing agents learn that file paths never hard-block', () => {
+    const legacy = `### Outbound Tone Gate\n\n**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration, file paths are advisory.\n\n### Next Section\n`;
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\n${legacy}`);
+
+    const result = runClaudeMdMigration(newMigrator(projectDir));
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+
+    expect(result.errors).toEqual([]);
+    expect(after).toContain('File-path feedback is always a NUDGE');
+    expect(after).toContain('even when decision-quality recording is unavailable');
+    expect(after).not.toContain('Most checks are NUDGES you may override');
+    expect(after).toContain('### Next Section');
   });
 
   it('is idempotent — a second run adds nothing and does not duplicate', () => {

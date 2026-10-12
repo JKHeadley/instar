@@ -103,6 +103,11 @@ describe('MemoryExporter API (integration)', () => {
       expect(res.status).toBe(200);
       expect(res.body.markdown).toContain('# Agent Memory');
       expect(res.body.entityCount).toBe(3);
+      expect(res.body.excludedByCap).toBe(0);
+      expect(res.body.excludedByBudget).toBe(0);
+      expect(res.body.wordBudget).toBe(5000);
+      expect(res.body.selectedEntityWords).toBeGreaterThan(0);
+      expect(res.body.actualWords).toBeGreaterThan(0);
       expect(res.body.domainCount).toBeGreaterThanOrEqual(2);
       expect(res.body.estimatedTokens).toBeGreaterThan(0);
     });
@@ -154,6 +159,23 @@ describe('MemoryExporter API (integration)', () => {
       expect(res.status).toBe(200);
       expect(res.body.entityCount).toBe(1);
       expect(res.body.excludedCount).toBe(2);
+      expect(res.body.excludedByCap).toBe(2);
+      expect(res.body.excludedByBudget).toBe(0);
+    });
+
+    it('respects wordBudget independently from maxEntities', async () => {
+      const res = await request(app)
+        .post('/semantic/export-memory')
+        .set(auth())
+        .send({ maxEntities: 10, wordBudget: 8 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.wordBudget).toBe(8);
+      expect(res.body.entityCount).toBeLessThan(3);
+      expect(res.body.selectedEntityWords).toBeLessThanOrEqual(8);
+      expect(res.body.excludedByCap).toBe(0);
+      expect(res.body.excludedByBudget).toBeGreaterThan(0);
+      expect(res.body.markdown).toContain('Selection health:');
     });
 
     it('returns 503 when semantic memory not available', async () => {

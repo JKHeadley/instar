@@ -147,8 +147,19 @@ export function parseUsageFromTail(
     const payload = obj.payload as Record<string, unknown> | undefined;
     if (!payload) continue;
     if (payload.type === 'token_count' && payload.rate_limits) {
-      rateLimits = payload.rate_limits as Record<string, unknown>;
-      capturedAt = typeof obj.timestamp === 'string' ? obj.timestamp : capturedAt;
+      const candidate = payload.rate_limits as Record<string, unknown>;
+      // Codex can append a second token_count record for another limit family
+      // (currently `premium`) immediately after the actual `codex` quota
+      // record. Those entitlement records commonly have no windows and must
+      // not erase the newest usable account quota. Keep backwards
+      // compatibility with older rollouts that omitted limit_id entirely.
+      const limitId = candidate.limit_id;
+      const isCodexFamily = limitId === undefined || limitId === 'codex';
+      const hasWindow = isRateWindowObject(candidate.primary) || isRateWindowObject(candidate.secondary);
+      if (isCodexFamily && hasWindow) {
+        rateLimits = candidate;
+        capturedAt = typeof obj.timestamp === 'string' ? obj.timestamp : capturedAt;
+      }
     } else if (payload.type === undefined && obj.type === 'turn_context') {
       // turn_context nests its fields directly under payload.
       const m = payload.model;
@@ -172,6 +183,10 @@ export function parseUsageFromTail(
     primary: parseWindow(rateLimits.primary, nowMs),
     secondary: parseWindow(rateLimits.secondary, nowMs),
   };
+}
+
+function isRateWindowObject(value: unknown): boolean {
+  return !!value && typeof value === 'object';
 }
 
 function parseWindow(raw: unknown, nowMs: number): CodexRateWindow | null {

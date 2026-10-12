@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "agentName": "instar",
+  "agentName": "echo",
   "budget": {
     "maxLlmCalls": 10,
     "maxSeconds": 30,
@@ -27,6 +27,22 @@
             }
           ],
           "description": "Agent name, purpose, and core identity"
+        },
+        {
+          "id": "identity.soul",
+          "name": "Soul — Self-Authored Identity",
+          "alwaysInclude": false,
+          "managed": true,
+          "depth": "medium",
+          "maxTokens": 800,
+          "sensitivity": "internal",
+          "sources": [
+            {
+              "type": "file",
+              "path": "soul.md"
+            }
+          ],
+          "description": "Self-authored values, convictions, growth edges, and open questions. The agent's reflective identity."
         }
       ]
     },

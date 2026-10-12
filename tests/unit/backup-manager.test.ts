@@ -115,6 +115,23 @@ describe('BackupManager', () => {
       manager.createSnapshot('manual');
       expect(fs.existsSync(path.join(stateDir, 'backups'))).toBe(true);
     });
+
+    it('discovers durable sqlite stores at snapshot time instead of relying only on includeFiles', () => {
+      fs.writeFileSync(path.join(stateDir, 'semantic.db'), 'db');
+      fs.writeFileSync(path.join(stateDir, 'semantic.db-wal'), 'wal');
+      fs.mkdirSync(path.join(stateDir, 'state', 'nested'), { recursive: true });
+      fs.writeFileSync(path.join(stateDir, 'state', 'nested', 'topic-memory.db'), 'topic');
+      fs.writeFileSync(path.join(stateDir, 'feature-metrics.db'), 'bulk');
+
+      const manager = new BackupManager(stateDir);
+      const snapshot = manager.createSnapshot('manual');
+
+      expect(snapshot.files).toContain('semantic.db');
+      expect(snapshot.files).toContain('semantic.db-wal');
+      expect(snapshot.files).toContain('state/nested/topic-memory.db');
+      expect(snapshot.files).not.toContain('feature-metrics.db');
+      expect(manager.coverageReport().uncoveredStores).toEqual([]);
+    });
   });
 
   describe('security: blocked files', () => {

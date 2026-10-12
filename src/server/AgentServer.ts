@@ -433,6 +433,7 @@ export class AgentServer {
     isRestorePending: () => boolean;
   } | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
+  private agentBackupTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
   private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
   private parallelActivityIndex: ParallelActivityIndex | null = null;
@@ -1008,6 +1009,7 @@ export class AgentServer {
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
+    this.startAgentBackupCadence(options.config);
     this.app = express();
 
     // Middleware
@@ -6003,6 +6005,22 @@ export class AgentServer {
     );
   }
 
+  private startAgentBackupCadence(config: InstarConfig): void {
+    if (!config.stateDir || config.backup?.enabled === false) return;
+    const manager = new BackupManager(config.stateDir, config.backup);
+    const tick = () => {
+      try {
+        manager.createSnapshot('agent-hourly');
+      } catch (error) {
+        // @silent-fallback-ok: the next hourly tick retries, and manual /backups
+        // still reports coverage gaps through the same BackupManager.
+        console.warn('[backups] agent-hourly snapshot failed:', error instanceof Error ? error.message : String(error));
+      }
+    };
+    this.agentBackupTimer = setInterval(tick, 60 * 60 * 1000);
+    this.agentBackupTimer.unref?.();
+  }
+
   /**
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
@@ -6122,6 +6140,8 @@ export class AgentServer {
     }
     try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
     this.feedbackDrainBackupTimer = null;
+    try { if (this.agentBackupTimer) clearInterval(this.agentBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+    this.agentBackupTimer = null;
     // Stop the growth-digest publisher's cron + pending catch-up timer.
     if (this.growthDigestPublisher) {
       try { this.growthDigestPublisher.stop(); } catch { /* @silent-fallback-ok — best-effort teardown at shutdown */ }

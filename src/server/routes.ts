@@ -2230,6 +2230,85 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
   'grokInteractiveSessions',
 ];
 
+function implementedResolutionContradiction(resolution: unknown): string | null {
+  if (typeof resolution !== 'string') return null;
+  const text = resolution.toLowerCase();
+  const contradictions = [
+    'not implemented',
+    'status stays approved',
+    'status remains approved',
+    'no src/ change landed',
+    'no code shipped',
+    'cannot mark implemented',
+    'blocked on',
+    'still blocked',
+  ];
+  return contradictions.find((phrase) => text.includes(phrase)) ?? null;
+}
+
+function looksHttpEvidenceInstrument(instrument: unknown): boolean {
+  if (typeof instrument !== 'string') return false;
+  return /\b(GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?:\/|https?:\/\/)/i.test(instrument)
+    || /\bhttps?:\/\//i.test(instrument);
+}
+
+function localPreflightUrl(endpoint: string, port: number): string | null {
+  const trimmed = endpoint.trim();
+  if (!trimmed.startsWith('/')) return null;
+  return `http://127.0.0.1:${port}${trimmed}`;
+}
+
+async function validateHttpEvidencePreflights(
+  rawEvidenceLines: unknown,
+  ctx: RouteContext,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (rawEvidenceLines === undefined) return { ok: true };
+  const lines = Array.isArray(rawEvidenceLines) ? rawEvidenceLines : [rawEvidenceLines];
+  for (const line of lines) {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) continue;
+    const record = line as Record<string, unknown>;
+    if (!looksHttpEvidenceInstrument(record.instrument)) continue;
+    const preflight = record.httpPreflight;
+    if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) {
+      return { ok: false, error: 'HTTP evidence requires httpPreflight with known-present and known-absent probes' };
+    }
+    const pf = preflight as Record<string, unknown>;
+    const present = typeof pf.present === 'string' ? pf.present.trim() : '';
+    const absent = typeof pf.absent === 'string' ? pf.absent.trim() : '';
+    if (!present || !absent) {
+      return { ok: false, error: 'HTTP evidence httpPreflight requires present and absent endpoints' };
+    }
+    if (typeof pf.presentStatus === 'number' && typeof pf.absentStatus === 'number' && pf.presentStatus !== pf.absentStatus) {
+      continue;
+    }
+    const presentUrl = localPreflightUrl(present, ctx.config.port);
+    const absentUrl = localPreflightUrl(absent, ctx.config.port);
+    if (!presentUrl || !absentUrl || ctx.config.port <= 0) {
+      return { ok: false, error: 'HTTP evidence httpPreflight must show differing presentStatus/absentStatus or use local endpoints on a bound port' };
+    }
+    try {
+      const headers: Record<string, string> = { 'X-Instar-Request': '1' };
+      if (ctx.config.authToken) headers.Authorization = `Bearer ${ctx.config.authToken}`;
+      const [presentResponse, absentResponse] = await Promise.all([
+        fetch(presentUrl, { headers, signal: AbortSignal.timeout(5_000) }),
+        fetch(absentUrl, { headers, signal: AbortSignal.timeout(5_000) }),
+      ]);
+      if (presentResponse.status === absentResponse.status) {
+        const [presentText, absentText] = await Promise.all([
+          presentResponse.text(),
+          absentResponse.text(),
+        ]);
+        if (presentText.slice(0, 500) === absentText.slice(0, 500)) {
+          return { ok: false, error: 'HTTP evidence preflight did not distinguish the known-present and known-absent cases' };
+        }
+      }
+    } catch (err) {
+      return { ok: false, error: `HTTP evidence preflight failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  return { ok: true };
+}
+
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
@@ -5073,7 +5152,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       const { BackupManager } = await import('../core/BackupManager.js');
       const manager = new BackupManager(ctx.config.stateDir, ctx.config.backup);
-      res.json({ snapshots: manager.listSnapshots() });
+      res.json({ snapshots: manager.listSnapshots(), coverage: manager.coverageReport() });
     } catch {
       res.status(500).json({ error: 'Failed to list backups' });
     }
@@ -5631,6 +5710,7 @@ export function createRoutes(ctx: RouteContext): Router {
         semanticMemory: ctx.semanticMemory,
         minConfidence: req.body?.minConfidence,
         maxEntities: req.body?.maxEntities,
+        wordBudget: req.body?.wordBudget,
         agentName: req.body?.agentName,
         includeFooter: req.body?.includeFooter,
       });
@@ -9919,7 +9999,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // Mirror of KNOWN_CODEX_MODEL_IDS (ModelTierEscalation.ts) — keep in lockstep.
     // GPT-5.6 family GA on the codex subscription 2026-07-09 (codex CLI >= 0.144.0);
     // -pro variants deliberately excluded (plan-gated + pricier, future follow-up).
-    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+    const CODEX_MODELS_SUBSCRIPTION = ['gpt-6-astra', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
     if (model !== undefined) {
       if (typeof model !== 'string') {
         res.status(400).json({ error: '"model" must be a string' });
@@ -21009,6 +21089,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/updates/apply', async (_req, res) => {
+    try {
+      const { BackupManager } = await import('../core/BackupManager.js');
+      new BackupManager(ctx.config.stateDir, ctx.config.backup).createSnapshot('pre-update');
+    } catch (backupErr) {
+      console.warn('[updates] pre-update backup failed:', backupErr instanceof Error ? backupErr.message : String(backupErr));
+    }
+
     // Prefer AutoUpdater path (coalescing + session-aware gating)
     if (ctx.autoUpdater) {
       try {
@@ -23339,15 +23426,74 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { status, resolution } = req.body;
+    const { status, resolution, implementationEvidence } = req.body;
     const validStatuses = ['proposed', 'approved', 'in_progress', 'implemented', 'rejected', 'deferred'];
     if (!status || !validStatuses.includes(status)) {
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
       return;
     }
+    if (status === 'implemented') {
+      const contradiction = implementedResolutionContradiction(resolution);
+      if (contradiction) {
+        res.status(422).json({
+          error: `implemented status contradicts resolution caveat: "${contradiction}"`,
+        });
+        return;
+      }
+      const entries = Array.isArray(implementationEvidence)
+        ? implementationEvidence
+        : implementationEvidence ? [implementationEvidence] : [];
+      let resolvingEntry: Record<string, unknown> | null = null;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const ev = entry as Record<string, unknown>;
+        const ref = typeof ev.ref === 'string' ? ev.ref.trim() : '';
+        const artifactPath = typeof ev.path === 'string' ? ev.path.trim() : '';
+        if (!ref) continue;
+        try {
+          if (artifactPath) {
+            const treeMatch = SafeGitExecutor.readSync(['ls-tree', ref, '--', artifactPath], {
+              cwd: ctx.config.projectDir,
+              encoding: 'utf-8',
+              timeout: 5000,
+              operation: 'src/server/routes.ts:evolution-proposal-implementation-evidence',
+              sourceTreeReadOk: true,
+            });
+            if (!treeMatch.trim()) continue;
+          } else {
+            SafeGitExecutor.readSync(['cat-file', '-e', `${ref}^{commit}`], {
+              cwd: ctx.config.projectDir,
+              encoding: 'utf-8',
+              timeout: 5000,
+              operation: 'src/server/routes.ts:evolution-proposal-implementation-evidence',
+              sourceTreeReadOk: true,
+            });
+          }
+          resolvingEntry = ev;
+          break;
+        } catch {
+          // Keep scanning other evidence entries; the terminal transition
+          // succeeds only if at least one committed object resolves now.
+        }
+      }
+      if (!resolvingEntry) {
+        res.status(422).json({
+          error: 'implemented status requires implementationEvidence resolving to a committed object (ref plus optional path)',
+        });
+        return;
+      }
+    }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
-    const success = ctx.evolution.updateProposalStatus(req.params.id, status, resolution);
+    const normalizedImplementationEvidence = Array.isArray(implementationEvidence)
+      ? implementationEvidence
+      : implementationEvidence ? [implementationEvidence] : undefined;
+    const success = ctx.evolution.updateProposalStatus(
+      req.params.id,
+      status,
+      resolution,
+      normalizedImplementationEvidence,
+    );
     if (!success) {
       res.status(404).json({ error: 'Proposal not found' });
       return;
@@ -23368,7 +23514,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, category, description, source, tags, evolutionRelevance,
+    const { title, category, description, diagnosis, remedy, consequenceAsserted,
+            consumerEvidence, evidenceLines, reproductionSteps, source, tags, evolutionRelevance,
             context, documentFallback, evidence: explicitEvidence } = req.body;
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
@@ -23418,11 +23565,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const learning = ctx.evolution.addLearning({
-      title, category: category || 'general', description,
-      source: source || { discoveredAt: new Date().toISOString() },
-      tags, evolutionRelevance,
-    });
+    const httpPreflight = await validateHttpEvidencePreflights(evidenceLines, ctx);
+    if (!httpPreflight.ok) {
+      res.status(422).json({ error: httpPreflight.error });
+      return;
+    }
+
+    let learning;
+    try {
+      learning = ctx.evolution.addLearning({
+        title, category: category || 'general', description, diagnosis, remedy,
+        source: source || { discoveredAt: new Date().toISOString() },
+        tags, consequenceAsserted, consumerEvidence, evidenceLines, reproductionSteps, evolutionRelevance,
+      });
+    } catch (err) {
+      if ((err as { name?: string; statusCode?: number })?.name === 'LearningApplyError') {
+        res.status((err as { statusCode?: number }).statusCode ?? 400).json({ error: err instanceof Error ? err.message : 'Learning validation refused' });
+        return;
+      }
+      throw err;
+    }
 
     // Learning→Soul pipeline nudge: if soul.md is enabled, hint whether this
     // learning might be identity-relevant (the agent decides whether to act on it).
@@ -23462,12 +23624,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
-    const success = ctx.evolution.markLearningApplied(req.params.id, appliedTo);
+    let success = false;
+    try {
+      success = ctx.evolution.markLearningApplied(req.params.id, appliedTo);
+    } catch (err) {
+      if ((err as { name?: string; statusCode?: number })?.name === 'LearningApplyError') {
+        res.status((err as { statusCode?: number }).statusCode ?? 422).json({ error: err instanceof Error ? err.message : 'Learning apply refused' });
+        return;
+      }
+      throw err;
+    }
     if (!success) {
       res.status(404).json({ error: 'Learning not found' });
       return;
     }
     res.json({ ok: true, id: req.params.id, appliedTo });
+  });
+
+  router.post('/evolution/learnings/:id/supersede', (req, res) => {
+    if (!ctx.evolution) {
+      res.status(503).json({ error: 'Evolution system not configured' });
+      return;
+    }
+    const { supersededBy, reason } = req.body;
+    if (!supersededBy || typeof supersededBy !== 'string') {
+      res.status(400).json({ error: '"supersededBy" is required' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    const success = ctx.evolution.supersedeLearning(
+      req.params.id,
+      supersededBy,
+      typeof reason === 'string' ? reason : undefined,
+    );
+    if (!success) {
+      res.status(404).json({ error: 'Learning not found' });
+      return;
+    }
+    res.json({ ok: true, id: req.params.id, supersededBy });
   });
 
   // Capability gaps

@@ -159,6 +159,15 @@ export const LEARNING_STORE_KNOWN_FIELDS: ReadonlyArray<string> = Object.freeze(
   'tags',
   'applied',
   'appliedTo',
+  'diagnosis',
+  'remedy',
+  'consequenceAsserted',
+  'consumerEvidence',
+  'evidenceLines',
+  'reproductionSteps',
+  'supersededBy',
+  'supersededAt',
+  'supersedeReason',
   'evolutionRelevance',
 ]);
 
@@ -194,6 +203,16 @@ export function isIso8601(v: unknown): v is string {
 function clampFreeText(v: unknown, max = MAX_FREETEXT_LENGTH): string | null {
   if (typeof v !== 'string') return null;
   return v.length > max ? v.slice(0, max) : v;
+}
+
+function boundedJsonValue(v: unknown, max = MAX_FREETEXT_LENGTH): unknown | null {
+  try {
+    const encoded = JSON.stringify(v);
+    if (encoded === undefined || encoded.length > max) return null;
+    return JSON.parse(encoded);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -297,6 +316,19 @@ export const learningRecordStoreSchema: StoreFieldSchema = {
     if (appliedTo !== null && appliedTo.length > 0) out.appliedTo = appliedTo;
     const evolutionRelevance = raw.evolutionRelevance !== undefined ? clampFreeText(raw.evolutionRelevance) : null;
     if (evolutionRelevance !== null && evolutionRelevance.length > 0) out.evolutionRelevance = evolutionRelevance;
+    const diagnosis = raw.diagnosis !== undefined ? clampFreeText(raw.diagnosis, MAX_DESCRIPTION_LENGTH) : null;
+    if (diagnosis !== null && diagnosis.length > 0) out.diagnosis = diagnosis;
+    const supersededBy = raw.supersededBy !== undefined ? clampFreeText(raw.supersededBy) : null;
+    if (supersededBy !== null && supersededBy.length > 0) out.supersededBy = supersededBy;
+    const supersedeReason = raw.supersedeReason !== undefined ? clampFreeText(raw.supersedeReason) : null;
+    if (supersedeReason !== null && supersedeReason.length > 0) out.supersedeReason = supersedeReason;
+    if (isIso8601(raw.supersededAt)) out.supersededAt = raw.supersededAt;
+    if (typeof raw.consequenceAsserted === 'boolean') out.consequenceAsserted = raw.consequenceAsserted;
+    for (const key of ['remedy', 'consumerEvidence', 'evidenceLines', 'reproductionSteps']) {
+      if (raw[key] === undefined) continue;
+      const bounded = boundedJsonValue(raw[key], MAX_DESCRIPTION_LENGTH);
+      if (bounded !== null) out[key] = bounded;
+    }
 
     return out;
   },
@@ -423,6 +455,15 @@ export function buildLearningRecordData(input: BuildLearningRecordInput): Learni
   };
   // Optional fields — only when present (the local LRN id is NEVER among them).
   if (record.appliedTo) data.appliedTo = clampFreeTextEmit(record.appliedTo);
+  if (record.diagnosis) data.diagnosis = clampFreeTextEmit(record.diagnosis, MAX_DESCRIPTION_LENGTH);
+  if (record.remedy) data.remedy = record.remedy;
+  if (record.consequenceAsserted !== undefined) data.consequenceAsserted = record.consequenceAsserted;
+  if (record.consumerEvidence) data.consumerEvidence = record.consumerEvidence;
+  if (record.evidenceLines) data.evidenceLines = record.evidenceLines;
+  if (record.reproductionSteps) data.reproductionSteps = record.reproductionSteps;
+  if (record.supersededBy) data.supersededBy = clampFreeTextEmit(record.supersededBy);
+  if (record.supersededAt) data.supersededAt = clampFreeTextEmit(record.supersededAt);
+  if (record.supersedeReason) data.supersedeReason = clampFreeTextEmit(record.supersedeReason);
   if (record.evolutionRelevance) data.evolutionRelevance = clampFreeTextEmit(record.evolutionRelevance);
 
   assertProjectionUnderCap(recordKey, data);
@@ -606,6 +647,15 @@ export function learningToOriginRecord(record: LearningEntry, origin: string): O
     tags: Array.isArray(record.tags) ? record.tags : [],
   };
   if (record.appliedTo) data.appliedTo = record.appliedTo;
+  if (record.diagnosis) data.diagnosis = record.diagnosis;
+  if (record.remedy) data.remedy = record.remedy;
+  if (record.consequenceAsserted !== undefined) data.consequenceAsserted = record.consequenceAsserted;
+  if (record.consumerEvidence) data.consumerEvidence = record.consumerEvidence;
+  if (record.evidenceLines) data.evidenceLines = record.evidenceLines;
+  if (record.reproductionSteps) data.reproductionSteps = record.reproductionSteps;
+  if (record.supersededBy) data.supersededBy = record.supersededBy;
+  if (record.supersededAt) data.supersededAt = record.supersededAt;
+  if (record.supersedeReason) data.supersedeReason = record.supersedeReason;
   if (record.evolutionRelevance) data.evolutionRelevance = record.evolutionRelevance;
   const envelope: ReplicatedEnvelope = { recordKey, hlc, op: 'put', origin };
   return { origin, envelope, data };

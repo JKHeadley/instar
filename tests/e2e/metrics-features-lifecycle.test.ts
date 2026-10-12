@@ -69,8 +69,14 @@ describe('Per-feature LLM metrics E2E lifecycle (feature is alive)', () => {
     expect(res.body.error).toBeUndefined();
     expect(res.body.totals).toBeDefined();
     expect(Array.isArray(res.body.features)).toBe(true);
+    expect(res.body.effectiveness).toMatchObject({
+      status: 'ok',
+      minimumCalls: 50,
+    });
+    expect(Array.isArray(res.body.effectiveness.components)).toBe(true);
     // Empty until the Phase-1b funnel tap feeds it, but the surface is alive.
     expect(res.body.totals.calls).toBe(0);
+    expect(res.body.totals.classified).toBe(0);
   });
 
   it('serves the token-audit-completeness enrichment on the production init path', async () => {

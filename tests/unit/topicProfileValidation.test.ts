@@ -25,6 +25,7 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
   });
 
   it('accepts a known codex id against codex-cli', () => {
+    expect(validateModelId('gpt-6-astra', 'codex-cli')).toBeNull();
     expect(validateModelId('gpt-5.5', 'codex-cli')).toBeNull();
   });
 

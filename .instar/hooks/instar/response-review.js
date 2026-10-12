@@ -8,20 +8,29 @@
 // The CoherenceGate handles retry tracking and exhaustion internally.
 // The hook always passes the stopHookActive flag so the server can decide.
 
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
-const http = _r('http');
+//
+// ESM-SAFE: dynamic `await import(...)` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level `require(...)` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
 
-// Read config for port and auth token
-let serverPort = 4040;
-let authToken = '';
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const http = await import('node:http');
+
+// Read config for port and auth token. Token: env first (SessionManager injects
+// INSTAR_AUTH_TOKEN per spawned session — survives secret-externalization), legacy
+// plaintext-config fallback with a string-type guard so the { secret: true }
+// placeholder produced by SecretMigrator can never leak as a Bearer.
+let serverPort = 4042;
+let authToken = process.env.INSTAR_AUTH_TOKEN || '';
 try {
   const configPath = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'config.json');
   const raw = fs.readFileSync(configPath, 'utf-8');
   const cfg = JSON.parse(raw);
-  serverPort = cfg.port || 4040;
-  authToken = cfg.authToken || '';
+  serverPort = cfg.port || 4042;
+  if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
 } catch {}
 
 // Check if response review is enabled in config
@@ -37,9 +46,11 @@ if (!reviewEnabled) {
   process.exit(0);
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', async () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const message = input.last_assistant_message || '';
@@ -116,4 +127,5 @@ process.stdin.on('end', async () => {
     // JSON parse error on stdin — fail open
     process.exit(0);
   }
-});
+})();
+

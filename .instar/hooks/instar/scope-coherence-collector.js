@@ -7,11 +7,17 @@
 // State persists in .instar/state/scope-coherence.json via the server API.
 
 // CJS imports — this is a standalone hook script, not an ESM module
-const _r = require;
-const fs = _r('fs');
-const path = _r('path');
+//
+// ESM-SAFE: dynamic `await import(...)` inside an async IIFE so this runs in
+// both CJS and ESM host package types. Bare top-level `require(...)` throws in
+// ESM scope when the host has "type":"module" — silently killed this hook on
+// every fire. See hook-event-reporter.js header for the documented pattern.
 
-const STATE_FILE = path.join('.instar', 'state', 'scope-coherence.json');
+(async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+const STATE_FILE = path.join(process.env.CLAUDE_PROJECT_DIR || '.', '.instar', 'state', 'scope-coherence.json');
 const SCOPE_DOC_PATTERNS = [
   'docs/', 'specs/', 'SPEC', 'PROPOSAL', 'DESIGN', 'ARCHITECTURE',
   'README', '.instar/AGENT.md', '.instar/USER.md', '.claude/context/',
@@ -57,9 +63,11 @@ function saveState(state) {
   } catch {}
 }
 
-let data = '';
-process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+  let data = '';
+  try {
+    for await (const chunk of process.stdin) data += chunk;
+  } catch { process.exit(0); }
+
   try {
     const input = JSON.parse(data);
     const toolName = input.tool_name || '';
@@ -108,4 +116,5 @@ process.stdin.on('end', () => {
   } catch {}
   process.stdout.write(JSON.stringify({ decision: 'approve' }));
   process.exit(0);
-});
+})();
+

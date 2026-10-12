@@ -102,3 +102,39 @@ src/data/standards-registry.md
 src/data/standards-registry.meta.json
 src/data/standards-guard-index.json
 src/data/standards-guard-index.meta.json
+.instar/secrets/pr-gate/
+
+# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)
+.worktrees/
+
+# Judgment-call provenance rows (machine-local decision context — never commit)
+state/judgment-provenance/
+# Paste files (may contain sensitive content)
+.instar/paste/
+.instar/origin-sessions-*
+.instar/origin-notice.sock*
+.instar/state/pending-relay.*
+.instar/state/telegram-origin-spool/
+.instar/state/telegram-origin-archives/
+
+# Jev harness sample sets contain real message text — regenerable, never committed
+docs/research/jev/harness/**/sample-*.json
+docs/research/jev/harness/**/corpus-*.json
+.instar/secrets/
+
+# Subscription pool login locations (machine-local — never commit)
+.instar/subscription-pool.json
+.instar/identity.json*
+.instar/threadline/identity.json*
+.instar/threadline/inbox-hmac.key*
+.instar/threadline/invitation-secret.key*
+.instar/threadline/secure-invitations.json*
+.instar/machine-ssh/
+.instar/state/inbound-delivery.hmac-key*
+.instar/relay-tokens.json*
+.instar/local-state/
+.instar/state/conversation-bind-token.secret*
+.instar/state/.manifest-key*
+.instar/machine/
+.instar/remediation-keys.age*
+.instar/telemetry/local-secret*
