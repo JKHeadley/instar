@@ -133,6 +133,15 @@ export interface ThreadlineHandleResult {
    *  (PR-4: avoids the overhead of spawning/resuming when a session is
    *  already running for this thread). */
   injected?: boolean;
+  /**
+   * ACT-091: set when the message was typed into a live session that was
+   * MID-TURN, so it sits as queued input and `delivered` is `false` FOR NOW.
+   * Resolves once the text has left the prompt (`delivered: true`) or provably
+   * has not (`false`; `reason` names the case: stuck / ceiling / session-gone).
+   * The relay handler settles the auto-ack from this, never from the
+   * provisional `delivered`.
+   */
+  deliveryPending?: Promise<{ delivered: boolean; reason: string }>;
   /** The tmux session name handling this thread */
   sessionName?: string;
   /** Error message if handling failed */
@@ -723,6 +732,31 @@ export class ThreadlineRouter {
               machineOrigin: existingEntry.machineOrigin,
             },
           });
+          if (outcome.kind === 'routed' && outcome.deliveryMode === 'live-inject-pending' && outcome.settled) {
+            // ACT-091: queued input in a busy session — not delivered YET. The
+            // verdict follows once the text has left the prompt; the relay
+            // handler settles its ack from `deliveryPending`, never from here.
+            console.log(
+              `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: live-inject-pending (queued in a busy session; confirming)`,
+            );
+            return {
+              handled: true,
+              accepted: true,
+              delivered: false,
+              threadId,
+              injected: false,
+              deliveryPending: outcome.settled.then(
+                ({ outcome: o, settlement }) => {
+                  const delivered = o.kind === 'routed' && o.deliveryMode === 'live-inject';
+                  console.log(
+                    `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: pending inject settled ${settlement}${delivered ? '' : ' (no live session received it)'}`,
+                  );
+                  return { delivered, reason: settlement };
+                },
+                (err: unknown) => ({ delivered: false, reason: `settle-error: ${err instanceof Error ? err.message : String(err)}` }),
+              ),
+            };
+          }
           if (outcome.kind === 'routed') {
             // ACT-091: `delivered`/`resumed` describe what a LIVE session
             // actually received. `resume-pending` reached no session, so it is

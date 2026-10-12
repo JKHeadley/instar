@@ -88,6 +88,11 @@ describe('relay handler (src/commands/server.ts)', () => {
     expect(handler.slice(router, settle)).not.toMatch(/if \(relayAckInput\.deferSend\)|if \(isTopicBoundReply\)/);
     // A queued capacity refusal is logged as queued, through the tested helper.
     expect(handler.slice(settle)).toContain('— ${describeUndeliveredRouterResult(result)}`');
+    // A provisional verdict (queued in a busy session) is never settled from
+    // `result.delivered`; the late settle names which case resolved it.
+    const pending = handler.indexOf('if (result.deliveryPending) {');
+    expect(pending).toBeGreaterThan(router);
+    expect(handler.slice(pending)).toContain('queued text never left the prompt (${reason})');
   });
 
   it('ACT-091: the warrants-gate suppress exit (no-reply verdict or loop budget) settles as no-reply BEFORE it returns', () => {
@@ -147,10 +152,17 @@ describe('relay handler (src/commands/server.ts)', () => {
     // The inbound-ack exit is the one deliberate non-settle: an ack is never acked.
     expect(pieces[0]).toContain("if (ackStage === 'ack-consumed')");
     expect(count(pieces[0])).toBe(0);
-    // Every other exit, the final one included, settles exactly once on the way out.
-    for (const piece of pieces.slice(1)) expect(count(piece)).toBe(1);
-    // Four call sites in all: one per routed exit.
-    expect(count(afterStage)).toBe(4);
+    // Every routed exit before the router settles exactly once on the way out.
+    for (const piece of pieces.slice(1, -1)) expect(count(piece)).toBe(1);
+    // The router exit settles exactly once too — but at one of TWO sites: now,
+    // from `result.delivered`, or late, from `deliveryPending` (a reply queued
+    // in a busy session). The one-shot settler makes that one ack, not two.
+    const routerPiece = pieces[pieces.length - 1];
+    expect(count(routerPiece)).toBe(2);
+    expect(routerPiece).toContain("relayAck.settle(delivered ? 'router-delivered' : 'router-undelivered')");
+    expect(routerPiece).toMatch(/if \(result\.deliveryPending\) \{[\s\S]*?\} else \{[\s\S]*?relayAck\.settle\(result\.delivered === true/);
+    // Five call sites in all.
+    expect(count(afterStage)).toBe(5);
   });
 
   it('sends its own ack only as a typed ack — never as a chat message', () => {

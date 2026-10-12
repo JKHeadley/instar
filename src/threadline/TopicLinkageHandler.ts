@@ -58,10 +58,14 @@ export interface TopicLinkageDeps {
   /**
    * Inject text into a live tmux session, returning whether the session
    * actually CONSUMED it (not merely dispatched). May be async — production
-   * confirms submission across the paste-recovery window. A `false`/rejected
-   * result means the inject stalled, so the caller must fall back to surfacing.
+   * confirms submission across the paste-recovery window. A `false`/`stuck`/
+   * rejected result means the inject stalled, so the caller must fall back to
+   * surfacing. A `queued-busy` result (the text sits as queued input in a
+   * session that is mid-turn) is PROVISIONAL: the handler reports
+   * `live-inject-pending` and finishes the route only when `settled` resolves
+   * (ACT-091: the promising ack is sent only once the text has left the prompt).
    */
-  injectIntoSession: (sessionName: string, text: string) => boolean | Promise<boolean>;
+  injectIntoSession: (sessionName: string, text: string) => LiveInjectOutcome | Promise<LiveInjectOutcome>;
   /** Check if a tmux session is alive. */
   isSessionAlive: (sessionName: string) => boolean;
   /** Post a notification to a Telegram topic. */
@@ -146,9 +150,29 @@ export interface CaptureOriginResult {
   threadResumeStamped: boolean;
 }
 
+/** The late verdict of a provisional (`queued-busy`) live inject. */
+export type LiveInjectSettlement = 'submitted' | 'stuck' | 'ceiling' | 'session-gone';
+
+/**
+ * What `injectIntoSession` may report. `true`/`submitted`: consumed.
+ * `false`/`stuck`: not consumed. `queued-busy`: queued in a mid-turn session;
+ * `settled` resolves to the real verdict once the text left the prompt or
+ * provably did not (bounded by the session manager's watch ceiling).
+ */
+export type LiveInjectOutcome =
+  | boolean
+  | { state: 'submitted' }
+  | { state: 'stuck' }
+  | { state: 'queued-busy'; settled: Promise<LiveInjectSettlement> };
+
 /**
  * How a topic-bound reply was handed over:
  *  - `live-inject`    — typed into the topic's live session and consumed;
+ *  - `live-inject-pending` — typed into the topic's live session while it was
+ *                       mid-turn; the text is queued input, not yet consumed.
+ *                       The route finishes later (`settled`) as `live-inject`
+ *                       or `failure-visible` — never reported as delivered
+ *                       until the text has actually left the prompt;
  *  - `respawn-inject` — the topic's session was dead/reaped, so it was
  *                       respawned (resuming its conversation) with the reply as
  *                       its first message (ACT-091);
@@ -156,7 +180,7 @@ export interface CaptureOriginResult {
  *                       (legacy; the reply sits in the hub only);
  *  - `failure-visible`— a hand-off was attempted and failed; always surfaced.
  */
-export type TopicDeliveryMode = 'live-inject' | 'respawn-inject' | 'resume-pending' | 'failure-visible';
+export type TopicDeliveryMode = 'live-inject' | 'live-inject-pending' | 'respawn-inject' | 'resume-pending' | 'failure-visible';
 
 export type TopicRouteOutcome =
   | { kind: 'no-linkage' }
@@ -168,6 +192,12 @@ export type TopicRouteOutcome =
       reason: string;
       commitmentDelivered: boolean;
       telegramSent: boolean;
+      /**
+       * Set ONLY with `deliveryMode: 'live-inject-pending'`: the final route
+       * (`live-inject` → commitment delivered, no surface; `failure-visible`
+       * → surfaced in the topic) and which case settled it.
+       */
+      settled?: Promise<{ outcome: TopicRouteOutcome; settlement: LiveInjectSettlement }>;
     };
 
 export interface RouteReplyInput {
@@ -176,6 +206,13 @@ export interface RouteReplyInput {
 }
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Fold the boolean form of `LiveInjectOutcome` into the object form. */
+export function normalizeLiveInject(o: LiveInjectOutcome): Exclude<LiveInjectOutcome, boolean> {
+  if (o === true) return { state: 'submitted' };
+  if (o === false || o == null) return { state: 'stuck' };
+  return o;
+}
 
 // Soft rate-limit per thread for user-visible Telegram surfaces.
 const USER_VISIBLE_RATE_LIMIT_MS = 60_000;
@@ -479,6 +516,7 @@ export class TopicLinkageHandler {
 
     const sessionName = liveSessionName ?? threadEntry.originSessionName ?? null;
     let deliveryMode: TopicDeliveryMode = 'failure-visible';
+    let pendingSettled: Promise<LiveInjectSettlement> | null = null;
 
     const payload = this.buildSessionPayload({
       threadId,
@@ -500,9 +538,12 @@ export class TopicLinkageHandler {
     })();
     if (sessionName && !(spawning && this.deps.respawnTopicSession) && this.deps.isSessionAlive(sessionName)) {
       try {
-        const ok = await this.deps.injectIntoSession(sessionName, payload);
-        if (ok) {
+        const o = normalizeLiveInject(await this.deps.injectIntoSession(sessionName, payload));
+        if (o.state === 'submitted') {
           deliveryMode = 'live-inject';
+        } else if (o.state === 'queued-busy') {
+          deliveryMode = 'live-inject-pending';
+          pendingSettled = o.settled;
         }
       } catch (err) {
         console.warn(
@@ -523,6 +564,10 @@ export class TopicLinkageHandler {
           console.log(
             `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} delivered by ${r.mode}${r.sessionName ? ` into "${r.sessionName}"` : ''}`,
           );
+        } else if (r.pending) {
+          // The hook's live paste landed in a mid-turn session: provisional.
+          deliveryMode = 'live-inject-pending';
+          pendingSettled = r.settled;
         } else {
           console.warn(
             `[TopicLinkageHandler] Topic ${topicId} session not alive and respawn refused for thread ${threadId}: ${r.reason ?? 'unknown'} — surfacing`,
@@ -543,6 +588,36 @@ export class TopicLinkageHandler {
       // quiet, hub only). NOTE: there is no automatic topic-resume REPLAY of a
       // quieted reply — recovery of a low-salience reply is via the hub.
       deliveryMode = 'resume-pending';
+    }
+
+    if (deliveryMode === 'live-inject-pending' && pendingSettled) {
+      // ACT-091: the text sits as queued input in a busy session. Nothing is
+      // claimed yet — no commitment delivery, no surface, no promising ack.
+      // The route finishes when the watch settles: `submitted` → live-inject;
+      // anything else (stuck at an idle prompt again, the session gone, or the
+      // watch ceiling) → failure-visible, surfaced in the topic as today.
+      console.log(
+        `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} queued in busy session "${sessionName}" — delivery pending until the text leaves the prompt`,
+      );
+      const settled = pendingSettled
+        .then((s) => s, () => 'stuck' as LiveInjectSettlement)
+        .then(async (settlement) => {
+          const finalMode: TopicDeliveryMode = settlement === 'submitted' ? 'live-inject' : 'failure-visible';
+          console.log(
+            `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} pending inject settled: ${settlement} → ${finalMode}`,
+          );
+          const outcome = await this.finishRouted({ threadId, topicId, message, threadEntry, commitment, deliveryMode: finalMode, verdictResult });
+          return { outcome, settlement };
+        });
+      return {
+        kind: 'routed',
+        deliveryMode,
+        verdict: verdictResult.verdict,
+        reason: verdictResult.reason,
+        commitmentDelivered: false,
+        telegramSent: false,
+        settled,
+      };
     }
 
     return this.finishRouted({ threadId, topicId, message, threadEntry, commitment, deliveryMode, verdictResult });

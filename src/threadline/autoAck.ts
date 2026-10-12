@@ -211,7 +211,11 @@ export function settleDeferredRelayAck(
  *                           stale between the routing check and the write). The
  *                           write succeeds with nobody reading, so it is a queue
  *                           write, NOT a delivery.
- *  - `router-delivered`   — `ThreadlineRouter` reported `delivered === true`.
+ *  - `router-delivered`   — `ThreadlineRouter` reported `delivered === true`,
+ *                           or its `deliveryPending` (a reply typed into a
+ *                           busy session as queued input) resolved delivered.
+ *                           THE RULE: the promising ack is sent only once the
+ *                           injected text has actually left the prompt.
  *  - `router-undelivered` — the router accepted, queued, refused or failed
  *                           without a live session receiving the message. This
  *                           includes a capacity refusal the spawn manager

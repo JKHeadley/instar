@@ -610,6 +610,15 @@ export type SessionTerminateAuthority = (
   opts?: SessionTerminateAuthorityOptions,
 ) => Promise<{ terminated: boolean; skipped?: string }>;
 
+/** The late verdict of a `queued-busy` injection — see `watchQueuedInjection`. */
+export type InjectionSettlement = 'submitted' | 'stuck' | 'ceiling' | 'session-gone';
+
+/** The observed outcome of a confirmed paste — see `injectPasteNotificationObserved`. */
+export type InjectionConfirmation =
+  | { state: 'submitted' }
+  | { state: 'stuck' }
+  | { state: 'queued-busy'; settle: () => Promise<InjectionSettlement> };
+
 export class SessionManager extends EventEmitter {
   private config: SessionManagerConfig;
   private state: StateManager;
@@ -6946,40 +6955,127 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * Inject a paste notification and CONFIRM it actually submitted (was not left
-   * stuck at the prompt by the paste-end Enter race). Returns true only when the
-   * injected marker is no longer sitting at the input prompt within the recovery
-   * window — i.e. the session genuinely consumed the message. Observes outcome
-   * across the same window verifyInjection (fired by injectMessage) uses to resend
-   * Enter, so this does NOT duplicate recovery; it only reports the result.
+   * Inject a paste notification and OBSERVE whether it actually submitted.
    *
-   * Used by topic-linkage reply surfacing, which must not treat a
-   * dispatched-but-stuck inject as "delivered to the user" (the A2 bug: a stalled
-   * inject silently resolved the commitment and suppressed the Telegram fallback).
+   * Contract (ACT-091 — the delivery verdict is load-bearing: it decides the
+   * promising auto-ack, the topic surface and the commitment):
+   *
+   *  - `submitted`   — within the confirmation window the injected marker left
+   *                    the input prompt. The session consumed it.
+   *  - `stuck`       — after the window the marker is still at an IDLE prompt
+   *                    (no mid-turn footer): the paste-end Enter race left the
+   *                    text unsubmitted. Also the verdict when the inject throws
+   *                    or the session disappears.
+   *  - `queued-busy` — after the window the marker is still at the prompt AND
+   *                    the pane shows Claude Code's mid-turn footer
+   *                    (`paneShowsActiveWork`). Claude Code holds text typed
+   *                    during a turn as queued input and submits it at the next
+   *                    tool round, so this looks identical to `stuck` to the
+   *                    marker check alone — the false negative that logged
+   *                    "no live session received it" for a reply the live
+   *                    session did receive (2026-10-12 22:21Z). It is NOT
+   *                    reported as submitted: the footer is screen text, and a
+   *                    stale footer over an idle prompt would make stuck text
+   *                    look queued. `settle()` starts a bounded, non-blocking
+   *                    watch (`watchQueuedInjection`) and resolves to the
+   *                    outcome once the text has actually left the prompt or
+   *                    provably has not.
+   *
+   * Observes outcome across the same window verifyInjection (fired by
+   * injectMessage) uses to resend Enter, so this does NOT duplicate recovery;
+   * it only reports the result. A marker too short to verify counts as
+   * submitted (there is nothing to observe).
    */
-  async injectPasteNotificationConfirmed(tmuxSession: string, notification: string): Promise<boolean> {
+  async injectPasteNotificationObserved(tmuxSession: string, notification: string): Promise<InjectionConfirmation> {
     let injected: string;
     try {
       injected = this.injectPasteNotification(tmuxSession, notification);
     } catch {
-      return false;
+      return { state: 'stuck' };
     }
-    const marker = injected.replace(/^\s+/, '').slice(0, 40).trim();
-    // Marker too short to verify reliably — treat dispatch as success.
-    if (!marker || marker.length < 8) return true;
+    const marker = SessionManager.extractInjectionMarker(injected);
+    if (!marker) return { state: 'submitted' };
 
     // Absolute times-from-injection (ms) at which to check. Extends just past
     // verifyInjection's last recovery attempt (6500ms) so we observe the final state.
     const schedule = [1000, 3000, 5000, 7500];
     let prev = 0;
+    let lastPane = '';
     for (const t of schedule) {
       await new Promise((r) => setTimeout(r, t - prev));
       prev = t;
-      if (!this.tmuxSessionExists(tmuxSession)) return false;
-      const pane = this.captureOutput(tmuxSession, 30) || '';
-      if (!this.isMarkerStuckAtPrompt(pane, marker)) return true; // submitted
+      if (!this.tmuxSessionExists(tmuxSession)) return { state: 'stuck' };
+      lastPane = this.captureOutput(tmuxSession, 30) || '';
+      if (!this.isMarkerStuckAtPrompt(lastPane, marker)) return { state: 'submitted' };
     }
-    return false; // still stuck after the full recovery window
+    if (this.paneShowsActiveWork(lastPane)) {
+      let watch: Promise<InjectionSettlement> | null = null;
+      return {
+        state: 'queued-busy',
+        // Lazy: a caller that cannot act on a late verdict never starts the watch.
+        settle: () => (watch ??= this.watchQueuedInjection(tmuxSession, marker)),
+      };
+    }
+    return { state: 'stuck' }; // still at an idle prompt after the full recovery window
+  }
+
+  /**
+   * Inject a paste notification and CONFIRM it submitted within the window.
+   * `true` ONLY for `submitted`; a `queued-busy` observation is `false` here
+   * (not yet proven), so a caller that CAN wait for the late verdict must use
+   * `injectPasteNotificationObserved` instead. Used by the cross-machine
+   * topic-reply inject, whose mesh RPC cannot hold for a turn to end.
+   */
+  async injectPasteNotificationConfirmed(tmuxSession: string, notification: string): Promise<boolean> {
+    const r = await this.injectPasteNotificationObserved(tmuxSession, notification);
+    return r.state === 'submitted';
+  }
+
+  /**
+   * How long a `queued-busy` injection is watched before it is given up as
+   * undelivered: 10 minutes — the Bash tool's maximum foreground timeout, i.e.
+   * the longest a single tool call can hold a turn before Claude Code reads
+   * its queued input at the next tool round. Reaching it resolves `ceiling`
+   * (NOT delivered): a promising ack is never sent on a guess.
+   */
+  static readonly QUEUED_INJECTION_WATCH_CEILING_MS = 10 * 60_000;
+
+  /**
+   * The follow-up watch for a `queued-busy` injection. Non-blocking for the
+   * caller (it runs on timers); polls the pane every 5 s for the first minute,
+   * then every 15 s, until the ceiling. Resolves:
+   *  - `submitted`    — the marker left the prompt (the queued text was taken
+   *                     when the turn reached its next round);
+   *  - `stuck`        — the prompt is idle again (no footer) and the marker is
+   *                     still there, on TWO consecutive polls — the debounce
+   *                     covers the frame between a turn ending and the queued
+   *                     text submitting; also on a capture error;
+   *  - `session-gone` — the tmux session disappeared;
+   *  - `ceiling`      — still busy with the marker at the prompt at the ceiling.
+   * Observe-only: it fires no recovery Enter. Only `submitted` is a delivery.
+   */
+  private async watchQueuedInjection(tmuxSession: string, marker: string): Promise<InjectionSettlement> {
+    const ceiling = SessionManager.QUEUED_INJECTION_WATCH_CEILING_MS;
+    let elapsed = 0;
+    let idleStuckStreak = 0;
+    while (elapsed < ceiling) {
+      const step = elapsed < 60_000 ? 5_000 : 15_000;
+      await new Promise((r) => setTimeout(r, step));
+      elapsed += step;
+      try {
+        if (!this.tmuxSessionExists(tmuxSession)) return 'session-gone';
+        const pane = this.captureOutput(tmuxSession, 30) || '';
+        if (!this.isMarkerStuckAtPrompt(pane, marker)) return 'submitted';
+        if (this.paneShowsActiveWork(pane)) {
+          idleStuckStreak = 0;
+        } else if (++idleStuckStreak >= 2) {
+          return 'stuck';
+        }
+      } catch {
+        return 'stuck'; // an unreadable pane cannot prove a delivery
+      }
+    }
+    return 'ceiling';
   }
 
   injectTelegramMessage(

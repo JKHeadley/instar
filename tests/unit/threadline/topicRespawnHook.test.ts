@@ -113,4 +113,20 @@ describe('createThreadlineTopicRespawn', () => {
     const { deps, setAlive } = makeDeps({ injectConfirmed: vi.fn().mockResolvedValue(false) }); setAlive(true);
     expect(await createThreadlineTopicRespawn(deps)({ topicId: 9210, text: 'hi' })).toEqual({ delivered: false, reason: 'inject-unconfirmed' });
   });
+
+  it('ACT-091: a live paste into a MID-TURN session is reported pending (queued-busy), never delivered', async () => {
+    const settled = Promise.resolve('submitted' as const);
+    const { deps, setAlive } = makeDeps({ injectConfirmed: vi.fn().mockResolvedValue({ state: 'queued-busy', settled }) }); setAlive(true);
+    const r = await createThreadlineTopicRespawn(deps)({ topicId: 9210, text: 'hi' });
+    expect(r).toMatchObject({ delivered: false, pending: true, reason: 'queued-busy', mode: 'live-inject', sessionName: 'echo-topic-9210' });
+    expect((r as { settled?: Promise<string> }).settled).toBe(settled);
+    expect(deps.respawn).not.toHaveBeenCalled();
+  });
+
+  it('ACT-091: the object forms map like the booleans — submitted → delivered, stuck → inject-unconfirmed', async () => {
+    const a = makeDeps({ injectConfirmed: vi.fn().mockResolvedValue({ state: 'submitted' }) }); a.setAlive(true);
+    expect(await createThreadlineTopicRespawn(a.deps)({ topicId: 9210, text: 'hi' })).toMatchObject({ delivered: true, mode: 'live-inject' });
+    const b = makeDeps({ injectConfirmed: vi.fn().mockResolvedValue({ state: 'stuck' }) }); b.setAlive(true);
+    expect(await createThreadlineTopicRespawn(b.deps)({ topicId: 9210, text: 'hi' })).toMatchObject({ delivered: false, reason: 'inject-unconfirmed' });
+  });
 });

@@ -219,6 +219,44 @@ message id while the original waits in that bounded, expiring queue. If the
 queued message later reaches a session, that session's reply is the sender's
 acknowledgement.
 
+**The promising ack is sent only once the injected text has actually left the
+prompt.** The verdict behind `router-delivered` on the topic path is the
+confirmed paste (`SessionManager.injectPasteNotificationObserved`): the
+injected marker is polled at the input prompt over the 7.5 s recovery window.
+That check alone gave a false negative on a BUSY session: Claude Code holds text
+typed mid-turn as queued input at the prompt and reads it at the next tool
+round, which looks identical to "stuck at an idle prompt" (a live topic session
+received a reply at 22:21:27Z on 2026-10-12 while the server logged
+"failure-visible (no live session received it)" and withheld the ack). The fix
+makes a third verdict, and keeps it PROVISIONAL:
+
+- `submitted` — the marker left the prompt inside the window: delivered.
+- `stuck` — the marker is still at an IDLE prompt after the window: not
+  delivered (`failure-visible`, surfaced in the topic, no ack).
+- `queued-busy` — the marker is still at the prompt AND the pane shows Claude
+  Code's mid-turn footer (`paneShowsClaudeWorking`, the same indicator
+  `verifyInjection` already uses to avoid firing a recovery Enter into a working
+  pane). This is NOT reported as delivered: the footer is screen text, and a
+  stale footer over an idle prompt would make stuck text look queued. The
+  handler reports `live-inject-pending`, the router returns `delivered: false`
+  with a `deliveryPending` promise, and the relay handler does not settle the
+  ack. A bounded, non-blocking watch re-captures the pane (every 5 s for a
+  minute, then every 15 s) until the marker is gone (`submitted` → the route
+  finishes as `live-inject`, the commitment is delivered, the promising ack is
+  sent — once, through the one-shot settler) or the prompt is idle again with
+  the marker still there on two consecutive polls (`stuck` → `failure-visible`,
+  surfaced, no ack), or the session disappears (`session-gone`, no ack), or the
+  ceiling is reached (`ceiling`, no ack). The ceiling is 10 minutes: the Bash
+  tool's maximum foreground timeout, the longest a single tool call can hold a
+  turn before the queued input is read. On the ceiling the verdict is
+  undelivered, never delivered. The log names the case that settled it.
+
+The same three verdicts flow through the respawn hook's live paste (a reply
+that waited for an in-flight topic spawn). The cross-machine topic-reply inject
+(`a2a-topic-reply-inject`) keeps the boolean confirmation, so a busy owner
+session still reads as undelivered there (its mesh RPC cannot wait for a turn to
+end); that remains a known false negative on that path.
+
 **The listener path needs a proven reader.**
 `ListenerSessionManager.writeToInbox` appends to a file and succeeds whether or
 not anything reads it. The manager used to report `listening` from
@@ -348,8 +386,18 @@ sniff key, framework-shadowed).
   queued, no ack, logged as queued; a free slot → delivered and acked; refused
   with the queue full → not queued, no ack), and the real client wire encoding.
   `tests/unit/ListenerSessionManager.test.ts`
-  covers the heartbeat on both sides of the freshness bound. E2E: over the real relay, a message that reaches no live session
-  leaves the sender's record unacknowledged, and the next, delivered, is acked.
+  covers the heartbeat on both sides of the freshness bound.
+  `tests/unit/session-inject-observed.test.ts` covers the three paste verdicts
+  and the watch (text taken later → submitted; idle with the marker twice →
+  stuck; stale footer → ceiling, never submitted; session gone; capture error).
+  `tests/integration/threadline/delivered-verdict-per-route.test.ts` asserts
+  `delivered === true` on every delivering route (live inject idle, respawn,
+  cold spawn, resume, warm spawn, the router's live inject) and the
+  busy-session cases end to end through the real handler, router and settler
+  (one late ack when the text leaves the prompt; none on a stale footer or
+  ceiling; failure-visible surfaced). E2E: over the real relay, a message that
+  reaches no live session leaves the sender's record unacknowledged, and the
+  next, delivered, is acked.
 
 ## Maturation plan
 

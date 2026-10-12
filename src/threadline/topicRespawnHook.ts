@@ -21,10 +21,13 @@
  */
 
 import type { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
+import { normalizeLiveInject, type LiveInjectOutcome, type LiveInjectSettlement } from './TopicLinkageHandler.js';
 
 export type TopicRespawnResult =
-  | { delivered: true; mode: 'live-inject' | 'respawn-inject'; sessionName?: string }
-  | { delivered: false; reason: string };
+  | { delivered: true; mode: 'live-inject' | 'respawn-inject'; sessionName?: string; pending?: false }
+  | { delivered: false; reason: string; pending?: false }
+  /** A live paste into a MID-TURN session: queued input, provisional (ACT-091). */
+  | { delivered: false; pending: true; reason: 'queued-busy'; mode: 'live-inject'; sessionName: string; settled: Promise<LiveInjectSettlement> };
 
 export interface TopicRespawnDeps {
   spawning: SpawningTopicsRegistry;
@@ -33,8 +36,11 @@ export interface TopicRespawnDeps {
   /** The session the topic registry names (never a name read from a thread record). */
   registeredSession: (topicId: number) => string | null;
   isSessionAlive: (sessionName: string) => boolean;
-  /** Confirmed paste into a live session: true only when it was consumed. */
-  injectConfirmed: (sessionName: string, text: string) => Promise<boolean>;
+  /**
+   * Confirmed paste into a live session: `true`/`submitted` only when it was
+   * consumed; `queued-busy` when the session was mid-turn (provisional).
+   */
+  injectConfirmed: (sessionName: string, text: string) => Promise<LiveInjectOutcome>;
   /** The G3 lease-gated spawn decision. */
   leaseGate: (topicId: number) => { spawnLocally: boolean; reason: string };
   /** Why the registered session died, from its dead pane. `null` = unknown. */
@@ -59,8 +65,10 @@ export function createThreadlineTopicRespawn(deps: TopicRespawnDeps) {
 
   const injectLive = async (sessionName: string, text: string): Promise<TopicRespawnResult> => {
     try {
-      const ok = await deps.injectConfirmed(sessionName, text);
-      return ok ? { delivered: true, mode: 'live-inject', sessionName } : { delivered: false, reason: 'inject-unconfirmed' };
+      const o = normalizeLiveInject(await deps.injectConfirmed(sessionName, text));
+      if (o.state === 'submitted') return { delivered: true, mode: 'live-inject', sessionName };
+      if (o.state === 'queued-busy') return { delivered: false, pending: true, reason: 'queued-busy', mode: 'live-inject', sessionName, settled: o.settled };
+      return { delivered: false, reason: 'inject-unconfirmed' };
     } catch (err) {
       return { delivered: false, reason: err instanceof Error ? err.message : String(err) };
     }
