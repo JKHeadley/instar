@@ -50,3 +50,4 @@ export {
   type SuccessorVeto,
 } from './binding.js';
 export { WitnessStore, type AddResult, type Chain, type ChainLink, type RecordStatus } from './store.js';
+export { didKeyFromPublicKey, publicKeyFromDidKey } from './didkey.js';

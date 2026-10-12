@@ -72,7 +72,9 @@ witness seal-evidence seal.json --url https://...   # a SEAL by hash plus where 
 witness export                                 # the binding and every record, to share
 ```
 
-`--agent` is the name your records carry as issuer. Whether an issuer named by `did:key` should name the Threadline identity key (and reach the Witness key through the binding) is still being decided, so treat that naming as provisional. A SEAL is carried as `seal:sha256:<hex>` plus its URL, never inline, because it can be larger than one evidence item. `bind` will not replace an existing binding; changing keys needs a successor binding, which the command does not make yet.
+`--agent` is the name your records carry as issuer. A `did:key` issuer names the agent's **Threadline identity key**, never its Witness key: the binding is what reaches the Witness key, so the name stays the same when the Witness key rotates. `bind` refuses a `did:key` that is not this agent's own Threadline key (`didKeyFromPublicKey` makes the right one).
+
+What `verify` checks: one record against one binding. The record's signature is checked against the binding's Witness key, and the binding's own two signatures are checked. For a `did:key` issuer it also checks, offline, that the issuer *is* the binding's Threadline key, so a binding someone else made under your name is refused. For a `did:web` issuer it cannot check that offline (the key is in the did document), and its output says so. It does **not** walk a chain: a superseded or revoked binding still verifies here. The store (`WitnessStore`) applies the chain rules; use it, or check the issuer's current chain, before relying on an old record. A SEAL is carried as `seal:sha256:<hex>` plus its URL, never inline, because it can be larger than one evidence item. `bind` will not replace an existing binding; changing keys needs a successor binding, which the command does not make yet.
 
 ## Not yet
 

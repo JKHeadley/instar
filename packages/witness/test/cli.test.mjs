@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyBinding } from '../dist/index.js';
+import { verifyBinding, createBinding, createRecord, generateWitnessKey, didKeyFromPublicKey, publicKeyFromDidKey } from '../dist/index.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
 
@@ -37,7 +37,7 @@ function setup() {
   return { dir, id, home, run };
 }
 
-const AGENT = 'did:key:z6MkTrialAgent';
+const AGENT = 'did:web:example.com:agents:trial'; // did:key gets its own tests below
 const PEER = 'did:web:api.moltbridge.ai:agents:dawn';
 
 test('init creates a Witness key once, separate from the Threadline key, and never replaces it', () => {
@@ -124,4 +124,89 @@ test('an identity file whose private key belongs to a different public key is re
   const r = spawnSync(process.execPath, [CLI, 'bind', '--agent', AGENT, '--home', home, '--identity', id.file], { encoding: 'utf8' });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /publicKey does not match privateKey/);
+});
+
+// ── did:key: the issuer name IS the Threadline identity key (Echo's review of 0e488e16) ──
+
+// An independent base58btc (BigInt) so the encoder is not only checked against itself.
+function base58BigInt(bytes) {
+  const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let n = BigInt('0x' + Buffer.from(bytes).toString('hex'));
+  let out = '';
+  while (n > 0n) { out = A[Number(n % 58n)] + out; n /= 58n; }
+  for (const b of bytes) { if (b === 0) out = '1' + out; else break; }
+  return out;
+}
+
+test('did:key encodes Ed25519 as multicodec 0xed01 + base58btc, and round-trips', () => {
+  for (let i = 0; i < 25; i++) {
+    const pub = crypto.randomBytes(32).toString('hex');
+    const did = didKeyFromPublicKey(pub);
+    assert.match(did, /^did:key:z6Mk/); // every Ed25519 did:key starts with z6Mk
+    assert.equal(did, 'did:key:z' + base58BigInt(Buffer.concat([Buffer.from([0xed, 0x01]), Buffer.from(pub, 'hex')])));
+    assert.equal(publicKeyFromDidKey(did), pub);
+  }
+  assert.equal(publicKeyFromDidKey('did:key:z6MkTrialAgent'), null);
+  assert.equal(publicKeyFromDidKey('did:web:example.com'), null);
+});
+
+function didKeySetup() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'witness-cli-'));
+  const id = threadlineIdentity(dir);
+  const home = path.join(dir, 'witness');
+  const did = didKeyFromPublicKey(id.publicKeyHex);
+  const run = (...args) => {
+    const r = spawnSync(process.execPath, [CLI, ...args, '--home', home, '--identity', id.file], { encoding: 'utf8' });
+    return { code: r.status, out: r.stdout ? JSON.parse(r.stdout) : null, err: r.stderr };
+  };
+  return { dir, id, home, did, run };
+}
+
+test('verify accepts a record whose did:key issuer IS the binding\'s Threadline key, and says it checked', () => {
+  const { dir, home, did, run } = didKeySetup();
+  run('init');
+  assert.equal(run('bind', '--agent', did).code, 0);
+  const signed = run('sign', '--subject', PEER, '--claim', 'collaborated', '--context', 'Paired over Threadline');
+  const recFile = path.join(dir, 'rec.json');
+  fs.writeFileSync(recFile, JSON.stringify(signed.out.record));
+  const v = run('verify', recFile, '--binding', path.join(home, 'binding.json'));
+  assert.equal(v.out.ok, true);
+  assert.match(v.out.issuerKeyCheck, /^checked/);
+});
+
+test('a forged binding under someone else\'s did:key is refused, even though its own signatures are valid', () => {
+  const { dir, did } = didKeySetup(); // the victim's did:key
+  // The attacker makes a binding with THEIR keys but the victim's name, and signs a record.
+  const attackerTl = generateWitnessKey(); // any Ed25519 pair works as a Threadline key here
+  const attackerWitness = generateWitnessKey();
+  const forged = createBinding({ agent: did, threadline: attackerTl, witness: attackerWitness });
+  assert.equal(verifyBinding(forged).ok, true); // internally consistent, which is the trap
+  const record = createRecord({ issuer: did, subject: PEER, claim: 'completed', context: 'forged', confidence: 100 }, attackerWitness);
+  const bFile = path.join(dir, 'forged-binding.json');
+  const rFile = path.join(dir, 'forged-record.json');
+  fs.writeFileSync(bFile, JSON.stringify(forged));
+  fs.writeFileSync(rFile, JSON.stringify(record));
+  const r = spawnSync(process.execPath, [CLI, 'verify', rFile, '--binding', bFile], { encoding: 'utf8' });
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /not the key the issuer did:key names/);
+});
+
+test('verify on a did:web issuer says the binding\'s key was NOT checked offline', () => {
+  const { dir, run, home } = setup();
+  run('init');
+  run('bind', '--agent', AGENT);
+  const signed = run('sign', '--subject', PEER, '--claim', 'completed', '--context', 'x');
+  const recFile = path.join(dir, 'rec.json');
+  fs.writeFileSync(recFile, JSON.stringify(signed.out.record));
+  assert.match(run('verify', recFile, '--binding', path.join(home, 'binding.json')).out.issuerKeyCheck, /^NOT checked/);
+});
+
+test('bind refuses a did:key that names a different key than this agent\'s Threadline key', () => {
+  const { run } = didKeySetup();
+  run('init');
+  const other = didKeyFromPublicKey(crypto.randomBytes(32).toString('hex'));
+  const r = run('bind', '--agent', other);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /does not name this agent's Threadline identity key/);
 });

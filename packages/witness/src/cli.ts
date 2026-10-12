@@ -27,6 +27,7 @@ import { publicKeyFromPrivate, type WitnessKeyPair } from './keys.js';
 import { createBinding, verifyBinding, threadlineFingerprint, type KeyBinding } from './binding.js';
 import { createRecord, verifyRecord, CLAIMS, type Claim } from './record.js';
 import { WitnessStore } from './store.js';
+import { publicKeyFromDidKey } from './didkey.js';
 
 const BINDING_FILE = 'binding.json';
 
@@ -133,12 +134,25 @@ export function run(argv: string[]): unknown {
       }
       const witness = existingKey(home);
       const threadline = readThreadlineIdentity(path.resolve(values.identity ?? defaultIdentity()));
+      // A did:key name IS the agent's Threadline identity key (not its Witness key), so it
+      // must be this agent's own key; otherwise verify would rightly refuse every record.
+      if (values.agent.startsWith('did:key:')) {
+        const named = publicKeyFromDidKey(values.agent);
+        if (!named) fail('--agent is a did:key but not an Ed25519 one');
+        if (named !== threadline.publicKey) fail('--agent did:key does not name this agent\'s Threadline identity key');
+      }
       const binding = createBinding({ agent: values.agent, threadline, witness });
       const checked = verifyBinding(binding, threadline.fingerprint);
       if (!checked.ok) fail(`binding did not verify: ${checked.reason}`);
+      // File first: if the store were written first and the file write failed, a re-run
+      // would see no file and make a second seq-0 binding.
+      const bindingFile = path.join(home, BINDING_FILE);
+      fs.writeFileSync(bindingFile, JSON.stringify(binding, null, 2) + '\n', { flag: 'wx' });
       const added = new WitnessStore({ dir: path.join(home, 'store') }).addBinding(binding, { expectedFingerprint: threadline.fingerprint });
-      if (added.status === 'rejected') fail(`store refused the binding: ${added.reason}`);
-      fs.writeFileSync(path.join(home, BINDING_FILE), JSON.stringify(binding, null, 2) + '\n', { flag: 'wx' });
+      if (added.status === 'rejected') {
+        fs.rmSync(bindingFile, { force: true });
+        fail(`store refused the binding: ${added.reason}`);
+      }
       return binding;
     }
     case 'sign': {
@@ -169,7 +183,20 @@ export function run(argv: string[]): unknown {
       if (!b.ok) return { ok: false, reason: `binding: ${b.reason}` };
       const record = readJson(path.resolve(file), 'record') as { issuer?: unknown };
       if (record.issuer !== b.binding.agent) return { ok: false, reason: 'the record\'s issuer is not the agent this binding names' };
-      return { ...verifyRecord(record, b.binding.witness_public_key), threadlineFingerprint: b.binding.threadline_fingerprint };
+      // A binding only names the issuer by string; anyone can make one with their own keys
+      // under your name. For did:key the name IS the Threadline key, so check it offline.
+      let issuerKeyCheck: string;
+      if (b.binding.agent.startsWith('did:key:')) {
+        const named = publicKeyFromDidKey(b.binding.agent);
+        if (!named) return { ok: false, reason: 'the issuer is a did:key but not an Ed25519 one' };
+        if (named !== b.binding.threadline_public_key) {
+          return { ok: false, reason: 'the binding\'s Threadline key is not the key the issuer did:key names (a binding made by someone else)' };
+        }
+        issuerKeyCheck = 'checked: the issuer did:key is the binding\'s Threadline key';
+      } else {
+        issuerKeyCheck = 'NOT checked offline: a did:web issuer\'s key is in its did document, so this binding is only known to carry the issuer\'s name';
+      }
+      return { ...verifyRecord(record, b.binding.witness_public_key), threadlineFingerprint: b.binding.threadline_fingerprint, issuerKeyCheck };
     }
     case 'seal-evidence': {
       const file = positionals[0];
@@ -187,7 +214,14 @@ export function run(argv: string[]): unknown {
   }
 }
 
-const invokedDirectly = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+function isInvokedDirectly(): boolean {
+  try {
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+  } catch {
+    return false; // an odd argv (a path that does not exist) never crashes an import
+  }
+}
+const invokedDirectly = isInvokedDirectly();
 if (invokedDirectly) {
   try {
     process.stdout.write(JSON.stringify(run(process.argv.slice(2)), null, 2) + '\n');
