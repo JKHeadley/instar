@@ -13,12 +13,395 @@
  *   Verdict:     deterministic FS walk + canary (canary at canary/codexSessionLayoutCanary.ts)
  */
 
-import { promises as fs, readdirSync, statSync } from 'node:fs';
+import { promises as fs, readdirSync, statSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 export function codexHomeFromConfig(codexHome?: string): string {
   return codexHome ?? path.join(homedir(), '.codex');
+}
+
+function sessionsRootFor(codexHome?: string): string {
+  return path.join(codexHomeFromConfig(codexHome), 'sessions');
+}
+
+// ── Rollout lookup by thread UUID ─────────────────────────────────────────
+//
+// Why this is not a plain recursive walk (2026-10-13 server-loop freeze): the
+// previous walker `statSync`ed EVERY entry under `$CODEX_HOME/sessions` before
+// even looking at its name, so a MISSING uuid (a Claude transcript id sent here
+// by a framework-blind caller) cost one stat per archived rollout — 286,984 on
+// one machine, ~25 s of blocked event loop per call, once a minute from the
+// resume heartbeat. The supervisor then restarted a healthy server three times
+// in a morning.
+//
+// The lookup now works in this order, cheapest first:
+//   1. Exact known path — a per-process positive cache, validated with ONE stat.
+//   2. A short-lived miss cache (TTL + the newest partition's mtime as a
+//      generation stamp) so a repeated miss costs one small readdir chain.
+//   3. UUIDv7 partition hint — codex thread ids are UUIDv7, whose first 48 bits
+//      are the creation time in ms; the rollout lives in the local-date
+//      partition of that instant (checked with ±1 day for the midnight edge).
+//      A hinted lookup reads 1–3 directories by NAME only — no per-file stat.
+//   4. Sync callers only: a bounded readdir-only scan newest-first, capped at
+//      SYNC_SCAN_NAME_BUDGET names, so a small archive still resolves a
+//      non-v7 id synchronously while a large one costs milliseconds, not
+//      seconds.
+//   5. Async enumeration (yielding between directories and every
+//      ASYNC_YIELD_EVERY_NAMES names, capped at ASYNC_SCAN_NAME_BUDGET) — the
+//      only path that can cover the whole archive. A sync caller whose bounded
+//      scan ran out of budget schedules it in the background (single-flight per
+//      uuid) and answers an honest miss now; the next call reads the cache.
+//
+// Filenames are tested BEFORE any stat on every path. `rolloutLookupStats()`
+// exposes the counters so tests can prove a lookup never statted the archive.
+
+/** How long a miss from the cheap paths (hint / bounded sync scan) is remembered. */
+export const ROLLOUT_MISS_TTL_MS = 60_000;
+/**
+ * How long a miss is remembered once a FULL async enumeration has covered the
+ * archive. Longer than the cheap-path TTL so an untagged stale id polled every
+ * minute cannot re-enumerate hundreds of thousands of names every other tick;
+ * still dropped early by the newest-partition generation stamp and by
+ * `invalidateRolloutLookup`.
+ */
+export const ROLLOUT_ENUMERATED_MISS_TTL_MS = 5 * 60_000;
+/** Names a SYNC lookup may scan before deferring the rest to async enumeration. */
+export const SYNC_SCAN_NAME_BUDGET = 20_000;
+/** Names an ASYNC enumeration may scan before giving up (bounded work). */
+export const ASYNC_SCAN_NAME_BUDGET = 2_000_000;
+/** The async enumeration yields the event loop at least this often within one directory. */
+export const ASYNC_YIELD_EVERY_NAMES = 5_000;
+
+export interface RolloutLookupStats {
+  positiveHits: number;
+  negativeHits: number;
+  hintedPartitionReads: number;
+  syncDirectoryReads: number;
+  syncNamesScanned: number;
+  syncBudgetExhausted: number;
+  asyncEnumerations: number;
+  asyncDirectoryReads: number;
+  asyncNamesScanned: number;
+  asyncBudgetExhausted: number;
+  statCalls: number;
+}
+
+const positiveCache = new Map<string, string>();
+const negativeCache = new Map<string, { expiresAt: number; generation: string }>();
+const inflight = new Map<string, Promise<string | null>>();
+const stats: RolloutLookupStats = {
+  positiveHits: 0, negativeHits: 0, hintedPartitionReads: 0,
+  syncDirectoryReads: 0, syncNamesScanned: 0, syncBudgetExhausted: 0,
+  asyncEnumerations: 0, asyncDirectoryReads: 0, asyncNamesScanned: 0, asyncBudgetExhausted: 0,
+  statCalls: 0,
+};
+
+/** Snapshot of the lookup counters (tests + observability). */
+export function rolloutLookupStats(): RolloutLookupStats {
+  return { ...stats };
+}
+
+/** Drop every cached rollout lookup result and zero the counters (tests). */
+export function resetRolloutLookupState(): void {
+  positiveCache.clear();
+  negativeCache.clear();
+  inflight.clear();
+  for (const k of Object.keys(stats) as Array<keyof RolloutLookupStats>) stats[k] = 0;
+}
+
+/**
+ * Forget a remembered MISS so the next lookup re-reads the archive. Call it
+ * when a rollout is known to have just been written (CodexResumeMap.save).
+ * With no uuid, every remembered miss is dropped.
+ */
+export function invalidateRolloutLookup(threadId?: string, codexHome?: string): void {
+  if (!threadId) {
+    negativeCache.clear();
+    return;
+  }
+  negativeCache.delete(cacheKey(sessionsRootFor(codexHome), threadId));
+}
+
+/** The in-flight async enumeration for a uuid, if one is running (tests await it). */
+export function pendingRolloutLookup(threadId: string, codexHome?: string): Promise<string | null> | null {
+  return inflight.get(cacheKey(sessionsRootFor(codexHome), threadId)) ?? null;
+}
+
+function cacheKey(root: string, uuid: string): string {
+  return `${root}\u0000${uuid}`;
+}
+
+function isRolloutName(name: string, uuid: string): boolean {
+  return name.startsWith('rollout-') && name.endsWith('.jsonl') && name.includes(uuid);
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * The `YYYY/MM/DD` partitions a UUIDv7 thread id's rollout can live in (local
+ * date of the embedded creation instant, then the next day, then the previous
+ * — codex partitions by LOCAL date, verified against the archive). Null for a
+ * non-v7 id (a Claude v4 id, a legacy id), which carries no date.
+ */
+export function rolloutPartitionHint(threadId: string): string[] | null {
+  const m = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i.exec(threadId);
+  if (!m) return null;
+  const ms = parseInt(m[1] + m[2], 16);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const base = new Date(ms);
+  if (Number.isNaN(base.getTime())) return null;
+  const day = (offset: number): string => {
+    const d = new Date(base);
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+  };
+  return [day(0), day(1), day(-1)];
+}
+
+/**
+ * A cheap stamp that changes whenever a rollout could have been added: the
+ * newest day-partition's path + mtime (a new file in a directory bumps the
+ * directory's mtime; a new day adds a newer partition). Three small readdirs
+ * and one stat — never a walk.
+ */
+function partitionGeneration(root: string): string {
+  const newest = (dir: string, re: RegExp): string | null => {
+    try {
+      const names = readdirSync(dir).filter((e) => re.test(e)).sort();
+      return names.length > 0 ? names[names.length - 1] : null;
+    } catch {
+      return null;
+    }
+  };
+  const y = newest(root, /^\d{4}$/);
+  const m = y ? newest(path.join(root, y), /^\d{2}$/) : null;
+  const d = y && m ? newest(path.join(root, y, m), /^\d{2}$/) : null;
+  const dir = y && m && d ? path.join(root, y, m, d) : root;
+  try {
+    stats.statCalls++;
+    return `${dir}:${statSync(dir).mtimeMs}`;
+  } catch {
+    return `${dir}:unreadable`;
+  }
+}
+
+function positiveLookupSync(key: string): string | null {
+  const known = positiveCache.get(key);
+  if (!known) return null;
+  try {
+    stats.statCalls++;
+    if (statSync(known).isFile()) {
+      stats.positiveHits++;
+      return known;
+    }
+  } catch {
+    // The remembered file is gone — fall through and re-discover.
+  }
+  positiveCache.delete(key);
+  return null;
+}
+
+async function positiveLookupAsync(key: string): Promise<string | null> {
+  const known = positiveCache.get(key);
+  if (!known) return null;
+  try {
+    stats.statCalls++;
+    if ((await fs.stat(known)).isFile()) {
+      stats.positiveHits++;
+      return known;
+    }
+  } catch {
+    // Gone — re-discover.
+  }
+  positiveCache.delete(key);
+  return null;
+}
+
+function missIsFresh(key: string, root: string): boolean {
+  const entry = negativeCache.get(key);
+  if (!entry) return false;
+  if (Date.now() >= entry.expiresAt || entry.generation !== partitionGeneration(root)) {
+    negativeCache.delete(key);
+    return false;
+  }
+  stats.negativeHits++;
+  return true;
+}
+
+function recordHit(key: string, full: string): string {
+  positiveCache.set(key, full);
+  negativeCache.delete(key);
+  return full;
+}
+
+function recordMiss(key: string, root: string, ttlMs: number = ROLLOUT_MISS_TTL_MS): null {
+  negativeCache.set(key, { expiresAt: Date.now() + ttlMs, generation: partitionGeneration(root) });
+  return null;
+}
+
+/** readdir one partition by NAME; confirm the single match with one stat. */
+function scanPartitionSync(dir: string, uuid: string, counter: 'hintedPartitionReads' | 'syncDirectoryReads'): string | null {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  stats[counter]++;
+  stats.syncNamesScanned += names.length;
+  for (const name of names) {
+    if (!isRolloutName(name, uuid)) continue;
+    const full = path.join(dir, name);
+    try {
+      stats.statCalls++;
+      if (statSync(full).isFile()) return full;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function listDayPartitionsDescendingSync(root: string): string[] | null {
+  const readDesc = (dir: string, re: RegExp): string[] => {
+    try {
+      return readdirSync(dir).filter((e) => re.test(e)).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const dirs: string[] = [];
+  for (const y of readDesc(root, /^\d{4}$/)) {
+    const yPath = path.join(root, y);
+    for (const m of readDesc(yPath, /^\d{2}$/)) {
+      const mPath = path.join(yPath, m);
+      for (const d of readDesc(mPath, /^\d{2}$/)) dirs.push(path.join(mPath, d));
+    }
+  }
+  return dirs.length > 0 ? dirs : null;
+}
+
+/**
+ * Bounded sync scan: partitions newest-first (or a Dirent walk for a flat
+ * layout), names only, at most SYNC_SCAN_NAME_BUDGET names. `exhausted` means
+ * the archive was NOT fully covered — the caller defers the rest to async.
+ */
+function boundedSyncScan(root: string, uuid: string): { found: string | null; exhausted: boolean } {
+  let budget = SYNC_SCAN_NAME_BUDGET;
+  const partitions = listDayPartitionsDescendingSync(root);
+  if (partitions) {
+    for (const dir of partitions) {
+      if (budget <= 0) {
+        stats.syncBudgetExhausted++;
+        return { found: null, exhausted: true };
+      }
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        continue;
+      }
+      stats.syncDirectoryReads++;
+      stats.syncNamesScanned += names.length;
+      budget -= names.length;
+      for (const name of names) {
+        if (!isRolloutName(name, uuid)) continue;
+        const full = path.join(dir, name);
+        try {
+          stats.statCalls++;
+          if (statSync(full).isFile()) return { found: full, exhausted: false };
+        } catch {
+          continue;
+        }
+      }
+    }
+    return { found: null, exhausted: false };
+  }
+  // Flat / unexpected layout: a bounded Dirent walk (directory-ness comes from
+  // the dirent, so still no per-file stat).
+  const state = { budget, found: null as string | null, exhausted: false };
+  const walk = (dir: string): void => {
+    if (state.found || state.exhausted) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    stats.syncDirectoryReads++;
+    stats.syncNamesScanned += entries.length;
+    state.budget -= entries.length;
+    if (state.budget < 0) {
+      stats.syncBudgetExhausted++;
+      state.exhausted = true;
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        walk(path.join(dir, entry.name));
+        if (state.found || state.exhausted) return;
+      } else if (isRolloutName(entry.name, uuid) && entry.isFile()) {
+        state.found = path.join(dir, entry.name);
+        return;
+      }
+    }
+  };
+  walk(root);
+  return { found: state.found, exhausted: state.exhausted };
+}
+
+/**
+ * Full async enumeration, single-flight per (root, uuid). Yields the event loop
+ * between directories and within a large one; bounded by ASYNC_SCAN_NAME_BUDGET.
+ * Settles the caches so a later sync lookup answers from them.
+ */
+function enumerateAsync(root: string, uuid: string, key: string): Promise<string | null> {
+  const running = inflight.get(key);
+  if (running) return running;
+  const task = (async (): Promise<string | null> => {
+    stats.asyncEnumerations++;
+    let budget = ASYNC_SCAN_NAME_BUDGET;
+    const partitions = await listDayPartitionsDescending(root);
+    const dirs = partitions ?? [root];
+    const flat = partitions === null;
+    const queue = [...dirs];
+    while (queue.length > 0) {
+      const dir = queue.shift() as string;
+      if (budget <= 0) {
+        stats.asyncBudgetExhausted++;
+        return recordMiss(key, root, ROLLOUT_ENUMERATED_MISS_TTL_MS);
+      }
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      stats.asyncDirectoryReads++;
+      stats.asyncNamesScanned += entries.length;
+      budget -= entries.length;
+      let sinceYield = 0;
+      for (const entry of entries) {
+        if (++sinceYield >= ASYNC_YIELD_EVERY_NAMES) {
+          sinceYield = 0;
+          await yieldToEventLoop();
+        }
+        if (flat && entry.isDirectory()) {
+          queue.push(path.join(dir, entry.name));
+        } else if (isRolloutName(entry.name, uuid) && entry.isFile()) {
+          return recordHit(key, path.join(dir, entry.name));
+        }
+      }
+      await yieldToEventLoop();
+    }
+    return recordMiss(key, root, ROLLOUT_ENUMERATED_MISS_TTL_MS);
+  })().finally(() => {
+    inflight.delete(key);
+  });
+  inflight.set(key, task);
+  return task;
 }
 
 /** Find a rollout JSONL file by Codex thread UUID. Returns null on miss. */
@@ -27,72 +410,80 @@ export async function findRolloutFile(
   codexHome?: string,
 ): Promise<string | null> {
   if (!threadId) return null;
-  const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
-  return walkForUuid(root, threadId);
+  const root = sessionsRootFor(codexHome);
+  const key = cacheKey(root, threadId);
+  const known = await positiveLookupAsync(key);
+  if (known) return known;
+  // A sync caller may have recorded a cheap-path miss AND started the full
+  // enumeration; an async caller joins that enumeration instead of repeating
+  // the miss for the rest of its TTL (second-pass review).
+  const running = inflight.get(key);
+  if (running) return running;
+  if (missIsFresh(key, root)) return null;
+  const hint = rolloutPartitionHint(threadId);
+  if (hint) {
+    for (const rel of hint) {
+      const dir = path.join(root, rel);
+      let names: string[];
+      try {
+        names = await fs.readdir(dir);
+      } catch {
+        continue;
+      }
+      stats.hintedPartitionReads++;
+      stats.asyncNamesScanned += names.length;
+      for (const name of names) {
+        if (!isRolloutName(name, threadId)) continue;
+        const full = path.join(dir, name);
+        try {
+          stats.statCalls++;
+          if ((await fs.stat(full)).isFile()) return recordHit(key, full);
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+  return enumerateAsync(root, threadId, key);
 }
 
 /**
- * Synchronous variant of {@link findRolloutFile}. Needed by callers that run on
- * a sync code path and cannot await — notably the resume-map `jsonlExists`
- * guards (ThreadResumeMap, TopicResumeMap), which previously checked only the
- * Claude flat layout and so returned false for EVERY codex session (the
- * codex-compat resume bug: every codex thread looked expired/missing). Returns
- * the rollout path or null. A missing `$CODEX_HOME/sessions` (e.g. a pure
- * Claude agent) returns null fast — `readdirSync` throws and is caught.
+ * Synchronous variant of {@link findRolloutFile} for callers on a sync code
+ * path — the resume-map `jsonlExists` guards (ThreadResumeMap, TopicResumeMap)
+ * and CodexResumeMap.get. Never walks the archive with per-file stats: it
+ * answers from the exact known path, the miss cache, the UUIDv7 partition hint,
+ * or a bounded readdir-only scan; anything beyond the budget is enumerated
+ * asynchronously in the background and the call answers an honest miss now. A
+ * missing `$CODEX_HOME/sessions` (a pure Claude agent) returns null fast.
  */
 export function findRolloutFileSync(threadId: string, codexHome?: string): string | null {
   if (!threadId) return null;
-  const root = path.join(codexHomeFromConfig(codexHome), 'sessions');
-  return walkForUuidSync(root, threadId);
-}
-
-function walkForUuidSync(root: string, uuid: string): string | null {
-  let entries: string[];
+  const root = sessionsRootFor(codexHome);
   try {
-    entries = readdirSync(root);
+    statSync(root);
   } catch {
     return null;
   }
-  for (const entry of entries) {
-    const full = path.join(root, entry);
-    let stat;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
+  const key = cacheKey(root, threadId);
+  const known = positiveLookupSync(key);
+  if (known) return known;
+  if (missIsFresh(key, root)) return null;
+  const hint = rolloutPartitionHint(threadId);
+  if (hint) {
+    for (const rel of hint) {
+      const found = scanPartitionSync(path.join(root, rel), threadId, 'hintedPartitionReads');
+      if (found) return recordHit(key, found);
     }
-    if (stat.isDirectory()) {
-      const nested = walkForUuidSync(full, uuid);
-      if (nested) return nested;
-    } else if (stat.isFile() && entry.startsWith('rollout-') && entry.includes(uuid) && entry.endsWith('.jsonl')) {
-      return full;
-    }
-  }
-  return null;
-}
-
-async function walkForUuid(root: string, uuid: string): Promise<string | null> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(root);
-  } catch {
+    // A dated id that is not in its own partitions is almost certainly absent;
+    // let the background enumeration settle the rare clock-skew case.
+    recordMiss(key, root);
+    void enumerateAsync(root, threadId, key).catch(() => undefined);
     return null;
   }
-  for (const entry of entries) {
-    const full = path.join(root, entry);
-    let stat;
-    try {
-      stat = await fs.stat(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      const nested = await walkForUuid(full, uuid);
-      if (nested) return nested;
-    } else if (stat.isFile() && entry.startsWith('rollout-') && entry.includes(uuid) && entry.endsWith('.jsonl')) {
-      return full;
-    }
-  }
+  const scan = boundedSyncScan(root, threadId);
+  if (scan.found) return recordHit(key, scan.found);
+  recordMiss(key, root);
+  if (scan.exhausted) void enumerateAsync(root, threadId, key).catch(() => undefined);
   return null;
 }
 
