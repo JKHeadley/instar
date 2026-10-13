@@ -36,11 +36,23 @@ import { execFileSync } from 'node:child_process';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { isAlive } from './ProjectRoundLock.js';
+import { gatherPidEvidence, selfProcessFingerprint, START_TIME_SKEW_MS } from './hostTestRunnerSemaphore.js';
 
 interface InstanceLockRecord {
   pid: number;
   hostname: string;
   heartbeat: number;
+  /**
+   * Holder process START TIME (ms epoch, 1s resolution, from `ps -o lstart=`). PID-REUSE GUARD: a
+   * pid alone cannot identify a process on a host that churns pids — Justin's
+   * laptop wraps the whole pid space every 5-11 minutes, so a dead holder's pid
+   * is continuously re-issued to unrelated live processes and `pidAlive()`
+   * answers "still running" forever. That wedged `inspec` dark for ~35h and
+   * ~3.5h on 2026-10-12 (42 consecutive refused spawns). Optional so a lock
+   * written by an older build still reads — such a record falls back to the
+   * historical pid-only verdict.
+   */
+  startedAt?: number;
 }
 
 export interface SingleInstanceLockResult {
@@ -59,6 +71,13 @@ export interface SingleInstanceLockDeps {
   now?: () => number;
   hostname?: () => string;
   pidAlive?: (pid: number) => boolean;
+  /**
+   * Start time (ms epoch) of an arbitrary pid, or null when it cannot be read.
+   * Backs the pid-reuse guard; tests override. Default: the shared `ps -o lstart=` read.
+   */
+  pidStartedAt?: (pid: number) => number | null;
+  /** Start time (ms epoch) of THIS process, or null if unreadable (tests override). */
+  selfStartedAt?: () => number | null;
   /** Host-local FS probe (tests override). */
   isStateDirHostLocal?: (stateDir: string) => boolean;
   /** Deploy-handoff grace (ms) to wait for an outgoing same-host holder. Default 8000. */
@@ -108,11 +127,47 @@ export function isStateDirHostLocalForLock(stateDir: string): boolean {
   return false;
 }
 
+/**
+ * PID-REUSE GUARD tolerance. The test is ONE-SIDED: a candidate is "not the
+ * holder" only when its observed start POSTDATES the recorded start by more
+ * than this. A reused pid is always newer than the holder it replaced, so the
+ * backward direction carries no detection power and is the only direction that
+ * could ever evict a genuinely live holder — it is deliberately not tested.
+ * The skew reuses the host test-runner semaphore's value: both sides are
+ * `ps -o lstart=` readings (1s resolution), and the width absorbs a wall-clock
+ * step between the lock write and the probe (on Linux `lstart` is boot-relative
+ * and moves with the clock). A pid reused within this window of its holder's
+ * start is the accepted residual miss; pid reuse on a churning host happens
+ * minutes apart, which is exactly the case this exists to catch.
+ */
+export const PID_START_MISMATCH_MS = START_TIME_SKEW_MS;
+
+/**
+ * Absolute start time (ms epoch) of `pid`, or null when it cannot be read
+ * (process gone, ps unavailable, unparseable). Rides the SAME primitive the host
+ * test-runner semaphore already uses for its own pid-reuse corroboration
+ * (`gatherPidEvidence` → `ps -o lstart=` + `Date.parse`), so the two call sites
+ * cannot drift apart in how they read a start time.
+ */
+export function readPidStartedAt(pid: number, pidAlive: (pid: number) => boolean = isAlive): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const v = gatherPidEvidence([pid], pidAlive).startMs.get(pid);
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** THIS process's absolute start time via the same `lstart` read; null if unreadable. */
+export function readSelfStartedAt(): number | null {
+  const parsed = Date.parse(selfProcessFingerprint().startedAt);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export class SingleInstanceLock {
   private readonly stateDir: string;
   private readonly now: () => number;
   private readonly host: string;
   private readonly pidAlive: (pid: number) => boolean;
+  private readonly pidStartedAt: (pid: number) => number | null;
+  private readonly selfStartedAt: () => number | null;
   private readonly isStateDirHostLocal: (stateDir: string) => boolean;
   private readonly handoffGraceMs: number;
   private readonly pollIntervalMs: number;
@@ -128,6 +183,8 @@ export class SingleInstanceLock {
     this.now = deps.now ?? (() => Date.now());
     this.host = (deps.hostname ?? (() => os.hostname()))();
     this.pidAlive = deps.pidAlive ?? isAlive;
+    this.pidStartedAt = deps.pidStartedAt ?? ((pid) => readPidStartedAt(pid, this.pidAlive));
+    this.selfStartedAt = deps.selfStartedAt ?? readSelfStartedAt;
     this.isStateDirHostLocal = deps.isStateDirHostLocal ?? isStateDirHostLocalForLock;
     this.handoffGraceMs = deps.handoffGraceMs ?? 8000;
     this.pollIntervalMs = deps.pollIntervalMs ?? 250;
@@ -140,6 +197,42 @@ export class SingleInstanceLock {
 
   lockPath(): string {
     return path.join(this.stateDir, 'local', 'server-instance.lock');
+  }
+
+  /** Per-`acquire()` memo: a process's start time is immutable, so one probe per pid is enough. */
+  private startProbeMemo = new Map<number, number | null>();
+
+  /**
+   * Is `rec` held by a process that is genuinely still running?
+   *
+   * `pidAlive()` alone is NOT an answer on a pid-churning host: the holder's pid
+   * gets re-issued to an unrelated process and the lock reads LIVE forever (the
+   * 2026-10-12 inspec wedge). When the record carries a `startedAt`, a candidate
+   * whose observed start POSTDATES it by more than the skew is provably a
+   * different process.
+   *
+   * Conservative on every uncertainty — an unreadable start time, or a record
+   * from an older build with no `startedAt`, keeps the historical pid-only
+   * verdict, because wrongly declaring a live holder dead admits the duplicate
+   * instance this lock exists to prevent. The test is one-sided for the same
+   * reason (see PID_START_MISMATCH_MS).
+   */
+  private holderIsLive(rec: InstanceLockRecord): boolean {
+    if (!this.pidAlive(rec.pid)) return false;
+    if (typeof rec.startedAt !== 'number' || !Number.isFinite(rec.startedAt)) return true;
+    let observed = this.startProbeMemo.get(rec.pid);
+    if (observed === undefined) {
+      observed = this.pidStartedAt(rec.pid);
+      this.startProbeMemo.set(rec.pid, observed);
+    }
+    if (observed === null || !Number.isFinite(observed)) return true;
+    const later = observed - rec.startedAt;
+    if (later <= PID_START_MISMATCH_MS) return true;
+    this.log(
+      `[single-instance] pid ${rec.pid} is alive but started ${Math.round(later / 1000)}s AFTER the recorded ` +
+      `holder start — this is a REUSED pid, not the holder. Treating the lock as stale (pid-reuse guard).`,
+    );
+    return false;
   }
 
   /**
@@ -157,6 +250,7 @@ export class SingleInstanceLock {
       return { acquired: true, overridden: true };
     }
 
+    this.startProbeMemo.clear();
     const deadline = this.now() + this.handoffGraceMs;
     for (;;) {
       const existing = this.readLock();
@@ -188,7 +282,7 @@ export class SingleInstanceLock {
         // heartbeat is genuinely STALE, and the state dir is `df -P` host-local
         // (the load-bearing guard: a host-local disk cannot be shared by a second
         // host). Fail-closed: any unmet condition falls through to refuse-loud.
-        const holderDead = !this.pidAlive(existing.pid);
+        const holderDead = !this.holderIsLive(existing);
         const hbStale =
           typeof existing.heartbeat === 'number' &&
           existing.heartbeat > 0 &&
@@ -218,7 +312,7 @@ export class SingleInstanceLock {
       }
 
       // Same-host lock (or an auto-heal-approved single-host rename). Is the holder alive?
-      if (this.pidAlive(existing.pid)) {
+      if (this.holderIsLive(existing)) {
         // A LIVE same-host holder. Could be a normal restart's outgoing instance
         // (it will exit + release shortly) OR a genuine duplicate. Wait a bounded
         // grace for a handoff before refusing.
@@ -319,7 +413,9 @@ export class SingleInstanceLock {
       if (typeof obj?.pid !== 'number') return null;
       if (typeof obj?.hostname !== 'string') return null;
       const heartbeat = typeof obj?.heartbeat === 'number' ? obj.heartbeat : 0;
-      return { pid: obj.pid, hostname: obj.hostname, heartbeat };
+      const startedAt =
+        typeof obj?.startedAt === 'number' && Number.isFinite(obj.startedAt) ? obj.startedAt : undefined;
+      return { pid: obj.pid, hostname: obj.hostname, heartbeat, ...(startedAt === undefined ? {} : { startedAt }) };
     } catch {
       // @silent-fallback-ok: a missing/corrupt lock file reads as "no holder"
       // (null) — the acquire loop then treats the slot as free, the safe direction.
@@ -330,7 +426,17 @@ export class SingleInstanceLock {
   /** Atomic O_CREAT|O_EXCL write. Returns false if another writer won the race. */
   private tryWriteLock(): boolean {
     this.ensureDir();
-    const rec: InstanceLockRecord = { pid: process.pid, hostname: this.host, heartbeat: this.now() };
+    const rec: InstanceLockRecord = {
+      pid: process.pid,
+      hostname: this.host,
+      heartbeat: this.now(),
+    };
+    // `ps -o lstart=` has 1s resolution; an unreadable self start leaves the
+    // legacy (pid-only) record shape rather than inventing a value.
+    const selfStart = this.selfStartedAt();
+    if (typeof selfStart === 'number' && Number.isFinite(selfStart)) {
+      rec.startedAt = Math.round(selfStart / 1000) * 1000;
+    }
     const body = JSON.stringify(rec);
     const tmp = `${this.lockPath()}.tmp.${process.pid}`;
     try {

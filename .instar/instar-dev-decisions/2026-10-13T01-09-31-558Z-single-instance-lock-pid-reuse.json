@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-13T01:09:31.558Z",
+  "slug": "single-instance-lock-pid-reuse",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 158,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SingleInstanceLock.ts",
+      "src/lifeline/ServerSupervisor.ts"
+    ],
+    "addedLines": 151,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

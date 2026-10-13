@@ -36,6 +36,11 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 // mirrors on every depth transition.
 import { defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 
+/** Size cap for the appended server stderr crash log (see start()). */
+const SERVER_STDERR_MAX_BYTES = 4 * 1024 * 1024;
+/** Bytes retained from the end of the crash log when the cap trims it. */
+const SERVER_STDERR_KEEP_BYTES = 512 * 1024;
+
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
   const shell = process.env.SHELL || '/bin/zsh';
@@ -1101,10 +1106,27 @@ export class ServerSupervisor extends EventEmitter {
         }
       }
 
-      // Stderr capture: tee to crash log file for fast-exit diagnostics
+      // Stderr capture: tee to crash log file for fast-exit diagnostics.
+      //
+      // APPEND, never truncate (2026-10-12, inspec): a truncating `tee` keeps only
+      // the LAST spawn's stderr, so in a crash loop every attempt erases the
+      // evidence of the one before it and the surviving file describes whichever
+      // boot happened to succeed. inspec refused 42 consecutive spawns — each one
+      // printing its reason to stderr — and the file still held three unrelated
+      // lines from a prior boot, which is why the cause was invisible for hours.
+      // Bounded by a size cap so a tight crash loop cannot fill the disk.
       const crashLogDir = this.stateDir ? path.join(this.stateDir, 'logs') : '/tmp';
       try { fs.mkdirSync(crashLogDir, { recursive: true }); } catch { /* ignore */ }
       const crashLogPath = path.join(crashLogDir, 'server-stderr.log');
+      try {
+        if (fs.statSync(crashLogPath).size > SERVER_STDERR_MAX_BYTES) {
+          // Keep the newest slice: at the moment a crash loop has produced the
+          // most evidence is exactly the wrong moment to discard all of it.
+          const tail = ServerSupervisor.readTailBytes(crashLogPath, SERVER_STDERR_KEEP_BYTES);
+          fs.writeFileSync(crashLogPath, tail, 'utf-8');
+          console.log(`[Supervisor] server-stderr.log exceeded ${SERVER_STDERR_MAX_BYTES} bytes — kept the last ${SERVER_STDERR_KEEP_BYTES} bytes.`);
+        }
+      } catch { /* @silent-fallback-ok: no file yet, or unreadable — tee creates it */ }
 
       // --no-telegram: lifeline owns the Telegram connection, server should not poll
       // Use the agent's node symlink (.instar/bin/node) instead of bare `node` so the
@@ -1116,7 +1138,7 @@ export class ServerSupervisor extends EventEmitter {
       const nodeExe = (nodeSymlink && fs.existsSync(nodeSymlink)) ? nodeSymlink : 'node';
       const quotedNode = nodeExe.replace(/'/g, "'\\''");
       const quotedCli = cliPath.replace(/'/g, "'\\''");
-      const nodeCmd = `'${quotedNode}' '${quotedCli}' 'server' 'start' '--foreground' '--no-telegram' 2> >(tee '${crashLogPath}' >&2)`;
+      const nodeCmd = `'${quotedNode}' '${quotedCli}' 'server' 'start' '--foreground' '--no-telegram' 2> >(tee -a '${crashLogPath}' >&2)`;
 
       // GIT_TERMINAL_PROMPT=0 prevents git operations performed during startup
       // (auto-pull / git-sync) from falling through to an interactive terminal
@@ -2255,7 +2277,8 @@ export class ServerSupervisor extends EventEmitter {
       const crashLogPath = path.join(this.stateDir, 'logs', 'server-stderr.log');
       try {
         if (fs.existsSync(crashLogPath)) {
-          const content = fs.readFileSync(crashLogPath, 'utf-8');
+          // Bounded: the log now appends across spawns, so never read it whole.
+          const content = ServerSupervisor.readTailBytes(crashLogPath, 65_536);
           const last500 = content.slice(-500).trim();
           if (last500) {
             this.lastCrashOutput = last500;
@@ -2264,6 +2287,21 @@ export class ServerSupervisor extends EventEmitter {
         }
       } catch { /* ignore */ }
     }
+  }
+
+  /** Read at most the last `maxBytes` of a file (seek-based; never the whole file). */
+  static readTailBytes(filePath: string, maxBytes: number): string {
+    const size = fs.statSync(filePath).size;
+    const want = Math.min(maxBytes, size);
+    if (want <= 0) return '';
+    const buf = Buffer.alloc(want);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      fs.readSync(fd, buf, 0, want, size - want);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buf.toString('utf-8');
   }
 
   /**
