@@ -2563,7 +2563,8 @@ export function wireTelegramRouting(
     // no store / unauthorized / error → no-op and routing continues.
     try {
       const opStore = getTopicOperatorStore?.() ?? null;
-      if (opStore && operatorAutoBindPermitted(signedByAgent) && msg.metadata?.senderUnverified !== true && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
+      // An inbound the lifeline-secret gate accepted WITHOUT proof never seats an operator.
+      if (opStore && msg.metadata?.senderUnverified !== true && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
         // A lifeline-forwarded Message.id may contain a Date.now fallback used
         // only for internal routing. Establishment evidence must use the raw
         // Telegram id carried separately; absent stays absent and fails closed.

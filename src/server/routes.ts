@@ -25332,9 +25332,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Lifeline-secret gate: belt and braces. The identity was already removed
     // above for an untrusted request; this bind also checks the flag itself.
-    if (ctx.topicOperatorStore && !lifelineSignedByAgent && !senderUntrusted
-        && fromUserId !== undefined && fromUserId !== null
-        && typeof topicId === 'number') {
+    if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
+        && typeof topicId === 'number' && !senderUntrusted) {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
           ctx.topicOperatorStore.setAuthenticatedOperator(topicId, {

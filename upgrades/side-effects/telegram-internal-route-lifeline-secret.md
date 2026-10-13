@@ -162,6 +162,12 @@ After the second-pass review, the `no-silent-fallbacks` ratchet counted four new
 
 ---
 
+## Addendum — third commit (source-pin ordering)
+
+The full local suite found `tests/unit/signed-inbound-label.test.ts` failing: it pins the exact operator-bind condition lines in `server.ts` and `routes.ts` to prove the agent-signed verdict is resolved before the bind, and the first commit had inserted the `senderUnverified` / `senderUntrusted` condition into the middle of both pinned strings. The condition is now placed outside the pinned substring in each file (before the pinned clause in `server.ts`, after it in `routes.ts`). Same checks, same effect; the ordering proof the pin exists for still holds. The two bind behaviour tests (`topic-operator-autobind-route`, `topic-operator-polling-bind`) and this change's own tests pass unchanged.
+
+---
+
 ## Evidence pointers
 
 - `tests/unit/lifeline-ingress-secret.test.ts`, `tests/unit/lifeline-ingress-guard.test.ts`, `tests/unit/telegram-callback-dedupe.test.ts`, `tests/unit/session-spawn-no-lifeline-secret.test.ts`, `tests/unit/PostUpdateMigrator-lifelineIngressSecret.test.ts`, `tests/unit/lifeline/forwardErrors.test.ts`
