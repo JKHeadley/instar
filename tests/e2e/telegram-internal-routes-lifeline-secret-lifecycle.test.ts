@@ -374,6 +374,21 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
     expect((await health()).telegramIngress.lifelineSecret.armed).toBe(true);
   });
 
+  it('a failing attention raise never breaks the refusal or the server (the adapter here cannot create attention items)', async () => {
+    // This harness's Telegram stub has no createAttentionItem, so every
+    // attempt to raise the operator item throws inside the guard's callback.
+    const before = (await health()).telegramIngress.lifelineSecret.refused as number;
+    const res = await fetch(`${base}/internal/telegram-forward`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}` },
+      body: JSON.stringify({ topicId: TOPIC, text: 'forged once more', fromUserId: OPERATOR_ID, messageId: 990, lifelineVersion: serverVersion }),
+    });
+    expect(res.status).toBe(401);
+    const after = await health();
+    expect(after.telegramIngress.lifelineSecret.refused).toBe(before + 1);
+    expect(after.telegramIngress.lifelineSecret.armed).toBe(true);
+  });
+
   it('the counters on /health are the persisted ones and never contain the secret', async () => {
     const h = await health();
     const g = h.telegramIngress.lifelineSecret;

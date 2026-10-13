@@ -319,7 +319,14 @@ export class LifelineIngressGuard {
       this.armIfNoLifeline(nowMs, nowIso);
       if (!this.state.armedAt && this.spendSignalBudget()) {
         let wrote: boolean | void = false;
-        try { wrote = this.opts.writeRestartSignal({ previousVersion: 'unknown' }); } catch { wrote = false; }
+        try {
+          wrote = this.opts.writeRestartSignal({ previousVersion: 'unknown' });
+        } catch (err) {
+          // @silent-fallback-ok — logged, and the budget is released below so
+          // the first unverified request writes the signal instead.
+          this.log(`[lifeline-ingress] boot nudge could not write the lifeline-restart signal: ${err instanceof Error ? err.message : err}`);
+          wrote = false;
+        }
         if (wrote === false) this.state.lastSignalAt = null; // declined: budget unspent
       }
       this.persist(nowMs);
@@ -357,7 +364,13 @@ export class LifelineIngressGuard {
 
   /** Is the full rollback (`bypass: true`) set? */
   bypassed(): boolean {
-    try { return this.opts.bypass?.() === true; } catch { return false; }
+    try {
+      return this.opts.bypass?.() === true;
+    } catch {
+      // @silent-fallback-ok — a config read fault must never switch the guard
+      // OFF: "not bypassed" is the protective direction, not a degraded one.
+      return false;
+    }
   }
 
   /**
@@ -721,7 +734,10 @@ export class LifelineIngressGuard {
       else if (result && typeof (result as Promise<boolean | void>).then === 'function') {
         (result as Promise<boolean | void>).then((ok) => { if (ok === false) release(); }, () => release());
       }
-    } catch {
+    } catch (err) {
+      // @silent-fallback-ok — logged; the throttle is released so the next
+      // occurrence tries again, and the degradation record already exists.
+      this.log(`[lifeline-ingress] attention item could not be raised (${kind}): ${err instanceof Error ? err.message : err}`);
       release();
     }
   }

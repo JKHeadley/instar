@@ -156,6 +156,12 @@ Second read, after those corrections and seven small code changes (the pre-arm a
 
 ---
 
+## Addendum — second commit (catch sites)
+
+After the second-pass review, the `no-silent-fallbacks` ratchet counted four new catch blocks in `LifelineIngressGuard.ts` and `LifelineIngressSecret.ts`. Two now log (the boot-nudge signal write and the attention raise); all four carry a stated reason why the fallback direction is the safe one (a config read fault never switches the guard off; a failed temp-file cleanup happens after the secret is already published). No behaviour change, so none of the sections above changes. The second-pass reviewer did not see this commit.
+
+---
+
 ## Evidence pointers
 
 - `tests/unit/lifeline-ingress-secret.test.ts`, `tests/unit/lifeline-ingress-guard.test.ts`, `tests/unit/telegram-callback-dedupe.test.ts`, `tests/unit/session-spawn-no-lifeline-secret.test.ts`, `tests/unit/PostUpdateMigrator-lifelineIngressSecret.test.ts`, `tests/unit/lifeline/forwardErrors.test.ts`

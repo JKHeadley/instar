@@ -111,7 +111,10 @@ export function ensureLifelineIngressSecret(stateDir: string): string {
       if (fs.existsSync(tmpPath)) {
         SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/core/LifelineIngressSecret.ts:ensure-tmp-cleanup' });
       }
-    } catch { /* best-effort temp cleanup */ }
+    } catch {
+      // @silent-fallback-ok — best-effort removal of our own private temp file;
+      // the secret itself was already published (or the publish already threw).
+    }
   }
 }
 
