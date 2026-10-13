@@ -213,6 +213,9 @@ import { resolveToneRecipientClass } from './toneRecipientClass.js';
 import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
+import { LifelineIngressGuard } from './LifelineIngressGuard.js';
+import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
+import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
 import type { StopSignals } from '../core/CompletionEvaluator.js';
@@ -3225,6 +3228,86 @@ export function createRoutes(ctx: RouteContext): Router {
     ctx.config as { developmentAgent?: boolean; threadline?: { localRouteSignature?: { enabled?: boolean; dryRun?: boolean } } },
   );
   const localEnvelopeSigner = createAgentLocalEnvelopeSigner(ctx.config.projectName, ctx.config.stateDir);
+  // Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md):
+  // the two internal Telegram routes require proof the caller is the lifeline,
+  // not a session holding the ordinary Bearer token. The mode is read live.
+  const lifelineIngressGuard = new LifelineIngressGuard({
+    stateDir: ctx.config.stateDir,
+    // Live when a live reader exists (so REMOVING the key takes effect too);
+    // the boot snapshot only when there is none.
+    bypass: () => (ctx.liveConfig
+      ? ctx.liveConfig.get<boolean | undefined>('telegramIngress.lifelineSecret.bypass', undefined)
+      : (ctx.config as { telegramIngress?: { lifelineSecret?: { bypass?: boolean } } }).telegramIngress?.lifelineSecret?.bypass) === true,
+    explicitEnforce: () => ctx.liveConfig
+      ? ctx.liveConfig.get<boolean | undefined>('telegramIngress.lifelineSecret.enforce', undefined)
+      : (ctx.config as { telegramIngress?: { lifelineSecret?: { enforce?: boolean } } }).telegramIngress?.lifelineSecret?.enforce,
+    config: ctx.config as { developmentAgent?: boolean },
+    holder: sharedLifelineIngressSecretHolder(ctx.config.stateDir),
+    // The 60-second boot nudge is a real-time timer that writes into the
+    // state dir; under the test runner routes are built thousands of times
+    // against throwaway dirs, so it is exercised directly there instead.
+    bootNudgeDelayMs: process.env.VITEST ? null : undefined,
+    // The lifeline is the Telegram ingress unless this server polls Telegram
+    // itself, or Telegram is not CONFIGURED at all (then no lifeline can
+    // exist). A configured adapter that is merely absent is UNKNOWN, and
+    // unknown waits for proof like any other machine.
+    lifelineIsIngress: () => {
+      const t = ctx.telegram as unknown as { isPolling?: boolean } | null | undefined;
+      if (t) return t.isPolling !== true;
+      const configured = (ctx.config.messaging ?? []).some((m) => m.type === 'telegram' && m.enabled !== false);
+      return configured;
+    },
+    // Answers false when nothing reached the operator, so the guard's daily
+    // throttle is released and the next occurrence tries again.
+    raiseAttention: async (item) => {
+      if (!ctx.telegram) return false;
+      try {
+        await ctx.telegram.createAttentionItem({
+          id: item.id,
+          title: item.title,
+          summary: item.summary,
+          category: 'security',
+          priority: 'HIGH',
+          sourceContext: 'telegram-ingress-lifeline-secret',
+          healthKey: item.id,
+        });
+        return true;
+      } catch {
+        // @silent-fallback-ok — the degradation record and /health already carry it.
+        return false;
+      }
+    },
+    writeRestartSignal: ({ previousVersion }) => {
+      // Never write a target the lifeline cannot match: it would restart an
+      // up-to-date lifeline. No known version → decline, budget unspent.
+      const targetVersion = ProcessIntegrity.getInstance()?.getState().runningVersion;
+      if (!targetVersion) return false;
+      writeLifelineRestartSignal({
+        stateDir: ctx.config.stateDir,
+        requestedBy: 'server-lifeline-secret',
+        reason: 'lifeline-secret-required',
+        previousVersion,
+        targetVersion,
+      });
+      return true;
+    },
+    reportDegradation: ({ kind, reason, impact }) => {
+      DegradationReporter.getInstance().report({
+        feature: 'TelegramIngress.lifelineSecret',
+        primary: 'Internal Telegram routes accept only requests that carry the lifeline secret',
+        fallback: 'Request handled per the current mode; see /health telegramIngress.lifelineSecret',
+        reason: `${kind}: ${reason}`,
+        impact,
+      });
+    },
+  });
+  ctx.guardRegistry?.register('telegramIngress.lifelineSecret', () => lifelineIngressGuard.guardStatus());
+  // One inline-button tap has one effect, however many times it is delivered.
+  // Proven taps go to the durable store; a tap accepted without proof (only
+  // possible before the guard arms) is deduped in memory, so an unproven
+  // caller can neither fill nor evict the durable record of real taps.
+  const telegramCallbackDedupe = new TelegramCallbackDedupe(ctx.config.stateDir);
+  const telegramCallbackDedupeUnproven = new TelegramCallbackDedupe(null);
   const localRouteTrustCounters = createLocalRouteTrustCounters();
   const localRouteTrustMode = () => resolveLocalRouteTrustMode(
     {
@@ -4931,6 +5014,19 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.a2aRelayForward) {
         base.threadline = { ...(base.threadline as object ?? {}), relayForward: { ...ctx.a2aRelayForward.counters } };
       }
+      // Lifeline ingress secret: mode, arming, the observe exit rule and the
+      // PERSISTED counters (they survive a restart). AUTHED only; no secret.
+      try {
+        base.telegramIngress = {
+          lifelineSecret: lifelineIngressGuard.health(),
+          callbackDedupe: {
+            tracked: telegramCallbackDedupe.size,
+            duplicatesDropped: telegramCallbackDedupe.duplicates + telegramCallbackDedupeUnproven.duplicates,
+            writeFailures: telegramCallbackDedupe.writeFailures,
+            corruptAtLoad: telegramCallbackDedupe.corruptAtLoad,
+          },
+        };
+      } catch { base.telegramIngress = { lifelineSecret: { state: 'unavailable' } }; }
       // Local-route trust (docs/specs/a2a-local-route-trust.md): the live mode,
       // whether a trust manager is wired, and the verdict counters. AUTHED only.
       base.threadline = {
@@ -24845,8 +24941,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   let _versionMissingLogged = false;
 
   router.post('/internal/telegram-forward', async (req, res) => {
-    const {
-      topicId, text, fromUserId, fromUsername, fromFirstName, messageId, lifelineVersion,
+    const { topicId, text, messageId, lifelineVersion } = req.body;
+    // The sender-identity fields are `let`: a request accepted WITHOUT proof of
+    // the lifeline has them removed below, in one place, before any use.
+    let {
+      fromUserId, fromUsername, fromFirstName,
       // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
       // lifeline forwards these when present in the Telegram update. Older lifelines
       // omit them → `senderIsBot` defaults to falsy → any marker-bearing forwarded
@@ -24855,6 +24954,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // be dropped). Upgraded lifelines populate them and the hook routes normally.
       senderIsBot, senderChatId, senderBotId,
     } = req.body;
+
+    // Lifeline-secret gate — FIRST, before any side effect, so a refused
+    // request has had no effect at all and its replay applies exactly once.
+    const ingressDecision = lifelineIngressGuard.evaluate(req.headers, 'telegram-forward', { lifelineVersion });
+    if (ingressDecision.action === 'refuse') {
+      res.status(401).json({ ok: false, error: 'lifeline-secret-required', refused: true, reason: ingressDecision.reason });
+      return;
+    }
+    // Accepted with a secret that is not ours (observe): tell the caller, so a
+    // current lifeline re-reads the file instead of staying stale forever.
+    if (ingressDecision.staleSecretHint) res.setHeader('X-Instar-Lifeline-Secret-Stale', '1');
+    // SENDER NOT TRUSTED: the message is still delivered, but every
+    // body-supplied identity claim is dropped HERE, once, so nothing below —
+    // the inbound log (standing-authorization evidence), the ratifiers, the
+    // a2a hook, either operator auto-bind, command and profile authority in
+    // the message pipeline, the session's sender tag — can read it as an
+    // authenticated sender. Downstream already treats "no sender id" as "no
+    // first-party identity".
+    const senderUntrusted = !ingressDecision.senderTrusted;
+    if (senderUntrusted) {
+      fromUserId = undefined;
+      fromUsername = undefined;
+      fromFirstName = 'Unverified sender';
+      senderIsBot = false;
+      senderChatId = undefined;
+      senderBotId = undefined;
+    }
 
     // Server boot window: if version cache wasn't populated, skip handshake
     // rather than 426-erroneously. Lifeline retries after retryAfterMs.
@@ -24885,8 +25011,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // that even if AutoUpdater missed the boundary (deferred restart,
         // lockfile race, etc.), the lifeline self-corrects on its next
         // tick / supervisor poll. Idempotent vs. AutoUpdater's prior write.
+        // An unverified caller can name any lifelineVersion, so its signal
+        // write goes through the guard's persisted budget; a verified lifeline
+        // is direct evidence and writes as before.
         try {
-          writeLifelineRestartSignal({
+          if (ingressDecision.verified || lifelineIngressGuard.spendSignalBudget()) writeLifelineRestartSignal({
             stateDir: ctx.config.stateDir,
             requestedBy: 'server-426',
             reason: 'server-426-direct-evidence',
@@ -25110,7 +25239,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         console.error(`[telegram-forward] ownership read error (fail-open, claiming/routing normally): ${err instanceof Error ? err.message : err}`);
       }
     }
-    if (ctx.messageLedger && shouldClaimInbound) {
+    // A request accepted WITHOUT proof of the lifeline chose its own
+    // updateId/messageId: it must not claim a key in the exactly-once ledger,
+    // or it could pre-claim the id of a real message yet to arrive.
+    if (ctx.messageLedger && shouldClaimInbound && !senderUntrusted) {
       try {
         const eventId = req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`;
         const dedupeKey = dedupeKeyFor('telegram', topicId, eventId);
@@ -25198,7 +25330,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (lifelineSignedByAgent) {
       console.log(`[telegram-forward] topic ${topicId} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
     }
-    if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
+    // Lifeline-secret gate: belt and braces. The identity was already removed
+    // above for an untrusted request; this bind also checks the flag itself.
+    if (ctx.topicOperatorStore && !lifelineSignedByAgent && !senderUntrusted
+        && fromUserId !== undefined && fromUserId !== null
         && typeof topicId === 'number') {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
@@ -25234,6 +25369,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: true,
+          // Explicit, so the message pipeline can refuse authority by the
+          // flag as well as by the missing id.
+          ...(senderUntrusted ? { senderUnverified: true } : {}),
           // Preserve the platform message id separately from Message.id. The
           // latter has a Date.now fallback for routing/dedupe compatibility and
           // must NEVER be laundered into operator-establishment evidence.
@@ -25692,6 +25830,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ resolved: entry.resolved, key: entry.key });
   });
 
+  // ── Lifeline startup proof ─────────────────────────────────────
+  // The lifeline posts here once at startup (and whenever the server comes
+  // back) with the ingress secret, so the guard is armed within seconds of a
+  // current lifeline starting instead of waiting for the next Telegram
+  // message. Carries no Telegram input and has no effect beyond the guard.
+  router.post('/internal/lifeline-proof', (req, res) => {
+    const decision = lifelineIngressGuard.evaluate(req.headers, 'lifeline-proof', {
+      lifelineVersion: (req.body as { lifelineVersion?: unknown } | undefined)?.lifelineVersion,
+    });
+    if (decision.action === 'refuse') {
+      res.status(401).json({ ok: false, error: 'lifeline-secret-required', refused: true, reason: decision.reason });
+      return;
+    }
+    if (decision.staleSecretHint) res.setHeader('X-Instar-Lifeline-Secret-Stale', '1');
+    res.json({ ok: true, verified: decision.verified, mode: decision.mode });
+  });
+
   // ── Telegram Callback Query Forwarding (from Lifeline) ────────
   // Receives inline keyboard callback queries that the Lifeline forwarded.
   // Processes them through TelegramAdapter.processCallbackQuery().
@@ -25704,8 +25859,53 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    if (typeof callbackQueryId !== 'string' && typeof callbackQueryId !== 'number') {
+      res.status(400).json({ error: 'callbackQueryId must be a string or a number' });
+      return;
+    }
+
+    // Lifeline-secret gate — before any effect. A tap is nothing but a
+    // privileged act (it can be an approval), so once the guard is armed an
+    // unproven tap is refused in EITHER mode, and a tap is refused while our
+    // own secret is unreadable (nobody can be verified). The user is told to
+    // try again by the lifeline.
+    const callbackDecision = lifelineIngressGuard.evaluate(req.headers, 'telegram-callback');
+    if (callbackDecision.action === 'refuse') {
+      if (callbackDecision.reason === 'secret-unavailable') {
+        res.status(503).json({ ok: false, error: 'lifeline-secret-unavailable', refused: true });
+      } else {
+        res.status(401).json({ ok: false, error: 'lifeline-secret-required', refused: true, reason: callbackDecision.reason });
+      }
+      return;
+    }
+    if (callbackDecision.staleSecretHint) res.setHeader('X-Instar-Lifeline-Secret-Stale', '1');
+
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+
+    // Idempotency: the same tap delivered twice (a lifeline retry, or a
+    // re-polled update after a lifeline restart) has ONE effect. Claimed
+    // before processing and kept on failure — at-most-once.
+    const claimStore = callbackDecision.verified ? telegramCallbackDedupe : telegramCallbackDedupeUnproven;
+    // A tap accepted unproven before the guard armed may be re-polled and
+    // arrive again, now proven, after the lifeline restarts: one effect still.
+    const seenUnproven = callbackDecision.verified ? telegramCallbackDedupeUnproven.peek(callbackQueryId) : 'none';
+    const claim = seenUnproven !== 'none' ? seenUnproven : claimStore.claim(callbackQueryId);
+    if (claim === 'duplicate') {
+      res.json({ ok: true, deduped: true });
+      return;
+    }
+    if (claim === 'duplicate-of-failed' || claim === 'duplicate-of-unknown') {
+      // A refusal stays a refusal: the first delivery of this tap FAILED, or
+      // never recorded an outcome (the server stopped mid-handling). Its
+      // redelivery must not read as success. It is still not re-applied.
+      res.status(409).json({
+        ok: false,
+        deduped: true,
+        error: claim === 'duplicate-of-failed' ? 'callback-previously-failed' : 'callback-outcome-unknown',
+      });
       return;
     }
 
@@ -25720,8 +25920,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       // Use the adapter's public method for processing forwarded callbacks
       await ctx.telegram.handleForwardedCallback(query);
+      claimStore.markDone(callbackQueryId);
       res.json({ ok: true });
     } catch (err) {
+      claimStore.markFailed(callbackQueryId);
       console.error(`[telegram-callback] Processing failed:`, err instanceof Error ? err.message : err);
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

@@ -3447,6 +3447,29 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /**
+   * Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md).
+   * `POST /internal/telegram-forward` and `/internal/telegram-callback` require
+   * a secret only the lifeline and the server hold; the Bearer token alone is
+   * not proof. `enforce` OMITTED (the shipped default) ⇒ enforce on a
+   * development agent; on the fleet, observe (accept + count would-refuse)
+   * until the observe exit rule is met, then enforce. Explicit `false` pins
+   * observe (the rollback lever); explicit `true` enforces. Read live.
+   * Enforce only ever refuses after the running lifeline has proven it sends
+   * the secret.
+   */
+  telegramIngress?: {
+    lifelineSecret?: {
+      enforce?: boolean;
+      /**
+       * Full rollback: `true` restores the pre-change handling of every
+       * request on the internal Telegram routes (accepted, sender trusted,
+       * taps accepted). The check still runs and counts, and each unverified
+       * request is reported. File edit only; read live.
+       */
+      bypass?: boolean;
+    };
+  };
   /** Crash-safe inbound observer rollout. Absence is dark; explicit false is preserved by migration. */
   codexSessionLifecycle?: {
     ledgerObserverEnabled?: boolean;

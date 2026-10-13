@@ -8400,6 +8400,18 @@ The automatic "Message received. Composing response..." ack I send a peer over t
       result.upgraded.push('CLAUDE.md: added A2A ack waits for a live session section');
     }
 
+    // Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md,
+    // Agent awareness). OWN sniff key `Telegram internal routes need the lifeline
+    // secret` — content-sniffed for idempotency.
+    if (!content.includes('Telegram internal routes need the lifeline secret')) {
+      content += '\n\n' + `### Telegram internal routes need the lifeline secret
+
+The two routes that carry Telegram input from my lifeline into my server (\`POST /internal/telegram-forward\` for messages, \`POST /internal/telegram-callback\` for button taps) take the sender's Telegram id from the request body. My ordinary API token used to be enough to call them, so any session could have sent a message or an Approve tap that claimed to come from the operator. They now also require a secret that only the lifeline and the server hold: 32 random bytes in \`.instar/state/lifeline-ingress-secret\` (owner-only), sent in the \`X-Instar-Lifeline-Secret\` header. It is never placed in any process environment, so sessions do not inherit it, and the file viewer, backups and git sync refuse the file and the guard's own records. I never call these routes myself and never read that file. No message is refused until the guard is armed: the lifeline has proven it sends the secret (it does so within seconds of starting, through \`POST /internal/lifeline-proof\`), or there is no lifeline to wait for. A lifeline still on older code is accepted and counted, never cut off, and is asked to restart; while the guard is unarmed the server handles it exactly as before (in \`enforce\`, for at most 24 hours). Once the guard is armed (or, in \`enforce\`, those 24 hours have passed): a button tap without the secret is always refused, and a message without it is delivered with no sender identity (it shows as from "Unverified sender", binds no operator and carries no command authority). Two modes decide what else happens to such a message: \`observe\` delivers it that way and counts a would-refuse; \`enforce\` refuses it with HTTP 401 \`{ error: 'lifeline-secret-required', refused: true }\`, and the lifeline keeps it in its saved queue, keeps retrying (every minute at first, then less often), and tells the user after ten minutes. Default: enforce on a development agent; on other agents observe, and observe ends by itself: after 24 hours with zero would-refuse and at least 10 verified Telegram requests from the lifeline, or 7 days after the guard armed, whichever comes first. The counts are saved to disk and survive a restart. In the config file (read live, not changeable over the API): \`telegramIngress.lifelineSecret.enforce: false\` holds observe, \`true\` enforces (still only once armed), and \`telegramIngress.lifelineSecret.bypass: true\` is the full rollback that restores the old handling. The same button tap delivered twice is applied once. Mode, whether it is refusing messages (\`refusing\`) and taps (\`refusingTaps\`), the exit-rule progress and the counts: authed \`/health\` → \`telegramIngress.lifelineSecret\`; it is also a row on \`/guards\`. Honest limit: everything here runs as one OS user, so this is a cooperative boundary. It stops a session forging through its normal token; it does not stop a session that deliberately reads the file. **When to use** (PROACTIVE): the user asks "could a session fake a message or an approval from me?" or "why was a Telegram message refused with lifeline-secret-required?" or "why does a message show as from Unverified sender?" → read that \`/health\` block; the counts are running totals, so compare times: a \`lastWouldRefuseAt\` or \`lastRefusedAt\` later than \`armedAt\` means something other than a healthy lifeline called the route (a session using the ordinary token, or a lifeline that cannot read its secret file).
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram internal routes need the lifeline secret section');
+    }
+
     // A2A dark peers (docs/specs/a2a-single-agent-identity.md §3, Agent
     // awareness). OWN sniff key `A2A dark peers` — content-sniffed for idempotency.
     if (!content.includes('A2A dark peers')) {
@@ -11445,6 +11457,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // topic-bound reply, framework-agnostic — a Codex/Gemini agent must know a
       // reaped topic session is woken and when the ack is withheld.
       '### A2A reply into a reaped topic session',
+      // Lifeline ingress secret: a server-side check on the two internal Telegram
+      // routes, framework-agnostic — a Codex/Gemini agent must know the 401, the
+      // modes and the cooperative-boundary limit.
+      '### Telegram internal routes need the lifeline secret',
       // A2A ack waits for a live session (ACT-091 follow-up): server-side timing
       // of the relay's automatic ack, framework-agnostic — a Codex/Gemini agent
       // must know what an ack, and a missing ack, now mean.

@@ -763,6 +763,25 @@
       "grandfathered": false
     },
     {
+      "category": "lifeline-ingress-guard",
+      "description": "Lifeline ingress secret and its guard evidence (docs/specs/telegram-internal-route-lifeline-secret.md): the 0600 secret the lifeline and server share on this disk, the guard's persisted arming/graduation/counter state, and the button-tap claim store. MACHINE-LOCAL: each machine runs its own lifeline-to-server loopback hop with its own secret; the secret must never leave the disk, and the evidence describes only that hop. All three are in KEY_MATERIAL_PATHS (never served, edited, backed up or committed).",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/lifeline-ingress-secret",
+        "state/lifeline-ingress-secret.guard.json",
+        "state/telegram-callback-seen.json"
+      ],
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2002,
+        "note": "One 64-character secret, one replace-in-place guard record (fixed fields, no event rows), and a tap claim map capped at 2000 ids and 7 days (oldest evicted on write)."
+      },
+      "grandfathered": false
+    },
+    {
       "category": "process-restart-coordination",
       "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
       "scope": "machine-local",

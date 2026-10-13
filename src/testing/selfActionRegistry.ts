@@ -1938,7 +1938,104 @@ function makeA2aPeerDarkRaise(f: PressureFixture, sink: ActionSink): { tick(): v
   };
 }
 
+/**
+ * Lifeline-ingress restart-signal writer (docs/specs/telegram-internal-route-lifeline-secret.md
+ * "The restart-signal budget"). An unverified request on the internal Telegram
+ * routes — which any Bearer holder can produce at any rate — makes the server
+ * write the lifeline-restart signal. Convergence shape: a PERSISTED gap between
+ * writes (`lastSignalAt` in the guard state: 12 h while unarmed, 24 h once
+ * armed), so the write rate is floored however fast requests arrive and
+ * however often the server restarts. The model drives the tighter 12 h floor.
+ */
+const lifelineIngressRestartSignal: SelfActionController = {
+  id: 'lifeline-ingress-restart-signal',
+  actionVerb: 'restart-signal-lifeline',
+  models: 'src/server/LifelineIngressGuard.ts (evaluate + bootNudge + spendSignalBudget — persisted lastSignalAt, SIGNAL_GAP_UNARMED_MS / SIGNAL_GAP_ARMED_MS)',
+  modelsPath: 'src/server/LifelineIngressGuard.ts',
+  delegatedGiveUp: 'the persisted 12 h signal gap, plus the lifeline ignoring a signal that targets its own version and its own shared daily restart cap of three',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor, not a total count
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 2880, // one unverified request a minute for 48 h
+  tickMs: 60_000,
+  eternalSentinel: {
+    reason: 'a lifeline that stays on older code must keep being asked to restart; the request rate is attacker-chosen, so only a persisted rate floor bounds it',
+    rateFloorMs: 12 * 60 * 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeLifelineIngressRestartSignal(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeLifelineIngressRestartSignal(f, sink),
+};
+
+function makeLifelineIngressRestartSignal(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const GAP_MS = 12 * 60 * 60_000;
+  const KEY = 'lifeline-ingress:lastSignalAt'; // the guard state file's lastSignalAt
+  return {
+    tick() {
+      sink.considered += 1;
+      // The pressure: an unverified request every tick, and a lifeline that
+      // never proves itself (the guard stays unarmed).
+      if (!f.targetAlwaysRejects()) return;
+      const last = (f.durableState.get(KEY) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - last < GAP_MS) return;
+      f.durableState.set(KEY, f.clock.nowMs());
+      sink.emitTimesMs.push(f.clock.nowMs());
+      sink.emit({ verb: 'restart-signal-lifeline', target: 'lifeline' });
+    },
+  };
+}
+
+/**
+ * Lifeline secret-refusal redrive (same spec, "If a refusal reaches a real
+ * lifeline, the message is held, not lost"). While the server refuses the
+ * lifeline's secret, queue replay keeps retrying the held message — it must
+ * never be dropped. Convergence shape: single-flight replay, the pass stops at
+ * the first refusal, and the gap between passes doubles from 1 minute to a
+ * 15-minute cap. Never faster than one pass a minute; the backoff state is
+ * in-memory, so a lifeline restart begins again at the 1-minute floor.
+ */
+const lifelineSecretRefusalRedrive: SelfActionController = {
+  id: 'lifeline-secret-refusal-redrive',
+  actionVerb: 'retry-held-forward',
+  models: 'src/lifeline/TelegramLifeline.ts (replayQueue — replayInFlight, secretRefusedLastAt, secretRefusalBackoffMs 1→15 min)',
+  modelsPath: 'src/lifeline/TelegramLifeline.ts',
+  delegatedGiveUp: 'none by design — a held operator message is never dropped; the brake is the 1-minute floor doubling to a 15-minute cap, plus one user notice per episode',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 5760, // the 15 s replay tick for 24 h
+  tickMs: 15_000,
+  eternalSentinel: {
+    reason: 'dropping a held operator message is the failure this path exists to prevent, so it retries for as long as the refusal lasts, at a floored and backing-off rate',
+    rateFloorMs: 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'A restarted lifeline starts a new refusal episode at the 1-minute floor; the floor itself is never undercut because the first replay pass after a restart is itself the first attempt.',
+  },
+  makeUnderPressure(f, sink) {
+    const FLOOR_MS = 60_000;
+    const CAP_MS = 15 * 60_000;
+    let lastPassAt = Number.NEGATIVE_INFINITY;
+    let passes = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!f.targetAlwaysRejects()) return; // the server refuses every forward
+        const backoff = Math.min(CAP_MS, FLOOR_MS * 2 ** Math.min(Math.max(0, passes - 1), 10));
+        if (f.clock.nowMs() - lastPassAt < backoff) return;
+        lastPassAt = f.clock.nowMs();
+        passes += 1;
+        sink.emitTimesMs.push(f.clock.nowMs());
+        sink.emit({ verb: 'retry-held-forward', target: 'server' });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  lifelineIngressRestartSignal,
+  lifelineSecretRefusalRedrive,
   feedbackTriageTick,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,

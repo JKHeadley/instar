@@ -799,6 +799,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent verifies each inbound same-machine envelope, LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Writes no file and no durable state (the first-contact key cache, replay cache and counters are in memory). Its only outbound traffic is one loopback GET of a same-machine peer\'s /threadline/health when a SIGNED envelope arrives from a name with no key on record (at most 2.5 s on that request, five tries per peer per process). No LLM, no spend, no messages.',
   },
   {
+    name: 'telegramIngressLifelineSecret',
+    configPath: 'telegramIngress.lifelineSecret.enforce',
+    description: 'Lifeline ingress secret: the two internal Telegram routes refuse a request that does not carry the secret only the lifeline and the server hold, instead of trusting any caller with the ordinary Bearer token to name the sender.',
+    justification: 'No message is refused without proof: the guard refuses no message until the running lifeline has sent the valid secret at least once (persisted), so a lifeline still on older code has its messages accepted and counted; for its first 24 hours it is handled exactly as before, after that its messages are still delivered (without a sender identity) and only its button taps are refused. A refused request has had no effect (the check precedes every effect), a current lifeline re-reads the secret and otherwise holds the message in its durable queue with no drop budget burned, backs off (one minute doubling to fifteen) and tells the user once it has been refused for ten minutes. An unreadable server secret still delivers messages (without sender trust). Restart-signal writes are on a persisted 12 h / 24 h budget. Exact constant-time credential compare: no LLM, no spend; the only new outbound message is that one fixed lifeline notice per episode. bypass:true in the config file is the live full rollback.',
+  },
+  {
     name: 'a2aPeerDarkNotice',
     configPath: 'threadline.peerDarkNotice.enabled',
     description: 'Honest sender-side reporting of a send that stays queued: a per-peer `dark` classification on the delivery ledger, a `peerDark` object + worded deliveryOutcome on a send to a dark peer, and ONE per-peer attention item (deterministic id, pool-scope raise/resolve, 12 h cooldown) through the reworked A2ARedeliverySentinel after the awake machine has healed its own side.',

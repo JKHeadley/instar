@@ -529,6 +529,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /internal/stop-gate/kill-switch`
 - `GET /internal/stop-gate/log`
 - `POST /internal/compaction-resume`
+- `POST /internal/lifeline-proof` — the lifeline proves to its own server that it sends the ingress secret (Bearer + `X-Instar-Lifeline-Secret`); carries no Telegram input.
 - `POST /internal/prompt-recall`
 - `POST /internal/slack-forward`
 - `POST /internal/stop-gate/annotations`
@@ -536,8 +537,8 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
 - `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
-- `POST /internal/telegram-callback`
-- `POST /internal/telegram-forward`
+- `POST /internal/telegram-callback` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
+- `POST /internal/telegram-forward` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
 
 ## /jobs
 - `GET /jobs`

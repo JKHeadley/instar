@@ -71,6 +71,21 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // install-id beside it is a bare UUID, not key material, and stays servable.
   // Found by the second-pass review of §5.4.
   'telemetry/local-secret',
+  // Lifeline ingress secret (32 random bytes, hex, 0600): the proof a request
+  // on the internal Telegram routes came from the lifeline. Covers the
+  // creator's temp names (`lifeline-ingress-secret.<pid>.<rand>.tmp`) AND the
+  // guard's evidence file `lifeline-ingress-secret.guard.json` (whether the
+  // guard is armed / graduated): not a key, but if the file editor could
+  // rewrite it, the Bearer token alone could disarm the guard.
+  // docs/specs/telegram-internal-route-lifeline-secret.md
+  'state/lifeline-ingress-secret',
+  // Button-tap claim store of the same guard (which taps were already
+  // applied). Same reason: not a key, but must not be editable over HTTP.
+  'state/telegram-callback-seen.json',
+  // The lifeline-restart signal. Server-side writes caused by an unverified
+  // request are on a persisted budget; a file-editor write would step around
+  // it and spend the lifeline's shared daily restart cap.
+  'state/lifeline-restart-requested.json',
 ]);
 
 /**
@@ -98,6 +113,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'secrets/passkeys/store.enc',
   'remediation-keys.age',
   'telemetry/local-secret',
+  'state/lifeline-ingress-secret',
   'config.json',
 ]);
 

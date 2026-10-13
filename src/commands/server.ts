@@ -103,6 +103,12 @@ import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { SessionManager, type SessionTerminateAuthority, IDLE_PROMPT_PATTERNS } from '../core/SessionManager.js';
+import {
+  sharedLifelineIngressSecretHolder,
+  LIFELINE_SECRET_HEADER,
+  LIFELINE_INGRESS_CALLER_HEADER,
+  LIFELINE_INGRESS_CALLER_SERVER_SELF,
+} from '../core/LifelineIngressSecret.js';
 import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
@@ -2519,7 +2525,10 @@ export function wireTelegramRouting(
     const text = msg.content;
 
     // Resolve user profile for context injection (Gap 8)
-    const telegramUserId = (msg.metadata?.telegramUserId as number) ?? 0;
+    // An inbound the lifeline-secret gate accepted WITHOUT proof of the
+    // lifeline carries `senderUnverified` and no sender id: it is delivered,
+    // but nothing here may treat it as coming from a known person.
+    const telegramUserId = msg.metadata?.senderUnverified === true ? 0 : ((msg.metadata?.telegramUserId as number) ?? 0);
     const resolvedUser = telegramUserId && userManager
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
@@ -2554,7 +2563,7 @@ export function wireTelegramRouting(
     // no store / unauthorized / error → no-op and routing continues.
     try {
       const opStore = getTopicOperatorStore?.() ?? null;
-      if (opStore && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
+      if (opStore && operatorAutoBindPermitted(signedByAgent) && msg.metadata?.senderUnverified !== true && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
         // A lifeline-forwarded Message.id may contain a Date.now fallback used
         // only for internal routing. Establishment evidence must use the raw
         // Telegram id carried separately; absent stays absent and fails closed.
@@ -11503,11 +11512,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         console.log(`[injectionDropped] Session "${info.sessionName}" died with unanswered message for topic ${info.topicId}. Triggering respawn.`);
         // Re-trigger the telegram-forward endpoint internally using fetch
+        // The route requires the lifeline ingress secret; this is the server
+        // calling itself, so it reads the same file and labels the call so it
+        // is not counted as proof the LIFELINE sends the secret.
+        // The SAME in-memory holder the route's guard checks against, so a
+        // momentarily unreadable file cannot make the server refuse itself.
+        const selfIngressSecret = sharedLifelineIngressSecretHolder(config.stateDir).get();
         fetch(`http://localhost:${config.port}/internal/telegram-forward`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${config.authToken}`,
+            ...(selfIngressSecret ? { [LIFELINE_SECRET_HEADER]: selfIngressSecret } : {}),
+            [LIFELINE_INGRESS_CALLER_HEADER]: LIFELINE_INGRESS_CALLER_SERVER_SELF,
           },
           body: JSON.stringify({ topicId: info.topicId, text: info.text, fromFirstName: 'User' }),
         }).then(async (res) => {

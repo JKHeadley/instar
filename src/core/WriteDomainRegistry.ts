@@ -436,6 +436,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
     },
   });
+  // POST /internal/lifeline-proof — this machine's lifeline proving to this
+  // machine's server that it sends the ingress secret
+  // (docs/specs/telegram-internal-route-lifeline-secret.md). A standby's
+  // lifeline must be able to prove itself to its own server, so the write is
+  // admitted on every machine.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/internal/lifeline-proof',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the guard evidence (armed / graduated / counters) describes this disk\'s lifeline-to-server loopback hop and its own secret; it lives under the key-material prefix state/lifeline-ingress-secret*, which is gitignored, backup-excluded and never served',
+    },
+  });
   // Promotion writes the coherence-critical, git-synced session-pool stage.
   // Keep it behind the cluster lease holder; a standby must never create a
   // competing rollout history even when its local signed evidence is green.

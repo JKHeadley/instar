@@ -43,6 +43,7 @@ import {
   readLifelineRestartSignal,
   clearLifelineRestartSignal,
 } from '../core/version-skew.js';
+import { LifelineIngressSecretHolder, LIFELINE_SECRET_HEADER } from '../core/LifelineIngressSecret.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the lifeline on older Node versions
 // import { installAutoStart } from '../commands/setup.js';
@@ -57,6 +58,7 @@ import {
   ForwardServerBootError,
   ForwardVersionSkewError,
   isTerminalForwardError,
+  ForwardSecretRefusedError,
   type VersionSkewBody,
 } from './forwardErrors.js';
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
@@ -218,6 +220,9 @@ export class TelegramLifeline {
 
     // Wire supervisor events
     this.supervisor.on('serverUp', () => {
+      // A server (re)start re-reads the secret: probe at once, not after the backoff.
+      this.secretRefusedLastAt = 0;
+      void this.proveIngressSecret();
       console.log('[Lifeline] Server is up — replaying queued messages');
       if (this.hasNotifiedServerDown) {
         this.hasNotifiedServerDown = false;
@@ -421,6 +426,9 @@ export class TelegramLifeline {
     this.replayInterval = setInterval(() => {
       if (this.supervisor.healthy && this.queue.length > 0) {
         this.replayQueue();
+      }
+      if (this.supervisor.healthy && Date.now() - this.lastIngressProofAt > 15 * 60_000) {
+        void this.proveIngressSecret();
       }
       // B1 — reconcile poll-ownership to the lease intent (no-op unless
       // pollFollowsLease is on; DRY-RUN by default — see reconcilePolling).
@@ -1344,26 +1352,34 @@ export class TelegramLifeline {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
-        const cbHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (this.projectConfig.authToken) {
-          cbHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
-        }
-        const response = await fetch(
-          `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-callback`,
-          {
-            method: 'POST',
-            headers: cbHeaders,
-            body: JSON.stringify({
-              callbackQueryId: query.id,
-              data: query.data,
-              fromUserId: query.from.id,
-              fromUsername: query.from.username,
-              messageId: query.message?.message_id,
-              chatId: query.message?.chat?.id,
-            }),
-            signal: controller.signal,
+        const cbBody = JSON.stringify({
+          callbackQueryId: query.id,
+          data: query.data,
+          fromUserId: query.from.id,
+          fromUsername: query.from.username,
+          messageId: query.message?.message_id,
+          chatId: query.message?.chat?.id,
+        });
+        const sendCallback = (): Promise<Response> => {
+          const cbHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (this.projectConfig.authToken) {
+            cbHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
           }
-        );
+          this.addIngressSecretHeader(cbHeaders);
+          return fetch(
+            `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-callback`,
+            { method: 'POST', headers: cbHeaders, body: cbBody, signal: controller.signal },
+          );
+        };
+        let response = await sendCallback();
+        // The server refused our secret: the file may have been replaced since
+        // we cached it. Re-read once and retry. The server dedupes on the
+        // callback id, so a retried tap can never be applied twice.
+        if (response.status === 401 && await this.isLifelineSecretRefusal(response)) {
+          this.ingressSecret.reload();
+          response = await sendCallback();
+        }
+        if (response.ok) this.observeStaleSecretHint(response);
         if (!response.ok) {
           await this.apiCall('answerCallbackQuery', {
             callback_query_id: query.id,
@@ -1402,6 +1418,134 @@ export class TelegramLifeline {
 
   /** Full semver of this lifeline, read once at construction. */
   private readonly lifelineVersion = getInstarVersion();
+
+  /**
+   * The lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md).
+   * Held in this process's memory and in its 0600 file only — never in
+   * `process.env`, so nothing this process spawns inherits it.
+   */
+  private _ingressSecret: LifelineIngressSecretHolder | null = null;
+  private get ingressSecret(): LifelineIngressSecretHolder {
+    if (!this._ingressSecret) this._ingressSecret = new LifelineIngressSecretHolder(this.projectConfig.stateDir);
+    return this._ingressSecret;
+  }
+
+  private lastSecretRefusalLogAt = 0;
+  private lastIngressProofAt = 0;
+  /** Start of the current secret-refusal episode (0 = none). */
+  private secretRefusedSince = 0;
+  private secretRefusedLastAt = 0;
+  private secretRefusalNoticeSent = false;
+  private secretRefusalNoticeInFlight = false;
+  private replayInFlight = false;
+
+  /** Consecutive refused replay passes in the current episode (drives the backoff). */
+  private secretRefusedPasses = 0;
+
+  /**
+   * While the server refuses our secret, replay backs off: one minute, then
+   * doubling, capped at fifteen. The message is never dropped; only the rate
+   * of asking falls.
+   */
+  private static readonly SECRET_REFUSAL_RETRY_MS = 60_000;
+  private static readonly SECRET_REFUSAL_RETRY_MAX_MS = 15 * 60_000;
+  private secretRefusalBackoffMs(): number {
+    const n = Math.max(0, this.secretRefusedPasses - 1);
+    return Math.min(TelegramLifeline.SECRET_REFUSAL_RETRY_MAX_MS, TelegramLifeline.SECRET_REFUSAL_RETRY_MS * 2 ** Math.min(n, 10));
+  }
+  /** After this long refused, tell the user once (per episode). */
+  private static readonly SECRET_REFUSAL_NOTICE_AFTER_MS = 10 * 60_000;
+
+  /**
+   * The server refused our lifeline secret even after a re-read. Not a
+   * property of the message and not an outage: the message stays queued with
+   * no drop budget burned. This bounds the consequences — one log line a
+   * minute, replay backs off from one minute to fifteen (see replayQueue), and
+   * at the first refusal after ten minutes the user is told ONCE, on the
+   * lifeline's own always-available channel, that messages are held and why.
+   */
+  private noteSecretRefusal(inboundTopicId: number): void {
+    const nowMs = Date.now();
+    if (this.secretRefusedSince === 0) this.secretRefusedSince = nowMs;
+    this.secretRefusedLastAt = nowMs;
+    if (nowMs - this.lastSecretRefusalLogAt > 60_000) {
+      this.lastSecretRefusalLogAt = nowMs;
+      console.error(
+        '[Lifeline] server refused the lifeline ingress secret after a re-read — ' +
+        `messages stay queued. Secret readable here: ${this.ingressSecret.get() !== null}`,
+      );
+    }
+    if (!this.secretRefusalNoticeSent && !this.secretRefusalNoticeInFlight
+        && nowMs - this.secretRefusedSince >= TelegramLifeline.SECRET_REFUSAL_NOTICE_AFTER_MS) {
+      const topic = this.resolveUpdatesAlertTopic();
+      if (topic !== null) {
+        // "Sent" is recorded only once the send succeeded; a failure leaves it
+        // unset, so the next refusal (the backoff cadence) tries again.
+        this.secretRefusalNoticeInFlight = true;
+        this.sendToTopic(topic,
+          'Heads up: your Telegram messages are reaching my lifeline but my server is not accepting them, ' +
+          'because the two no longer agree on their shared key. Your messages are NOT lost — they are saved ' +
+          'and will be delivered as soon as this is fixed. Sending /lifeline restart usually resolves it.',
+        ).then(() => {
+          this.secretRefusalNoticeSent = true;
+        }).finally(() => {
+          this.secretRefusalNoticeInFlight = false;
+        }).catch((sendErr) => {
+          console.warn(
+            `[Lifeline] failed to send secret-refusal notice to topic ${topic} (inbound was ${inboundTopicId}): ` +
+            `${sendErr instanceof Error ? sendErr.message : sendErr}`,
+          );
+        });
+      }
+    }
+  }
+
+  private addIngressSecretHeader(headers: Record<string, string>): void {
+    const secret = this.ingressSecret.get();
+    if (secret) headers[LIFELINE_SECRET_HEADER] = secret;
+  }
+
+  /** The server accepted a secret that is not its own (observe): re-read ours. */
+  private observeStaleSecretHint(response: Response): void {
+    if (response.headers.get('x-instar-lifeline-secret-stale') === '1') {
+      this.ingressSecret.reload();
+    }
+  }
+
+  /**
+   * Tell the server that THIS lifeline sends the ingress secret — at lifeline
+   * start, whenever the server comes up, and every 15 minutes — so the
+   * server's guard is armed within seconds instead of waiting for the next
+   * Telegram message (a standby lifeline never forwards one at all).
+   * Best-effort: an older server answers 404 and nothing changes.
+   */
+  private async proveIngressSecret(): Promise<void> {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+      this.addIngressSecretHeader(headers);
+      const post = (): Promise<Response> => fetch(
+        `http://127.0.0.1:${this.projectConfig.port}/internal/lifeline-proof`,
+        { method: 'POST', headers, body: JSON.stringify({ lifelineVersion: this.lifelineVersion }), signal: AbortSignal.timeout(5_000) },
+      );
+      this.lastIngressProofAt = Date.now();
+      let response = await post();
+      if (response.status === 401 && await this.isLifelineSecretRefusal(response)) {
+        this.ingressSecret.reload();
+        this.addIngressSecretHeader(headers);
+        response = await post();
+      }
+      if (response.ok) this.observeStaleSecretHint(response);
+    } catch {
+      // @silent-fallback-ok — the proof is an optimisation; the first real
+      // forward carries the same secret and arms the guard just the same.
+    }
+  }
+
+  private async isLifelineSecretRefusal(response: Response): Promise<boolean> {
+    const body = (await response.clone().json().catch(() => ({}))) as { error?: string };
+    return body.error === 'lifeline-secret-required';
+  }
 
   /**
    * Agent hard-sleep wake trigger. When the ServerSupervisor has intentionally
@@ -1486,6 +1630,7 @@ export class TelegramLifeline {
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),
       });
 
+    let secretReloaded = false;
     const doForward = async (): Promise<true> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
@@ -1494,6 +1639,7 @@ export class TelegramLifeline {
         if (this.projectConfig.authToken) {
           fwdHeaders['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
         }
+        this.addIngressSecretHeader(fwdHeaders);
         const response = await fetch(
           `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
           {
@@ -1505,6 +1651,7 @@ export class TelegramLifeline {
         );
         if (response.ok) {
           this.observeForwardResponseDriftHeader(response);
+          this.observeStaleSecretHint(response);
           return true;
         }
         if (response.status === 426) {
@@ -1514,6 +1661,19 @@ export class TelegramLifeline {
         if (response.status === 503) {
           const body = (await response.json().catch(() => ({}))) as { retryAfterMs?: number };
           throw new ForwardServerBootError(body.retryAfterMs ?? 1000);
+        }
+        if (response.status === 401 && await this.isLifelineSecretRefusal(response)) {
+          // The server refused our secret: the file may have been replaced
+          // since we cached it. Re-read it ONCE per forward and let
+          // retryWithBackoff try again with the fresh value. If the server
+          // still refuses, stop retrying: the message is re-queued without
+          // burning any replay budget (never dropped as "server unreachable").
+          if (!secretReloaded) {
+            secretReloaded = true;
+            this.ingressSecret.reload();
+            throw new ForwardTransientError(401);
+          }
+          throw new ForwardSecretRefusedError();
         }
         if (response.status === 400) {
           const body = await response.json().catch(() => ({}));
@@ -1560,6 +1720,11 @@ export class TelegramLifeline {
       // Record success for watchdog.
       this.consecutiveForwardFailures = 0;
       this.lastForwardSuccessAt = Date.now();
+      // A delivered forward ends any secret-refusal episode.
+      this.secretRefusedSince = 0;
+      this.secretRefusedLastAt = 0;
+      this.secretRefusedPasses = 0;
+      this.secretRefusalNoticeSent = false;
       // Successful forward → the skew episode (if any) has resolved.
       // Clear the flag and the alert-dedupe timestamp so the next episode
       // gets its own user-visible notification.
@@ -1570,6 +1735,13 @@ export class TelegramLifeline {
       // Version-skew handler: emit signal + request restart via orchestrator.
       if (err instanceof ForwardVersionSkewError) {
         this.handleVersionSkew(err, topicId);
+        return 'skew';
+      }
+      // The server will not accept our lifeline secret. Not a property of the
+      // message and not an outage: re-queue with no budget burned (the same
+      // replay decision as a skew), and say so loudly — at most once a minute.
+      if (err instanceof ForwardSecretRefusedError) {
+        this.noteSecretRefusal(topicId);
         return 'skew';
       }
       this.consecutiveForwardFailures++;
@@ -1861,9 +2033,25 @@ export class TelegramLifeline {
     // the very episodes that trigger queuing) lost the in-memory messages with
     // no trace. That is the 2026-06-06 topic-21487 untracked-loss: a real user
     // question vanished without even a dropped-messages.json record.
+    // Single flight: a pass that outlives the tick must not overlap the next.
+    if (this.replayInFlight) return;
+    // While the server refuses our secret every forward fails identically, so
+    // back off (one minute, doubling, capped at fifteen) instead of
+    // re-forwarding the whole queue on every tick.
+    if (this.secretRefusedLastAt !== 0
+        && Date.now() - this.secretRefusedLastAt < this.secretRefusalBackoffMs()) return;
     const messages = this.queue.peek();
     if (messages.length === 0) return;
+    this.replayInFlight = true;
+    try {
+      await this.replayQueueLocked(messages);
+    } finally {
+      this.replayInFlight = false;
+    }
+  }
 
+  /* @self-action-controller: lifeline-secret-refusal-redrive */
+  private async replayQueueLocked(messages: QueuedMessage[]): Promise<void> {
     console.log(`[Lifeline] Replaying ${messages.length} queued messages`);
     let replayed = 0;
     let failed = 0;
@@ -1895,6 +2083,12 @@ export class TelegramLifeline {
         poisonFailures: msg.replayFailures ?? 0,
         transientFailures: msg.transientReplayFailures ?? 0,
       });
+      // The server refused our secret: the rest of the queue would be refused
+      // the same way. Stop this pass; everything stays on disk, no budget burned.
+      if (outcome === 'skew' && this.secretRefusedLastAt !== 0 && !this.versionSkewActive) {
+        this.secretRefusedPasses++; // one refused PASS — drives the backoff
+        break;
+      }
 
       if (decision.action === 'delivered') {
         this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it

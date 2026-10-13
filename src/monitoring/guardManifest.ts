@@ -1103,6 +1103,30 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'CoherenceJournal',
     description: 'Cross-machine coherence journal (dev-gated).',
   },
+  // ── Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md) ──
+  // Code-default ON with a runtime getter that reports the EFFECTIVE state:
+  // `enabled` only once the guard is armed (the lifeline proved it sends the
+  // secret, or there is no lifeline to wait for) and not bypassed. An unarmed
+  // or bypassed guard therefore derives off-runtime-divergent (loud).
+  // `dryRun` is reported only for observe HELD by config: default observe
+  // already protects the critical path once armed (unproven identity dropped,
+  // unproven taps refused) and ends by its own exit rule, so reporting it as
+  // a dry run would alarm on every healthy fleet agent once the calendar
+  // soak window below has passed. A held observe is a soak that lapses to a
+  // load-bearing gap.
+  {
+    key: 'telegramIngress.lifelineSecret',
+    kind: 'code-default',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: true,
+    component: 'LifelineIngressGuard',
+    description: 'Lifeline ingress secret — the internal Telegram routes accept a sender identity only from a caller that proves it is the lifeline (observe on the fleet until the exit rule, enforce on a development agent).',
+    loadBearing: true,
+    criticalPath: 'operator identity on Telegram ingress (operator binding, button approvals)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-10-12',
+  },
   // ── Code-default guards (no config key; default-ON in code) ──
   {
     key: 'messaging.attentionTopicGuard',
