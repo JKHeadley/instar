@@ -52,7 +52,7 @@ If something other than the lifeline calls these addresses after the proof exist
 
 ## What it does not do
 
-Everything on the machine runs as the same user account. A session that deliberately goes and reads the secret file can still forge a request. This change stops a session forging through the password it normally holds. It does not stop one that goes looking for the file. Stopping that would mean running sessions as a separate user, and this change does not attempt it.
+Everything on the machine runs as the same user account. A session that deliberately goes and reads the secret file can still forge a request; nothing stops that read today, only the file's owner-only permissions and the rule that keeps it out of the file viewer and backups. This change stops a session forging through the password it normally holds. It does not stop one that goes looking for the file. Stopping that would mean running sessions as a separate user, and this change does not attempt it.
 
 A button tap that is refused is not replayed automatically. The person sees "please try again" and taps again.
 

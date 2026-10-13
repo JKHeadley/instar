@@ -23,7 +23,7 @@
 - **Observability.** The authed `/health` gains `telegramIngress.lifelineSecret` (mode, `armed`, `refusing`, `refusingTaps`, `secretAvailable`, exit-rule progress, persisted counters) and `telegramIngress.callbackDedupe`. The guard is a load-bearing row on `/guards` (`telegramIngress.lifelineSecret`). Degradation reports under feature `TelegramIngress.lifelineSecret`; an unproven request after arming, a bypassed guard, and a lifeline still not updated after a day each raise an operator attention item (at most one a day per kind).
 - CLAUDE.md template and `migrateClaudeMd` gain "Telegram internal routes need the lifeline secret" (framework-shadowed). Registered in `DEV_GATED_FEATURES`.
 
-**Limit:** everything runs as one OS user, so this is a cooperative boundary. It stops a session forging through its normal token. It does not stop a session that deliberately reads the secret file.
+**Limit:** no tool hook refuses a read of the secret file today; the protection is the 0600 mode plus the key-material path list (file viewer, backups, git sync). Everything runs as one OS user, so this is a cooperative boundary. It stops a session forging through its normal token. It does not stop a session that deliberately reads the secret file. A read-refusing hook covering this file, `.instar/identity.json` and the dashboard PIN is tracked as ACT-099.
 
 **Rollback note:** rolling the lifeline back by itself to a version from before this change, under a server that has already armed and enforces, gets that lifeline refused. Set `telegramIngress.lifelineSecret.bypass: true` first.
 
