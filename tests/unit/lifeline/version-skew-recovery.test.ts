@@ -231,7 +231,9 @@ describe('Replay drop-policy — only a message-specific (HTTP 400) failure may 
     const fn = extractSectionAroundFirstMatch(
       src,
       /private async forwardToServerClassified\(/,
-      8000,
+      // The function grew with the lifeline-secret refusal handling; the
+      // window must still reach its final classification returns.
+      12000,
     );
     expect(fn).toBeTruthy();
     expect(fn).toMatch(/ForwardBadRequestError\)\s*return 'poison'/);
