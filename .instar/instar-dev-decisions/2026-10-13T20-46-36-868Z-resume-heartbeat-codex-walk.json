@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-13T20:46:36.868Z",
+  "slug": "resume-heartbeat-codex-walk",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 853,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CodexResumeMap.ts",
+      "src/core/ResumeHeartbeat.ts",
+      "src/core/TopicResumeMap.ts",
+      "src/providers/adapters/openai-codex/observability/sessionPaths.ts",
+      "src/threadline/ThreadResumeMap.ts"
+    ],
+    "addedLines": 701,
+    "deletedLines": 152
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
