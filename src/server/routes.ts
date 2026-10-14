@@ -214,6 +214,7 @@ import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConf
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { LifelineIngressGuard } from './LifelineIngressGuard.js';
+import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX } from '../threadline/PairingInviteTelegram.js';
 import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -3303,6 +3304,29 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     },
   });
+
+  // Pairing by invite, Telegram surface (docs/specs/a2a-pairing-invite-link.md §6.1). Buttons
+  // are offered only when the lifeline is this agent's Telegram ingress AND its guard enforces;
+  // otherwise every prompt points at the dashboard (PIN) instead.
+  const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
+    ? new PairingInviteTelegram({
+      flow: ctx.pairingInvites.flow,
+      events: ctx.pairingInvites.events,
+      send: async (topicId, text, buttons) => {
+        if (buttons && buttons.length) {
+          if (await ctx.telegram!.sendPairingPrompt(topicId, text, buttons) !== null) return;
+          throw new Error('could not send the pairing prompt');
+        }
+        await ctx.telegram!.sendToTopic(topicId, text);
+      },
+      answer: (id, text) => ctx.telegram!.answerCallback(id, text),
+      ownerUserId: () => ctx.telegram!.getOwnerUserId(),
+      chatId: () => ctx.telegram!.getChatId(),
+      operatorTopicId: () => ctx.telegram!.getLifelineTopicId(),
+      enforcing: () => lifelineIngressGuard.mode() === 'enforce'
+        && (ctx.telegram as unknown as { isPolling?: boolean }).isPolling !== true,
+    })
+    : null;
   ctx.guardRegistry?.register('telegramIngress.lifelineSecret', () => lifelineIngressGuard.guardStatus());
   // One inline-button tap has one effect, however many times it is delivered.
   // Proven taps go to the durable store; a tap accepted without proof (only
@@ -25202,6 +25226,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // ── Pairing invite (docs/specs/a2a-pairing-invite-link.md §6.1) ──
+    // A message carrying `tlinv1:` holds a one-time secret. It is handled HERE and goes no
+    // further: not to the sentinel's classifier, the session, the message log or the
+    // topic-intent extractor. Whether it may open an Approve prompt is decided inside
+    // (verified lifeline forward + enforce mode + the owner); `fromUserId` was already
+    // removed above when the forward was not verified.
+    if (PairingInviteTelegram.carriesInvite(text)) {
+      try {
+        if (pairingInviteTelegram) {
+          await pairingInviteTelegram.onForwardedInvite({ text, topicId: Number(topicId), fromUserId, verified: ingressDecision.verified });
+        } else {
+          await ctx.telegram?.sendToTopic(Number(topicId), 'I got a pairing invite, but pairing by invite is not turned on for this agent.');
+        }
+      } catch { /* the invite is still consumed: it must never fall through to a session */ }
+      res.json({ ok: true, pairingInvite: true });
+      return;
+    }
+
     // ── Sentinel intercept (P0 safety: emergency-stop on the LIFELINE path) ──
     // The sentinel emergency-stop/pause intercept also lives in
     // TelegramAdapter.processUpdate(), but lifeline-owned-polling agents (e.g.
@@ -26034,6 +26076,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         deduped: true,
         error: claim === 'duplicate-of-failed' ? 'callback-previously-failed' : 'callback-outcome-unknown',
       });
+      return;
+    }
+
+    // Pairing-invite buttons (§6.1): judged with the lifeline proof this route holds,
+    // which the adapter never sees.
+    if (pairingInviteTelegram && typeof data === 'string' && data.startsWith(PAIRING_CALLBACK_PREFIX)) {
+      try {
+        await pairingInviteTelegram.onCallback({ callbackQueryId, data, fromUserId, chatId, verified: callbackDecision.verified });
+        claimStore.markDone(callbackQueryId);
+        res.json({ ok: true, pairingInvite: true });
+      } catch (err) {
+        claimStore.markFailed(callbackQueryId);
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
 

@@ -55,7 +55,7 @@ No LLM or heuristic is involved. Every decision is deterministic cryptography or
 
 ## 6. External surfaces
 
-Wire ops (step 5) and HTTP routes (step 6). Telegram buttons and the dashboard follow.
+Wire ops (step 5), HTTP routes (step 6), Telegram interception and buttons (step 7). The dashboard follows.
 
 ## 6b. Operator-surface quality
 
@@ -71,7 +71,7 @@ The feature is behind `threadline.verifiedPairing`. Turning it off stops all rou
 
 ## Conclusion
 
-Steps 1–6 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`, and approval still needs the PIN.
+Steps 1–7 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
 
 ## Second-pass review (if required)
 
@@ -101,6 +101,17 @@ Echo approved the spec; code review happens on the PR.
 - Server wiring: `bootstrapThreadline` receives `ownerName` (the admin user's name, else the first user's; self-described, shown as "claimed"), and the engine reaches the routes as `ctx.pairingInvites`.
 - Over-block: an operator who taps Not-them cannot change their mind on that invite and needs a new invite. Under-block: none new; the routes add no path that skips the engine's checks.
 - Evidence: `pairing-invite-production-path.test.ts` scenario 2 drives the whole flow over HTTP on two real agents and a real relay (401 without Bearer, 403 approve/finish without PIN, decided-once 409s, revoked invite refused by the inviter, no secrets in the list). New unit tests for decisions, the second-accept block and the pending list. Breakages: 7 of 7 caught (each PIN check, the decided-once guard in engine and store, the second-accept block, the pending-list expiry, the list's secret stripping). Regression: threadline unit/e2e/integration 185 files, 2949 tests; every test that scans routes.ts, 60 files, 1047 tests; tsc clean.
+
+## Step 7: Telegram (added 2026-10-14)
+
+- `PairingInviteTelegram` (new): one controller for the Telegram surface. A message carrying `tlinv1:` is consumed by `/internal/telegram-forward` right after the lifeline guard and before the emergency-stop sentinel, so the secret reaches no classifier, session, inbound log or topic-intent extractor. An Approve/Decline prompt opens only when the forward was verified by the lifeline secret, the guard ENFORCES, the lifeline is this agent's Telegram ingress, and the sender is the configured owner. Otherwise the reply points at the dashboard and nothing is decoded.
+- Buttons carry `pi:<24 hex>`, a one-time token bound to one invite and one step. `/internal/telegram-callback` judges them with the lifeline proof it holds (the adapter never sees them). A tap counts only when verified, enforcing, from the owner and in the agent's chat. A refused tap does not spend the button, so the real owner can still use it. One decision per prompt: using one button spends its sibling. Finish/Not-them prompts go to the lifeline topic, and so do the leak alarm and the "used elsewhere" notice.
+- Never persisted: `MessageQueue.enqueue` refuses invite text (the lifeline's on-disk queue), and the lifeline tells the sender to forward it again rather than queueing. The direct-polling adapter path drops an invite before logging or routing it and points an authorized sender at the dashboard. It has no lifeline proof, so it never offers buttons, and a `pi:` tap there gets a dashboard pointer.
+- Deviation from §6.1 (stricter): the spec has history store `tlinv1:<iid>` with the secret removed. This writes nothing to history at all. `PairingInviteTelegram.scrub` exists for any recorder that needs the redacted form.
+- Over-block: in observe mode (the fleet default until a lifeline has proven itself), Telegram approval is off and the dashboard is the only path. That is the spec's stated behaviour. An invite forwarded while the server is down is not kept, and the sender is told to forward it again.
+- Under-block: the boundary is cooperative (spec §6.1 "Honest boundary"). An agent that reads the lifeline secret file, or drives the owner's own Telegram, could approve. The agent's Bearer token alone cannot.
+- Interactions: the forward route returns `{ pairingInvite: true }` with 200, so the lifeline shows its usual "✓ Delivered". Other callbacks still reach the adapter unchanged (tested).
+- Evidence: `PairingInviteTelegram.test.ts` (16: the authority matrix for prompts and taps, single use, siblings spent, refused taps not spent, observe mode, operator notices). `tests/integration/pairing-invite-telegram-routes.test.ts` (4, real routes with the real guard: an owner forward opens a prompt with nothing reaching a session or the log, a forged tap 401s, a verified tap approves via the engine and never the adapter, a duplicate tap has one effect, a non-owner gets no prompt, observe mode gets no prompt, other callbacks are unchanged). `tests/unit/pairing-invite-never-persisted.test.ts` (2: queue refusal; the direct-polling adapter neither routes an invite nor writes its secret anywhere under the state dir). Breakages: 10 of 10 caught (both route intercepts, each tap condition, single use, sibling spending, button expiry, the queue refusal, the adapter drop). Regression: 325 files, 4744 tests (threadline, lifeline, every Telegram suite, every test that scans routes.ts). The one failure, the silent-fallback ratchet (496 vs 494), was mine: two best-effort catches in the adapter, now marked with their reasons. 494 again.
 
 ## Class-Closure Declaration (display-only mirror)
 

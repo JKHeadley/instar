@@ -46,6 +46,7 @@ import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardCon
 import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionContext.js';
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
+import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
 export const TELEGRAM_STALL_CONFIRM_PROMPT_ID = 'telegram-stall-confirm-v1';
 
@@ -801,6 +802,39 @@ export class TelegramAdapter implements MessagingAdapter {
       console.warn(`[telegram] sendOwnerConsentPrompt failed: ${msg}`);
       return null;
     }
+  }
+
+  /**
+   * Pairing by invite (docs/specs/a2a-pairing-invite-link.md §6.1): a prompt in a topic with one
+   * row of buttons. callback_data is `pi:<24 hex>` (27 bytes, under Telegram's 64). The tap is
+   * judged by PairingInviteTelegram in the callback route, never here.
+   */
+  async sendPairingPrompt(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
+    try {
+      const result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] },
+      }) as { message_id: number };
+      return result.message_id;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: returns null, and the caller (PairingInviteTelegram.send) throws on null
+      console.warn(`[telegram] sendPairingPrompt failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** The small toast answering a button tap. Best-effort. */
+  async answerCallback(callbackQueryId: string | number, text: string): Promise<void> {
+    await this.apiCall('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: text.length > 60 }).catch(() => {
+      // @silent-fallback-ok — the toast is best-effort; the decision it reports was already recorded
+    });
+  }
+
+  /** The forum chat this agent lives in. */
+  getChatId(): string {
+    return this.config.chatId;
   }
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
@@ -4928,6 +4962,17 @@ export class TelegramAdapter implements MessagingAdapter {
     const msg = update.message;
     if (!msg) return;
 
+    // A pairing invite carries a one-time secret: it never reaches a session, the message log
+    // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). Approving by Telegram needs
+    // the lifeline path (its secret proves the tap); this direct-polling path has none, so the
+    // owner is pointed at the dashboard. Unauthorized senders get nothing.
+    if (typeof msg.text === 'string' && msg.text.includes(INVITE_PREFIX)) {
+      if (this.isAuthorized(msg.from.id)) {
+        void this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.').catch(() => {});
+      }
+      return;
+    }
+
     // Auth gating — handle messages from unauthorized/unknown users
     if (!this.isAuthorized(msg.from.id)) {
       await this.handleUnknownUser(msg.from.id, msg.from.first_name, msg.from.username, msg.text);
@@ -5534,6 +5579,16 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
         text: 'Invalid button data',
+      }).catch(() => {});
+      return;
+    }
+
+    // ── Pairing-invite buttons: only honoured on the lifeline path (/internal/telegram-callback),
+    // which carries the proof this direct-polling path lacks (a2a-pairing-invite-link §6.1).
+    if (query.data.startsWith('pi:')) {
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
       }).catch(() => {});
       return;
     }

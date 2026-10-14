@@ -95,6 +95,7 @@ import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetri
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -1136,6 +1137,13 @@ export class TelegramLifeline {
         await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
+    }
+    // A pairing invite is never queued (its secret would sit on disk): say so instead.
+    if (text.includes(INVITE_PREFIX)) {
+      await this.sendFixedNotice(topicId, "I couldn't pass that pairing invite to the agent just now, and I don't store invites. Forward it again in a minute.");
+      return;
+    }
+    if (this.supervisor.healthy) {
       // Server appears healthy but forward failed. Preserve the message, but do
       // not announce an outage: a slow ingress decision is not a dead server.
       this.queue.enqueue({
