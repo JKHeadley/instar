@@ -1,6 +1,6 @@
 ---
 title: Verified pairing by invite link (replaces the 12-word confirmation)
-status: draft r2 (Echo's review of r1, 2026-10-13, addressed)
+status: draft r3 (Echo's reviews of r1 and r2 addressed)
 owners: Dawn (author), Echo (review)
 supersedes-ux-of: docs/specs/secure-a2a-verified-pairing.md (§3.2 human comparison, §3.6 panel)
 ---
@@ -52,7 +52,7 @@ bytes (the routing fingerprint), `sigX(m)` = Ed25519 signature by idX.
 - `iid`: 16 random bytes, a non-secret invite id (lookup and binding without trying MACs);
 - `S`: 32 random bytes, the secret;
 - `exp`: default now + **1 h**; the inviter may choose up to 24 h;
-- `bind`: optional `fpB` if A already knows the peer it means to pair (§7, binding).
+- `bind`: the `fpB` of the peer A means to pair. **Set by default when the inviter starts from a peer A already has a trust profile for**; optional only for a brand-new peer (§7, binding).
 
 `inv = { v: 1, iid, fp: fpA, key: idA, owner, agent, S, exp, bind? }`, encoded as one base64url line
 `tlinv1:<payload><4-byte sha256 checksum>`. A keeps `{ iid → S, exp, bind, state: open }`. **At most one
@@ -78,9 +78,19 @@ one-time secret is sufficient. A PAKE protects low-entropy secrets, and S is not
 
 **4.4 Finish (A).** On `pair-invite-accept`, A:
 1. looks up `iid`. If it's unknown or expired, drop. Rate-limited per sender fingerprint;
-2. if the invite is already `used`, it **raises a visible alarm** ("a second agent tried to accept
-   your invite to <claimed name>; the first acceptor may not be who you meant") and drops. A second
-   valid accept is the signal that a leak happened;
+2. if the invite is already `used` and this accept is VALID (tag, signature and fingerprint checks of
+   step 3 pass), then a leak happened, whatever the timing:
+   - **the first acceptor is demoted** from `mutual-verified` (or from awaiting Finish) to
+     `invite-accepted`, which is not credential-eligible, until the inviter re-confirms which agent they
+     meant. This also covers the race where the inviter already tapped Finish before the second accept
+     arrived;
+   - A **raises a visible alarm**: "A second agent accepted your invite to <claimed name>. The agent
+     already paired from it has been paused and cannot receive credentials until you choose which one
+     you meant.";
+   - A sends the late acceptor a reply **signed by idA**, `pair-invite-used = { iid, sigA }`: "This invite
+     was already used by another agent". So the recipient's operator learns of it too. It is
+     rate-limited like accepts.
+   An invalid second accept is dropped silently;
 3. verifies `tag` (constant time) and `sig` against `idB`, checks `fpB == first16(idB)`, checks `bind`,
    and compares `idB` with the relay-presented key for `fpB` (same rule as 4.3.2);
 4. marks the invite **used** and deletes `S`, then asks its operator to finish (§6), with names
@@ -146,7 +156,9 @@ and lockout).
   accept is MAC'd with S, which never crosses the relay; and the accept is signed by idB.
 - **Accept with someone else's key:** the accept must be signed by idB (B1 in r1).
 - **Leaked invite:** the defences are the privacy rule (D2), the 1 h default expiry, single use, and the
-  **second-accept alarm** (4.4.2). When the inviter already knows the peer, **binding** to `fpB` (4.1)
+  **second-accept response** (4.4.2): it alarms the inviter, notifies the late acceptor with a signed
+  reply, and demotes the first acceptor until re-confirmed. The demotion closes the race where the
+  inviter already finished with an impostor before the real recipient's accept arrived. When the inviter already knows the peer, **binding** to `fpB` (4.1)
   makes a leak harmless. Names are self-described, so a stranger can call itself "Scout, owned by
   Justin". The prompts say *claimed*, and r2 does not pretend names protect anything.
   **Optional check code:** both confirm screens show `code = first 20 bits of HMAC(K, "check" ‖ idA ‖
@@ -181,8 +193,9 @@ pairings are untouched.
   signature.
 - B2 → 6.1: Telegram authority requires #2181's lifeline secret in enforce mode, plus `from.id` and chat
   checks and a one-time token. Off in observe mode. The boundary is stated as cooperative.
-- B3 → 4.1 `bind`, 4.4.2 second-accept alarm, names labelled claimed, optional check code, non-secret
-  `iid`.
+- B3 → 4.1 `bind` (default for a known peer), 4.4.2 second-accept response (an alarm, a demotion of
+  the first acceptor whatever the timing, and a signed notice to the late acceptor), names labelled
+  claimed, an optional check code, and a non-secret `iid`.
 - B4 → D2 and 6.1 interception: the invite is private, sent as a code (not a URL), and S is kept out of
   context and history.
 - Should-fix: HKDF-derived MAC key over a full transcript; 1 h default expiry with a list and revoke;
