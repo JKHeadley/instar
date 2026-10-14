@@ -272,6 +272,7 @@ export async function defaultLiveMappers(file: string): Promise<number | null> {
       }
       return count;
     } catch {
+      // @silent-fallback-ok — /proc unreadable: "cannot tell" → the caller KEEPS.
       return null;
     }
   }
@@ -368,6 +369,8 @@ export class ClaudeBinaryRetainer {
       realPath = fs.realpathSync(located);
       srcStat = fs.statSync(realPath);
     } catch (err) {
+      // @silent-fallback-ok — NOT silent: the resolution carries a named reason
+      // and the status route exposes it; the session still launches.
       return fallback('source-unreadable', `${located}: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (!srcStat.isFile()) return fallback('not-a-file', realPath, realPath);
@@ -545,7 +548,7 @@ export class ClaudeBinaryRetainer {
         lastUsedMs = fs.statSync(path.join(versionDir, LAST_USED_MARKER)).mtimeMs;
       } catch {
         // @silent-fallback-ok — no marker: fall back to the directory's own mtime.
-        try { lastUsedMs = fs.statSync(versionDir).mtimeMs; } catch { lastUsedMs = 0; }
+        try { lastUsedMs = fs.statSync(versionDir).mtimeMs; } catch { lastUsedMs = 0; /* @silent-fallback-ok — unstat-able dir reads as old; the mapper gate still protects it */ }
       }
       if (now - lastUsedMs < this.pruneGraceMs) { result.keptRecent.push(entry.key); continue; }
       if (result.removed.length >= PRUNE_MAX_REMOVALS_PER_PASS) break;

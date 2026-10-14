@@ -67,6 +67,7 @@ No new static heuristic at a competing-signals decision point. Prune is a safety
 - **Double-fire:** none. One retainer per SessionManager; prune is single-flight and throttled to once per hour per process.
 - **Races:** two processes (e.g. two agents sharing a configured `dir`) copying the same version concurrently are reconciled by `link()` + EEXIST — one copy wins, the other's tmp is discarded; nothing is ever replaced. Prune vs spawn: see §2.
 - **Feedback loops:** none. Prune deletes only what resolve created; resolve never reads prune state.
+- **Existing tests that pin the launch argv byte-for-byte** against the configured claude path (`tests/unit/headless-spawn-reroute.test.ts`) now opt out of the retained-copy indirection they do not test (`retainedClaudeBinary: { enabled: false }`); the indirection has its own wiring tests. The delivery-completeness parity test tracks the new CLAUDE.md section.
 - **Subscription-pool account swaps / `--resume` / configHome:** untouched; they change the session's HOME and args, not the binary path.
 - **SourceTreeGuard / SafeFsExecutor:** the only deletions (prune's `rm -r` of a version dir, the tmp-file unlink) go through `SafeFsExecutor`; the default dir is under the agent's gitignored `.instar/state`, which the guard already permits for sibling stores.
 

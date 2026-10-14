@@ -9554,7 +9554,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // ── Retained Claude Code executable (CMT-798) ──────────────────────────
   // Registry-First read: which claude binary do my sessions launch from, is
-  // the retainer on, did the last resolution fall back (and why), what
+  // the retainer on, did the last resolution use the original path (and why), what
   // versions are retained, what did the last prune do. Pure read; the POST
   // runs one prune pass (never removes a version a live process maps).
   // 503 only when the SessionManager in use predates the feature (a mock).
@@ -9567,6 +9567,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(sm.claudeBinaryStatus());
     } catch (err) {
+      // @silent-fallback-ok — surfaced as an honest 500 with the error detail, never swallowed.
       res.status(500).json({ error: 'claude-binary status unavailable', detail: err instanceof Error ? err.message : String(err) });
     }
   });

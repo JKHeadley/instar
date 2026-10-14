@@ -36,7 +36,7 @@ At the moment a Claude Code session is about to start, the agent now looks at th
 
 ## What ships when
 
-One PR. Sessions started before this lands still map their old unlinked program; they only move onto a saved copy when they are restarted (the desk schedules those restarts at safe points; this change never restarts anything by itself).
+One PR, including the test-suite adjustments that keep the full suite green (a launch-argv test that pins the configured path opts out of the new indirection; the CLAUDE.md parity test tracks the new section). Sessions started before this lands still map their old unlinked program; they only move onto a saved copy when they are restarted (the desk schedules those restarts at safe points; this change never restarts anything by itself).
 
 ## What you actually need to decide
 
