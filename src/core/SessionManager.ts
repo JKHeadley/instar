@@ -107,6 +107,7 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { ClaudeBinaryRetainer, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import {
   InboundDeliveryStore,
@@ -1010,10 +1011,30 @@ export class SessionManager extends EventEmitter {
    *  present, else `<projectDir>/.instar`). */
   private vaultStateDir: string;
 
+  /**
+   * Per-version retained copy of the Claude Code executable (CMT-798). Every
+   * claude-code session launches from `<state>/claude-bin/<version>/claude`
+   * instead of the mutable npm path, so a Claude Code update can no longer
+   * unlink a live session's executable (the macOS data.kalloc.1024 kernel
+   * leak — see ClaudeBinaryRetainer). Default ON; `sessions.retainedClaudeBinary`
+   * is the off switch. Construction is side-effect free; the first copy
+   * happens at the first claude-code spawn.
+   */
+  private readonly claudeBinaryRetainer: ClaudeBinaryRetainer;
+  private lastClaudeBinaryPruneAt = 0;
+  private static readonly CLAUDE_BINARY_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
   constructor(config: SessionManagerConfig, state: StateManager, opts: SessionManagerOptions = {}) {
     super();
     this.config = config;
     this.state = state;
+    this.claudeBinaryRetainer = new ClaudeBinaryRetainer({
+      dir: config.retainedClaudeBinary?.dir || ClaudeBinaryRetainer.defaultDir(config.projectDir),
+      enabled: config.retainedClaudeBinary?.enabled !== false,
+      ...(typeof config.retainedClaudeBinary?.pruneGraceMs === 'number'
+        ? { pruneGraceMs: config.retainedClaudeBinary.pruneGraceMs }
+        : {}),
+    });
     this.stageBActivation = opts.stageBActivation ?? {
       configured: null, pendingActivation: false, active: false,
       reason: 'unconfigured-dark', artifactDigest: null,
@@ -3380,15 +3401,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // MISSED (round-9 adversarial): a grok-labelled headless spawn resolved to
     // `claudePath`, i.e. the CLAUDE binary, and only an unrelated cwd gate
     // masked it.
-    const headlessBinaryPath = resolveFrameworkBinaryPath({
+    const headlessConfiguredBinary = resolveFrameworkBinaryPath({
       framework: headlessFramework,
       frameworkBinaryPaths: this.config.frameworkBinaryPaths,
       claudePath: this.config.claudePath,
       configuredFramework: this.config.framework,
     });
-    if (!headlessBinaryPath) {
+    if (!headlessConfiguredBinary) {
       throw new Error(`No binary path available for framework "${headlessFramework}"`);
     }
+    // CMT-798: launch claude-code from its retained per-version copy.
+    const headlessBinaryPath = this.resolveLaunchBinary(headlessFramework, headlessConfiguredBinary);
 
     // Codex rate-limit model-swap (dark by default): when the agent's main
     // codex model has exhausted its weekly window, launch on a configured
@@ -5356,6 +5379,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** Privacy-safe lifecycle counts for authenticated diagnostics. */
+  /**
+   * The ONE place a claude-code launch binary is chosen (CMT-798). Other
+   * frameworks pass through untouched. On a retained hit the path returned is
+   * the per-version copy; on any retainer fallback it is `binaryPath` itself
+   * (the retainer already logged why, loudly). Also schedules a throttled,
+   * non-blocking prune of unused old versions — prune never deletes a version
+   * a live process maps.
+   */
+  resolveLaunchBinary(framework: IntelligenceFramework, binaryPath: string): string {
+    if (framework !== 'claude-code') return binaryPath;
+    const resolution = this.claudeBinaryRetainer.resolve(binaryPath);
+    if (resolution.source === 'retained') {
+      const now = Date.now();
+      if (now - this.lastClaudeBinaryPruneAt >= SessionManager.CLAUDE_BINARY_PRUNE_INTERVAL_MS) {
+        this.lastClaudeBinaryPruneAt = now;
+        void this.claudeBinaryRetainer.prune().catch((err) => {
+          console.warn(`[SessionManager] retained Claude binary prune failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    }
+    return resolution.path;
+  }
+
+  /** Registry-First read for `GET /sessions/claude-binary`. */
+  claudeBinaryStatus(): RetainerStatus {
+    return this.claudeBinaryRetainer.status();
+  }
+
+  /** Run one prune pass now (the route's POST lever + tests). */
+  pruneRetainedClaudeBinaries() {
+    return this.claudeBinaryRetainer.prune();
+  }
+
   inboundDeliveryStatus(): (ReturnType<InboundDeliveryStore['status']> & {
     observer: ReturnType<CodexDeliveryObserver['status']> | null;
     activation: StageBActivationStatus;
@@ -6098,15 +6154,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
       envFramework: frameworkFromEnv(),
     });
     // Shared impersonation fence (spec §2.0) — see resolveFrameworkBinaryPath.
-    const binaryPath = resolveFrameworkBinaryPath({
+    const configuredBinaryPath = resolveFrameworkBinaryPath({
       framework,
       frameworkBinaryPaths: this.config.frameworkBinaryPaths,
       claudePath: this.config.claudePath,
       configuredFramework: this.config.framework,
     });
-    if (!binaryPath) {
+    if (!configuredBinaryPath) {
       throw new Error(`No binary path available for framework "${framework}"`);
     }
+    // CMT-798: launch claude-code from its retained per-version copy.
+    const binaryPath = this.resolveLaunchBinary(framework, configuredBinaryPath);
     // Per-call defaultModel override (used by /local-model to set Codex's
     // local model id) wins over config defaults. Config defaults survive
     // for cloud-Codex topics that haven't been customized.
@@ -6869,7 +6927,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
             'spawning another framework\'s binary with Claude flags.',
         );
       }
-      tmuxArgs.push(triageBinary);
+      // CMT-798: triage panes are claude-code sessions too — retained copy.
+      tmuxArgs.push(this.resolveLaunchBinary('claude-code', triageBinary));
 
       // Scoped permissions: allowedTools + permissionMode (NOT --dangerously-skip-permissions)
       if (options.allowedTools.length > 0) {

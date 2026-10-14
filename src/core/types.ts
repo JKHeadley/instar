@@ -190,6 +190,16 @@ export interface SessionManagerConfig {
    * dead-pane checks, restoring the previous behaviour. Absent = on.
    */
   resumeFollowsAccount?: { enabled?: boolean };
+  /**
+   * Retained per-version Claude Code executable (CMT-798). claude-code
+   * sessions launch from `<dir>/<version>/claude` (a one-time copy per
+   * version) instead of the mutable npm path, so a Claude Code update can no
+   * longer unlink a live session's executable and leak kernel memory on
+   * macOS. Absent = ON. `dir` defaults to `<projectDir>/.instar/state/claude-bin`;
+   * `pruneGraceMs` (default 6 h) is how long an unused old version must sit
+   * idle before it is a prune candidate (prune never removes a mapped one).
+   */
+  retainedClaudeBinary?: { enabled?: boolean; dir?: string; pruneGraceMs?: number };
   /** Path to the framework CLI binary for the agent's primary framework.
    *  Misnamed for v0.x compat — actually holds whichever framework binary
    *  was selected (claude OR codex OR …). New code should consult

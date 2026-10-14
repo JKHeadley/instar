@@ -11219,6 +11219,16 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
     }
+    // CMT-798 retained per-version Claude executable — Agent Awareness backfill
+    // for existing agents (Migration Parity). Mirrors the bullet in
+    // generateClaudeMd(); content-sniffed on a distinctive stable phrase so it
+    // is idempotent and never rewrites operator-customized text.
+    if (!content.includes('retained per-version copy of the executable (CMT-798)')) {
+      content += '\n' + `- **Claude sessions launch from a retained per-version copy of the executable (CMT-798):** a Claude Code npm update replaces \`claude.exe\` in place, which leaves every already-running session on an UNLINKED executable; on macOS each EndpointSecurity path lookup on it then leaks ~1 KiB of kernel memory (\`data.kalloc.1024\` — ~163 MiB/h measured on a Mac Studio that later panicked at 20 GiB in that zone). So every claude-code session now launches from \`<state>/claude-bin/<version>/claude\`, a one-time copy per version that an update can never unlink; unused old versions are pruned only once no live process maps them. Registry First: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions/claude-binary\` → \`{ enabled, dir, current, lastResolution, lastError, retained[], lastPrune }\` — a \`lastResolution.source: "original"\` with a \`reason\` means the copy FAILED and that session launched from the mutable path (fix the dir; never ignore it). Off switch: \`sessions.retainedClaudeBinary.enabled: false\` (applies to sessions spawned after the next server restart). Sessions started before this shipped still map their old unlinked executable; only restarting such a session moves it onto a retained copy. When the user asks "why is kernel memory / data.kalloc.1024 growing?" or "which claude binary are my sessions running?" → read the route first.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added retained Claude executable (CMT-798) awareness bullet');
+    }
+
     if (!content.includes('Command-watchdog attribution:')) {
       content += `\n- **Command-watchdog attribution:** \`SessionWatchdog\` never interrupts known bounded external waiters (including safe-merge and GitHub watch commands). If it successfully interrupts a genuinely stuck command, its audit entry names \`principal: session-watchdog\` and \`operatorInitiated: false\`; Codex's generic "aborted by user" text is transport wording, not proof the operator acted. The watchdog makes one process-local, liveness-gated continuation attempt so the task usually resumes without another user message; delivery is not durable across server restart.\n`;
       patched = true;
@@ -12781,6 +12791,20 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     if (migrateTelegramOriginDisplay(config)) {
       patched = true;
       result.upgraded.push('config.json: added missing Telegram origin display, outage-notice and forward-to-holder defaults');
+    }
+
+    // CMT-798 retained per-version Claude executable: surface the off switch.
+    // The code default is ON (absent = on); this only writes the explicit
+    // block when `sessions.retainedClaudeBinary` is missing, so an operator's
+    // `enabled: false` (or a custom dir) is never overwritten. Idempotent.
+    {
+      const sessions: Record<string, unknown> = (config.sessions && typeof config.sessions === 'object') ? config.sessions as Record<string, unknown> : {};
+      if (!sessions.retainedClaudeBinary || typeof sessions.retainedClaudeBinary !== 'object') {
+        sessions.retainedClaudeBinary = { enabled: true };
+        config.sessions = sessions;
+        patched = true;
+        result.upgraded.push('config.json: added sessions.retainedClaudeBinary default (enabled: true)');
+      }
     }
 
     // a2a-single-agent-identity §1.2: the FLEET-LIVE adoption kill switch. Add the missing

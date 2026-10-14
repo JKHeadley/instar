@@ -9552,6 +9552,37 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // ── Retained Claude Code executable (CMT-798) ──────────────────────────
+  // Registry-First read: which claude binary do my sessions launch from, is
+  // the retainer on, did the last resolution fall back (and why), what
+  // versions are retained, what did the last prune do. Pure read; the POST
+  // runs one prune pass (never removes a version a live process maps).
+  // 503 only when the SessionManager in use predates the feature (a mock).
+  router.get('/sessions/claude-binary', (_req, res) => {
+    const sm = ctx.sessionManager as { claudeBinaryStatus?: () => unknown };
+    if (typeof sm.claudeBinaryStatus !== 'function') {
+      res.status(503).json({ error: 'claude-binary-retainer-unavailable', detail: 'SessionManager does not expose claudeBinaryStatus()' });
+      return;
+    }
+    try {
+      res.json(sm.claudeBinaryStatus());
+    } catch (err) {
+      res.status(500).json({ error: 'claude-binary status unavailable', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+  router.post('/sessions/claude-binary/prune', async (_req, res) => {
+    const sm = ctx.sessionManager as { pruneRetainedClaudeBinaries?: () => Promise<unknown> };
+    if (typeof sm.pruneRetainedClaudeBinaries !== 'function') {
+      res.status(503).json({ error: 'claude-binary-retainer-unavailable', detail: 'SessionManager does not expose pruneRetainedClaudeBinaries()' });
+      return;
+    }
+    try {
+      res.json(await sm.pruneRetainedClaudeBinaries());
+    } catch (err) {
+      res.status(500).json({ error: 'claude-binary prune failed', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/sessions/inbound-delivery-status', (_req, res) => {
     const status = ctx.sessionManager.inboundDeliveryStatus();
     res.json({

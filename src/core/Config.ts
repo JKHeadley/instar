@@ -1083,6 +1083,11 @@ export function loadConfig(projectDir?: string): InstarConfig {
     typeof fileConfig.sessions.resumeFollowsAccount === 'object'
       ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }
       : {}),
+    // CMT-798: retained per-version Claude executable (off switch + dir + grace).
+    ...(fileConfig.sessions?.retainedClaudeBinary &&
+    typeof fileConfig.sessions.retainedClaudeBinary === 'object'
+      ? { retainedClaudeBinary: fileConfig.sessions.retainedClaudeBinary as { enabled?: boolean; dir?: string; pruneGraceMs?: number } }
+      : {}),
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
     // Per-component framework routing (docs/specs/per-component-framework-routing.md).
     // LOAD-PATH FIX (2026-06-06): this field was documented + consumed
