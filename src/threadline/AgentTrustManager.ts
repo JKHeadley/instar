@@ -50,7 +50,17 @@ export type AgentTrustSource =
  * outbound CredentialShareGate enforces the encrypted-path half). It cannot be reached
  * locally (only an inbound replicated record sets it), so it can never be self-granted.
  */
-export type PairingState = 'pending-verification' | 'mutual-verified' | 'verification-failed' | 'identity-verified';
+export type PairingState =
+  | 'pending-verification'
+  | 'mutual-verified'
+  | 'verification-failed'
+  | 'identity-verified'
+  /**
+   * Invite flow (docs/specs/a2a-pairing-invite-link.md §4.3–4.4): this side approved an
+   * invite and pinned the peer's key, but the pairing is not finished (or was paused by a
+   * second accept). NOT credential-eligible.
+   */
+  | 'invite-accepted';
 
 export interface AgentTrustHistory {
   messagesReceived: number;
@@ -776,6 +786,105 @@ export class AgentTrustManager {
    * discards the pending SAS store. NOT used for a missing-receipt timeout
    * (that simply stays 'pending-verification').
    */
+  // ── Invite flow (docs/specs/a2a-pairing-invite-link.md) ─────────────────────
+
+  /**
+   * B side, after its operator approved an invite: pin the inviter's identity key in state
+   * `invite-accepted`. Not credential-eligible until the inviter finishes (markInviteVerified).
+   * Never downgrades an existing verified pairing for the SAME key.
+   */
+  recordInviteAccepted(peerFp: string, args: { peerIdentityPub: string; displayName?: string; ownFp?: string }): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const key = String(args.peerIdentityPub || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(fp) || !/^[0-9a-f]{64}$/.test(key) || key.slice(0, 32) !== fp) return false;
+    if (args.ownFp && fp === args.ownFp.toLowerCase()) return false; // self-pair
+    const profile = this.getOrCreateProfileByFingerprint(fp, args.displayName);
+    if ((profile.pairingState === 'mutual-verified' || profile.pairingState === 'identity-verified') && profile.peerIdentityPub === key) {
+      return true; // already verified for this exact key
+    }
+    const now = new Date().toISOString();
+    profile.pairingState = 'invite-accepted';
+    profile.peerIdentityPub = key;
+    profile.pairingId = undefined;
+    profile.sasFingerprint = undefined;
+    profile.verifiedAt = undefined;
+    profile.peerAcked = undefined;
+    profile.pairingRecordedAt = now;
+    if (profile.source === 'mutual-verified') profile.source = 'setup-default';
+    profile.updatedAt = now;
+    this.save();
+    return true;
+  }
+
+  /**
+   * Either side, when the invite flow completes (A on its operator's Finish; B on a valid
+   * signed finish): pin the key and mark `mutual-verified`. Same write order and effects as
+   * markMutualVerified (record first, level raised to trusted, source LAST, replication).
+   */
+  markInviteVerified(peerFp: string, args: { peerIdentityPub: string; displayName?: string; ownFp?: string; via: string }): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const key = String(args.peerIdentityPub || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(fp) || !/^[0-9a-f]{64}$/.test(key) || key.slice(0, 32) !== fp) return false;
+    if (args.ownFp && fp === args.ownFp.toLowerCase()) return false;
+    const profile = this.getOrCreateProfileByFingerprint(fp, args.displayName);
+    // A pinned key may only be replaced by re-pairing: never silently swap keys here.
+    if (profile.peerIdentityPub && profile.peerIdentityPub !== key && profile.pairingState !== 'verification-failed' && profile.pairingState !== undefined) {
+      return false;
+    }
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = 'mutual-verified';
+    profile.peerIdentityPub = key;
+    profile.pairingId = undefined;
+    profile.sasFingerprint = undefined;
+    profile.verifiedAt = now;
+    if (this.compareTrust(profile.level, 'trusted') < 0) profile.level = 'trusted';
+    profile.allowedOperations = [...DEFAULT_ALLOWED_OPS[profile.level]];
+    profile.source = 'mutual-verified'; // LAST: the credential-share authorization bit
+    profile.updatedAt = now;
+    this.save();
+    if (this.pairingReplication) {
+      try {
+        this.pairingReplication.emitVerified({ peerFp: fp, peerIdentityPub: key, verifiedAt: now, verifiedOnMachine: this.machineId });
+      } catch { /* replication failure never breaks the local trust write */ }
+    }
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'mutual-verified',
+      reason: `Invite pairing completed (${args.via})`, userInitiated: true,
+    });
+    if (this.onTrustChange) {
+      this.onTrustChange({ agent: profile.agent, previousLevel, newLevel: profile.level, reason: 'Invite pairing completed', userInitiated: true });
+    }
+    return true;
+  }
+
+  /**
+   * A second valid accept arrived for an invite this agent already used (spec §4.4.2): pause
+   * the first acceptor. Back to `invite-accepted`, credential-ineligible, until the operator
+   * re-confirms. Applies whatever the timing, including after Finish. Revokes any replicated
+   * copy so other machines stop honouring it too.
+   */
+  demoteInvitePairing(peerFp: string, reason: string): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const profile = this.getProfileByFingerprint(fp);
+    if (!profile || !profile.pairingState) return false;
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = 'invite-accepted';
+    profile.verifiedAt = undefined;
+    if (profile.source === 'mutual-verified') profile.source = 'setup-default';
+    profile.updatedAt = now;
+    this.save();
+    if (this.pairingReplication) {
+      try { this.pairingReplication.emitRevoke(fp, now); } catch { /* best effort */ }
+    }
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'setup-default',
+      reason: `Invite pairing paused: ${reason}`, userInitiated: false,
+    });
+    return true;
+  }
+
   markVerificationFailed(peerFp: string, reason: string): boolean {
     const profile = this.getProfileByFingerprint(peerFp);
     if (!profile) return false;
