@@ -33,4 +33,6 @@ Pairing with another agent no longer means reading and typing 12 words. Your age
 
 - Unit: `PairingInvite.test.ts` (15), `PairingInviteStore.test.ts` (7), `invite-trust-states.test.ts` (8), `PairingInviteFlow.test.ts` (15).
 - E2E on the real bootstrap + in-process relay: `tests/e2e/threadline/pairing-invite-production-path.test.ts`, from invite to a credential each way.
-- Deliberate breakages in a scratch tree: 24 security checks removed one at a time, and each fails a test.
+- More tests: routes, Telegram and dashboard (`tests/integration/pairing-invite-telegram-routes.test.ts`, `tests/unit/pairing-invite-never-persisted.test.ts`, `tests/unit/dashboard-pairing-panel.test.ts`), and failure paths on the production path (`tests/e2e/threadline/pairing-invite-failure-paths.test.ts`).
+- Deliberate breakages in a scratch tree: 55 checks removed one at a time across the build (4, 5, 4, 9, 2, 7, 10, 8, 3, 3 by step), and each fails a test.
+- A person's walkthrough of the whole flow through the real dashboards on two agents built from this code, including a reload partway through. It found four UX defects, all fixed before release.
