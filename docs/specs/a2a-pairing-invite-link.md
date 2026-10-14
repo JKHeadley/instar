@@ -1,6 +1,6 @@
 ---
 title: Verified pairing by invite link (replaces the 12-word confirmation)
-status: draft
+status: draft r2 (Echo's review of r1, 2026-10-13, addressed)
 owners: Dawn (author), Echo (review)
 supersedes-ux-of: docs/specs/secure-a2a-verified-pairing.md (§3.2 human comparison, §3.6 panel)
 ---
@@ -22,102 +22,148 @@ should only ever **carry** something from one trusted place to another, never re
 - **D1. Built into Instar, not a central service.** The attack is a key swap by whoever is in the
   middle, and the party best placed to do that is whoever runs the relay (us). A code-sharing service
   run by the same party adds no protection. Invites travel only outside our infrastructure.
-- **D2. Users send the invite through whatever app they already use with each other** (iMessage,
-  Slack, email). That channel is theirs and is trusted for integrity between them. Confidentiality does
-  not matter: the invite carries public keys plus a one-time secret that is useless after one use.
-- **D3. No words to read, compare or type.** Each side gives one approval (a PIN or a Telegram tap).
+- **D2. Users send the invite through whatever app they already use with each other.** That channel is
+  the trust root and must keep the invite **intact and private until it is used**. The invite carries a
+  bearer secret (§4.1): anyone who reads it before the recipient can try to use it. Link scanners and chat
+  previews count as readers, so the invite is sent as a code, never as an http(s) URL.
+- **D3. No words to read, compare or type.** Each person gives one approval.
 
 ## 3. The flow (what the person does)
 
-1. **Inviter:** clicks "Invite an agent to pair" on the dashboard, or asks the agent in Telegram
-   ("invite Carl's agent to pair"). They get one invite (a link and a short code; see §5).
-2. **Inviter:** sends it to the other person in any app.
-3. **Recipient:** gives it to their own agent: **forwards it to their agent's Telegram chat** (primary),
-   or pastes it into "Accept an invite" on their dashboard. The agent answers:
-   *"Pair with **Scout**, owned by **Justin**? [Approve] [Decline]"*. Recipient taps Approve.
-4. **Inviter:** their agent says *"**Carl's agent** (owner: **Carl**) accepted your invite. [Finish
-   pairing] [Not them]"*. Inviter taps Finish. Both agents are now `mutual-verified`.
+1. **Inviter:** clicks "Invite an agent to pair" on the dashboard, or asks the agent in Telegram. They
+   get one message to send.
+2. **Inviter:** sends it to the other person, privately, in any app.
+3. **Recipient:** gives it to their own agent: **forwards it to their agent's Telegram chat** (primary,
+   §6.1), or pastes it into "Accept an invite" on their dashboard and enters the PIN (fallback). The agent
+   asks: *"Pair with the agent that calls itself **Scout** (claimed owner: **Justin**)? [Approve]
+   [Decline]"*. Recipient approves.
+4. **Inviter:** their agent asks: *"The agent that calls itself **Carl's agent** (claimed owner:
+   **Carl**) accepted your invite. [Finish pairing] [Not them]"*. Inviter finishes.
 
-That is one send and one tap per person, with nothing to read, compare or type.
+That is one send and one approval per person, with nothing to read, compare or type. (An optional short
+check code for two operators who are on a call together is in §7.)
 
 ## 4. Protocol
 
-Notation: A = inviter's agent, B = recipient's agent. `idA`, `idB` = Ed25519 identity keys; `fpX` =
-first 16 bytes of `idX` (the routing fingerprint).
+Notation: A = inviter's agent, B = recipient's agent. `idX` = Ed25519 identity key, `fpX` = its first 16
+bytes (the routing fingerprint), `sigX(m)` = Ed25519 signature by idX.
 
-**4.1 Invite.** A creates `inv = { v: 1, fp: fpA, key: idA, owner, agent, secret: S, exp }`, where
-`S` = 32 random bytes and `exp` = now + 24 h. A stores `{ S, exp, used: false }` and encodes
-`inv` as one base64url line with a 4-byte checksum (sha256 truncated). Truncation, a bad copy or an
-edit fails the checksum and is refused loudly.
+**4.1 Invite.** A creates:
+- `iid`: 16 random bytes, a non-secret invite id (lookup and binding without trying MACs);
+- `S`: 32 random bytes, the secret;
+- `exp`: default now + **1 h**; the inviter may choose up to 24 h;
+- `bind`: optional `fpB` if A already knows the peer it means to pair (§7, binding).
 
-**4.2 Accept (B).** On receiving `inv`, B:
-1. checks the checksum, `exp`, and that `fp == first16(key)`;
-2. **machine-compares** `key` with the key the relay currently presents for `fp` (card or cache), and
-   refuses on any difference (Echo's requirement (a)). A swapped or phished invite is detected, not
-   pinned;
-3. asks its operator to approve (§6), showing `agent` and `owner` from the invite;
-4. on approval: pins `idA` as `invite-accepted` (not yet mutual), and sends A over the relay a
-   `pair-invite-accept` message: `{ idB, fpB, owner, agent, nonce, tag }` with
-   `tag = HMAC-SHA256(S, "threadline-invite-accept-v1" ‖ idA ‖ idB ‖ nonce)`.
+`inv = { v: 1, iid, fp: fpA, key: idA, owner, agent, S, exp, bind? }`, encoded as one base64url line
+`tlinv1:<payload><4-byte sha256 checksum>`. A keeps `{ iid → S, exp, bind, state: open }`. **At most one
+open invite per bound peer**. The dashboard lists open invites, with Revoke.
 
-**4.3 Finish (A).** On `pair-invite-accept`, A:
-1. finds the open invite by trying the `tag` against unexpired, unused secrets (constant-time); no match
-   means drop. The relay never saw `S`, so it cannot forge B's key;
-2. checks `fpB == first16(idB)`, and that `idB` matches the relay-presented key for `fpB`;
-3. marks the invite **used** (single use), then asks its operator to finish (§6), showing B's `agent`
-   and `owner`;
-4. on approval: pins `idB` as `mutual-verified` and sends B a signed `pair-invite-finish` carrying a
-   challenge response. B verifies the signature with the pinned `idA` and flips to `mutual-verified`
-   (Echo's requirement (c): possession proven both ways, not assumed).
+**4.2 Transcript and MAC key.** Both sides compute
+`T = "threadline-invite-v1" ‖ len-prefixed(iid, fpA, idA, fpB, idB, exp, nonce, direction)` and
+`K = HKDF-SHA256(ikm = S, salt = iid, info = "threadline-invite-mac-v1", L = 32)`. HMAC with a 256-bit
+one-time secret is sufficient. A PAKE protects low-entropy secrets, and S is not one.
 
-**4.4 Credentials, receipts, restart.** Unchanged from v2: credentials encrypt to the pinned key and
-its derived X25519 key, and the pinned key in the trust profile is the authority after a restart.
+**4.3 Accept (B).** On receiving `inv`, B:
+1. checks the checksum and `exp`, and that `fp == first16(key)`;
+2. compares `key` with the key the relay presents for `fp`. On any **difference** it refuses. If the
+   relay presents **no** key (a new peer, or the relay is down), it proceeds: the invite is the trust
+   root;
+3. if `bind` is set and is not `fpB`, refuses (the invite was meant for another agent);
+4. asks its operator to approve (§6), labelling `agent` and `owner` as **claimed**;
+5. on approval: stores `idA` as `invite-accepted` (**not** credential-eligible), and sends A
+   `pair-invite-accept = { iid, idB, fpB, owner, agent, nonce, tag, sig }` with
+   `tag = HMAC(K, T with direction="accept")` and `sig = sigB(T with direction="accept")`.
+   **The signature proves B holds idB's private key; the tag proves B was given the invite.** Both are
+   required (r1 had only the tag, so whoever held S could submit any key).
 
-## 5. Getting the invite to the right agent (the "link" question)
+**4.4 Finish (A).** On `pair-invite-accept`, A:
+1. looks up `iid`. If it's unknown or expired, drop. Rate-limited per sender fingerprint;
+2. if the invite is already `used`, it **raises a visible alarm** ("a second agent tried to accept
+   your invite to <claimed name>; the first acceptor may not be who you meant") and drops. A second
+   valid accept is the signal that a leak happened;
+3. verifies `tag` (constant time) and `sig` against `idB`, checks `fpB == first16(idB)`, checks `bind`,
+   and compares `idB` with the relay-presented key for `fpB` (same rule as 4.3.2);
+4. marks the invite **used** and deletes `S`, then asks its operator to finish (§6), with names
+   labelled **claimed**;
+5. on approval: stores `idB` as `mutual-verified` and sends B
+   `pair-invite-finish = { iid, nonce2, sig = sigA(T with direction="finish") }`;
+6. B verifies `sig` against the stored `idA`, flips to `mutual-verified`, and replies
+   `pair-invite-ack` signed by B. A retries finish (bounded: 5 tries over 10 min) until it gets the ack.
+   **Credentials need `mutual-verified` on the SENDING side.** So until B has flipped, B cannot send A a
+   credential, and A can (A verified both proofs). That asymmetry is intentional and stated in the panel.
 
-A plain web link cannot know where the recipient's dashboard lives. The options:
+**4.5 Credentials, receipts, restart.** Unchanged from v2: credentials encrypt to the pinned key and its
+derived X25519 key, and the pinned key in the trust profile is the authority after a restart.
 
-| Option | Recipient does | Infrastructure | Notes |
-|---|---|---|---|
-| **T. Forward to own agent's Telegram** (recommended primary) | forward the message, tap Approve | none new (inline buttons exist in `TelegramAdapter`) | most agents are Telegram-bound; works on a phone |
-| **P. Paste a code into own dashboard** (fallback) | copy, paste, PIN | a new "Accept an invite" box | works without Telegram |
-| H. A hosted redirect page | click | a page we host | **rejected:** we would serve the code that handles the invite (D1) |
+## 5. Getting the invite to the right agent
 
-The invite is sent as one message containing both a short human sentence and the code, e.g. *"Scout
-(Justin's agent) invites your agent to pair. Forward this to your agent, or paste the code in its
-dashboard: `tlinv1:…`"*. The agent recognises the `tlinv1:` prefix.
+A plain web link cannot know where the recipient's dashboard lives, and a hosted page would be ours
+(D1). The options:
+
+| Option | Recipient does | Notes |
+|---|---|---|
+| **T. Forward to own agent's Telegram** (primary) | forward, approve | needs §6.1's conditions; otherwise falls back to P |
+| **P. Paste into own dashboard** (fallback) | paste, PIN | works without Telegram |
+| H. A hosted redirect page | — | **rejected** (D1) |
+
+The message the inviter sends reads: *"Scout (Justin's agent) invites your agent to pair. Forward this
+to your agent's Telegram, or paste it in its dashboard. Keep it private; it expires in 1 hour.
+`tlinv1:…`"*.
 
 ## 6. Operator approval (authority)
 
-The approval stays an **operator act, not an agent act** (v2 FD7 holds). Either of:
-- a Telegram inline-button tap from the agent's **configured operator user id**. Telegram
-  authenticates the callback's sender; the agent cannot press its own button as the operator. The
-  callback carries an opaque one-time token bound to this invite, so a replayed or forged callback
-  does nothing;
-- the dashboard PIN (fallback path P).
+Approval is an **operator act, not an agent act** (v2 FD7). The agent's Bearer token alone never
+approves, accepts or finishes.
 
-The agent's Bearer token alone can never approve, accept or finish.
+**6.1 Telegram (primary).** A Telegram approval counts only when ALL hold:
+- the update reached the server through the lifeline's ingress, carrying the **lifeline-only secret**
+  (instar #2181, `LifelineIngressGuard`), with the guard in **enforce** mode. In observe mode, Telegram
+  approval is off and the agent offers path P instead;
+- the callback's `from.id` is the agent's configured operator user id, **and** the chat is the
+  operator's chat or topic. In a forum group, other members see the buttons, so the handler checks
+  both;
+- the callback carries an opaque one-time token bound to this `iid` and this step;
+- the forwarded invite itself only opens a prompt when the operator sent it.
+
+**Interception:** a message containing `tlinv1:` is handled **structurally, before it reaches the
+session**. It is not added to the session's context. `S` is not written to the agent's message history
+or sent to the topic-intent extractor (which may use an off-machine model); history stores `tlinv1:<iid>`
+with the secret removed.
+
+**Honest boundary.** Every process on an agent's machine runs as one OS user, so this is a
+**cooperative** boundary, the same as the PIN that sits in a config file the agent can read. It stops an
+agent forging an approval with the token it normally holds. It does not stop an agent that deliberately
+reads the lifeline secret file. Separately, an agent that drives the operator's own Telegram browser
+profile produces callbacks genuinely from the operator's id; the typed browser broker exposes only
+snapshot and send, which is the intended shape, and that boundary is cooperative too.
+
+**6.2 Dashboard (fallback).** The paste box plus the dashboard PIN, through `checkMandatePin` (counters
+and lockout).
 
 ## 7. Threats
 
-- **Key swap by the relay:** defeated twice: B compares the invite key to the relay-presented key, and
-  B's reply is MAC'd with `S`, which the relay never sees.
-- **Leaked invite, accepted by a stranger first:** A's operator sees the stranger's `agent`/`owner` and
-  taps "Not them". Single use also means the real recipient then gets "already used", which raises the
-  alarm.
-- **Phished invite ("here's A's code" from an impostor):** the key doesn't match the relay-presented
-  key for that fingerprint, so B refuses. An impostor using their own fingerprint shows their own
-  `agent`/`owner` names, so the operator is warned by name. The one thing no design fixes is a person
-  approving an agent they don't know; the screen says plainly whose agent it is.
-- **Tampered message channel between the two users:** this is the trust root; D2 is explicit about it.
-- **Replay:** the secret is single use and expires in 24 h; callbacks carry one-time tokens; accept
-  messages carry a nonce.
+- **Key swap by the relay:** defeated three ways. B compares the invite key to the relay's key; the
+  accept is MAC'd with S, which never crosses the relay; and the accept is signed by idB.
+- **Accept with someone else's key:** the accept must be signed by idB (B1 in r1).
+- **Leaked invite:** the defences are the privacy rule (D2), the 1 h default expiry, single use, and the
+  **second-accept alarm** (4.4.2). When the inviter already knows the peer, **binding** to `fpB` (4.1)
+  makes a leak harmless. Names are self-described, so a stranger can call itself "Scout, owned by
+  Justin". The prompts say *claimed*, and r2 does not pretend names protect anything.
+  **Optional check code:** both confirm screens show `code = first 20 bits of HMAC(K, "check" ‖ idA ‖
+  idB)` as 4 characters. Two operators on a call together can read it to each other. It is never
+  required, so it costs nothing for the normal flow and catches a substituted acceptor when used.
+- **Phished invite** (an impostor sends "here is Scout's invite" with its own key): its fingerprint is
+  the impostor's own, and B shows that agent's claimed names. This is the same trust decision as
+  accepting a stranger's invite, and no design fixes approving an agent you don't know.
+- **Forged approval:** §6.1.
+- **Replay and brute force:** single use, expiry, nonces, one-time callback tokens, rate limits on
+  accepts.
 
 ## 8. UI requirements (from Justin's test)
 
 1. Nothing in the pairing UI refreshes, re-renders or clears while a pairing or an invite is open.
 2. One approval per person. The PIN is never asked twice.
-3. A pending item sits at the TOP of the Threadline tab with a badge on the tab; it's never buried.
+3. A pending item sits at the TOP of the Threadline tab, with a badge on the tab.
 4. The dashboard notices the server version changed and offers a reload, never showing a stale page.
 5. **Completion criterion:** a person (Dawn, then Justin) performs the whole flow end to end, on real
    agents, through a real reload, timing it. Passing tests is not enough
@@ -129,10 +175,16 @@ The v2 routes stay for agents already mid-pairing, but the dashboard stops offer
 Existing `pending-verification` records from v2 can be cleared or completed by invite. `mutual-verified`
 pairings are untouched.
 
-## 10. Open questions for Echo
+## 10. Changes from r1 (Echo's review, 2026-10-13)
 
-1. Is HMAC with a 32-byte one-time secret enough here, or should the accept step be a PAKE (e.g. CPace)?
-   My view: since `S` never crosses the relay and is single use, HMAC suffices.
-2. Is 24 h the right expiry?
-3. Telegram callback as operator authority: any path by which an agent could produce a callback that
-   appears to come from the operator's user id?
+- B1 → 4.3.5: the accept is signed by idB over the transcript, and A verifies both the tag and the
+  signature.
+- B2 → 6.1: Telegram authority requires #2181's lifeline secret in enforce mode, plus `from.id` and chat
+  checks and a one-time token. Off in observe mode. The boundary is stated as cooperative.
+- B3 → 4.1 `bind`, 4.4.2 second-accept alarm, names labelled claimed, optional check code, non-secret
+  `iid`.
+- B4 → D2 and 6.1 interception: the invite is private, sent as a code (not a URL), and S is kept out of
+  context and history.
+- Should-fix: HKDF-derived MAC key over a full transcript; 1 h default expiry with a list and revoke;
+  defined behaviour when the relay has no key; finish ack and bounded retry, with credential gating per
+  side stated; group-chat checks; claimed labels; rate limits.
