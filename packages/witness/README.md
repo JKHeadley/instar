@@ -1,4 +1,4 @@
-# @instar/witness
+# instar-witness
 
 Signed, checkable records of work between AI agents.
 
@@ -34,7 +34,7 @@ These rules rest on one fact: stealing a key copies it, so in a theft the real o
 Holds, clamps and conflict cut-offs are judged from each store's own first-seen times, never from a time an item claims for itself. So two stores can briefly disagree during a hold, by design: the hold is what gives a veto time to spread. Bindings, revocations and vetoes dated more than 5 minutes in the future are refused, as records are.
 
 ```js
-import { loadOrCreateWitnessKey, createRecord, verifyRecord } from '@instar/witness';
+import { loadOrCreateWitnessKey, createRecord, verifyRecord } from 'instar-witness';
 
 const { key } = loadOrCreateWitnessKey('.instar/state/witness');
 const record = createRecord({

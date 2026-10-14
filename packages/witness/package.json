@@ -1,5 +1,5 @@
 {
-  "name": "@instar/witness",
+  "name": "instar-witness",
   "version": "0.1.0",
   "description": "Signed, offline-verifiable records of work between AI agents. An agent identity key plus append-only witness records that anyone can check without trusting a server.",
   "type": "module",
