@@ -1070,6 +1070,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     projectDir: resolvedProjectDir,
     maxSessions: fileConfig.sessions?.maxSessions ?? DEFAULT_MAX_SESSIONS,
     protectedSessions: fileConfig.sessions?.protectedSessions || [`${projectName}-server`],
+    standingSessions: normalizeStandingSessions(fileConfig.sessions?.standingSessions),
     completionPatterns: fileConfig.sessions?.completionPatterns || [
       'has been automatically paused',
       'Session ended',
@@ -1268,4 +1269,10 @@ export function ensureStateDir(stateDir: string): void {
   for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true });
   }
+}
+
+/** `sessions.standingSessions` — keep only non-empty strings; anything else ⇒ []. */
+export function normalizeStandingSessions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is string => typeof e === 'string' && e.trim().length > 0).map(e => e.trim());
 }

@@ -355,6 +355,81 @@ export class SessionRefresh {
   }
 
   /**
+   * A Telegram-bound session whose process is GONE (reaped, crashed) while the
+   * topic still maps to it. `refreshSession` refuses it (`session_not_found`:
+   * there is nothing to kill), and inbound-only revival needs a user message —
+   * so a coordinator topic that gets few user messages stayed dead (2026-10-14,
+   * the 2.0 desk). Eligible only when ALL hold: the name resolves to a topic,
+   * the topic is not mapped to some OTHER session (never a duplicate beside a
+   * newer session), no running state record carries the name, and tmux has no
+   * live session by that name. Returns the topic id, or null.
+   */
+  deadBoundTopic(sessionName: string): number | null {
+    const tg = this.deps.telegram;
+    if (!tg) return null;
+    let topicId = tg.getTopicForSession(sessionName);
+    if (topicId === null) topicId = tg.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+    if (topicId === null) return null;
+    // A topic now mapped to a DIFFERENT session is never revived under the old
+    // name (that would create a duplicate). An unmapped topic (in-memory miss on a
+    // --no-telegram server) is fine: the disk binding named this session.
+    const current = tg.getSessionForTopic(topicId);
+    if (current && current !== sessionName) return null;
+    const running = this.deps.state.listSessions({ status: 'running' })
+      .some(s => s.tmuxSession === sessionName);
+    if (running) return null;
+    if (this.deps.sessionManager.isSessionAlive(sessionName)) return null;
+    return topicId;
+  }
+
+  /**
+   * Respawn a dead-but-still-mapped topic session (see `deadBoundTopic`) through
+   * the same respawner a refresh uses — `claude --resume` from the topic's saved
+   * UUID, topic binding re-registered. No kill (nothing is running) and no work
+   * gate (no live work to protect); the in-flight guard and the rate guard
+   * apply exactly as for a refresh. Called only from the explicit
+   * `POST /sessions/refresh` route — no automatic caller revives a session
+   * through this path.
+   */
+  async respawnDeadBound(opts: Pick<RefreshOptions, 'sessionName' | 'followUpPrompt' | 'reason' | 'fresh'>): Promise<RefreshResult> {
+    const { sessionName, followUpPrompt, reason, fresh } = opts;
+    const topicId = this.deadBoundTopic(sessionName);
+    if (topicId === null) {
+      return { ok: false, code: 'session_not_found', message: `No running or dead-but-mapped topic session found for tmux name "${sessionName}".${this.displayNameHint(sessionName)}` };
+    }
+    if (this.inFlight.has(sessionName)) {
+      return { ok: false, code: 'refresh_in_progress', message: `A refresh is already in progress for "${sessionName}".` };
+    }
+    if (!this.checkRateLimit(sessionName)) {
+      this.logRateLimit(sessionName, reason);
+      return {
+        ok: false,
+        code: 'rate_limited',
+        message: `Refresh rate limit exceeded (${this.maxPerWindow} per ${Math.round(this.windowMs / 60000)} minutes) for session "${sessionName}".`,
+      };
+    }
+    this.inFlight.add(sessionName);
+    try {
+      // Re-check at the last moment: an inbound message may have respawned the
+      // session since the eligibility check, and the respawner force-kills any
+      // tmux session by that name before spawning — never kill a fresh one.
+      if (this.deadBoundTopic(sessionName) !== topicId) {
+        return { ok: false, code: 'session_not_found', message: `Session "${sessionName}" came back up (or its topic was remapped) before the respawn; nothing to do.` };
+      }
+      this.recordRefresh(sessionName);
+      if (fresh) {
+        this.deps.topicResumeMap?.remove(topicId);
+        console.log(`[SessionRefresh] fresh respawn of dead session — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
+      }
+      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt);
+      console.log(`[SessionRefresh] Respawned dead topic session "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
+      return { ok: true, newSessionName, topicId };
+    } finally {
+      this.inFlight.delete(sessionName);
+    }
+  }
+
+  /**
    * EVO-025: when a caller passed a session's display name (e.g. "Jev")
    * rather than its tmux name ("echo-jev"), name the tmux name in the
    * refusal. Deliberately a hint, not a silent remap: display names are not

@@ -485,4 +485,66 @@ describe('SessionRefresh', () => {
       expect(respawner).toHaveBeenCalled();
     });
   });
+  describe('respawnDeadBound — a mapped topic session whose process is gone', () => {
+    function deadDeps(opts: { mappedTo?: string | null; alive?: boolean; topicId?: number | null } = {}) {
+      const d = makeDeps({ stateSession: null, topicId: opts.topicId === undefined ? 52075 : opts.topicId });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic =
+        vi.fn().mockReturnValue(opts.mappedTo === undefined ? 'echo-desk' : opts.mappedTo);
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(opts.alive ?? false);
+      return d;
+    }
+
+    it('REPRO: refreshSession refuses a dead mapped session (session_not_found) — nothing to kill', async () => {
+      const { refresh, respawner } = deadDeps();
+      expect(await refresh.refreshSession({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+      expect(respawner).not.toHaveBeenCalled();
+    });
+
+    it('respawns it through the respawner without a kill, carrying the follow-up prompt', async () => {
+      const { refresh, respawner, sessionManager, callOrder } = deadDeps();
+      expect(refresh.deadBoundTopic('echo-desk')).toBe(52075);
+      const r = await refresh.respawnDeadBound({ sessionName: 'echo-desk', followUpPrompt: 'rebuild context' });
+      expect(r).toEqual({ ok: true, newSessionName: 'new-tmux-session', topicId: 52075 });
+      expect(respawner).toHaveBeenCalledWith('echo-desk', 52075, 'rebuild context');
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['respawner']);
+    });
+
+    it('fresh clears the topic resume entry before the respawn', async () => {
+      const { refresh, callOrder } = deadDeps();
+      await refresh.respawnDeadBound({ sessionName: 'echo-desk', fresh: true });
+      expect(callOrder).toEqual(['removeResume', 'respawner']);
+    });
+
+    it('refuses when the tmux session is still alive, when the topic now maps elsewhere, or when unbound', async () => {
+      for (const d of [deadDeps({ alive: true }), deadDeps({ mappedTo: 'echo-newer-desk' }), deadDeps({ topicId: null })]) {
+        expect(d.refresh.deadBoundTopic('echo-desk')).toBeNull();
+        expect(await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+        expect(d.respawner).not.toHaveBeenCalled();
+      }
+    });
+
+    it('refuses while a running state record carries the name (the normal refresh owns that case)', () => {
+      const d = makeDeps({ stateSession: { id: 's1', tmuxSession: 'echo-desk' }, topicId: 52075 });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic = vi.fn().mockReturnValue('echo-desk');
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(false);
+      expect(d.refresh.deadBoundTopic('echo-desk')).toBeNull();
+    });
+
+    it('does not respawn (and so never force-kills) a session that came back up after the eligibility check', async () => {
+      const { refresh, respawner, sessionManager } = deadDeps();
+      const alive = vi.fn().mockReturnValueOnce(false).mockReturnValue(true); // inbound respawned it meanwhile
+      (sessionManager as { isSessionAlive?: unknown }).isSessionAlive = alive;
+      expect(await refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+      expect(respawner).not.toHaveBeenCalled();
+    });
+
+    it('shares the refresh rate guard', async () => {
+      const d = makeDeps({ stateSession: null, topicId: 52075, rateLimit: { maxPerWindow: 1, windowMs: 60_000 } });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic = vi.fn().mockReturnValue('echo-desk');
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(false);
+      expect((await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).ok).toBe(true);
+      expect(await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'rate_limited' });
+    });
+  });
 });

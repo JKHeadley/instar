@@ -1,0 +1,31 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+A long-lived coordinator session (on the development agent: the session that drives the Instar 2.0 build pipeline, topic 52075) was closed by autonomous cleanup three times on 2026-10-14: twice at the age limit (03:27, 08:15 PDT), both revived by the resume queue, then for idleness at 10:04, which hit the queue's revival cap (2 per window), so nothing revived it. The topic gets few user messages, so it reads as abandoned after 8 hours. The only existing "keep" list, `sessions.protectedSessions`, also refuses `killSession`, so a refresh or respawn fails (the 2026-10-05 six-hour outage). Two further gaps kept it down: `POST /sessions/refresh` answered `session_not_found` for a session whose process was gone, and creating a session for a topic whose mapped session was dead was refused with `topic-has-session`.
+
+- **`sessions.standingSessions`** (new, optional, read at server start): entries are tmux session names or `"topic:<id>"`. A standing session is never ended by an autonomous lifecycle path: the shared `ReapGuard` gains a `standing-session` keep reason (right after `protected`), so the SessionReaper's idle reap, the age-limit kill, `sentinel-complete`, the rerouted lifetime cap and every other autonomous `terminateSession` call keep it. The SessionManager monitor also skips the age-limit and completion-pattern checks for it (no per-tick reap attempts), and `reapCompletedSessions` no longer closes a LIVE standing session on a completion pattern (a dead one is still cleaned up).
+- **Still restartable.** `killSession` does not consult the list, so `POST /sessions/refresh`, inbound respawn and an operator close work as before. A topic-moved closeout and a drained stand-down close lift only the `standing-session` reason (every other keep guard still applies), so a coordinator never ends up live on two machines.
+- **Refreshing a dead topic session.** `POST /sessions/refresh` on a tmux name whose process is gone, while its Telegram topic still maps to that name (or to nothing), now respawns it through the same respawner (`claude --resume` from the topic's saved conversation, binding re-registered) and answers `200 { ok: true, respawnedDead: true, newSessionName, topicId }`. No kill, no work gate; the in-flight and rate guards apply. A topic now mapped to a different session still answers `409 session_not_found`. Only the explicit route uses this path.
+- **A dead mapping no longer refuses a new topic session.** The dashboard topic spawn (`createSpawnForTopic`, used by `POST /sessions/create`) treats a mapping to a dead tmux session as absent and overwrites it; a live mapping still refuses with `topic-has-session`.
+- CLAUDE.md template and `migrateClaudeMd` gain the "Standing sessions are never closed by cleanup" bullet after the SessionReaper background-work bullet.
+
+Not changed: the resume queue's revival cap. It is a deliberate brake against restart loops; it was hit only because the coordinator kept being closed.
+
+## What to Tell Your User
+
+If you run a session that coordinates other work and must stay up, such as one that drives a build pipeline, I can now mark it as standing. Automatic cleanup then never closes it, not for being idle and not for running a long time, but I can still restart it whenever it needs one. Before, the only way to keep a session open also stopped it from being restarted. Also, if a session for one of your conversations dies, I can bring it back right away with its conversation intact, instead of waiting for you to send a message there.
+
+## Summary of New Capabilities
+
+- Mark a coordinator session as standing, by session name or by the conversation it serves; cleanup leaves it running and it stays restartable.
+- Restart a conversation's session even after its process has died, from its saved conversation.
+- Start a new session for a conversation whose old session died, instead of being told the conversation already has one.
+
+## Evidence
+
+- Reproduction (live, 2026-10-14): `logs/reap-log.jsonl` rows for `echo-deepseek-harness` (age-limit 10:27Z and 15:15Z, reaped-idle 17:04Z with `midWork: true`); `logs/resume-queue.jsonl` `resurrection-cap` for `topic:52075` at 17:04:41Z; `POST /sessions/refresh` → `session_not_found`; dashboard create → `topic-has-session`.
+- Unit: `tests/unit/reap-guard.test.ts` (standing keeps an otherwise reap-eligible session; protected still wins; a bypassed standing reason falls through to the remaining guards; a throwing predicate keeps), `tests/unit/session-manager-terminate.test.ts` (name and `topic:` matching with a failing resolver; idle reap and sentinel-complete refused with `standing-session`; killSession and an operator close still end it; topic-moved closeout lifts only `standing-session`; an over-age idle standing session survives the age-limit tick with no terminate attempt; a completion pattern does not close it), `tests/unit/SessionRefresh.test.ts` (dead mapped session respawned without a kill, fresh clears resume first, refusals for alive / remapped / unbound / running, shared rate guard), `tests/unit/dashboard-door-model-controls.test.ts` (dead mapping no longer refuses, live mapping does), `tests/unit/standing-sessions-wiring.test.ts` (config normalization, server wiring, template + migration idempotency).
+- Integration: `tests/integration/session-refresh-dead-topic-route.test.ts` (real `createRoutes` + `SessionRefresh`: 200 respawn of a dead mapped session, 409 when remapped, 202 for a running one).

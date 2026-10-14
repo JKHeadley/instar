@@ -409,6 +409,16 @@ describe('createSpawnForTopic (§3.3 steps 4+5)', () => {
     expect(await f(2, 'n')).toEqual({ ok: false, code: 'topic-spawning' });
   });
 
+  it('a mapping to a DEAD session no longer refuses; a live mapping still does', async () => {
+    const g = guard();
+    const t = tg({ 6: 'reaped-desk', 7: 'live-desk' });
+    const alive = (tmux: string) => tmux === 'live-desk';
+    const f = createSpawnForTopic({ guard: () => g, telegram: () => t, isSessionAlive: alive, spawn: async () => 'new-desk' });
+    expect(await f(6, 'desk')).toEqual({ ok: true, session: 'new-desk', registered: true });
+    expect(t.registered).toEqual([[6, 'new-desk', 'desk']]);
+    expect(await f(7, 'desk')).toEqual({ ok: false, code: 'topic-has-session' });
+  });
+
   it('spawn + register run under ONE token, cleared in finally', async () => {
     const g = guard();
     const t = tg();

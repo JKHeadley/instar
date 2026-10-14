@@ -602,6 +602,13 @@ export interface SessionTerminateAuthorityOptions {
   standDownDrainedClose?: boolean;
   /** Trusted SessionReaper assertion after ownership/liveness/dwell clears. */
   localPostTransferCloseout?: boolean;
+  /**
+   * Trusted assertion from the topic-transfer drain (SessionDrainRunner): this
+   * close retires the local copy of a topic that is moving to another machine.
+   * Lifts ONLY the `standing-session` keep (a standing coordinator must not stay
+   * live on both machines); every other keep-guard is still re-checked.
+   */
+  topicTransferClose?: boolean;
   workEvidence?: string[];
 }
 
@@ -1814,6 +1821,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.config.protectedSessions;
   }
 
+  /** Resolves a tmux session to its bound Telegram topic, for `topic:<id>`
+   *  entries in `standingSessions`. Wired by server.ts; null ⇒ name-only match. */
+  private standingTopicResolver: ((tmuxSession: string) => number | null) | null = null;
+
+  setStandingTopicResolver(fn: ((tmuxSession: string) => number | null) | null): void {
+    this.standingTopicResolver = fn;
+  }
+
+  /** The configured standing-session entries (tmux names and `topic:<id>`). */
+  getStandingSessions(): string[] {
+    return this.config.standingSessions ?? [];
+  }
+
+  /**
+   * Standing session (`sessions.standingSessions`): a long-lived coordinator no
+   * AUTONOMOUS lifecycle path may end (idle reap, age limit, completion
+   * detection), while it stays killable for a kill-to-respawn — `killSession`
+   * deliberately does NOT consult this (that is the difference from
+   * `protectedSessions`, which made the 2.0 desk unrestartable on 2026-10-05).
+   * Matches by tmux name or by bound topic (`topic:<id>`). Never throws: an
+   * unresolvable topic falls back to the name match only.
+   */
+  isStandingSession(tmuxSession: string): boolean {
+    const entries = this.config.standingSessions;
+    if (!entries || entries.length === 0) return false;
+    if (entries.includes(tmuxSession)) return true;
+    if (!entries.some(e => e.startsWith('topic:'))) return false;
+    let topicId: number | null = null;
+    try { topicId = this.standingTopicResolver?.(tmuxSession) ?? null; }
+    catch { topicId = null; /* @silent-fallback-ok: name match already checked above; an unresolvable binding cannot widen or narrow beyond it */ }
+    return topicId != null && entries.includes(`topic:${topicId}`);
+  }
+
   /** Mark a session as being reaped (two-phase reap window). The idle-kill path
    *  skips reaping sessions so the reaper is the single actor on them. */
   markReaping(sessionId: string): void {
@@ -1941,6 +1981,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       seenWorkingPastAgeLimit?: boolean;
       /** Birth-bound SessionReaper assertion after ownership/liveness/dwell. */
       localPostTransferCloseout?: boolean;
+      /** See SessionTerminateAuthorityOptions.topicTransferClose. */
+      topicTransferClose?: boolean;
       /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
@@ -2056,6 +2098,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // direction.
         if (opts?.standDownDrainedClose && this.standDownDrainProbe?.(session.tmuxSession) === true) {
           bypassedReasons.push(...DRAINED_CLOSE_BYPASSED_REASONS);
+        }
+        // A standing session (`sessions.standingSessions`) is kept from every
+        // autonomous END. Lifted only by trusted, runtime-private assertions:
+        // the reaper's post-transfer closeout and the topic-transfer drain (a
+        // topic that moved away — keeping it would leave the coordinator live on
+        // two machines), a verified drained stand-down close (same), and the
+        // recovery engine's kill-to-respawn (a restart, which standing sessions
+        // must keep). Only the `standing-session` reason is lifted; every other
+        // KEEP-guard is still re-checked. Public callers cannot supply any of
+        // these: `bypassRecoveryFlag` and the closeout flags are authority-only.
+        if (opts?.localPostTransferCloseout === true
+            || opts?.topicTransferClose === true
+            || (opts?.disposition === 'recovery-bounce' && opts?.bypassRecoveryFlag === true)
+            || (opts?.standDownDrainedClose && this.standDownDrainProbe?.(session.tmuxSession) === true)) {
+          bypassedReasons.push('standing-session');
         }
         // C2/R4-2: the idle-zombie branch precomputes the guard verdict (no bypass
         // flags) and threads it here so the guard is evaluated ONCE this tick.
@@ -2585,6 +2642,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // maps only 'killed' → 'timeout'). A sentinel completion is a clean
           // finish, NOT a timeout.
           if (!this.config.protectedSessions.includes(session.tmuxSession) &&
+              !this.isStandingSession(session.tmuxSession) &&
               await this.detectSessionCompletionMaybeAsync(session)) {
             console.log(`[SessionManager] Rerouted session "${session.name}" completed (sentinel detected). Reaping as success.`);
             await this.terminateSession(session.id, 'sentinel-complete', {
@@ -2600,7 +2658,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (session.startedAt && session.maxLifetimeMinutes) {
             const lifeElapsedMin = (Date.now() - new Date(session.startedAt).getTime()) / 60000;
             if (lifeElapsedMin > session.maxLifetimeMinutes &&
-                !this.config.protectedSessions.includes(session.tmuxSession)) {
+                !this.config.protectedSessions.includes(session.tmuxSession) &&
+                !this.isStandingSession(session.tmuxSession)) {
               console.warn(`[SessionManager] Rerouted session "${session.name}" exceeded its hard lifetime (${Math.round(lifeElapsedMin)}m > ${session.maxLifetimeMinutes}m) without a completion sentinel. Killing (timeout).`);
               const killed = await this.terminateSession(session.id, 'rerouted-lifetime', {
                 finalStatus: 'killed',
@@ -2652,6 +2711,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Check for completion patterns even while session appears alive
         // (catches sessions where Claude finished but tmux is still open)
         if (!this.config.protectedSessions.includes(session.tmuxSession) &&
+            !this.isStandingSession(session.tmuxSession) &&
             await this.detectCompletionMaybeAsync(session.tmuxSession)) {
           console.log(`[SessionManager] Session "${session.name}" completed (pattern detected). Cleaning up.`);
           // Emit beforeSessionKill so listeners (TopicResumeMap, SlackAdapter) can save resume UUIDs
@@ -2689,7 +2749,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const elapsed = (Date.now() - new Date(session.startedAt).getTime()) / 60000;
           const buffer = Math.min(maxMinutes * 0.2, 60); // 20% buffer, max 60 min
           const limit = maxMinutes + buffer;
-          if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)) {
+          if (elapsed > limit && !this.config.protectedSessions.includes(session.tmuxSession)
+              && !this.isStandingSession(session.tmuxSession)) {
             // Activity check — defer kill if the session is doing real work.
             const ageGateOutput = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
             const ageGateIsIdle = ageGateOutput && IDLE_PROMPT_PATTERNS.some(p => ageGateOutput.includes(p));
@@ -5810,7 +5871,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     for (const session of running) {
       if (this.config.protectedSessions.includes(session.tmuxSession)) continue;
 
-      if (!this.isSessionAlive(session.tmuxSession) || this.detectCompletion(session.tmuxSession)) {
+      // A live standing session is never closed on a completion pattern; a dead one is.
+      if (!this.isSessionAlive(session.tmuxSession)
+          || (!this.isStandingSession(session.tmuxSession) && this.detectCompletion(session.tmuxSession))) {
         session.status = 'completed';
         session.endedAt = new Date().toISOString();
         this.state.saveSession(session);

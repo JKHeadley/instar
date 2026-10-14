@@ -360,6 +360,18 @@ export interface SessionManagerConfig {
   /** Protected session names that should never be reaped */
   protectedSessions: string[];
   /**
+   * Standing sessions: long-lived coordinators (e.g. a desk that drives a build
+   * pipeline) that must never be ended by an AUTONOMOUS lifecycle path — idle
+   * reaping, the age limit, completion-pattern / sentinel-complete detection —
+   * yet must stay RESTARTABLE. Unlike `protectedSessions` (never touch: it also
+   * refuses `killSession`, so a refresh/respawn fails), a standing session is
+   * still killable by an explicit kill-to-respawn (`/sessions/refresh`, inbound
+   * respawn, operator close), and a topic-moved closeout still closes it.
+   * Each entry is a tmux session name (`echo-desk`) or a Telegram topic
+   * (`topic:52075`). Optional; absent ⇒ none. Snapshotted at boot.
+   */
+  standingSessions?: string[];
+  /**
    * Finished-session registry retention (session-listing hygiene, CMT-1936).
    * Bounds how long TERMINAL session records (completed / failed / killed)
    * stay in the on-disk registry after they end, and hard-caps how many are

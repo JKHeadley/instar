@@ -1034,4 +1034,105 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
+  // ── Standing sessions (sessions.standingSessions) ──────────────────────────
+  // A long-lived coordinator (the 2.0 desk, 2026-10-14) must never be ended by an
+  // AUTONOMOUS lifecycle path, yet must stay restartable — unlike
+  // protectedSessions, which also refuses killSession (2026-10-05 6h outage).
+  const setStanding = (entries: string[]) => {
+    (manager as unknown as { config: SessionManagerConfig }).config.standingSessions = entries;
+  };
+  const standingGuard = (over: Partial<ReapGuardDeps> = {}) =>
+    guardWith({ hasActiveProcesses: () => false, isStandingSession: (t) => manager.isStandingSession(t), ...over });
+
+  it('standing: matches by tmux name and by bound topic; nothing else', async () => {
+    setStanding(['desk-by-name', 'topic:52075']);
+    manager.setStandingTopicResolver((t) => (t === 'desk-by-topic' ? 52075 : t === 'other' ? 7 : null));
+    expect(manager.isStandingSession('desk-by-name')).toBe(true);
+    expect(manager.isStandingSession('desk-by-topic')).toBe(true);
+    expect(manager.isStandingSession('other')).toBe(false);
+    expect(manager.isStandingSession('unbound')).toBe(false);
+    manager.setStandingTopicResolver(() => { throw new Error('adapter down'); });
+    expect(manager.isStandingSession('desk-by-topic')).toBe(false); // name-only fallback
+    expect(manager.isStandingSession('desk-by-name')).toBe(true);
+    setStanding([]);
+    expect(manager.isStandingSession('desk-by-name')).toBe(false);
+  });
+
+  it('standing: an autonomous idle reap is refused with standing-session; a non-standing twin is reaped', async () => {
+    manager.setReapGuard(standingGuard());
+    const desk = await spawn('desk');
+    const job = await spawn('job');
+    setStanding([desk.tmuxSession]);
+    expect(await manager.terminateSession(desk.id, 'reaped-idle')).toEqual({ terminated: false, skipped: 'standing-session' });
+    expect(state.getSession(desk.id)!.status).toBe('running');
+    expect((await manager.terminateSession(job.id, 'reaped-idle')).terminated).toBe(true);
+  });
+
+  it('standing: sentinel-complete is refused too (never treated as job-complete)', async () => {
+    manager.setReapGuard(standingGuard());
+    const desk = await spawn('desk-sc');
+    setStanding([desk.tmuxSession]);
+    expect(await manager.terminateSession(desk.id, 'sentinel-complete')).toEqual({ terminated: false, skipped: 'standing-session' });
+  });
+
+  it('standing: stays restartable — killSession and an operator close still end it', async () => {
+    manager.setReapGuard(standingGuard());
+    const a = await spawn('desk-kill');
+    const b = await spawn('desk-op');
+    setStanding([a.tmuxSession, b.tmuxSession]);
+    expect(manager.killSession(a.id)).toBe(true);
+    expect(state.getSession(a.id)!.status).not.toBe('running');
+    const r = await terminateAuthority(b.id, 'operator close', { origin: 'operator' });
+    expect(r.terminated).toBe(true);
+  });
+
+  it('standing: trusted duplicate-removing closes lift ONLY standing-session; a public "topic moved" reason does not', async () => {
+    manager.setReapGuard(standingGuard());
+    const pub = await spawn('desk-moved-public');
+    const reaper = await spawn('desk-moved-reaper');
+    const drain = await spawn('desk-moved-drain');
+    setStanding([pub.tmuxSession, reaper.tmuxSession, drain.tmuxSession]);
+    // A reason string is not authority: the public method cannot lift the keep.
+    expect(await manager.terminateSession(pub.id, 'topic moved to mini — closing the leftover')).toEqual({ terminated: false, skipped: 'standing-session' });
+    expect((await terminateAuthority(reaper.id, 'topic moved to mini — closing the leftover session on this machine (post-transfer closeout)', { localPostTransferCloseout: true })).terminated).toBe(true);
+    // The topic-transfer drain's real reason string.
+    expect((await terminateAuthority(drain.id, 'topic 52075 transferring to mini — turn boundary reached, clean close', { topicTransferClose: true, via: 'ws12-drain' })).terminated).toBe(true);
+    manager.setReapGuard(standingGuard({ hasActiveProcesses: () => true }));
+    const busy = await spawn('desk-moved-busy');
+    setStanding([busy.tmuxSession]);
+    expect(await terminateAuthority(busy.id, 'topic 52075 transferring to mini — turn boundary reached, clean close', { topicTransferClose: true })).toEqual({ terminated: false, skipped: 'active-process' });
+  });
+
+  it('standing: the recovery engine kill-to-respawn is allowed (restartable); a public recovery-bounce claim is not', async () => {
+    manager.setReapGuard(standingGuard());
+    const a = await spawn('desk-recovery');
+    const b = await spawn('desk-recovery-public');
+    setStanding([a.tmuxSession, b.tmuxSession]);
+    expect((await terminateAuthority(a.id, 'session-recovery', { disposition: 'recovery-bounce', finalStatus: 'killed', bypassRecoveryFlag: true })).terminated).toBe(true);
+    expect(await manager.terminateSession(b.id, 'session-recovery', { disposition: 'recovery-bounce' })).toEqual({ terminated: false, skipped: 'standing-session' });
+  });
+
+  it('standing: the age-limit monitor path leaves an over-age idle standing session running', async () => {
+    manager.setReapGuard(standingGuard());
+    setStanding(['topic:99']);
+    manager.setStandingTopicResolver(() => 99); // every session here is bound to the standing topic
+    const { id, blocked } = await runLocalExpiredMonitorTick('standing-over-age');
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(blocked).toEqual([]); // skipped before any terminate attempt, so no reap-log churn
+  });
+
+  it('standing: a completion pattern does not close a live standing session', async () => {
+    const s = await spawn('desk-complete');
+    setStanding([s.tmuxSession]);
+    const seam = manager as unknown as MonitorSeam;
+    seam.isSessionAliveAsync = async () => true;
+    seam.recordBuildContextMaybeAsync = async () => {};
+    seam.detectCompletionMaybeAsync = async () => true; // pane shows a completion pattern
+    seam.captureMeaningfulTailMaybeAsync = async () => 'working';
+    seam.hasActiveProcessesMaybeAsync = async () => true;
+    seam.isTranscriptRecentlyActive = () => true;
+    seam.captureOutputMaybeAsync = async () => '';
+    await maintenanceTick();
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
 });

@@ -449,6 +449,13 @@ export interface SpawnForTopicDeps {
   guard: () => { has(topic: number): boolean; add(topic: number): string; clear(topic: number, token: string): void } | null;
   /** The Telegram adapter's binding surface — null when no adapter. */
   telegram: () => { getSessionForTopic(topicId: number): string | null | undefined; registerTopicSession(topicId: number, session: string, name?: string): void } | null;
+  /**
+   * Optional liveness probe for the topic's mapped session. When supplied and it
+   * reports the mapped session DEAD (reaped/crashed, binding left behind), the
+   * stale mapping no longer refuses a new spawn — the registration below
+   * overwrites it. Absent ⇒ any mapping refuses (legacy behavior).
+   */
+  isSessionAlive?: (tmuxSession: string) => boolean;
   /** The ONE spawn chokepoint, called with silentStart. A throw propagates. */
   spawn: (topicId: number, name: string) => Promise<string>;
 }
@@ -464,7 +471,8 @@ export function createSpawnForTopic(deps: SpawnForTopicDeps): (topicId: number, 
     const guard = deps.guard();
     const tg = deps.telegram();
     if (!guard || !tg) return { ok: false, code: 'telegram-routing-not-wired' };
-    if (tg.getSessionForTopic(topicId)) return { ok: false, code: 'topic-has-session' };
+    const mapped = tg.getSessionForTopic(topicId);
+    if (mapped && (!deps.isSessionAlive || deps.isSessionAlive(mapped))) return { ok: false, code: 'topic-has-session' };
     if (guard.has(topicId)) return { ok: false, code: 'topic-spawning' };
     const token = guard.add(topicId);
     try {

@@ -155,3 +155,33 @@ describe('ReapGuard — cheap-first ordering (no fork when an in-memory guard hi
     expect(forked).toBe(false);
   });
 });
+
+describe('ReapGuard — standing session (sessions.standingSessions)', () => {
+  it('keeps a standing session even when it is idle, stale and over every other guard', () => {
+    const g = new ReapGuard(clearDeps({ isStandingSession: (t) => t === 'agent-work' }));
+    expect(g.blockedReason(mkSession())?.reason).toBe('standing-session');
+  });
+
+  it('a non-standing session is unaffected (all-clear stays null)', () => {
+    const g = new ReapGuard(clearDeps({ isStandingSession: (t) => t === 'agent-desk' }));
+    expect(g.blockedReason(mkSession())).toBeNull();
+  });
+
+  it('protected still wins first; absent predicate means nothing is standing', () => {
+    const both = new ReapGuard(clearDeps({ protectedSessions: () => ['agent-work'], isStandingSession: () => true }));
+    expect(both.blockedReason(mkSession())?.reason).toBe('protected');
+    expect(new ReapGuard(clearDeps()).blockedReason(mkSession())).toBeNull();
+  });
+
+  it('a bypassed standing-session reason falls through to the remaining guards', () => {
+    const g = new ReapGuard(clearDeps({ isStandingSession: () => true, hasActiveProcesses: () => true }));
+    expect(g.blockedReason(mkSession(), ['standing-session'])?.reason).toBe('active-process');
+    const clear = new ReapGuard(clearDeps({ isStandingSession: () => true }));
+    expect(clear.blockedReason(mkSession(), ['standing-session'])).toBeNull();
+  });
+
+  it('a throwing predicate resolves to KEEP (guard-error), never to reap', () => {
+    const g = new ReapGuard(clearDeps({ isStandingSession: () => { throw new Error('boom'); } }));
+    expect(g.blockedReason(mkSession())?.reason).toBe('guard-error');
+  });
+});

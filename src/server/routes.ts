@@ -11546,6 +11546,25 @@ export function createRoutes(ctx: RouteContext): Router {
     // then refused only in server.log. Answer them synchronously instead.
     // refreshSession() still re-checks everything authoritatively post-202.
     const refusal = ctx.sessionRefresh.precheckRefusal(sessionName);
+    // A topic session whose process is gone but whose topic still maps to it
+    // (reaped, crashed) has nothing to kill: respawn it directly with the same
+    // respawner (resume from the topic's saved conversation). Synchronous — the
+    // caller is not the session being restarted, so no 202-before-kill dance.
+    if (refusal?.code === 'session_not_found' && ctx.sessionRefresh.deadBoundTopic(sessionName) !== null) {
+      let result: Awaited<ReturnType<NonNullable<typeof ctx.sessionRefresh>['respawnDeadBound']>>;
+      try {
+        result = await ctx.sessionRefresh.respawnDeadBound({ sessionName, followUpPrompt, reason, fresh: fresh === true });
+      } catch (err) {
+        res.status(500).json({ code: 'respawn_failed', error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      if (result.ok) {
+        res.status(200).json({ ok: true, message: 'Dead topic session respawned', sessionName, newSessionName: result.newSessionName, topicId: result.topicId, respawnedDead: true, fresh: fresh === true });
+      } else {
+        res.status(result.code === 'rate_limited' ? 429 : 409).json({ code: result.code, error: result.message });
+      }
+      return;
+    }
     if (refusal) {
       res.status(refusal.code === 'rate_limited' ? 429 : 409).json({ code: refusal.code, error: refusal.message });
       return;

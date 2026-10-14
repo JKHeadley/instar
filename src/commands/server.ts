@@ -20492,8 +20492,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // once here and used to back BOTH the SessionReaper and the ReapAuthority's
     // guard (`sessionManager.setReapGuard`), so a killer cannot end a session the
     // reaper would have kept — the same chain protects every kill path.
+    // `topic:<id>` entries in sessions.standingSessions resolve through the same
+    // topic binding the guard uses.
+    sessionManager.setStandingTopicResolver(_resolveTopic);
     const reapGuardDeps: import('../core/ReapGuard.js').ReapGuardDeps = {
       protectedSessions: () => sessionManager.getProtectedSessions(),
+      isStandingSession: (s) => sessionManager.isStandingSession(s),
       isRecoveryActive: (session) => composedRecoveryActive(session),
       hasPendingInjection: (s) => sessionManager.getPendingInjection(s) != null,
       isRelayLeaseActive: (id) => sessionManager.isRelayLeaseActive(id),
@@ -23744,6 +23748,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!rec) return { terminated: false, skipped: 'no-local-session' };
               return terminateWithAuthority(rec.id, reason, {
                 via: 'ws12-drain',
+                topicTransferClose: true,
                 bypassActiveProcessKeep: opts.force,
                 workEvidence: opts.force ? ['active-build-or-autonomous-run'] : undefined,
               });
@@ -27229,6 +27234,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             spawnForTopic: createSpawnForTopic({
               guard: () => _spawningTopicsRegistryRef,
               telegram: () => telegram ?? null,
+              // A mapping left behind by a reaped/crashed session must not
+              // refuse the spawn (2026-10-14: the 2.0 desk topic).
+              isSessionAlive: (tmux) => sessionManager.isSessionAlive(tmux),
               spawn: (topicId, name) => spawnSessionForTopic(
                 sessionManager, telegram!, name, topicId,
                 undefined, undefined, undefined, undefined, undefined,
