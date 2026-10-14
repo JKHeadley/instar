@@ -11,6 +11,7 @@ import { CREDENTIAL_SHARE_OP, type AgentTrustManager, type AgentTrustLevel } fro
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { PAIR_VERIFY_OP, processPairVerifyReceipt } from './PairVerifyReceipt.js';
+import { INVITE_OPS } from './PairingInviteFlow.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -46,6 +47,11 @@ export interface InboundGateConfig {
    * live). When absent/returns enabled:false, verified-pairing is a pass-through.
    */
   getVerifiedPairingConfig?: () => VerifiedPairingGateConfig;
+  /**
+   * Invite pairing (docs/specs/a2a-pairing-invite-link.md): receives the four invite control
+   * ops. Fire-and-forget; the engine validates everything (MAC, signatures, keys).
+   */
+  onInviteControl?: (op: string, fromFp: string, payload: Record<string, unknown>) => void;
 }
 
 export interface GateDecision {
@@ -281,7 +287,7 @@ export class InboundMessageGate {
     const opType = this.classifyOperation(message);
     const isProbe = PROBE_OPS.has(opType);
 
-    if (isProbe || opType === PAIR_VERIFY_OP) {
+    if (isProbe || opType === PAIR_VERIFY_OP || INVITE_OPS.has(opType)) {
       const replay = this.isReplay(messageId, fingerprint);
       if (replay) return replay;
     }
@@ -310,6 +316,18 @@ export class InboundMessageGate {
       }
       // Consumed control-plane message: handled inline, do NOT route onward.
       return { action: 'block', reason: 'pair-verify', fingerprint, controlPlane: true };
+    }
+
+    // 1b. Invite-pairing control ops (docs/specs/a2a-pairing-invite-link.md §4): gate-exempt for
+    // the trust level (a brand-new peer is untrusted), never routed onward. The engine validates
+    // the MAC, signatures and keys and rate-limits accepts per sender.
+    if (vp.enabled && INVITE_OPS.has(opType)) {
+      const payload = InboundMessageGate.extractInvitePayload(message);
+      if (messageId) this.seenMessageIds.set(messageId, Date.now());
+      if (payload && this.config.onInviteControl) {
+        try { this.config.onInviteControl(opType, fingerprint, payload); } catch { /* engine errors never break the gate */ }
+      }
+      return { action: 'block', reason: opType, fingerprint, controlPlane: true };
     }
 
     // 2. Trust check (keyed by fingerprint)
@@ -502,6 +520,24 @@ export class InboundMessageGate {
    * Extract the control-plane payload object (e.g. a pair-verify receipt) from an
    * inbound message. The receipt fields ride alongside `type` on the content object.
    */
+  /**
+   * An invite op's fields: on the message content itself (encrypted path), or as JSON in
+   * `content.content` (plaintext path, which arrives via unknown-sender as `{content, type}`).
+   */
+  static extractInvitePayload(message: ReceivedMessage): Record<string, unknown> | null {
+    const c = message.content as unknown;
+    if (!c || typeof c !== 'object') return null;
+    const obj = c as Record<string, unknown>;
+    if (typeof obj.iid === 'string') return obj;
+    if (typeof obj.content === 'string' && obj.content.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(obj.content) as unknown;
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      } catch { return null; }
+    }
+    return null;
+  }
+
   private extractControlPayload(message: ReceivedMessage): unknown {
     const content = message.content;
     if (typeof content === 'object' && content !== null) return content;

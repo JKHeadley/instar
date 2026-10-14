@@ -29,6 +29,9 @@ import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
 import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
+import { EventEmitter } from 'node:events';
+import { PairingInviteStore } from './PairingInviteStore.js';
+import { PairingInviteFlow, INVITE_OPS, type InviteEvent } from './PairingInviteFlow.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { IdentityManager, IdentityNotProvisionedError } from './client/IdentityManager.js';
@@ -58,6 +61,8 @@ export interface ThreadlineBootstrapConfig {
   port: number;
   /** Enable cloud relay connection (opt-in, default: false) */
   relayEnabled?: boolean;
+  /** The operator's display name, shown (as CLAIMED) in pairing invites. */
+  ownerName?: string;
   /**
    * This machine is a quiet standby of a multi-machine agent (the operator set
    * `multiMachine.telegramPolling: false`, the same per-machine flag that keeps
@@ -129,6 +134,11 @@ export interface ThreadlineBootstrapResult {
   inboundGate?: InboundMessageGate;
   /** Trust manager */
   trustManager?: AgentTrustManager;
+  /**
+   * Invite pairing (docs/specs/a2a-pairing-invite-link.md): the engine, its store, and the
+   * operator-facing events (prompts and alarms) for Telegram and the dashboard to surface.
+   */
+  pairingInvites?: { flow: PairingInviteFlow; store: PairingInviteStore; events: EventEmitter };
   /**
    * Most recent relay connection-LOSS event, or null if the relay has never
    * dropped. Exists so a status surface can report WHY the relay is down rather
@@ -408,6 +418,7 @@ export async function bootstrapThreadline(
   let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
+  let pairingInvites: ThreadlineBootstrapResult['pairingInvites'];
   // Relay unknown-sender trust: the live mode (off when server.ts supplies no reader).
   const relayUnknownSenderTrustMode = (): RelayUnknownSenderTrustMode => {
     try {
@@ -455,9 +466,40 @@ export async function bootstrapThreadline(
     relayClient.setPinnedKeyResolver((fp) => {
       const p = pinnedTrust?.getProfileByFingerprint(fp);
       if (!p?.peerIdentityPub) return null;
-      if (p.pairingState !== 'pending-verification' && p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified') return null;
+      // invite-accepted too: B must decrypt the inviter's signed finish / used notice (invite spec §4.4).
+      if (p.pairingState !== 'pending-verification' && p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified' && p.pairingState !== 'invite-accepted') return null;
       return Buffer.from(p.peerIdentityPub, 'hex');
     });
+
+    // Invite pairing engine (docs/specs/a2a-pairing-invite-link.md). Identity is read fresh on
+    // every use so a rotated key is never signed with stale material.
+    {
+      const client = relayClient;
+      const invStore = new PairingInviteStore(config.stateDir);
+      const invEvents = new EventEmitter();
+      const flow = new PairingInviteFlow({
+        store: invStore,
+        trust: trustManager!,
+        identity: () => {
+          const id = routingIdentityManager.get();
+          return id ? { fp: String(id.fingerprint).toLowerCase(), publicKeyHex: id.publicKey.toString('hex'), privateKey: id.privateKey } : null;
+        },
+        relayKeyFor: async (fp) => {
+          const known = client.getKnownAgents().find((a) => a.agentId === fp);
+          if (known?.publicKey) return Buffer.from(known.publicKey).toString('hex');
+          const fetched = await client.fetchPeerIdentityKey(fp).catch(() => null);
+          return fetched ? fetched.toString('hex') : null;
+        },
+        sendPlaintext: (to, op, payload) => { client.sendInviteControlPlaintext(to, op, payload); },
+        sendToKey: (to, key, op, payload) => { client.sendInviteControlToKey(to, key, op, payload); },
+        notify: (e: InviteEvent) => {
+          console.log(`[pairing-invite] ${e.kind} ${JSON.stringify(e)}`);
+          invEvents.emit('event', e);
+        },
+        ownName: () => ({ owner: config.ownerName ?? '', agent: config.agentName }),
+      });
+      pairingInvites = { flow, store: invStore, events: invEvents };
+    }
 
     // Create inbound message gate (imports ThreadlineRouter lazily if needed)
     // For now, router is not available at bootstrap time — it's created in server.ts
@@ -469,6 +511,11 @@ export async function bootstrapThreadline(
       ownFingerprint: routingIdentity?.fingerprint,
       // Live verified-pairing config reader (spec §3.10) — supplied by server.ts.
       getVerifiedPairingConfig: config.getVerifiedPairingConfig,
+      onInviteControl: (op, fromFp, payload) => {
+        void pairingInvites?.flow.handleControl(op, fromFp, payload).then((r) => {
+          if (!r.ok) console.warn(`[pairing-invite] ${op} from ${fromFp.slice(0, 12)} refused: ${(r as { reason: string }).reason}`);
+        });
+      },
     });
 
     // Only wire inbound message handling and connect if daemon is NOT handling relay.
@@ -528,6 +575,15 @@ export async function bootstrapThreadline(
       // proves the sender holds its fingerprint's key, not who it is. With the
       // check on, the level comes from the trust manager the gate reads and the
       // gate's operation table applies; off, today's `verified` handling stands.
+      // Invite pairing: the accept arrives as plaintext from a not-yet-known sender
+      // (docs/specs/a2a-pairing-invite-link.md §4.3). It is a CONTROL message for the gate, never
+      // conversation text, so it must not reach the unknown-sender router (which would treat it
+      // as an ordinary message and could spawn a session).
+      if (msgType && INVITE_OPS.has(msgType)) {
+        void inboundGate.evaluate(received);
+        return;
+      }
+
       handleRelayUnknownSender(
         {
           trustManager: trustManager!,
@@ -660,6 +716,7 @@ export async function bootstrapThreadline(
     discovery,
     trustManager,
     relayClient,
+    pairingInvites,
     /** Most recent relay connection-loss event, or null if it has never dropped.
      *  Lets a status surface report WHY the relay is down instead of only that it
      *  is — the distinction the 2026-07-26 incident turned on. */

@@ -821,7 +821,10 @@ export class AgentTrustManager {
    * signed finish): pin the key and mark `mutual-verified`. Same write order and effects as
    * markMutualVerified (record first, level raised to trusted, source LAST, replication).
    */
-  markInviteVerified(peerFp: string, args: { peerIdentityPub: string; displayName?: string; ownFp?: string; via: string }): boolean {
+  markInviteVerified(
+    peerFp: string,
+    args: { peerIdentityPub: string; displayName?: string; ownFp?: string; via: string; ownIdentityPub?: string },
+  ): boolean {
     const fp = String(peerFp || '').toLowerCase();
     const key = String(args.peerIdentityPub || '').toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(fp) || !/^[0-9a-f]{64}$/.test(key) || key.slice(0, 32) !== fp) return false;
@@ -835,7 +838,11 @@ export class AgentTrustManager {
     const now = new Date().toISOString();
     profile.pairingState = 'mutual-verified';
     profile.peerIdentityPub = key;
-    profile.pairingId = undefined;
+    // The same pairingId v2 uses (HKDF over the two identity keys), so the credential gate can
+    // check our own key has not rotated since verification (CredentialShareGate check 3).
+    profile.pairingId = args.ownIdentityPub
+      ? derivePairingIdV2(Buffer.from(args.ownIdentityPub, 'hex'), Buffer.from(key, 'hex'))
+      : undefined;
     profile.sasFingerprint = undefined;
     profile.verifiedAt = now;
     if (this.compareTrust(profile.level, 'trusted') < 0) profile.level = 'trusted';

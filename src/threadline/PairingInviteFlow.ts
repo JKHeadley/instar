@@ -173,7 +173,7 @@ export class PairingInviteFlow {
     const stored = this.deps.store.getInternal(String(iid).toLowerCase());
     if (!stored || stored.state !== 'used' || !stored.acceptor) return { ok: false, reason: 'nothing waiting to finish for this invite' };
     const a = stored.acceptor;
-    if (!this.deps.trust.markInviteVerified(a.fp, { peerIdentityPub: a.key, displayName: a.agent, ownFp: me.fp, via: `invite ${stored.iid.slice(0, 8)} finished by operator` })) {
+    if (!this.deps.trust.markInviteVerified(a.fp, { peerIdentityPub: a.key, displayName: a.agent, ownFp: me.fp, ownIdentityPub: me.publicKeyHex, via: `invite ${stored.iid.slice(0, 8)} finished by operator` })) {
       return { ok: false, reason: 'could not record the pairing (a different key is already pinned for this agent)' };
     }
     const sf: SentFinish = { acceptorFp: a.fp, acceptorKey: a.key, exp: stored.exp, nonce: this.random(16).toString('hex'), acked: false, tries: 0 };
@@ -281,7 +281,7 @@ export class PairingInviteFlow {
     const T = transcript({ iid, fpA: from, idA: prof.peerIdentityPub, fpB: me.fp, idB: me.publicKeyHex, exp, nonce, direction: 'finish' });
     if (!this.verifySig(prof.peerIdentityPub, T, p.sig)) return { ok: false, reason: 'bad signature' };
     if (prof.pairingState !== 'mutual-verified') {
-      this.deps.trust.markInviteVerified(from, { peerIdentityPub: prof.peerIdentityPub, displayName: prof.agent, ownFp: me.fp, via: `invite ${iid.slice(0, 8)} finished by inviter` });
+      this.deps.trust.markInviteVerified(from, { peerIdentityPub: prof.peerIdentityPub, displayName: prof.agent, ownFp: me.fp, ownIdentityPub: me.publicKeyHex, via: `invite ${iid.slice(0, 8)} finished by inviter` });
       this.deps.notify({ kind: 'paired', peerFp: from, claimedAgent: prof.agent, role: 'recipient' });
     }
     const n2 = this.random(16).toString('hex');

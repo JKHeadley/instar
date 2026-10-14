@@ -83,6 +83,15 @@ Echo approved the spec; code review happens on the PR.
 - Breakages run in scratch: 4 + 5 + 4 + 9, each caught by at least one test.
 - Pairing/trust regression suite after step 3: 121 files, 2714 tests pass.
 
+## Step 5: wiring (added 2026-10-14)
+
+- `ThreadlineClient.sendInviteControlToKey` (encrypted to any key whose fingerprint matches) and `sendInviteControlPlaintext` (the accept). A narrow exception in `handleIncomingMessage`: a plaintext envelope typed `pair-invite-*` from a sender whose keys are cached goes to the unknown-sender path, not `decrypt-error`. Every other undecryptable message behaves as before.
+- `InboundMessageGate`: the four invite ops are trust-level-exempt control-plane messages under the same replay check as `pair-verify`. They are dispatched to `onInviteControl` and never routed onward. Only when verified pairing is enabled.
+- `ThreadlineBootstrap`: builds the store and engine, and the pinned-key resolver also returns the key for `invite-accepted` (so B can decrypt the finish). **Found by the production-path E2E:** a plaintext invite op from an unknown sender went to `handleRelayUnknownSender`, which routes to the router as ordinary text and could spawn a session. Invite ops now go to the gate before that point.
+- `markInviteVerified` records the same pairingId v2 uses (HKDF over both identity keys), so CredentialShareGate's own-key-rotation check (check 3) applies to invite pairings too. Without it every credential to an invite pairing was refused (`encryption-key-not-bound`), also found by the E2E.
+- Interactions: an untrusted peer's invite op is no longer routed as a conversation message, an improvement. A peer whose verified pairing is `invite-accepted` can now be decrypted via the pinned key, the same as `pending-verification` already was.
+- Evidence: `tests/e2e/threadline/pairing-invite-production-path.test.ts` (real bootstrap + in-process RelayServer): invite → plaintext accept → finish → ack → credential both ways. Breakages: the resolver without invite-accepted, and the gate without dispatch, each fail it. Regression suite: 139 files, 2893 tests pass.
+
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action` — closure **n/a** (negative declaration). The only repeated action this change adds is the finish send in `PairingInviteFlow.sendFinishWithRetry`. It starts only when an operator approves Finish, sends at most 5 times over about 10 minutes, and stops on the peer's ack. It is not self-triggered and cannot re-arm itself. Covered by `tests/unit/threadline/PairingInviteFlow.test.ts` ("finish retries are bounded (5)").

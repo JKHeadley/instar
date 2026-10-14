@@ -13,7 +13,7 @@ import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../re
 import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
-import { AUTO_ACK_TYPE, encodePlaintextPayload } from '../autoAck.js';
+import { AUTO_ACK_TYPE, encodePlaintextPayload, decodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
 import { derivePairingIdV2, edPublicToX25519, isX25519BoundToIdentity } from '../ThreadlineCrypto.js';
 import { buildPairVerifyReceipt, PAIR_VERIFY_OP } from '../PairVerifyReceipt.js';
@@ -539,6 +539,23 @@ export class ThreadlineClient extends EventEmitter {
       sasFingerprint: args.sasFingerprint,
     });
     return this.sendToPinned(recipientId, pinnedIdentityPubHex, { content: PAIR_VERIFY_OP, ...receipt }).messageId;
+  }
+
+  /**
+   * Invite pairing: send a control op ENCRYPTED to `keyHex` (spec §4: used, finish, ack). The
+   * recipient need not be pinned yet; the key's fingerprint must match `recipientId`.
+   */
+  sendInviteControlToKey(recipientId: AgentFingerprint, keyHex: string, op: string, payload: Record<string, unknown>): string {
+    return this.sendToPinned(recipientId, keyHex, { content: op, type: op, ...payload } as PlaintextMessage).messageId;
+  }
+
+  /**
+   * Invite pairing: send a control op as a PLAINTEXT relay message (spec §4.3, the accept).
+   * The inviter cannot decrypt before it knows our key, which is what the accept carries. Safe:
+   * no secret is in it, and it is self-authenticating (MAC with the invite secret + our signature).
+   */
+  sendInviteControlPlaintext(recipientId: AgentFingerprint, op: string, payload: Record<string, unknown>): string {
+    return this.sendPlaintextTyped(op, recipientId, JSON.stringify(payload));
   }
 
   private sendToPinned(
@@ -1216,6 +1233,14 @@ export class ThreadlineClient extends EventEmitter {
       try {
         plaintext = this.encryptor.decrypt(envelope, sender.publicKey, sender.x25519PublicKey);
       } catch (err) {
+        // Narrow exception: an invite-pairing accept is deliberately PLAINTEXT (the inviter can't
+        // decrypt before it learns our key), so a sender whose keys we already cache must not have
+        // it dropped as undecryptable. Only plaintext envelopes typed pair-invite-* take this path.
+        const plain = decodePlaintextPayload(envelope.payload);
+        if (plain?.type && plain.type.startsWith('pair-invite-')) {
+          this.emit('unknown-sender', envelope);
+          return;
+        }
         this.emit('decrypt-error', { envelope, error: err });
         return;
       }
