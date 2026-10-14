@@ -100,6 +100,7 @@ export class PairingInviteFlow {
     const names = this.deps.ownName();
     const inv = makeInvite({ identityPubHex: me.publicKeyHex, owner: names.owner, agent: names.agent, ttlMs: opts.ttlMs, bindFp: opts.bindFp, now: this.now(), random: this.random });
     const { replaced } = this.deps.store.add(inv);
+    this.deps.store.appendEvent({ iid: inv.iid, event: 'created', ...(inv.bind ? { peerFp: inv.bind } : {}) });
     return { ok: true, iid: inv.iid, exp: inv.exp, message: inviteMessage(inv), ...(replaced ? { replaced } : {}) };
   }
 
@@ -148,10 +149,14 @@ export class PairingInviteFlow {
 
       if (stored.state === 'used') {
         if (stored.acceptor?.fp === fpB) return { ok: true, duplicate: true }; // same acceptor retrying
-        // A leak happened (§4.4.2): pause the first acceptor, alarm, tell the late acceptor.
-        if (stored.acceptor) this.deps.trust.demoteInvitePairing(stored.acceptor.fp, `a second agent accepted invite ${iid.slice(0, 8)}`);
-        this.deps.store.recordSecondAccept(iid, { fp: fpB, owner: claimedOwner, agent: claimedAgent });
-        this.deps.notify({ kind: 'second-accept-alarm', iid, pausedFp: stored.acceptor?.fp ?? '', lateFp: fpB, lateClaimedAgent: claimedAgent, lateClaimedOwner: claimedOwner });
+        // A leak happened (§4.4.2): pause the first acceptor, alarm, tell the late acceptor. One alarm and
+        // one demotion per iid (Echo's review): a further VALID accept only gets the signed notice.
+        if (!stored.secondAccept) {
+          if (stored.acceptor) this.deps.trust.demoteInvitePairing(stored.acceptor.fp, `a second agent accepted invite ${iid.slice(0, 8)}`);
+          this.deps.store.recordSecondAccept(iid, { fp: fpB, owner: claimedOwner, agent: claimedAgent });
+          this.deps.notify({ kind: 'second-accept-alarm', iid, pausedFp: stored.acceptor?.fp ?? '', lateFp: fpB, lateClaimedAgent: claimedAgent, lateClaimedOwner: claimedOwner });
+        }
+        this.deps.store.appendEvent({ iid, event: 'second-accept', peerFp: fpB, detail: `paused ${stored.acceptor?.fp?.slice(0, 12) ?? 'none'}` });
         const n2 = this.random(16).toString('hex');
         const Tu = transcript({ iid, fpA: me.fp, idA: me.publicKeyHex, fpB, idB, exp: stored.exp, nonce: n2, direction: 'used' });
         this.deps.sendToKey(fpB, idB, OP_USED, { iid, exp: stored.exp, nonce: n2, sig: sign(me.privateKey, Tu).toString('hex') });
@@ -160,6 +165,7 @@ export class PairingInviteFlow {
 
       // First valid accept: single use from here, keep K only to judge a second accept.
       this.deps.store.markUsed(iid, { fp: fpB, key: idB, owner: claimedOwner, agent: claimedAgent }, K.toString('hex'));
+      this.deps.store.appendEvent({ iid, event: 'accept-received', peerFp: fpB });
       this.deps.notify({ kind: 'finish-prompt', iid, claimedAgent, claimedOwner, acceptorFp: fpB, checkCode: checkCode(K, me.publicKeyHex, idB) });
       return { ok: true, awaitingFinish: true };
     } catch (err) {
@@ -180,6 +186,7 @@ export class PairingInviteFlow {
       return { ok: false, reason: 'could not record the pairing (a different key is already pinned for this agent)' };
     }
     this.deps.store.markDecided(stored.iid, 'finished');
+    this.deps.store.appendEvent({ iid: stored.iid, event: 'finished', peerFp: a.fp });
     const sf: SentFinish = { acceptorFp: a.fp, acceptorKey: a.key, exp: stored.exp, nonce: this.random(16).toString('hex'), acked: false, tries: 0 };
     this.sentFinishes.set(stored.iid, sf);
     this.sendFinishWithRetry(stored.iid);
@@ -208,6 +215,7 @@ export class PairingInviteFlow {
     const stored = this.deps.store.getInternal(String(iid).toLowerCase());
     if (!stored || stored.state !== 'used') return { ok: false, reason: 'nothing waiting to finish for this invite' };
     if (!this.deps.store.markDecided(stored.iid, 'rejected')) return { ok: false, reason: `already decided (${stored.decision})` };
+    this.deps.store.appendEvent({ iid: stored.iid, event: 'not-them', peerFp: stored.acceptor?.fp });
     return { ok: true };
   }
 
@@ -242,6 +250,7 @@ export class PairingInviteFlow {
     }
     const K = macKey(inv.secret, inv.iid);
     this.pendingAccepts.set(inv.iid, { invite: inv, K });
+    this.deps.store.appendEvent({ iid: inv.iid, event: 'received', peerFp: inv.fp });
     const event: InviteEvent = { kind: 'accept-prompt', iid: inv.iid, claimedAgent: inv.agent, claimedOwner: inv.owner, inviterFp: inv.fp, checkCode: checkCode(K, inv.key, me.publicKeyHex) };
     this.deps.notify(event);
     return { ok: true, iid: inv.iid, claimedAgent: inv.agent, claimedOwner: inv.owner, checkCode: event.checkCode };
@@ -265,6 +274,7 @@ export class PairingInviteFlow {
       tag: inviteTag(pa.K, T), sig: sign(me.privateKey, T).toString('hex'),
     });
     this.pendingAccepts.delete(inv.iid); // S leaves memory once the accept is built
+    this.deps.store.appendEvent({ iid: inv.iid, event: 'approved', peerFp: inv.fp });
     return { ok: true, inviterFp: inv.fp };
   }
 
@@ -281,7 +291,10 @@ export class PairingInviteFlow {
   }
 
   declineAccept(iid: string): Result {
-    return this.pendingAccepts.delete(String(iid).toLowerCase()) ? { ok: true } : { ok: false, reason: 'no invite waiting' };
+    const id = String(iid).toLowerCase();
+    if (!this.pendingAccepts.delete(id)) return { ok: false, reason: 'no invite waiting' };
+    this.deps.store.appendEvent({ iid: id, event: 'declined' });
+    return { ok: true };
   }
 
   /** B gets the signed finish: verify against the PINNED inviter key, flip to mutual-verified, ack. */
@@ -300,6 +313,7 @@ export class PairingInviteFlow {
     if (prof.pairingState !== 'mutual-verified') {
       this.deps.trust.markInviteVerified(from, { peerIdentityPub: prof.peerIdentityPub, displayName: prof.agent, ownFp: me.fp, ownIdentityPub: me.publicKeyHex, via: `invite ${iid.slice(0, 8)} finished by inviter` });
       this.deps.notify({ kind: 'paired', peerFp: from, claimedAgent: prof.agent, role: 'recipient' });
+      this.deps.store.appendEvent({ iid, event: 'paired', peerFp: from });
     }
     const n2 = this.random(16).toString('hex');
     const Ta = transcript({ iid, fpA: from, idA: prof.peerIdentityPub, fpB: me.fp, idB: me.publicKeyHex, exp, nonce: n2, direction: 'ack' });
@@ -320,6 +334,7 @@ export class PairingInviteFlow {
     const T = transcript({ iid, fpA: from, idA: prof.peerIdentityPub, fpB: me.fp, idB: me.publicKeyHex, exp, nonce, direction: 'used' });
     if (!this.verifySig(prof.peerIdentityPub, T, p.sig)) return { ok: false, reason: 'bad signature' };
     this.deps.notify({ kind: 'invite-used-elsewhere', iid, inviterFp: from });
+    this.deps.store.appendEvent({ iid, event: 'used-elsewhere', peerFp: from });
     return { ok: true };
   }
 

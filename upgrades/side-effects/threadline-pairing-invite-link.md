@@ -33,7 +33,7 @@ Wire, routes, Telegram and dashboard follow in later steps of the same branch.
 
 - Names are self-described, and nothing can stop an operator approving an agent they don't know. The prompts say "claimed", and that is the honest limit.
 - A leaked invite used by an impostor before the real recipient, when the real recipient never accepts: nothing alarms. The defences are privacy, expiry and binding (default for known peers). Stated in the spec (§7).
-- Deviation from spec §4.4.4: after use, the derived MAC key is kept (0600 store) until expiry, to verify a second accept. Someone who reads that file could forge second accepts, which only PAUSES pairings (denial of service, not impersonation). The alternative, accepting unauthenticated second accepts, would hand that same pause to the relay. To be confirmed with Echo on the PR.
+- After use, the derived MAC key K is kept (0600 store) until expiry, to verify a second accept. Someone who reads that file could forge second accepts, which only PAUSES pairings (denial of service, not impersonation), and there is at most one pause per invite. The alternative, accepting unauthenticated second accepts, would hand that same pause to the relay. Echo agreed in review, and spec §4.4 step 4 now says exactly this.
 
 ## 3. Level-of-abstraction fit
 
@@ -165,6 +165,15 @@ Still to do: §8.5's second half, Justin with Scout on real agents (needs this b
 ## Step 11a addendum: binding by default (added 2026-10-14)
 
 Re-reading the spec against the build found a gap: §4.1 says `bind` is **set by default when the inviter starts from a peer it already has a trust profile for**. The dashboard could only make unbound invites. `GET /threadline/pairing/invites` now also returns `knownPeers` (the trust profiles with a fingerprint, never this agent's own). The dashboard asks "Who is it for?", with "Someone new" or a known agent, and a known agent binds the invite to it. That matters for re-pairing a peer that is already known (Scout and Dawn have an old 12-word pairing pending). The MCP action already took `fingerprint` to bind. Evidence: a dashboard test (known agents listed, the choice kept across refreshes, `bindFp` sent only for a known agent), and the production-path E2E (`knownPeers` contains the peer and never this agent, even when a profile for itself exists). Breakages: 2 of 2 caught. The self check at first SURVIVED, because no test agent had a profile for itself, so the test now creates one.
+
+## Review follow-ups (Echo, PR #2188, 2026-10-14)
+
+1. Spec §4.4 step 4 now says S is deleted and K kept only until `exp` (and K is also deleted on revoke). **At most one alarm and one demotion per invite**: a third or later VALID accept gets only the signed "used elsewhere" notice. Before this, each extra agent re-alarmed the operator.
+2. Spec §4.4 now defines VALID once, before the steps, and steps 2 and 3 refer to it. Text only.
+3. History stays stricter than the spec, with nothing written. The invite events are now recorded: `threadline/pairing-invite-events.jsonl` (0600, rotated past 1 MB) gets one line per event: created, revoked, received, approved, declined, accept-received, finished, not-them, second-accept, used-elsewhere, paired. Each line has the iid, a timestamp and the peer fingerprint, and never the secret or K.
+4. The "Who is it for?" picker leaves out profiles created only by a relay first contact (unless a pairing already exists). Each name already shows a fingerprint prefix.
+Out of scope, filed separately: `lint-no-direct-destructive` fails open on an unreadable file.
+Evidence: the flow tests (+3: a third accept does not re-alarm or re-demote, the event lines on both sides with no secret or K at 0600, decline and Not-them recorded) and the production-path E2E (first-contact profiles left out of the picker). Breakages: 3 of 3 caught.
 
 ## Class-Closure Declaration (display-only mirror)
 

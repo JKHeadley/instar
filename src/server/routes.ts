@@ -18648,7 +18648,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // binds it to that peer by default (spec §4.1). Names are self-described.
     const ownFp = ctx.threadlineRelayClient?.fingerprint?.toLowerCase();
     const knownPeers = (ctx.unifiedTrust?.trustManager?.listProfiles() ?? [])
-      .filter((p) => typeof p.fingerprint === 'string' && /^[0-9a-f]{32}$/.test(p.fingerprint) && p.fingerprint !== ownFp)
+      // A profile created only because an unknown agent messaged us once (relayFirstContact) is not a
+      // peer the operator knows; it is left out unless a pairing already exists (Echo's review).
+      .filter((p) => typeof p.fingerprint === 'string' && /^[0-9a-f]{32}$/.test(p.fingerprint) && p.fingerprint !== ownFp
+        && (!p.relayFirstContact || p.pairingState !== undefined))
       .map((p) => ({ fp: p.fingerprint as string, name: p.agent, pairingState: p.pairingState ?? null }));
     res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts(), knownPeers });
   });

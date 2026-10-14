@@ -87,10 +87,12 @@ one-time secret is sufficient. A PAKE protects low-entropy secrets, and S is not
    **The signature proves B holds idB's private key; the tag proves B was given the invite.** Both are
    required (r1 had only the tag, so whoever held S could submit any key).
 
-**4.4 Finish (A).** On `pair-invite-accept`, A:
+**4.4 Finish (A).** Definition used below: an accept is **VALID** when its `tag` verifies (constant
+time), `sigB` over T verifies, `fpB == first16(idB)`, `bind` (if set) equals `fpB`, and `idB` matches the
+relay-presented key for `fpB` (the 4.3.2 rule). On `pair-invite-accept`, A:
 1. looks up `iid`. If it's unknown or expired, drop. Rate-limited per sender fingerprint;
-2. if the invite is already `used` and this accept is VALID (tag, signature and fingerprint checks of
-   step 3 pass), then a leak happened, whatever the timing:
+2. if the invite is already `used` and this accept is VALID, then a leak happened, whatever the timing
+   (at most one alarm and one demotion per `iid`; a further VALID accept only gets the signed notice):
    - **the first acceptor is demoted** from `mutual-verified` (or from awaiting Finish) to
      `invite-accepted`, which is not credential-eligible, until the inviter re-confirms which agent they
      meant. This also covers the race where the inviter already tapped Finish before the second accept
@@ -102,10 +104,10 @@ one-time secret is sufficient. A PAKE protects low-entropy secrets, and S is not
      was already used by another agent". So the recipient's operator learns of it too. It is
      rate-limited like accepts.
    An invalid second accept is dropped silently;
-3. verifies `tag` (constant time) and `sig` against `idB`, checks `fpB == first16(idB)`, checks `bind`,
-   and compares `idB` with the relay-presented key for `fpB` (same rule as 4.3.2);
-4. marks the invite **used** and deletes `S`, then asks its operator to finish (§6), with names
-   labelled **claimed**;
+3. checks that the accept is VALID; an invalid accept is dropped silently;
+4. marks the invite **used**, deletes `S`, and keeps `K` (derived from `S`) only until `exp`, solely to
+   check that a later second accept is VALID; `K` is deleted at `exp`, like `S`. Then it asks its
+   operator to finish (§6), with names labelled **claimed**;
 5. on approval: stores `idB` as `mutual-verified` and sends B
    `pair-invite-finish = { iid, nonce2, sig = sigA(T with direction="finish") }`;
 6. B verifies `sig` against the stored `idA`, flips to `mutual-verified`, and replies

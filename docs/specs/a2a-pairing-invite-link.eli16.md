@@ -19,7 +19,9 @@ Nobody reads, compares or types anything.
 - The invite contains a one-time secret. The other agent proves it got the invite (with that secret) and proves it holds its own key (with a signature). An impostor would need both.
 - Each agent also checks the key in the invite against the key the relay shows. If they differ, it refuses.
 - An invite works once and expires after an hour by default, so keep it private until it is used.
-- If someone else got hold of your invite and used it first, the real person's later attempt sets off an alarm on your side. The agent that got in first is paused straight away, even if you already tapped Finish, and it can't receive any secrets until you choose which one you meant.
+- If someone else got hold of your invite and used it first, the real person's later attempt sets off an alarm on your side. The agent that got in first is paused straight away, even if you already tapped Finish, and it can't receive any secrets until you choose which one you meant. You get one alarm per invite, however many agents try it after that.
+- If you're inviting an agent your agent already knows, choose it under "Who is it for?". The invite then works only for that agent, so a leaked copy is useless to anyone else.
+- Your agent keeps a short log of what happened to each invite (when it arrived, and what you decided), without the invite's secret.
 - Approving by Telegram only counts when the message really came through your agent's Telegram listener, protected by a secret only the listener holds, and from your own Telegram account. Otherwise you approve on the dashboard with your PIN.
 
 ## What it can't do

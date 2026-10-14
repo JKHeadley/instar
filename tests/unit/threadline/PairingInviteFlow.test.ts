@@ -322,3 +322,55 @@ describe('invite flow: operator decisions and the recipient list', () => {
     expect(B.flow.listPendingAccepts()).toEqual([]);
   });
 });
+
+describe('invite flow: review follow-ups (Echo, PR #2188)', () => {
+  it('one alarm and one demotion per invite: a THIRD valid accept only gets the signed notice', async () => {
+    const net = new Net();
+    const A = makeAgent(net, 'scout'); const B = makeAgent(net, 'carl'); const M = makeAgent(net, 'mallory'); const N = makeAgent(net, 'nemo');
+    const demotions: string[] = [];
+    const orig = A.trust.demoteInvitePairing.bind(A.trust);
+    A.trust.demoteInvitePairing = (fp: string, reason: string) => { demotions.push(fp); return orig(fp, reason); };
+    const { iid, message } = await invite(net, A);
+    await acceptAndDeliver(net, B, message);
+    await acceptAndDeliver(net, M, message);
+    await acceptAndDeliver(net, N, message);
+    expect(A.events.filter((e) => e.kind === 'second-accept-alarm')).toHaveLength(1);
+    expect(demotions).toEqual([B.fp]);
+    expect(M.events.some((e) => e.kind === 'invite-used-elsewhere')).toBe(true);
+    expect(N.events.some((e) => e.kind === 'invite-used-elsewhere')).toBe(true);
+    expect(A.store.getInternal(iid)?.secondAccept?.fp).toBe(M.fp); // the alarm names the first leak
+  });
+
+  it('every invite event is recorded (iid, time, decision) on both sides, and never the secret or the MAC key', async () => {
+    const net = new Net();
+    const A = makeAgent(net, 'scout'); const B = makeAgent(net, 'carl');
+    const { iid, message } = await invite(net, A);
+    await acceptAndDeliver(net, B, message);
+    A.flow.approveFinish(iid);
+    await net.pump();
+    const read = (dir: string) => fs.readFileSync(path.join(dir, 'threadline', 'pairing-invite-events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const a = read(A.dir), b = read(B.dir);
+    expect(a.map((e) => e.event)).toEqual(['created', 'accept-received', 'finished']);
+    expect(b.map((e) => e.event)).toEqual(['received', 'approved', 'paired']);
+    for (const e of [...a, ...b]) { expect(e.iid).toBe(iid); expect(Number.isNaN(Date.parse(e.at))).toBe(false); }
+    const inv = decodeInvite(findInviteToken(message)!);
+    const raw = fs.readFileSync(path.join(A.dir, 'threadline', 'pairing-invite-events.jsonl'), 'utf8') + fs.readFileSync(path.join(B.dir, 'threadline', 'pairing-invite-events.jsonl'), 'utf8');
+    expect(inv.ok && raw.includes(inv.invite.secret)).toBe(false);
+    expect(raw).not.toMatch(/macKey|secret/);
+    expect(fs.statSync(path.join(A.dir, 'threadline', 'pairing-invite-events.jsonl')).mode & 0o777).toBe(0o600);
+  });
+
+  it('decline and Not them are recorded as decisions', async () => {
+    const net = new Net();
+    const A = makeAgent(net, 'scout'); const B = makeAgent(net, 'carl');
+    const one = await invite(net, A);
+    const r = await B.flow.receiveInvite(one.message) as { iid: string };
+    B.flow.declineAccept(r.iid);
+    const two = await invite(net, A);
+    await acceptAndDeliver(net, B, two.message);
+    A.flow.rejectFinish(two.iid);
+    const read = (dir: string) => fs.readFileSync(path.join(dir, 'threadline', 'pairing-invite-events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).event);
+    expect(read(B.dir)).toContain('declined');
+    expect(read(A.dir)).toContain('not-them');
+  });
+});

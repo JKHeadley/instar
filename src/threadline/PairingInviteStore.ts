@@ -49,6 +49,12 @@ export interface StoredInvite {
 export type InviteSummary = Omit<StoredInvite, 'secret' | 'macKey'>;
 
 export const INVITE_STORE_FILE = 'pairing-invites.json';
+/** Invite events, one JSON line each (spec review: iid, time, decision). */
+export const INVITE_EVENTS_FILE = 'pairing-invite-events.jsonl';
+const INVITE_EVENTS_MAX_BYTES = 1024 * 1024;
+export type InviteEventName =
+  | 'created' | 'revoked' | 'received' | 'approved' | 'declined' | 'accept-received'
+  | 'finished' | 'not-them' | 'second-accept' | 'used-elsewhere' | 'paired';
 /** Closed invites are kept this long (for the second-accept alarm and the dashboard), then dropped. */
 const CLOSED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
@@ -166,8 +172,24 @@ export class PairingInviteStore {
     if (!inv || inv.state !== 'open') return false;
     inv.state = 'revoked';
     delete inv.secret;
+    delete inv.macKey;
     this.save();
+    this.appendEvent({ iid: inv.iid, event: 'revoked' });
     return true;
+  }
+
+  /**
+   * Append one invite event to `threadline/pairing-invite-events.jsonl` (0600): what happened to which
+   * invite, when, and the operator's decision. Never the secret or the MAC key. The file is rotated to
+   * `.1` past 1 MB, so it stays bounded. Best-effort: a failed append never breaks pairing.
+   */
+  appendEvent(e: { iid: string; event: InviteEventName; peerFp?: string; detail?: string }): void {
+    try {
+      const file = path.join(path.dirname(this.file), INVITE_EVENTS_FILE);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      try { if (fs.statSync(file).size > INVITE_EVENTS_MAX_BYTES) fs.renameSync(file, `${file}.1`); } catch { /* no file yet */ }
+      fs.appendFileSync(file, JSON.stringify({ at: this.now().toISOString(), ...e }) + '\n', { mode: 0o600 });
+    } catch { /* @silent-fallback-ok — the audit line is best-effort; pairing state is already recorded */ }
   }
 
   /** Every invite, without secrets, newest first. */

@@ -187,6 +187,11 @@ describe('invite pairing — production path', () => {
     const peers = (await call(A, 'GET', '/threadline/pairing/invites')).body.knownPeers as Array<{ fp: string; name: string }>;
     expect(peers.map((p) => p.fp)).toContain(B.fp);
     expect(peers.map((p) => p.fp)).not.toContain(A.fp);
+    // an agent that only ever messaged us once (relay first contact) is not offered (Echo's review)
+    A.boot.trustManager!.getOrCreateProfileByFingerprint('9'.repeat(32), 'stranger', { relayFirstContact: true });
+    const peers2 = (await call(A, 'GET', '/threadline/pairing/invites')).body.knownPeers as Array<{ fp: string }>;
+    expect(peers2.map((p) => p.fp)).not.toContain('9'.repeat(32));
+    expect(peers2.map((p) => p.fp)).toContain(B.fp);
         // accepting a further invite from an already-verified peer never downgrades that pairing
     expect(B.boot.trustManager!.isCredentialShareAllowedByFingerprint(A.fp)).toBe(true);
   }, 60_000);
