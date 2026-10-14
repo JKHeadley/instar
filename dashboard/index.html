@@ -1056,6 +1056,11 @@
     .pair-word input { flex: 1; min-width: 0; padding: 6px; font-family: ui-monospace, monospace; font-size: 15px; }
     .pair-meta { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
     .pair-waiting { border-color: #1f6feb; }
+    #pairNotice:empty { display: none; }
+    .pair-pin { width: 160px; padding: 8px; font-size: 16px; }
+    .pair-nav-badge { margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: #1f6feb; color: #fff; font-size: 12px; font-weight: 600; }
+    /* On a phone the header has no room left: the badge floats on the menu button's corner and takes no width. */
+    @media (max-width: 640px) { .pair-nav-badge-word { display: none; } #navToggle { position: relative; } .pair-nav-badge { position: absolute; top: -7px; right: -7px; margin: 0; padding: 1px 6px; } }
     .pair-alarm { border-color: #f85149; background: rgba(248, 81, 73, 0.08); }
     .pair-invite-text { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 13px; padding: 8px; }
     @media (max-width: 640px) {
@@ -4186,8 +4191,8 @@
         <strong>Pair with another agent</strong>
         <div class="mnd-hint">Pairing proves another agent is really who it says it is, before it can be sent anything secret.</div>
         <div id="pairNotice" class="mnd-notice"></div>
+        <div id="pairPinRow" class="pair-row" style="display:none"><label for="pairPin" class="pair-step-title" style="margin:0">Your PIN, to approve (asked once):</label><input type="password" id="pairPin" class="mnd-pin pair-pin" inputmode="numeric" autocomplete="off" /></div>
         <div id="pairPending"></div>
-        <div id="pairPinRow" class="pair-row"><input type="password" id="pairPin" class="mnd-pin" placeholder="Your PIN (asked once)" autocomplete="off" /></div>
         <div class="pair-step">
           <div class="pair-step-title">Invite an agent</div>
           <div class="pair-row"><select id="pairTtl"><option value="60">Valid for 1 hour</option><option value="1440">Valid for 24 hours</option></select>
@@ -4232,7 +4237,7 @@
           </span>
         </label>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
           <div>
             <div style="font-weight:600;font-size:13px;margin-bottom:6px">Allow-list</div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Always auto-create topics for these remote agents (overrides "auto-create off").</div>
@@ -4259,7 +4264,7 @@
       <!-- Conversation observability — threads list + message stream + search -->
       <div style="border:1px solid var(--border);border-radius:8px;padding:0;display:flex;flex-direction:column;min-height:480px">
         <!-- Toolbar -->
-        <div style="display:flex;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
           <div style="font-weight:600">Conversations</div>
           <div style="flex:1"></div>
           <input type="search" id="tlObsSearchInput" placeholder="search messages…" style="padding:6px 8px;font-size:12px;width:220px" oninput="tlObsSearchDebounced(this.value)" />
@@ -10492,6 +10497,7 @@
           root: $('pairCard'), notice: $('pairNotice'), pending: $('pairPending'), open: $('pairOpen'), list: $('pairList'),
           pin: $('pairPin'), pinRow: $('pairPinRow'), ttl: $('pairTtl'), inviteOut: $('pairInviteOut'), inviteIn: $('pairInviteIn'),
           tabButton: document.querySelector('.tab[data-tab="threadline"]'),
+          navToggle: $('navToggle'),
         };
         const fetchImpl = (url, opts = {}) => fetch(url, {
           ...opts,

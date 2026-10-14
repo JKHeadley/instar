@@ -13,7 +13,8 @@
  *     their content actually changed; none of them holds an input.
  *  2. The PIN is asked once per page: after one accepted use it is held in this module's
  *     memory (never storage) until the page is reloaded. A refused PIN is forgotten.
- *  3. Decisions waiting for the operator come first, and the Threadline tab shows a count.
+ *  3. Decisions waiting for the operator come first, with a count on the Threadline tab AND on
+ *     the header menu button (the tabs sit behind it, so a count only on the tab is invisible).
  *
  * Same shape as mandates.js: pure renderers + createController({ doc, els, fetchImpl }).
  */
@@ -34,6 +35,8 @@ const STATE_LABEL = {
 
 const claimed = (agent, owner) =>
   `the agent that calls itself <strong>${esc(agent || 'unknown')}</strong>${owner ? `, which says it belongs to <strong>${esc(owner)}</strong>` : ''}`;
+
+const cap = (h) => h.charAt(0).toUpperCase() + h.slice(1);
 
 const timeLeft = (exp, now = Date.now()) => {
   const ms = Date.parse(exp) - now;
@@ -73,7 +76,7 @@ export function renderPending(data, now = Date.now()) {
   }
   for (const i of finishPrompts(data?.invites)) {
     parts.push(`<div class="pair-card pair-waiting" data-finish-prompt="${esc(i.iid)}">
-      <div>${claimed(i.acceptor.agent, i.acceptor.owner)} accepted your invite. Finish only if that is who you sent it to.</div>
+      <div>${cap(claimed(i.acceptor.agent, i.acceptor.owner))} accepted your invite. Finish only if that is who you sent it to.</div>
       <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-finish="${esc(i.iid)}">Finish</button>
       <button class="mnd-btn mnd-btn-quiet mnd-btn-danger" data-not-them="${esc(i.iid)}">Not them</button></div></div>`);
   }
@@ -129,8 +132,10 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     el.innerHTML = html;
   }
 
+  // The PIN field sits right above the decisions and shows only while one waits and no PIN is
+  // held: a person meets it before the button that needs it, and never otherwise.
   function showPinRow() {
-    if (els.pinRow) els.pinRow.style.display = heldPin ? 'none' : '';
+    if (els.pinRow) els.pinRow.style.display = !heldPin && pendingCount(data) > 0 ? '' : 'none';
   }
 
   function render() {
@@ -141,6 +146,23 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     if (els.tabButton) {
       const base = els.tabButton.dataset.baseLabel || (els.tabButton.dataset.baseLabel = els.tabButton.textContent);
       els.tabButton.textContent = n > 0 ? `${base} (${n})` : base;
+    }
+    // The tabs sit behind the header menu button, so the count must also show THERE or nobody
+    // sees it (found walking the flow as a person, 2026-10-14).
+    if (els.navToggle) {
+      let badge = els.navToggle.querySelector('[data-pair-badge]');
+      if (!badge && n > 0) {
+        badge = doc.createElement('span');
+        badge.setAttribute('data-pair-badge', '');
+        badge.className = 'pair-nav-badge';
+        els.navToggle.appendChild(badge);
+      }
+      if (badge) {
+        // On a phone only the number shows (the word would push the header past the screen).
+        badge.innerHTML = n > 0 ? `${n}<span class="pair-nav-badge-word"> waiting</span>` : '';
+        badge.setAttribute('aria-label', n > 0 ? `${n} pairing decision${n === 1 ? '' : 's'} waiting` : '');
+        badge.style.display = n > 0 ? '' : 'none';
+      }
     }
     showPinRow();
   }

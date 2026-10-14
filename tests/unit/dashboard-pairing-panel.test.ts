@@ -23,13 +23,13 @@ const pendingAccept = { iid: 'ef'.repeat(16), claimedAgent: 'Scout', claimedOwne
 interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[] }
 
 function setup(server: Server, reply: (url: string, opts: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } })) {
-  const dom = new JSDOM(`<button class="tab" data-tab="threadline">Threadline</button>
+  const dom = new JSDOM(`<button id="navToggle">&#9776; <span>Sessions</span></button><button class="tab" data-tab="threadline">Threadline</button>
     <div id="root"><div id="notice"></div><div id="pending"></div><div id="pinRow"><input id="pin"></div>
     <select id="ttl"><option value="60">1h</option></select><div id="out"></div><div id="open"></div>
     <textarea id="in"></textarea><div id="list"></div></div>`);
   const doc = dom.window.document;
   const $ = (id: string) => doc.getElementById(id)! as any;
-  const els = { root: $('root'), notice: $('notice'), pending: $('pending'), open: $('open'), list: $('list'), pin: $('pin'), pinRow: $('pinRow'), ttl: $('ttl'), inviteOut: $('out'), inviteIn: $('in'), tabButton: doc.querySelector('.tab') as any };
+  const els = { root: $('root'), notice: $('notice'), pending: $('pending'), open: $('open'), list: $('list'), pin: $('pin'), pinRow: $('pinRow'), ttl: $('ttl'), inviteOut: $('out'), inviteIn: $('in'), tabButton: doc.querySelector('.tab') as any, navToggle: $('navToggle') };
   const calls: Array<{ url: string; opts: any }> = [];
   const fetchImpl = async (url: string, opts: any = {}) => {
     calls.push({ url, opts });
@@ -119,6 +119,7 @@ describe('pairing card — controller', () => {
     expect(JSON.parse(calls.find((x) => x.url.endsWith('/approve'))!.opts.body)).toEqual({ pin: '135790' });
     expect(c.hasPin()).toBe(true);
     expect(els.pinRow.style.display).toBe('none');
+    expect(els.pending.innerHTML).toContain('The agent that calls itself'); // a sentence starts with a capital
     await click(c, els.pending.querySelector('[data-finish]'));
     expect(JSON.parse(calls.find((x) => x.url.endsWith('/finish'))!.opts.body)).toEqual({ pin: '135790' });
   });
@@ -130,7 +131,7 @@ describe('pairing card — controller', () => {
     els.pin.value = '0000';
     await click(c, els.pending.querySelector('[data-finish]'));
     expect(c.hasPin()).toBe(false);
-    expect(els.pinRow.style.display).toBe('');
+    expect(els.pinRow.style.display).toBe(''); // a decision still waits, so the field comes back
     expect(els.notice.textContent).toMatch(/not accepted/);
   });
 
@@ -147,14 +148,18 @@ describe('pairing card — controller', () => {
     expect(els.pending.innerHTML).toContain('data-approve');
   });
 
-  it('the Threadline tab shows how many decisions wait', async () => {
+  it('the Threadline tab AND the header menu button show how many decisions wait', async () => {
     const server = { ...empty(), invites: [usedInvite], pendingAccepts: [pendingAccept] };
     const { els, c } = setup(server);
     await c.load();
     expect(els.tabButton.textContent).toBe('Threadline (2)');
+    // the tabs hide behind the header menu button, so the count shows there too
+    expect(els.navToggle.querySelector('[data-pair-badge]').textContent).toBe('2 waiting');
+    expect(els.navToggle.querySelector('[data-pair-badge]').getAttribute('aria-label')).toBe('2 pairing decisions waiting');
     server.invites = []; server.pendingAccepts = [];
     await c.load();
     expect(els.tabButton.textContent).toBe('Threadline');
+    expect(els.navToggle.querySelector('[data-pair-badge]').style.display).toBe('none');
   });
 
   it('cancel and decline need no PIN', async () => {
@@ -165,6 +170,18 @@ describe('pairing card — controller', () => {
     await click(c, els.pending.querySelector('[data-decline]'));
     expect(calls.find((x) => x.url === `/threadline/pairing/invites/${IID}`)!.opts.method).toBe('DELETE');
     expect(calls.some((x) => x.url.endsWith('/decline'))).toBe(true);
+  });
+});
+
+describe('pairing card — the PIN field appears only when a decision waits', () => {
+  it('hidden with nothing waiting, shown above the decisions when one arrives', async () => {
+    const server = empty();
+    const { els, c } = setup(server);
+    await c.load();
+    expect(els.pinRow.style.display).toBe('none');
+    server.pendingAccepts = [pendingAccept];
+    await c.load();
+    expect(els.pinRow.style.display).toBe('');
   });
 });
 
@@ -180,6 +197,8 @@ describe('pairing card — page wiring', () => {
   it('the panel starts at login (for the tab count) and the page offers a reload when the server version changes', () => {
     expect((html.match(/startPairingPanel\(\);/g) || []).length).toBeGreaterThanOrEqual(2);
     expect(html).toContain('id="dashVersionBar"');
+    // the PIN field comes BEFORE the decisions it unlocks
+    expect(html.indexOf('id="pairPinRow"')).toBeLessThan(html.indexOf('id="pairPending"'));
     expect(html).toMatch(/h\.version !== window\.__dashServerVersion/);
   });
 });

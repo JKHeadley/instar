@@ -149,6 +149,19 @@ No production code changed. `tests/e2e/threadline/pairing-invite-failure-paths.t
   - Dashboard: labelled "Waiting for the other side to finish" (step 8).
 - **Evidence:** `tests/integration/threadline/pair-mcp-tool.test.ts` (+2: invite through the server with bind and TTL passed, the operator-sends instruction, and errors when no server or refused). `tests/unit/PostUpdateMigrator-verifiedPairing.test.ts` (the v3 block: v1 and v2 `###` sections replaced with what follows kept, the scaffold's bold v2 section replaced with no duplicate, a v3 template untouched, idempotent). Every test that reads the template, the site docs or the migrator: 147 files, 1303 of 1304 pass. The one failure (`agent-owned-memory`, "a throwaway temp-dir agent never links") also fails on a clean HEAD worktree in the same `/tmp` location, because the test's own directory is a temp dir there. It is environmental, not this change.
 
+## Step 11a: my own walkthrough, as the person (added 2026-10-14)
+
+Spec §8.5 says passing tests is not enough. I ran two agents built from this branch (real bootstrap, a real AgentServer serving the real dashboard, a real in-process relay) and drove both dashboards in a real browser as a person would: log in with the PIN, open the menu, open the Threadline tab, make an invite, wait past a refresh, paste it on the other agent (in a phone-sized window), approve, RELOAD the inviter's page, finish, and check both lists. The flow took 26–39 s of clicking on a heavily loaded machine, with no page errors. Both sides ended "Paired".
+
+It found four problems the unit tests had passed:
+- **The waiting count was invisible.** The tabs sit behind the header menu button, so a count only on the Threadline tab is never seen. The count now also shows on the menu button.
+- **The PIN came after the button that needed it.** A person tapped Approve and was then told to enter a PIN. The PIN field now sits above the decisions and shows only while one waits and no PIN is held.
+- **On a phone the badge pushed the page off-screen** (the header went 390 → 435 px and the card's right edge went to 415). On narrow screens the badge is now just the number, floating on the menu button's corner: header 390, card 20–370. The tab's existing bridge allow/deny grid and conversation filter row also overflowed a phone (the tab's scroll width was 695). They now wrap, and the scroll width is 390.
+- **Copy:** the Finish prompt started with a lowercase "the agent…". It now starts with a capital. An empty notice area left a gap and is now hidden when empty.
+
+Breakages for these: 3 of 3 caught (the PIN field only when needed, the header badge, the capital). Tests: `dashboard-pairing-panel.test.ts` 14.
+Still to do: §8.5's second half, Justin with Scout on real agents (needs this build on Scout), and the Telegram path on a real lifeline.
+
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action` — closure **n/a** (negative declaration). The only repeated action this change adds is the finish send in `PairingInviteFlow.sendFinishWithRetry`. It starts only when an operator approves Finish, sends at most 5 times over about 10 minutes, and stops on the peer's ack. It is not self-triggered and cannot re-arm itself. Covered by `tests/unit/threadline/PairingInviteFlow.test.ts` ("finish retries are bounded (5)").
