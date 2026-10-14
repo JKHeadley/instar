@@ -181,7 +181,13 @@ describe('invite pairing — production path', () => {
     await new Promise((r) => setTimeout(r, 1500));
     const after = await call(A, 'GET', '/threadline/pairing/invites');
     expect((after.body.invites as Array<Record<string, unknown>>).find((x) => x.iid === second.body.iid)!.state).toBe('revoked');
-    // accepting a further invite from an already-verified peer never downgrades that pairing
+    // the list offers known agents to bind an invite to (spec §4.1), never this agent itself,
+    // even when a profile for it exists (replication or a self-message can create one)
+    A.boot.trustManager!.getOrCreateProfileByFingerprint(A.fp, 'self');
+    const peers = (await call(A, 'GET', '/threadline/pairing/invites')).body.knownPeers as Array<{ fp: string; name: string }>;
+    expect(peers.map((p) => p.fp)).toContain(B.fp);
+    expect(peers.map((p) => p.fp)).not.toContain(A.fp);
+        // accepting a further invite from an already-verified peer never downgrades that pairing
     expect(B.boot.trustManager!.isCredentialShareAllowedByFingerprint(A.fp)).toBe(true);
   }, 60_000);
 });

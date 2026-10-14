@@ -179,6 +179,7 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
       }
       if (inv.status !== 200) { note(`Could not load invites: ${inv.body?.error ?? `HTTP ${inv.status}`}`, 'error'); return; }
       data = { invites: inv.body?.invites ?? [], pendingAccepts: inv.body?.pendingAccepts ?? [], pairings: pr.status === 200 ? (pr.body?.pairings ?? []) : data.pairings };
+      renderForChoices(inv.body?.knownPeers ?? []);
       render();
     } catch (e) {
       note(`Could not reach the agent: ${e?.message ?? e}`, 'error');
@@ -208,9 +209,24 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     await load();
   }
 
+  // "Who is it for?": a known agent binds the invite to it (spec §4.1: the default whenever the
+  // inviter starts from a peer it already knows). Rebuilt only when the list changes, and the
+  // operator's current choice is kept.
+  function renderForChoices(peers) {
+    if (!els.forPeer) return;
+    const key = JSON.stringify(peers.map((p) => [p.fp, p.name]));
+    if (lastHtml.get('for') === key) return;
+    const keep = els.forPeer.value;
+    lastHtml.set('for', key);
+    const opt = (fpValue, label) => { const o = doc.createElement('option'); o.value = fpValue; o.textContent = label; return o; };
+    els.forPeer.replaceChildren(opt('', 'Someone new'), ...peers.map((p) => opt(p.fp, `${p.name || 'Unknown agent'} (${p.fp.slice(0, 6)}…)`)));
+    if (peers.some((p) => p.fp === keep)) els.forPeer.value = keep;
+  }
+
   async function makeInvite() {
     const ttlMinutes = els.ttl ? Number(els.ttl.value) || 60 : 60;
-    const { status, body } = await post('/threadline/pairing/invites', { ttlMinutes });
+    const bindFp = els.forPeer ? String(els.forPeer.value || '') : '';
+    const { status, body } = await post('/threadline/pairing/invites', bindFp ? { ttlMinutes, bindFp } : { ttlMinutes });
     if (status !== 200 || !body?.message) { note(`Could not make an invite: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
     // Shown until the operator closes it; no timer touches this box.
     els.inviteOut.innerHTML = `<div class="pair-step-title">Send this to the other person, privately, in any app. It works once.</div>

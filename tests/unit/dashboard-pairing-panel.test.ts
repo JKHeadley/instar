@@ -20,20 +20,20 @@ const openInvite = { iid: IID, state: 'open', exp: later(60), createdAt: later(0
 const usedInvite = { iid: IID, state: 'used', exp: later(60), createdAt: later(0), acceptor: { fp: FP, key: 'k', agent: 'Carl', owner: 'Carl O', acceptedAt: later(1) } };
 const pendingAccept = { iid: 'ef'.repeat(16), claimedAgent: 'Scout', claimedOwner: 'Justin', inviterFp: FP, exp: later(30), checkCode: 'K7Q2' };
 
-interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[] }
+interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[]; knownPeers?: any[] }
 
 function setup(server: Server, reply: (url: string, opts: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } })) {
   const dom = new JSDOM(`<button id="navToggle">&#9776; <span>Sessions</span></button><button class="tab" data-tab="threadline">Threadline</button>
     <div id="root"><div id="notice"></div><div id="pending"></div><div id="pinRow"><input id="pin"></div>
-    <select id="ttl"><option value="60">1h</option></select><div id="out"></div><div id="open"></div>
+    <select id="for"></select><select id="ttl"><option value="60">1h</option></select><div id="out"></div><div id="open"></div>
     <textarea id="in"></textarea><div id="list"></div></div>`);
   const doc = dom.window.document;
   const $ = (id: string) => doc.getElementById(id)! as any;
-  const els = { root: $('root'), notice: $('notice'), pending: $('pending'), open: $('open'), list: $('list'), pin: $('pin'), pinRow: $('pinRow'), ttl: $('ttl'), inviteOut: $('out'), inviteIn: $('in'), tabButton: doc.querySelector('.tab') as any, navToggle: $('navToggle') };
+  const els = { root: $('root'), notice: $('notice'), pending: $('pending'), open: $('open'), list: $('list'), pin: $('pin'), pinRow: $('pinRow'), ttl: $('ttl'), forPeer: $('for'), inviteOut: $('out'), inviteIn: $('in'), tabButton: doc.querySelector('.tab') as any, navToggle: $('navToggle') };
   const calls: Array<{ url: string; opts: any }> = [];
   const fetchImpl = async (url: string, opts: any = {}) => {
     calls.push({ url, opts });
-    if (url === '/threadline/pairing/invites' && !opts.method) return { status: 200, json: async () => ({ invites: server.invites, pendingAccepts: server.pendingAccepts }) };
+    if (url === '/threadline/pairing/invites' && !opts.method) return { status: 200, json: async () => ({ invites: server.invites, pendingAccepts: server.pendingAccepts, knownPeers: server.knownPeers ?? [] }) };
     if (url === '/threadline/pairing' && !opts.method) return { status: 200, json: async () => ({ pairings: server.pairings }) };
     const r = reply(url, opts);
     return { status: r.status, json: async () => r.body };
@@ -170,6 +170,23 @@ describe('pairing card — controller', () => {
     await click(c, els.pending.querySelector('[data-decline]'));
     expect(calls.find((x) => x.url === `/threadline/pairing/invites/${IID}`)!.opts.method).toBe('DELETE');
     expect(calls.some((x) => x.url.endsWith('/decline'))).toBe(true);
+  });
+});
+
+describe('pairing card — inviting a known agent binds the invite to it (spec §4.1)', () => {
+  it('lists known agents, keeps the choice across refreshes, and sends bindFp for a known agent only', async () => {
+    const server = { ...empty(), knownPeers: [{ fp: FP, name: 'carl', pairingState: null }] };
+    const { els, c, calls } = setup(server, () => ({ status: 200, body: { ok: true, iid: IID, exp: later(60), message: 'x tlinv1:a.b' } }));
+    await c.load();
+    expect([...els.forPeer.options].map((o: any) => o.textContent)).toEqual(['Someone new', 'carl (ababab…)']);
+    els.forPeer.value = FP;
+    await c.load();
+    expect(els.forPeer.value).toBe(FP);
+    await click(c, { dataset: { makeInvite: '' } });
+    expect(JSON.parse(calls.filter((x) => x.opts.method === 'POST').at(-1)!.opts.body)).toEqual({ ttlMinutes: 60, bindFp: FP });
+    els.forPeer.value = '';
+    await click(c, { dataset: { makeInvite: '' } });
+    expect(JSON.parse(calls.filter((x) => x.opts.method === 'POST').at(-1)!.opts.body)).toEqual({ ttlMinutes: 60 });
   });
 });
 

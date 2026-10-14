@@ -18644,7 +18644,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/threadline/pairing/invites', (req, res) => {
     const pi = invitesOrRefuse(req, res);
     if (!pi) return;
-    res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts() });
+    // knownPeers lets the dashboard start an invite FROM a peer this agent already knows, which
+    // binds it to that peer by default (spec §4.1). Names are self-described.
+    const ownFp = ctx.threadlineRelayClient?.fingerprint?.toLowerCase();
+    const knownPeers = (ctx.unifiedTrust?.trustManager?.listProfiles() ?? [])
+      .filter((p) => typeof p.fingerprint === 'string' && /^[0-9a-f]{32}$/.test(p.fingerprint) && p.fingerprint !== ownFp)
+      .map((p) => ({ fp: p.fingerprint as string, name: p.agent, pairingState: p.pairingState ?? null }));
+    res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts(), knownPeers });
   });
 
   // Revoke an open invite (making it useless). Bearer: revoking only removes an option.

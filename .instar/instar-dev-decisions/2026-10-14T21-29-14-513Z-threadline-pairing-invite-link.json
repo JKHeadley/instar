@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-14T21:29:14.513Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "read-only list field and an operator choice; the finish retry stays operator-driven and hard-bounded"
+  },
+  "verdict": "blocked"
+}

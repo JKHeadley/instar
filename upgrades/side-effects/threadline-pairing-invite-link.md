@@ -162,6 +162,10 @@ It found four problems the unit tests had passed:
 Breakages for these: 3 of 3 caught (the PIN field only when needed, the header badge, the capital). Tests: `dashboard-pairing-panel.test.ts` 14.
 Still to do: §8.5's second half, Justin with Scout on real agents (needs this build on Scout), and the Telegram path on a real lifeline.
 
+## Step 11a addendum: binding by default (added 2026-10-14)
+
+Re-reading the spec against the build found a gap: §4.1 says `bind` is **set by default when the inviter starts from a peer it already has a trust profile for**. The dashboard could only make unbound invites. `GET /threadline/pairing/invites` now also returns `knownPeers` (the trust profiles with a fingerprint, never this agent's own). The dashboard asks "Who is it for?", with "Someone new" or a known agent, and a known agent binds the invite to it. That matters for re-pairing a peer that is already known (Scout and Dawn have an old 12-word pairing pending). The MCP action already took `fingerprint` to bind. Evidence: a dashboard test (known agents listed, the choice kept across refreshes, `bindFp` sent only for a known agent), and the production-path E2E (`knownPeers` contains the peer and never this agent, even when a profile for itself exists). Breakages: 2 of 2 caught. The self check at first SURVIVED, because no test agent had a profile for itself, so the test now creates one.
+
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action` — closure **n/a** (negative declaration). The only repeated action this change adds is the finish send in `PairingInviteFlow.sendFinishWithRetry`. It starts only when an operator approves Finish, sends at most 5 times over about 10 minutes, and stops on the peer's ack. It is not self-triggered and cannot re-arm itself. Covered by `tests/unit/threadline/PairingInviteFlow.test.ts` ("finish retries are bounded (5)").

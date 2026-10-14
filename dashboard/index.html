@@ -4195,6 +4195,7 @@
         <div id="pairPending"></div>
         <div class="pair-step">
           <div class="pair-step-title">Invite an agent</div>
+          <div class="pair-row"><label for="pairFor" class="mnd-dim">Who is it for?</label><select id="pairFor"><option value="">Someone new</option></select></div>
           <div class="pair-row"><select id="pairTtl"><option value="60">Valid for 1 hour</option><option value="1440">Valid for 24 hours</option></select>
           <button class="mnd-btn mnd-btn-primary" data-make-invite>Make an invite</button></div>
           <div id="pairInviteOut"></div>
@@ -10495,7 +10496,7 @@
         const $ = (id) => document.getElementById(id);
         const els = {
           root: $('pairCard'), notice: $('pairNotice'), pending: $('pairPending'), open: $('pairOpen'), list: $('pairList'),
-          pin: $('pairPin'), pinRow: $('pairPinRow'), ttl: $('pairTtl'), inviteOut: $('pairInviteOut'), inviteIn: $('pairInviteIn'),
+          pin: $('pairPin'), pinRow: $('pairPinRow'), ttl: $('pairTtl'), forPeer: $('pairFor'), inviteOut: $('pairInviteOut'), inviteIn: $('pairInviteIn'),
           tabButton: document.querySelector('.tab[data-tab="threadline"]'),
           navToggle: $('navToggle'),
         };
