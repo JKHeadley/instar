@@ -321,3 +321,35 @@ export async function startPairingViaHttp(
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * Make a pairing invite via the agent server's `POST /threadline/pairing/invites`
+ * (docs/specs/a2a-pairing-invite-link.md). Grants nothing: the other side's operator approves,
+ * then this side's operator finishes (PIN or a lifeline-verified Telegram tap).
+ */
+export async function createPairingInviteViaHttp(
+  opts: { ttlMinutes?: number; bindFp?: string },
+  serverPort: number,
+  agentToken: string,
+): Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/pairing/invites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ ...(opts.ttlMinutes !== undefined ? { ttlMinutes: opts.ttlMinutes } : {}), ...(opts.bindFp ? { bindFp: opts.bindFp } : {}) }),
+    });
+    const raw = await response.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      /* tolerate a non-JSON body */
+    }
+    if (!response.ok) {
+      return { success: false, status: response.status, error: (parsed.error as string) || `HTTP ${response.status}` };
+    }
+    return { success: true, status: response.status, body: parsed };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

@@ -11,7 +11,14 @@ The 12-word check in verified pairing v2 asked a person to read 12 words, compar
 - If a second, valid accept arrives for a used invite (the invite leaked), the first acceptor is paused (new state `invite-accepted`, not credential-eligible) even if the inviter already finished. The inviter gets an alarm, and the late acceptor gets a signed "already used" notice.
 - New pairing state `invite-accepted`: the key is pinned but cannot receive credentials yet.
 
-Still dark behind `threadline.verifiedPairing.enabled`. The operator surfaces (routes, Telegram approval, dashboard) are added in the same release.
+How operators use it:
+- Routes: `POST /threadline/pairing/invites` (make), `GET` (list, plus invites waiting for this operator), `DELETE /:iid` (cancel), `POST /inspect` (read one you were sent), and `POST /:iid/approve`, `/finish` and `/not-them`, which need the dashboard PIN. The agent's Bearer token alone can make, list, cancel, inspect and decline, none of which grants anything.
+- Telegram: forwarding an invite to the agent opens Approve/Decline buttons, and Finish/Not-them prompts arrive in the lifeline topic. A tap counts only from the owner, through the lifeline (its secret), while the lifeline ingress guard enforces. The invite's secret never reaches a session, the message log, the lifeline's disk queue or any classifier.
+- Dashboard: the Threadline tab opens with a "Pair with another agent" card. Decisions waiting for you come first and are counted on the tab. You can make and copy an invite, cancel unused ones, and paste one you were sent. The PIN is asked once per page, nothing resets while you use it, and the page offers a reload when the server is updated. The 12-word panel is gone.
+- MCP: `threadline_pair` gains `action: "invite"`.
+- Existing agents' CLAUDE.md pairing section is replaced in place with the invite flow.
+
+Still dark behind `threadline.verifiedPairing.enabled`.
 
 ## What to Tell Your User
 

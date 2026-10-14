@@ -30,7 +30,7 @@ import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp, startPairingViaHttp } from './mcp-http-client.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
@@ -220,6 +220,8 @@ async function main(): Promise<void> {
       requestSecret: (params) => requestSecretViaHttp(params, serverPort),
       // Verified pairing v2: start a pending static-key pairing on the server (spec §3.2).
       startPairing: (peerFp) => startPairingViaHttp(peerFp, serverPort, agentToken),
+      // Pairing by invite: make an invite on the server (a2a-pairing-invite-link).
+      createInvite: (opts) => createPairingInviteViaHttp(opts, serverPort, agentToken),
       // This process holds its own trust-manager copy; re-read it before pairing status reads.
       reloadTrustBeforePairingRead: true,
       registry: registryClient,

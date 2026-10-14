@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-14T20:46:46.822Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 133,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/mcp-stdio-entry.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "operator-driven hard-bounded finish retry unchanged; step 10 adds an on-demand MCP invite action and docs, no repeated action"
+  },
+  "verdict": "pass"
+}

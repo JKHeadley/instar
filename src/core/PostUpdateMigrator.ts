@@ -8542,27 +8542,40 @@ When I run on more than one machine and a dashboard polls several pool-scope tab
     // section (12 words, a START step, typed comparison) REPLACES a v1 section in place rather
     // than appending a second block that contradicts it (Echo's review of #2173). Content-sniffed
     // on the start route, which only the v2 text names; idempotent.
+    // v3 (docs/specs/a2a-pairing-invite-link.md): pairing BY INVITE replaces the 12-word check, which
+    // Justin rejected on 2026-10-13. The section is REPLACED in place whatever version is present, in
+    // either form an agent can have: the migrator's "### " heading or the scaffold's bold inline
+    // heading. Content-sniffed on the invites route, which only v3 names; idempotent.
     {
-      const V1_HEADING = '### Verified Pairing — is my channel to a peer mutually verified before I share a secret?';
-      const V2_MARKER = '/threadline/pairing/:peerFp/start';
-      const verifiedPairingSection = `${V1_HEADING}
+      const HEADING = '### Verified Pairing — is my channel to a peer mutually verified before I share a secret?';
+      const BOLD_HEADING = '**Verified Pairing — is my channel to a peer mutually verified before I share a secret?**';
+      const V3_MARKER = '/threadline/pairing/invites';
+      const verifiedPairingSection = `${HEADING}
 
-Before I send another agent a credential, that peer must be **mutually verified** out-of-band, not merely reachable. The relay proves an endpoint holds *a* key; it does NOT prove fingerprint \`63b1…\` belongs to the peer I actually trust (a relay could substitute keys). Verified pairing closes that with a **12-word check**: both sides derive the same 12 words from the two identity keys, a human compares them over a channel the relay cannot touch, and on a match the operator confirms. Ships DARK behind \`threadline.verifiedPairing.enabled\` (dev-agent gated; routes 503 when off); a credential to an unverified peer is REFUSED fail-closed.
-- **Is my channel to <peer> verified?** (Registry First): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\` → \`{ peerFp, peerName, state, verifiedAt?, trustSource }\` (\`?scope=pool\` merges machines). \`GET /threadline/health\` carries \`mutualVerifiedCount\`.
-- **To pair:** START with \`threadline_pair\` \`action: "start"\` (or \`POST ${V2_MARKER}\` with my Bearer token); the peer starts from their side too. Each operator reads their own 12 words (\`GET /threadline/pairing/:peerFp\` with the dashboard PIN) and TYPES the other side's 12 words to confirm (\`POST /threadline/pairing/:peerFp/verify {words, pin}\`); any difference is a denial. The words are not secret; the comparison is the protection. My Bearer token cannot confirm.
-- **A denied match stays denied** until an operator clears it with the PIN (\`clearFailed: true\` on start). A rotated identity key resets a pairing to pending.
-- **The credential rule (load-bearing):** NEVER send a peer a secret until that peer is \`mutual-verified\`. The gate is enforced at the relay-send funnel and the credential-ingestion chokepoint, keyed on WHO the peer is, and it also refuses unless the encryption key is the one derived from the peer's verified identity key (\`encryption-key-not-bound\`).
-- **When to use** (PROACTIVE): the moment a credential needs to go agent-to-agent, FIRST check \`GET /threadline/pairing\`; if the peer is not verified, pair first — never paste the secret into an ordinary message. Spec: \`docs/specs/secure-a2a-verified-pairing.md\`.
+Before I send another agent a credential, that peer must be **mutually verified**, not merely reachable. The relay proves an endpoint holds *a* key; it does NOT prove the key belongs to the agent I mean (a relay could substitute keys). Pairing closes that **by invite**: my operator sends a one-time invite through an app they already use with the other operator (never through the relay), that operator approves it, mine taps Finish, and each side pins the other's identity key. Ships DARK behind \`threadline.verifiedPairing.enabled\` (routes 503 when off); a credential to an unverified peer is REFUSED fail-closed.
+- **Is my channel to <peer> verified?** (Registry First): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\` → \`{ peerFp, peerName, state, verifiedAt?, trustSource }\`. \`invite-accepted\` means waiting for the inviter's Finish (not credential-eligible yet). \`GET /threadline/health\` carries \`mutualVerifiedCount\`.
+- **To pair:** \`threadline_pair\` \`action: "invite"\` (or \`POST /threadline/pairing/invites\` with my Bearer token; a \`fingerprint\`/\`bindFp\` binds it to a peer I already know). I give the returned message to MY OPERATOR to send privately. I never post an invite or send it over Threadline: it works once, expires (1 h by default), and whoever uses it first is the one offered to my operator.
+- **Approving is never mine:** the other operator approves (forwarding the invite to their agent's Telegram and tapping Approve, or pasting it on their dashboard's Threadline tab with the PIN), then my operator taps Finish (Telegram or the dashboard). My Bearer token cannot approve, accept or finish. \`GET /threadline/pairing/invites\` lists my invites and anything waiting for my operator.
+- **A leaked invite:** if a second agent uses the same invite, the first one is paused (no credentials) and my operator is alarmed. Make a new invite.
+- **An invite my operator forwards to me in Telegram** is taken by the server before it reaches me; I never handle invite text myself.
+- **The credential rule (load-bearing):** NEVER send a peer a secret until that peer is \`mutual-verified\`. The gate is enforced at the relay-send funnel and the credential-ingestion chokepoint, keyed on WHO the peer is, and it refuses unless the encryption key is the one derived from the peer's verified identity key (\`encryption-key-not-bound\`).
+- **When to use** (PROACTIVE): the moment a credential needs to go agent-to-agent, FIRST check \`GET /threadline/pairing\`; if the peer is not verified, make an invite and ask my operator to send it — never paste the secret into an ordinary message. Spec: \`docs/specs/a2a-pairing-invite-link.md\`. (The older 12-word check, \`threadline_pair start\`, still works for pairings already started that way.)
 `;
-      if (!content.includes(V2_MARKER)) {
-        const at = content.indexOf(V1_HEADING);
-        if (at >= 0) {
-          const next = content.indexOf('\n### ', at + V1_HEADING.length);
-          content = content.slice(0, at) + verifiedPairingSection + (next >= 0 ? content.slice(next + 1) : '');
-          result.upgraded.push('CLAUDE.md: replaced the Verified Pairing section with v2 (12 words, start, typed comparison)');
+      if (!content.includes(V3_MARKER)) {
+        const h = content.indexOf(HEADING);
+        const b = h >= 0 ? -1 : content.indexOf(BOLD_HEADING);
+        if (h >= 0) {
+          const next = content.indexOf('\n### ', h + HEADING.length);
+          content = content.slice(0, h) + verifiedPairingSection + (next >= 0 ? content.slice(next + 1) : '');
+          result.upgraded.push('CLAUDE.md: replaced the Verified Pairing section with pairing by invite');
+        } else if (b >= 0) {
+          // The scaffold's bold-inline section runs to the next blank-line-separated bold heading.
+          const next = content.indexOf('\n\n**', b + BOLD_HEADING.length);
+          content = content.slice(0, b) + verifiedPairingSection + (next >= 0 ? content.slice(next + 1) : '');
+          result.upgraded.push('CLAUDE.md: replaced the Verified Pairing section with pairing by invite');
         } else {
           content += '\n' + verifiedPairingSection;
-          result.upgraded.push('CLAUDE.md: added Secure A2A Verified Pairing awareness section');
+          result.upgraded.push('CLAUDE.md: added the Verified Pairing (by invite) section');
         }
         patched = true;
       }

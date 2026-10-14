@@ -132,39 +132,53 @@ describe('migrateClaudeMd — Verified Pairing awareness reaches EXISTING agents
   });
 });
 
-describe('migrateClaudeMd — Verified Pairing v2 REPLACES a v1 section in place', () => {
+describe('migrateClaudeMd — pairing BY INVITE (v3) replaces any earlier section in place', () => {
   let projectDir: string;
   let claudeMdPath: string;
   beforeEach(() => {
-    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-vp2-md-'));
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-vp3-md-'));
     fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
     claudeMdPath = path.join(projectDir, 'CLAUDE.md');
   });
   afterEach(() => {
-    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-verifiedPairing.test.ts:v2-cleanup' });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-verifiedPairing.test.ts:v3-cleanup' });
   });
 
-  it('replaces the v1 section with v2, keeps what follows, and is idempotent', () => {
-    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\n### Verified Pairing — is my channel to a peer mutually verified before I share a secret?\n\nv1 text: each side renders 6 words.\n\n### Something Else\n\nkeep me\n');
+  it.each([
+    ['a v1 (6 words) heading section', '6 words'],
+    ['a v2 (12 words) heading section', '12 words. POST /threadline/pairing/:peerFp/start'],
+  ])('replaces %s with the invite flow, keeps what follows, and is idempotent', (_n, oldText) => {
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\n### Verified Pairing — is my channel to a peer mutually verified before I share a secret?\n\nold text: ${oldText}\n\n### Something Else\n\nkeep me\n`);
     const first = runClaudeMdMigration(projectDir);
-    expect(first.upgraded.some((u) => u.includes('replaced the Verified Pairing section'))).toBe(true);
+    expect(first.upgraded.some((u) => u.includes('pairing by invite'))).toBe(true);
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
-    expect(after).not.toContain('6 words');
-    expect(after).toContain('12 words');
-    expect(after).toContain('/threadline/pairing/:peerFp/start');
+    expect(after).not.toContain(oldText);
+    expect(after).toContain('/threadline/pairing/invites');
+    expect(after).toContain('action: "invite"');
     expect(after).toContain('### Something Else\n\nkeep me');
-    expect(after.match(/### Verified Pairing — is my channel/g)!.length).toBe(1);
+    expect(after.match(/Verified Pairing — is my channel/g)!.length).toBe(1);
     runClaudeMdMigration(projectDir);
     expect(fs.readFileSync(claudeMdPath, 'utf-8')).toBe(after);
   });
 
-  it('leaves a new agent whose template already teaches v2 untouched', () => {
+  it("replaces the scaffold's bold-inline v2 section too, so an agent never holds two contradicting sections", () => {
+    const bold = '**Verified Pairing — is my channel to a peer mutually verified before I share a secret?** — 12 words, typed.\n- **To pair / verify:** START with threadline_pair start (POST /threadline/pairing/:peerFp/start).';
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\nintro\n\n${bold}\n\n**Multi-Machine Session Pool** — keep me\n`);
+    runClaudeMdMigration(projectDir);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).not.toContain('12 words, typed');
+    expect(after).toContain('/threadline/pairing/invites');
+    expect(after).toContain('**Multi-Machine Session Pool** — keep me');
+    expect(after.match(/Verified Pairing — is my channel/g)!.length).toBe(1);
+  });
+
+  it('leaves a new agent whose template already teaches the invite flow untouched', () => {
     const md = generateClaudeMd('test', 'TestAgent', 4042, false);
-    expect(md).toContain('/threadline/pairing/:peerFp/start');
-    expect(md).toContain('12 words');
-    expect(md).not.toMatch(/renders 6 words/);
+    expect(md).toContain('/threadline/pairing/invites');
+    expect(md).toContain('action: "invite"');
+    expect(md).not.toMatch(/TYPES the other side's 12 words/);
     fs.writeFileSync(claudeMdPath, md);
     const r = runClaudeMdMigration(projectDir);
-    expect(r.upgraded.some((u) => u.includes('Verified Pairing'))).toBe(false);
+    expect(r.upgraded.some((u) => u.includes('Verified Pairing') || u.includes('pairing by invite'))).toBe(false);
   });
 });

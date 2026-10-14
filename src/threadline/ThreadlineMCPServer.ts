@@ -121,6 +121,11 @@ export interface ThreadlineMCPDeps {
    */
   startPairing?: (peerFp: string) => Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }>;
   /**
+   * Pairing by invite: make an invite on the agent server (POST /threadline/pairing/invites).
+   * Optional, like startPairing.
+   */
+  createInvite?: (opts: { ttlMinutes?: number; bindFp?: string }) => Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }>;
+  /**
    * True in the stdio MCP process, whose trust manager is a separate in-memory copy loaded
    * at startup: pairing reads reload it from disk first so a pairing the server just started
    * is visible (spec §3.6). Never set in-process, where a reload could drop debounced writes.
@@ -1226,17 +1231,17 @@ export class ThreadlineMCPServer {
   private registerPairTool(): void {
     this.mcpServer.tool(
       'threadline_pair',
-      'Inspect and drive Secure A2A verified pairings (mutual SAS identity verification). ' +
-      'start: begin a pairing with a peer (records it as pending; both sides start independently and ' +
-      'see the same 12 words). status: list pairings and show the local SAS words for a pending peer so ' +
-      'the operator can compare them out-of-band against the peer\'s SAS. verify/deny: the actual ' +
-      'confirmation is PIN-gated — these return the dashboard path the operator must use (the agent cannot self-confirm a pairing).',
+      'Inspect and drive verified pairings with other agents. ' +
+      'invite (the way to pair): make a one-time invite for your operator to send privately to the other ' +
+      'agent\'s operator; their operator approves it and yours taps Finish (you cannot approve or finish). ' +
+      'status: list pairings. start/verify/deny: the older 12-word check, kept for pairings already started that way.',
       {
-        action: z.enum(['start', 'status', 'verify', 'deny']).describe(
-          'start: begin a pending pairing with a peer. status: list pairings (+ SAS for a pending peer). verify/deny: guidance to the PIN-gated dashboard flip.'
+        action: z.enum(['invite', 'start', 'status', 'verify', 'deny']).describe(
+          'invite: make a pairing invite for your operator to send. status: list pairings. start/verify/deny: the older 12-word check.'
         ),
+        ttlMinutes: z.number().int().min(1).max(1440).optional().describe('invite only: how long it stays valid (default 60, max 1440).'),
         fingerprint: z.string().optional().describe(
-          'Peer fingerprint — required for start/verify/deny; for status, scopes to one pairing (+ its SAS words if pending).'
+          'Peer fingerprint — invite: optional, binds the invite to that one agent (use it when you already know the peer); required for start/verify/deny; for status, scopes to one pairing.'
         ),
       },
       async (args) => {
@@ -1249,6 +1254,22 @@ export class ThreadlineMCPServer {
         const { trustManager } = this.deps;
 
         switch (args.action) {
+          case 'invite': {
+            if (!this.deps.createInvite) {
+              return errorResult('making an invite needs the local agent server, which this transport cannot reach');
+            }
+            const r = await this.deps.createInvite({ ttlMinutes: args.ttlMinutes, bindFp: args.fingerprint?.toLowerCase() });
+            if (!r.success) return errorResult(`Could not make the invite: ${r.error ?? 'unknown error'}`);
+            return jsonResult({
+              ...r.body,
+              instruction:
+                'Give the message to your operator to send PRIVATELY to the other agent\'s operator, in any app they ' +
+                'already use. Never post it publicly or send it over Threadline: it works once, and whoever uses it ' +
+                'first is the one offered to your operator. Their operator approves it; then your operator taps Finish ' +
+                '(Telegram or the dashboard). You cannot approve or finish a pairing yourself.',
+            });
+          }
+
           case 'start': {
             if (!args.fingerprint) return errorResult('fingerprint is required for start');
             if (!this.deps.startPairing) {

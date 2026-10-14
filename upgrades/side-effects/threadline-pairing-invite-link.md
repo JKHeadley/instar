@@ -71,7 +71,7 @@ The feature is behind `threadline.verifiedPairing`. Turning it off stops all rou
 
 ## Conclusion
 
-Steps 1–9 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
+Steps 1–10 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
 
 ## Second-pass review (if required)
 
@@ -132,6 +132,22 @@ No production code changed. `tests/e2e/threadline/pairing-invite-failure-paths.t
 - An invite edited in transit is refused at the recipient before anything is recorded or sent. An invite made with the inviter's real key that expired an hour ago is refused as expired. The shortest real lifetime is one minute by design, so the test builds an already-expired invite rather than waiting.
 - The inviter restarts between the accept and Finish: the same identity comes back, Finish works from the persisted store, and both sides become credential-eligible.
 - Breakages: 3 of 3 caught (no demotion on a second accept, no expiry check at the recipient, no save when the invite is used).
+
+## Step 10: agents, docs and migration (added 2026-10-14)
+
+- **MCP:** `threadline_pair` gains `action: "invite"` (optional `ttlMinutes`, and `fingerprint` binds it to a known peer). It calls `POST /threadline/pairing/invites` with the agent's Bearer token through a new `createPairingInviteViaHttp`, wired in the stdio entry. The reply tells the agent the operator must send the invite privately, never over Threadline or in public, and that the agent cannot approve or finish. Making an invite grants nothing (§6).
+- **CLAUDE.md (new agents):** the scaffold's Verified Pairing section now teaches the invite flow. **Existing agents:** the migrator replaces the pairing section in place when it lacks the invites route. It handles both forms an agent can have: the migrator's `###` heading (v1/v2) and the scaffold's bold inline heading (v2). Without the second, a scaffolded agent would have ended up with two contradicting sections. It is idempotent.
+- **Site doc** `features/secure-agent-pairing.md`: rewritten for invites. The 12-word check is described as the older flow, still finishable for pairings already started that way.
+- **Release fragment:** extended with the routes, Telegram, dashboard, MCP and migration.
+- **`invite-accepted` at every `pairingState` branch site** (it must never be treated as verified):
+  - `CredentialShareGate` (L142–145): eligibility needs `mutual-verified`/`identity-verified` plus source `mutual-verified`, so `invite-accepted` is refused. No change.
+  - `ThreadlineBootstrap` pinned-key resolver: includes `invite-accepted` (step 5), so B can decrypt the signed finish.
+  - `PairVerifyReceipt` (L180): v2 receipts are accepted only for `pending-verification`/`mutual-verified`. An `invite-accepted` profile ignores a v2 receipt, which is correct, since invite pairings finish by the invite ops. No change.
+  - `ThreadlinePairingReplicatedStore`: replicates only verified states, so `invite-accepted` stays machine-local. No change.
+  - Routes: the list/detail routes show the state as-is. The v2 SAS and verify routes act only on `pending-verification`, so `invite-accepted` cannot be pushed to verified by the 12-word path. The `/threadline/health` count is `mutual-verified` only. No change.
+  - MCP `status`: lists the state as-is. No change.
+  - Dashboard: labelled "Waiting for the other side to finish" (step 8).
+- **Evidence:** `tests/integration/threadline/pair-mcp-tool.test.ts` (+2: invite through the server with bind and TTL passed, the operator-sends instruction, and errors when no server or refused). `tests/unit/PostUpdateMigrator-verifiedPairing.test.ts` (the v3 block: v1 and v2 `###` sections replaced with what follows kept, the scaffold's bold v2 section replaced with no duplicate, a v3 template untouched, idempotent). Every test that reads the template, the site docs or the migrator: 147 files, 1303 of 1304 pass. The one failure (`agent-owned-memory`, "a throwaway temp-dir agent never links") also fails on a clean HEAD worktree in the same `/tmp` location, because the test's own directory is a temp dir there. It is environmental, not this change.
 
 ## Class-Closure Declaration (display-only mirror)
 

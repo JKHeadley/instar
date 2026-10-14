@@ -27,7 +27,7 @@ const SAS_WORDS = ['abandon', 'ability', 'able', 'about', 'above', 'absent'];
 
 let dirs: string[] = [];
 
-async function makeCtx(opts: { reload?: boolean } = {}) {
+async function makeCtx(opts: { reload?: boolean; extra?: Record<string, unknown> } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-mcp-'));
   dirs.push(stateDir);
   const trustManager = new AgentTrustManager({ stateDir });
@@ -54,6 +54,7 @@ async function makeCtx(opts: { reload?: boolean } = {}) {
     getThreadHistory: vi.fn(),
     registry: null,
     reloadTrustBeforePairingRead: opts.reload,
+    ...(opts.extra ?? {}),
   } as unknown as ThreadlineMCPDeps;
 
   const server = new ThreadlineMCPServer(
@@ -145,5 +146,31 @@ describe('threadline_pair MCP tool (integration)', () => {
       const res = await ctx.client.callTool({ name: 'threadline_pair', arguments: { action: 'verify' } });
       expect(res.isError).toBe(true);
     } finally { await ctx.close(); }
+  });
+
+  it('invite makes an invite through the server and tells the agent the operator must send it privately and finish it', async () => {
+    const createInvite = vi.fn().mockResolvedValue({ success: true, status: 200, body: { ok: true, iid: 'a'.repeat(32), exp: '2026-10-14T13:00:00Z', message: 'agent invites you… tlinv1:x.y' } });
+    const ctx = await makeCtx({ extra: { createInvite } });
+    try {
+      const out = parse(await ctx.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite', ttlMinutes: 30, fingerprint: PEER_FP.toUpperCase() } }));
+      expect(createInvite).toHaveBeenCalledWith({ ttlMinutes: 30, bindFp: PEER_FP });
+      expect(out.message).toContain('tlinv1:');
+      expect(out.instruction).toMatch(/PRIVATELY/);
+      expect(out.instruction).toMatch(/cannot approve or finish/);
+    } finally { await ctx.close(); }
+  });
+
+  it('invite without a reachable server, or refused by it, is an error', async () => {
+    const none = await makeCtx();
+    try {
+      const r = await none.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite' } });
+      expect(r.isError).toBe(true);
+    } finally { await none.close(); }
+    const refused = await makeCtx({ extra: { createInvite: vi.fn().mockResolvedValue({ success: false, status: 503, error: 'verified pairing not enabled' }) } });
+    try {
+      const r = await refused.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite' } });
+      expect(r.isError).toBe(true);
+      expect(JSON.stringify(r.content)).toContain('not enabled');
+    } finally { await refused.close(); }
   });
 });
