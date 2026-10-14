@@ -857,6 +857,27 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // ── Retained Claude executable prune (CMT-798) ──
+  // <agent>/.instar/state/claude-bin/<version>/claude is a per-machine copy of
+  // THIS machine's installed Claude Code (its version, its architecture);
+  // .instar/state/ is gitignored so it never git-syncs. POST /prune only removes
+  // version directories that are not current, idle past the grace window, and
+  // mapped by no live process on THIS machine — fully rebuildable (the next
+  // claude-code spawn re-copies whatever the machine has installed). Must never
+  // converge across machines: a peer's "unmapped" verdict says nothing about
+  // the processes on this one. The GET status route is a pure read.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/sessions/claude-binary/prune',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'retained claude copies live under the gitignored per-agent .instar/state/claude-bin (never git-synced); prune reclaims only non-current, idle, unmapped version dirs on this machine (live-mapper check is host-local by construction); the next spawn re-copies from the local install',
+    },
+  });
+
   // ── External-hog arm/disarm (external-hog-sentinel spec, arm gate) ──
   // Machine-local BY SAFETY DESIGN, not convenience: the PIN-gated arm marker
   // (state/external-hog-arm.json) is this machine's operator consent to LIVE

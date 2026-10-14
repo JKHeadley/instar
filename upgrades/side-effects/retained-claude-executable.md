@@ -85,7 +85,7 @@ No new static heuristic at a competing-signals decision point. Prune is a safety
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-**Machine-local BY DESIGN.** The retained copy is a per-machine artifact of that machine's installed Claude Code (its version, its architecture, its filesystem); it must never replicate. Nothing here is user-facing (no notices), no durable topic-scoped state exists to strand on transfer, and the status route reports only this machine (no `scope=pool` — a pool read would be meaningful only as per-machine rows, which is a follow-up if anyone asks). A topic moved to another machine simply spawns there from THAT machine's retained copy.
+**Machine-local BY DESIGN.** The retained copy is a per-machine artifact of that machine's installed Claude Code (its version, its architecture, its filesystem); it must never replicate. Nothing here is user-facing (no notices), no durable topic-scoped state exists to strand on transfer, and the status route reports only this machine (no `scope=pool` — a pool read would be meaningful only as per-machine rows, which is a follow-up if anyone asks). A topic moved to another machine simply spawns there from THAT machine's retained copy. `POST /sessions/claude-binary/prune` is classified `machine-local` / `ephemeral-rebuildable` in `WriteDomainRegistry` (the write-domain conformance ratchet requires every mutating route to declare its domain): the retain dir is gitignored, the live-mapper check is host-local by construction, and the next spawn re-copies from the local install.
 
 ---
 

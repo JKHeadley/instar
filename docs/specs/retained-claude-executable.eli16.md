@@ -32,6 +32,8 @@ At the moment a Claude Code session is about to start, the agent now looks at th
 
 **Prevents the fix from ever blocking a session.** Every failure path (disk full, unreadable file, permission error, unknown layout) falls back to launching the configured path, with a loud error line and a `lastError` on the status route. The leak is a slow failure; a session that cannot start is an immediate one, so the fallback direction is deliberate.
 
+**Prevents the clean-up from ever acting across machines.** The prune action is registered as machine-local: each machine only ever removes copies under its own state directory, judged by its own live processes, and the next session start re-creates whatever it needs.
+
 **Prevents surprises for other frameworks and tests.** Only `claude-code` launches are touched; codex, gemini, pi and grok pass through unchanged. The copy lives under the agent's gitignored state directory, so test agents in temporary directories clean up after themselves.
 
 ## What ships when

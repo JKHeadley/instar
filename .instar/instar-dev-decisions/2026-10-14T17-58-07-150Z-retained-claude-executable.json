@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-14T17:58:07.150Z",
+  "slug": "retained-claude-executable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
