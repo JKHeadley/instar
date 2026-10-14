@@ -1,86 +1,113 @@
 /**
- * pairing.js — the Verified Pairing panel on the dashboard's Threadline tab
- * (docs/specs/secure-a2a-verified-pairing.md §3.6, Mobile-Complete operator action).
+ * pairing.js — "Pair with another agent" on the dashboard's Threadline tab
+ * (docs/specs/a2a-pairing-invite-link.md §8; replaces the 12-word panel of
+ * secure-a2a-verified-pairing §3.6, which Justin rejected on 2026-10-13).
  *
- * The operator's surface for the 12-word check: list pairings; for a pending one,
- * enter the dashboard PIN to see THIS side's 12 words, then type the 12 words the
- * OTHER side shows and confirm (the server compares all 12 in order; any difference
- * is a denial). A denied pairing can be cleared with the PIN. The PIN is typed at
- * action time, sent once, and never stored (no localStorage, no module state).
+ * What the operator does: make an invite and send it however they like; or paste one
+ * they were sent and approve it; and, when someone accepts their invite, Finish (or say
+ * "Not them"). Nobody reads, compares or types words.
+ *
+ * The rules from Justin's test (spec §8):
+ *  1. Nothing the operator is looking at or typing into is re-rendered by a timer. Only the
+ *     list sections (waiting decisions, open invites, paired agents) refresh, and only when
+ *     their content actually changed; none of them holds an input.
+ *  2. The PIN is asked once per page: after one accepted use it is held in this module's
+ *     memory (never storage) until the page is reloaded. A refused PIN is forgotten.
+ *  3. Decisions waiting for the operator come first, and the Threadline tab shows a count.
  *
  * Same shape as mandates.js: pure renderers + createController({ doc, els, fetchImpl }).
  */
 
-const REFRESH_MS = 30_000;
-const WORD_COUNT = 12;
+const POLL_MS = 10_000;
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 const STATE_LABEL = {
-  'pending-verification': 'Waiting for you to compare the words',
-  'mutual-verified': 'Verified',
-  'identity-verified': 'Verified on another of my machines',
-  'verification-failed': 'Words did not match — blocked',
+  'mutual-verified': 'Paired',
+  'identity-verified': 'Paired (on another of my machines)',
+  'invite-accepted': 'Waiting for the other side to finish',
+  'pending-verification': 'Started with the old word check. Pair by invite instead.',
+  'verification-failed': 'Blocked (the old word check did not match)',
 };
 
-/** One pairing card. Primary action first; the fingerprint is support metadata. */
+const claimed = (agent, owner) =>
+  `the agent that calls itself <strong>${esc(agent || 'unknown')}</strong>${owner ? `, which says it belongs to <strong>${esc(owner)}</strong>` : ''}`;
+
+const timeLeft = (exp, now = Date.now()) => {
+  const ms = Date.parse(exp) - now;
+  if (!(ms > 0)) return 'expired';
+  const min = Math.round(ms / 60_000);
+  return min >= 90 ? `${Math.round(min / 60)} h left` : `${Math.max(1, min)} min left`;
+};
+
+/** Invites waiting for this operator's Finish: used, with an acceptor, undecided, not leaked. */
+export function finishPrompts(invites) {
+  return (invites || []).filter((i) => i.state === 'used' && i.acceptor && !i.decision && !i.secondAccept);
+}
+
+/** Leak alarms from the last 24 h. */
+export function alarms(invites, now = Date.now()) {
+  return (invites || []).filter((i) => i.secondAccept && now - Date.parse(i.secondAccept.at) < 24 * 60 * 60_000);
+}
+
+/** How many decisions wait for the operator (the tab badge). */
+export function pendingCount(data) {
+  return finishPrompts(data?.invites).length + (data?.pendingAccepts || []).length;
+}
+
+export function renderPending(data, now = Date.now()) {
+  const parts = [];
+  for (const a of alarms(data?.invites, now)) {
+    parts.push(`<div class="pair-card pair-alarm" data-alarm="${esc(a.iid)}">
+      <div><strong>Warning: your invite got out.</strong> Two agents used it, so I paused the first one: it cannot receive anything secret.
+      The second calls itself <strong>${esc(a.secondAccept.agent || 'unknown')}</strong>. Make a new invite and send it privately.</div></div>`);
+  }
+  for (const p of data?.pendingAccepts || []) {
+    parts.push(`<div class="pair-card pair-waiting" data-pending-accept="${esc(p.iid)}">
+      <div>Pair with ${claimed(p.claimedAgent, p.claimedOwner)}? Only approve if you know who sent you this invite.</div>
+      <div class="pair-meta">Check code (optional, to read to them): ${esc(p.checkCode)} · ${esc(timeLeft(p.exp, now))}</div>
+      <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-approve="${esc(p.iid)}">Approve</button>
+      <button class="mnd-btn mnd-btn-quiet" data-decline="${esc(p.iid)}">Decline</button></div></div>`);
+  }
+  for (const i of finishPrompts(data?.invites)) {
+    parts.push(`<div class="pair-card pair-waiting" data-finish-prompt="${esc(i.iid)}">
+      <div>${claimed(i.acceptor.agent, i.acceptor.owner)} accepted your invite. Finish only if that is who you sent it to.</div>
+      <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-finish="${esc(i.iid)}">Finish</button>
+      <button class="mnd-btn mnd-btn-quiet mnd-btn-danger" data-not-them="${esc(i.iid)}">Not them</button></div></div>`);
+  }
+  return parts.join('');
+}
+
+export function renderOpenInvites(invites, now = Date.now()) {
+  const open = (invites || []).filter((i) => i.state === 'open' && Date.parse(i.exp) > now);
+  if (open.length === 0) return '';
+  return '<div class="pair-step-title">Invites not used yet</div>' + open.map((i) => `<div class="pair-row" data-open-invite="${esc(i.iid)}">
+    <span>Invite ${esc(i.iid.slice(0, 6))} · ${esc(timeLeft(i.exp, now))}</span>
+    <button class="mnd-btn mnd-btn-quiet" data-revoke="${esc(i.iid)}">Cancel it</button></div>`).join('');
+}
+
+/** One paired (or pairing) agent. No actions: invites replace the 12-word flow. */
 export function renderPairing(p) {
   const fp = esc(p.peerFp);
-  const name = esc(p.peerName || 'Unknown agent');
-  const state = p.state;
-  const label = esc(STATE_LABEL[state] || state || 'Unknown');
-  let actions = '';
-  if (state === 'pending-verification') {
-    const inputs = Array.from({ length: WORD_COUNT }, (_, i) =>
-      `<label class="pair-word"><span>${i + 1}</span><input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-their-word="${fp}" data-idx="${i}" aria-label="Their word ${i + 1}" /></label>`).join('');
-    actions = `
-      <div class="pair-step">
-        <div class="pair-step-title">1. See the words on this side</div>
-        <div class="pair-row"><input type="password" class="mnd-pin" data-show-pin="${fp}" placeholder="Your PIN" autocomplete="off" />
-        <button class="mnd-btn mnd-btn-primary" data-show-words="${fp}">Show my words</button></div>
-        <ol class="pair-own-words" data-own-words="${fp}"></ol>
-      </div>
-      <div class="pair-step">
-        <div class="pair-step-title">2. Type the 12 words the OTHER agent's operator sees</div>
-        <div class="pair-words">${inputs}</div>
-        <div class="pair-row"><input type="password" class="mnd-pin" data-confirm-pin="${fp}" placeholder="Your PIN" autocomplete="off" />
-        <button class="mnd-btn mnd-btn-primary" data-confirm="${fp}">Confirm they match</button></div>
-        <div class="mnd-hint">Compare over a call or in person, not through the agents. Any wrong word blocks this pairing.</div>
-        <button class="mnd-btn mnd-btn-quiet mnd-btn-danger" data-deny="${fp}">They don't match</button>
-      </div>`;
-  } else if (state === 'verification-failed') {
-    actions = `
-      <div class="pair-step">
-        <div class="mnd-hint">Clear this only once you know why the words were different.</div>
-        <div class="pair-row"><input type="password" class="mnd-pin" data-clear-pin="${fp}" placeholder="Your PIN" autocomplete="off" />
-        <button class="mnd-btn mnd-btn-quiet" data-clear="${fp}">Clear and start again</button></div>
-      </div>`;
-  }
+  const label = esc(STATE_LABEL[p.state] || p.state || 'Unknown');
   return `<div class="pair-card" data-pairing="${fp}">
-    <div class="pair-head"><strong>${name}</strong> <span class="pair-state pair-state-${esc(state)}">${label}</span></div>
-    ${actions}
+    <div class="pair-head"><strong>${esc(p.peerName || 'Unknown agent')}</strong> <span class="pair-state pair-state-${esc(p.state)}">${label}</span></div>
     <div class="pair-meta">Agent ${fp.slice(0, 12)}…</div>
   </div>`;
 }
 
 export function renderPairings(list) {
-  if (!Array.isArray(list) || list.length === 0) {
-    return '<div class="mnd-hint">No pairings yet. An agent starts one with <code>threadline_pair</code> start.</div>';
-  }
-  return list.map(renderPairing).join('');
+  if (!Array.isArray(list) || list.length === 0) return '<div class="mnd-hint">No paired agents yet.</div>';
+  return '<div class="pair-step-title">Agents</div>' + list.map(renderPairing).join('');
 }
 
-/** Words typed into the 12 inputs for one pairing, in order. */
-export function collectTypedWords(root, fp) {
-  const inputs = Array.from(root.querySelectorAll(`[data-their-word="${fp}"]`));
-  inputs.sort((a, b) => Number(a.dataset.idx) - Number(b.dataset.idx));
-  return inputs.map((i) => String(i.value || '').trim().toLowerCase());
-}
-
-export function createController({ doc, els, fetchImpl }) {
+export function createController({ doc, els, fetchImpl, now = () => Date.now() }) {
   let timer = null;
+  let heldPin = '';           // §8.2: asked once per page, memory only
+  let data = { invites: [], pendingAccepts: [], pairings: [] };
+  const lastHtml = new Map();  // section → last rendered HTML (§8.1: re-render only on change)
 
   async function fetchJson(url, opts) {
     const res = await fetchImpl(url, opts);
@@ -88,6 +115,7 @@ export function createController({ doc, els, fetchImpl }) {
     try { body = await res.json(); } catch { body = null; }
     return { status: res.status, body };
   }
+  const post = (url, payload, method = 'POST') => fetchJson(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload ?? {}) });
 
   function note(msg, kind) {
     if (!els.notice) return;
@@ -95,70 +123,123 @@ export function createController({ doc, els, fetchImpl }) {
     els.notice.className = kind === 'error' ? 'mnd-notice mnd-notice-err' : kind === 'success' ? 'mnd-notice mnd-notice-ok' : 'mnd-notice';
   }
 
-  // A timed refresh must not wipe words or a PIN the operator is typing.
-  function operatorIsTyping() {
-    const inputs = els.list ? Array.from(els.list.querySelectorAll('input')) : [];
-    return inputs.some((i) => i.value);
+  function setSection(el, key, html) {
+    if (!el || lastHtml.get(key) === html) return;
+    lastHtml.set(key, html);
+    el.innerHTML = html;
   }
 
-  async function load(opts = {}) {
-    if (opts.timed && operatorIsTyping()) return;
+  function showPinRow() {
+    if (els.pinRow) els.pinRow.style.display = heldPin ? 'none' : '';
+  }
+
+  function render() {
+    setSection(els.pending, 'pending', renderPending(data, now()));
+    setSection(els.open, 'open', renderOpenInvites(data.invites, now()));
+    setSection(els.list, 'list', renderPairings(data.pairings));
+    const n = pendingCount(data);
+    if (els.tabButton) {
+      const base = els.tabButton.dataset.baseLabel || (els.tabButton.dataset.baseLabel = els.tabButton.textContent);
+      els.tabButton.textContent = n > 0 ? `${base} (${n})` : base;
+    }
+    showPinRow();
+  }
+
+  async function load() {
     try {
-      const { status, body } = await fetchJson('/threadline/pairing');
-      if (status === 503) { els.list.innerHTML = '<div class="mnd-hint">Verified pairing is turned off on this agent.</div>'; return; }
-      if (status !== 200) { note(`Could not load pairings: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
-      els.list.innerHTML = renderPairings(body?.pairings ?? []);
+      const [inv, pr] = await Promise.all([fetchJson('/threadline/pairing/invites'), fetchJson('/threadline/pairing')]);
+      if (inv.status === 503 || pr.status === 503) {
+        const off = /not enabled/.test(String(inv.body?.error ?? pr.body?.error ?? ''));
+        setSection(els.list, 'list', off
+          ? '<div class="mnd-hint">Pairing is turned off on this agent.</div>'
+          : '<div class="mnd-hint">Pairing runs on the machine that holds this agent\'s Threadline identity. Open the dashboard on that machine.</div>');
+        return;
+      }
+      if (inv.status !== 200) { note(`Could not load invites: ${inv.body?.error ?? `HTTP ${inv.status}`}`, 'error'); return; }
+      data = { invites: inv.body?.invites ?? [], pendingAccepts: inv.body?.pendingAccepts ?? [], pairings: pr.status === 200 ? (pr.body?.pairings ?? []) : data.pairings };
+      render();
     } catch (e) {
       note(`Could not reach the agent: ${e?.message ?? e}`, 'error');
     }
   }
 
-  async function post(url, payload) {
-    return fetchJson(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  /** The PIN for one action: the held one, or the field's (asked once). */
+  function pinForAction() {
+    if (heldPin) return heldPin;
+    const v = els.pin ? String(els.pin.value || '') : '';
+    return v;
+  }
+  /** After a PIN-gated call: keep an accepted PIN, forget a refused one. */
+  function settlePin(pin, status) {
+    if (status === 403 || status === 429) { heldPin = ''; if (els.pin) els.pin.value = ''; showPinRow(); return; }
+    if (status < 500 && status !== 401) { heldPin = pin; if (els.pin) els.pin.value = ''; showPinRow(); }
+  }
+
+  async function pinned(url, okMsg) {
+    const pin = pinForAction();
+    if (!pin) { note('Enter your PIN first (you will only be asked once).', 'error'); if (els.pin) els.pin.focus?.(); return; }
+    const { status, body } = await post(url, { pin });
+    settlePin(pin, status);
+    if (status === 403) { note('That PIN was not accepted.', 'error'); return; }
+    if (status !== 200) { note(`That didn't work: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
+    note(okMsg, 'success');
+    await load();
+  }
+
+  async function makeInvite() {
+    const ttlMinutes = els.ttl ? Number(els.ttl.value) || 60 : 60;
+    const { status, body } = await post('/threadline/pairing/invites', { ttlMinutes });
+    if (status !== 200 || !body?.message) { note(`Could not make an invite: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
+    // Shown until the operator closes it; no timer touches this box.
+    els.inviteOut.innerHTML = `<div class="pair-step-title">Send this to the other person, privately, in any app. It works once.</div>
+      <textarea class="pair-invite-text" readonly rows="4" data-invite-text>${esc(body.message)}</textarea>
+      <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-copy-invite>Copy</button>
+      <button class="mnd-btn mnd-btn-quiet" data-close-invite>Done</button></div>
+      <div class="mnd-hint">Expires in ${esc(timeLeft(body.exp, now()))}. When they accept, you will see it at the top of this card.</div>`;
+    await load();
+  }
+
+  async function copyInvite() {
+    const ta = els.inviteOut.querySelector('[data-invite-text]');
+    if (!ta) return;
+    try {
+      await doc.defaultView.navigator.clipboard.writeText(ta.value);
+      note('Copied. Paste it to the other person.', 'success');
+    } catch {
+      ta.select?.();
+      note('Select the text and copy it yourself (your browser blocked copying).', 'info');
+    }
+  }
+
+  async function inspect() {
+    const text = els.inviteIn ? String(els.inviteIn.value || '') : '';
+    if (!text.includes('tlinv1:')) { note('Paste the whole invite you were sent.', 'error'); return; }
+    const { status, body } = await post('/threadline/pairing/invites/inspect', { invite: text });
+    if (status !== 200) { note(`I can't use that invite: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
+    els.inviteIn.value = ''; // the secret leaves the page; the decision now waits at the top
+    note('Got it. Approve or decline it at the top of this card.', 'info');
+    await load();
   }
 
   async function onClick(ev) {
     const t = ev.target;
     if (!t || !t.dataset) return;
-    const root = els.list;
-    const take = (attr, fp) => { const el = root.querySelector(`[${attr}="${fp}"]`); const v = el ? el.value : ''; if (el) el.value = ''; return v; };
+    const d = t.dataset;
     try {
-      if (t.dataset.showWords) {
-        const fp = t.dataset.showWords;
-        const pin = take('data-show-pin', fp);
-        if (!pin) { note('Enter your PIN to see the words.', 'error'); return; }
-        const res = await fetchImpl(`/threadline/pairing/${fp}`, { headers: { 'X-Dashboard-Pin': pin } });
-        const body = await res.json().catch(() => null);
-        const words = body?.pairing?.sasWords;
-        if (!Array.isArray(words)) { note(res.status === 200 ? 'The PIN was not accepted, or this pairing is no longer waiting.' : `Refused: ${body?.error ?? `HTTP ${res.status}`}`, 'error'); return; }
-        const ol = root.querySelector(`[data-own-words="${fp}"]`);
-        if (ol) ol.innerHTML = words.map((w) => `<li>${esc(w)}</li>`).join('');
-        note('These are the words on this side. Read them to the other operator and type theirs below.', 'info');
-      } else if (t.dataset.confirm) {
-        const fp = t.dataset.confirm;
-        const words = collectTypedWords(root, fp);
-        const pin = take('data-confirm-pin', fp);
-        if (words.some((w) => !w)) { note(`Type all ${WORD_COUNT} of the other side's words first.`, 'error'); return; }
-        if (!pin) { note('Enter your PIN to confirm.', 'error'); return; }
-        const { status, body } = await post(`/threadline/pairing/${fp}/verify`, { words, pin });
-        if (status !== 200) { note(`Not confirmed — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
-        note(body?.state === 'mutual-verified' ? 'Verified. Every word matched.' : 'The words did not match. This pairing is now blocked.', body?.state === 'mutual-verified' ? 'success' : 'error');
+      if (d.makeInvite !== undefined) await makeInvite();
+      else if (d.copyInvite !== undefined) await copyInvite();
+      else if (d.closeInvite !== undefined) els.inviteOut.innerHTML = '';
+      else if (d.inspectInvite !== undefined) await inspect();
+      else if (d.approve) await pinned(`/threadline/pairing/invites/${d.approve}/approve`, 'Approved. Waiting for the other side to finish.');
+      else if (d.finish) await pinned(`/threadline/pairing/invites/${d.finish}/finish`, 'Finished. You are paired.');
+      else if (d.notThem) await pinned(`/threadline/pairing/invites/${d.notThem}/not-them`, 'Not paired. That invite is used up.');
+      else if (d.decline) {
+        const { status, body } = await post(`/threadline/pairing/invites/${d.decline}/decline`, {});
+        note(status === 200 ? 'Declined. Nothing was paired.' : `That didn't work: ${body?.error ?? `HTTP ${status}`}`, status === 200 ? 'success' : 'error');
         await load();
-      } else if (t.dataset.deny) {
-        const fp = t.dataset.deny;
-        const pin = take('data-confirm-pin', fp);
-        if (!pin) { note('Enter your PIN (in the field above) to record that the words did not match.', 'error'); return; }
-        const { status, body } = await post(`/threadline/pairing/${fp}/verify`, { match: false, pin });
-        if (status !== 200) { note(`Not recorded — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
-        note('Recorded: the words did not match. This pairing is blocked.', 'success');
-        await load();
-      } else if (t.dataset.clear) {
-        const fp = t.dataset.clear;
-        const pin = take('data-clear-pin', fp);
-        if (!pin) { note('Enter your PIN to clear this pairing.', 'error'); return; }
-        const { status, body } = await post(`/threadline/pairing/${fp}/start`, { clearFailed: true, pin });
-        if (status !== 200) { note(`Not cleared — the server refused: ${body?.error ?? `HTTP ${status}`}`, 'error'); return; }
-        note('Cleared. Compare the words again.', 'success');
+      } else if (d.revoke) {
+        const { status, body } = await post(`/threadline/pairing/invites/${d.revoke}`, {}, 'DELETE');
+        note(status === 200 ? 'Cancelled. That invite no longer works.' : `That didn't work: ${body?.error ?? `HTTP ${status}`}`, status === 200 ? 'success' : 'error');
         await load();
       }
     } catch (e) {
@@ -168,12 +249,13 @@ export function createController({ doc, els, fetchImpl }) {
 
   return {
     start() {
-      if (els.list && !els.list.__pairWired) { els.list.addEventListener('click', onClick); els.list.__pairWired = true; }
+      if (els.root && !els.root.__pairWired) { els.root.addEventListener('click', onClick); els.root.__pairWired = true; }
       load();
-      if (!timer) timer = setInterval(() => load({ timed: true }), REFRESH_MS);
+      if (!timer) timer = setInterval(load, POLL_MS);
     },
     stop() { if (timer) { clearInterval(timer); timer = null; } },
     load,
     onClick,
+    hasPin: () => Boolean(heldPin),
   };
 }

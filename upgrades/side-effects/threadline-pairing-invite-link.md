@@ -55,11 +55,11 @@ No LLM or heuristic is involved. Every decision is deterministic cryptography or
 
 ## 6. External surfaces
 
-Wire ops (step 5), HTTP routes (step 6), Telegram interception and buttons (step 7). The dashboard follows.
+Wire ops (step 5), HTTP routes (step 6), Telegram interception and buttons (step 7), the dashboard card (step 8).
 
 ## 6b. Operator-surface quality
 
-Not applicable until the dashboard step. The UI requirements from Justin's test are in spec §8.
+The dashboard card follows spec §8 (see Step 8): nothing resets while open, the PIN is asked once, waiting decisions are first with a tab count, and there is a reload prompt. Spec §8.5 (a person doing the whole flow end to end) is step 11.
 
 ## 7. Multi-machine posture
 
@@ -71,7 +71,7 @@ The feature is behind `threadline.verifiedPairing`. Turning it off stops all rou
 
 ## Conclusion
 
-Steps 1–7 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
+Steps 1–8 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
 
 ## Second-pass review (if required)
 
@@ -112,6 +112,18 @@ Echo approved the spec; code review happens on the PR.
 - Under-block: the boundary is cooperative (spec §6.1 "Honest boundary"). An agent that reads the lifeline secret file, or drives the owner's own Telegram, could approve. The agent's Bearer token alone cannot.
 - Interactions: the forward route returns `{ pairingInvite: true }` with 200, so the lifeline shows its usual "✓ Delivered". Other callbacks still reach the adapter unchanged (tested).
 - Evidence: `PairingInviteTelegram.test.ts` (16: the authority matrix for prompts and taps, single use, siblings spent, refused taps not spent, observe mode, operator notices). `tests/integration/pairing-invite-telegram-routes.test.ts` (4, real routes with the real guard: an owner forward opens a prompt with nothing reaching a session or the log, a forged tap 401s, a verified tap approves via the engine and never the adapter, a duplicate tap has one effect, a non-owner gets no prompt, observe mode gets no prompt, other callbacks are unchanged). `tests/unit/pairing-invite-never-persisted.test.ts` (2: queue refusal; the direct-polling adapter neither routes an invite nor writes its secret anywhere under the state dir). Breakages: 10 of 10 caught (both route intercepts, each tap condition, single use, sibling spending, button expiry, the queue refusal, the adapter drop). Regression: 325 files, 4744 tests (threadline, lifeline, every Telegram suite, every test that scans routes.ts). The one failure, the silent-fallback ratchet (496 vs 494), was mine: two best-effort catches in the adapter, now marked with their reasons. 494 again.
+
+## Step 8: dashboard (added 2026-10-14)
+
+- The Threadline tab's pairing card is rebuilt around invites and moved to the TOP of the tab (spec §8.3). It has: decisions waiting for the operator first (Approve/Decline an invite they were sent, Finish/Not-them for someone who accepted theirs, and a leak alarm), "Make an invite" (1 h or 24 h) with the invite shown in a read-only box with Copy, a cancel button for each unused invite, a paste box for an invite they were sent, and the list of paired agents in plain words. The 12-word controls are gone (§9): an old `pending-verification` record says to pair by invite instead.
+- §8.1, nothing resets while open: only the three list sections refresh (every 10 s), and only when their HTML changed. None of them holds an input. The invite box, the paste box and the PIN field are never rendered by a timer. A likely cause of Justin's resets, from reading the old code (not reproduced): its 30 s refresh skipped only when an input held text, and "Show my words" emptied the PIN field, so the next refresh replaced the whole list, including the words just shown.
+- §8.2, PIN once: the first PIN-gated action uses the PIN field. An accepted PIN is held in the module's memory (never storage) until the page reloads, and the field hides. A refused PIN (403/429) is forgotten and the field returns. Cancel and Decline need no PIN.
+- §8.3, a count on the tab: the panel now starts at login, not only when the tab opens, so the Threadline tab shows "(n)" for waiting decisions.
+- §8.4, a reload prompt: the vital-signs poll (authenticated `/health`, which reports `version`) remembers the first version and shows a fixed "The agent was updated… Reload" bar when it changes.
+- The paste box is emptied once the server has read the invite, so the secret leaves the page.
+- When this machine does not hold the relay identity, the card says to open the dashboard on the machine that does, instead of claiming pairing is off.
+- Over-block: none new. Under-block: holding the PIN in memory means someone at an unlocked, already-used dashboard page can approve without retyping it. The page already holds the Bearer token, and the spec chose one PIN entry per person.
+- Evidence: `tests/unit/dashboard-pairing-panel.test.ts` (13, jsdom): the renderers (claimed names, decided and leaked invites ask nothing, the alarm, open invites, no 12-word controls, escaping), the invite box surviving refreshes as the same DOM node, unchanged refreshes re-rendering nothing, typed paste text and PIN surviving refreshes, the PIN asked once and held, a refused PIN forgotten, the paste box emptied, the tab count, cancel/decline without PIN, and the page wiring (the card before the bridge settings, starting at login, the reload bar). Breakages: 8 of 8 caught (re-render only on change, the held PIN, forgetting a refused PIN, the finish-prompt filter, emptying the paste box, the tab count, the no-PIN refusal, the version check). Every test that reads the dashboard files: 19 files, 300 tests pass.
 
 ## Class-Closure Declaration (display-only mirror)
 

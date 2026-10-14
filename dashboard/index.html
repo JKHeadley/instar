@@ -1055,6 +1055,9 @@
     .pair-word { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); }
     .pair-word input { flex: 1; min-width: 0; padding: 6px; font-family: ui-monospace, monospace; font-size: 15px; }
     .pair-meta { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+    .pair-waiting { border-color: #1f6feb; }
+    .pair-alarm { border-color: #f85149; background: rgba(248, 81, 73, 0.08); }
+    .pair-invite-text { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 13px; padding: 8px; }
     @media (max-width: 640px) {
       .pair-own-words { columns: 2; }
       .pair-words { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3023,6 +3026,10 @@
   </div>
 
   <!-- Main app -->
+  <div id="dashVersionBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:10000;gap:10px;align-items:center;justify-content:center;padding:8px 12px;background:#1f6feb;color:#fff;font-size:14px">
+    The agent was updated to <span data-new-version></span>. Reload to get the new dashboard.
+    <button onclick="location.reload()" style="padding:4px 12px">Reload</button>
+  </div>
   <div class="app" id="app" style="display:none">
     <header class="header">
       <div class="header-left">
@@ -4173,6 +4180,29 @@
         Threadline is your agent's secure channel to other AI agents. The Telegram bridge mirrors those conversations into per-thread Telegram topics so you can watch every exchange. Quiet by default — flip the master switch below to opt in.
       </div>
 
+      <!-- Pair with another agent — by invite (docs/specs/a2a-pairing-invite-link.md §8). First on the
+           tab: decisions waiting for the operator sit at the top of this card. -->
+      <div id="pairCard" class="mnd-card" style="border:1px solid var(--border);border-radius:8px;padding:16px">
+        <strong>Pair with another agent</strong>
+        <div class="mnd-hint">Pairing proves another agent is really who it says it is, before it can be sent anything secret.</div>
+        <div id="pairNotice" class="mnd-notice"></div>
+        <div id="pairPending"></div>
+        <div id="pairPinRow" class="pair-row"><input type="password" id="pairPin" class="mnd-pin" placeholder="Your PIN (asked once)" autocomplete="off" /></div>
+        <div class="pair-step">
+          <div class="pair-step-title">Invite an agent</div>
+          <div class="pair-row"><select id="pairTtl"><option value="60">Valid for 1 hour</option><option value="1440">Valid for 24 hours</option></select>
+          <button class="mnd-btn mnd-btn-primary" data-make-invite>Make an invite</button></div>
+          <div id="pairInviteOut"></div>
+          <div id="pairOpen"></div>
+        </div>
+        <div class="pair-step">
+          <div class="pair-step-title">Got an invite? Paste it here</div>
+          <textarea id="pairInviteIn" class="pair-invite-text" rows="3" placeholder="Paste the whole message you were sent" autocomplete="off" spellcheck="false"></textarea>
+          <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-inspect-invite>Check it</button></div>
+        </div>
+        <div id="pairList"></div>
+      </div>
+
       <!-- Bridge settings card -->
       <div id="tlBridgeCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:14px">
         <div style="font-weight:600">Telegram bridge settings</div>
@@ -4224,17 +4254,6 @@
         </div>
 
         <div id="tlBridgeError" style="color:var(--err, #c44);font-size:12px;display:none"></div>
-      </div>
-
-      <!-- Verified pairing — the 12-word check (docs/specs/secure-a2a-verified-pairing.md §3.6) -->
-      <div id="pairCard" class="mnd-card" style="border:1px solid var(--border);border-radius:8px;padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-          <strong>Verified pairing</strong>
-          <button onclick="startPairingPanel()" class="mnd-btn mnd-btn-quiet" style="padding:6px 12px">Refresh</button>
-        </div>
-        <div class="mnd-hint">Confirm another agent is really who it says it is: compare 12 words with its operator before it can be sent credentials.</div>
-        <div id="pairNotice" class="mnd-notice"></div>
-        <div id="pairList"></div>
       </div>
 
       <!-- Conversation observability — threads list + message stream + search -->
@@ -4430,6 +4449,7 @@
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            if (typeof startPairingPanel === 'function') startPairingPanel();
             loadTopicProfileOptions();
           } else {
             showAuthError('Incorrect PIN');
@@ -4457,6 +4477,7 @@
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            if (typeof startPairingPanel === 'function') startPairingPanel();
             loadTopicProfileOptions();
           }
         })
@@ -8008,6 +8029,18 @@
         const resp = await fetch('/health', { headers: { 'Authorization': 'Bearer ' + token } });
         if (!resp.ok) return;
         const h = await resp.json();
+        // a2a-pairing-invite-link §8.4: an updated server means this page may be stale. Offer a
+        // reload instead of silently showing an old dashboard.
+        if (h.version) {
+          if (!window.__dashServerVersion) window.__dashServerVersion = h.version;
+          else if (h.version !== window.__dashServerVersion) {
+            const bar = document.getElementById('dashVersionBar');
+            if (bar && bar.style.display === 'none') {
+              bar.querySelector('[data-new-version]').textContent = h.version;
+              bar.style.display = 'flex';
+            }
+          }
+        }
 
         // Server status
         const serverDot = document.getElementById('vitalServerDot');
@@ -10443,8 +10476,9 @@
       } catch { host.innerHTML = '<div style="opacity:.7">Throughput data is temporarily unavailable.</div>'; }
     }
 
-    // ── Verified pairing panel (Threadline tab; secure-a2a-verified-pairing §3.6) ──
-    // Lazy-loaded like Mandates. The PIN typed here is sent once per action, never stored.
+    // ── Pairing by invite (Threadline tab; a2a-pairing-invite-link §8) ──
+    // Started at login (not only on the tab) so the tab can show waiting decisions.
+    // The PIN is held in the module's memory after one accepted use; never stored.
     let __pairController = null;
     let __pairModule = null;
     async function startPairingPanel() {
@@ -10453,7 +10487,12 @@
         catch (e) { console.error('[pairing] module load failed', e); return; }
       }
       if (!__pairController) {
-        const els = { list: document.getElementById('pairList'), notice: document.getElementById('pairNotice') };
+        const $ = (id) => document.getElementById(id);
+        const els = {
+          root: $('pairCard'), notice: $('pairNotice'), pending: $('pairPending'), open: $('pairOpen'), list: $('pairList'),
+          pin: $('pairPin'), pinRow: $('pairPinRow'), ttl: $('pairTtl'), inviteOut: $('pairInviteOut'), inviteIn: $('pairInviteIn'),
+          tabButton: document.querySelector('.tab[data-tab="threadline"]'),
+        };
         const fetchImpl = (url, opts = {}) => fetch(url, {
           ...opts,
           headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },

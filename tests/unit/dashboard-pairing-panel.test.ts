@@ -1,119 +1,185 @@
 /**
- * Dashboard Verified Pairing panel (docs/specs/secure-a2a-verified-pairing.md §3.6).
+ * Dashboard "Pair with another agent" card (docs/specs/a2a-pairing-invite-link.md §8).
  * Pure renderers + the controller against a fake fetch, in a real jsdom DOM.
+ * Covers the rules from Justin's test: nothing he is looking at or typing into is reset by a
+ * timer, the PIN is asked once, and waiting decisions come first with a count on the tab.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
 // @ts-expect-error — plain JS dashboard module
-import { renderPairing, renderPairings, collectTypedWords, createController } from '../../dashboard/pairing.js';
+import { renderPairing, renderPairings, renderPending, renderOpenInvites, finishPrompts, pendingCount, createController } from '../../dashboard/pairing.js';
 
 const FP = 'ab'.repeat(16);
-const WORDS = ['abandon', 'ability', 'able', 'about', 'above', 'absent', 'absorb', 'abstract', 'absurd', 'abuse', 'access', 'accident'];
+const IID = 'cd'.repeat(16);
+const NOW = Date.parse('2026-10-14T12:00:00Z');
+const later = (min: number) => new Date(NOW + min * 60_000).toISOString();
 
-function setup(state = 'pending-verification', reply: (url: string, opts: any) => { status: number; body: unknown } = () => ({ status: 200, body: {} })) {
-  const dom = new JSDOM('<div id="list"></div><div id="notice"></div>');
+const openInvite = { iid: IID, state: 'open', exp: later(60), createdAt: later(0) };
+const usedInvite = { iid: IID, state: 'used', exp: later(60), createdAt: later(0), acceptor: { fp: FP, key: 'k', agent: 'Carl', owner: 'Carl O', acceptedAt: later(1) } };
+const pendingAccept = { iid: 'ef'.repeat(16), claimedAgent: 'Scout', claimedOwner: 'Justin', inviterFp: FP, exp: later(30), checkCode: 'K7Q2' };
+
+interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[] }
+
+function setup(server: Server, reply: (url: string, opts: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } })) {
+  const dom = new JSDOM(`<button class="tab" data-tab="threadline">Threadline</button>
+    <div id="root"><div id="notice"></div><div id="pending"></div><div id="pinRow"><input id="pin"></div>
+    <select id="ttl"><option value="60">1h</option></select><div id="out"></div><div id="open"></div>
+    <textarea id="in"></textarea><div id="list"></div></div>`);
   const doc = dom.window.document;
-  const els = { list: doc.getElementById('list')!, notice: doc.getElementById('notice')! };
+  const $ = (id: string) => doc.getElementById(id)! as any;
+  const els = { root: $('root'), notice: $('notice'), pending: $('pending'), open: $('open'), list: $('list'), pin: $('pin'), pinRow: $('pinRow'), ttl: $('ttl'), inviteOut: $('out'), inviteIn: $('in'), tabButton: doc.querySelector('.tab') as any };
   const calls: Array<{ url: string; opts: any }> = [];
   const fetchImpl = async (url: string, opts: any = {}) => {
     calls.push({ url, opts });
-    if (url === '/threadline/pairing' && !opts.method) {
-      return { status: 200, json: async () => ({ pairings: [{ peerFp: FP, peerName: 'scout', state }] }) };
-    }
+    if (url === '/threadline/pairing/invites' && !opts.method) return { status: 200, json: async () => ({ invites: server.invites, pendingAccepts: server.pendingAccepts }) };
+    if (url === '/threadline/pairing' && !opts.method) return { status: 200, json: async () => ({ pairings: server.pairings }) };
     const r = reply(url, opts);
     return { status: r.status, json: async () => r.body };
   };
-  const c = createController({ doc, els, fetchImpl });
-  return { doc, els, calls, c };
+  const c = createController({ doc, els, fetchImpl, now: () => NOW });
+  return { doc, els, calls, c, $ };
 }
-
 const click = (c: any, el: any) => c.onClick({ target: el });
+const empty = (): Server => ({ invites: [], pendingAccepts: [], pairings: [] });
 
-describe('pairing panel — rendering', () => {
-  it('a pending pairing leads with the actions: show words, 12 inputs, confirm; fingerprint only as metadata', () => {
-    const html = renderPairing({ peerFp: FP, peerName: 'scout', state: 'pending-verification' });
-    expect(html).toContain('Show my words');
-    expect((html.match(/data-their-word=/g) || []).length).toBe(12);
-    expect(html).toContain('Confirm they match');
-    expect(html.indexOf('Show my words')).toBeLessThan(html.indexOf('pair-meta'));
-    expect(html).not.toContain(FP + '<'); // never the full fingerprint as headline text
+describe('pairing card — rendering', () => {
+  it('waiting decisions: an approve prompt and a finish prompt, names labelled as claimed; nothing for an open invite', () => {
+    const html = renderPending({ invites: [usedInvite, { ...openInvite, iid: 'aa'.repeat(16) }], pendingAccepts: [pendingAccept] }, NOW);
+    expect(html).toContain('calls itself <strong>Scout</strong>');
+    expect(html).toContain(`data-approve="${pendingAccept.iid}"`);
+    expect(html).toContain(`data-finish="${IID}"`);
+    expect(html).toContain('Not them');
+    expect(html).not.toContain('aa'.repeat(16));
+    expect(pendingCount({ invites: [usedInvite], pendingAccepts: [pendingAccept] })).toBe(2);
   });
 
-  it('a denied pairing offers only a PIN-gated clear; a verified one offers nothing', () => {
-    expect(renderPairing({ peerFp: FP, state: 'verification-failed' })).toContain('Clear and start again');
-    const ok = renderPairing({ peerFp: FP, state: 'mutual-verified' });
-    expect(ok).toContain('Verified');
-    expect(ok).not.toContain('<button');
+  it('a decided or leaked invite asks for nothing; a leak shows an alarm', () => {
+    expect(finishPrompts([{ ...usedInvite, decision: 'finished' }])).toEqual([]);
+    const leaked = { ...usedInvite, secondAccept: { fp: 'f'.repeat(32), agent: 'Mallory', owner: '', at: later(2) } };
+    expect(finishPrompts([leaked])).toEqual([]);
+    expect(renderPending({ invites: [leaked], pendingAccepts: [] }, NOW)).toMatch(/your invite got out[\s\S]*Mallory/);
   });
 
-  it('escapes peer-supplied names', () => {
+  it('open invites list with a cancel button; expired ones are not listed', () => {
+    expect(renderOpenInvites([openInvite], NOW)).toContain(`data-revoke="${IID}"`);
+    expect(renderOpenInvites([{ ...openInvite, exp: later(-1) }], NOW)).toBe('');
+  });
+
+  it('agents list: states in plain words, no 12-word controls, names escaped', () => {
+    expect(renderPairing({ peerFp: FP, peerName: 'scout', state: 'mutual-verified' })).toContain('Paired');
+    expect(renderPairing({ peerFp: FP, state: 'invite-accepted' })).toContain('Waiting for the other side');
+    const old = renderPairing({ peerFp: FP, state: 'pending-verification' });
+    expect(old).toContain('Pair by invite instead');
+    expect(old).not.toMatch(/data-their-word|Show my words/);
     expect(renderPairing({ peerFp: FP, peerName: '<img src=x onerror=1>', state: 'mutual-verified' })).not.toContain('<img');
-    expect(renderPairings([])).toContain('No pairings yet');
+    expect(renderPairings([])).toContain('No paired agents yet');
   });
 });
 
-describe('pairing panel — controller', () => {
-  it('shows this side\'s words using the PIN in a header (a GET cannot carry a body), then clears the PIN field', async () => {
-    const { els, calls, c } = setup('pending-verification', () => ({ status: 200, body: { pairing: { sasWords: WORDS } } }));
+describe('pairing card — controller', () => {
+  it('make an invite: the message is shown with Copy, and a later refresh never touches it', async () => {
+    const server = empty();
+    const { els, c, calls } = setup(server, (url) => url === '/threadline/pairing/invites'
+      ? { status: 200, body: { ok: true, iid: IID, exp: later(60), message: 'Scout invites you… tlinv1:abc.def' } }
+      : { status: 200, body: {} });
     await c.load();
-    const pin = els.list.querySelector(`[data-show-pin="${FP}"]`) as any;
-    pin.value = '1234';
-    await click(c, els.list.querySelector(`[data-show-words="${FP}"]`));
-    const call = calls.find((x) => x.url === `/threadline/pairing/${FP}`)!;
-    expect(call.opts.headers['X-Dashboard-Pin']).toBe('1234');
-    expect(call.opts.body).toBeUndefined();
-    expect(pin.value).toBe('');
-    expect(els.list.querySelectorAll(`[data-own-words="${FP}"] li`).length).toBe(12);
+    await click(c, { dataset: { makeInvite: '' } });
+    expect(JSON.parse(calls.find((x) => x.url === '/threadline/pairing/invites' && x.opts.method === 'POST')!.opts.body)).toEqual({ ttlMinutes: 60 });
+    const box = els.inviteOut.querySelector('[data-invite-text]');
+    expect(box.value).toContain('tlinv1:abc.def');
+    server.invites = [openInvite];
+    await c.load(); await c.load();
+    expect(els.inviteOut.querySelector('[data-invite-text]')).toBe(box); // same node: not re-rendered
+    expect(els.open.innerHTML).toContain('data-revoke');
   });
 
-  it('confirm sends the 12 typed words (trimmed, lowercased, in order) with the PIN', async () => {
-    const { els, calls, c } = setup('pending-verification', () => ({ status: 200, body: { state: 'mutual-verified' } }));
+  it('a refresh with no change re-renders nothing; text typed into the paste box survives refreshes', async () => {
+    const server = { ...empty(), pendingAccepts: [pendingAccept] };
+    const { els, c } = setup(server);
     await c.load();
-    const inputs = Array.from(els.list.querySelectorAll(`[data-their-word="${FP}"]`)) as any[];
-    inputs.forEach((i, k) => { i.value = ` ${WORDS[k].toUpperCase()} `; });
-    (els.list.querySelector(`[data-confirm-pin="${FP}"]`) as any).value = '1234';
-    await click(c, els.list.querySelector(`[data-confirm="${FP}"]`));
-    const call = calls.find((x) => x.url === `/threadline/pairing/${FP}/verify`)!;
-    expect(JSON.parse(call.opts.body)).toEqual({ words: WORDS, pin: '1234' });
-    expect(els.notice.textContent).toContain('Every word matched');
+    const node = els.pending.firstElementChild;
+    els.inviteIn.value = 'half-pasted';
+    els.pin.value = '13';
+    await c.load(); await c.load();
+    expect(els.pending.firstElementChild).toBe(node);
+    expect(els.inviteIn.value).toBe('half-pasted');
+    expect(els.pin.value).toBe('13');
   });
 
-  it('refuses to send with a missing word or no PIN', async () => {
-    const { els, calls, c } = setup();
+  it('the PIN is asked once: after one accepted use it is held, the field hides, and the next action needs no typing', async () => {
+    const server = { ...empty(), pendingAccepts: [pendingAccept], invites: [usedInvite] };
+    const { els, c, calls } = setup(server);
     await c.load();
-    (els.list.querySelector(`[data-confirm-pin="${FP}"]`) as any).value = '1234';
-    await click(c, els.list.querySelector(`[data-confirm="${FP}"]`));
-    expect(calls.some((x) => x.url.endsWith('/verify'))).toBe(false);
-    expect(els.notice.className).toContain('mnd-notice-err');
-    expect(collectTypedWords(els.list, FP)).toHaveLength(12);
+    await click(c, els.pending.querySelector('[data-approve]'));
+    expect(calls.some((x) => x.url.endsWith('/approve'))).toBe(false); // no PIN yet: nothing sent
+    els.pin.value = '135790';
+    await click(c, els.pending.querySelector('[data-approve]'));
+    expect(JSON.parse(calls.find((x) => x.url.endsWith('/approve'))!.opts.body)).toEqual({ pin: '135790' });
+    expect(c.hasPin()).toBe(true);
+    expect(els.pinRow.style.display).toBe('none');
+    await click(c, els.pending.querySelector('[data-finish]'));
+    expect(JSON.parse(calls.find((x) => x.url.endsWith('/finish'))!.opts.body)).toEqual({ pin: '135790' });
   });
 
-  it('a timed refresh does not wipe words the operator is typing', async () => {
-    const { els, c } = setup();
+  it('a refused PIN is forgotten and the field comes back', async () => {
+    const server = { ...empty(), invites: [usedInvite] };
+    const { els, c } = setup(server, () => ({ status: 403, body: { error: 'wrong' } }));
     await c.load();
-    const first = els.list.querySelector(`[data-their-word="${FP}"]`) as any;
-    first.value = 'abandon';
-    await c.load({ timed: true });
-    expect((els.list.querySelector(`[data-their-word="${FP}"]`) as any).value).toBe('abandon');
+    els.pin.value = '0000';
+    await click(c, els.pending.querySelector('[data-finish]'));
+    expect(c.hasPin()).toBe(false);
+    expect(els.pinRow.style.display).toBe('');
+    expect(els.notice.textContent).toMatch(/not accepted/);
   });
 
-  it('clear posts clearFailed with the PIN to the start route', async () => {
-    const { els, calls, c } = setup('verification-failed', () => ({ status: 200, body: { outcome: 'started' } }));
+  it('paste an invite: checked, the box is emptied (the secret leaves the page), and the decision waits at the top', async () => {
+    const server = empty();
+    const { els, c, calls } = setup(server, (url) => {
+      if (url.endsWith('/inspect')) { server.pendingAccepts = [pendingAccept]; return { status: 200, body: { ok: true } }; }
+      return { status: 200, body: {} };
+    });
+    els.inviteIn.value = 'Fwd: tlinv1:abc.def';
+    await click(c, { dataset: { inspectInvite: '' } });
+    expect(JSON.parse(calls.find((x) => x.url.endsWith('/inspect'))!.opts.body)).toEqual({ invite: 'Fwd: tlinv1:abc.def' });
+    expect(els.inviteIn.value).toBe('');
+    expect(els.pending.innerHTML).toContain('data-approve');
+  });
+
+  it('the Threadline tab shows how many decisions wait', async () => {
+    const server = { ...empty(), invites: [usedInvite], pendingAccepts: [pendingAccept] };
+    const { els, c } = setup(server);
     await c.load();
-    (els.list.querySelector(`[data-clear-pin="${FP}"]`) as any).value = '1234';
-    await click(c, els.list.querySelector(`[data-clear="${FP}"]`));
-    const call = calls.find((x) => x.url === `/threadline/pairing/${FP}/start`)!;
-    expect(JSON.parse(call.opts.body)).toEqual({ clearFailed: true, pin: '1234' });
+    expect(els.tabButton.textContent).toBe('Threadline (2)');
+    server.invites = []; server.pendingAccepts = [];
+    await c.load();
+    expect(els.tabButton.textContent).toBe('Threadline');
+  });
+
+  it('cancel and decline need no PIN', async () => {
+    const server = { ...empty(), invites: [openInvite], pendingAccepts: [pendingAccept] };
+    const { els, c, calls } = setup(server);
+    await c.load();
+    await click(c, els.open.querySelector('[data-revoke]'));
+    await click(c, els.pending.querySelector('[data-decline]'));
+    expect(calls.find((x) => x.url === `/threadline/pairing/invites/${IID}`)!.opts.method).toBe('DELETE');
+    expect(calls.some((x) => x.url.endsWith('/decline'))).toBe(true);
   });
 });
 
-describe('pairing panel — page wiring', () => {
-  it('index.html has the card and loads the module on the Threadline tab', () => {
-    const html = fs.readFileSync(path.join(__dirname, '../../dashboard/index.html'), 'utf-8');
-    expect(html).toContain('id="pairList"');
+describe('pairing card — page wiring', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../../dashboard/index.html'), 'utf-8');
+  it('the card is first on the Threadline tab, before the bridge settings, with no 12-word controls', () => {
+    const tab = html.slice(html.indexOf('id="threadlineTab"'));
+    expect(tab.indexOf('id="pairCard"')).toBeGreaterThan(0);
+    expect(tab.indexOf('id="pairCard"')).toBeLessThan(tab.indexOf('id="tlBridgeCard"'));
+    expect(html).not.toContain('Compare 12 words');
     expect(html).toContain("import('/dashboard/pairing.js')");
-    expect(html).toMatch(/startPairingPanel\(\)/);
+  });
+  it('the panel starts at login (for the tab count) and the page offers a reload when the server version changes', () => {
+    expect((html.match(/startPairingPanel\(\);/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(html).toContain('id="dashVersionBar"');
+    expect(html).toMatch(/h\.version !== window\.__dashServerVersion/);
   });
 });
