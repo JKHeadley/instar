@@ -71,7 +71,7 @@ The feature is behind `threadline.verifiedPairing`. Turning it off stops all rou
 
 ## Conclusion
 
-Steps 1–8 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
+Steps 1–9 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`. Approval needs the PIN, or a lifeline-verified owner tap in enforce mode.
 
 ## Second-pass review (if required)
 
@@ -124,6 +124,14 @@ Echo approved the spec; code review happens on the PR.
 - When this machine does not hold the relay identity, the card says to open the dashboard on the machine that does, instead of claiming pairing is off.
 - Over-block: none new. Under-block: holding the PIN in memory means someone at an unlocked, already-used dashboard page can approve without retyping it. The page already holds the Bearer token, and the spec chose one PIN entry per person.
 - Evidence: `tests/unit/dashboard-pairing-panel.test.ts` (13, jsdom): the renderers (claimed names, decided and leaked invites ask nothing, the alarm, open invites, no 12-word controls, escaping), the invite box surviving refreshes as the same DOM node, unchanged refreshes re-rendering nothing, typed paste text and PIN surviving refreshes, the PIN asked once and held, a refused PIN forgotten, the paste box emptied, the tab count, cancel/decline without PIN, and the page wiring (the card before the bridge settings, starting at login, the reload bar). Breakages: 8 of 8 caught (re-render only on change, the held PIN, forgetting a refused PIN, the finish-prompt filter, emptying the paste box, the tab count, the no-PIN refusal, the version check). Every test that reads the dashboard files: 19 files, 300 tests pass.
+
+## Step 9: failure paths on the production path (added 2026-10-14)
+
+No production code changed. `tests/e2e/threadline/pairing-invite-failure-paths.test.ts` drives real `bootstrapThreadline` agents over a real in-process relay:
+- A leaked invite used by a third agent AFTER the inviter finished: the inviter's first acceptor stops being credential-eligible, the inviter gets the alarm, and the late acceptor is told the invite was used elsewhere and never trusts the inviter.
+- An invite edited in transit is refused at the recipient before anything is recorded or sent. An invite made with the inviter's real key that expired an hour ago is refused as expired. The shortest real lifetime is one minute by design, so the test builds an already-expired invite rather than waiting.
+- The inviter restarts between the accept and Finish: the same identity comes back, Finish works from the persisted store, and both sides become credential-eligible.
+- Breakages: 3 of 3 caught (no demotion on a second accept, no expiry check at the recipient, no save when the invite is used).
 
 ## Class-Closure Declaration (display-only mirror)
 
