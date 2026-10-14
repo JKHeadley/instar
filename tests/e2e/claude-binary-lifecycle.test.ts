@@ -58,6 +58,7 @@ describe('Retained Claude executable E2E lifecycle (feature is alive)', () => {
     sm = new SessionManager({
       tmuxPath: '/usr/bin/false', claudePath: claude, projectDir: tmpDir,
       maxSessions: 3, protectedSessions: [], completionPatterns: [],
+      retainedClaudeBinary: { enabled: true }, // the vitest default is off (host-independent argv tests); production default is on
     }, new StateManager(stateDir));
     server = new AgentServer({ config, sessionManager: sm, state: new StateManager(stateDir) });
     await server.start();
@@ -71,7 +72,7 @@ describe('Retained Claude executable E2E lifecycle (feature is alive)', () => {
 
   const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
-  it('GET /sessions/claude-binary is alive (200, not 503) with the retainer ON by default', async () => {
+  it('GET /sessions/claude-binary is alive (200, not 503) with the retainer ON', async () => {
     const res = await request(app).get('/sessions/claude-binary').set(auth());
     expect(res.status).toBe(200);
     expect(res.body.error).toBeUndefined();

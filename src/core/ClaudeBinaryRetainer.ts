@@ -148,6 +148,22 @@ export interface ClaudeBinaryRetainerOptions {
 
 const SAFE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 
+/**
+ * Is the retainer ON for this process? Production default is ON (absent =
+ * on — the leak is the default-on failure). Under a test runner (VITEST set)
+ * the default is OFF: dozens of SessionManager tests pin the launch argv
+ * byte-for-byte against a configured claude path that happens to EXIST on a
+ * developer's Mac and not on CI, so a host-dependent default would make the
+ * same test pass on one machine and fail on another. An EXPLICIT
+ * `enabled: true` always wins (the retainer's own tests set it), and an
+ * explicit `false` always wins.
+ */
+export function resolveRetainerEnabled(configured: boolean | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (configured === true) return true;
+  if (configured === false) return false;
+  return !env.VITEST;
+}
+
 export function sanitizeVersionKey(version: string | null | undefined): string | null {
   if (!version) return null;
   const v = version.trim();

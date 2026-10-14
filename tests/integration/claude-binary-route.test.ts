@@ -61,6 +61,7 @@ describe('/sessions/claude-binary (integration)', () => {
     const sm = new SessionManager({
       tmuxPath: '/usr/bin/false', claudePath: claude, projectDir,
       maxSessions: 1, protectedSessions: [], completionPatterns: [],
+      retainedClaudeBinary: { enabled: true }, // the vitest default is off (host-independent argv tests)
     }, new StateManager(projectDir));
     const app = express();
     app.use(express.json());

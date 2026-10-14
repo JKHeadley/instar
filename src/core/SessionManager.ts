@@ -107,7 +107,7 @@ import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { ClaudeBinaryRetainer, type RetainerStatus } from './ClaudeBinaryRetainer.js';
+import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import {
   InboundDeliveryStore,
@@ -1030,7 +1030,7 @@ export class SessionManager extends EventEmitter {
     this.state = state;
     this.claudeBinaryRetainer = new ClaudeBinaryRetainer({
       dir: config.retainedClaudeBinary?.dir || ClaudeBinaryRetainer.defaultDir(config.projectDir),
-      enabled: config.retainedClaudeBinary?.enabled !== false,
+      enabled: resolveRetainerEnabled(config.retainedClaudeBinary?.enabled),
       ...(typeof config.retainedClaudeBinary?.pruneGraceMs === 'number'
         ? { pruneGraceMs: config.retainedClaudeBinary.pruneGraceMs }
         : {}),

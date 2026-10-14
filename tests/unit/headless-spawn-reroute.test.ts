@@ -116,9 +116,6 @@ function makeManager(opts: {
     maxSessions: 10,
     protectedSessions: [],
     completionPatterns: ['has been automatically paused'],
-    // CMT-798: these assertions pin the launch argv byte-for-byte against CLAUDE;
-    // the retained-copy indirection (on by default) is covered by its own tests.
-    retainedClaudeBinary: { enabled: false },
     ...(opts.framework ? { framework: opts.framework } : {}),
     ...(opts.mode ? { subscriptionPathMode: opts.mode } : {}),
     ...(opts.maxRerouted != null ? { subscriptionMaxRerouted: opts.maxRerouted } : {}),

@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
-import { ClaudeBinaryRetainer, RETAINED_BINARY_NAME } from '../../src/core/ClaudeBinaryRetainer.js';
+import { ClaudeBinaryRetainer, RETAINED_BINARY_NAME, resolveRetainerEnabled } from '../../src/core/ClaudeBinaryRetainer.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const OP = 'tests/unit/session-manager-claude-binary.test.ts';
@@ -49,7 +49,9 @@ describe('SessionManager launches claude-code from the retained copy (CMT-798)',
     new SessionManager({
       tmuxPath: '/usr/bin/false', claudePath: claude.link, projectDir,
       maxSessions: 1, protectedSessions: [], completionPatterns: [],
-      ...(retainedClaudeBinary ? { retainedClaudeBinary } : {}),
+      // Under vitest the default resolves OFF (see resolveRetainerEnabled); these
+      // tests exercise the ON path explicitly, exactly as production resolves it.
+      retainedClaudeBinary: retainedClaudeBinary ?? { enabled: true },
     }, new StateManager(projectDir));
 
   it('claude-code → the retained per-version path under <projectDir>/.instar/state/claude-bin by default', () => {
@@ -105,7 +107,7 @@ describe('SessionManager launches claude-code from the retained copy (CMT-798)',
 
   it('a custom dir + pruneGraceMs from config are honoured', () => {
     const dir = path.join(projectDir, 'elsewhere', 'claude-bin');
-    const sm = newSm({ dir, pruneGraceMs: 42 });
+    const sm = newSm({ enabled: true, dir, pruneGraceMs: 42 });
     const launched = sm.resolveLaunchBinary('claude-code', claude.link);
     expect(launched).toBe(path.join(dir, '2.1.299', RETAINED_BINARY_NAME));
     expect(sm.claudeBinaryStatus()).toMatchObject({ dir, pruneGraceMs: 42 });
@@ -117,6 +119,20 @@ describe('SessionManager launches claude-code from the retained copy (CMT-798)',
     const sm = newSm();
     expect(sm.resolveLaunchBinary('claude-code', claude.link)).toBe(claude.link);
     expect(sm.claudeBinaryStatus().lastResolution?.reason).toBe('script-not-retained');
+  });
+
+  it('under a test runner the DEFAULT resolves off, so argv-pinning tests stay host-independent; production default is on', () => {
+    expect(process.env.VITEST).toBeTruthy();
+    const sm = new SessionManager({
+      tmuxPath: '/usr/bin/false', claudePath: claude.link, projectDir,
+      maxSessions: 1, protectedSessions: [], completionPatterns: [],
+    }, new StateManager(projectDir));
+    expect(sm.resolveLaunchBinary('claude-code', claude.link)).toBe(claude.link);
+    expect(sm.claudeBinaryStatus().enabled).toBe(false);
+    expect(resolveRetainerEnabled(undefined, {})).toBe(true);
+    expect(resolveRetainerEnabled(undefined, { VITEST: 'true' })).toBe(false);
+    expect(resolveRetainerEnabled(true, { VITEST: 'true' })).toBe(true);
+    expect(resolveRetainerEnabled(false, {})).toBe(false);
   });
 
   it('pruneRetainedClaudeBinaries() runs a real pass and reports it on the status read', async () => {
