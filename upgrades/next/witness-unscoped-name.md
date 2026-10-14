@@ -6,7 +6,7 @@ The Witness package now publishes to npm as `instar-witness` instead of `@instar
 
 ## What to Tell Your User
 
-The Witness tool installs with `npm install -g instar-witness`, and the command is still `witness`.
+The Witness tool is now called instar-witness on npm. Installing it gives you the same witness command as before.
 
 ## Summary of New Capabilities
 
