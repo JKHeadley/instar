@@ -1258,6 +1258,8 @@ export interface RouteContext {
   topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null;
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
+  /** Pairing by invite (a2a-pairing-invite-link): engine + store. Absent when this machine has no relay identity. */
+  pairingInvites?: import('../threadline/ThreadlineBootstrap.js').ThreadlineBootstrapResult['pairingInvites'] | null;
   /** a2a-single-agent-identity §1–§2: the agent-identity runtime (detector, audit, posture, reload lever). */
   agentIdentity?: import('../core/AgentIdentityRuntime.js').AgentIdentityRuntime | null;
   /** Relay connection-LOSS reader. Null when no relay client exists in this
@@ -18558,6 +18560,133 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     pairingPoolCache.set('pairing', { at: Date.now(), payload });
     return payload;
   }
+
+  // ── Pairing by invite (docs/specs/a2a-pairing-invite-link.md) ─────────────────────────
+  // Registered BEFORE /threadline/pairing/:peerFp so "invites" is never read as a fingerprint.
+  // Authority (§6): the agent's Bearer token makes, lists, revokes and inspects invites, none of
+  // which grants anything. Approving an accept and finishing (or refusing) an acceptor are operator
+  // acts and need the dashboard PIN. Telegram approval is wired separately (§6.1).
+  const invitesOrRefuse = (req: import('express').Request, res: import('express').Response) => {
+    if (!verifiedPairingRouteEnabled()) {
+      res.status(503).json({ error: 'verified pairing not enabled' });
+      return null;
+    }
+    if (!pairingRouteAuthorized(req, res)) return null;
+    if (!ctx.pairingInvites) {
+      res.status(503).json({ error: 'invite pairing unavailable (this machine does not run the Threadline relay)' });
+      return null;
+    }
+    return ctx.pairingInvites;
+  };
+  const iidParam = (req: import('express').Request, res: import('express').Response): string | null => {
+    const iid = String(req.params.iid || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(iid)) {
+      res.status(400).json({ error: 'iid must be 32 hex characters' });
+      return null;
+    }
+    return iid;
+  };
+  const sendFlowResult = (res: import('express').Response, r: { ok: boolean; reason?: string; [k: string]: unknown }, failStatus = 409) => {
+    if (r.ok) res.json(r);
+    else res.status(failStatus).json({ error: r.reason });
+  };
+
+  // Make an invite. Body: { ttlMinutes?: number (max 1440), bindFp?: string }.
+  router.post('/threadline/pairing/invites', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    const body = req.body ?? {};
+    let ttlMs: number | undefined;
+    if (body.ttlMinutes !== undefined) {
+      const m = Number(body.ttlMinutes);
+      if (!Number.isFinite(m) || m <= 0 || m > 24 * 60) {
+        res.status(400).json({ error: 'ttlMinutes must be between 1 and 1440' });
+        return;
+      }
+      ttlMs = Math.round(m * 60_000);
+    }
+    let bindFp: string | undefined;
+    if (body.bindFp !== undefined && body.bindFp !== null && body.bindFp !== '') {
+      bindFp = String(body.bindFp).toLowerCase();
+      if (!/^[0-9a-f]{32}$/.test(bindFp)) {
+        res.status(400).json({ error: 'bindFp must be a 32-hex-char Threadline fingerprint' });
+        return;
+      }
+    }
+    sendFlowResult(res, pi.flow.createInvite({ ttlMs, bindFp }), 503);
+  });
+
+  // This agent's invites (never their secrets) and the invites waiting for this operator's approval.
+  router.get('/threadline/pairing/invites', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts() });
+  });
+
+  // Revoke an open invite (making it useless). Bearer: revoking only removes an option.
+  router.delete('/threadline/pairing/invites/:iid', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    const iid = iidParam(req, res);
+    if (!iid) return;
+    if (!pi.store.revoke(iid)) {
+      res.status(409).json({ error: 'no open invite with that id' });
+      return;
+    }
+    res.json({ ok: true, iid, state: 'revoked' });
+  });
+
+  // Recipient: read an invite someone sent (body: { invite: "<text containing tlinv1:...>" }).
+  // Checks it and holds it for the operator's decision; it grants nothing and sends nothing.
+  router.post('/threadline/pairing/invites/inspect', async (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    const text = (req.body ?? {}).invite;
+    if (typeof text !== 'string' || text.length === 0 || text.length > 4096) {
+      res.status(400).json({ error: 'send invite: the message or code you were sent' });
+      return;
+    }
+    sendFlowResult(res, await pi.flow.receiveInvite(text), 400);
+  });
+
+  // Recipient's operator approves (PIN). Pins the inviter (not yet credential-eligible) and sends the accept.
+  router.post('/threadline/pairing/invites/:iid/approve', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    if (!checkMandatePin(req, res)) return;
+    const iid = iidParam(req, res);
+    if (!iid) return;
+    sendFlowResult(res, pi.flow.approveAccept(iid));
+  });
+
+  // Recipient declines. Bearer: declining only removes an option.
+  router.post('/threadline/pairing/invites/:iid/decline', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    const iid = iidParam(req, res);
+    if (!iid) return;
+    sendFlowResult(res, pi.flow.declineAccept(iid), 404);
+  });
+
+  // Inviter's operator finishes (PIN): pins the acceptor as verified and sends the signed finish.
+  router.post('/threadline/pairing/invites/:iid/finish', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    if (!checkMandatePin(req, res)) return;
+    const iid = iidParam(req, res);
+    if (!iid) return;
+    sendFlowResult(res, pi.flow.approveFinish(iid));
+  });
+
+  // Inviter's operator says the acceptor is not who they meant (PIN). Nothing is pinned; the invite stays used.
+  router.post('/threadline/pairing/invites/:iid/not-them', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    if (!checkMandatePin(req, res)) return;
+    const iid = iidParam(req, res);
+    if (!iid) return;
+    sendFlowResult(res, pi.flow.rejectFinish(iid));
+  });
 
   // List all pairings (read-only, no SAS words ever). 503 when the feature is off.
   // `?scope=pool` merges every online machine's pairings (dark-peer-tolerant) so the

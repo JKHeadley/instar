@@ -55,7 +55,7 @@ No LLM or heuristic is involved. Every decision is deterministic cryptography or
 
 ## 6. External surfaces
 
-None yet (no routes or messages wired in this step). Later steps add the routes, wire ops, Telegram buttons and dashboard.
+Wire ops (step 5) and HTTP routes (step 6). Telegram buttons and the dashboard follow.
 
 ## 6b. Operator-surface quality
 
@@ -71,7 +71,7 @@ The feature is behind `threadline.verifiedPairing`. Turning it off stops all rou
 
 ## Conclusion
 
-Steps 1–4 are safe to merge behind the flag. Nothing is reachable until the wire and route steps.
+Steps 1–6 are safe to merge behind the flag. The routes are reachable only with `threadline.verifiedPairing.enabled`, and approval still needs the PIN.
 
 ## Second-pass review (if required)
 
@@ -91,6 +91,16 @@ Echo approved the spec; code review happens on the PR.
 - `markInviteVerified` records the same pairingId v2 uses (HKDF over both identity keys), so CredentialShareGate's own-key-rotation check (check 3) applies to invite pairings too. Without it every credential to an invite pairing was refused (`encryption-key-not-bound`), also found by the E2E.
 - Interactions: an untrusted peer's invite op is no longer routed as a conversation message, an improvement. A peer whose verified pairing is `invite-accepted` can now be decrypted via the pinned key, the same as `pending-verification` already was.
 - Evidence: `tests/e2e/threadline/pairing-invite-production-path.test.ts` (real bootstrap + in-process RelayServer): invite → plaintext accept → finish → ack → credential both ways. Breakages: the resolver without invite-accepted, and the gate without dispatch, each fail it. Regression suite: 139 files, 2893 tests pass.
+
+## Step 6: routes (added 2026-10-14)
+
+- New routes, registered before `/threadline/pairing/:peerFp` so "invites" is never read as a fingerprint: `POST /threadline/pairing/invites` (make; `ttlMinutes` 1–1440, optional `bindFp`), `GET /threadline/pairing/invites` (the invites without secret or MAC key, plus the recipient's pending accepts), `DELETE /threadline/pairing/invites/:iid` (revoke an open invite), `POST .../invites/inspect` (recipient reads an invite; grants and sends nothing), `POST .../:iid/approve` (PIN), `POST .../:iid/decline`, `POST .../:iid/finish` (PIN), `POST .../:iid/not-them` (PIN). All are Bearer-gated and 503 when verified pairing is off or the machine has no relay identity.
+- Authority (spec §6): the Bearer token alone makes, lists, revokes, inspects and declines, none of which grants anything. Approve, Finish and Not-them need the dashboard PIN through `checkMandatePin`, with its shared failure counters and lockout.
+- Engine changes found by writing the routes: the inviter now records its operator's decision (`decision: finished|rejected`, set once and persisted), so Finish cannot be repeated or flipped. A second valid accept is recorded on the invite (`secondAccept`), and Finish is refused afterwards: two agents accepting means the invite leaked, and the operator makes a new one. The recipient can list its pending accepts (claimed names, check code, expiry; never the secret; expired ones dropped).
+- Write domain: the invite routes are classified `cluster-shared` beside `/start` (WriteDomainRegistry), the same reasoning.
+- Server wiring: `bootstrapThreadline` receives `ownerName` (the admin user's name, else the first user's; self-described, shown as "claimed"), and the engine reaches the routes as `ctx.pairingInvites`.
+- Over-block: an operator who taps Not-them cannot change their mind on that invite and needs a new invite. Under-block: none new; the routes add no path that skips the engine's checks.
+- Evidence: `pairing-invite-production-path.test.ts` scenario 2 drives the whole flow over HTTP on two real agents and a real relay (401 without Bearer, 403 approve/finish without PIN, decided-once 409s, revoked invite refused by the inviter, no secrets in the list). New unit tests for decisions, the second-accept block and the pending list. Breakages: 7 of 7 caught (each PIN check, the decided-once guard in engine and store, the second-accept block, the pending-list expiry, the list's secret stripping). Regression: threadline unit/e2e/integration 185 files, 2949 tests; every test that scans routes.ts, 60 files, 1047 tests; tsc clean.
 
 ## Class-Closure Declaration (display-only mirror)
 

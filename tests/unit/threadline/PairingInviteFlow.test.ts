@@ -281,3 +281,44 @@ describe('invite flow: finish delivery', () => {
     expect(net.queue.filter((m) => m.op === 'pair-invite-finish')).toHaveLength(5);
   });
 });
+
+describe('invite flow: operator decisions and the recipient list', () => {
+  it('a second valid accept BEFORE Finish blocks Finish; the alarm is recorded on the invite', async () => {
+    const net = new Net();
+    const A = makeAgent(net, 'scout'); const B = makeAgent(net, 'carl'); const M = makeAgent(net, 'mallory');
+    const { iid, message } = await invite(net, A);
+    await acceptAndDeliver(net, M, message);
+    await acceptAndDeliver(net, B, message);
+    expect(A.store.getInternal(iid)?.secondAccept).toMatchObject({ fp: B.fp, agent: 'carl' });
+    expect(A.flow.approveFinish(iid)).toMatchObject({ ok: false });
+    expect(A.trust.isCredentialShareAllowedByFingerprint(M.fp)).toBe(false);
+    expect(A.trust.isCredentialShareAllowedByFingerprint(B.fp)).toBe(false);
+  });
+
+  it('Finish and "Not them" are each decided once, and the decision survives a restart', async () => {
+    const net = new Net();
+    const A = makeAgent(net, 'scout'); const B = makeAgent(net, 'carl');
+    const { iid, message } = await invite(net, A);
+    await acceptAndDeliver(net, B, message);
+    expect(A.flow.rejectFinish(iid)).toMatchObject({ ok: true });
+    expect(A.flow.approveFinish(iid)).toMatchObject({ ok: false });
+    expect(A.flow.rejectFinish(iid)).toMatchObject({ ok: false });
+    const reopened = new PairingInviteStore(A.dir);
+    expect(reopened.getInternal(iid)).toMatchObject({ decision: 'rejected' });
+    expect(A.trust.isCredentialShareAllowedByFingerprint(B.fp)).toBe(false);
+  });
+
+  it('the recipient lists invites waiting for its operator, without the secret, and drops expired ones', async () => {
+    const net = new Net();
+    let now = new Date('2026-10-14T12:00:00.000Z');
+    const A = makeAgent(net, 'scout', { now: () => now }); const B = makeAgent(net, 'carl', { now: () => now });
+    const { iid, message } = await invite(net, A);
+    await B.flow.receiveInvite(message);
+    const list = B.flow.listPendingAccepts();
+    expect(list).toEqual([expect.objectContaining({ iid, claimedAgent: 'scout', inviterFp: A.fp })]);
+    const secret = decodeInvite(findInviteToken(message)!);
+    expect(secret.ok && JSON.stringify(list).includes(secret.invite.secret)).toBe(false);
+    now = new Date(now.getTime() + 2 * 60 * 60_000);
+    expect(B.flow.listPendingAccepts()).toEqual([]);
+  });
+});

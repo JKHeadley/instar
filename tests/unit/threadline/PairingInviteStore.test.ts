@@ -94,3 +94,20 @@ describe('PairingInviteStore', () => {
     expect(s.getInternal(i.iid)).toBeUndefined();
   });
 });
+
+describe('PairingInviteStore decisions', () => {
+  it('markDecided needs a used invite, is set once, and persists; recordSecondAccept needs a used invite', () => {
+    const d = dir();
+    const s = new PairingInviteStore(d, () => T0);
+    const i = inv();
+    s.add(i);
+    expect(s.markDecided(i.iid, 'finished')).toBe(false); // still open
+    expect(s.recordSecondAccept(i.iid, { fp: 'b'.repeat(32), owner: 'X', agent: 'X' })).toBe(false);
+    s.markUsed(i.iid, { fp: 'a'.repeat(32), key: 'a'.repeat(64), owner: 'Carl', agent: 'C' });
+    expect(s.markDecided(i.iid, 'finished')).toBe(true);
+    expect(s.markDecided(i.iid, 'rejected')).toBe(false);
+    expect(s.recordSecondAccept(i.iid, { fp: 'b'.repeat(32), owner: 'X', agent: 'X' })).toBe(true);
+    const r = new PairingInviteStore(d, () => T0);
+    expect(r.list()[0]).toMatchObject({ decision: 'finished', secondAccept: { fp: 'b'.repeat(32) } });
+  });
+});

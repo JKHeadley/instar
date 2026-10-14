@@ -367,6 +367,12 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // cluster-shared (single writer = the lease holder): the conservative default, with no
   // machine-local convergence claim to defend.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/:peerFp/start', domain: 'cluster-shared' });
+  // Pairing by invite (docs/specs/a2a-pairing-invite-link.md): the invite routes write the
+  // invite store and the trust profile, only on the machine holding the relay identity (503
+  // elsewhere); the verified result replicates through the same pairing replication. Same
+  // conservative classification as /start.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const subscriptionReloginStory: ConvergenceStory = {

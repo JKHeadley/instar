@@ -57,7 +57,7 @@ describe('invite pairing — production path', () => {
     const trust = createUnifiedTrustSystem(boot.trustManager!, { stateDir: project.stateDir });
     const server = new AgentServer({
       config: configFor(project, name, auth), sessionManager: createMockSessionManager() as never, state: project.state,
-      handshakeManager: new HandshakeManager(project.stateDir, name), threadlineRelayClient: boot.relayClient!, unifiedTrust: trust,
+      handshakeManager: new HandshakeManager(project.stateDir, name), threadlineRelayClient: boot.relayClient!, unifiedTrust: trust, pairingInvites: boot.pairingInvites,
     } as never);
     await server.start();
     const events: InviteEvent[] = [];
@@ -67,9 +67,9 @@ describe('invite pairing — production path', () => {
     return s;
   }
 
-  const call = async (s: Side, method: string, p: string, body?: unknown) => {
+  const call = async (s: Side, method: string, p: string, body?: unknown, bearer = true) => {
     const r = await fetch(`${s.url}${p}`, {
-      method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.auth}` },
+      method, headers: { 'Content-Type': 'application/json', ...(bearer ? { Authorization: `Bearer ${s.auth}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return { status: r.status, body: (await r.json().catch(() => null)) as Record<string, unknown> };
@@ -121,5 +121,67 @@ describe('invite pairing — production path', () => {
       await vi.waitFor(() => expect(got).toContain(`secret from ${from.name}`), { timeout: 10_000 });
       to.boot.relayClient!.off('message', onMsg);
     }
+  }, 60_000);
+  it('the routes: make, inspect, approve (PIN), finish (PIN); the Bearer token alone cannot approve or finish', async () => {
+    const A = await bootSide('echo', 4073);
+    const B = await bootSide('dawn', 4074);
+
+    expect((await call(A, 'POST', '/threadline/pairing/invites', {}, false)).status).toBe(401);
+    expect((await call(A, 'POST', '/threadline/pairing/invites', { ttlMinutes: 5000 })).status).toBe(400);
+    const made = await call(A, 'POST', '/threadline/pairing/invites', { ttlMinutes: 30 });
+    expect(made.status).toBe(200);
+    const iid = made.body.iid as string;
+    const message = made.body.message as string;
+    expect(message).toContain('tlinv1:');
+
+    // "invites" is not read as a fingerprint by GET /threadline/pairing/:peerFp
+    const listed = await call(A, 'GET', '/threadline/pairing/invites');
+    expect(listed.status).toBe(200);
+    const inv0 = (listed.body.invites as Array<Record<string, unknown>>).find((i) => i.iid === iid)!;
+    expect(inv0.state).toBe('open');
+    expect(JSON.stringify(listed.body)).not.toMatch(/"secret"|"macKey"/);
+
+    const insp = await call(B, 'POST', '/threadline/pairing/invites/inspect', { invite: `here you go: ${message}` });
+    expect(insp.status, JSON.stringify(insp.body)).toBe(200);
+    expect(insp.body).toMatchObject({ claimedAgent: 'echo', claimedOwner: 'echo-owner' });
+    const pend = await call(B, 'GET', '/threadline/pairing/invites');
+    expect((pend.body.pendingAccepts as Array<{ iid: string }>).map((p) => p.iid)).toContain(iid);
+
+    // Bearer alone cannot approve
+    expect((await call(B, 'POST', `/threadline/pairing/invites/${iid}/approve`, {})).status).toBe(403);
+    const appr = await call(B, 'POST', `/threadline/pairing/invites/${iid}/approve`, { pin: PIN });
+    expect(appr.status, JSON.stringify(appr.body)).toBe(200);
+
+    await vi.waitFor(async () => {
+      const l = await call(A, 'GET', '/threadline/pairing/invites');
+      const i = (l.body.invites as Array<Record<string, unknown>>).find((x) => x.iid === iid)!;
+      expect(i.state).toBe('used');
+      expect((i.acceptor as { fp: string }).fp).toBe(B.fp);
+    }, { timeout: 10_000 });
+
+    expect((await call(A, 'POST', `/threadline/pairing/invites/${iid}/finish`, {})).status).toBe(403);
+    const fin = await call(A, 'POST', `/threadline/pairing/invites/${iid}/finish`, { pin: PIN });
+    expect(fin.status, JSON.stringify(fin.body)).toBe(200);
+    // decided once
+    expect((await call(A, 'POST', `/threadline/pairing/invites/${iid}/finish`, { pin: PIN })).status).toBe(409);
+    expect((await call(A, 'POST', `/threadline/pairing/invites/${iid}/not-them`, { pin: PIN })).status).toBe(409);
+
+    await vi.waitFor(() => {
+      expect(A.boot.trustManager!.isCredentialShareAllowedByFingerprint(B.fp)).toBe(true);
+      expect(B.boot.trustManager!.isCredentialShareAllowedByFingerprint(A.fp)).toBe(true);
+    }, { timeout: 10_000 });
+
+    // revoke: only open invites
+    const second = await call(A, 'POST', '/threadline/pairing/invites', {});
+    expect((await call(A, 'DELETE', `/threadline/pairing/invites/${second.body.iid}`)).status).toBe(200);
+    expect((await call(A, 'DELETE', `/threadline/pairing/invites/${second.body.iid}`)).status).toBe(409);
+    const revokedInsp = await call(B, 'POST', '/threadline/pairing/invites/inspect', { invite: second.body.message });
+    expect(revokedInsp.status).toBe(200); // B cannot know A revoked it; A refuses the accept
+    expect((await call(B, 'POST', `/threadline/pairing/invites/${second.body.iid}/approve`, { pin: PIN })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await call(A, 'GET', '/threadline/pairing/invites');
+    expect((after.body.invites as Array<Record<string, unknown>>).find((x) => x.iid === second.body.iid)!.state).toBe('revoked');
+    // accepting a further invite from an already-verified peer never downgrades that pairing
+    expect(B.boot.trustManager!.isCredentialShareAllowedByFingerprint(A.fp)).toBe(true);
   }, 60_000);
 });

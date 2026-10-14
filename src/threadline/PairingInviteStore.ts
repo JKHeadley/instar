@@ -38,6 +38,11 @@ export interface StoredInvite {
    * accept (spec §4.4.2; see PairingInviteFlow's header). Deleted at expiry. S itself is gone.
    */
   macKey?: string;
+  /** The inviter operator's decision on the acceptor (Finish or "Not them"). Set once. */
+  decision?: 'finished' | 'rejected';
+  decidedAt?: string;
+  /** A second, valid accept arrived after use (a leak): who, and when. The first acceptor was paused. */
+  secondAccept?: { fp: string; owner: string; agent: string; at: string };
 }
 
 /** What callers outside the store see: never the secret. */
@@ -133,6 +138,25 @@ export class PairingInviteStore {
     delete inv.secret;
     if (macKeyHex) inv.macKey = macKeyHex;
     inv.acceptor = { ...acceptor, acceptedAt: this.now().toISOString() };
+    this.save();
+    return true;
+  }
+
+  /** Record the operator's decision on a used invite's acceptor. Refused once decided. */
+  markDecided(iid: string, decision: 'finished' | 'rejected'): boolean {
+    const inv = this.invites.get(String(iid).toLowerCase());
+    if (!inv || inv.state !== 'used' || inv.decision) return false;
+    inv.decision = decision;
+    inv.decidedAt = this.now().toISOString();
+    this.save();
+    return true;
+  }
+
+  /** Record a second valid accept on a used invite (the latest one wins the record). */
+  recordSecondAccept(iid: string, late: { fp: string; owner: string; agent: string }): boolean {
+    const inv = this.invites.get(String(iid).toLowerCase());
+    if (!inv || inv.state !== 'used') return false;
+    inv.secondAccept = { ...late, at: this.now().toISOString() };
     this.save();
     return true;
   }

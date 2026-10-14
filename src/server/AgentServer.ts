@@ -1021,6 +1021,8 @@ export class AgentServer {
     topicLinkageHandler?: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler;
     handshakeManager?: import('../threadline/HandshakeManager.js').HandshakeManager;
     threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
+    /** Pairing by invite (a2a-pairing-invite-link), from bootstrapThreadline. */
+    pairingInvites?: import('../threadline/ThreadlineBootstrap.js').ThreadlineBootstrapResult['pairingInvites'];
     /** Relay connection-LOSS reader from bootstrapThreadline. Lets /threadline/health
      *  report WHY the relay is down (and whether it can self-heal) instead of a
      *  literal 'ok'. Undefined when no relay client exists in this process. */
@@ -4536,6 +4538,7 @@ export class AgentServer {
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
+      pairingInvites: options.pairingInvites ?? null,
       agentIdentity: this.agentIdentityRuntime,
       getLastRelayEvent: options.getLastRelayEvent ?? null,
       a2aRelayForward: options.a2aRelayForward ?? null,

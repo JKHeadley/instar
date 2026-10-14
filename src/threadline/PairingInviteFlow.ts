@@ -150,6 +150,7 @@ export class PairingInviteFlow {
         if (stored.acceptor?.fp === fpB) return { ok: true, duplicate: true }; // same acceptor retrying
         // A leak happened (§4.4.2): pause the first acceptor, alarm, tell the late acceptor.
         if (stored.acceptor) this.deps.trust.demoteInvitePairing(stored.acceptor.fp, `a second agent accepted invite ${iid.slice(0, 8)}`);
+        this.deps.store.recordSecondAccept(iid, { fp: fpB, owner: claimedOwner, agent: claimedAgent });
         this.deps.notify({ kind: 'second-accept-alarm', iid, pausedFp: stored.acceptor?.fp ?? '', lateFp: fpB, lateClaimedAgent: claimedAgent, lateClaimedOwner: claimedOwner });
         const n2 = this.random(16).toString('hex');
         const Tu = transcript({ iid, fpA: me.fp, idA: me.publicKeyHex, fpB, idB, exp: stored.exp, nonce: n2, direction: 'used' });
@@ -172,10 +173,13 @@ export class PairingInviteFlow {
     if (!me) return { ok: false, reason: 'no identity' };
     const stored = this.deps.store.getInternal(String(iid).toLowerCase());
     if (!stored || stored.state !== 'used' || !stored.acceptor) return { ok: false, reason: 'nothing waiting to finish for this invite' };
+    if (stored.decision) return { ok: false, reason: `already decided (${stored.decision})` };
+    if (stored.secondAccept) return { ok: false, reason: 'two agents accepted this invite; it cannot be finished. Make a new invite and send it privately' };
     const a = stored.acceptor;
     if (!this.deps.trust.markInviteVerified(a.fp, { peerIdentityPub: a.key, displayName: a.agent, ownFp: me.fp, ownIdentityPub: me.publicKeyHex, via: `invite ${stored.iid.slice(0, 8)} finished by operator` })) {
       return { ok: false, reason: 'could not record the pairing (a different key is already pinned for this agent)' };
     }
+    this.deps.store.markDecided(stored.iid, 'finished');
     const sf: SentFinish = { acceptorFp: a.fp, acceptorKey: a.key, exp: stored.exp, nonce: this.random(16).toString('hex'), acked: false, tries: 0 };
     this.sentFinishes.set(stored.iid, sf);
     this.sendFinishWithRetry(stored.iid);
@@ -203,6 +207,7 @@ export class PairingInviteFlow {
   rejectFinish(iid: string): Result {
     const stored = this.deps.store.getInternal(String(iid).toLowerCase());
     if (!stored || stored.state !== 'used') return { ok: false, reason: 'nothing waiting to finish for this invite' };
+    if (!this.deps.store.markDecided(stored.iid, 'rejected')) return { ok: false, reason: `already decided (${stored.decision})` };
     return { ok: true };
   }
 
@@ -261,6 +266,18 @@ export class PairingInviteFlow {
     });
     this.pendingAccepts.delete(inv.iid); // S leaves memory once the accept is built
     return { ok: true, inviterFp: inv.fp };
+  }
+
+  /** B side: invites forwarded or pasted here and waiting for this operator. Never includes the secret. */
+  listPendingAccepts(): Array<{ iid: string; claimedAgent: string; claimedOwner: string; inviterFp: string; exp: string; checkCode: string }> {
+    const me = this.deps.identity();
+    const now = this.now();
+    const out = [];
+    for (const [iid, pa] of this.pendingAccepts) {
+      if (isExpired(pa.invite, now)) { this.pendingAccepts.delete(iid); continue; }
+      out.push({ iid, claimedAgent: pa.invite.agent, claimedOwner: pa.invite.owner, inviterFp: pa.invite.fp, exp: pa.invite.exp, checkCode: me ? checkCode(pa.K, pa.invite.key, me.publicKeyHex) : '' });
+    }
+    return out;
   }
 
   declineAccept(iid: string): Result {
