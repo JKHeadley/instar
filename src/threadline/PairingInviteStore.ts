@@ -33,10 +33,15 @@ export interface StoredInvite {
   createdAt: string;
   /** The (first) agent whose valid accept used this invite. */
   acceptor?: InviteAcceptor;
+  /**
+   * Used invites only: the MAC key derived from S, kept until `exp` solely to verify a SECOND
+   * accept (spec §4.4.2; see PairingInviteFlow's header). Deleted at expiry. S itself is gone.
+   */
+  macKey?: string;
 }
 
 /** What callers outside the store see: never the secret. */
-export type InviteSummary = Omit<StoredInvite, 'secret'>;
+export type InviteSummary = Omit<StoredInvite, 'secret' | 'macKey'>;
 
 export const INVITE_STORE_FILE = 'pairing-invites.json';
 /** Closed invites are kept this long (for the second-accept alarm and the dashboard), then dropped. */
@@ -80,6 +85,10 @@ export class PairingInviteStore {
         delete inv.secret;
         changed = true;
       }
+      if (inv.macKey && now >= Date.parse(inv.exp)) {
+        delete inv.macKey;
+        changed = true;
+      }
       if (inv.state !== 'open' && now - Date.parse(inv.exp) > CLOSED_RETENTION_MS) {
         this.invites.delete(iid);
         changed = true;
@@ -117,11 +126,12 @@ export class PairingInviteStore {
   }
 
   /** Mark used by its first valid acceptor and delete the secret (single use, spec §4.4.4). */
-  markUsed(iid: string, acceptor: Omit<InviteAcceptor, 'acceptedAt'>): boolean {
+  markUsed(iid: string, acceptor: Omit<InviteAcceptor, 'acceptedAt'>, macKeyHex?: string): boolean {
     const inv = this.invites.get(iid);
     if (!inv || inv.state !== 'open') return false;
     inv.state = 'used';
     delete inv.secret;
+    if (macKeyHex) inv.macKey = macKeyHex;
     inv.acceptor = { ...acceptor, acceptedAt: this.now().toISOString() };
     this.save();
     return true;
@@ -140,7 +150,7 @@ export class PairingInviteStore {
   list(): InviteSummary[] {
     this.sweep();
     return [...this.invites.values()]
-      .map(({ secret: _s, ...rest }) => rest)
+      .map(({ secret: _s, macKey: _k, ...rest }) => rest)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 }

@@ -1,8 +1,19 @@
 ---
-title: Verified pairing by invite link (replaces the 12-word confirmation)
-status: draft r3 (Echo's reviews of r1 and r2 addressed)
-owners: Dawn (author), Echo (review)
-supersedes-ux-of: docs/specs/secure-a2a-verified-pairing.md (§3.2 human comparison, §3.6 panel)
+title: "Verified pairing by invite link (replaces the 12-word confirmation)"
+slug: "a2a-pairing-invite-link"
+author: "dawn"
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
+status: "approved r3"
+owners: "Dawn (author), Echo (review)"
+supersedes-ux-of: "docs/specs/secure-a2a-verified-pairing.md (§3.2 human comparison, §3.6 panel)"
+eli16-overview: "a2a-pairing-invite-link.eli16.md"
+review-convergence: "2026-10-14T14:44:29Z"
+review-iterations: 3
+review-completed-at: "2026-10-14T14:44:29Z"
+review-notes: "Echo reviewed r1 (4 blockers), r2 (second-accept race) and approved r3 (21d5fcd1) on PR #2180"
+approved: true
+approved-by: "Echo (EchoOfDawn, GitHub approval of r3 21d5fcd1, PR #2180, 2026-10-14T14:44:29Z) for the spec; Justin (topic 61599, 2026-10-13T01:40Z, 'Yes, perfect') for the direction: invite link, built into Instar, no central service"
+approved-basis: "Justin approved the design direction after rejecting the 12-word flow; he has not read the spec text. Echo approved the spec text after three review rounds. The feature ships dark behind threadline.verifiedPairing, and Justin's own end-to-end walkthrough is a completion criterion (§8.5)."
 ---
 
 # Verified pairing by invite link
