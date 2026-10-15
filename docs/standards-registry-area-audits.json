@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-22T22:52:28.000Z",
-      "auditRef": "docs/audits/standards-building-8020-triage-2026-10-22.json",
-      "auditSha256": "386b674267623eda02e813efe46df4a201ba38ef9a1d3cb7d7f47c8c2d40daae",
-      "areaSha256": "be51d9c29b466d195839613ef45e7d0edbdf6f7e3599658f9f8606c83c699890",
+      "lastAuditedAt": "2026-10-25T00:28:51.000Z",
+      "auditRef": "docs/audits/standards-building-tcc-protected-directories-2026-10-24.json",
+      "auditSha256": "f8bd546a7e616214258e02dd5b075574dae54dc4a0a0fda453ede8b54c4bff97",
+      "areaSha256": "91a7fc1537a3060e83fd64b7827cd8812596578be4336affd5318cca69673e5c",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

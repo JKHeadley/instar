@@ -1169,6 +1169,27 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'TopicCreationBudget',
     description: 'Bounded Notification Surface — last-resort budget on every auto-created topic (default-ON in code).',
   },
+  {
+    // Avoid TCC-Protected Directories (docs/STANDARDS-REGISTRY.md): the
+    // 2026-10-14 ~/Documents TCC withdrawal killed two agents in the same
+    // second. Always-on, no config key (a safety floor that ships dark is no
+    // floor). The boot check runs once (lastTickAt = checkedAt, no cadence);
+    // a failed check reads verdictUnknown, never green. Registered in
+    // src/commands/server.ts beside the worktree detector.
+    key: 'monitoring.tccProtectedPathGuard',
+    kind: 'code-default',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: true,
+    component: 'TccProtectedPathGuard',
+    description: 'TCC-protected path guard — detects agent state under ~/Documents, ~/Desktop, ~/Downloads or iCloud Drive on macOS (the grant can be withdrawn from the whole process tree at once); refuses at init, surfaces at boot, never moves anything.',
+    loadBearing: true,
+    criticalPath: 'agent state durability on macOS — a TCC grant withdrawal kills every agent under the shared tmux server at once (2026-10-14)',
+    // Always-on and never dry-run, so no soak: an unguarded posture would be an
+    // immediate Gap (safe/loud), never a quiet soak.
+    soakWindowDays: 0,
+    declaredLoadBearingAt: '2026-10-15',
+  },
   // ── Stall-coverage matrix gate (framework-stall-coverage-matrix §3.4) ──
   {
     key: 'apprenticeship.stallCoverageGate.enabled',

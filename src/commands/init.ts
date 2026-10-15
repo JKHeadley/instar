@@ -1,5 +1,7 @@
 /**
  * `instar init` — Initialize agent infrastructure.
+ * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
+ * `refuseIfTccProtected` refuses a protected project directory at creation.
  *
  * Two modes:
  *   instar init <project-name>   — Create a new project from scratch
@@ -34,6 +36,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
+import {
+  assertNotTccProtected,
+  describeTccProtectedPath,
+  TccProtectedPathRefusal,
+} from '../core/TccProtectedPathGuard.js';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
@@ -170,6 +177,29 @@ export function isKnownFramework(f: unknown): f is IntelligenceFramework {
 }
 
 /**
+ * Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS
+ * (docs/STANDARDS-REGISTRY.md). Refuse at creation, ABSOLUTELY: on macOS a
+ * project directory under ~/Documents, ~/Desktop, ~/Downloads or iCloud Drive
+ * is refused before anything is written, in the same shape as the worktree
+ * convention's destination refusal. No override flag exists on purpose — a
+ * brand-new agent has nothing to move, so the only cost of refusing is
+ * choosing another directory, and an override would recreate the 2026-10-14
+ * incident class the operator forbade "at all costs". Non-macOS: no-op.
+ */
+export function refuseIfTccProtected(projectDir: string, what: string): void {
+  try {
+    assertNotTccProtected(projectDir, what);
+  } catch (err) {
+    if (!(err instanceof TccProtectedPathRefusal)) throw err;
+    console.log();
+    console.log(pc.red(`  Refused: ${what} is in a macOS protected folder (~/${err.classification.zone}).`));
+    console.log(`  ${describeTccProtectedPath(err.classification, what)}`);
+    console.log();
+    process.exit(1);
+  }
+}
+
+/**
  * Main init entry point. Handles both fresh and existing project modes.
  */
 export async function initProject(options: InitOptions): Promise<void> {
@@ -216,6 +246,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   }
 
   const projectDir = path.resolve(process.cwd(), projectName);
+  refuseIfTccProtected(projectDir, 'the new project directory');
 
   console.log();
   console.log(pc.bold(`  Creating new agent project: ${pc.cyan(projectName)}`));
@@ -614,6 +645,7 @@ node_modules/
  */
 async function initExistingProject(options: InitOptions): Promise<void> {
   const projectDir = path.resolve(options.dir || process.cwd());
+  refuseIfTccProtected(projectDir, 'the project directory');
   const projectName = options.name || path.basename(projectDir);
 
   // Framework choice — gates `.claude/` writes for codex-only installs.
@@ -966,6 +998,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   const claudeEnabled = enabledFrameworks.includes('claude-code');
 
   const projectDir = path.join(standaloneAgentsDir(), agentName);
+  refuseIfTccProtected(projectDir, 'the standalone agent directory');
   const stateDir = path.join(projectDir, '.instar');
 
   // Check if already exists
