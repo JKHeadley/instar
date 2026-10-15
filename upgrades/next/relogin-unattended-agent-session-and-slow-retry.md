@@ -1,0 +1,30 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Automatic subscription sign-in repair had two gaps, both seen live on 2026-10-14 (`GET /subscription-relogin?scope=pool`):
+
+- **The no-tap list was ignored on the agent-session path.** With `subscriptionPool.assistedRelogin.mode: "unattended"` and an account on `unattendedPolicy.identities`, a macOS development agent (where omitted `navigation` resolves to `agent-session`) still forced every repair to `approval`. `echo@` repairs on the Mac Studio and Mac Mini sat in `suggested` all morning. Now every navigation path honors `mode` the same way: the existing admission policy decides, so an account whose exact email is on the list (and that clears the evidence floors) starts with no tap; every other account still needs the one dashboard tap. Existing `suggested` rows are re-admitted under the new inputs on the next scan and start on their own.
+- **A failed repair never retried.** An episode that ended `failed` on a budget or transient reason stayed failed while the account stayed signed out (`dawn@` on the Laptop since 2026-09-14). A new slow retry runs while the source incident is still open: 6 hours after the failure (or after it is first seen, for rows that failed long ago), then 24 hours apart, at most 3 per incident (durable `slowRetryCount`), one per machine at a time. Only an explicit allowlist of failure classes is retried (`attempt-budget-exhausted`, `repair-time-budget-exhausted`, `agent-sign-in-unfinished`); safety refusals, operator cancels, runs that hit a CAPTCHA/phone check or asked for a phone tap, and security-class failures never are. Each retry re-runs the full admission (breaker included) and the self-action governor (`subscription-relogin-redrive` class). Unattended identities restart with no tap; approval-mode accounts are re-offered (`suggested`) for one tap, never between 23:00 and 08:00 local. The repair's own leftover login (recorded `loginCreatedAt`) no longer blocks its retry; an operator's sign-in still does. `nextAttemptAt` shows the next try on `GET /subscription-relogin` and on the dashboard cell, with a quieter **Don't retry on its own** button (cancel on a failed repair now holds its retries and keeps the failure). Off switch: `subscriptionPool.assistedRelogin.slowRetry.enabled: false`; `delaysMs`, `maxRetries` and `quietHours` tune it.
+- **Tighter repair bookkeeping.** Failed rows are no longer re-admitted when inputs change (only the paced retry restarts them); **Try repair again** on changed inputs re-offers the repair instead of failing with `approval-input-digest-mismatch`, and clears the prior run's notices so the new outcome is delivered; an operator-cancelled repair is only ever re-offered. The stuck pre-upgrade suggestions now actually re-admit (the scan no longer counts an incident's own row as another live repair). A failure notice is held while a retry will follow (bounded to about a day). The account breaker counts failed runs, so retries still count toward "3 in 24 h". A verified wrong identity whose quarantine failed is now recorded as `wrong-identity`.
+- **Unattended holds.** A helper hard-line report since the last verified success, or too few stored backup codes (fewer than a full run plus one; any backup-code account on the helper path), holds the account at approval.
+- CLAUDE.md template and `migrateClaudeMd`: the agent-session bullet no longer says approval is forced, and a "Failed sign-in repairs retry slowly" bullet is added (content-sniffed, idempotent). CapabilityIndex description updated.
+
+## What to Tell Your User
+
+The accounts you said I may sign back in without asking are now really handled without asking, on every Mac. Before, the newer sign-in helper ignored that list and waited for your tap anyway. And when a sign-in repair fails for an ordinary reason, it now tries again on its own while the account is still signed out: six hours later, then a day apart, at most three times. For accounts not on your list I just offer the repair to you again. Anything that stopped for safety, like a CAPTCHA or the wrong account showing up, still waits for you and is never retried automatically. The Subscriptions screen shows when the next try will happen.
+
+## Summary of New Capabilities
+
+- Sign-in repair honors the no-tap list on the agent-session (macOS helper) path.
+- A failed sign-in repair retries itself slowly while the account is still signed out, with the next try time shown on the dashboard.
+- The sign-in helper can report a CAPTCHA, phone check, wrong account or unexpected site, which hands the repair to you instead of ending it as an ordinary failure.
+
+## Evidence
+
+- Reproduction (live, 2026-10-14): pool view showed `sagemind-echo` episodes on the Mac Studio and Mac Mini in `mode: approval, state: suggested` with `echo@sagemindai.io` on `unattendedPolicy.identities`; `sagemind-dawn` (Laptop, 2026-09-14), `sagemind-justin` (Mini 2026-09-25, Studio 2026-09-24) in `failed / attempt-budget-exhausted`.
+- Unit: `tests/unit/subscription-relogin-slow-retry.test.ts` (eligibility, store primitives, durability across reopen, service schedule/act/refuse/cap/off), `tests/unit/subscription-relogin-helper.test.ts` (hard-line shape + mapping, prompt lines), `tests/unit/subscriptions-render.test.ts` (next-try label), `tests/unit/PostUpdateMigrator-assistedRelogin.test.ts` (fresh insert + old-sentence patch, idempotent), `tests/unit/self-action-convergence.test.ts` (redrive bound 12 per incident).
+- Integration: `tests/integration/subscription-relogin-agent-session.test.ts` — unattended opted-in identity succeeds with no tap; non-listed identity waits; a failing unattended repair retries at 6 h / 24 h / 24 h then stops; an operator-replaced login is never released; a reported CAPTCHA is never redriven; an approval-mode failure is re-offered.
+- E2E: `tests/e2e/subscription-relogin-agent-session-lifecycle.test.ts` through the production `AgentServer` — no-tap success, list respected, `nextAttemptAt` visible on `GET /subscription-relogin` then the retry succeeds.

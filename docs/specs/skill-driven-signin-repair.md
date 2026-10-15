@@ -46,6 +46,7 @@ On macOS, the browser step of a repair episode is done by **one agent session th
 
 1. **Admission.** Episode admission, the attempt budget, the breaker and `idx_relogin_live_cell` (one repair per account) are unchanged.
    - On this path, mode is forced to `approval` until graduation, whatever `assistedRelogin.mode` says. A trusted helper is never spawned unattended before the evidence exists.
+   - *Superseded 2026-10-15 by `relogin-unattended-agent-session-and-slow-retry`: this path now honors `mode` like the others, with added holds.*
    - Approval itself is unchanged; the operator's tap always lands.
 2. **Pre-attempt check (new).** This runs in the orchestrator's `approved` branch, before the `approved → cli-starting` transition that counts an attempt. Three checks run in order:
    - **Lease.** Acquire the machine's `PlaywrightSeatLease`, with the episode as holder. This is the one-helper-per-machine floor. It is renewed every 2 minutes, since its 10-minute TTL is shorter than the helper cap, and released on every exit.

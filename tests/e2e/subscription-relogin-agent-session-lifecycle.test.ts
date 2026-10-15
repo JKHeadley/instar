@@ -161,3 +161,112 @@ describe('skill-driven sign-in repair through the production AgentServer', () =>
     expect(response.status).toBe(503);
   });
 });
+
+/**
+ * Spec relogin-unattended-agent-session-and-slow-retry — through the production AgentServer:
+ *  - unattended mode + an opted-in identity starts on the agent-session path with NO tap;
+ *  - a failed repair's next automatic try is visible on GET /subscription-relogin, and once due
+ *    the repair runs again on its own.
+ */
+describe('agent-session repair honors unattended mode and retries slowly (production AgentServer)', () => {
+  async function build(opts: { identities: string[]; helperPostsCode: boolean; clock: { offset: number } }) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-unattended-e2e-')); roots.push(root);
+    const cfg = config(root);
+    const userDataDir = path.join(root, 'browser-profile'); fs.mkdirSync(userDataDir);
+    const now = () => Date.now() + opts.clock.offset;
+    const accounts: Record<string, any> = {
+      'acct-broken': { id: 'acct-broken', nickname: 'Broken', email: 'person@example.test', provider: 'anthropic', framework: 'claude-code',
+        configHome: path.join(root, 'slot-broken'), status: 'needs-reauth', enrolledAt: '2026-01-01T00:00:00Z', version: 1 },
+      'acct-helper': { id: 'acct-helper', nickname: 'Helper', email: 'helper@example.test', provider: 'anthropic', framework: 'claude-code',
+        configHome: path.join(root, 'slot-helper'), status: 'active', enrolledAt: '2026-01-01T00:00:00Z', version: 1 },
+    };
+    let source: any = { id: 92, accountId: 'acct-broken', machineId: 'machine-1', openedAt: '2026-10-14T00:00:00Z', closedAt: null,
+      causeClass: 'exchange-failed', corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
+    const pool: any = { getAvailability: () => ({ state: 'ready' }), get: (id: string) => accounts[id] ? { ...accounts[id] } : null,
+      list: () => Object.values(accounts).map((a) => ({ ...a })),
+      update: vi.fn((id: string, patch: Record<string, unknown>) => (accounts[id] = { ...accounts[id], ...patch })) };
+    const ledger: any = { listEpisodes: () => [{ ...source }], recordStatus: vi.fn(() => {
+      source = { ...source, closedAt: new Date(now()).toISOString(), outcome: 'resolved' }; return { changed: true, episodeId: source.id };
+    }) };
+    let pending: any = null;
+    const enrollment: any = { getById: () => pending,
+      abandon: vi.fn(() => { if (pending) pending = { ...pending, status: 'abandoned' }; return pending; }), refresh: vi.fn(),
+      start: vi.fn(async () => (pending = {
+        id: 'acct-broken', label: 'Broken', provider: 'anthropic', framework: 'claude-code', kind: 'url-code-paste',
+        configHome: accounts['acct-broken'].configHome, verificationUrl: 'https://claude.ai/oauth/authorize?code=true',
+        ttlExpiresAt: new Date(now() + 30 * 60_000).toISOString(), status: 'pending', reissueCount: 0,
+        createdAt: new Date(now()).toISOString(), updatedAt: '', version: 1 })) };
+    const profiles: any = { resolve: () => ({ profile: { id: 'profile-1' }, dirExists: true }), listProfiles: () => [{
+      id: 'profile-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
+      accounts: [{ service: 'google', identity: 'person@example.test', owner: 'operator', vaultRefs: [], loginMethod: 'password',
+        lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }] }] };
+    let serverUrl = '';
+    const live = new Set<string>();
+    const state = { postCode: opts.helperPostsCode };
+    const spawn = vi.fn(async ({ name, prompt }: { name: string; prompt: string }) => {
+      const tmux = `e2e-${name}`;
+      live.add(tmux);
+      if (state.postCode) {
+        const token = /X-Relogin-Helper-Token: ([A-Za-z0-9_-]+)/.exec(prompt)![1]!;
+        const route = /http:\/\/127\.0\.0\.1:\d+(\/subscription-relogin\/[^/]+\/code)/.exec(prompt)![1]!;
+        setTimeout(() => { void fetch(`${serverUrl}${route}`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Relogin-Helper-Token': token }, body: JSON.stringify({ code: CODE }) }); }, 30);
+      } else {
+        setTimeout(() => live.delete(tmux), 30); // exits without finishing
+      }
+      return tmux;
+    });
+    const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root, machineId: 'machine-1', mode: 'unattended',
+      unattendedPolicy: { identities: opts.identities, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+      pool, ledger, enrollment, profiles, now,
+      quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now()).toISOString() })) } as any,
+      identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: 'person@example.test' })) } as any,
+      pasteBack: { finish: vi.fn(async () => 'complete') } as any,
+      createBrowser: () => { throw new Error('driver browser must not open'); }, resolveSecret: async () => null,
+      supervise: async () => { throw new Error('no supervisor'); },
+      navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat.json') }),
+      helperSession: { spawn, isAlive: (t) => live.has(t), kill: (t) => { live.delete(t); }, listHelpers: () => [],
+        hasCapacity: () => true, serverPort: 4042, timing: { pollMs: 10, startGraceMs: 0, exitSettleMs: 0 } },
+    });
+    const server = new AgentServer({ config: cfg, state: new StateManager(cfg.stateDir),
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, on: vi.fn() } as never,
+      subscriptionRelogin: subscriptionReloginRouteContext(runtime) });
+    servers.push(server);
+    await server.start();
+    serverUrl = await listen(server);
+    const list = async () => (await request(server.getApp()).get('/subscription-relogin')
+      .set('Authorization', 'Bearer relogin-api-token')).body.episodes as Array<Record<string, any>>;
+    return { runtime, spawn, accounts, list, state };
+  }
+
+  it('an opted-in identity is repaired with no operator tap', async () => {
+    const w = await build({ identities: ['person@example.test'], helperPostsCode: true, clock: { offset: 0 } });
+    await w.runtime.service.tick();
+    await vi.waitFor(async () => expect((await w.list())[0]).toMatchObject({ mode: 'unattended', state: 'succeeded' }), { timeout: 5_000 });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    expect(w.accounts['acct-broken'].status).toBe('active');
+  });
+
+  it('an identity NOT on the list still waits for the tap', async () => {
+    const w = await build({ identities: ['other@example.test'], helperPostsCode: true, clock: { offset: 0 } });
+    await w.runtime.service.tick();
+    expect((await w.list())[0]).toMatchObject({ mode: 'approval', state: 'suggested' });
+    expect(w.spawn).not.toHaveBeenCalled();
+  });
+
+  it('a failed repair shows its next automatic try, then runs again on its own once due', async () => {
+    const clock = { offset: 0 };
+    const w = await build({ identities: ['person@example.test'], helperPostsCode: false, clock });
+    await w.runtime.service.tick();
+    await vi.waitFor(async () => expect((await w.list())[0]?.state).toBe('failed'), { timeout: 5_000 });
+    await w.runtime.service.tick();
+    const failed = (await w.list())[0]!;
+    expect(Date.parse(failed.nextAttemptAt) - Date.parse(failed.finishedAt)).toBe(6 * 60 * 60_000);
+    w.state.postCode = true; // the next try succeeds
+    clock.offset = Date.parse(failed.nextAttemptAt) - Date.now() + 1_000;
+    await w.runtime.service.tick();
+    await vi.waitFor(async () => expect((await w.list())[0]).toMatchObject({ state: 'succeeded', slowRetryCount: 1 }), { timeout: 5_000 });
+    expect(w.spawn).toHaveBeenCalledTimes(2);
+    expect(w.accounts['acct-broken'].status).toBe('active');
+  });
+});

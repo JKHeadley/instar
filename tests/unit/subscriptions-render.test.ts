@@ -18,6 +18,7 @@ import {
   friendlyProvider,
   countdown,
   relativeAge,
+  slowRetryLabel,
   staleReadingAge,
   quotaBar,
   quotaSeverity,
@@ -513,6 +514,41 @@ describe('renderAccountMatrix', () => {
     ]);
     expect(refused.querySelector('[data-matrix-relogin]')).toBeNull();
     expect(refused.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('shows when a failed repair will try again on its own (spec relogin-unattended-agent-session-and-slow-retry)', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const scheduled = el();
+    renderAccountMatrix(doc, scheduled, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: new Date(Date.now() + 5.6 * 3_600_000).toISOString() },
+    ]);
+    expect(scheduled.textContent).toContain('Trying again on its own in about 6 h.');
+    expect(scheduled.querySelector('[data-repair-action="retry"]')!.textContent).toBe('Try repair again');
+    const hold = scheduled.querySelector('.sub-matrix-repair-hold')!;
+    expect(hold.textContent).toBe('Don’t retry on its own');
+    expect(hold.getAttribute('data-repair-action')).toBe('cancel');
+    const none = el();
+    renderAccountMatrix(doc, none, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null },
+    ]);
+    expect(none.textContent).not.toContain('Trying again on its own');
+    expect(none.querySelector('.sub-matrix-repair-hold')).toBeNull();
+    const held = el();
+    renderAccountMatrix(doc, held, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null, slowRetryHeld: true },
+    ]);
+    expect(held.textContent).toContain('Won’t try again on its own. Try repair again any time.');
+    const now = Date.parse('2026-10-14T10:00:00Z');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:00:30Z' }, now)).toBe('Trying again on its own shortly.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:20:00Z' }, now)).toBe('Trying again on its own in 20 min.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-17T10:00:00Z' }, now)).toBe('Trying again on its own in about 3 days.');
+    expect(slowRetryLabel({ state: 'refused', nextAttemptAt: '2026-10-14T12:00:00Z' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: 'not-a-date' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', mode: 'approval', nextAttemptAt: '2026-10-14T16:00:00Z' }, now)).toBe('Will offer to try again in about 6 h.');
   });
 
   it('lets current Active truth suppress a stale failed repair episode', () => {

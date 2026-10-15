@@ -14,7 +14,7 @@ export interface ReloginArtifact {
 }
 export type BrowserRepairResult =
   | { outcome: 'approved'; pasteCode?: string }
-  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' | 'automation-permission' | 'no-healthy-seat'; reason?: string }
+  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' | 'automation-permission' | 'no-healthy-seat' | 'agent-hard-line'; reason?: string }
   | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient'; reason?: string }
   | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' | 'agent-sign-in-unfinished'; reason?: string };
 
@@ -266,7 +266,9 @@ export class SubscriptionReloginOrchestrator {
       if (identity === 'mismatch') {
         try { await this.deps.quarantineIdentityMismatch(ep, signal); }
         catch {
-          return this.fail(ep, 'authority-degraded', 'identity-quarantine-failed', 'failed');
+          // A VERIFIED wrong identity whose quarantine failed is still a wrong identity: record it as
+          // such so it is breaker evidence and never slow-retried.
+          return this.fail(ep, 'wrong-identity', 'identity-quarantine-failed', 'failed');
         }
         if (signal.aborted) return this.cancelledResult(ep);
         return this.fail(ep, 'wrong-identity', 'identity-mismatch-quarantined', 'refused');

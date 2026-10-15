@@ -103,6 +103,10 @@ export interface SubscriptionReloginAdmissionInput {
     unexpectedOrigins: number;
     minimumSuccessfulRepairs?: number;
     minimumEvidenceDays?: number;
+    /** Helper-reported hard-line stops since the last success (any ⇒ held at approval). */
+    helperHardLines?: number;
+    /** The bound backup-code vault entry holds fewer than the unattended floor (⇒ held at approval). */
+    backupCodesLow?: boolean;
   };
 }
 
@@ -185,7 +189,9 @@ function unattendedGraduated(value: SubscriptionReloginAdmissionInput['unattende
     && value.successfulRepairs >= minimumSuccessfulRepairs
     && value.evidenceDays >= minimumEvidenceDays
     && value.identityMismatches === 0
-    && value.unexpectedOrigins === 0;
+    && value.unexpectedOrigins === 0
+    && (value.helperHardLines ?? 0) === 0
+    && value.backupCodesLow !== true;
 }
 
 function refuse(reason: SubscriptionReloginRefusal): SubscriptionReloginAdmission {

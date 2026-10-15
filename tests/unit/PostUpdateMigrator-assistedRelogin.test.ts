@@ -47,7 +47,36 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once.match(/Skill-driven sign-in repair \(macOS, dev-gated\)/g)).toHaveLength(1);
     expect(once).toContain('POST /subscription-relogin/EPISODE/code');
     expect(once).toContain('loginCheck');
+    // Spec relogin-unattended-agent-session-and-slow-retry: fresh inserts carry the new wording.
+    expect(once).not.toContain('Approval is forced on this path');
+    expect(once).toContain('This path honors `mode` like every other');
+    expect(once.match(/Failed sign-in repairs retry slowly/g)).toHaveLength(1);
     run();
+    expect(fs.readFileSync(target, 'utf8')).toBe(once);
+  });
+
+  it('patches an agent that already carries the old forced-approval sentence, idempotently', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-awareness-old-')); roots.push(root);
+    fs.mkdirSync(path.join(root, '.instar'), { recursive: true });
+    const target = path.join(root, 'CLAUDE.md');
+    const oldBullet = "- **Skill-driven sign-in repair (macOS, dev-gated)** — capped at 15 minutes. Approval is forced on this path; no healthy helper account ⇒ the repair waits on the operator (`no-healthy-seat`). Claude's `claude auth status` is never used as proof — it reports signed in for expired sessions.";
+    fs.writeFileSync(target, `# CLAUDE.md\n\n**Subscription Pool (multi-account quota + auto-swap + enrollment)**\n- **Sign-in repair uses a normal browser (macOS)** — x. Other platforms keep the automated browser until a normal-browser path exists there.\n${oldBullet}\n`);
+    const migrator = new PostUpdateMigrator({ projectDir: root, stateDir: path.join(root, '.instar'), port: 4042, hasTelegram: false, projectName: 'test' });
+    const run = () => {
+      const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+      (migrator as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd(result);
+      return result;
+    };
+    const first = run();
+    expect(first.upgraded).toContain('CLAUDE.md: agent-session sign-in repair now honors unattended mode');
+    expect(first.upgraded).toContain('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
+    const once = fs.readFileSync(target, 'utf8');
+    expect(once).not.toContain('Approval is forced on this path');
+    expect(once).toContain('unattendedPolicy.identities');
+    expect(once.match(/Failed sign-in repairs retry slowly/g)).toHaveLength(1);
+    expect(once).toContain('slowRetry.enabled: false');
+    const second = run();
+    expect(second.upgraded.filter((u) => u.includes('unattended mode') || u.includes('slow automatic retry'))).toEqual([]);
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });
 });

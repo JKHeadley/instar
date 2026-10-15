@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SubscriptionReloginOrchestrator } from '../../src/core/SubscriptionReloginOrchestrator.js';
-import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
+import { SubscriptionReloginStore, isSlowRetryEligible } from '../../src/core/SubscriptionReloginStore.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -147,6 +147,16 @@ describe('SubscriptionReloginOrchestrator', () => {
     expect(result.episode).toMatchObject({ state: 'refused', failureClass: 'wrong-identity' });
     expect(store.listEvents(approved.id).map((event) => event.eventClass))
       .toContain('identity-mismatch-quarantined');
+    store.close();
+  });
+
+  it('a verified mismatch whose quarantine fails ends failed/wrong-identity (breaker evidence, never slow-retried)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.verifyIdentity.mockResolvedValue('mismatch');
+    ports.quarantineIdentityMismatch.mockRejectedValue(new Error('pool write failed'));
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result.episode).toMatchObject({ state: 'failed', failureClass: 'wrong-identity' });
+    expect(isSlowRetryEligible(result.episode)).toBe(false);
     store.close();
   });
 

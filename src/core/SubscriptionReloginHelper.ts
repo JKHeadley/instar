@@ -82,11 +82,20 @@ export type ReloginHelperSubmitResult = { status: number; body: Record<string, u
 const HELPER_NAME_PREFIX = 'relogin-';
 const MAX_BODY_KEYS = 2;
 const PERMISSIONS = new Set(['screen-recording', 'accessibility', 'automation']);
+/**
+ * Hard-line stops the helper reports (spec relogin-unattended-agent-session-and-slow-retry). Each
+ * hands the repair to the operator (`waiting-operator-only`), which a slow retry never touches — so
+ * a CAPTCHA or a wrong-account screen is never driven again automatically. A report can only REDUCE
+ * autonomy; it never counts toward success.
+ */
+const HARD_LINES = new Set(['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site']);
 
 interface LiveDrive {
   tokenHash: Buffer;
   tmuxSession: string | null;
   codeTaken: boolean;
+  /** True once the drive's outcome is decided; later reports are refused, never falsely "accepted". */
+  settled: boolean;
   settle: (result: BrowserRepairResult) => void;
 }
 
@@ -178,8 +187,8 @@ export class SubscriptionReloginHelper {
 
       const outcome = new Promise<BrowserRepairResult>((resolve) => {
         this.live.set(episode.id, {
-          tokenHash: hashToken(token), tmuxSession: null, codeTaken: false,
-          settle: (result) => resolve(result),
+          tokenHash: hashToken(token), tmuxSession: null, codeTaken: false, settled: false,
+          settle: (result) => { const e = this.live.get(episode.id); if (e) e.settled = true; resolve(result); },
         });
       });
       const settle = (result: BrowserRepairResult): void => { this.live.get(episode.id)?.settle(result); };
@@ -263,8 +272,9 @@ export class SubscriptionReloginHelper {
     if (!entry.tmuxSession || !this.deps.isAlive(entry.tmuxSession)) return { status: 409, body: { error: 'helper-not-live' } };
     const parsed = parseHelperBody(body);
     if (!parsed) return { status: 400, body: { error: 'invalid-helper-body' } };
+    if (entry.settled) return { status: 409, body: { error: 'already-settled' } };
     if (parsed.kind === 'code') {
-      if (entry.codeTaken) return { status: 409, body: { error: 'code-already-accepted' } };
+      if (entry.codeTaken) return { status: 409, body: { error: 'code-already-accepted' } }; // defensive: an accepted code also settles the drive
       if (!this.deps.validateCode(parsed.code)) return { status: 400, body: { error: 'invalid-code-shape' } };
       entry.codeTaken = true;
       entry.settle({ outcome: 'approved', pasteCode: parsed.code });
@@ -273,6 +283,12 @@ export class SubscriptionReloginHelper {
     if (parsed.kind === 'phone-tap') {
       this.deps.queuePhoneTap(episodeId);
       return { status: 202, body: { accepted: true, notice: 'phone-tap' } };
+    }
+    if (parsed.kind === 'hard-line') {
+      // Every report is the same unverified class: never breaker or re-admission evidence, but it
+      // holds the account × machine at approval until the next verified success.
+      entry.settle({ outcome: 'operator-only', failureClass: 'agent-hard-line', reason: `agent-hard-line-${parsed.line}` });
+      return { status: 202, body: { accepted: true, notice: 'hard-line' } };
     }
     entry.settle({ outcome: 'operator-only', failureClass: 'automation-permission',
       reason: `agent-permission-${parsed.permission}` });
@@ -308,9 +324,10 @@ export class SubscriptionReloginHelper {
 type HelperBody =
   | { kind: 'code'; code: string }
   | { kind: 'phone-tap' }
-  | { kind: 'macos-permission'; permission: string };
+  | { kind: 'macos-permission'; permission: string }
+  | { kind: 'hard-line'; line: string };
 
-/** Strict tagged union: exactly one of the three shapes, nothing else. Exported for tests. */
+/** Strict tagged union: exactly one of the four shapes, nothing else. Exported for tests. */
 export function parseHelperBody(body: unknown): HelperBody | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
   const record = body as Record<string, unknown>;
@@ -324,6 +341,10 @@ export function parseHelperBody(body: unknown): HelperBody | null {
   if (keys.length === 2 && record.notify === 'macos-permission' && 'permission' in record
     && typeof record.permission === 'string' && PERMISSIONS.has(record.permission)) {
     return { kind: 'macos-permission', permission: record.permission };
+  }
+  if (keys.length === 2 && record.notify === 'hard-line' && 'line' in record
+    && typeof record.line === 'string' && HARD_LINES.has(record.line)) {
+    return { kind: 'hard-line', line: record.line };
   }
   return null;
 }
@@ -348,6 +369,8 @@ export function renderHelperPrompt(input: ReloginHelperDriveInput & { token: str
     `Vault entries for this account (fetch by NAME, pipe over stdin, never print): ${input.vaultBindingNames.length > 0 ? input.vaultBindingNames.join(', ') : '(none bound)'}`,
     '',
     'The CLI login is ALREADY started. Do not start, cancel, reissue or complete any login, and do not call the pool enroll routes.',
+    'If Google opens on a passkey screen, choose "Try another way", then "Enter your password".',
+    'Once Google accepts the second step, finish in that SAME Chrome window. Do not close and relaunch Chrome mid-sign-in: that loses the session.',
     `If a phone tap or "Is it you?" prompt appears, ask the operator once: ${post('{"notify":"phone-tap"}')}`,
     'If macOS asks for Screen Recording, Accessibility or Automation permission, report it and stop:',
     `  ${post('{"notify":"macos-permission","permission":"screen-recording"}')}  (or "accessibility" / "automation")`,
@@ -360,7 +383,9 @@ export function renderHelperPrompt(input: ReloginHelperDriveInput & { token: str
     '',
     'Before EVERY keystroke burst, check that the frontmost process is the Chrome you opened and that',
     'document.activeElement is the password or code field you mean. Re-check after anything that can move focus.',
-    'You cannot message anyone. If you reach a hard line or cannot finish, write the reason in your final output and exit.',
+    'If you reach a hard line, report which one and stop (the repair then waits for the operator and is never retried on its own):',
+    `  ${post('{"notify":"hard-line","line":"captcha"}')}  (or "phone-confirmation" / "wrong-account" / "unexpected-site")`,
+    'You cannot message anyone. If you cannot finish for any other reason, write the reason in your final output and exit.',
     'Instar verifies the signed-in account itself; your word never counts as success. When done, close only the Chrome you opened and exit.',
   ];
   return lines.join('\n');

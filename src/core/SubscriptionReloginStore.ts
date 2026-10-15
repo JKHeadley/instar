@@ -21,7 +21,7 @@ export type SubscriptionReloginFailureClass =
   | 'repair-time-budget-exhausted' | 'automation-permission'
   | 'uncertain-external-outcome'
   | 'passkey-refused'
-  | 'agent-sign-in-unfinished' | 'no-healthy-seat'
+  | 'agent-sign-in-unfinished' | 'no-healthy-seat' | 'agent-hard-line'
   | 'resolved-elsewhere'
   | 'cancelled-by-operator' | 'other';
 
@@ -35,6 +35,20 @@ export interface SubscriptionReloginEpisode {
   createdAt: string; updatedAt: string;
   /** The login method the repair was admitted under; null on rows created before the column existed. */
   loginMethod: string | null;
+  /**
+   * How many slow automatic retries this repair has started after a non-safety failure (spec
+   * relogin-unattended-agent-session-and-slow-retry). Durable, never reset by a re-admission, so the
+   * per-incident cap survives restarts. 0 on rows created before the column existed.
+   */
+  slowRetryCount: number;
+  /**
+   * `createdAt` of the CLI login this repair's latest attempt started (null before any attempt, and
+   * on rows from before the column existed). The slow retry releases a leftover login ONLY when it
+   * matches — an operator's own sign-in replaces the login and so never matches.
+   */
+  loginCreatedAt: string | null;
+  /** True once the operator said "don't retry this" on a failed repair; a slow retry never starts it. */
+  slowRetryHeld: boolean;
 }
 export interface SubscriptionReloginEvent {
   id: number; episodeId: string; at: string; fromState: SubscriptionReloginState | null;
@@ -56,6 +70,12 @@ export interface SubscriptionReloginEvidence {
   oldestSuccessAt: string | null;
   identityMismatches: number;
   unexpectedOrigins: number;
+  /**
+   * Helper-reported hard-line stops (`agent-hard-line`) newer than the last verified success on this
+   * account × machine (a repair that succeeded, or a cell the server verified healthy by hand). Unverified claims, so never breaker evidence — but any one holds the next
+   * repair at `approval` until a success clears it.
+   */
+  helperHardLines: number;
 }
 
 const TERMINAL = new Set<SubscriptionReloginState>(['succeeded', 'refused', 'cancelled', 'failed']);
@@ -71,7 +91,9 @@ const TRANSITIONS: Readonly<Record<SubscriptionReloginState, readonly Subscripti
   'identity-verifying': ['approved', 'auth-verifying', 'refused', 'cancelled', 'failed'],
   'auth-verifying': ['approved', 'succeeded', 'cancelled', 'failed'],
   'waiting-operator-only': ['approved', 'cancelled', 'failed'],
-  succeeded: [], refused: [], cancelled: [], failed: ['approved'],
+  // failed → suggested: a slow automatic retry of an approval-mode repair re-offers it to the
+  // operator (spec relogin-unattended-agent-session-and-slow-retry). Only `slowRetry()` takes it.
+  succeeded: [], refused: [], cancelled: [], failed: ['approved', 'suggested'],
 };
 const FAILURES: readonly string[] = [
   'seat-busy', 'target-unreachable', 'artifact-expired', 'provider-transient',
@@ -82,7 +104,7 @@ const FAILURES: readonly string[] = [
   'uncertain-external-outcome',
   'cancelled-by-operator', 'other',
   'passkey-refused',
-  'agent-sign-in-unfinished', 'no-healthy-seat',
+  'agent-sign-in-unfinished', 'no-healthy-seat', 'agent-hard-line',
   'resolved-elsewhere',
 ];
 /** An approval never stays alive longer than this after the operator's tap, however long it queues. */
@@ -134,6 +156,9 @@ function ensureRepairEpisodeColumns(db: BetterSqliteDatabase): void {
   const columns = new Set((db.prepare('PRAGMA table_info(repair_episodes)').all() as Array<{ name: string }>).map((r) => r.name));
   const additions: Array<[string, string]> = [
     ['loginMethod', 'TEXT'],
+    ['slowRetryCount', 'INTEGER NOT NULL DEFAULT 0'],
+    ['loginCreatedAt', 'TEXT'],
+    ['slowRetryHeld', 'INTEGER NOT NULL DEFAULT 0'],
   ];
   for (const [name, declaration] of additions) {
     if (!columns.has(name)) db.exec(`ALTER TABLE repair_episodes ADD COLUMN ${name} ${declaration}`);
@@ -144,6 +169,29 @@ function ensureRepairEpisodeColumns(db: BetterSqliteDatabase): void {
 const READMIT_BLOCKING_FAILURES: ReadonlySet<string> = new Set([
   'wrong-identity', 'unexpected-origin', 'permission-expansion', 'captcha', 'phone-confirmation',
 ]);
+/**
+ * The ONLY failure classes a slow automatic retry may follow — an explicit allowlist, so a class
+ * added later is never retried by default. Each is the end of the parent spec's closed transient
+ * taxonomy: `attempt-budget-exhausted` (the in-run retries of seat-busy / target-unreachable /
+ * artifact-expired / provider-transient / verification-failed ran out — `retry()` is only ever
+ * called with those), `repair-time-budget-exhausted` (the 10-minute wall clock), and
+ * `agent-sign-in-unfinished` (the helper exited or hit its cap without a code or a hard-line
+ * report). Never retried: security classes, `authority-degraded`, `provider-rejected` (including
+ * a lapsed approval), `vault-reference-missing`, `passkey-refused` — assisted-subscription-relogin §7.
+ */
+const SLOW_RETRY_FAILURES: ReadonlySet<string> = new Set([
+  'attempt-budget-exhausted', 'repair-time-budget-exhausted', 'agent-sign-in-unfinished',
+]);
+
+/**
+ * True when a terminal episode may be retried automatically later: state `failed`, a non-safety
+ * class, and the operator has not said "don't retry this".
+ */
+export function isSlowRetryEligible(episode: Pick<SubscriptionReloginEpisode, 'state' | 'failureClass'>
+  & Partial<Pick<SubscriptionReloginEpisode, 'slowRetryHeld'>>): boolean {
+  return episode.state === 'failed' && episode.slowRetryHeld !== true
+    && SLOW_RETRY_FAILURES.has(episode.failureClass ?? '');
+}
 
 export class SubscriptionReloginConflictError extends Error {
   constructor(message: string) { super(message); this.name = 'SubscriptionReloginConflictError'; }
@@ -216,22 +264,34 @@ export class SubscriptionReloginStore {
         // A failure carrying a security class is breaker evidence (`isBreakerOpen` reads these rows);
         // re-admitting it would erase that evidence, so it stays terminal like `refused`.
         const securityFailure = prior.failureClass !== null && READMIT_BLOCKING_FAILURES.has(prior.failureClass);
-        const readmittable = (prior.state === 'suggested' || prior.state === 'cancelled' || prior.state === 'failed')
+        const priorEp = coerceEpisode(prior);
+        // A FAILED row is never re-admitted here (spec relogin-unattended-agent-session-and-slow-retry):
+        // every automatic restart or re-offer of a failed repair goes through the one paced path
+        // (`slowRetry`: due time, cap, operator hold, quiet hours, governor), and an operator's
+        // "Try repair again" on changed inputs re-offers it (`slowRetry` with `operatorRequested`).
+        const readmittable = (prior.state === 'suggested' || prior.state === 'cancelled')
           && !securityFailure;
-        if (!readmittable || prior.inputDigest === input.inputDigest) return coerceEpisode(prior);
+        if (!readmittable || prior.inputDigest === input.inputDigest) return priorEp;
+        // An operator-cancelled repair is never restarted without a tap: re-admitted, it is re-offered,
+        // and stays approval-only on later re-admissions until the operator approves it again.
+        const operatorCancelPending = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=?
+          AND eventClass='operator-cancelled' AND id > COALESCE((SELECT MAX(id) FROM repair_events WHERE episodeId=?
+          AND eventClass IN ('operator-approved','operator-resumed','operator-retry-approved')), 0)`)
+          .get(prior.id, prior.id) as { n: number }).n) > 0;
+        const mode: SubscriptionReloginMode = operatorCancelPending ? 'approval' : input.mode;
         const otherLive = this.db.prepare(`SELECT id FROM repair_episodes WHERE accountId=? AND machineId=? AND id<>?
           AND state NOT IN ('succeeded','refused','cancelled','failed')`).get(account, machine, prior.id);
         if (otherLive) throw new SubscriptionReloginConflictError('live-repair-already-owns-cell');
         this.db.prepare(`UPDATE repair_episodes SET mode=?,state='suggested',inputDigest=?,profileId=?,framework=?,
           provider=?,loginMethod=?,attemptCount=0,reissueCount=0,approvedAt=NULL,approvalExpiresAt=NULL,startedAt=NULL,
           finishedAt=NULL,nextAttemptAt=NULL,failureClass=NULL,version=version+1,updatedAt=? WHERE id=?`)
-          .run(input.mode, input.inputDigest, profile, framework, provider, loginMethod, at, prior.id);
+          .run(mode, input.inputDigest, profile, framework, provider, loginMethod, at, prior.id);
         this.event(prior.id, at, prior.state, 'suggested', 'candidate-readmitted-inputs-changed', 0);
         // Notifications are keyed (episode, kind); clear the prior outcome's rows so this
         // admission's suggestion and outcome are delivered rather than silently deduplicated. A row
         // mid-delivery is left alone so its in-flight completion still finds its claim.
         this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND state<>'delivering'`).run(prior.id);
-        if (input.mode === 'approval') this.enqueueNotification(prior.id, 'suggested', at);
+        if (mode === 'approval') this.enqueueNotification(prior.id, 'suggested', at);
         return this.mustGet(prior.id);
       }
       const live = this.db.prepare(`SELECT id FROM repair_episodes WHERE accountId=? AND machineId=?
@@ -271,9 +331,116 @@ export class SubscriptionReloginStore {
     if (ep.inputDigest !== input.inputDigest) throw new SubscriptionReloginConflictError('approval-input-digest-mismatch');
     const at = input.at ?? this.isoNow();
     const ttl = Math.max(1, Math.min(3_600_000, Math.floor(input.ttlMs ?? 900_000)));
-    return this.transition(id, { expectedVersion: ep.version, to: 'approved', at,
+    const retried = this.transition(id, { expectedVersion: ep.version, to: 'approved', at,
       eventClass: 'operator-retry-approved', approvedAt: at,
       approvalExpiresAt: new Date(Date.parse(at) + ttl).toISOString(), clearFailure: true, resetBudgets: true });
+    // Notices are unique per (episode, kind): clear the prior run's (except one mid-delivery) so this
+    // run's outcome is delivered, not silently ignored; its keys carry `.oN`.
+    this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND state<>'delivering'`).run(ep.id);
+    return retried;
+  }
+
+  /**
+   * Remember which CLI login this repair's current attempt started (its `createdAt`). Metadata only:
+   * no state change and no version bump, so the orchestrator's in-flight version stays valid. The
+   * slow retry uses it to release ONLY the repair's own leftover login.
+   */
+  recordAttemptLogin(id: string, loginCreatedAt: string | null): void {
+    if (loginCreatedAt !== null && !Number.isFinite(Date.parse(loginCreatedAt))) throw new Error('invalid-login-created-at');
+    this.db.prepare('UPDATE repair_episodes SET loginCreatedAt=? WHERE id=?')
+      .run(loginCreatedAt === null ? null : loginCreatedAt.slice(0, 40), normalizeId(id, 'episode'));
+  }
+
+  /**
+   * True when this repair stopped at an operator-only challenge (CAPTCHA, phone check, permission
+   * expansion, macOS permission, helper hard line) since it was last admitted or retried. An
+   * operator resume clears the row's failure class, so this is read from the audit events: such a
+   * run is never slow-retried, however it later ends.
+   */
+  challengedSinceAdmission(id: string): boolean {
+    // "No other healthy account to run the helper" is a seat shortage, not a challenge.
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=? AND eventClass IN ('operator-only-challenge','phone-tap-requested')
+      AND COALESCE(reason,'')<>'agent-no-healthy-seat'
+      AND id > COALESCE((SELECT MAX(id) FROM repair_events WHERE episodeId=? AND eventClass IN
+        ('candidate-admitted','candidate-readmitted-inputs-changed','slow-retry-approved','slow-retry-suggested',
+         'operator-retry-readmitted','operator-retry-approved')), 0)`)
+      .get(normalizeId(id, 'episode'), normalizeId(id, 'episode')) as { n: number };
+    return Number(row.n) > 0;
+  }
+
+  /**
+   * Record (or clear, with `null`) when this failed episode's next slow automatic retry is due. Only
+   * a slow-retry-eligible `failed` row may carry it; no state change. Version-checked.
+   */
+  scheduleSlowRetry(id: string, expectedVersion: number, nextAttemptAt: string | null, at = this.isoNow(),
+    reason?: string): SubscriptionReloginEpisode {
+    return this.db.transaction(() => {
+      const ep = this.mustGet(id);
+      if (ep.version !== expectedVersion) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      if (nextAttemptAt !== null && !isSlowRetryEligible(ep)) throw new SubscriptionReloginConflictError('episode-not-slow-retryable');
+      if (nextAttemptAt !== null && !Number.isFinite(Date.parse(nextAttemptAt))) throw new Error('invalid-next-attempt-at');
+      if (ep.nextAttemptAt === nextAttemptAt) return ep;
+      const info = this.db.prepare(`UPDATE repair_episodes SET nextAttemptAt=?,version=version+1,updatedAt=?
+        WHERE id=? AND version=?`).run(nextAttemptAt, at, ep.id, ep.version);
+      if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      this.event(ep.id, at, ep.state, ep.state, nextAttemptAt === null ? 'slow-retry-unscheduled' : 'slow-retry-scheduled',
+        ep.attemptCount, reloginReasonToken(reason));
+      return this.mustGet(ep.id);
+    })();
+  }
+
+  /**
+   * Start one slow automatic retry of a failed repair whose source incident is still open (spec
+   * relogin-unattended-agent-session-and-slow-retry). The caller has re-run admission; `mode` and
+   * `inputDigest` are that fresh verdict. `unattended` → `approved` with fresh attempt budgets (the
+   * unattended policy is the approving authority, exactly as for a first unattended attempt);
+   * `approval` → back to `suggested`, re-offered to the operator with a fresh notice. Increments the
+   * durable `slowRetryCount`; refuses past `maxRetries` and for any non-eligible row.
+   */
+  slowRetry(id: string, input: { expectedVersion: number; inputDigest: string; mode: 'approval' | 'unattended';
+    maxRetries: number; at?: string; ttlMs?: number;
+    /**
+     * The operator tapped "Try repair again" but the admitted inputs changed since: re-offer the
+     * repair on the CURRENT inputs (always `suggested`, so the operator approves what is current),
+     * without spending the slow-retry budget and regardless of a hold.
+     */
+    operatorRequested?: boolean;
+    /** The fresh admission's profile and login method (the digest covers them; the row must match). */
+    profileId?: string; loginMethod?: string | null }): SubscriptionReloginEpisode {
+    if (!DIGEST_RE.test(input.inputDigest)) throw new Error('invalid-input-digest');
+    if (input.mode !== 'approval' && input.mode !== 'unattended') throw new Error('invalid-relogin-mode');
+    const at = input.at ?? this.isoNow();
+    const ttl = Math.max(1, Math.min(3_600_000, Math.floor(input.ttlMs ?? 900_000)));
+    return this.db.transaction(() => {
+      const ep = this.mustGet(id);
+      if (ep.version !== input.expectedVersion) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      const operator = input.operatorRequested === true;
+      if (operator ? ep.state !== 'failed' : (!isSlowRetryEligible(ep) || this.challengedSinceAdmission(ep.id)))
+        throw new SubscriptionReloginConflictError('episode-not-slow-retryable');
+      if (!operator && ep.slowRetryCount >= Math.max(0, Math.floor(input.maxRetries)))
+        throw new SubscriptionReloginConflictError('slow-retry-budget-exhausted');
+      const otherLive = this.db.prepare(`SELECT id FROM repair_episodes WHERE accountId=? AND machineId=? AND id<>?
+        AND state NOT IN ('succeeded','refused','cancelled','failed')`).get(ep.accountId, ep.machineId, ep.id);
+      if (otherLive) throw new SubscriptionReloginConflictError('live-repair-already-owns-cell');
+      const to: SubscriptionReloginState = !operator && input.mode === 'unattended' ? 'approved' : 'suggested';
+      const approvedAt = to === 'approved' ? at : null;
+      const approvalExpiresAt = to === 'approved' ? new Date(Date.parse(at) + ttl).toISOString() : null;
+      const profile = input.profileId !== undefined ? normalizeId(input.profileId, 'profile') : ep.profileId;
+      const method = input.loginMethod === undefined ? ep.loginMethod
+        : (typeof input.loginMethod === 'string' && input.loginMethod.length > 0 ? input.loginMethod.slice(0, 64) : null);
+      const info = this.db.prepare(`UPDATE repair_episodes SET mode=?,state=?,inputDigest=?,profileId=?,loginMethod=?,attemptCount=0,reissueCount=0,
+        approvedAt=?,approvalExpiresAt=?,startedAt=NULL,finishedAt=NULL,nextAttemptAt=NULL,failureClass=NULL,
+        slowRetryCount=slowRetryCount+?,version=version+1,updatedAt=? WHERE id=? AND version=?`)
+        .run(operator ? 'approval' : input.mode, to, input.inputDigest, profile, method, approvedAt, approvalExpiresAt, operator ? 0 : 1, at, ep.id, ep.version);
+      if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      this.event(ep.id, at, ep.state, to, operator ? 'operator-retry-readmitted'
+        : to === 'approved' ? 'slow-retry-approved' : 'slow-retry-suggested', 0);
+      // The prior outcome's notice rows are keyed (episode, kind); clear them so this retry's
+      // suggestion/outcome is delivered rather than de-duplicated (a row mid-delivery is kept).
+      this.db.prepare(`D${'ELETE'} FROM repair_notifications WHERE episodeId=? AND state<>'delivering'`).run(ep.id);
+      if (to === 'suggested') this.enqueueNotification(ep.id, 'suggested', at);
+      return this.mustGet(ep.id);
+    })();
   }
 
   /**
@@ -307,6 +474,9 @@ export class SubscriptionReloginStore {
    */
   enqueuePhoneTap(id: string, at = this.isoNow()): void {
     const ep = this.mustGet(id);
+    // Audited: a run that needed the operator's phone and then did not finish is never slow-retried
+    // (`challengedSinceAdmission`) — the next try would need them again.
+    this.event(ep.id, at, ep.state, ep.state, 'phone-tap-requested', ep.attemptCount);
     this.enqueueNotification(ep.id, 'phone-tap', at);
   }
 
@@ -352,10 +522,25 @@ export class SubscriptionReloginStore {
   }
 
   cancel(id: string, at = this.isoNow()): SubscriptionReloginEpisode {
-    const ep = this.mustGet(id); if (TERMINAL.has(ep.state)) return ep;
+    const ep = this.mustGet(id);
+    // On a failed repair, "cancel" means "don't retry this on your own": the row stays `failed` with
+    // its failure class (breaker evidence intact) and no slow retry ever starts it.
+    if (ep.state === 'failed') return this.holdSlowRetry(ep, at);
+    if (TERMINAL.has(ep.state)) return ep;
     return this.transition(id, { expectedVersion: ep.version, to: 'cancelled', at,
       eventClass: 'operator-cancelled', failureClass: 'cancelled-by-operator' });
   }
+  private holdSlowRetry(ep: SubscriptionReloginEpisode, at: string): SubscriptionReloginEpisode {
+    if (ep.slowRetryHeld && ep.nextAttemptAt === null) return ep;
+    return this.db.transaction(() => {
+      const info = this.db.prepare(`UPDATE repair_episodes SET slowRetryHeld=1,nextAttemptAt=NULL,version=version+1,updatedAt=?
+        WHERE id=? AND version=?`).run(at, ep.id, ep.version);
+      if (info.changes !== 1) throw new SubscriptionReloginConflictError('episode-version-conflict');
+      this.event(ep.id, at, ep.state, ep.state, 'slow-retry-held-by-operator', ep.attemptCount);
+      return this.mustGet(ep.id);
+    })();
+  }
+
   /**
    * Close an open repair whose account×machine cell the server has since verified healthy by
    * another path (signed in by hand, from the phone, …). Goes through the store's own audited
@@ -423,11 +608,20 @@ export class SubscriptionReloginStore {
       FROM repair_episodes WHERE accountId=? AND machineId=? AND provider=? AND framework=?`)
       .get(...scopeParams, ...scopeParams, normalizeId(accountId, 'account'), normalizeId(machineId, 'machine'),
         normalizeId(provider, 'provider'), normalizeId(framework, 'framework')) as Record<string, unknown>;
+    // Counted from the audit events, not the row's current class: a later operator cancel rewrites
+    // the row's failureClass, and must not erase the report.
+    const hardLines = this.db.prepare(`SELECT COUNT(*) n FROM repair_events e JOIN repair_episodes r ON e.episodeId=r.id
+      WHERE r.accountId=? AND r.machineId=? AND r.provider=? AND r.framework=? AND e.reason LIKE 'agent-hard-line-%'
+      AND e.at > COALESCE((SELECT MAX(s.finishedAt) FROM repair_episodes s WHERE s.accountId=r.accountId
+        AND s.machineId=r.machineId AND (s.state='succeeded' OR s.failureClass='resolved-elsewhere')), '')`)
+      .get(normalizeId(accountId, 'account'), normalizeId(machineId, 'machine'), normalizeId(provider, 'provider'),
+        normalizeId(framework, 'framework')) as { n: number };
     return {
       successfulRepairs: Number(row.successfulRepairs ?? 0),
       oldestSuccessAt: typeof row.oldestSuccessAt === 'string' ? row.oldestSuccessAt : null,
       identityMismatches: Number(row.identityMismatches ?? 0),
       unexpectedOrigins: Number(row.unexpectedOrigins ?? 0),
+      helperHardLines: Number(hardLines.n ?? 0),
     };
   }
   isBreakerOpen(accountId: string, provider: string, windowMs = 24 * 60 * 60_000, threshold = 3): boolean {
@@ -443,8 +637,12 @@ export class SubscriptionReloginStore {
       AND failureClass IN ('wrong-identity','unexpected-origin','permission-expansion','captcha','phone-confirmation')
       LIMIT 1`).get(account, normalizedProvider, since);
     if (securityEvent) return true;
-    const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_episodes WHERE accountId=? AND provider=?
-      AND state IN ('failed','refused') AND finishedAt>?`).get(account, normalizedProvider, since) as { n: number };
+    // Count failed/refused RUNS from the append-only events, not rows: a slow retry or an operator
+    // retry reuses its episode row, and each of its failed runs must still count toward the brake.
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_events e JOIN repair_episodes r ON e.episodeId=r.id
+      WHERE r.accountId=? AND r.provider=? AND e.toState IN ('failed','refused')
+      AND COALESCE(e.fromState,'') NOT IN ('failed','refused') AND e.at>?`)
+      .get(account, normalizedProvider, since) as { n: number };
     return Number(row.n) >= Math.max(1, Math.min(10, Math.floor(threshold)));
   }
   claimNotifications(limit = 10, leaseMs = 60_000): SubscriptionReloginNotification[] {
@@ -486,9 +684,17 @@ export class SubscriptionReloginStore {
   private enqueueNotification(id: string, kind: SubscriptionReloginNotification['kind'], at: string): void {
     // The delivery key (also the attention-item id) carries the attempt number, so a notice
     // re-inserted for a later attempt is not de-duplicated away downstream.
-    const attempt = Number((this.db.prepare('SELECT attemptCount FROM repair_episodes WHERE id=?').get(id) as
-      { attemptCount: number } | undefined)?.attemptCount ?? 0);
-    let key = `subscription-relogin:${id}:${kind}:${attempt}`;
+    const counts = this.db.prepare('SELECT attemptCount, slowRetryCount FROM repair_episodes WHERE id=?').get(id) as
+      { attemptCount: number; slowRetryCount: number } | undefined;
+    const attempt = Number(counts?.attemptCount ?? 0);
+    const slowRetries = Number(counts?.slowRetryCount ?? 0);
+    // A slow automatic retry restarts the attempt count, so its notices also carry the retry number
+    // (`.rN`) — otherwise its outcome would reuse the first run's key and be de-duplicated away.
+    // An operator restart (Try repair again, or its re-offer on changed inputs) resets the attempt
+    // count without spending a slow retry; its own count keeps every later notice key distinct.
+    const operatorReoffers = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events
+      WHERE episodeId=? AND eventClass IN ('operator-retry-readmitted','operator-retry-approved')`).get(id) as { n: number }).n);
+    let key = `subscription-relogin:${id}:${kind}:${attempt}${slowRetries > 0 ? `.r${slowRetries}` : ''}${operatorReoffers > 0 ? `.o${operatorReoffers}` : ''}`;
     if (kind === 'operator-only') {
       // A second operator-only reason within ONE attempt (e.g. no-healthy-seat, an operator resume,
       // then no-healthy-seat again) is its own notice: replace an already-delivered row, and give
@@ -547,5 +753,8 @@ function normalizeEvent(value: string): string {
 }
 function coerceEpisode(row: SubscriptionReloginEpisode): SubscriptionReloginEpisode {
   return { ...row, sourceEpisodeId: Number(row.sourceEpisodeId), attemptCount: Number(row.attemptCount),
-    reissueCount: Number(row.reissueCount), version: Number(row.version) };
+    reissueCount: Number(row.reissueCount), version: Number(row.version),
+    slowRetryCount: Number((row as { slowRetryCount?: unknown }).slowRetryCount ?? 0),
+    loginCreatedAt: (row as { loginCreatedAt?: unknown }).loginCreatedAt == null ? null : String((row as { loginCreatedAt?: unknown }).loginCreatedAt),
+    slowRetryHeld: Number((row as { slowRetryHeld?: unknown }).slowRetryHeld ?? 0) === 1 };
 }

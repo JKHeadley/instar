@@ -225,7 +225,7 @@ describe('SubscriptionReloginStore', () => {
     expect(store.listEvents(failed.id).map((event) => event.eventClass)).toContain('operator-retry-approved');
     store.close();
   });
-  it('re-admits a suggested, cancelled or failed row for the same incident when its admitted inputs changed', () => {
+  it('re-admits a suggested or cancelled row (never a failed one) for the same incident when its admitted inputs changed', () => {
     const { store, suggest } = fixture();
     const changed = { inputDigest: `sha256:${'b'.repeat(64)}`, mode: 'unattended' as const };
     // Stale suggestion (the live 2026-09-23 case: account joined the unattended list after suggest).
@@ -234,7 +234,8 @@ describe('SubscriptionReloginStore', () => {
     expect(readmitted).toMatchObject({ id: stale.id, state: 'suggested', mode: 'unattended',
       inputDigest: changed.inputDigest, attemptCount: 0, reissueCount: 0 });
     expect(store.approve(readmitted.id, { inputDigest: changed.inputDigest }).state).toBe('approved');
-    // A failed attempt (the 2026-09-21 Adriana case) re-admits once inputs change again…
+    // A failed attempt is NOT re-admitted on changed inputs any more: every automatic restart of a
+    // failed repair goes through the paced slow retry (spec relogin-unattended-agent-session-and-slow-retry).
     const approved = store.get(readmitted.id)!;
     const starting = store.transition(approved.id, { expectedVersion: approved.version,
       to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
@@ -242,14 +243,13 @@ describe('SubscriptionReloginStore', () => {
       eventClass: 'artifact-reissue-budget-exhausted', failureClass: 'attempt-budget-exhausted', incrementReissue: true });
     expect(suggest(changed)).toMatchObject({ state: 'failed' }); // unchanged inputs: still waits for an operator retry
     const third = { ...changed, inputDigest: `sha256:${'c'.repeat(64)}` };
-    expect(suggest(third)).toMatchObject({ id: failed.id, state: 'suggested', failureClass: null,
-      startedAt: null, approvedAt: null, attemptCount: 0, reissueCount: 0 });
-    expect(store.listEvents(failed.id).map((event) => event.eventClass)).toContain('candidate-readmitted-inputs-changed');
-    // …and a cancelled one too, but only on changed inputs.
-    const cancelled = store.cancel(failed.id);
+    expect(suggest(third)).toMatchObject({ id: failed.id, state: 'failed', failureClass: 'attempt-budget-exhausted' });
+    // A cancelled one is re-admitted, but only on changed inputs — and an operator cancel only as a re-offer.
+    const other = suggest({ sourceEpisodeId: 50 });
+    const cancelled = store.cancel(other.id);
     expect(cancelled.state).toBe('cancelled');
-    expect(suggest(third).state).toBe('cancelled');
-    expect(suggest({ ...third, inputDigest: `sha256:${'d'.repeat(64)}` }).state).toBe('suggested');
+    expect(suggest({ ...changed, sourceEpisodeId: 50, inputDigest: other.inputDigest }).state).toBe('cancelled');
+    expect(suggest({ ...third, sourceEpisodeId: 50, inputDigest: `sha256:${'d'.repeat(64)}` })).toMatchObject({ state: 'suggested', mode: 'approval' });
     store.close();
   });
 

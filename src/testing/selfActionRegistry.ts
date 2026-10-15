@@ -1367,19 +1367,23 @@ function makeStandDownPressureLoop(d: Map<string, unknown>, sink: ActionSink): {
 
 /**
  * subscription-relogin-redrive — models the repair service under a provider
- * that rejects forever. Attempt count and wall-clock start are durable episode
- * fields, so restart cannot refill the budget. The third rejected drive settles
- * terminally; later scans see the same terminal episode/breaker and emit nothing.
+ * that rejects forever. Attempt count, wall-clock start and the slow-retry
+ * count are durable episode fields, so restart cannot refill any budget. Each
+ * run spends at most 3 attempts and settles `failed`; while the incident stays
+ * open a slow automatic retry (6 h, then 24 h apart) starts a fresh run, at most
+ * 3 times per incident (spec relogin-unattended-agent-session-and-slow-retry).
+ * So the total is 3 × (1 + 3) = 12 drives per incident, horizon-independent;
+ * after that the same failed episode emits nothing.
  */
 const subscriptionReloginRedrive: SelfActionController = {
   id: 'subscription-relogin-redrive',
   actionVerb: 'relogin-redrive',
-  models: 'src/core/SubscriptionReloginService.ts + SubscriptionReloginOrchestrator.ts (durable maxAttempts/maxWallMs and terminal breaker)',
+  models: 'src/core/SubscriptionReloginService.ts + SubscriptionReloginOrchestrator.ts (durable maxAttempts/maxWallMs, durable slowRetryCount ≤ 3 with 6 h/24 h delays, terminal breaker)',
   modelsPath: 'src/core/SubscriptionReloginService.ts',
-  boundK: 3,
-  perTargetBoundK: 3,
-  ticks: 30,
-  tickMs: 30_000,
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 200,
+  tickMs: 60 * 60_000,
   restartPosture: {
     pressureSurvives: true,
     restartUnderPressure: (f, sink) => makeSubscriptionReloginPressureLoop(f, sink),
@@ -1390,15 +1394,31 @@ const subscriptionReloginRedrive: SelfActionController = {
 };
 
 function makeSubscriptionReloginPressureLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
-  const key = 'subscription-relogin:attempts';
-  if (!f.durableState.has(key)) f.durableState.set(key, 0);
+  const ATTEMPTS = 3;
+  const MAX_SLOW_RETRIES = 3;
+  const DELAYS_MS = [6 * 60 * 60_000, 24 * 60 * 60_000];
+  const attemptsKey = 'subscription-relogin:attempts';
+  const retriesKey = 'subscription-relogin:slow-retries';
+  const failedAtKey = 'subscription-relogin:failed-at';
+  if (!f.durableState.has(attemptsKey)) f.durableState.set(attemptsKey, 0);
+  if (!f.durableState.has(retriesKey)) f.durableState.set(retriesKey, 0);
   return {
     tick() {
       sink.considered += 1;
-      const attempts = f.durableState.get(key) as number;
-      if (attempts >= 3) return;
-      sink.emit({ verb: 'relogin-redrive', target: 'account-machine-cell' });
-      f.durableState.set(key, attempts + 1);
+      const attempts = f.durableState.get(attemptsKey) as number;
+      if (attempts < ATTEMPTS) {
+        sink.emit({ verb: 'relogin-redrive', target: 'account-machine-cell' });
+        f.durableState.set(attemptsKey, attempts + 1);
+        if (attempts + 1 >= ATTEMPTS) f.durableState.set(failedAtKey, f.clock.nowMs()); // settles `failed`
+        return;
+      }
+      // Failed. A slow retry starts a fresh run only once due and only while the durable cap allows.
+      const retries = f.durableState.get(retriesKey) as number;
+      if (retries >= MAX_SLOW_RETRIES || !f.targetAlwaysRejects()) return;
+      const failedAt = f.durableState.get(failedAtKey) as number;
+      if (f.clock.nowMs() < failedAt + DELAYS_MS[Math.min(retries, DELAYS_MS.length - 1)]) return;
+      f.durableState.set(retriesKey, retries + 1);
+      f.durableState.set(attemptsKey, 0);
     },
   };
 }

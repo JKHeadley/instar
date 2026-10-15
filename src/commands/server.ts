@@ -15118,7 +15118,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             : permissionReason === 'agent-permission-accessibility' ? 'Accessibility'
               : permissionReason === 'agent-permission-automation' ? 'Automation (control Google Chrome)' : null;
           const summary = kind === 'approval'
-            ? `A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once: ${subscriptionsLink}`
+            ? `${(episode.slowRetryCount ?? 0) > 0 ? `The last ${doorway} sign-in repair didn't finish and the account is still signed out. ` : ''}A ${doorway} subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once: ${subscriptionsLink}`
             : kind === 'phone-tap'
               ? `${doorway} sign-in repair is waiting on your phone: tap "Yes, it's me" on the Google prompt now. The helper continues on its own after that.`
               : kind === 'operator-only'
@@ -15214,6 +15214,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
+          slowRetry: reloginCfg.slowRetry,
         });
         subscriptionReloginRuntime.start();
         console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'})`));

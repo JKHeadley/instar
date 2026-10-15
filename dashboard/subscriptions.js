@@ -195,6 +195,25 @@ export function relativeAge(iso, now = Date.now()) {
 }
 
 /**
+ * Plain text for when a failed sign-in repair will try again on its own (spec
+ * relogin-unattended-agent-session-and-slow-retry), else ''. Only a `failed` repair carrying a
+ * future-or-due `nextAttemptAt` has one.
+ */
+export function slowRetryLabel(repair, now = Date.now()) {
+  if (!repair || repair.state !== 'failed' || typeof repair.nextAttemptAt !== 'string') return '';
+  const t = Date.parse(repair.nextAttemptAt);
+  if (Number.isNaN(t)) return '';
+  const min = Math.ceil((t - now) / 60_000);
+  // An approval-mode repair is only RE-OFFERED for a tap; it never starts on its own.
+  const lead = repair.mode === 'approval' ? 'Will offer to try again' : 'Trying again on its own';
+  if (min <= 1) return `${lead} shortly.`;
+  if (min < 60) return `${lead} in ${min} min.`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${lead} in about ${hr} h.`;
+  return `${lead} in about ${Math.round(hr / 24)} days.`;
+}
+
+/**
  * Age text for a quota reading that is old enough to mislead, else ''.
  *
  * Codex quota is read from the account's own session log, so it only advances
@@ -399,6 +418,11 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
                 : repair.state === 'cancelled' ? 'Sign-in repair cancelled.'
                   : 'Repairing sign-in…';
       repairBox.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+      const retryText = slowRetryLabel(repair, now);
+      if (retryText) repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', retryText));
+      else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+        repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', 'Won’t try again on its own. Try repair again any time.'));
+      }
       const action = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
         : repair.state === 'failed' ? ['retry', 'Try repair again']
           : (!terminal ? ['cancel', 'Cancel repair'] : null);
@@ -407,6 +431,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
         button.setAttribute('data-relogin-action', action[0]);
         button.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
         repairBox.appendChild(button);
+      }
+      if (retryText) {
+        // "Cancel" on a failed repair holds its automatic retries (the failure itself is kept).
+        const hold = el(doc, 'button', 'sub-account-repair-hold', 'Don’t retry on its own');
+        hold.setAttribute('data-relogin-action', 'cancel');
+        hold.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
+        repairBox.appendChild(hold);
       }
       card.appendChild(repairBox);
     }
@@ -968,6 +999,11 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
             : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
               : 'Repairing sign-in…';
         td.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+        const retryText = slowRetryLabel(repair);
+        if (retryText) td.appendChild(el(doc, 'div', 'sub-matrix-next-try', retryText));
+        else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-next-try', 'Won’t try again on its own. Try repair again any time.'));
+        }
         const repairAction = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
           : repair.state === 'failed' ? ['retry', 'Try repair again']
             : ['cancel', 'Cancel repair'];
@@ -979,6 +1015,16 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           button.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
           button.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
           td.appendChild(button);
+        }
+        if (retryText) {
+          // Quieter secondary action: hold this failed repair's automatic retries (relayed to its machine).
+          const hold = el(doc, 'button', 'sub-matrix-repair sub-matrix-repair-hold', 'Don’t retry on its own');
+          hold.setAttribute('data-matrix-relogin', '1');
+          hold.setAttribute('data-repair-action', 'cancel');
+          hold.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          hold.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          hold.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
+          td.appendChild(hold);
         }
         // While a repair waits on the operator (a phone tap, a macOS Allow, no helper account), the
         // operator can also finish the sign-in themselves from here — the same one-tap Sign in flow
@@ -1565,7 +1611,8 @@ export function createController(opts) {
       return;
     }
     btn.setAttribute('disabled', 'disabled');
-    setCellStatus(cell, 'Starting autonomous sign-in repair…');
+    const holding = action === 'cancel' && btn.classList && btn.classList.contains('sub-matrix-repair-hold');
+    setCellStatus(cell, holding ? 'Stopping automatic retries…' : 'Starting autonomous sign-in repair…');
     void (async () => {
       try {
         const response = await fetchImpl(URLS.repairCell, {
@@ -1584,7 +1631,10 @@ export function createController(opts) {
           if (resolvedConflict) await tick();
           return;
         }
-        setCellStatus(cell, 'Repair started — Instar is handling the sign-in.');
+        const reoffered = body && body.episode && body.episode.state === 'suggested';
+        setCellStatus(cell, holding ? 'Automatic retries stopped. Try repair again any time.'
+          : reoffered ? 'Things changed since the last try — tap Repair sign-in once more.'
+            : 'Repair started — Instar is handling the sign-in.');
         await tick();
       } catch {
         setCellStatus(cell, 'Couldn’t reach the target machine — try again.');

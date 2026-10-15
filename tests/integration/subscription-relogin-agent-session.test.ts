@@ -2,7 +2,9 @@
  * Skill-driven sign-in repair, integration tier (spec skill-driven-signin-repair):
  *  - the production-shaped runtime drives an episode through the agent-session helper (a fake
  *    session that posts the code the way a real helper would) to server-verified success;
- *  - approval is forced on this path; a missing helper account hands off to the operator;
+ *  - this path honors unattended mode for an opted-in identity (spec
+ *    relogin-unattended-agent-session-and-slow-retry); a missing helper account hands off to the operator;
+ *  - a failed repair retries itself slowly while the incident stays open, bounded per incident;
  *  - the code route through the REAL middleware stack (CORS + bearer auth + JSON parser):
  *    loopback + per-episode token, no bearer needed, strict body, no CORS.
  */
@@ -36,7 +38,8 @@ const CODE = 'c'.repeat(30) + '#' + 'd'.repeat(30);
 
 function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mode?: 'approval' | 'unattended';
   codexCli?: 'signed-in' | 'signed-out'; codexSource?: 'codex-app-server' | 'codex-rollout'; helperPostsCode?: boolean;
-  brokenFramework?: 'claude-code' | 'codex-cli'; codexLiveReadAvailable?: boolean } = {}) {
+  brokenFramework?: 'claude-code' | 'codex-cli'; codexLiveReadAvailable?: boolean; identities?: string[];
+  offsetMs?: { value: number }; hardLine?: string; backupCodes?: string } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-')); dirs.push(stateDir);
   const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
   const accounts = new Map<string, SubscriptionAccount>();
@@ -59,14 +62,15 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
     source = { ...source, closedAt: '2026-09-25T01:00:00Z', outcome: 'resolved' }; return { changed: true, episodeId: source.id };
   }) } as unknown as SubscriptionLoginLedger;
   let pending: any = null;
-  const enrollment = { getById: () => pending, abandon: vi.fn(), refresh: vi.fn(), start: vi.fn(async () => (pending = {
+  const enrollment = { getById: () => pending, abandon: vi.fn(() => { if (pending) pending = { ...pending, status: 'abandoned' }; return pending; }),
+    refresh: vi.fn(), start: vi.fn(async () => (pending = {
     id: broken.id, label: broken.nickname, provider: 'anthropic', framework: 'claude-code', kind: 'url-code-paste',
-    configHome: broken.configHome, verificationUrl: 'https://claude.ai/oauth/authorize?code=true', ttlExpiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
-    status: 'pending', reissueCount: 0, createdAt: '', updatedAt: '', version: 1 })) } as unknown as EnrollmentWizard;
+    configHome: broken.configHome, verificationUrl: 'https://claude.ai/oauth/authorize?code=true', ttlExpiresAt: new Date(Date.now() + (opts.offsetMs?.value ?? 0) + 30 * 60_000).toISOString(),
+    status: 'pending', reissueCount: 0, createdAt: new Date(Date.now() + (opts.offsetMs?.value ?? 0)).toISOString(), updatedAt: '', version: 1 })) } as unknown as EnrollmentWizard;
   const profiles = { resolve: () => ({ profile: { id: 'profile-1' }, dirExists: true }), listProfiles: () => [{
     id: 'profile-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
     accounts: [{ service: 'google', identity: broken.email, owner: 'operator', vaultRefs: ['google_password_person'],
-      vaultBindings: { password: 'google_password_person' },
+      vaultBindings: { password: 'google_password_person', ...(opts.backupCodes !== undefined ? { backupCode: 'google_backup_codes_person' } : {}) },
       loginMethod: 'password', lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }] }] } as unknown as PlaywrightProfileRegistry;
   const loginChecks = new Map<string, 'ok' | 'signed-out' | 'unavailable'>();
   const pollAccount = vi.fn(async (acct: SubscriptionAccount) => ({
@@ -78,7 +82,11 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   const spawn = vi.fn(async (input: { name: string; prompt: string }) => {
     const tmuxSession = `proj-${input.name}`;
     tmux.set(tmuxSession, true);
-    if (opts.helperPostsCode !== false) {
+    if (opts.hardLine) {
+      const token = /X-Relogin-Helper-Token: ([A-Za-z0-9_-]+)/.exec(input.prompt)![1]!;
+      const episodeId = input.name.slice('relogin-'.length);
+      setTimeout(() => { runtime.helper!.submit(episodeId, token, { notify: 'hard-line', line: opts.hardLine }); }, 20);
+    } else if (opts.helperPostsCode !== false) {
       // The fake helper does what section 3 does at the end: post the code with its token.
       const token = /X-Relogin-Helper-Token: ([A-Za-z0-9_-]+)/.exec(input.prompt)![1]!;
       const episodeId = input.name.slice('relogin-'.length);
@@ -90,18 +98,20 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   });
   const kill = vi.fn((tmuxSession: string) => { tmux.set(tmuxSession, false); });
   runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1', mode: opts.mode ?? 'approval',
-    unattendedPolicy: { identities: [broken.email], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    unattendedPolicy: { identities: opts.identities ?? [broken.email], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    ...(opts.offsetMs ? { now: () => Date.now() + opts.offsetMs!.value } : {}),
     pool, ledger, enrollment, profiles,
     quotaPoller: { pollAccount, loginCheck: (id: string) => loginChecks.get(id) ?? 'unavailable' } as unknown as QuotaPoller,
     identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: broken.email })) } as unknown as IdentityOracle,
     pasteBack, createBrowser: () => { throw new Error('the driver browser must not open on the agent-session path'); },
-    resolveSecret: async () => null, supervise: async () => { throw new Error('no supervisor on this path'); },
+    resolveSecret: async (name: string) => name === 'google_backup_codes_person' ? (opts.backupCodes ?? null) : null, supervise: async () => { throw new Error('no supervisor on this path'); },
     ...(opts.codexLiveReadAvailable !== undefined ? { codexLiveReadAvailable: opts.codexLiveReadAvailable } : {}),
     navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
     helperSession: { spawn, kill, isAlive: (t) => tmux.get(t) === true, listHelpers: () => [], hasCapacity: () => true, serverPort: 4042,
       codexLoginStatus: async () => opts.codexCli ?? 'signed-in', timing: { pollMs: 10, startGraceMs: 0, exitSettleMs: 0 } },
   });
-  return { runtime, spawn, kill, pasteBack, pollAccount, accounts, broken, loginChecks };
+  return { runtime, spawn, kill, pasteBack, pollAccount, accounts, broken, loginChecks, enrollment,
+    replaceLogin: (patch: Record<string, unknown>) => { pending = { ...pending, ...patch }; } };
 }
 
 describe('agent-session sign-in repair runtime', () => {
@@ -143,11 +153,171 @@ describe('agent-session sign-in repair runtime', () => {
     w.runtime.close();
   });
 
-  it('forces approval on this path even when the configured mode is unattended', async () => {
+  it('unattended mode + an opted-in identity: the repair starts with NO tap and reaches server-verified success', async () => {
     const w = world({ mode: 'unattended' });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    expect(episode.mode).toBe('unattended');
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    const events = w.runtime.store.listEvents(episode.id).map((e) => e.eventClass);
+    expect(events).toContain('unattended-policy-approved');
+    expect(events).not.toContain('operator-approved');
+    expect(w.accounts.get('acct-broken')!.status).toBe('active');
+    w.runtime.close();
+  });
+
+  it('UPGRADE HEAL: a stuck approval-mode suggestion for a listed identity is re-admitted and runs with no tap', async () => {
+    const w = world({ mode: 'unattended' });
+    // The pre-upgrade row: same incident, forced-approval digest.
+    const stale = w.runtime.store.suggest({ sourceEpisodeId: 81, accountId: 'acct-broken', machineId: 'machine-1', mode: 'approval',
+      inputDigest: `sha256:${'f'.repeat(64)}`, profileId: 'profile-1', framework: 'claude-code', provider: 'anthropic', loginMethod: 'password' });
+    await w.runtime.service.tick();
+    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'));
+    expect(w.runtime.store.get(stale.id)!.mode).toBe('unattended');
+    expect(w.runtime.store.listEvents(stale.id).map((e) => e.eventClass)).toEqual(
+      expect.arrayContaining(['candidate-readmitted-inputs-changed', 'unattended-policy-approved']));
+    w.runtime.close();
+  });
+
+  it('an operator tap on a suggestion whose inputs changed (before the scan healed it) re-admits and runs, never digest-mismatches', async () => {
+    const w = world({ mode: 'approval', identities: [] });
+    const stale = w.runtime.store.suggest({ sourceEpisodeId: 81, accountId: 'acct-broken', machineId: 'machine-1', mode: 'approval',
+      inputDigest: `sha256:${'e'.repeat(64)}`, profileId: 'profile-1', framework: 'claude-code', provider: 'anthropic', loginMethod: 'password' });
+    const approved = await w.runtime.service.approve(stale.id);
+    expect(approved.state).toBe('approved');
+    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'));
+    w.runtime.close();
+  });
+
+  it('unattended mode but the identity is NOT on the list: still waits for the one tap', async () => {
+    const w = world({ mode: 'unattended', identities: ['someone-else@example.com'] });
     await w.runtime.service.tick();
     expect(w.runtime.store.list()[0]).toMatchObject({ state: 'suggested', mode: 'approval' });
     expect(w.spawn).not.toHaveBeenCalled();
+    w.runtime.close();
+  });
+
+  it('a failed unattended repair retries itself slowly (6 h, then 24 h), at most 3 times per incident', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'unattended', helperPostsCode: false, offsetMs: clock });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    for (const [retry, hours] of [[1, 6], [2, 24], [3, 24]] as const) {
+      await w.runtime.service.tick(); // records when the next try is due (visible on the dashboard)
+      const scheduled = w.runtime.store.get(id)!;
+      expect(scheduled.state).toBe('failed');
+      expect(Date.parse(scheduled.nextAttemptAt!) - Date.parse(scheduled.finishedAt!)).toBe(hours * 60 * 60_000);
+      await w.runtime.service.tick(); // not due yet: nothing happens
+      expect(w.spawn).toHaveBeenCalledTimes(retry);
+      clock.value = Date.parse(scheduled.nextAttemptAt!) - Date.now() + 1_000;
+      await w.runtime.service.tick();
+      await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(retry + 1));
+      await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+      expect(w.runtime.store.get(id)!.slowRetryCount).toBe(retry);
+      expect(w.runtime.store.listEvents(id).map((e) => e.eventClass)).toContain('slow-retry-approved');
+    }
+    // Cap reached: no further schedule, no further spawn, however long it waits.
+    await w.runtime.service.tick();
+    expect(w.runtime.store.get(id)!.nextAttemptAt).toBeNull();
+    clock.value += 30 * 24 * 60 * 60_000;
+    await w.runtime.service.tick();
+    await w.runtime.service.tick();
+    expect(w.spawn).toHaveBeenCalledTimes(4);
+    w.runtime.close();
+  });
+
+  it('never releases a sign-in the operator started after the failure: the retry waits instead', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'unattended', helperPostsCode: false, offsetMs: clock });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    expect(w.runtime.store.get(id)!.loginCreatedAt).not.toBeNull();
+    await w.runtime.service.tick();
+    const due = Date.parse(w.runtime.store.get(id)!.nextAttemptAt!);
+    // The operator taps Sign in on the dashboard: a NEW login replaces the repair's own.
+    w.replaceLogin({ createdAt: new Date(due - 60_000).toISOString(), status: 'pending' });
+    clock.value = due - Date.now() + 1_000;
+    await w.runtime.service.tick();
+    expect((w.enrollment as unknown as { abandon: ReturnType<typeof vi.fn> }).abandon).not.toHaveBeenCalled();
+    const ep = w.runtime.store.get(id)!;
+    expect(ep).toMatchObject({ state: 'failed', slowRetryCount: 0 });
+    expect(Date.parse(ep.nextAttemptAt!)).toBeGreaterThan(due); // pushed one delay later, not a tight loop
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    w.runtime.close();
+  });
+
+  it('a helper that reports a CAPTCHA hands the repair to the operator, and no slow retry ever drives it again', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'unattended', hardLine: 'captcha', offsetMs: clock });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('waiting-operator-only'));
+    expect(w.runtime.store.get(id)!.failureClass).toBe('agent-hard-line');
+    for (let i = 0; i < 4; i++) { clock.value += 30 * 60 * 60_000; await w.runtime.service.tick(); }
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'waiting-operator-only', slowRetryCount: 0, nextAttemptAt: null });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    // The NEXT incident for this account × machine is held at approval until a verified success.
+    w.runtime.store.cancel(id);
+    await w.runtime.service.tick();
+    // The operator cancel is only ever followed by a re-offer that needs a tap (the hold changed the inputs).
+    expect(w.runtime.store.list().find((e) => e.id === id)).toMatchObject({ state: 'suggested', mode: 'approval' });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    const evidence = w.runtime.store.getUnattendedEvidence('acct-broken', 'machine-1', 'anthropic', 'claude-code', 'password');
+    expect(evidence.helperHardLines).toBe(1);
+    w.runtime.close();
+  });
+
+  it('on the helper path a backup-code account is always held at approval (spent codes are not removed from the vault there)', async () => {
+    const w = world({ mode: 'unattended', backupCodes: '1111 2222 3333 4444 5555 6666' }); // 3 eight-digit codes; floor = maxAttempts (3) + 1
+    await w.runtime.service.tick();
+    expect(w.runtime.store.list()[0]).toMatchObject({ state: 'suggested', mode: 'approval' });
+    expect(w.spawn).not.toHaveBeenCalled();
+    w.runtime.close();
+    const full = world({ mode: 'unattended', backupCodes: '11112222 33334444 55556666 77778888 99990000' });
+    await full.runtime.service.tick();
+    expect(full.runtime.store.list()[0]).toMatchObject({ mode: 'approval' });
+    full.runtime.close();
+  });
+
+  it('a LEGACY failed row (no recorded login) is re-offered and the operator\'s approval then runs despite its own leftover login', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'approval', helperPostsCode: false, offsetMs: clock });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await w.runtime.service.approve(id);
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    // Simulate a row from before the column existed.
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(w.runtime.store.dbPath);
+    db.prepare('UPDATE repair_episodes SET loginCreatedAt=NULL WHERE id=?').run(id);
+    db.close();
+    expect(w.runtime.store.get(id)!.loginCreatedAt).toBeNull();
+    await w.runtime.service.tick();
+    clock.value = Date.parse(w.runtime.store.get(id)!.nextAttemptAt!) - Date.now() + 1_000;
+    await w.runtime.service.tick();
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'suggested', slowRetryCount: 1 });
+    expect(w.runtime.store.get(id)!.loginCreatedAt).not.toBeNull(); // pinned before the window was cleared
+    await expect(w.runtime.service.approve(id)).resolves.toMatchObject({ state: 'approved' });
+    w.runtime.close();
+  });
+
+  it('a failed approval-mode repair is re-offered for one tap after the delay, never started on its own', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'approval', helperPostsCode: false, offsetMs: clock });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await w.runtime.service.approve(id);
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await w.runtime.service.tick();
+    const due = w.runtime.store.get(id)!.nextAttemptAt!;
+    clock.value = Date.parse(due) - Date.now() + 1_000;
+    await w.runtime.service.tick();
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'suggested', mode: 'approval', slowRetryCount: 1, attemptCount: 0 });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
     w.runtime.close();
   });
 

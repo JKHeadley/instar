@@ -65,6 +65,11 @@ export interface SubscriptionReloginRuntimeDeps {
   /** Host seat lease override (tests); defaults to the host-wide Playwright seat lease. */
   seatLease?: PlaywrightSeatLease;
   allowedScopes?: string[]; tickMs?: number; maxAttempts?: number; retryBaseMs?: number;
+  /**
+   * Slow automatic retry of failed repairs while the incident stays open (spec
+   * relogin-unattended-agent-session-and-slow-retry). Absent ⇒ on, 6 h then 24 h, at most 3.
+   */
+  slowRetry?: { enabled?: boolean; delaysMs?: number[]; maxRetries?: number; quietHours?: { startHour: number; endHour: number } | null };
   unattendedPolicy?: {
     identities?: string[];
     minimumSuccessfulRepairs?: number;
@@ -115,9 +120,12 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
   const seatLease = deps.seatLease ?? new PlaywrightSeatLease({ now });
   const agentSession = deps.navigation === 'agent-session';
   if (agentSession && !deps.helperSession) throw new Error('relogin-agent-session-ports-missing');
-  // On the agent-session path approval is forced until graduation, whatever `mode` says: a
-  // trusted helper is never spawned unattended before the evidence exists.
-  const effectiveMode: SubscriptionReloginRuntimeDeps['mode'] = agentSession && deps.mode === 'unattended' ? 'approval' : deps.mode;
+  // Every navigation path honors the configured mode the same way (spec
+  // relogin-unattended-agent-session-and-slow-retry, superseding skill-driven-signin-repair's
+  // forced approval): `unattended` still starts without a tap ONLY for an account whose exact email
+  // is on `unattendedPolicy.identities` AND that clears the evidence floors — the admission policy
+  // holds everything else at `approval`.
+  const effectiveMode: SubscriptionReloginRuntimeDeps['mode'] = deps.mode;
   let serviceRef: SubscriptionReloginService | null = null;
   const authenticated = new Set<string>();
   const identityMismatches = new Map<string, string>();
@@ -234,6 +242,12 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // attempt (a dashboard link the auto-reissuer has been refreshing, or a prior attempt's), and
       // its cumulative reissueCount would be read as this episode's reissue budget — failing the
       // repair before the browser is ever driven. Nothing has been driven yet, so replacing it is safe.
+      // A new attempt forgets the previous attempt's login first, so a failed record below can never
+      // leave a stale value that would block this repair's retries.
+      if (episode.state === 'cli-starting') {
+        try { store.recordAttemptLogin(episode.id, null); }
+        catch { /* @silent-fallback-ok — a stale value only makes the retry defer, never wrong */ }
+      }
       if (login && episode.state === 'cli-starting' && login.status !== 'completed' && login.status !== 'abandoned') {
         deps.enrollment.abandon(login.id);
         login = null;
@@ -242,6 +256,11 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         login = await deps.enrollment.start({ id: acct.id, label: acct.nickname, provider: acct.provider,
           framework: acct.framework, configHome: acct.configHome, expectedEmail: acct.email,
           openBrowser: false });
+        // Only a login THIS attempt created is recorded as the repair's own (reissues keep createdAt).
+        if (login) {
+          try { store.recordAttemptLogin(episode.id, login.createdAt); }
+          catch { /* @silent-fallback-ok — without the record the slow retry simply never releases this login */ }
+        }
       } else if (login.status === 'expired') {
         login = await deps.enrollment.refresh(login.id);
       }
@@ -332,7 +351,28 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     if (!entryKey) return 'unknown';
     return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey }) ?? 'unknown';
   };
-  const admissionFor = (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode, currentEpisodeId?: string) => {
+  // Unattended runs may spend single-use Google backup codes; never run one unattended when the
+  // bound vault entry is nearly empty (spec relogin-unattended-agent-session-and-slow-retry).
+  const backupCodesLow = async (browserAccount: PlaywrightAccount | null): Promise<boolean> => {
+    const name = browserAccount?.vaultBindings?.backupCode;
+    if (!name) return false;
+    // On the agent-session path the helper types codes itself and nothing removes a spent code from
+    // the vault, so the stored count cannot be trusted there: such accounts never run unattended on
+    // that path (held at approval). The driver path removes each code before typing it.
+    if (agentSession) return true;
+    try {
+      // Read fresh at every admission (no cache): the count must reflect codes the last run took.
+      const count = countBackupCodes(await deps.resolveSecret(name));
+      // One run spends at most one code per drive and has at most `maxAttempts` drives, and every
+      // run (first attempt or slow retry) re-checks here: keep at least one code past a full run.
+      return count < unattendedBackupCodeFloor(deps.maxAttempts);
+    } catch {
+      return true; // @silent-fallback-ok — an unreadable code store holds the repair at approval (the safe direction)
+    }
+  };
+  const admissionFor = async (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode,
+    current?: Pick<SubscriptionReloginEpisode, 'id' | 'loginCreatedAt' | 'startedAt' | 'finishedAt'>) => {
+    const currentEpisodeId = current?.id;
     if (acct.framework === 'codex-cli' && deps.codexLiveReadAvailable === false)
       return { admitted: false, reason: 'codex-live-read-disabled' } as const;
     const { resolved, detail, browserAccount } = profileContext(acct);
@@ -341,12 +381,24 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       browserAccount?.loginMethod ?? null);
     const oldestSuccessAt = evidence.oldestSuccessAt === null ? null : Date.parse(evidence.oldestSuccessAt);
     const optedInIdentities = deps.unattendedPolicy?.identities ?? [];
+    const lowCodes = deps.mode === 'unattended' ? await backupCodesLow(browserAccount) : false;
+    // The repair's OWN leftover login (the one its failed attempt created; reissues keep createdAt)
+    // does not block its retry: the orchestrator replaces it at cli-starting, as for any attempt.
+    // Any other pending login (an operator's) still blocks.
+    const livePending = pending(acct.id);
+    const ownLeftover = !!livePending && isOwnLeftoverLogin(livePending.createdAt, current);
+    // A legacy row matched by its run window: pin the exact login now, because a re-offer clears the
+    // window (startedAt/finishedAt) and the later approval must still recognise its own login.
+    if (ownLeftover && current && !current.loginCreatedAt && livePending) {
+      try { store.recordAttemptLogin(current.id, livePending.createdAt); }
+      catch { /* @silent-fallback-ok — without the pin a later approval refuses and the retry is deferred, never wrong */ }
+    }
     return evaluateSubscriptionReloginAdmission({ configuredMode: effectiveMode,
       poolAuthority: deps.pool.getAvailability().state, account: { id: acct.id, machineId: deps.machineId,
         status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email) },
       sourceEpisode, hasLiveRepair: store.list({ accountId: acct.id, limit: 10 }).some((item) =>
         item.id !== currentEpisodeId && !['succeeded', 'refused', 'cancelled', 'failed'].includes(item.state)),
-      hasLivePendingLogin: pending(acct.id)?.status === 'pending',
+      hasLivePendingLogin: livePending?.status === 'pending' && !ownLeftover,
       profile: detail && browserAccount ? { id: detail.id, ambiguous: resolved.ambiguous === true,
         dirExists: detail.dirExists, dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
         loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs,
@@ -362,6 +414,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         unexpectedOrigins: evidence.unexpectedOrigins,
         minimumSuccessfulRepairs: deps.unattendedPolicy?.minimumSuccessfulRepairs,
         minimumEvidenceDays: deps.unattendedPolicy?.minimumEvidenceDays,
+        helperHardLines: evidence.helperHardLines,
+        backupCodesLow: lowCodes,
       } });
   };
   const scanCandidates = async () => {
@@ -370,7 +424,13 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     const candidates = [];
     for (const sourceEpisode of open) {
       const acct = deps.pool.get(sourceEpisode.accountId); if (!acct) continue;
-      const verdict = admissionFor(acct, sourceEpisode); if (!verdict.admitted) continue;
+      // The incident's own re-admittable row (`suggested` or `cancelled`) is not "another live
+      // repair": without this, a row whose inputs changed (e.g. its mode flipped to unattended) could
+      // never be re-admitted, and its stale digest would also refuse the operator's tap.
+      const own = store.list({ accountId: acct.id, limit: 100 }).find((item) =>
+        item.sourceEpisodeId === sourceEpisode.id && item.machineId === deps.machineId
+        && (item.state === 'suggested' || item.state === 'cancelled'));
+      const verdict = await admissionFor(acct, sourceEpisode, own); if (!verdict.admitted) continue;
       candidates.push({ sourceEpisodeId: sourceEpisode.id, accountId: acct.id, machineId: deps.machineId,
         mode: verdict.mode, inputDigest: verdict.inputDigest, profileId: verdict.profileId,
         framework: acct.framework, provider: acct.provider,
@@ -382,10 +442,14 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     revalidate: async (episode) => {
       const acct = account(episode); const sourceEpisode = source(episode);
       if (!acct || !sourceEpisode) return { admissible: false, reason: 'authority-row-missing' } as const;
-      const verdict = admissionFor(acct, sourceEpisode, episode.id);
-      return verdict.admitted ? { admissible: true, inputDigest: verdict.inputDigest } as const
+      const verdict = await admissionFor(acct, sourceEpisode, episode);
+      return verdict.admitted ? { admissible: true, inputDigest: verdict.inputDigest, mode: verdict.mode,
+        profileId: verdict.profileId, loginMethod: profileContext(acct).browserAccount?.loginMethod ?? null } as const
         : { admissible: false, reason: verdict.reason } as const;
-    }, onSuggested: deps.onSuggested, onTerminal: deps.onTerminal,
+    },
+    sourceIncidentOpen: (episode) => source(episode)?.closedAt === null,
+    slowRetry: deps.slowRetry,
+    onSuggested: deps.onSuggested, onTerminal: deps.onTerminal,
     onOperatorOnly: deps.onOperatorOnly, onPhoneTap: deps.onPhoneTap, tickMs: deps.tickMs, now,
     // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
     // credential's identity), and this process's latest poll was an authenticated read.
@@ -460,6 +524,31 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     } : {}),
     close: () => runtime.close(),
   };
+}
+
+/**
+ * Whether a pending login is this repair's own leftover. Exact match on the recorded `createdAt`;
+ * for a row from before that column existed (null), a login created inside the row's own run
+ * (`startedAt ≤ createdAt ≤ finishedAt`) — no other login can be created for the account while the
+ * repair's own one is pending.
+ */
+export function isOwnLeftoverLogin(loginCreatedAt: string,
+  current?: { loginCreatedAt?: string | null; startedAt?: string | null; finishedAt?: string | null }): boolean {
+  if (!current) return false;
+  if (current.loginCreatedAt) return loginCreatedAt === current.loginCreatedAt;
+  const created = Date.parse(loginCreatedAt);
+  const started = Date.parse(current.startedAt ?? '');
+  const finished = Date.parse(current.finishedAt ?? '');
+  return Number.isFinite(created) && Number.isFinite(started) && Number.isFinite(finished) && created >= started && created <= finished;
+}
+
+/** Fewest single-use backup codes an unattended run may start with: a full run's drives plus one. */
+export function unattendedBackupCodeFloor(maxAttempts?: number): number {
+  return Math.max(1, Math.min(5, Math.floor(maxAttempts ?? 3))) + 1;
+}
+/** Count 8-digit Google backup codes in a vault value (same shape as {@link takeFirstBackupCode}). */
+export function countBackupCodes(value: unknown): number {
+  return typeof value === 'string' ? (value.match(/\b\d{4}\s?\d{4}\b/g) ?? []).length : 0;
 }
 
 function normalize(value: string): string { return value.trim().toLowerCase(); }

@@ -114,6 +114,17 @@ describe('evaluateSubscriptionReloginAdmission', () => {
         minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
     }));
     expect(unsafeHistory).toMatchObject({ admitted: true, mode: 'approval', unattendedHeld: true });
+
+    // Spec relogin-unattended-agent-session-and-slow-retry: a helper-reported hard line since the
+    // last success, or a nearly empty backup-code entry, holds the repair at approval.
+    const floor = { explicitlyEnabled: true, successfulRepairs: 0, evidenceDays: 0, identityMismatches: 0,
+      unexpectedOrigins: 0, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 };
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, helperHardLines: 1 } }))).toMatchObject({ mode: 'approval', unattendedHeld: true });
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, backupCodesLow: true } }))).toMatchObject({ mode: 'approval', unattendedHeld: true });
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, helperHardLines: 0, backupCodesLow: false } }))).toMatchObject({ mode: 'unattended', unattendedHeld: false });
   });
 
   it('binds the approval digest to every action-authority coordinate', () => {

@@ -149,6 +149,19 @@ describe('SubscriptionReloginHelper.drive + submit', () => {
     expect(await drive).toEqual({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'agent-permission-screen-recording' });
   });
 
+  it('a reported hard line hands the repair to the operator (spec relogin-unattended-agent-session-and-slow-retry)', async () => {
+    for (const line of ['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site']) {
+      const h = harness();
+      const drive = h.helper.drive(input(), new AbortController().signal);
+      await waitForSpawn(h);
+      expect(h.helper.submit('ep-1', h.token(), { notify: 'hard-line', line })).toEqual({ status: 202, body: { accepted: true, notice: 'hard-line' } });
+      // A later report after the outcome is decided is refused, never falsely "accepted".
+      expect(h.helper.submit('ep-1', h.token(), { notify: 'phone-tap' })).toEqual({ status: 409, body: { error: 'already-settled' } });
+      // Every report is the same unverified class: never breaker / re-admission evidence.
+      expect(await drive).toEqual({ outcome: 'operator-only', failureClass: 'agent-hard-line', reason: `agent-hard-line-${line}` });
+    }
+  });
+
   it('abort (cancel) throws AbortError and still kills the helper and releases the seat', async () => {
     const h = harness();
     const controller = new AbortController();
@@ -200,11 +213,14 @@ describe('parseHelperBody (strict tagged union)', () => {
     for (const permission of ['screen-recording', 'accessibility', 'automation']) {
       expect(parseHelperBody({ notify: 'macos-permission', permission })).toEqual({ kind: 'macos-permission', permission });
     }
+    for (const line of ['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site']) {
+      expect(parseHelperBody({ notify: 'hard-line', line })).toEqual({ kind: 'hard-line', line });
+    }
   });
   it('refuses everything else', () => {
     for (const body of [null, [], 'code', {}, { code: 1 }, { code: '' }, { notify: 'other' }, { notify: 'phone-tap', x: 1 },
       { notify: 'macos-permission' }, { notify: 'macos-permission', permission: 'camera' }, { code: 'x', notify: 'phone-tap' },
-      { code: 'x'.repeat(600) }]) {
+      { code: 'x'.repeat(600) }, { notify: 'hard-line' }, { notify: 'hard-line', line: 'other' }, { notify: 'hard-line', line: 1 }]) {
       expect(parseHelperBody(body)).toBeNull();
     }
   });
@@ -221,5 +237,8 @@ describe('renderHelperPrompt', () => {
     expect(text).toContain('document.activeElement');
     expect(text).toContain('google_password_person'); // a vault NAME
     expect(text).toContain('The CLI login is ALREADY started');
+    expect(text).toContain('{"notify":"hard-line","line":"captcha"}');
+    expect(text).toContain('Try another way');
+    expect(text).toContain('SAME Chrome window');
   });
 });

@@ -209,6 +209,21 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Slow automatic retry of a failed sign-in repair (spec
+    // relogin-unattended-agent-session-and-slow-retry). Telemetry first: the durable per-incident
+    // cap (slowRetryCount ≤ 3) and the 6 h / 24 h delays bind it in code.
+    controllerId: 'subscription-relogin-redrive',
+    actionVerb: 'relogin-redrive',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 20,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 20, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Crash-loop respawn (amplifying) — distinct from respawn-recovery.
     controllerId: 'respawn-crashloop',
     actionVerb: 'session-respawn',
