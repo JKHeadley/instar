@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-15T00:59:38.874Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/PairingInvite.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only change to a pure module; no repeated action"
+  },
+  "verdict": "pass"
+}

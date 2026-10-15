@@ -7,6 +7,11 @@
  * compared by a human. This module has no I/O: encode/decode with a checksum, expiry, the
  * transcript both sides authenticate, the MAC key derived from S, the tag, and the optional
  * check code two operators on a call can read to each other.
+ *
+ * Consumers: PairingInviteFlow (the protocol, §4.3–§4.4), PairingInviteStore (the inviter's
+ * record), and the places that must recognise an invite without decoding it to keep its secret
+ * out of logs and sessions: PairingInviteTelegram, TelegramAdapter, MessageQueue and the
+ * dashboard (all via INVITE_PREFIX / findInviteToken).
  */
 
 import crypto from 'node:crypto';

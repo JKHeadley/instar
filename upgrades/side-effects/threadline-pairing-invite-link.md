@@ -175,6 +175,10 @@ Re-reading the spec against the build found a gap: §4.1 says `bind` is **set by
 Out of scope, filed separately: `lint-no-direct-destructive` fails open on an unreadable file.
 Evidence: the flow tests (+3: a third accept does not re-alarm or re-demote, the event lines on both sides with no secret or K at 0600, decline and Not-them recorded) and the production-path E2E (first-contact profiles left out of the picker). Breakages: 3 of 3 caught.
 
+## Gate record for step 1 (added 2026-10-14)
+
+The PR's decision-audit check found no gate record covering `src/threadline/PairingInvite.ts`. The step-1 commit was made while `core.hooksPath` pointed at a missing directory, so the instar-dev gate never ran on it (the same cause as the three hookless commits noted in the build plan). This adds a comment-only change to that file, naming its consumers, and runs it through the gate, so the record now exists. No behaviour changes.
+
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action` — closure **n/a** (negative declaration). The only repeated action this change adds is the finish send in `PairingInviteFlow.sendFinishWithRetry`. It starts only when an operator approves Finish, sends at most 5 times over about 10 minutes, and stops on the peer's ack. It is not self-triggered and cannot re-arm itself. Covered by `tests/unit/threadline/PairingInviteFlow.test.ts` ("finish retries are bounded (5)").
