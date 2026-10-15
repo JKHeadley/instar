@@ -358,6 +358,11 @@ export class UpdateChecker {
           if (migration.upgraded.length > 0) {
             migrationSummary = ` Intelligence download (fallback): ${migration.upgraded.length} files upgraded (${migration.upgraded.join(', ')}).`;
           }
+          // Same warnings channel as the primary path above — a migration-surfaced
+          // condition must not vanish just because the fallback migrator ran.
+          if (migration.errors && migration.errors.length > 0) {
+            migrationSummary += ` Migration warnings: ${migration.errors.join('; ')}.`;
+          }
         } catch (fallbackErr) {
           migrationSummary = ` Post-update migration failed: ${errMsg}.`;
         }

@@ -1,5 +1,7 @@
 /**
  * Multi-machine CLI commands.
+ * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
+ * `instar doctor` reports the "Project location" check.
  *
  * Commands:
  *   instar machines          — List paired machines and their roles
@@ -1255,6 +1257,28 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     }
   } catch (e) {
     checks.push({ name: 'Self-knowledge tree', status: 'warn', detail: e instanceof Error ? e.message : String(e) });
+  }
+
+  // 10. Project location — Avoid TCC-Protected Directories (docs/STANDARDS-REGISTRY.md).
+  //     On macOS an agent under ~/Documents, ~/Desktop, ~/Downloads or iCloud Drive
+  //     can lose its access grant at any moment, taking every agent in the process
+  //     tree down at once (2026-10-14). Report only; the doctor never moves anything.
+  try {
+    const { classifyTccProtectedPath, TCC_MOVE_RUNBOOK } = await import('../core/TccProtectedPathGuard.js');
+    const loc = classifyTccProtectedPath(config.projectDir);
+    if (loc.platform !== 'darwin') {
+      checks.push({ name: 'Project location', status: 'ok', detail: `${loc.realPath} (macOS protected-folder check not applicable on ${loc.platform})` });
+    } else if (loc.protected) {
+      checks.push({
+        name: 'Project location',
+        status: 'fail',
+        detail: `${loc.realPath} is under ~/${loc.zone} — macOS can withdraw access at any moment and every agent in this process tree dies at once. Move it: ${TCC_MOVE_RUNBOOK}`,
+      });
+    } else {
+      checks.push({ name: 'Project location', status: 'ok', detail: `${loc.realPath} (outside Documents/Desktop/Downloads/iCloud Drive)` });
+    }
+  } catch (e) {
+    checks.push({ name: 'Project location', status: 'warn', detail: `Could not classify: ${e instanceof Error ? e.message : String(e)}` });
   }
 
   // Print results

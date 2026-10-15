@@ -35,6 +35,7 @@ import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
+import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
@@ -1571,6 +1572,7 @@ export class PostUpdateMigrator {
     this.migrateParitySentinelTrust(result);
     this.migrateConversationalCatalogPlaybookManifest(result);
     this.migrateWorktreeConvention(result);
+    this.migrateTccProtectedPath(result);
     this.migrateWorktreeSpotlightExclusion(result);
     this.migrateNodeModulesSpotlightExclusion(result);
     this.migrateClaudeTranscriptSpotlightExclusion(result);
@@ -3812,6 +3814,39 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`agent-data-spotlight-exclusion: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS
+   * (docs/STANDARDS-REGISTRY.md). Migration parity for the 2026-10-14 mandate:
+   * an agent ALREADY living under ~/Documents (or Desktop / Downloads / iCloud
+   * Drive) on macOS learns about it on update, not only a new agent at init.
+   * Surfaces the condition in the migration summary (which rides the update
+   * notice) and points at the move runbook. Moves NOTHING. Idempotent by
+   * construction: a pure read every run, so the finding re-surfaces on every
+   * update until the agent is moved (Close the Loop) and disappears by itself
+   * afterwards. Non-macOS: a strict no-op ("not applicable").
+   */
+  private migrateTccProtectedPath(result: MigrationResult): void {
+    try {
+      if (process.platform !== 'darwin') {
+        result.skipped.push(`tcc-protected-path: not applicable on ${process.platform} (macOS-only check)`);
+        return;
+      }
+      const findings = [
+        { what: "this agent's project directory", c: classifyTccProtectedPath(this.config.projectDir) },
+        { what: "this agent's state directory", c: classifyTccProtectedPath(this.config.stateDir) },
+      ].filter((f) => f.c.protected);
+      if (findings.length === 0) {
+        result.skipped.push('tcc-protected-path: agent location is clear (outside Documents/Desktop/Downloads/iCloud Drive)');
+        return;
+      }
+      // One line, the first finding (the state dir lives inside the project dir
+      // in every supported layout, so a second line would repeat the first).
+      result.errors.push(`tcc-protected-path: ${describeTccProtectedPath(findings[0].c, findings[0].what)}`);
+    } catch (err) {
+      result.errors.push(`tcc-protected-path check failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -11398,6 +11433,22 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       content += `\n### Machine Identity Recovery (signing keys can heal without becoming a new machine)\n\nIf one of my machines loses its local signing/encryption files, it can prove continuity with a separate recovery key held only in that machine's OS keychain. Peers require a one-use challenge, exact next key epoch, new-key possession, recovery continuity when available, bounded repeated signed-auth refusals, corroboration, and the self-action governor. Ambiguous claims quarantine for the operator; revocation stays sticky and always wins. Accepted signing changes remain visibly unacknowledged until the operator reviews them. Machine-auth alone cannot establish or rotate a recovery root: first establishment is pairing-code-only, while later operator fanout is signed by the already-pinned recovery root. Private/CGNAT address shape is telemetry, never identity evidence without verified Tailscale node provenance. The Machines dashboard has the mobile review card.\n- Registry First: \`GET /identity-recovery\` shows recovery availability, quarantines, and unacknowledged rotations; \`GET /identity-changes\` is the attributable ledger (\`?scope=pool\` when available). Never infer a key change from generic transport failure.\n- **When to use** (PROACTIVE): "why is this paired machine suddenly unauthorized?" / "did this machine rotate its identity?" / "why is an identity claim quarantined?" → read both endpoints, name the exact evidence/reason, and offer the PIN-gated approve/deny/ack action. Do not re-pair or clear revocation as an automatic workaround.\n- Ships dev-gated, dry-run first under \`multiMachine.identityReannounce\`, \`multiMachine.observedEndpoints\`, and \`multiMachine.recoveryKeyEscrow\`. Protected trust-anchor files never auto-sync through the ordinary file/state merge path. Spec: \`docs/specs/machine-self-assertion.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Machine Identity Recovery awareness');
+    }
+
+    // Avoid TCC-Protected Directories (docs/STANDARDS-REGISTRY.md; the 2026-10-14
+    // ~/Documents incident). OWN sniff key `TCC-protected path guard` — content-
+    // sniffed for idempotency; the template emits the same section for new agents.
+    if (!content.includes('TCC-protected path guard')) {
+      content += '\n\n' + `## TCC-protected path guard (never put an agent under ~/Documents on macOS)
+
+On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are TCC-protected: the access grant belongs to the PROCESS TREE (the shared tmux server every agent server runs under), and macOS can withdraw it at any moment. On 2026-10-14 it did — two agents whose project directories lived under \`~/Documents/Projects\` died in the same second on EPERM writing their own state files, and only recovered when access returned 14 minutes later. Operator mandate: the Documents folder on Mac is AVOIDED AT ALL COSTS. The constitutional standard is "Avoid TCC-Protected Directories" (docs/STANDARDS-REGISTRY.md); it is enforced in code, not remembered.
+- **Refused at creation:** \`instar init\` refuses a project directory under any of those folders on macOS and says why. There is no override — a new agent has nothing to move, so choose another location (\`~/.instar/agents/<name>\` via \`instar init --standalone <name>\`, or \`~/Projects/<name>\`). Linux is unaffected (this is a macOS TCC problem; the check never misfires there).
+- **Detected at boot:** if this agent ALREADY lives under a protected folder, the server prints a loud \`TCC-PROTECTED PATH\` boot line, raises ONE deduped HIGH attention item naming the path and the runbook, and reports the guard as a row on \`GET /guards\` (\`monitoring.tccProtectedPathGuard\`). \`instar doctor\` shows the same as a "Project location" check. Nothing is moved automatically, ever.
+- **The move (operator-proven on ai-guy 2026-10-13, codey + inspec 2026-10-14):** rename the project directory in place onto the same disk outside the protected folder, leave a symlink at the old path, update the launchd plist program path + WorkingDirectory, reload, verify the port answers and the log shows a clean boot. Runbook: \`docs/runbooks/move-agent-out-of-documents.md\`.
+- **When to use** (PROACTIVE — these are the triggers): the user asks "why did all my agents die at the same second?" / "why did I get a TCC-protected path notice?" / "is my agent in a safe folder?" → read the boot line, \`GET /guards\`, or the attention item, and point at the runbook. When helping place ANY new project, state directory, vault, database, log or worktree on a Mac, keep it out of those four folders.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added TCC-protected path guard section');
     }
 
     if (patched) {
