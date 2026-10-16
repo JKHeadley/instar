@@ -121,6 +121,7 @@ Round 2: "Concur with the review. The four earlier gaps are now closed and match
 - `tests/unit/subscription-relogin-slow-retry.test.ts`, `tests/unit/subscription-relogin-helper.test.ts`, `tests/unit/subscriptions-render.test.ts`, `tests/unit/PostUpdateMigrator-assistedRelogin.test.ts`, `tests/unit/self-action-convergence.test.ts`
 - `tests/integration/subscription-relogin-agent-session.test.ts` (the leftover-login blocker was reproduced by this suite before the release was added)
 - `tests/e2e/subscription-relogin-agent-session-lifecycle.test.ts`
+- Time-of-day determinism: the integration and e2e harnesses turn quiet hours off by default (they advance a real clock by hours); quiet hours are covered on purpose with a pinned local clock (unit: 17:00 start; integration: a re-offer due at 01:00 local waits until 08:00). Relogin unit, integration and e2e files verified under TZ=UTC, America/Los_Angeles and Asia/Tokyo.
 
 ---
 

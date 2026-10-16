@@ -218,6 +218,7 @@ describe('agent-session repair honors unattended mode and retries slowly (produc
     });
     const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root, machineId: 'machine-1', mode: 'unattended',
       unattendedPolicy: { identities: opts.identities, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+      slowRetry: { quietHours: null }, // never depend on the wall-clock time of day
       pool, ledger, enrollment, profiles, now,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now()).toISOString() })) } as any,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: 'person@example.test' })) } as any,

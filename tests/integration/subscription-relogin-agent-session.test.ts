@@ -39,7 +39,9 @@ const CODE = 'c'.repeat(30) + '#' + 'd'.repeat(30);
 function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mode?: 'approval' | 'unattended';
   codexCli?: 'signed-in' | 'signed-out'; codexSource?: 'codex-app-server' | 'codex-rollout'; helperPostsCode?: boolean;
   brokenFramework?: 'claude-code' | 'codex-cli'; codexLiveReadAvailable?: boolean; identities?: string[];
-  offsetMs?: { value: number }; hardLine?: string; backupCodes?: string } = {}) {
+  offsetMs?: { value: number }; hardLine?: string; backupCodes?: string;
+  /** Quiet hours for approval re-offers. Tests default to OFF so they never depend on the wall-clock time of day. */
+  quietHours?: { startHour: number; endHour: number } | null } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-')); dirs.push(stateDir);
   const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
   const accounts = new Map<string, SubscriptionAccount>();
@@ -99,6 +101,7 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   const kill = vi.fn((tmuxSession: string) => { tmux.set(tmuxSession, false); });
   runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1', mode: opts.mode ?? 'approval',
     unattendedPolicy: { identities: opts.identities ?? [broken.email], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
+    slowRetry: { quietHours: opts.quietHours === undefined ? null : opts.quietHours },
     ...(opts.offsetMs ? { now: () => Date.now() + opts.offsetMs!.value } : {}),
     pool, ledger, enrollment, profiles,
     quotaPoller: { pollAccount, loginCheck: (id: string) => loginChecks.get(id) ?? 'unavailable' } as unknown as QuotaPoller,
@@ -302,6 +305,29 @@ describe('agent-session sign-in repair runtime', () => {
     expect(w.runtime.store.get(id)).toMatchObject({ state: 'suggested', slowRetryCount: 1 });
     expect(w.runtime.store.get(id)!.loginCreatedAt).not.toBeNull(); // pinned before the window was cleared
     await expect(w.runtime.service.approve(id)).resolves.toMatchObject({ state: 'approved' });
+    w.runtime.close();
+  });
+
+  it('quiet hours (on purpose, pinned clock): a re-offer due at 01:00 local waits until 08:00 local', async () => {
+    const clock = { value: 0 };
+    const w = world({ mode: 'approval', helperPostsCode: false, offsetMs: clock, quietHours: { startHour: 23, endHour: 8 } });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await w.runtime.service.approve(id);
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await w.runtime.service.tick();
+    const due = Date.parse(w.runtime.store.get(id)!.nextAttemptAt!);
+    // Pin "now" to 01:00 local on the day after the due time (always past due, always inside the window).
+    const night = new Date(due); night.setDate(night.getDate() + 1); night.setHours(1, 0, 0, 0);
+    clock.value = night.getTime() - Date.now();
+    await w.runtime.service.tick();
+    const held = w.runtime.store.get(id)!;
+    expect(held).toMatchObject({ state: 'failed', slowRetryCount: 0 });
+    expect(new Date(held.nextAttemptAt!).getHours()).toBe(8);
+    // At 08:00 + 1 min local it is re-offered.
+    clock.value = Date.parse(held.nextAttemptAt!) + 60_000 - Date.now();
+    await w.runtime.service.tick();
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'suggested', slowRetryCount: 1 });
     w.runtime.close();
   });
 
