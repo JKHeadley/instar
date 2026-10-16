@@ -15381,10 +15381,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
-    // Jev correction-detector shadow (docs/specs/jev-correction-shadow.md) — log-only:
-    // asks Jev whether each inbound user message is a correction or a standing
+    // Jev correction-detector shadow (docs/specs/jev-correction-shadow.md): asks
+    // Jev whether each inbound user message is a correction or a standing
     // preference and logs it beside the Layer-0 verdict the Correction & Preference
-    // Learning Sentinel gates on. Changes nothing the sentinel records. Dev-gated
+    // Learning Sentinel gates on. Its live feed (docs/specs/jev-correction-live.md)
+    // is wired by the sentinel block below via setSentinelFeed. Dev-gated
     // (live on a development agent, dark on the fleet), read live per message,
     // inert without the vault typesafe_api_key. Chained, never replacing.
     if (telegram) {
@@ -15398,6 +15399,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           developmentAgent: config.developmentAgent === true,
           readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
           layer0: (text) => HumanAsDetectorLog.getInstance().classify(text),
+          agentName: config.projectName,
           stateDir: config.stateDir,
           metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
         });
@@ -15880,7 +15882,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Audit sink — one structured line per capture decision. The rollout
             // evidence filter keys on `correction-loop` in this file.
             const correctionAuditPath = path.join(config.stateDir, 'logs', 'correction-learning-audit.jsonl');
-            const correctionAudit = (event: { decision: string; topicId: number | null; detail?: string }) => {
+            const correctionAudit = (event: { decision: string; topicId: number | null; detail?: string; trigger?: 'jev' }) => {
               try {
                 fs.mkdirSync(path.dirname(correctionAuditPath), { recursive: true });
                 fs.appendFileSync(
@@ -16005,6 +16007,48 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (decision === 'recorded' || decision === 'noise') maybeDrainBacklog();
               }).catch(() => { /* @silent-fallback-ok — capture is fail-open */ });
             };
+
+            // Jev live input (docs/specs/jev-correction-live.md): a correction or
+            // standing preference Jev flagged and Layer 0 missed arrives here,
+            // after the turn was already pushed above, and is distilled from the
+            // window as it stood at that message. Same distill, rate ceiling,
+            // shedding, backlog and ledger as a Layer-0 signal; the occurrence
+            // carries the minimum Layer-0 weight so the unchanged recurrence gate
+            // can count it. Gated (dev-gate + kill switch) inside the shadow.
+            {
+              const { getJevCorrectionShadow } = await import('../core/JevCorrectionShadow.js');
+              const { LEARNING_DETERMINISTIC_THRESHOLD } = await import('../monitoring/HumanAsDetectorLog.js');
+              const { windowEndingAt } = await import('../monitoring/CorrectionCaptureLoop.js');
+              getJevCorrectionShadow()?.setSentinelFeed((signal) => {
+                void captureAndDistill(
+                  {
+                    ring,
+                    ledger: correctionLedger,
+                    distill: correctionDistill,
+                    shouldShed: () => {
+                      const r = quotaTracker?.getRecommendation();
+                      return r === 'critical' || r === 'stop';
+                    },
+                    rateCeiling: { maxPerWindow: cl.distillPerTopicRatePerMinute ?? 8, windowMs: 60_000 },
+                    backlog: captureBacklog,
+                    audit: (e) => correctionAudit({ ...e, trigger: 'jev' }),
+                    onRecorded: (record) => recordCorrectionClassReview?.(record),
+                  },
+                  {
+                    topicId: signal.topicId,
+                    text: signal.text,
+                    fromUser: true,
+                    sessionId: signal.sessionName,
+                    deterministicWeight: LEARNING_DETERMINISTIC_THRESHOLD,
+                    isLearningSignal: true,
+                    window: windowEndingAt(ring, signal.topicId, signal.text),
+                  },
+                  rateState,
+                ).then((decision) => {
+                  if (decision === 'recorded' || decision === 'noise') maybeDrainBacklog();
+                }).catch(() => { /* @silent-fallback-ok — capture is fail-open */ });
+              });
+            }
 
             // Belt-and-suspenders periodic tick: even with no live captures, a
             // throttle that has since lifted gets drained. Bounded + off-hot-path

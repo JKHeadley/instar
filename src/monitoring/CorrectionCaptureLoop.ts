@@ -117,6 +117,21 @@ export class CaptureRing {
   }
 }
 
+/**
+ * The window as it stood when `text` (a user turn) was captured: the ring cut
+ * just after the LAST user turn with that exact text, so turns that arrived
+ * while a later signal was being computed (e.g. the agent's reply) are not
+ * distilled as if they preceded it. Falls back to that one turn alone when the
+ * ring no longer holds it (evicted, or the sentinel came up after it).
+ */
+export function windowEndingAt(ring: CaptureRing, topicId: number, text: string, now: number = Date.now()): CaptureTurn[] {
+  const turns = ring.window(topicId);
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].fromUser && turns[i].text === text) return turns.slice(0, i + 1);
+  }
+  return [{ text, fromUser: true, at: now }];
+}
+
 // ── Distillation prompt + envelope ──────────────────────────────────────
 
 /** The strict JSON envelope the distiller must return. */
@@ -312,6 +327,12 @@ export async function captureAndDistill(
     sessionId?: string | null;
     deterministicWeight: number;
     isLearningSignal: boolean;
+    /**
+     * A window already captured on the seam (the Jev live feed, which arrives
+     * after the turn was pushed). When given, the ring is NOT pushed again and
+     * this window is distilled as-is.
+     */
+    window?: CaptureTurn[];
   },
   rateState?: CaptureRateState,
 ): Promise<CaptureDecision> {
@@ -325,7 +346,7 @@ export async function captureAndDistill(
     // Always push the turn (user OR agent) so the window carries the agent's
     // apology/concession turns marked fromUser=false for the prompt's
     // "derive from a user turn only" rule.
-    const window = deps.ring.push(input.topicId, {
+    const window = input.window ?? deps.ring.push(input.topicId, {
       text: input.text || '',
       fromUser: !!input.fromUser,
       at: now(),

@@ -15,6 +15,7 @@ import {
   renderCorrectionState,
   correctionQuestions,
   summarizeCorrectionLog,
+  feedExclusion,
   CORRECTION_MODEL,
   CORRECTION_CRITERIA,
   MAX_TOPICS,
@@ -385,7 +386,7 @@ describe('summary', () => {
     fs.writeFileSync(logPath, rows.map((r) => JSON.stringify(r)).join('\n') + '\n{torn');
     expect(summarizeCorrectionLog(logPath, true)).toEqual({
       enabled: true, since: '2026-10-05T01:00:00Z', checks: 4, jevFlags: 2, layer0Signals: 2, both: 1, jevOnly: 1, layer0Only: 1,
-      agreement: 0.5, labels: { correction: 1, preference: 1, neither: 2 }, orderFlips: 1, skipped: { timeout: 1 },
+      agreement: 0.5, labels: { correction: 1, preference: 1, neither: 2 }, orderFlips: 1, skipped: { timeout: 1 }, fed: 0, feedSkipped: {},
     });
   });
 
@@ -432,5 +433,129 @@ describe('production factory — dev gate both sides, live config', () => {
     await b.shadow.lastCheck;
     expect(b.fetchImpl).not.toHaveBeenCalled();
     expect(b.shadow.summary().enabled).toBe(false);
+  });
+});
+
+describe('live feed into the correction sentinel (jev-correction-live.md)', () => {
+  const PREF = { correction: 0.1, preference: 0.7, neither: 0.2, cannot_tell: 0 };
+  const PLAIN = 'Quality matters more than speed for this work, keep that in mind going forward.';
+
+  function feedMake(cfg: Record<string, unknown>, p: Record<string, number> = PREF) {
+    const m = make({ getConfig: () => ({ enabled: true, ...cfg }), agentName: 'echo' }, p);
+    const feed = vi.fn();
+    m.shadow.setSentinelFeed(feed);
+    return { ...m, feed };
+  }
+
+  it('hands a Jev-only flag to the sentinel with the raw text, topic, message id and session', async () => {
+    const m = feedMake({ feedSentinel: true });
+    expect(realLayer0(PLAIN)?.learningKind ?? null).toBeNull(); // Layer 0 misses it
+    m.shadow.observe({ ...USER, text: PLAIN, sessionName: 'echo-desk' });
+    await m.shadow.lastCheck;
+    expect(m.feed).toHaveBeenCalledTimes(1);
+    expect(m.feed.mock.calls[0][0]).toMatchObject({ topicId: 7, messageId: 101, text: PLAIN, sessionName: 'echo-desk', pPreference: 0.7 });
+    expect(m.rows()[0]).toMatchObject({ kind: 'check', jevFlag: true, fed: 'fed' });
+    expect(JSON.stringify(m.rows()[0])).not.toContain('Quality');
+    expect(m.shadow.summary()).toMatchObject({ fed: 1, feedSkipped: {} });
+  });
+
+  it('does not feed when the feed is off (omitted or false): the row carries no fed field', async () => {
+    for (const cfg of [{}, { feedSentinel: false }]) {
+      const m = feedMake(cfg);
+      m.shadow.observe({ ...USER, text: PLAIN });
+      await m.shadow.lastCheck;
+      expect(m.feed).not.toHaveBeenCalled();
+      expect(m.rows()[0].fed).toBeUndefined();
+    }
+  });
+
+  it('kill switch is read live: flipping feedSentinel to false stops the next feed', async () => {
+    let feedSentinel = true;
+    const m = make({ getConfig: () => ({ enabled: true, feedSentinel }), agentName: 'echo' }, PREF);
+    const feed = vi.fn();
+    m.shadow.setSentinelFeed(feed);
+    m.shadow.observe({ ...USER, text: PLAIN });
+    await m.shadow.lastCheck;
+    feedSentinel = false;
+    m.shadow.observe({ ...USER, messageId: 102, text: PLAIN });
+    await m.shadow.lastCheck;
+    expect(feed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not feed a message Layer 0 already marked (the sentinel distils those itself)', async () => {
+    const text = 'From now on, always run the full test suite before pushing.';
+    expect(realLayer0(text)?.learningKind).not.toBeNull();
+    const m = feedMake({ feedSentinel: true });
+    m.shadow.observe({ ...USER, text });
+    await m.shadow.lastCheck;
+    expect(m.feed).not.toHaveBeenCalled();
+    expect(m.rows()[0].fed).toBeUndefined();
+  });
+
+  it('does not feed below the confidence line', async () => {
+    const m = feedMake({ feedSentinel: true }, { correction: 0.2, preference: 0.29, neither: 0.51, cannot_tell: 0 });
+    m.shadow.observe({ ...USER, text: PLAIN });
+    await m.shadow.lastCheck;
+    expect(m.feed).not.toHaveBeenCalled();
+  });
+
+  it('excludes desk notes that open "From <agent>" and records why', async () => {
+    const m = feedMake({ feedSentinel: true });
+    m.shadow.observe({ ...USER, text: 'From Echo (observer), correction to my last note: do not leave the admission open.' });
+    await m.shadow.lastCheck;
+    expect(m.feed).not.toHaveBeenCalled();
+    expect(m.rows()[0]).toMatchObject({ jevFlag: true, fed: 'excluded-agent-prefix' });
+    expect(m.shadow.summary().feedSkipped).toEqual({ 'excluded-agent-prefix': 1 });
+  });
+
+  it('excludes agent-signed messages', async () => {
+    const m = feedMake({ feedSentinel: true });
+    const signed = `${PLAIN}\n\u27e6asp1 a=dawn t=7 ts=1760000000 n=abc s=${'A'.repeat(86)}\u27e7`;
+    m.shadow.observe({ ...USER, text: signed });
+    await m.shadow.lastCheck;
+    expect(m.feed).not.toHaveBeenCalled();
+    expect(m.rows()[0].fed).toBe('excluded-signed');
+  });
+
+  it('records no-sentinel when nothing is wired, no-topic without a topic, feed-error when the sink throws', async () => {
+    const a = make({ getConfig: () => ({ enabled: true, feedSentinel: true }), agentName: 'echo' }, PREF);
+    a.shadow.observe({ ...USER, text: PLAIN });
+    await a.shadow.lastCheck;
+    expect(a.rows()[0].fed).toBe('no-sentinel');
+
+    const b = feedMake({ feedSentinel: true });
+    b.shadow.observe({ ...USER, topicId: null, text: PLAIN });
+    await b.shadow.lastCheck;
+    expect(b.rows()[0].fed).toBe('no-topic');
+
+    const c = feedMake({ feedSentinel: true });
+    c.shadow.setSentinelFeed(() => { throw new Error('boom'); });
+    c.shadow.observe({ ...USER, text: PLAIN });
+    await c.shadow.lastCheck;
+    expect(c.rows()[0].fed).toBe('feed-error');
+  });
+
+  it('feedExclusion: both sides of each boundary', () => {
+    expect(feedExclusion('From Echo (the check-in), not from Justin: rule 77', 'echo')).toBe('agent-prefix');
+    expect(feedExclusion('  **From echo:** note', 'echo')).toBe('agent-prefix');
+    expect(feedExclusion('From Echoes of the past, a thought', 'echo')).toBeNull();
+    expect(feedExclusion('I got a message from Echo saying it was done, but it was wrong', 'echo')).toBeNull();
+    expect(feedExclusion('From Echo: note', null)).toBeNull();
+    expect(feedExclusion('hello \u27e6asp1 a=x', 'echo')).toBe('signed');
+    expect(feedExclusion('No, that is wrong.', 'echo')).toBeNull();
+  });
+
+  it('factory: feedSentinel follows the dev gate, explicit false wins', () => {
+    const mk = (block: Record<string, unknown>, dev: boolean) => buildJevCorrectionShadow({
+      readLiveIntelligence: () => ({ jevCorrectionShadow: block }),
+      developmentAgent: dev,
+      readSecret: () => null,
+      layer0: realLayer0,
+      stateDir: path.dirname(path.dirname(tmpLog())),
+    }) as unknown as { deps: JevCorrectionShadowDeps };
+    expect(mk({}, true).deps.getConfig()?.feedSentinel).toBe(true);
+    expect(mk({}, false).deps.getConfig()?.feedSentinel).toBe(false);
+    expect(mk({ feedSentinel: false }, true).deps.getConfig()?.feedSentinel).toBe(false);
+    expect(mk({ feedSentinel: true }, false).deps.getConfig()?.feedSentinel).toBe(true);
   });
 });

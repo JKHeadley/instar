@@ -6,10 +6,16 @@
  *
  * Spec: docs/specs/jev-correction-shadow.md
  *
+ * Live input (docs/specs/jev-correction-live.md): when `feedSentinel` resolves
+ * on, a Jev flag that Layer 0 missed is handed to the sentinel's capture path as
+ * a learning signal — except a "From <agent>" desk note or an agent-signed
+ * message. The sentinel's own distill, ledger and recurrence gate still decide
+ * whether it becomes a learning; this module never writes a record itself.
+ *
  * CONTRACT (the whole reason this is safe to ship):
- *   - It changes NOTHING the sentinel records. It writes one content-free row
- *     per inbound user message to a JSONL log; nothing reads that log on any
- *     decision path; a read route summarises it for people.
+ *   - It writes one content-free row per inbound user message to a JSONL log;
+ *     nothing reads that log on any decision path; a read route summarises it
+ *     for people. The only path into the sentinel is the live feed above.
  *   - It is never awaited on the message seam. `observe()` is synchronous and
  *     cheap; for a user message a detached check secret-scrubs the message
  *     (plus the tail of the agent's previous message as context) and asks Jev
@@ -25,6 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { scrubForStore } from './durableSecretScrub.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
+import { splitTag } from './agentSignatureProvenance.js';
 
 export const JEV_CORRECTION_FEATURE = 'jev-correction-shadow';
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
@@ -111,6 +118,13 @@ export function renderCorrectionState(userText: string, prevAgentText: string): 
 
 export interface JevCorrectionShadowConfig {
   enabled?: boolean;
+  /**
+   * Live input (docs/specs/jev-correction-live.md): a Jev-only flag is handed to
+   * the Correction & Preference Learning Sentinel as a learning signal. Omitted ⇒
+   * dev gate (live on a development agent, dark on the fleet); explicit false is
+   * the kill switch, read live. Inert while `enabled` is off.
+   */
+  feedSentinel?: boolean;
   model?: string;
   timeoutMs?: number;
   maxChecksPerDay?: number;
@@ -152,8 +166,55 @@ export type CorrectionRow =
       layer0: Layer0Verdict;
       agree: boolean;
       ms: number;
+      /** Live-feed outcome for a Jev-only flag (absent when the feed is off). */
+      fed?: FeedOutcome;
     }
   | { kind: 'skipped'; ts: string; topic: number | null; reason: CorrectionSkipReason };
+
+/**
+ * What happened to a Jev-only flag when the live feed is on (closed set,
+ * content-free). Absent on a row when the feed is off or the row is not a
+ * Jev-only flag.
+ */
+export type FeedOutcome =
+  | 'fed'
+  | 'excluded-agent-prefix'
+  | 'excluded-signed'
+  | 'no-topic'
+  | 'no-sentinel'
+  | 'feed-error';
+
+/** A Jev-only flag handed to the sentinel. Text is the raw message; the sentinel scrubs before its own LLM call. */
+export interface JevCorrectionSignal {
+  topicId: number;
+  messageId: number | null;
+  text: string;
+  sessionName: string | null;
+  pCorrection: number;
+  pPreference: number;
+}
+export type SentinelFeed = (signal: JevCorrectionSignal) => void;
+
+function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/**
+ * Why a message must NOT be fed to the sentinel even though it arrived on the
+ * operator's account. Pure.
+ *   - `agent-prefix`: it opens "From <agent name>" — a note this agent's own
+ *     desk/observer sessions posted through the operator's login (7 of the 40
+ *     Jev-only flags in the 2026-10 evidence).
+ *   - `signed`: it carries an agent-signature tag shape (any agent wrote it,
+ *     verified or not).
+ */
+export function feedExclusion(text: string, agentName: string | null | undefined): 'agent-prefix' | 'signed' | null {
+  try {
+    if (splitTag(text).hadTagShape) return 'signed';
+  } catch { /* @silent-fallback-ok — an unparseable tag shape is treated as signed below by the marker check */ }
+  if (text.includes('\u27e6asp1 ')) return 'signed';
+  const name = (agentName ?? '').trim();
+  if (name && new RegExp(`^[\\s>*_~\`"'“]*from\\s+${escapeRe(name)}\\b`, 'i').test(text)) return 'agent-prefix';
+  return null;
+}
 
 export interface InboundEntry {
   topicId?: number | null;
@@ -161,6 +222,7 @@ export interface InboundEntry {
   text?: string | null;
   fromUser?: boolean;
   provenance?: string;
+  sessionName?: string | null;
 }
 
 export interface JevCorrectionShadowDeps {
@@ -170,6 +232,8 @@ export interface JevCorrectionShadowDeps {
   /** The sentinel's own Layer-0 classifier (HumanAsDetectorLog.classify). */
   layer0: (text: string) => { learningKind: 'preference' | 'frustration' | null; deterministicWeight: number } | null;
   logPath: string;
+  /** This agent's name, for the "From <agent>" desk-note exclusion. */
+  agentName?: string | null;
   metrics?: { record(r: Record<string, unknown>): void } | null;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -188,6 +252,7 @@ export class JevCorrectionShadow {
   private day = '';
   private dayCalls = 0;
   private capNotedDay = '';
+  private sentinelFeed: SentinelFeed | null = null;
   /** Test seam: resolves when the most recent detached check settles. */
   lastCheck: Promise<void> = Promise.resolve();
 
@@ -197,6 +262,9 @@ export class JevCorrectionShadow {
   }
 
   private now(): number { return (this.deps.now ?? Date.now)(); }
+
+  /** server.ts wires the sentinel's capture path here once the sentinel is constructed; null unwires. */
+  setSentinelFeed(feed: SentinelFeed | null): void { this.sentinelFeed = feed; }
 
   private refreshKey(): void {
     this.keyReadAt = this.now();
@@ -226,10 +294,11 @@ export class JevCorrectionShadow {
       }
       const prev = topic === null ? '' : this.lastAgent.get(topic) ?? '';
       const messageId = typeof entry.messageId === 'number' && Number.isFinite(entry.messageId) ? entry.messageId : null;
+      const sessionName = typeof entry.sessionName === 'string' && entry.sessionName ? entry.sessionName : null;
       // Deferred to a later turn: nothing of the check (vault read, cap seed,
       // scrub, Layer 0) runs inside the message-logging call stack.
       this.lastCheck = new Promise<void>((resolve) => setImmediate(resolve))
-        .then(() => this.check(topic, messageId, text, prev, cfg))
+        .then(() => this.check(topic, messageId, text, prev, cfg, sessionName))
         .catch(() => {
           /* @silent-fallback-ok — check() records its own reason rows; a throw here only means a row write failed */
         });
@@ -252,7 +321,7 @@ export class JevCorrectionShadow {
     }
   }
 
-  private async check(topic: number | null, messageId: number | null, text: string, prev: string, cfg: JevCorrectionShadowConfig): Promise<void> {
+  private async check(topic: number | null, messageId: number | null, text: string, prev: string, cfg: JevCorrectionShadowConfig, sessionName: string | null = null): Promise<void> {
     if (!this.cachedKey && this.now() - this.keyReadAt >= KEY_REREAD_MS) { this.refreshKey(); this.keyNoted = false; }
     if (!this.cachedKey) {
       if (!this.keyNoted) { this.keyNoted = true; this.skip(topic, 'disabled-no-key'); }
@@ -311,6 +380,12 @@ export class JevCorrectionShadow {
       const rev = readChoice(json.answers?.kind_rev);
       const jevFlag = (fwd.p.correction ?? 0) + (fwd.p.preference ?? 0) >= CORRECTION_THRESHOLD;
       outcome = jevFlag ? 'fired' : 'noop';
+      const pCorrection = fwd.p.correction ?? 0;
+      const pPreference = fwd.p.preference ?? 0;
+      // Live input: only a flag Layer 0 missed (a Layer-0 signal is already distilled by the sentinel).
+      const fed = jevFlag && !layer0.signal && cfg.feedSentinel === true
+        ? this.feed({ topicId: topic, messageId, text, sessionName, pCorrection, pPreference })
+        : undefined;
       this.write({
         kind: 'check',
         ts: new Date(t0).toISOString(),
@@ -320,8 +395,8 @@ export class JevCorrectionShadow {
         hadContext: prev.length > 0,
         label: fwd.label,
         confidence: fwd.confidence,
-        pCorrection: fwd.p.correction ?? 0,
-        pPreference: fwd.p.preference ?? 0,
+        pCorrection,
+        pPreference,
         pNeither: fwd.p.neither ?? 0,
         pCannotTell: fwd.p.cannot_tell ?? 0,
         ...(rev ? { labelRev: rev.label } : {}),
@@ -329,6 +404,7 @@ export class JevCorrectionShadow {
         layer0,
         agree: jevFlag === layer0.signal,
         ms: this.now() - t0,
+        ...(fed ? { fed } : {}),
       });
     } catch (err) {
       return this.skip(topic, (err as Error)?.name === 'AbortError' ? 'timeout' : 'http-error');
@@ -347,6 +423,22 @@ export class JevCorrectionShadow {
           framework: 'typesafe-api',
         });
       } catch { /* @silent-fallback-ok — metering must never break the instrument */ }
+    }
+  }
+
+  private feed(s: Omit<JevCorrectionSignal, 'topicId'> & { topicId: number | null }): FeedOutcome {
+    const excluded = feedExclusion(s.text, this.deps.agentName);
+    if (excluded === 'agent-prefix') return 'excluded-agent-prefix';
+    if (excluded === 'signed') return 'excluded-signed';
+    if (s.topicId === null) return 'no-topic';
+    const sink = this.sentinelFeed;
+    if (!sink) return 'no-sentinel';
+    try {
+      sink({ ...s, topicId: s.topicId });
+      return 'fed';
+    } catch {
+      // @silent-fallback-ok — the sentinel's own capture is fail-open; a throw is recorded as feed-error on the row.
+      return 'feed-error';
     }
   }
 
@@ -430,12 +522,16 @@ export interface CorrectionSummary {
   /** Checks whose reverse-order label differs from the forward one. */
   orderFlips: number;
   skipped: Record<string, number>;
+  /** Jev-only flags handed to the sentinel (live feed). */
+  fed: number;
+  /** Jev-only flags the live feed did not hand on, by reason. */
+  feedSkipped: Record<string, number>;
 }
 
 export function summarizeCorrectionLog(logPath: string, enabled: boolean): CorrectionSummary {
   const out: CorrectionSummary = {
     enabled, since: null, checks: 0, jevFlags: 0, layer0Signals: 0, both: 0, jevOnly: 0, layer0Only: 0,
-    agreement: null, labels: {}, orderFlips: 0, skipped: {},
+    agreement: null, labels: {}, orderFlips: 0, skipped: {}, fed: 0, feedSkipped: {},
   };
   let agree = 0;
   for (const r of readRows(logPath)) {
@@ -451,6 +547,8 @@ export function summarizeCorrectionLog(logPath: string, enabled: boolean): Corre
     else if (l0) out.layer0Only++;
     if (r.agree) agree++;
     if (r.labelRev && r.labelRev !== r.label) out.orderFlips++;
+    if (r.fed === 'fed') out.fed++;
+    else if (r.fed) out.feedSkipped[r.fed] = (out.feedSkipped[r.fed] ?? 0) + 1;
   }
   if (out.checks > 0) out.agreement = agree / out.checks;
   return out;
@@ -469,6 +567,7 @@ export function buildJevCorrectionShadow(opts: {
   bootBlock?: JevCorrectionShadowConfig;
   developmentAgent?: boolean;
   readSecret: (name: string) => unknown;
+  agentName?: string | null;
   layer0: JevCorrectionShadowDeps['layer0'];
   stateDir: string;
   metrics?: JevCorrectionShadowDeps['metrics'];
@@ -480,13 +579,15 @@ export function buildJevCorrectionShadow(opts: {
       const live = intel && typeof intel === 'object' ? (intel as Record<string, unknown>).jevCorrectionShadow : undefined;
       const block = (live && typeof live === 'object' ? live : opts.bootBlock ?? {}) as JevCorrectionShadowConfig;
       const enabled = resolveDevAgentGate(typeof block.enabled === 'boolean' ? block.enabled : undefined, { developmentAgent: opts.developmentAgent });
-      return { ...block, enabled };
+      const feedSentinel = resolveDevAgentGate(typeof block.feedSentinel === 'boolean' ? block.feedSentinel : undefined, { developmentAgent: opts.developmentAgent });
+      return { ...block, enabled, feedSentinel };
     },
     readKey: () => {
       const v = opts.readSecret('typesafe_api_key');
       return typeof v === 'string' && v ? v : null;
     },
     layer0: opts.layer0,
+    agentName: opts.agentName ?? null,
     logPath: path.join(opts.stateDir, '..', 'logs', 'jev-correction-shadow.jsonl'),
     metrics: opts.metrics,
     fetchImpl: opts.fetchImpl,

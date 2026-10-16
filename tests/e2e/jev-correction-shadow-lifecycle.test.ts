@@ -140,3 +140,88 @@ describe('jev-correction-shadow — alive on a development agent, dark on the fl
     expect(x.summary).toMatchObject({ enabled: false });
   });
 });
+
+describe('jev-correction live feed (jev-correction-live.md) — production factory + wiring', () => {
+  const PREF = 'Quality and coherence matter more than speed here, keep that in mind going forward.';
+
+  async function feedRun(developmentAgent: boolean, block?: Record<string, unknown>) {
+    const e = setup({ developmentAgent, ...(block ? { intelligence: { jevCorrectionShadow: block } } : {}) });
+    e.migrator.migrateConfig(e.result());
+    const p = { correction: 0.1, preference: 0.8, neither: 0.1, cannot_tell: 0 };
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ model: 'jev-1.13.0', answers: { kind: { choice: 'preference', probabilities: p }, kind_rev: { choice: 'preference', probabilities: p } } }) } as unknown as Response));
+    const config = e.readConfig();
+    const shadow = buildJevCorrectionShadow({
+      readLiveIntelligence: () => e.readConfig().intelligence,
+      bootBlock: config.intelligence?.jevCorrectionShadow,
+      developmentAgent: config.developmentAgent === true,
+      readSecret: (n) => (n === 'typesafe_api_key' ? 'k' : null),
+      layer0: (t) => HumanAsDetectorLog.getInstance().classify(t),
+      agentName: config.projectName,
+      stateDir: e.stateDir,
+      fetchImpl: fetchImpl as never,
+    });
+    installJevCorrectionShadow(shadow);
+    const fed: string[] = [];
+    getJevCorrectionShadow()!.setSentinelFeed((s) => fed.push(s.text));
+    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, e.stateDir);
+    adapter.onMessageLogged = (entry) => shadow.observe(entry);
+    adapter.logInboundMessage({ messageId: 88, topicId: 5, text: PREF, timestamp: new Date().toISOString() });
+    await getJevCorrectionShadow()!.lastCheck;
+    adapter.logInboundMessage({ messageId: 89, topicId: 5, text: 'From e2e (desk), not from the operator: slow down.', timestamp: new Date().toISOString() });
+    await getJevCorrectionShadow()!.lastCheck;
+    return { fed, summary: shadow.summary(), fetchImpl };
+  }
+
+  it('development agent: a Jev-only preference is fed; the agent-prefixed desk note is excluded', async () => {
+    expect(HumanAsDetectorLog.getInstance().classify(PREF)?.learningKind ?? null).toBeNull();
+    const x = await feedRun(true);
+    expect(x.fed).toEqual([PREF]);
+    expect(x.summary).toMatchObject({ fed: 1, feedSkipped: { 'excluded-agent-prefix': 1 } });
+  });
+
+  it('fleet agent with the shadow explicitly on: the feed stays dark (its own dev gate)', async () => {
+    const x = await feedRun(false, { enabled: true });
+    expect(x.fetchImpl).toHaveBeenCalled();
+    expect(x.fed).toEqual([]);
+    expect(x.summary).toMatchObject({ checks: 2, fed: 0, feedSkipped: {} });
+  });
+
+  it('development agent with feedSentinel:false: kill switch holds, the shadow keeps measuring', async () => {
+    const x = await feedRun(true, { feedSentinel: false });
+    expect(x.fetchImpl).toHaveBeenCalled();
+    expect(x.fed).toEqual([]);
+  });
+
+  it('is registered as its own dev-gated feature and wired into the sentinel capture path in server.ts', () => {
+    expect(DEV_GATED_FEATURES.filter((f) => f.configPath === 'intelligence.jevCorrectionShadow.feedSentinel')).toHaveLength(1);
+    const src = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(src).toMatch(/agentName: config\.projectName,\s*stateDir: config\.stateDir,/);
+    const feed = src.slice(src.indexOf('getJevCorrectionShadow()?.setSentinelFeed('));
+    expect(src.indexOf('getJevCorrectionShadow()?.setSentinelFeed(')).toBeGreaterThan(src.indexOf('Correction & Preference Learning Sentinel — capture loop'));
+    expect(feed.slice(0, 2000)).toMatch(/deterministicWeight: LEARNING_DETERMINISTIC_THRESHOLD/);
+    expect(feed.slice(0, 2000)).toMatch(/window: windowEndingAt\(ring, signal\.topicId, signal\.text\)/);
+    expect(feed.slice(0, 2000)).toMatch(/trigger: 'jev'/);
+  });
+});
+
+describe('jev-correction live feed — existing agents get the updated card (Migration Parity)', () => {
+  it('replaces the log-only card once, keeps surrounding sections, and is idempotent', () => {
+    const e = setup({});
+    const oldCard = '### Jev Correction Shadow (log-only check on whether corrections are being missed)\n\nA dark research instrument (spec: jev-correction-shadow.md). The Correction & Preference Learning Sentinel only learns from a user message when a keyword detector (Layer 0) marks it. It changes nothing the sentinel records and sends nothing. Summary: `curl http://localhost:4042/jev-correction/summary`.';
+    fs.writeFileSync(path.join(e.root, 'CLAUDE.md'), `# CLAUDE.md — e2e\n\n## Before\n\ntext\n\n${oldCard}\n\n### Jev Circles Shadow (log-only)\n\nafter\n`);
+    const r = e.result();
+    e.migrator.migrateClaudeMd(r);
+    expect(r.upgraded).toContain('CLAUDE.md: updated Jev correction card for the live sentinel feed');
+    const md = fs.readFileSync(path.join(e.root, 'CLAUDE.md'), 'utf8');
+    expect(md).not.toContain('It changes nothing the sentinel records');
+    expect(md).toContain('feeds them to the correction sentinel');
+    expect(md).toContain('intelligence.jevCorrectionShadow.feedSentinel: false');
+    expect(md.split('### Jev Correction Shadow').length - 1).toBe(1);
+    expect(md).toContain('## Before\n\ntext');
+    expect(md).toContain('### Jev Circles Shadow (log-only)\n\nafter');
+    const r2 = e.result();
+    e.migrator.migrateClaudeMd(r2);
+    expect(r2.upgraded.filter((u) => u.includes('Jev correction'))).toEqual([]);
+    expect(fs.readFileSync(path.join(e.root, 'CLAUDE.md'), 'utf8')).toBe(md);
+  });
+});

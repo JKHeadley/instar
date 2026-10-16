@@ -4033,6 +4033,12 @@ export interface InstarConfig {
      */
     jevCorrectionShadow?: {
       enabled?: boolean;
+      /**
+       * Live input to the Correction & Preference Learning Sentinel
+       * (jev-correction-live.md): a Jev flag Layer 0 missed is distilled as a
+       * learning signal. Omitted ⇒ dev gate; explicit false is the kill switch.
+       */
+      feedSentinel?: boolean;
       /** Pinned model id — never an alias (default "jev-1.13.0"). */
       model?: string;
       /** Hard abort per call (default 1500, max 10000). */

@@ -686,6 +686,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Log-only — changes nothing the correction sentinel records, delivers nothing, and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Never awaited on the message seam; the message and the previous agent message are secret-scrubbed before egress; bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
   },
   {
+    name: 'jevCorrectionFeedSentinel',
+    configPath: 'intelligence.jevCorrectionShadow.feedSentinel',
+    description: 'Jev correction live input (jev-correction-live.md): a correction or standing preference Jev flags and Layer 0 missed is handed to the Correction & Preference Learning Sentinel as a learning signal (desk notes opening "From <agent>" and agent-signed messages excluded).',
+    justification: 'Signal into an existing authority-bounded pipeline: the sentinel\'s own distill can still call it noise, and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decides whether anything becomes a preference — which is itself an advisory, enveloped hint. Delivers nothing, blocks nothing. Inert unless the shadow is on and the sentinel is constructed; rides the sentinel\'s own LlmQueue daily cap, per-topic rate ceiling and load-shedding; kill switch read live. No destructive action.',
+  },
+  {
     name: 'jevCirclesShadow',
     configPath: 'intelligence.jevCirclesShadow.enabled',
     description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',

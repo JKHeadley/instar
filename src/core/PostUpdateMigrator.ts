@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6733,6 +6733,19 @@ setTimeout(() => process.exit(0), 2000);
       content += jevCorrectionShadowAwareness(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Jev correction-shadow awareness card');
+    } else if (content.includes(JEV_CORRECTION_CARD_V1_MARKER)) {
+      // jev-correction-live: the log-only card says the shadow "changes nothing the
+      // sentinel records" — no longer true once the live feed exists. Replace that
+      // card (heading line through the end of its paragraph) with the current one.
+      const head = content.indexOf('### Jev Correction Shadow');
+      const markerAt = content.indexOf(JEV_CORRECTION_CARD_V1_MARKER, head);
+      if (head >= 0 && markerAt > head) {
+        const nextBreak = content.indexOf('\n\n', markerAt);
+        const end = nextBreak === -1 ? content.length : nextBreak;
+        content = content.slice(0, head) + jevCorrectionShadowAwareness(port).trim() + content.slice(end);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated Jev correction card for the live sentinel feed');
+      }
     }
 
     if (!content.includes('### Jev Circles Shadow')) {
