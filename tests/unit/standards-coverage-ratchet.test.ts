@@ -1253,8 +1253,13 @@ describe('standards-coverage ratchet script', () => {
     // refreshed by a review that genuinely accepts
     // (docs/specs/reports/standards-building-occam-addition-2026-09-24.md),
     // with its 34/40 floor unchanged.
+    // 2026-10-15: 92 -> 93. Operator mandate (Justin, 2026-10-14, after the
+    // ~/Documents TCC withdrawal killed two agents in the same second): *Avoid
+    // TCC-Protected Directories — No Agent State Under ~/Documents on macOS*,
+    // one enforced Building article (refusal at init + boot detector + /guards
+    // row + doctor + migrator). Re-derived from the live registry.
     expect(report.measurement.status, `measurement errors: ${JSON.stringify(report.measurement.errors)}`).toBe('proven');
-    expect(report.total).toBe(92);
+    expect(report.total).toBe(93);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

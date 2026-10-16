@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-09-24T18:36:10.000Z",
-      "auditRef": "docs/audits/standards-building-occam-addition-2026-09-24.json",
-      "auditSha256": "902b9ad628bfe90baf749b5aa614e76c7052ab90fae202cf4335fa54755d359a",
-      "areaSha256": "3031d13ba311e50e26889bfd59512bd05c3cb45710220ade2ce6f1b428b41409",
+      "lastAuditedAt": "2026-10-15T20:50:24.000Z",
+      "auditRef": "docs/audits/standards-building-tcc-protected-directories-2026-10-15.json",
+      "auditSha256": "03e86d7660e6bbc5c84939da563ebec7339d374f4cfc9977d355af5223f04d31",
+      "areaSha256": "440454f964ea3bd27088673bd9d59b6b2ea39c4139c78b5ddbcacd5c7ecf7c5d",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
