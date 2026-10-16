@@ -1,0 +1,26 @@
+{
+  "startedAt": "2026-10-16T19:45:40.933Z",
+  "completedAt": "2026-10-16T19:45:43.380Z",
+  "kind": "authenticated-read-only-enrollment-inspection",
+  "result": "enrolled",
+  "buildId": "web-k-2.2-679",
+  "evidence": "docs/specs/reports/telegram-message-origin-evidence/web-k-2.2-679-review.md",
+  "accountNumber": 1,
+  "accountMatchesExpectedOperator": true,
+  "criticalAssets": [
+    "apiManagerProxy-DYhbs4ln.js",
+    "app-DVSixCDs.js",
+    "index-xJZhS8vI.js"
+  ],
+  "assetDigests": {
+    "apiManagerProxy-DYhbs4ln.js": "70513b1b70daee74142dce7f1452c95f695465812b7bb40340aa18fa4ca1932a",
+    "app-DVSixCDs.js": "fb82ff310b30bfd265e4ada88a8c5e2e6eb7e8bc971543cb4200bf3f4169bf6b",
+    "index-xJZhS8vI.js": "2faf42121fb7488fe20708d958a439e1cdddfffe95dd2de3e886bc465be455a9"
+  },
+  "selfPeerResolved": true,
+  "supportedBuilds": [
+    "web-k-2.2-679",
+    "web-k-2.2-676"
+  ],
+  "messagesSent": 0
+}

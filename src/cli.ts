@@ -2179,6 +2179,20 @@ machineCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(removeMachine);
 
+// ── Telegram message origin: reviewed browser re-enrollment ───────────
+// Local-only on purpose: the enrollment entrypoint is never an HTTP route.
+program
+  .command('telegram-origin')
+  .description('Telegram message-origin maintenance (trusted, local-only)')
+  .command('enroll-browser <profileId>')
+  .description('After a Telegram Web K update: run the read-only canary on the managed profile and enroll the build if it is on the reviewed list (keeps one prior reviewed build). Sends nothing.')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--evidence-out <file>', 'Write the canary result as JSON to this file')
+  .action(async (profileId: string, opts) => {
+    const { telegramOriginEnrollBrowser } = await import('./commands/telegramOrigin.js');
+    return telegramOriginEnrollBrowser(profileId, opts);
+  });
+
 // ── Agent identity (a2a-single-agent-identity §1.4) ──────────────────
 const identityCmd = program
   .command('identity')

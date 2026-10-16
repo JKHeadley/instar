@@ -34,6 +34,15 @@ export function telegramOriginWorkerAwareness(): string {
   return 'Origin worker health: a slow or stuck recording worker never latches sends off for the life of the server. A request past its short deadline answers only that caller (held, outcome unknown) while the worker keeps serving; a request stuck past the stall deadline replaces the worker automatically with bounded backoff, and the recovery tick can hasten the next attempt. Sends hold (fail-closed) while it is down; a held write is never replayed blindly. Read the authenticated `GET /health` → `telegramOriginStorage.store` / `.spool` (`state`: ready, starting, restarting, exhausted or closed; `restarts`, `lastFailure`, `downSince`). One degradation report per outage. Only `exhausted` (restart cap reached) waits for the slower 15-minute recovery reopen; do not restart the server to clear `restarting`.\n';
 }
 
+export function telegramOriginBrowserDriftAwareness(): string {
+  return 'Telegram Web K updates: the typed browser routes run only on Web K builds that were reviewed against their source maps and enrolled. When Telegram ships a new build, the browser send/snapshot routes hold (409) and the failed build is recorded (`GET /telegram/origins/status` → browser recovery `failedBuilds`) with exactly one attention item per failed build; nothing is sent. That item is a maintainer task, not an operator chore: review the new build (record evidence under `docs/specs/reports/telegram-message-origin-evidence/`, add it to `ReviewedWebKBuilds.ts`), ship it, then run `instar telegram-origin enroll-browser <profile>` on the machine. It runs a read-only canary on the managed profile, refuses any build not on the reviewed list, and keeps one prior reviewed build; the running server picks it up at its next browser start without a restart. It is deliberately not an HTTP route. Never hand-edit the profile registry or drive the managed profile with generic browser tools to work around the hold.\n';
+}
+
+/** Correct the shipped attention wording (one item per failed build, not per episode). */
+export function refreshOriginBrowserAttentionAwareness(content: string): string {
+  return content.split('then a persisted 15-minute pause and one attention item per ' + 'episode.').join('then a persisted 15-minute pause and one attention item per failed build.');
+}
+
 export function telegramDashboardEditAwareness(): string {
   return 'Dashboard edit rejection: a held or uncertain pinned-link edit preserves its original operation and saved message ID; it never escalates into a fresh dashboard post. Only Telegram\'s concrete missing-message rejection for that same target permits replacement, after durable outcome recording for managed sends. An authoritative unchanged response is a no-op. `POST /telegram/dashboard-refresh` still reports failed refreshes; inspect the original origin record rather than deleting the saved ID or manually reposting to evade a hold. This guard limits dashboard send amplification; it does not repair false wake classification or guarantee that a held edit is delivered.\n';
 }
@@ -57,6 +66,7 @@ ${telegramOriginRecoveryAwareness()}
 ${telegramOriginTransportAwareness()}
 ${telegramOriginCapacityAwareness()}
 ${telegramOriginWorkerAwareness()}
+${telegramOriginBrowserDriftAwareness()}
 Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
 Claude and Codex tool hooks direct raw Telegram writes to the recorded relay or typed browser broker. Managed Telegram profiles belong to the broker; generic browser tools cannot use them. This cooperative hook is not an operating-system sandbox. Other enabled harnesses must prove equivalent enrollment before activation; a hook being installed is not proof of complete sender coverage.
@@ -71,7 +81,7 @@ Registry first: "which machine/model sent this?" or "why is delivery held?" → 
 \`curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" -H "X-Instar-Operator-Session: $OPERATOR_SESSION" http://localhost:${port}/telegram/origins/status\`
 Status includes an activation matrix: every required obligation and enabled writer must have a fresh enrollment observation before it can report complete coverage. Missing, expired or conflicting observations keep activation incomplete. 503 means the origin service or requested scope is unavailable; it is not proof of active enforcement or complete pool coverage. New capabilities should use the prepared egress boundary, never attach a handwritten footer as a substitute for recording.
 
-Add \`?scope=pool\` to origin lists, individual-origin lookups or status to inspect all enrolled machines. Pool metrics count source evidence once and preserve unavailable shards' last-known counts as stale; incomplete coverage is explicit. Audit records include durable read-only recovery diagnostics. Legacy queued rows keep unknown author evidence and their original deadlines/attempt counts; ambiguous earlier sends stay held. A failed browser canary gets one fresh-process retry, then a persisted 15-minute pause and one attention item per episode. Status exposes the recovery pause even after restart.
+Add \`?scope=pool\` to origin lists, individual-origin lookups or status to inspect all enrolled machines. Pool metrics count source evidence once and preserve unavailable shards' last-known counts as stale; incomplete coverage is explicit. Audit records include durable read-only recovery diagnostics. Legacy queued rows keep unknown author evidence and their original deadlines/attempt counts; ambiguous earlier sends stay held. A failed browser canary gets one fresh-process retry, then a persisted 15-minute pause and one attention item per failed build. Status exposes the recovery pause even after restart.
 
 Setup completion uses the authenticated loopback endpoint \`POST /telegram/setup/greeting\` with \`{"agentName":"Echo","userName":"Justin","autonomy":"proactive"}\`. The server renders and records its fixed greeting for the configured Lifeline topic, then pins the confirmed message. It accepts no arbitrary text or destination. Setup clients use \`sendOriginSetupGreeting\` after the server is running.
 `;
