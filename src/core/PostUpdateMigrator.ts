@@ -24,7 +24,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -6785,6 +6785,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram origin worker self-recovery awareness');
     }
 
+    if (!content.includes('Telegram Web K updates:')) {
+      content += '\n' + telegramOriginBrowserDriftAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram Web K drift and reviewed re-enrollment awareness');
+    }
+
+    const refreshedBrowserAttention = refreshOriginBrowserAttentionAwareness(content);
+    if (refreshedBrowserAttention !== content) {
+      content = refreshedBrowserAttention;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: browser canary attention is one item per failed build');
+    }
+
     if (!content.includes('Dashboard edit rejection:')) {
       content += '\n' + telegramDashboardEditAwareness();
       patched = true;
@@ -11879,6 +11892,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
         ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
+        ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
@@ -11890,6 +11904,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);
       if (refreshedInboxShadow !== appended) {
         appended = refreshedInboxShadow;
+        mirrored++;
+      }
+
+      const refreshedAttentionShadow = refreshOriginBrowserAttentionAwareness(appended);
+      if (refreshedAttentionShadow !== appended) {
+        appended = refreshedAttentionShadow;
         mirrored++;
       }
 
