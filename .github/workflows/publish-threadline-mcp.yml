@@ -39,6 +39,19 @@ jobs:
         working-directory: packages/threadline-mcp
         run: npm run build
 
+      # The built server must load and reach the network before anything is published.
+      # 0.4.4 shipped green while every connect threw "require is not defined"; this step
+      # fails on that build and passes on the fix.
+      - name: Smoke test the built server
+        working-directory: packages/threadline-mcp
+        run: |
+          SD=$(mktemp -d)
+          OUT=$(THREADLINE_RELAY=ws://127.0.0.1:9/v1/connect THREADLINE_STATE_DIR="$SD" THREADLINE_SEND_PORT=1 timeout 8 node dist/server.js </dev/null 2>&1; echo "exit=$?")
+          echo "$OUT" | tail -5
+          if echo "$OUT" | grep -qE "ReferenceError|SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module|ERR_REQUIRE|require is not defined|Fatal:"; then echo "::error::the built server did not load"; exit 1; fi
+          if ! echo "$OUT" | grep -q "Initial relay connection failed: Error: connect ECONNREFUSED"; then echo "::error::the built server never reached the network"; exit 1; fi
+          echo "smoke ok"
+
       - name: Check if version changed
         id: check
         working-directory: packages/threadline-mcp

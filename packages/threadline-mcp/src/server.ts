@@ -39,6 +39,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
 import { WebSocket } from 'ws';
 
 // ── Config ──────────────────────────────────────────────────────────
@@ -551,7 +552,6 @@ class RelayConnection {
   private async isListenerAvailable(): Promise<boolean> {
     const port = parseInt(process.env.THREADLINE_SEND_PORT || '7711', 10);
     return new Promise((resolve) => {
-      const http = require('http');
       const req = http.get(`http://127.0.0.1:${port}/status`, (res: any) => {
         let data = '';
         res.on('data', (chunk: string) => { data += chunk; });
@@ -572,7 +572,6 @@ class RelayConnection {
    */
   async sendViaListener(to: string, text: string, threadId?: string): Promise<{ sent: boolean; threadId: string }> {
     const port = parseInt(process.env.THREADLINE_SEND_PORT || '7711', 10);
-    const http = require('http');
     const body = JSON.stringify({ to, text, threadId });
     return new Promise((resolve, reject) => {
       const req = http.request({
