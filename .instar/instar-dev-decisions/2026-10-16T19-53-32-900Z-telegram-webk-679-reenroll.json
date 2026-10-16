@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-16T19:53:32.900Z",
+  "slug": "telegram-webk-679-reenroll",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 354,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/telegramOrigin.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginBrowserEnrollment.ts",
+      "src/messaging/telegram-origin/OriginBrowserRecovery.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/ReviewedWebKBuilds.ts",
+      "src/messaging/telegram-origin/TelegramBrowserBroker.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts"
+    ],
+    "addedLines": 322,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

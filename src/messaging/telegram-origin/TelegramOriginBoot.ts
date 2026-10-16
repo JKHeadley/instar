@@ -186,8 +186,24 @@ export async function bootTelegramOrigin(options: {
       if (profile.executionOwner !== 'telegram-origin-broker' || !profile.telegramBroker?.exclusiveEnrollment || !profile.userDataDir) continue;
       const enrollment = profile.telegramBroker;
       let driver: TelegramWebKDriver | undefined;
-      const getDriver = () => driver ??= new TelegramWebKDriver({ ...enrollment, expectedAccountId: enrollment.accountId,
-        userDataDir: registry.requireTelegramBrokerProfile(profile.id).userDataDir! });
+      // Each driver process pins the enrollment that is live when it starts, so a
+      // reviewed re-enrollment (`instar telegram-origin enroll-browser`) applies at the
+      // next driver start without a server restart. The account and directory stay
+      // boot-pinned: changing either still needs a restart.
+      let driverProof: string | undefined;
+      const liveEnrollment = () => {
+        const live = registry.requireTelegramBrokerProfile(profile.id);
+        const current = live.telegramBroker;
+        return live.userDataDir === profile.userDataDir && current?.accountId === enrollment.accountId && current.exclusiveEnrollment
+          ? { live, current, proof: current.exclusiveEnrollment.proofDigest } : null;
+      };
+      const getDriver = () => {
+        if (driver) return driver;
+        const found = liveEnrollment();
+        if (!found) throw new Error('browser-profile-unavailable');
+        driverProof = found.proof;
+        return driver = new TelegramWebKDriver({ ...found.current, expectedAccountId: found.current.accountId, userDataDir: found.live.userDataDir! });
+      };
       let signing: { privateKey: Buffer; publicKey: Buffer } | null = null;
       try {
         const identity = JSON.parse(await readFile(path.join(config.stateDir, 'identity.json'), 'utf8'));
@@ -224,8 +240,10 @@ export async function bootTelegramOrigin(options: {
         resolveAgentPublicKey: agentId => agentId === config.projectName ? signing?.publicKey : null,
         isProfileExclusivelyOwned: () => {
           try {
-            const live = registry.requireTelegramBrokerProfile(profile.id);
-            return live.userDataDir === profile.userDataDir && live.telegramBroker?.exclusiveEnrollment?.proofDigest === enrollment.exclusiveEnrollment!.proofDigest;
+            const found = liveEnrollment();
+            // A running driver is bound to the proof it started under; a re-enrollment
+            // retires it (the next start picks up the new proof and builds).
+            return !!found && (!driver || found.proof === driverProof);
           }
           catch { return false; }
         },

@@ -60,17 +60,56 @@ export class TelegramBrowserBroker {
   }
   private async readDriver<T>(read: (driver: TelegramBrowserDriver) => Promise<T>): Promise<T> {
     return this.enqueue(async () => {
-      if (this.closed || !this.options.isProfileExclusivelyOwned()) throw new Error('browser-profile-unavailable');
+      if (this.closed) throw new Error('browser-profile-unavailable');
+      // Retire a process bound to a superseded enrollment, so a re-enrollment
+      // takes effect on the next call instead of holding forever.
+      if (!this.options.isProfileExclusivelyOwned()) { await this.closeDriver(); throw new Error('browser-profile-unavailable'); }
       let timer: NodeJS.Timeout | undefined;
       try {
         return await Promise.race([(async () => {
-          const snapshot = await read(await this.getDriver());
+          const snapshot = await read(await this.verifiedReadDriver());
           if (this.closed || !this.options.isProfileExclusivelyOwned()) throw new Error('browser-profile-unavailable');
           return snapshot;
         })(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('browser-read-deadline')), this.options.maxOperationMs ?? 60_000); })]);
       } catch (error) { await this.closeDriver(); throw error; }
       finally { if (timer) clearTimeout(timer); }
     });
+  }
+  /** A read uses the same bounded recovery as a write: the build canary, ONE
+   * fresh-process recheck, then failedBuilds + the per-build attention item
+   * through the durable recovery latch. Before this, an unsupported build on a
+   * read threw without recording anything while `begin` had already armed the
+   * 15-minute floor: a silent hold with no attention (2026-10-16, build 679). */
+  private async verifiedReadDriver(): Promise<TelegramBrowserDriver> {
+    let driver = await this.getDriver();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.lastCanary = await driver.canary();
+      this.lastCanaryAt = this.now();
+      if (this.lastCanary.supported) {
+        this.unsupportedCanaries = 0; this.lastUnsupportedBuild = undefined;
+        if (this.options.recovery && this.recoveryFence
+          && !(await this.options.recovery({ kind: 'success', fence: this.recoveryFence })).allowed) {
+          throw new Error('browser-recovery-fence-lost');
+        }
+        return driver;
+      }
+      if (this.lastCanary.buildId !== this.lastUnsupportedBuild) {
+        this.unsupportedCanaries++; this.lastUnsupportedBuild = this.lastCanary.buildId;
+      }
+      if (this.options.recovery) {
+        const result = await this.options.recovery({ kind: 'failure', fence: this.recoveryFence,
+          buildId: this.lastCanary.buildId, final: attempt === 1 });
+        this.unsupportedCanaries = result.state.failedBuilds.length;
+        if (!result.allowed) throw new Error('browser-recovery-fence-lost');
+      }
+      await this.closeDriver();
+      if (attempt === 1) break;
+      // One fresh process and read-only canary, never a write.
+      driver = await this.getDriver(true);
+    }
+    this.held = 'unsupported-browser-build';
+    this.notifyHeld(this.held);
+    throw new Error('browser-peer-canary-unavailable');
   }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error('browser-closed'));
@@ -155,6 +194,9 @@ export class TelegramBrowserBroker {
   private async execute(child: PreparedBrowserChild): Promise<BrowserOutcome> {
     let problem: string | null;
     try { problem = this.valid(child); } catch { problem = 'invalid-prepared-child'; }
+    // A re-enrollment retires the process started under the old proof, so the
+    // next attempt starts under the new one instead of staying held forever.
+    if (problem === 'browser-profile-not-exclusive') await this.closeDriver();
     if (problem) return this.reject(problem);
     let invoked = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
