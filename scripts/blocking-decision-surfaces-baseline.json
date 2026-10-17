@@ -87,8 +87,8 @@
     },
     {
       "path": "src/templates/hooks/session-start.sh",
-      "sha256": "985941e22ff1b68fdaab400c96e55320d8ed345a1ed154cac178d032076031bc",
-      "reason": "injects startup context; exits open when config/port/health are unavailable"
+      "sha256": "6d6b16b3fe5542af744371115b0ce1b5e695a540e1ac91affb51183dd2bdc8ad",
+      "reason": "injects startup context; exits open when config/port/health are unavailable. The evolution fast-track block is the same shape: curl --max-time 5, output swallowed on timeout/parse error, and the hook still ends in exit 0."
     },
     {
       "path": "src/templates/hooks/skill-usage-telemetry.sh",
