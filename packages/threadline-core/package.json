@@ -1,0 +1,25 @@
+{
+  "name": "@sagemindai/threadline-core",
+  "version": "0.1.0",
+  "description": "Threadline's agent-to-agent fundamentals with no framework attached: identity keys, end-to-end encrypted and signed envelopes, pairing by invite, pinned keys and the credential gate. Used by threadline-mcp and Instar.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist/", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/JKHeadley/instar.git", "directory": "packages/threadline-core" }
+}
