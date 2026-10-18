@@ -470,6 +470,17 @@ export async function bootstrapThreadline(
       if (p.pairingState !== 'pending-verification' && p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified' && p.pairingState !== 'invite-accepted') return null;
       return Buffer.from(p.peerIdentityPub, 'hex');
     });
+    // Ordinary chat to a peer paired BY INVITE goes encrypted to the pinned key, always
+    // (spec threadline-standalone-pairing D6, step 9). Only mutual-verified: an acceptor still
+    // waiting for the inviter's Finish holds a key the inviter cannot use yet, and a paused pin
+    // is back to unconfirmed. Only invite pairings (no SAS fingerprint): both sides of one run
+    // 1.3.1352+, which decrypts to a pinned key without a cached key; an older SAS-paired peer
+    // may not, so it keeps the previous rule (encrypt when the relay gave us its keys).
+    relayClient.setEncryptToResolver((fp) => {
+      const p = pinnedTrust?.getProfileByFingerprint(fp);
+      if (!p?.peerIdentityPub || p.pairingState !== 'mutual-verified' || p.sasFingerprint) return null;
+      return Buffer.from(p.peerIdentityPub, 'hex');
+    });
 
     // Invite pairing engine (docs/specs/a2a-pairing-invite-link.md). Identity is read fresh on
     // every use so a rotated key is never signed with stale material.
