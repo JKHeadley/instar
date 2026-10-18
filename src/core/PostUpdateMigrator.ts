@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -7672,6 +7672,19 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(readinessBrakeOld, '(spend cap, a different model or prompt answering, or three runs in a row with no usable answer: timeouts, provider errors, or answers that failed the checks; a single timeout or rejected answer is just retried, and a restart on the same machine keeps the approval); `pausedBecause` says why in plain words, and `GET /feedback-factory/drain/status` → `lastReadinessFailure` names the exact check that refused the most recent failed readiness call (`at` says when; it stays after later calls succeed);');
       patched = true;
       result.upgraded.push('CLAUDE.md: updated Feedback Readiness Authority brake wording');
+    }
+    // Readiness pause alarm: one bullet under the Feedback Readiness Authority section (after its
+    // "When to use" line when present, else appended). Idempotent via its marker.
+    if (!content.includes(READINESS_PAUSE_ALARM_MARKER)) {
+      const whenToUse = "- **When to use** (PROACTIVE): a drain tick 403s, or the user asks why feedback isn't turning into work → read the proposal, then give the operator the dashboard tab + PIN path. Never ask them to curl the POST route.";
+      const at = content.indexOf(whenToUse);
+      content = at >= 0
+        ? content.slice(0, at + whenToUse.length) + '\n' + READINESS_PAUSE_ALARM_BULLET + content.slice(at + whenToUse.length)
+        : content + '\n' + READINESS_PAUSE_ALARM_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added readiness pause-alarm bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: readiness pause-alarm bullet already present');
     }
 
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar

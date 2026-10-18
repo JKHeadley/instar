@@ -2713,6 +2713,11 @@ export class AgentServer {
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          raiseAttention: async (item) => {
+            const enqueue = this.telegramAdapter?.createAttentionItem;
+            if (!enqueue) throw new Error('durable attention enqueue unavailable');
+            await enqueue.call(this.telegramAdapter, item);
+          },
         });
         const tickProxy = new FeedbackDrainTickProxy({
           selfMachineId,
