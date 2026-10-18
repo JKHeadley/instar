@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -9909,6 +9909,19 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added standing-sessions bullet');
     } else {
       result.skipped.push('CLAUDE.md: standing-sessions bullet already present');
+    }
+
+    // Rerouted-job expired-login bullet: placed right after the standing-sessions
+    // bullet when present, else appended. Idempotent via its marker.
+    if (!content.includes(REROUTED_LOGIN_EXPIRED_MARKER)) {
+      const stIdx = content.indexOf(STANDING_SESSIONS_BULLET);
+      content = stIdx >= 0
+        ? content.slice(0, stIdx + STANDING_SESSIONS_BULLET.length) + '\n' + REROUTED_LOGIN_EXPIRED_BULLET + content.slice(stIdx + STANDING_SESSIONS_BULLET.length)
+        : content + '\n' + REROUTED_LOGIN_EXPIRED_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added rerouted-job expired-login bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: rerouted-job expired-login bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

@@ -67,6 +67,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressure.js';
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
+import { classifyLoginExpired } from './LoginExpiredSignature.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 import { toPaneTailLines, type PermissionPromptAutoResolver } from '../monitoring/PermissionPromptAutoResolver.js';
@@ -330,6 +331,9 @@ export function deriveTargetKey(sessionId: string): DerivedTarget {
 /** Sessions younger than this get their pane tail sampled each monitor tick
  *  so a self-exit during startup leaves evidence (see `startupTails`). */
 const STARTUP_TAIL_WINDOW_MS = 120_000;
+/** How long a rerouted session must keep showing the expired-login frame before
+ *  the monitor ends it (one frame alone never ends a session). */
+const LOGIN_EXPIRED_DWELL_MS = 60_000;
 /** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
 export const RESUME_REOPEN_FAILED_NOTE =
   'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
@@ -991,6 +995,14 @@ export class SessionManager extends EventEmitter {
    * dozen lines. Memory-only; never written anywhere except the redacted row.
    */
   private readonly startupTails = new Map<string, { tail: string; at: number }>();
+  /**
+   * First time each rerouted (completionMode 'pattern') session's live tail
+   * showed Claude Code's "Login expired · Please run /login" frame. A session
+   * still showing it LOGIN_EXPIRED_DWELL_MS later is ended (see the rerouted
+   * branch of the monitor tick). Evicted with the startup tails for sessions no
+   * longer running, and whenever the frame is no longer the live tail.
+   */
+  private readonly loginExpiredFirstSeen = new Map<string, number>();
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
@@ -1901,6 +1913,55 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * @returns `{ terminated: true }` on a kill performed by THIS call, or
    *          `{ terminated: false, skipped }` describing why it was a no-op.
    */
+  /**
+   * Rerouted-branch helper: if the session's live tail has shown Claude Code's
+   * dead-login frame for at least LOGIN_EXPIRED_DWELL_MS, terminate it (recorded
+   * as killed, so its job reruns on its next trigger, where placement can pick a
+   * signed-in account) and report a degradation naming the login folder.
+   * Returns true when the session was ended. Never throws into the tick.
+   */
+  private async endIfLoginExpired(session: Session): Promise<boolean> {
+    let pane = '';
+    try {
+      pane = (await this.captureOutputMaybeAsync(session.tmuxSession, 40)) || '';
+    } catch { /* @silent-fallback-ok — an unreadable pane is re-checked next tick */
+      return false;
+    }
+    const verdict = classifyLoginExpired(pane);
+    if (!verdict.loginExpired) {
+      this.loginExpiredFirstSeen.delete(session.tmuxSession);
+      return false;
+    }
+    const now = Date.now();
+    const firstSeen = this.loginExpiredFirstSeen.get(session.tmuxSession);
+    if (firstSeen === undefined) {
+      this.loginExpiredFirstSeen.set(session.tmuxSession, now);
+      return false;
+    }
+    if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return false;
+    const configHome = this.configHomeForSession(session.tmuxSession) ?? 'the default login';
+    console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
+    // workEvidence: [] — the killer proved the session idle (a REPL at the login screen can do
+    // nothing), so a live MCP child must not stamp it mid-work and queue a revival back onto
+    // the same dead login.
+    const killed = await this.terminateSession(session.id, 'rerouted-login-expired', {
+      finalStatus: 'killed',
+      disposition: 'terminal',
+      workEvidence: [],
+    });
+    this.loginExpiredFirstSeen.delete(session.tmuxSession);
+    if (killed.terminated) {
+      DegradationReporter.getInstance().report({
+        feature: 'SessionManager.monitorTick.reroutedLoginExpired',
+        primary: 'rerouted-interactive session runs under a signed-in login and completes via its sentinel',
+        fallback: 'ended as soon as its live tail showed an expired login, instead of holding its slot to the lifetime cap',
+        reason: `Session "${session.name}" launched under ${configHome}, which reports "${verdict.matchedLine}"`,
+        impact: 'That run did no work; its job reruns on its next trigger. The login itself needs a fresh sign-in.',
+      });
+    }
+    return killed.terminated;
+  }
+
   async terminateSession(
     sessionId: string,
     reason: string,
@@ -2522,6 +2583,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
+      if (this.loginExpiredFirstSeen.size > 0) {
+        const live = new Set(running.map(s => s.tmuxSession));
+        for (const key of this.loginExpiredFirstSeen.keys()) {
+          if (!live.has(key)) this.loginExpiredFirstSeen.delete(key);
+        }
+      }
       // Drop age-gate work memory for sessions that are no longer running
       // (bounded map — any exit path, not only an age kill).
       if (this.ageGateLastWorkingAt.size > 0 || this.ageGateConfirmedWorkPastLimit.size > 0) {
@@ -2676,6 +2743,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               continue;
             }
+          }
+          // (c) Dead login → end it now instead of at the lifetime cap. A
+          // rerouted session launched under a login whose interactive sign-in
+          // has expired prints "Login expired · Please run /login" and can never
+          // make progress; left alone it holds its scheduler slot until (b)
+          // fires 480 min later (2026-10-18: two such sessions stalled every job
+          // on the machine for a day). Signal-only classifier + a dwell so a
+          // single frame never ends a session; never touches pool status.
+          if (!this.config.protectedSessions.includes(session.tmuxSession) &&
+              !this.isStandingSession(session.tmuxSession)) {
+            if (await this.endIfLoginExpired(session)) continue;
           }
           // Still running, no sentinel, under lifetime — leave it; re-check next
           // tick. Skip the rest of the loop body (the default exit/idle paths
