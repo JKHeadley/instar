@@ -108,8 +108,10 @@ export interface AgentTrustProfile {
   /**
    * HOW the pinned key was verified (docs/specs/threadline-standalone-pairing.md D9):
    * `invite` (invite-link pairing), `sas` (operator SAS comparison) or `inherited` (a
-   * replicated result from another of this agent's machines). D9's encrypt-to-pinned rule
-   * applies only to `invite`. Profiles from before this field are backfilled on load:
+   * replicated result from another of this agent's machines whose record carried no
+   * method). An inherited pairing whose record DID carry a method stores that method
+   * (`invite` | `sas`, rollout step 5b), so D9 applies on every machine that holds the
+   * same pinned key. D9's encrypt-to-pinned rule applies only to `invite`. Profiles from before this field are backfilled on load:
    * a `mutual-verified` profile gets `sas` when it holds a sasFingerprint, else `invite`.
    */
   pairingMethod?: PairingMethod;
@@ -163,6 +165,8 @@ export interface PairingReplicationEmitter {
     peerIdentityPub: string;
     verifiedAt: string;
     verifiedOnMachine: string;
+    /** How the peer was paired (D9/D11, the optional sixth field): 'invite' | 'sas'. */
+    pairingMethod?: 'invite' | 'sas';
   }): void;
   /** Emit a `delete` tombstone for a revoked / verification-failed pairing (un-verify
    *  sticks pool-wide), keyed on the peer fingerprint. */
@@ -699,6 +703,7 @@ export class AgentTrustManager {
           peerIdentityPub: profile.peerIdentityPub,
           verifiedAt: now,
           verifiedOnMachine: this.machineId,
+          pairingMethod: 'sas',
         });
       } catch { /* replication failure never breaks the local trust write */ }
     }
@@ -867,7 +872,7 @@ export class AgentTrustManager {
     this.save();
     if (this.pairingReplication) {
       try {
-        this.pairingReplication.emitVerified({ peerFp: fp, peerIdentityPub: key, verifiedAt: now, verifiedOnMachine: this.machineId });
+        this.pairingReplication.emitVerified({ peerFp: fp, peerIdentityPub: key, verifiedAt: now, verifiedOnMachine: this.machineId, pairingMethod: 'invite' });
       } catch { /* replication failure never breaks the local trust write */ }
     }
     this.writeAudit({
@@ -1008,7 +1013,17 @@ export class AgentTrustManager {
    */
   inheritReplicatedVerification(
     peerFp: string,
-    args: { peerIdentityPub: string; verifiedAt?: string; verifiedOnMachine?: string; presentedIdentityPub?: string; displayName?: string },
+    args: {
+      peerIdentityPub: string;
+      verifiedAt?: string;
+      verifiedOnMachine?: string;
+      presentedIdentityPub?: string;
+      displayName?: string;
+      /** The replicated method (D9/D11). 'invite' | 'sas' is stored as-is so the
+       *  encrypt-to-pinned resolver applies D9 here with the same pinned key; absent or
+       *  unknown is stored as 'inherited' (treated as not-invite). */
+      pairingMethod?: 'invite' | 'sas';
+    },
   ): boolean {
     if (!peerFp || !args.peerIdentityPub) return false;
 
@@ -1037,8 +1052,15 @@ export class AgentTrustManager {
     const previousLevel = profile.level;
     const now = new Date().toISOString();
 
+    // Never downgrade a known 'invite' for the SAME pinned key (D11 mixed versions): the
+    // method is the peer's capability, and a record from an older machine without the field
+    // says nothing new about it. A different key starts over.
+    const sameKey = !!profile.peerIdentityPub && profile.peerIdentityPub.toLowerCase() === args.peerIdentityPub.toLowerCase();
+    const keepInvite = sameKey && profile.pairingState === 'identity-verified' && profile.pairingMethod === 'invite';
+    const method: PairingMethod = args.pairingMethod === 'invite' || args.pairingMethod === 'sas' ? args.pairingMethod : 'inherited';
+
     profile.pairingState = 'identity-verified';
-    profile.pairingMethod = 'inherited';
+    profile.pairingMethod = keepInvite ? 'invite' : method;
     profile.peerIdentityPub = args.peerIdentityPub;
     if (args.verifiedAt) profile.verifiedAt = args.verifiedAt;
     if (args.verifiedOnMachine) profile.inheritedFromMachine = args.verifiedOnMachine;
@@ -1063,6 +1085,42 @@ export class AgentTrustManager {
       userInitiated: false,
     });
     return true;
+  }
+
+  /**
+   * Upgrade migration (D11, rollout step 5b): re-send the replicated record of every LOCAL
+   * invite-paired, mutual-verified profile so its `pairingMethod` reaches the agent's other
+   * machines (records sent before the sixth field existed carry none). The emitter stamps a
+   * fresh HLC, so the re-sent record supersedes the old one; `verifiedAt` stays the original
+   * verification time. Only runs with the replication emitter attached (the
+   * `multiMachine.stateSync.threadlinePairing.enabled` gate). Idempotent through
+   * `alreadyPublished`, which the caller answers from THIS machine's own replicated stream
+   * (a record for that key already carrying 'invite' ⇒ skip). Inherited profiles never
+   * re-send. Returns the number of records emitted.
+   */
+  republishInvitePairingMethods(alreadyPublished: (peerFp: string, peerIdentityPub: string) => boolean): number {
+    if (!this.pairingReplication) return 0;
+    let sent = 0;
+    for (const profile of Object.values(this.profiles)) {
+      const fp = profile.fingerprint;
+      const key = profile.peerIdentityPub;
+      if (!fp || !key) continue;
+      if (profile.pairingState !== 'mutual-verified' || profile.source !== 'mutual-verified' || profile.pairingMethod !== 'invite') continue;
+      let published = false;
+      try { published = alreadyPublished(fp, key); } catch { published = false; }
+      if (published) continue;
+      try {
+        this.pairingReplication.emitVerified({
+          peerFp: fp,
+          peerIdentityPub: key,
+          verifiedAt: profile.verifiedAt ?? new Date().toISOString(),
+          verifiedOnMachine: this.machineId,
+          pairingMethod: 'invite',
+        });
+        sent++;
+      } catch { /* replication failure never breaks anything local */ }
+    }
+    return sent;
   }
 
   /** Downgrade a profile to pending-verification + drop any credential-share authorization

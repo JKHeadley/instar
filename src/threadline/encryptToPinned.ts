@@ -4,9 +4,12 @@
  *
  * For a peer that is `mutual-verified` THROUGH AN INVITE PAIRING (`pairingMethod: 'invite'`),
  * Instar encrypts every ordinary message to the X25519 key derived from the PINNED identity
- * key, whatever the relay offers, and never sends that peer plaintext. Peers paired by the
- * older SAS method, and pairings inherited from another machine (which carry no method),
- * keep the previous rule: encrypt when the relay gave us the peer's keys this session.
+ * key, whatever the relay offers, and never sends that peer plaintext. The same holds on
+ * another of this agent's machines that inherited the pairing (`identity-verified`) from a
+ * replicated record carrying `pairingMethod: 'invite'` (rollout step 5b) — same pinned key.
+ * Peers paired by the older SAS method, and inherited pairings whose record carried no
+ * method (`pairingMethod: 'inherited'`), keep the previous rule: encrypt when the relay gave
+ * us the peer's keys this session.
  *
  * The switch `threadline.encryptToPinned` follows `threadline.relayUnknownSenderTrust`
  * exactly: `enabled` omitted rides the developmentAgent gate, `dryRun` defaults TRUE.
@@ -86,10 +89,12 @@ export function resetEncryptToPinnedCounters(): void {
 
 type TrustReader = Pick<AgentTrustManager, 'getProfileByFingerprint'>;
 
-/** The pinned identity key of an invite-paired, mutual-verified peer, else null. */
+/** The pinned identity key of an invite-paired peer that is mutual-verified here, or
+ *  identity-verified by inheritance from a replicated invite record (step 5b), else null. */
 export function invitePinnedKey(tm: TrustReader | undefined, fp: string): Buffer | null {
   const p = tm?.getProfileByFingerprint(fp);
-  if (!p?.peerIdentityPub || p.pairingState !== 'mutual-verified' || p.pairingMethod !== 'invite') return null;
+  if (!p?.peerIdentityPub || p.pairingMethod !== 'invite') return null;
+  if (p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified') return null;
   return Buffer.from(p.peerIdentityPub, 'hex');
 }
 

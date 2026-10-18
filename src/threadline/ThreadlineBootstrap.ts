@@ -495,9 +495,11 @@ export async function bootstrapThreadline(
     // (spec threadline-standalone-pairing D9, rollout step 5), behind the live switch
     // `threadline.encryptToPinned` (off | watch | enforce). Only mutual-verified: an acceptor
     // still waiting for the inviter's Finish holds a key the inviter cannot use yet, and a
-    // paused pin is back to unconfirmed. Only `pairingMethod: 'invite'`: both sides of one run
+    // paused pin is back to unconfirmed. An `identity-verified` pairing inherited from a
+    // replicated record that says 'invite' counts too (rollout step 5b: same pinned key on
+    // every machine that can hold the relay). Only `pairingMethod: 'invite'`: both sides of one run
     // 1.3.1352+, which decrypts to a pinned key without a cached key; an SAS-paired peer may
-    // not, and an inherited pairing carries no method, so both keep the previous rule
+    // not, and an inherited pairing whose record carried no method ('inherited'), so both keep the previous rule
     // (encrypt when the relay gave us its keys).
     relayClient.setEncryptToResolver(createEncryptToPinnedResolver({
       trustManager: pinnedTrust,
