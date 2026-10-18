@@ -243,6 +243,26 @@ describe('invite pairing — production path', () => {
       expect(atA).toContainEqual({ text: 'paired b→a', encrypted: true });
     }, { timeout: 10_000 });
 
+    // Enforce: when the pinned send itself fails, relay-send answers 502 success:false with the
+    // reason, and nothing reaches B in plaintext or otherwise (spec D9: never a plaintext fallback).
+    {
+      const enc = (A.boot.relayClient as unknown as { encryptor: { encrypt: (...a: unknown[]) => unknown } }).encryptor;
+      const realEncrypt = enc.encrypt;
+      enc.encrypt = () => { throw new Error('simulated encrypt failure'); };
+      try {
+        const r = await send(A, B, 'must never go plaintext');
+        expect(r.status).toBe(502);
+        expect(r.body).toMatchObject({ success: false, accepted: false, delivered: false, reason: 'encrypted-send-to-pinned-failed', deliveryPath: 'relay' });
+        expect(String(r.body.error)).toMatch(/no plaintext fallback.*simulated encrypt failure/);
+      } finally {
+        enc.encrypt = realEncrypt;
+      }
+      // A later message arrives (ordering on one relay socket), and the failed one never did.
+      expect((await send(A, B, 'after the failure')).status).toBeLessThan(300);
+      await vi.waitFor(() => expect(atB).toContainEqual({ text: 'after the failure', encrypted: true }), { timeout: 10_000 });
+      expect(atB.some((g) => g.text === 'must never go plaintext')).toBe(false);
+    }
+
     // A pairing made by the older SAS method keeps the previous rule (the peer may be too old to decrypt).
     const passedAtB: Array<{ text: unknown; notice?: string; trustLevel?: string }> = [];
     B.boot.relayClient!.on('gate-passed', (d: { fingerprint?: string; notice?: string; trustLevel?: string; message?: { content?: { content?: unknown } } }) => {

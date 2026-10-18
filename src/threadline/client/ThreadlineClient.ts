@@ -107,6 +107,19 @@ interface ClientAffinityEntry {
   lastUsedAt: number;
 }
 
+/**
+ * A send that had to go encrypted to a peer's PINNED key (spec threadline-standalone-pairing
+ * D9) and could not be built or handed to the relay. Nothing went on the wire, and no
+ * plaintext or relay-key fallback is attempted. The relay-send route answers it 502.
+ */
+export class EncryptToPinnedSendError extends Error {
+  readonly code = 'encrypted-send-to-pinned-failed';
+  constructor(recipientId: string, cause: unknown) {
+    super(`Encrypted send to pinned peer ${recipientId.slice(0, 12)} failed; not sent (no plaintext fallback): ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'EncryptToPinnedSendError';
+  }
+}
+
 export class ThreadlineClient extends EventEmitter {
   private readonly config: ThreadlineClientConfig;
   private readonly identityManager: IdentityManager;
@@ -481,7 +494,7 @@ export class ThreadlineClient extends EventEmitter {
       try {
         return this.sendToPinned(recipientId, pinned.toString('hex'), resend ? { content, resend: true } : { content }, threadId, messageId).messageId;
       } catch (err) {
-        throw new Error(`Encrypted send to pinned peer ${String(recipientId).slice(0, 12)} failed; not sent (no plaintext fallback): ${err instanceof Error ? err.message : String(err)}`);
+        throw new EncryptToPinnedSendError(String(recipientId), err);
       }
     }
 

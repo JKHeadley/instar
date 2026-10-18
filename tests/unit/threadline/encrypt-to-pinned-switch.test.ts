@@ -19,6 +19,7 @@ import {
   type EncryptToPinnedMode,
 } from '../../../src/threadline/encryptToPinned.js';
 import type { RelayUnknownSenderPassDecision } from '../../../src/threadline/relayUnknownSenderTrust.js';
+import { buildForwardAnswer } from '../../../src/threadline/relayForward.js';
 
 const OFF: EncryptToPinnedMode = { enabled: false, dryRun: true };
 const WATCH: EncryptToPinnedMode = { enabled: true, dryRun: true };
@@ -239,5 +240,18 @@ describe('receive side: plaintext under an invite-paired peer is labelled unveri
       expect(out).toBe(d);
       expect((out as { notice?: string }).notice).toBeUndefined();
     }
+  });
+});
+
+describe('standby forward (relayForward): a holder 502 for a failed pinned send is transcribed, not retried', () => {
+  it('status and body pass through unchanged, with no settlement outcome', () => {
+    const body = { success: false, accepted: false, delivered: false, reason: 'encrypted-send-to-pinned-failed', error: 'not sent (no plaintext fallback): x' };
+    const answer = buildForwardAnswer(
+      { kind: 'answered', machine: { machineId: 'm-holder', nickname: 'holder' } as never, status: 502, body },
+      { messageId: 'msg-1', hadTopic: false },
+    )!;
+    expect(answer.status).toBe(502);
+    expect(answer.body).toMatchObject({ ...body, deliveryPath: 'forwarded', forwardedTo: 'holder' });
+    expect(answer.settlementOutcome).toBeUndefined();
   });
 });
