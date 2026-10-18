@@ -45,6 +45,12 @@ import {
   relayUnknownSenderTrustCounters,
   type RelayUnknownSenderTrustMode,
 } from './relayUnknownSenderTrust.js';
+import {
+  createEncryptToPinnedResolver,
+  encryptToPinnedCounters,
+  labelUnverifiedPinnedPlaintext,
+  type EncryptToPinnedMode,
+} from './encryptToPinned.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -119,6 +125,12 @@ export interface ThreadlineBootstrapConfig {
    * omitted the check is off: every unknown sender is handled as before.
    */
   getRelayUnknownSenderTrustMode?: () => RelayUnknownSenderTrustMode;
+  /**
+   * Live reader for encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9,
+   * `threadline.encryptToPinned`). Supplied by server.ts. When omitted it is off: ordinary
+   * chat is encrypted only when the relay gave us the peer's keys, as before.
+   */
+  getEncryptToPinnedMode?: () => EncryptToPinnedMode;
 }
 
 export interface ThreadlineBootstrapResult {
@@ -427,6 +439,15 @@ export async function bootstrapThreadline(
       return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
     }
   };
+  // Encrypt-to-pinned (spec threadline-standalone-pairing D9): the live mode (off when
+  // server.ts supplies no reader).
+  const encryptToPinnedMode = (): EncryptToPinnedMode => {
+    try {
+      return config.getEncryptToPinnedMode?.() ?? { enabled: false, dryRun: true };
+    } catch {
+      return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
+    }
+  };
 
   // Always create trust manager when relay is enabled — needed for processing
   // inbox entries even when the daemon handles the relay connection.
@@ -471,16 +492,18 @@ export async function bootstrapThreadline(
       return Buffer.from(p.peerIdentityPub, 'hex');
     });
     // Ordinary chat to a peer paired BY INVITE goes encrypted to the pinned key, always
-    // (spec threadline-standalone-pairing D6, step 9). Only mutual-verified: an acceptor still
-    // waiting for the inviter's Finish holds a key the inviter cannot use yet, and a paused pin
-    // is back to unconfirmed. Only invite pairings (no SAS fingerprint): both sides of one run
-    // 1.3.1352+, which decrypts to a pinned key without a cached key; an older SAS-paired peer
-    // may not, so it keeps the previous rule (encrypt when the relay gave us its keys).
-    relayClient.setEncryptToResolver((fp) => {
-      const p = pinnedTrust?.getProfileByFingerprint(fp);
-      if (!p?.peerIdentityPub || p.pairingState !== 'mutual-verified' || p.sasFingerprint) return null;
-      return Buffer.from(p.peerIdentityPub, 'hex');
-    });
+    // (spec threadline-standalone-pairing D9, rollout step 5), behind the live switch
+    // `threadline.encryptToPinned` (off | watch | enforce). Only mutual-verified: an acceptor
+    // still waiting for the inviter's Finish holds a key the inviter cannot use yet, and a
+    // paused pin is back to unconfirmed. Only `pairingMethod: 'invite'`: both sides of one run
+    // 1.3.1352+, which decrypts to a pinned key without a cached key; an SAS-paired peer may
+    // not, and an inherited pairing carries no method, so both keep the previous rule
+    // (encrypt when the relay gave us its keys).
+    relayClient.setEncryptToResolver(createEncryptToPinnedResolver({
+      trustManager: pinnedTrust,
+      mode: encryptToPinnedMode,
+      counters: encryptToPinnedCounters,
+    }));
 
     // Invite pairing engine (docs/specs/a2a-pairing-invite-link.md). Identity is read fresh on
     // every use so a rotated key is never signed with stale material.
@@ -600,7 +623,15 @@ export async function bootstrapThreadline(
           trustManager: trustManager!,
           mode: relayUnknownSenderTrustMode,
           counters: relayUnknownSenderTrustCounters,
-          emit: (decision) => { relayClient!.emit('gate-passed', decision); },
+          // Plaintext under an invite-paired peer's fingerprint is labelled unverified
+          // (never refused): the relay is the only evidence of who wrote it (spec D6/D9).
+          emit: (decision) => {
+            relayClient!.emit('gate-passed', labelUnverifiedPinnedPlaintext(
+              { trustManager, mode: encryptToPinnedMode, counters: encryptToPinnedCounters },
+              decision,
+              msgType,
+            ));
+          },
         },
         received,
         msgType,

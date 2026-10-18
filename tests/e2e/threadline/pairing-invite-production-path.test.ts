@@ -17,6 +17,8 @@ import { createTempProject, createMockSessionManager } from '../../helpers/setup
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import type { InviteEvent } from '../../../src/threadline/PairingInviteFlow.js';
+import type { EncryptToPinnedMode } from '../../../src/threadline/encryptToPinned.js';
+import { UNVERIFIED_PINNED_PLAINTEXT_NOTICE } from '../../../src/threadline/encryptToPinned.js';
 
 const PIN = '135790';
 
@@ -45,12 +47,13 @@ describe('invite pairing — production path', () => {
   let relayUrl: string;
   const sides: Side[] = [];
 
-  async function bootSide(name: string, port: number): Promise<Side> {
+  async function bootSide(name: string, port: number, encryptToPinned?: EncryptToPinnedMode): Promise<Side> {
     const project = createTempProject();
     const auth = `${name}-auth`;
     const boot = await bootstrapThreadline({
       agentName: name, ownerName: `${name}-owner`, stateDir: project.stateDir, projectDir: project.dir, port, relayEnabled: true, relayUrl,
       getVerifiedPairingConfig: () => ({ enabled: true, dryRun: true, credentialShareEnforced: false }),
+      ...(encryptToPinned ? { getEncryptToPinnedMode: () => encryptToPinned } : {}),
     });
     expect(boot.relayClient?.connectionState).toBe('connected');
     expect(boot.pairingInvites).toBeDefined();
@@ -197,8 +200,10 @@ describe('invite pairing — production path', () => {
   }, 60_000);
 
   it('ordinary chat to a peer paired by invite is always encrypted, even with no cached keys; before Finish it still arrives', async () => {
-    const A = await bootSide('iris', 4075);
-    const B = await bootSide('juno', 4076);
+    // threadline.encryptToPinned enforcing on both sides (spec D9, rollout step 5).
+    const ENFORCE = { enabled: true, dryRun: false };
+    const A = await bootSide('iris', 4075, ENFORCE);
+    const B = await bootSide('juno', 4076, ENFORCE);
     type Got = { text: unknown; encrypted: boolean };
     const listen = (to: Side, from: Side) => {
       const got: Got[] = [];
@@ -239,9 +244,16 @@ describe('invite pairing — production path', () => {
     }, { timeout: 10_000 });
 
     // A pairing made by the older SAS method keeps the previous rule (the peer may be too old to decrypt).
+    const passedAtB: Array<{ text: unknown; notice?: string; trustLevel?: string }> = [];
+    B.boot.relayClient!.on('gate-passed', (d: { fingerprint?: string; notice?: string; trustLevel?: string; message?: { content?: { content?: unknown } } }) => {
+      if (d.fingerprint === A.fp) passedAtB.push({ text: d.message?.content?.content, notice: d.notice, trustLevel: d.trustLevel });
+    });
     forgetKeys(A);
-    (A.boot.trustManager!.getProfileByFingerprint(B.fp) as { sasFingerprint?: string }).sasFingerprint = 'sas-pairing';
+    expect(A.boot.trustManager!.getProfileByFingerprint(B.fp)?.pairingMethod).toBe('invite');
+    A.boot.trustManager!.getProfileByFingerprint(B.fp)!.pairingMethod = 'sas';
     expect((await send(A, B, 'sas peer')).status).toBeLessThan(300);
     await vi.waitFor(() => expect(atB).toContainEqual({ text: 'sas peer', encrypted: false }), { timeout: 10_000 });
+    // B paired A by invite, so plaintext under A's fingerprint is delivered, labelled unverified.
+    await vi.waitFor(() => expect(passedAtB).toContainEqual({ text: 'sas peer', notice: UNVERIFIED_PINNED_PLAINTEXT_NOTICE, trustLevel: 'verified' }), { timeout: 10_000 });
   }, 60_000);
 });

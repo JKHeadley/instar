@@ -60,6 +60,7 @@ import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
+import { resolveEncryptToPinnedMode } from '../threadline/encryptToPinned.js';
 import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
@@ -18354,6 +18355,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           config as { developmentAgent?: boolean; threadline?: { relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean } } },
         ),
+        // Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9). Read live per
+        // send: `enabled` omitted rides the developmentAgent gate, `dryRun` defaults true
+        // (count would-encrypt sends, send as today).
+        getEncryptToPinnedMode: () => resolveEncryptToPinnedMode(
+          {
+            enabled: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.enabled', undefined),
+            dryRun: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.dryRun', undefined),
+          },
+          config as { developmentAgent?: boolean; threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } } },
+        ),
       });
       threadlineHandshake = threadline.handshakeManager;
       threadlineShutdown = threadline.shutdown;
@@ -18478,7 +18489,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         const { runRelayInboundWithLedger } = await import('../threadline/inboundIdLedgerWiring.js');
         const { InboundMessageGate: InboundGateStatics } = await import('../threadline/InboundMessageGate.js');
-        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string }) => {
+        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string; notice?: string }) => {
           // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md §1) — THE
           // COMMIT POINT: runRelayInboundWithLedger commits as the first statement
           // after the null-check and the probe exclusion, BEFORE every side effect
@@ -18493,7 +18504,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               annotate: (ledger, senderKey, messageId) => annotatePeerHandoff(config, ledger, senderKey, messageId),
             },
             (ledgerTicket, ledgerNotice) => handleGatePassedRelayMessage(
-              decision as typeof decision & { message: NonNullable<typeof decision.message> }, ledgerTicket, ledgerNotice),
+              decision as typeof decision & { message: NonNullable<typeof decision.message> }, ledgerTicket,
+              // A server-constant label from the inbound path (encrypt-to-pinned: unverified
+              // plaintext under a paired peer's fingerprint) rides the same server-notice slot.
+              [decision.notice, ledgerNotice].filter((n): n is string => !!n).join('; ') || null),
           );
         });
 

@@ -5563,6 +5563,16 @@ export interface ThreadlineConfig {
    * and creates new fingerprint profiles at `untrusted`.
    */
   relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9, rollout step 5).
+   * Read live per send. `enabled` omitted ⇒ the developmentAgent gate (live on a dev
+   * agent, dark on the fleet). `dryRun` defaults TRUE (watch): sends are unchanged and each
+   * one that would have gone encrypted to an invite-paired peer's PINNED key is counted;
+   * only an explicit `false` (enforce) encrypts every ordinary message to such a peer with
+   * the pinned key, never falling back to plaintext, and labels plaintext arriving under
+   * its fingerprint as unverified.
+   */
+  encryptToPinned?: { enabled?: boolean; dryRun?: boolean };
 }
 
 /**

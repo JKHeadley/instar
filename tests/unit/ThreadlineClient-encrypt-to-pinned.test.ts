@@ -1,7 +1,9 @@
 /**
  * Ordinary chat to a peer paired by invite is always encrypted to the PINNED key
  * (spec threadline-standalone-pairing D6, step 9). The bootstrap decides which peers qualify;
- * the client only trusts a resolver key that belongs to the recipient.
+ * the client only trusts a resolver key that belongs to the recipient. The bootstrap returns a
+ * key only when `threadline.encryptToPinned` is enforcing (see tests/unit/threadline/
+ * encrypt-to-pinned-switch.test.ts); here the resolver stands for that enforcing bootstrap.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
@@ -65,6 +67,31 @@ describe('ThreadlineClient: encrypt ordinary chat to the pinned key', () => {
     client.sendAuto(peer.fp, 'again');
     expect(encrypted).toHaveLength(0);
     expect(sent).toHaveLength(2);
+  });
+
+  it('a send the resolver routes to the pinned key that then fails is refused, never sent in plaintext', () => {
+    const peer = keyFor();
+    const internals = client as unknown as Record<string, unknown>;
+    internals.encryptor = { encrypt: () => { throw new Error('boom'); } };
+    client.setEncryptToResolver(() => peer.key);
+    expect(() => client.sendAuto(peer.fp, 'secret-ish')).toThrow(/no plaintext fallback.*boom/);
+    expect(sent).toHaveLength(0);
+    // Even with relay-supplied keys cached, it does not fall through to them either.
+    (client as unknown as { knownAgents: Map<string, unknown> }).knownAgents.set(peer.fp, { publicKey: Buffer.alloc(32, 7), x25519PublicKey: Buffer.alloc(32, 8) });
+    expect(() => client.sendAuto(peer.fp, 'again')).toThrow(/no plaintext fallback/);
+    internals.relayClient = { sendMessage: () => { throw new Error('socket closed'); } };
+    internals.encryptor = { encrypt: (_pk: Buffer, _xk: Buffer, threadId: string) => ({ threadId, messageId: 'm', ephemeralPubKey: 'e' }) };
+    expect(() => client.sendAuto(peer.fp, 'x')).toThrow(/no plaintext fallback.*socket closed/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the resolver is told whether it is consulted for a send or a capability check', () => {
+    const peer = keyFor();
+    const uses: Array<string | undefined> = [];
+    client.setEncryptToResolver((_fp, use) => { uses.push(use); return null; });
+    client.sendAuto(peer.fp, 'a');
+    client.hasEncryptedSendPath(peer.fp);
+    expect(uses).toEqual(['send', 'check']);
   });
 
   it('no resolver, or one returning null: unchanged behaviour', () => {

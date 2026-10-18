@@ -115,7 +115,7 @@ export class ThreadlineClient extends EventEmitter {
   private identity: IdentityInfo | null = null;
   private pinnedKeyResolver: ((fp: string) => Buffer | null) | null = null;
   /** The pinned key to ALWAYS encrypt ordinary chat to, or null (spec threadline-standalone-pairing D6, step 9). */
-  private encryptToResolver: ((fp: string) => Buffer | null) | null = null;
+  private encryptToResolver: ((fp: string, use?: 'send' | 'check') => Buffer | null) | null = null;
   private readonly knownAgents = new Map<AgentFingerprint, KnownAgent>();
   /** threadId of the most recent send()/sendPlaintext() envelope (synchronous; read by sendAutoWithThread). */
   private lastWireThreadId: string | null = null;
@@ -474,9 +474,15 @@ export class ThreadlineClient extends EventEmitter {
   ): string {
     // A peer paired by invite is always sent encrypted, to the PINNED key, whether or not the
     // relay has given us its keys this session (never a silent plaintext downgrade).
-    const pinned = this.resolveEncryptTo(recipientId);
+    // If that send cannot be built or handed to the relay, it FAILS: it never falls through to
+    // the plaintext / relay-key paths below (spec D9).
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
     if (pinned) {
-      return this.sendToPinned(recipientId, pinned.toString('hex'), resend ? { content, resend: true } : { content }, threadId, messageId).messageId;
+      try {
+        return this.sendToPinned(recipientId, pinned.toString('hex'), resend ? { content, resend: true } : { content }, threadId, messageId).messageId;
+      } catch (err) {
+        throw new Error(`Encrypted send to pinned peer ${String(recipientId).slice(0, 12)} failed; not sent (no plaintext fallback): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     // If we know the agent's keys, use encrypted send
@@ -602,7 +608,7 @@ export class ThreadlineClient extends EventEmitter {
    * credential-bearing send when this returns false.
    */
   hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
-    if (this.resolveEncryptTo(recipientId)) return true;
+    if (this.resolveEncryptTo(recipientId, 'check')) return true;
     const known = this.knownAgents.get(recipientId);
     return Boolean(known?.publicKey && known?.x25519PublicKey);
   }
@@ -1051,13 +1057,14 @@ export class ThreadlineClient extends EventEmitter {
    * Where ordinary chat to `fp` must always be encrypted: the pinned identity key when the
    * pairing makes that safe (the bootstrap decides: invite-paired and mutual-verified), else null.
    */
-  setEncryptToResolver(resolver: ((fp: string) => Buffer | null) | null): void {
+  setEncryptToResolver(resolver: ((fp: string, use?: 'send' | 'check') => Buffer | null) | null): void {
     this.encryptToResolver = resolver;
   }
 
-  private resolveEncryptTo(fp: string): Buffer | null {
+  /** `use`: 'send' for an actual send (counted by the bootstrap's watch mode), 'check' for a capability probe. */
+  private resolveEncryptTo(fp: string, use: 'send' | 'check'): Buffer | null {
     try {
-      const key = this.encryptToResolver?.(String(fp).toLowerCase()) ?? null;
+      const key = this.encryptToResolver?.(String(fp).toLowerCase(), use) ?? null;
       return key && key.length === 32 && key.subarray(0, 16).toString('hex') === String(fp).toLowerCase() ? key : null;
     } catch {
       return null;

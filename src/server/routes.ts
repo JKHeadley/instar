@@ -570,6 +570,11 @@ import {
   relayUnknownSenderTrustCounters,
   resolveRelayUnknownSenderTrustMode,
 } from '../threadline/relayUnknownSenderTrust.js';
+import {
+  encryptToPinnedCounters,
+  encryptToPinnedModeName,
+  resolveEncryptToPinnedMode,
+} from '../threadline/encryptToPinned.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
 import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
 import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
@@ -5138,6 +5143,18 @@ export function createRoutes(ctx: RouteContext): Router {
             } catch { return null; /* @silent-fallback-ok — evidence only */ }
           })(),
         },
+        // Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9): the live mode
+        // (off | watch | enforce) and the process-wide counters. AUTHED only.
+        encryptToPinned: (() => {
+          const mode = resolveEncryptToPinnedMode(
+            {
+              enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.encryptToPinned.enabled', undefined),
+              dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.encryptToPinned.dryRun', undefined),
+            },
+            ctx.config as { developmentAgent?: boolean; threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } } },
+          );
+          return { ...mode, mode: encryptToPinnedModeName(mode), ...encryptToPinnedCounters };
+        })(),
       };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.

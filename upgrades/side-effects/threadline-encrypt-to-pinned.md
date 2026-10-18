@@ -9,6 +9,13 @@
 
 Step 9 (second half) of `docs/specs/threadline-standalone-pairing.md`: Instar now encrypts ordinary chat to a peer paired by invite, always, to the pinned identity key. `ThreadlineClient` gains `setEncryptToResolver`; `sendAuto` consults it first; `hasEncryptedSendPath` counts it. `ThreadlineBootstrap` wires it to the trust store: a key only for `mutual-verified` peers with no `sasFingerprint` (paired by invite).
 
+## Revision (spec r3, D9 / rollout step 5)
+
+- Invite peers are identified by an explicit `pairingMethod` on the trust profile (set by the invite, SAS and inheritance paths; backfilled on load for `mutual-verified` profiles), not by the absence of a SAS fingerprint.
+- Behind the live switch `threadline.encryptToPinned` (off | watch | enforce; dev-gated like `relayUnknownSenderTrust`, `dryRun` default true). Only enforce changes a send.
+- In enforce, a pinned send that fails throws; it never falls through to plaintext.
+- Receive side, enforce only: plaintext ordinary chat under an invite-paired peer's fingerprint is delivered with a fixed server notice and its trust level capped at `verified`. Nothing is refused. This IS a behaviour change for such a sender's plaintext (it no longer gets `trusted` handling); acks and probes are untouched.
+
 ## Decision-point inventory
 
 - `ThreadlineBootstrap` resolver: which peers always get encryption (mutual-verified AND invite-paired).

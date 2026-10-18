@@ -62,6 +62,9 @@ export type PairingState =
    */
   | 'invite-accepted';
 
+/** How a pinned identity key was verified (spec threadline-standalone-pairing D9). */
+export type PairingMethod = 'invite' | 'sas' | 'inherited';
+
 export interface AgentTrustHistory {
   messagesReceived: number;
   messagesResponded: number;
@@ -102,6 +105,14 @@ export interface AgentTrustProfile {
   peerIdentityPub?: string;
   /** SAS fingerprint (FD3) — logged/audited value; the SAS WORDS are never stored here. */
   sasFingerprint?: string;
+  /**
+   * HOW the pinned key was verified (docs/specs/threadline-standalone-pairing.md D9):
+   * `invite` (invite-link pairing), `sas` (operator SAS comparison) or `inherited` (a
+   * replicated result from another of this agent's machines). D9's encrypt-to-pinned rule
+   * applies only to `invite`. Profiles from before this field are backfilled on load:
+   * a `mutual-verified` profile gets `sas` when it holds a sasFingerprint, else `invite`.
+   */
+  pairingMethod?: PairingMethod;
   /** When this side's operator SAS-confirmed the peer (ISO-8601). */
   verifiedAt?: string;
   /** Optional liveness flag (FD8): a signature-verified inbound peer receipt arrived. */
@@ -594,6 +605,7 @@ export class AgentTrustManager {
     profile.pairingId = args.pairingId;
     profile.peerIdentityPub = args.peerIdentityPub;
     profile.sasFingerprint = args.sasFingerprint;
+    profile.pairingMethod = 'sas';
     profile.verifiedAt = undefined;
     profile.peerAcked = undefined;
     profile.pairingRecordedAt = now;
@@ -660,6 +672,7 @@ export class AgentTrustManager {
 
     // Record fields first (single source of truth, write source LAST).
     profile.pairingState = 'mutual-verified';
+    profile.pairingMethod = 'sas';
     profile.verifiedAt = now;
     if (typeof args.peerAcked === 'boolean') profile.peerAcked = args.peerAcked;
 
@@ -807,6 +820,7 @@ export class AgentTrustManager {
     profile.peerIdentityPub = key;
     profile.pairingId = undefined;
     profile.sasFingerprint = undefined;
+    profile.pairingMethod = 'invite';
     profile.verifiedAt = undefined;
     profile.peerAcked = undefined;
     profile.pairingRecordedAt = now;
@@ -844,6 +858,7 @@ export class AgentTrustManager {
       ? derivePairingIdV2(Buffer.from(args.ownIdentityPub, 'hex'), Buffer.from(key, 'hex'))
       : undefined;
     profile.sasFingerprint = undefined;
+    profile.pairingMethod = 'invite';
     profile.verifiedAt = now;
     if (this.compareTrust(profile.level, 'trusted') < 0) profile.level = 'trusted';
     profile.allowedOperations = [...DEFAULT_ALLOWED_OPS[profile.level]];
@@ -1023,6 +1038,7 @@ export class AgentTrustManager {
     const now = new Date().toISOString();
 
     profile.pairingState = 'identity-verified';
+    profile.pairingMethod = 'inherited';
     profile.peerIdentityPub = args.peerIdentityPub;
     if (args.verifiedAt) profile.verifiedAt = args.verifiedAt;
     if (args.verifiedOnMachine) profile.inheritedFromMachine = args.verifiedOnMachine;
@@ -1418,6 +1434,7 @@ export class AgentTrustManager {
       profiles: {},
       updatedAt: '',
     });
+    backfillPairingMethod(data.profiles);
     return data.profiles;
   }
 
@@ -1444,4 +1461,24 @@ export class AgentTrustManager {
   private compareTrust(a: AgentTrustLevel, b: AgentTrustLevel): number {
     return TRUST_ORDER.indexOf(a) - TRUST_ORDER.indexOf(b);
   }
+}
+
+/**
+ * Backfill `pairingMethod` on profiles written before it existed (spec
+ * threadline-standalone-pairing D9). Idempotent and in memory: a `mutual-verified` profile
+ * with no method gets `sas` when it holds a sasFingerprint (only the SAS path sets one),
+ * else `invite` (the invite path clears it). An existing value is never overwritten. The
+ * field reaches disk with the next save, like every other profile field.
+ * Returns the number of profiles changed.
+ */
+export function backfillPairingMethod(profiles: Record<string, AgentTrustProfile> | undefined | null): number {
+  if (!profiles || typeof profiles !== 'object') return 0;
+  let changed = 0;
+  for (const p of Object.values(profiles)) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.pairingState !== 'mutual-verified' || p.pairingMethod) continue;
+    p.pairingMethod = p.sasFingerprint ? 'sas' : 'invite';
+    changed++;
+  }
+  return changed;
 }
