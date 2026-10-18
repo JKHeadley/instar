@@ -204,11 +204,21 @@ export const threadlinePairingRecordStoreSchema: StoreFieldSchema = {
     //    carry the suppression. ──────────────────────────────────────────────────────
     if (op === 'delete') {
       const deletedAt = isIso8601(raw.deletedAt) ? (raw.deletedAt as string) : undefined;
+      // Optional (step 5b): the identity key the revoke is FOR, so a receiver only demotes
+      // an inherited profile pinned to that key. Non-hex ⇒ dropped (the revoke still stands,
+      // keyed on the fingerprint recordKey). An older machine drops it as a value field.
+      const peerIdentityPub = isHexString(raw.peerIdentityPub, PAIRING_FP_MIN_LEN, PAIRING_PUB_MAX_LEN)
+        ? (raw.peerIdentityPub as string)
+        : undefined;
       for (const k of Object.keys(raw)) {
         if (k === 'op' || k === 'deletedAt') continue;
+        if (k === 'peerIdentityPub' && peerIdentityPub !== undefined) continue;
         if (THREADLINE_PAIRING_STORE_KNOWN_FIELDS.includes(k)) ctx.countDroppedField();
       }
-      return deletedAt !== undefined ? { deletedAt } : {};
+      return {
+        ...(deletedAt !== undefined ? { deletedAt } : {}),
+        ...(peerIdentityPub !== undefined ? { peerIdentityPub } : {}),
+      };
     }
 
     // ── VALUE (put) branch. ──────────────────────────────────────────────────────────
@@ -374,6 +384,8 @@ export interface BuildThreadlinePairingTombstoneInput {
   origin: string;
   deletedAt: string;
   observed?: HlcTimestamp;
+  /** The pinned identity key being revoked (optional; lets receivers match by key). */
+  peerIdentityPub?: string;
 }
 
 /**
@@ -386,8 +398,12 @@ export interface BuildThreadlinePairingTombstoneInput {
 export function buildThreadlinePairingTombstoneData(input: BuildThreadlinePairingTombstoneInput): ThreadlinePairingRecordData | null {
   const recordKey = deriveThreadlinePairingRecordKey(input.peerFp);
   if (recordKey === null) return null;
+  const key = typeof input.peerIdentityPub === 'string' && /^[0-9a-fA-F]+$/.test(input.peerIdentityPub)
+    ? input.peerIdentityPub
+    : undefined;
   return {
     deletedAt: input.deletedAt,
+    ...(key !== undefined ? { peerIdentityPub: key } : {}),
     recordKey,
     hlc: input.hlc,
     op: 'delete' as ReplicatedOp,
@@ -439,6 +455,52 @@ export function mergeUnionToPairings(union: Map<string, UnionResult>): MergedPai
     if (result.value && result.value.envelope.op !== 'delete') {
       out.push(viewFromOriginRecord(result.value, false));
     }
+  }
+  return out;
+}
+
+/**
+ * A revoke the union currently says is in force for a recordKey (step 5b). `keys` are the
+ * identity keys the tombstones name; `unkeyed` is true when at least one tombstone (from a
+ * machine that does not send the key) names none, which then applies to the fingerprint.
+ */
+export interface PairingRevocation {
+  keys: ReadonlySet<string>;
+  unkeyed: boolean;
+}
+
+/**
+ * The revokes in force, by recordKey, respecting the union's ordering: a key whose union
+ * resolved to a tombstone (every origin's latest is a delete, or a delete superseded the
+ * puts) is revoked; a key whose union resolved to a NEWER put is not (the newer record
+ * wins). An OPEN conflict that includes a tombstone (a revoke concurrent with a put — no
+ * order between them) counts as revoked: fail closed until a newer record settles it.
+ * PURE apart from `loadOriginRecords`.
+ */
+export function revokedPairings(
+  union: Map<string, UnionResult>,
+  loadOriginRecords: (recordKey: string) => ReadonlyArray<OriginRecord>,
+  droppedOrigins: ReadonlySet<string> = new Set(),
+): Map<string, PairingRevocation> {
+  const out = new Map<string, PairingRevocation>();
+  const add = (recordKey: string, tombstones: ReadonlyArray<OriginRecord>): void => {
+    if (tombstones.length === 0) return;
+    const keys = new Set<string>();
+    let unkeyed = false;
+    for (const t of tombstones) {
+      if (typeof t.data.peerIdentityPub === 'string') keys.add(t.data.peerIdentityPub.toLowerCase());
+      else unkeyed = true;
+    }
+    out.set(recordKey, { keys, unkeyed });
+  };
+  for (const [recordKey, result] of union) {
+    if (result.conflict) {
+      add(recordKey, result.conflict.versions.filter((v) => v.envelope.op === 'delete'));
+      continue;
+    }
+    if (result.value) continue; // a put won (newer than any revoke)
+    const records = loadOriginRecords(recordKey).filter((r) => !droppedOrigins.has(r.origin));
+    add(recordKey, records.filter((r) => r.envelope.op === 'delete'));
   }
   return out;
 }

@@ -170,7 +170,7 @@ export interface PairingReplicationEmitter {
   }): void;
   /** Emit a `delete` tombstone for a revoked / verification-failed pairing (un-verify
    *  sticks pool-wide), keyed on the peer fingerprint. */
-  emitRevoke(peerFp: string, deletedAt: string): void;
+  emitRevoke(peerFp: string, deletedAt: string, peerIdentityPub?: string): void;
 }
 
 export interface InteractionStats {
@@ -903,7 +903,7 @@ export class AgentTrustManager {
     profile.updatedAt = now;
     this.save();
     if (this.pairingReplication) {
-      try { this.pairingReplication.emitRevoke(fp, now); } catch { /* best effort */ }
+      try { this.pairingReplication.emitRevoke(fp, now, profile.peerIdentityPub); } catch { /* best effort */ }
     }
     this.writeAudit({
       timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'setup-default',
@@ -933,7 +933,7 @@ export class AgentTrustManager {
     // §3.8 — propagate the un-verify as a TOMBSTONE so it sticks pool-wide (even on a
     // peer machine that was offline at revoke time). Best-effort; never throws out.
     if (this.pairingReplication) {
-      try { this.pairingReplication.emitRevoke(peerFp, now); }
+      try { this.pairingReplication.emitRevoke(peerFp, now, profile.peerIdentityPub); }
       catch { /* replication failure never breaks the local trust write */ }
     }
 
@@ -1121,6 +1121,50 @@ export class AgentTrustManager {
       } catch { /* replication failure never breaks anything local */ }
     }
     return sent;
+  }
+
+  /**
+   * A replicated REVOKE for an inherited pairing (step 5b): the person unpaired on another
+   * of this agent's machines. Acts ONLY on an `identity-verified` profile — the state only
+   * inheritance sets — so a pairing established on THIS machine is never touched. When
+   * `revokedKeys` names keys, the profile must be pinned to one of them (a revoke for key K
+   * never touches a pin to another key); `unkeyed` (a tombstone from a machine that does
+   * not send the key) applies to the fingerprint.
+   *
+   * The inherited pin is FORGOTTEN, not marked verification-failed: the pairing state,
+   * method, pinned key and verification fields are cleared, the trust source goes back to
+   * setup-default and the level is clamped to `verified` (the same clamp as
+   * downgradeToPending), so credential-share and encrypt-to-pinned stop for the peer. A
+   * later, newer replicated record can be inherited again. Emits nothing (the revoke is
+   * already replicated). Returns true iff the profile was changed.
+   */
+  revokeInheritedVerification(
+    peerFp: string,
+    revoke: { keys: ReadonlySet<string>; unkeyed: boolean },
+    reason = 'replicated revoke',
+  ): boolean {
+    const profile = this.getProfileByFingerprint(String(peerFp || '').toLowerCase()) ?? this.getProfileByFingerprint(peerFp);
+    if (!profile || profile.pairingState !== 'identity-verified') return false;
+    const pinned = profile.peerIdentityPub?.toLowerCase();
+    if (!revoke.unkeyed && (!pinned || !revoke.keys.has(pinned))) return false;
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = undefined;
+    profile.pairingMethod = undefined;
+    profile.peerIdentityPub = undefined;
+    profile.verifiedAt = undefined;
+    profile.peerAcked = undefined;
+    profile.inheritedFromMachine = undefined;
+    profile.source = 'setup-default';
+    if (this.compareTrust(profile.level, 'verified') > 0) profile.level = 'verified';
+    profile.allowedOperations = [...DEFAULT_ALLOWED_OPS[profile.level]];
+    profile.updatedAt = now;
+    this.save();
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'system',
+      reason: `Inherited pairing revoked (${reason})`, userInitiated: false,
+    });
+    return true;
   }
 
   /** Downgrade a profile to pending-verification + drop any credential-share authorization

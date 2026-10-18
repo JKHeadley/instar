@@ -18432,70 +18432,26 @@ export async function startServer(options: StartOptions): Promise<void> {
       // can never cross. Gated on the EXPLICIT `multiMachine.stateSync.threadlinePairing.enabled`
       // (default false ⇒ NOT attached ⇒ strict no-op, single-machine behavior). Attached only
       // when the journal-backed emitter exists (journal live) AND the store is enabled.
-      if (threadline.trustManager && replicatedRecordEmitter && cjOwnMachineId) {
-        const pairingStoreEnabled =
-          (config.multiMachine?.stateSync as { threadlinePairing?: { enabled?: boolean } } | undefined)
-            ?.threadlinePairing?.enabled === true;
-        if (pairingStoreEnabled) {
-          const emitter = replicatedRecordEmitter;
-          const {
-            THREADLINE_PAIRING_STORE_KEY,
-            deriveThreadlinePairingRecordKey,
-            buildThreadlinePairingRecordData,
-            buildThreadlinePairingTombstoneData,
-          } = await import('../core/ThreadlinePairingReplicatedStore.js');
-          threadline.trustManager.setPairingReplicationEmitter(
-            {
-              emitVerified: (result) =>
-                emitter.emit(
-                  THREADLINE_PAIRING_STORE_KEY,
-                  deriveThreadlinePairingRecordKey(result.peerFp),
-                  (hlc, origin, observed) =>
-                    buildThreadlinePairingRecordData({
-                      result: { ...result, state: 'mutual-verified' },
-                      hlc,
-                      origin,
-                      observed,
-                    }),
-                ),
-              emitRevoke: (peerFp, deletedAt) =>
-                emitter.emit(
-                  THREADLINE_PAIRING_STORE_KEY,
-                  deriveThreadlinePairingRecordKey(peerFp),
-                  (hlc, origin, observed) =>
-                    buildThreadlinePairingTombstoneData({ peerFp, hlc, origin, deletedAt, observed }),
-                ),
-            },
-            cjOwnMachineId,
-          );
-
-          // Rollout step 5b — the MERGE half: inherit replicated pairings (pin + method) so a
-          // machine that can become the relay holder applies D9 with the same pinned key, and
-          // re-send local invite pairings once so their method replicates. Same gate as above.
-          if (replicatedPeerStreamReader) {
-            const { createPairingReplicationWiring, buildPairingViewSource } = await import('../threadline/pairingReplicationWiring.js');
-            const source = buildPairingViewSource({
-              registry: replicatedKindRegistry,
-              stores: _stateSyncStoresResolved,
-              streams: replicatedPeerStreamReader,
-              droppedOrigins: droppedOriginRegistry,
-              conflictStore,
-              ownOrigin: cjOwnMachineId,
-            });
-            _threadlinePairingWiring = createPairingReplicationWiring({
-              config,
-              trust: threadline.trustManager,
-              readViews: source.readViews,
-              // Idempotency marker for the migration: THIS machine's own replicated stream.
-              alreadyPublishedInvite: source.alreadyPublishedInvite,
-              log: (m) => console.log(pc.dim(`  [threadline-pairing] ${m}`)),
-            });
-            const started = _threadlinePairingWiring?.start();
-            if (started) {
-              console.log(pc.dim(`  [threadline-pairing] replication merge wired (re-sent ${started.republished}, inherited ${started.inheritance.inherited}, peers ${started.inheritance.peers})`));
-            }
-          }
-        }
+      //
+      // Rollout step 5b — the MERGE half lives in attachThreadlinePairingReplication too:
+      // replicated pairings are inherited (pin + method) and revokes forget inherited pins,
+      // run once at startup (after the invite-method migration) and again from the
+      // peer-apply commit observer above whenever threadline-pairing-record entries land.
+      // All of it is inside the module; this block only attaches it.
+      if (threadline.trustManager && replicatedRecordEmitter && cjOwnMachineId && replicatedPeerStreamReader) {
+        const { attachThreadlinePairingReplication } = await import('../threadline/pairingReplicationWiring.js');
+        _threadlinePairingWiring = attachThreadlinePairingReplication({
+          config,
+          trust: threadline.trustManager,
+          emitter: replicatedRecordEmitter,
+          ownOrigin: cjOwnMachineId,
+          registry: replicatedKindRegistry,
+          stores: _stateSyncStoresResolved,
+          streams: replicatedPeerStreamReader,
+          droppedOrigins: droppedOriginRegistry,
+          conflictStore,
+          log: (m) => console.log(pc.dim(`  [threadline-pairing] ${m}`)),
+        });
       }
 
       // Rollout step 5b, item 7: enforce encrypt-to-pinned on a MULTI-machine agent needs

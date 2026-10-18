@@ -20,7 +20,9 @@ import {
   REPLICATED_PAIRING_STATE,
   addPairingMethodWitnesses,
   buildThreadlinePairingRecordData,
+  buildThreadlinePairingTombstoneData,
   deriveThreadlinePairingRecordKey,
+  revokedPairings,
   evaluateInheritedVerification,
   pairingResultToOriginRecord,
   threadlinePairingRecordStoreSchema,
@@ -38,10 +40,10 @@ import type { HlcTimestamp } from '../../../src/core/HybridLogicalClock.js';
 import type { OriginRecord } from '../../../src/core/UnionReader.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { createEncryptToPinnedResolver, createEncryptToPinnedCounters, type EncryptToPinnedMode } from '../../../src/threadline/encryptToPinned.js';
+import { assertCanShareCredential } from '../../../src/threadline/CredentialShareGate.js';
 import {
   applyReplicatedPairingInheritance,
-  buildPairingViewSource,
-  createPairingReplicationWiring,
+  attachThreadlinePairingReplication,
   encryptToPinnedMultiMachineNote,
   isThreadlinePairingReplicationEnabled,
   type PairingReplicationWiring,
@@ -124,6 +126,17 @@ describe('the sixth field: pairingMethod', () => {
     expect(dropped).toBe(0);
   });
 
+  it('a tombstone may name the revoked key; a non-hex key is dropped and the revoke still stands', () => {
+    const keyed = schemaValidate({ op: 'delete', deletedAt: VERIFIED_AT, peerIdentityPub: p.key });
+    expect(keyed.out).toEqual({ deletedAt: VERIFIED_AT, peerIdentityPub: p.key });
+    expect(keyed.dropped).toBe(0);
+    const bad = schemaValidate({ op: 'delete', deletedAt: VERIFIED_AT, peerIdentityPub: '<zz>' });
+    expect(bad.out).toEqual({ deletedAt: VERIFIED_AT });
+    expect(bad.dropped).toBe(1);
+    const built = buildThreadlinePairingTombstoneData({ peerFp: p.fp, hlc: hlc(1, SELF), origin: SELF, deletedAt: VERIFIED_AT, peerIdentityPub: p.key })!;
+    expect(built.peerIdentityPub).toBe(p.key);
+  });
+
   it('the sender includes invite|sas and omits anything else', () => {
     const withInvite = buildThreadlinePairingRecordData({ result: result(p, { pairingMethod: 'invite' }), hlc: hlc(1, SELF), origin: SELF })!;
     expect(withInvite.pairingMethod).toBe('invite');
@@ -201,45 +214,51 @@ describe('inheritance wired on merge', () => {
   let wiring: PairingReplicationWiring | null;
   const seq: Record<string, number> = {};
 
+  let tick = 5000;
+  /** The server's attach call, verbatim in shape: real journal-backed emitter, real streams. */
   function makeWiring(config: unknown): PairingReplicationWiring | null {
-    const source = buildPairingViewSource({
+    return attachThreadlinePairingReplication({
+      config: config as never,
+      trust,
+      emitter: new ReplicatedRecordEmitter({
+        journal,
+        clock: { tick: () => hlc(++tick, SELF) },
+        registry,
+        origin: SELF,
+        stores: () => ({ threadlinePairing: { enabled: true } }),
+        loadWitness: (store, rk) => reader.loadWitness(store, rk),
+      }),
+      ownOrigin: SELF,
       registry,
       stores: { threadlinePairing: { enabled: true } },
       streams: reader,
       droppedOrigins: new DroppedOriginRegistry({ stateDir: dir }),
       conflictStore: new ConflictStore({ stateDir: dir, now: () => new Date() }),
-      ownOrigin: SELF,
-    });
-    return createPairingReplicationWiring({
-      config: config as never, trust, readViews: source.readViews, alreadyPublishedInvite: source.alreadyPublishedInvite,
     });
   }
 
-  /** A peer machine's record arrives through the real applier; the commit observer is the merge hook. */
-  function applyPeer(origin: string, p: { key: string; fp: string }, physical: number, method?: 'invite' | 'sas'): void {
+  function applyEntry(origin: string, data: Record<string, unknown>): void {
     seq[origin] = (seq[origin] ?? 0) + 1;
-    const data = buildThreadlinePairingRecordData({ result: result(p, { verifiedOnMachine: origin, pairingMethod: method }), hlc: hlc(physical, origin), origin })!;
     const entry: JournalEntry = { seq: seq[origin], ts: new Date(2026, 9, 1).toISOString(), machine: origin, kind: THREADLINE_PAIRING_RECORD_KIND, data };
     const batch: ApplyBatchStream[] = [{ kind: THREADLINE_PAIRING_RECORD_KIND, incarnation: `inc-${origin}`, entries: [entry] }];
     applier.apply(origin, batch);
   }
 
-  /** The same emitter adapter server.ts attaches, over a real journal-backed emitter. */
-  function attachSender(): void {
-    let tick = 5000;
-    const emitter = new ReplicatedRecordEmitter({
-      journal,
-      clock: { tick: () => hlc(++tick, SELF) },
-      registry,
-      origin: SELF,
-      stores: () => ({ threadlinePairing: { enabled: true } }),
-      loadWitness: (store, rk) => reader.loadWitness(store, rk),
-    });
-    trust.setPairingReplicationEmitter({
-      emitVerified: (r) => emitter.emit(THREADLINE_PAIRING_STORE_KEY, deriveThreadlinePairingRecordKey(r.peerFp),
-        (h, origin, observed) => buildThreadlinePairingRecordData({ result: { ...r, state: 'mutual-verified' }, hlc: h, origin, observed })),
-      emitRevoke: () => {},
-    }, SELF);
+  /** A peer machine's record arrives through the real applier; the commit observer is the merge hook. */
+  function applyPeer(origin: string, p: { key: string; fp: string }, physical: number, method?: 'invite' | 'sas', observed?: number): void {
+    applyEntry(origin, buildThreadlinePairingRecordData({
+      result: result(p, { verifiedOnMachine: origin, pairingMethod: method }), hlc: hlc(physical, origin), origin,
+      ...(observed !== undefined ? { observed: hlc(observed, 'witness') } : {}),
+    })!);
+  }
+
+  /** A peer machine's revoke (tombstone) arrives through the real applier. */
+  function applyRevoke(origin: string, p: { key: string; fp: string }, physical: number, opts: { observed?: number; keyed?: boolean } = {}): void {
+    applyEntry(origin, buildThreadlinePairingTombstoneData({
+      peerFp: p.fp, hlc: hlc(physical, origin), origin, deletedAt: VERIFIED_AT,
+      ...(opts.keyed === false ? {} : { peerIdentityPub: p.key }),
+      ...(opts.observed !== undefined ? { observed: hlc(opts.observed, 'witness') } : {}),
+    })!);
   }
 
   beforeEach(() => {
@@ -259,6 +278,7 @@ describe('inheritance wired on merge', () => {
       wiring?.onRecordsCommitted(kind);
     });
     for (const k of Object.keys(seq)) delete seq[k];
+    tick = 5000;
   });
   afterEach(() => {
     try { journal.close(); } catch { /* best effort */ }
@@ -347,10 +367,9 @@ describe('inheritance wired on merge', () => {
     expect(trust.inheritReplicatedVerification(inh.fp, { peerIdentityPub: inh.key, pairingMethod: 'invite' })).toBe(true);
     expect(reader.listRecordKeys(THREADLINE_PAIRING_STORE_KEY)).toHaveLength(0);
 
-    attachSender();
-    wiring = makeWiring(GATE_ON);
-    expect(wiring!.start().republished).toBe(1); // only the LOCAL invite pairing
+    wiring = makeWiring(GATE_ON); // attach runs start(): migration, then a pass
     journal.flush();
+    expect(reader.listRecordKeys(THREADLINE_PAIRING_STORE_KEY)).toHaveLength(1); // only the LOCAL invite pairing
     const own = reader.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, deriveThreadlinePairingRecordKey(inv.fp)!);
     expect(own).toHaveLength(1);
     expect(own[0]).toMatchObject({ origin: SELF, data: { pairingMethod: 'invite', peerIdentityPub: inv.key } });
@@ -358,6 +377,7 @@ describe('inheritance wired on merge', () => {
 
     // Next start: the own stream already carries 'invite' for that key — nothing re-sent.
     expect(makeWiring(GATE_ON)!.start().republished).toBe(0);
+    expect(wiring!.start().republished).toBe(0);
     journal.flush();
     expect(reader.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, deriveThreadlinePairingRecordKey(inv.fp)!)[0].envelope.hlc.physical)
       .toBe(own[0].envelope.hlc.physical);
@@ -366,14 +386,14 @@ describe('inheritance wired on merge', () => {
   it('migration does nothing with the gate off', () => {
     const inv = peer();
     trust.markInviteVerified(inv.fp, { peerIdentityPub: inv.key, via: 'finish' });
-    attachSender();
     expect(makeWiring(GATE_OFF)).toBeNull();
+    trust.markVerificationFailed(inv.fp, 'x'); // no sender attached either: nothing emitted
     journal.flush();
     expect(reader.listRecordKeys(THREADLINE_PAIRING_STORE_KEY)).toHaveLength(0);
   });
 
   it('a new invite verification sends the method; a new SAS verification sends sas', () => {
-    attachSender();
+    wiring = makeWiring(GATE_ON);
     const inv = peer(), sas = peer();
     trust.markInviteVerified(inv.fp, { peerIdentityPub: inv.key, via: 'finish' });
     trust.recordPendingVerification(sas.fp, { pairingId: 'pid', peerIdentityPub: sas.key, sasWords: ['a'], sasFingerprint: 'sfp' });
@@ -381,6 +401,155 @@ describe('inheritance wired on merge', () => {
     journal.flush();
     expect(reader.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, deriveThreadlinePairingRecordKey(inv.fp)!)[0].data.pairingMethod).toBe('invite');
     expect(reader.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, deriveThreadlinePairingRecordKey(sas.fp)!)[0].data.pairingMethod).toBe('sas');
+  });
+});
+
+describe('revokes forget the INHERITED pin', () => {
+  let dir: string;
+  let journal: CoherenceJournal;
+  let applier: JournalSyncApplier;
+  let reader: ReplicatedPeerStreamReader;
+  let registry: ReplicatedKindRegistry;
+  let trust: AgentTrustManager;
+  let wiring: PairingReplicationWiring | null;
+  const seq: Record<string, number> = {};
+
+  function applyEntry(origin: string, data: Record<string, unknown>): void {
+    seq[origin] = (seq[origin] ?? 0) + 1;
+    const entry: JournalEntry = { seq: seq[origin], ts: new Date(2026, 9, 1).toISOString(), machine: origin, kind: THREADLINE_PAIRING_RECORD_KIND, data };
+    applier.apply(origin, [{ kind: THREADLINE_PAIRING_RECORD_KIND, incarnation: `inc-${origin}`, entries: [entry] }]);
+  }
+  const put = (origin: string, p: { key: string; fp: string }, physical: number, method?: 'invite' | 'sas', observed?: number) =>
+    applyEntry(origin, buildThreadlinePairingRecordData({
+      result: result(p, { verifiedOnMachine: origin, pairingMethod: method }), hlc: hlc(physical, origin), origin,
+      ...(observed !== undefined ? { observed: hlc(observed, 'witness') } : {}),
+    })!);
+  const revoke = (origin: string, p: { key: string; fp: string }, physical: number, opts: { observed?: number; keyed?: boolean } = {}) =>
+    applyEntry(origin, buildThreadlinePairingTombstoneData({
+      peerFp: p.fp, hlc: hlc(physical, origin), origin, deletedAt: VERIFIED_AT,
+      ...(opts.keyed === false ? {} : { peerIdentityPub: p.key }),
+      ...(opts.observed !== undefined ? { observed: hlc(opts.observed, 'witness') } : {}),
+    })!);
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pairing-revoke-'));
+    registry = new ReplicatedKindRegistry();
+    registry.register(THREADLINE_PAIRING_KIND_REGISTRATION);
+    journal = new CoherenceJournal({ stateDir: dir, machineId: SELF, flushIntervalMs: 1_000_000 });
+    journal.open();
+    journal.setReplicatedKindRegistry(registry);
+    applier = new JournalSyncApplier({ stateDir: dir, replicatedRegistry: registry });
+    reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry, selfMachineId: SELF, autoRebuild: false });
+    trust = new AgentTrustManager({ stateDir: dir, machineId: SELF });
+    let tick = 9000;
+    wiring = attachThreadlinePairingReplication({
+      config: GATE_ON, trust,
+      emitter: new ReplicatedRecordEmitter({
+        journal, clock: { tick: () => hlc(++tick, SELF) }, registry, origin: SELF,
+        stores: () => ({ threadlinePairing: { enabled: true } }),
+        loadWitness: (store, rk) => reader.loadWitness(store, rk),
+      }),
+      ownOrigin: SELF, registry, stores: { threadlinePairing: { enabled: true } }, streams: reader,
+      droppedOrigins: new DroppedOriginRegistry({ stateDir: dir }),
+      conflictStore: new ConflictStore({ stateDir: dir, now: () => new Date() }),
+    });
+    applier.setReplicatedRecordCommitObserver((_s, kind, entries) => {
+      reader.observeCommittedEntries(kind, entries);
+      wiring?.onRecordsCommitted(kind);
+    });
+    for (const k of Object.keys(seq)) delete seq[k];
+  });
+  afterEach(() => {
+    try { journal.close(); } catch { /* best effort */ }
+    trust.flush();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/threadline/pairing-replication-merge.test.ts' });
+  });
+
+  it('a revoke (person unpaired on machine A) removes the inherited pin: credentials refused, encrypt-to-pinned null', () => {
+    const p = peer();
+    put(PEER_A, p, 1000, 'invite');
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBe('identity-verified');
+    expect(assertCanShareCredential(trust, p.fp).allow).toBe(true);
+    expect(createEncryptToPinnedResolver({ trustManager: trust, mode: () => ENFORCE })(p.fp, 'send')!.toString('hex')).toBe(p.key);
+
+    revoke(PEER_A, p, 2000);
+    const prof = trust.getProfileByFingerprint(p.fp)!;
+    expect(prof.pairingState).toBeUndefined();
+    expect(prof.peerIdentityPub).toBeUndefined();
+    expect(prof.source).toBe('setup-default');
+    expect(trust.isCredentialShareAllowedByFingerprint(p.fp)).toBe(false);
+    expect(assertCanShareCredential(trust, p.fp).allow).toBe(false);
+    expect(createEncryptToPinnedResolver({ trustManager: trust, mode: () => ENFORCE })(p.fp, 'send')).toBeNull();
+  });
+
+  it('a revoke from ANOTHER machine that saw the put (witness) also applies', () => {
+    const p = peer();
+    put(PEER_A, p, 1000, 'invite');
+    revoke(PEER_C, p, 2000, { observed: 1000 });
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBeUndefined();
+  });
+
+  it('a tombstone from an older machine (no key) revokes by fingerprint', () => {
+    const p = peer();
+    put(PEER_A, p, 1000, 'invite');
+    revoke(PEER_A, p, 2000, { keyed: false });
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBeUndefined();
+  });
+
+  it('a locally established pairing is untouched by a revoke', () => {
+    const local = peer();
+    expect(trust.markInviteVerified(local.fp, { peerIdentityPub: local.key, via: 'finish' })).toBe(true);
+    revoke(PEER_A, local, 2000);
+    expect(trust.getProfileByFingerprint(local.fp)).toMatchObject({ pairingState: 'mutual-verified', peerIdentityPub: local.key, source: 'mutual-verified' });
+    expect(trust.isCredentialShareAllowedByFingerprint(local.fp)).toBe(true);
+  });
+
+  it('a revoke for key K does not touch an inherited pin to a different key', () => {
+    const p = peer();
+    trust.inheritReplicatedVerification(p.fp, { peerIdentityPub: p.key, pairingMethod: 'invite' });
+    revoke(PEER_A, { fp: p.fp, key: p.fp + '0'.repeat(32) }, 2000);
+    expect(trust.getProfileByFingerprint(p.fp)).toMatchObject({ pairingState: 'identity-verified', peerIdentityPub: p.key });
+    expect(trust.isCredentialShareAllowedByFingerprint(p.fp)).toBe(true);
+  });
+
+  it('a revoke then a NEWER record re-inherits (the newer one wins)', () => {
+    const p = peer();
+    put(PEER_A, p, 1000, 'invite');
+    revoke(PEER_A, p, 2000);
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBeUndefined();
+    put(PEER_A, p, 3000, 'invite');
+    expect(trust.getProfileByFingerprint(p.fp)).toMatchObject({ pairingState: 'identity-verified', pairingMethod: 'invite', peerIdentityPub: p.key });
+    // and from another machine that saw the revoke
+    revoke(PEER_A, p, 4000);
+    put(PEER_C, p, 5000, 'invite', 4000);
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBe('identity-verified');
+  });
+
+  it('a NEWER put already in force is not undone by an older revoke arriving late', () => {
+    const p = peer();
+    put(PEER_C, p, 3000, 'invite', 2000); // C re-paired after seeing A's revoke at 2000
+    revoke(PEER_A, p, 2000);              // the older revoke lands afterwards
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBe('identity-verified');
+  });
+
+  it('a revoke CONCURRENT with a put (no order) fails closed', () => {
+    const p = peer();
+    put(PEER_A, p, 1000, 'invite');
+    put(PEER_C, p, 1500, 'invite');      // concurrent puts, same key: inherited
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBe('identity-verified');
+    revoke(PEER_A, p, 2000);             // A revoked, C never saw it: open conflict with a tombstone
+    expect(trust.getProfileByFingerprint(p.fp)!.pairingState).toBeUndefined();
+  });
+
+  it('revokedPairings respects the union winner', () => {
+    const p = peer();
+    put(PEER_A, p, 1000);
+    revoke(PEER_A, p, 2000);
+    const rk = deriveThreadlinePairingRecordKey(p.fp)!;
+    const tomb = reader.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, rk);
+    expect(revokedPairings(new Map([[rk, { recordKey: rk, value: null, conflict: null, divergenceFlag: false }]]), () => tomb).get(rk))
+      .toMatchObject({ unkeyed: false });
+    expect(revokedPairings(new Map([[rk, { recordKey: rk, value: tomb[0], conflict: null, divergenceFlag: false }]]), () => tomb).size).toBe(0);
   });
 });
 

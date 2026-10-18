@@ -20,13 +20,27 @@
  * paused invite pairing looks). A local `pending-verification` live handshake is evaluated
  * with its own key as the presented key; a different replicated key is refused without
  * touching the profile.
+ *
+ * Revokes: a tombstone in force for a peer (the union resolved to it, or an open conflict
+ * includes it) FORGETS the INHERITED (`identity-verified`) profile pinned to the revoked key
+ * (AgentTrustManager.revokeInheritedVerification). A locally established pairing and a pin
+ * to a different key are never touched; a newer put for the key wins over an older revoke
+ * through the union's own ordering, and is then inherited again.
+ *
+ * `attachThreadlinePairingReplication` holds ALL of the server's wiring (sender adapters,
+ * read side, merge wiring, startup pass); server.ts calls it and forwards the journal
+ * applier's commit observer to `onRecordsCommitted`.
  */
 
 import {
   THREADLINE_PAIRING_RECORD_KIND,
   THREADLINE_PAIRING_STORE_KEY,
   addPairingMethodWitnesses,
+  buildThreadlinePairingRecordData,
+  buildThreadlinePairingTombstoneData,
   deriveThreadlinePairingRecordKey,
+  revokedPairings,
+  type PairingRevocation,
   evaluateInheritedVerification,
   mergeUnionToPairings,
   threadlinePairingTierOf,
@@ -35,15 +49,23 @@ import {
 import { ReplicatedStoreReader } from '../core/ReplicatedStoreReader.js';
 import type { ReplicatedKindRegistry, StateSyncStores } from '../core/ReplicatedRecordEnvelope.js';
 import type { OriginRecord } from '../core/UnionReader.js';
+import type { BuildRecordData } from '../core/ReplicatedRecordEmitter.js';
 import type { ConflictStore } from '../core/ConflictStore.js';
 import type { DroppedOriginRegistry } from '../core/RollbackUnmerge.js';
 import type { AgentTrustManager, AgentTrustProfile } from './AgentTrustManager.js';
 
+/** What one merge pass reads: the honourable views and the revokes in force. */
+export interface PairingReplicatedState {
+  views: MergedPairingView[];
+  revoked: ReadonlyMap<string, PairingRevocation>;
+}
+
 /**
  * The read side the wiring needs, built over the replicated peer-stream reader (own +
- * peer journal streams). `readViews` is the no-clobber union (dropped origins excluded,
- * HIGH-impact conflicts recorded) plus method witnesses; `alreadyPublishedInvite` answers
- * from THIS machine's own stream (the migration's idempotency marker).
+ * peer journal streams). `readState` reads the no-clobber union once (dropped origins
+ * excluded, HIGH-impact conflicts recorded) and returns the views plus method witnesses
+ * and the revokes in force; `alreadyPublishedInvite` answers from THIS machine's own
+ * stream (the migration's idempotency marker).
  */
 export function buildPairingViewSource(deps: {
   registry: ReplicatedKindRegistry;
@@ -55,7 +77,7 @@ export function buildPairingViewSource(deps: {
   droppedOrigins: DroppedOriginRegistry;
   conflictStore: ConflictStore;
   ownOrigin: string;
-}): { readViews: () => MergedPairingView[]; alreadyPublishedInvite: (peerFp: string, peerIdentityPub: string) => boolean } {
+}): { readState: () => PairingReplicatedState; alreadyPublishedInvite: (peerFp: string, peerIdentityPub: string) => boolean } {
   const union = new ReplicatedStoreReader({
     registry: deps.registry,
     stores: deps.stores,
@@ -66,11 +88,15 @@ export function buildPairingViewSource(deps: {
     conflictStore: deps.conflictStore,
   });
   return {
-    readViews: () => addPairingMethodWitnesses(
-      mergeUnionToPairings(union.readAll(THREADLINE_PAIRING_STORE_KEY)),
-      (recordKey) => deps.streams.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, recordKey),
-      deps.droppedOrigins.droppedOrigins(THREADLINE_PAIRING_STORE_KEY),
-    ),
+    readState: () => {
+      const all = union.readAll(THREADLINE_PAIRING_STORE_KEY);
+      const load = (recordKey: string) => deps.streams.loadOriginRecords(THREADLINE_PAIRING_STORE_KEY, recordKey);
+      const dropped = deps.droppedOrigins.droppedOrigins(THREADLINE_PAIRING_STORE_KEY);
+      return {
+        views: addPairingMethodWitnesses(mergeUnionToPairings(all), load, dropped),
+        revoked: revokedPairings(all, load, dropped),
+      };
+    },
     alreadyPublishedInvite: (peerFp, peerIdentityPub) => {
       const rk = deriveThreadlinePairingRecordKey(peerFp);
       if (!rk) return false;
@@ -90,7 +116,10 @@ export function isThreadlinePairingReplicationEnabled(config: {
   return ss?.threadlinePairing?.enabled === true;
 }
 
-export type InheritanceTrust = Pick<AgentTrustManager, 'getProfileByFingerprint' | 'inheritReplicatedVerification'>;
+export type InheritanceTrust = Pick<
+  AgentTrustManager,
+  'getProfileByFingerprint' | 'inheritReplicatedVerification' | 'listProfiles' | 'revokeInheritedVerification'
+>;
 
 export interface InheritanceSummary {
   /** Peers evaluated (distinct fingerprints in the view). */
@@ -103,6 +132,10 @@ export interface InheritanceSummary {
   localWins: number;
   /** evaluateInheritedVerification refused (key mismatch / ambiguous keys / no record). */
   refused: number;
+  /** Inherited profiles forgotten because a revoke for their key is in force. */
+  revoked: number;
+  /** Peers with a revoke in force whose put variants were NOT inherited (fail closed). */
+  revokeHeld: number;
 }
 
 /** Local pairing states that are THIS machine's own decision and are never overridden here. */
@@ -116,14 +149,33 @@ const LOCAL_AUTHORITY_STATES = new Set(['mutual-verified', 'verification-failed'
 export function applyReplicatedPairingInheritance(
   views: ReadonlyArray<MergedPairingView>,
   trust: InheritanceTrust,
+  revoked: ReadonlyMap<string, PairingRevocation> = new Map(),
 ): InheritanceSummary {
-  const summary: InheritanceSummary = { peers: 0, inherited: 0, unchanged: 0, localWins: 0, refused: 0 };
+  const summary: InheritanceSummary = { peers: 0, inherited: 0, unchanged: 0, localWins: 0, refused: 0, revoked: 0, revokeHeld: 0 };
+
+  // 1. Revokes first. Only INHERITED profiles (identity-verified — the state only
+  //    inheritance sets); revokeInheritedVerification enforces that and the key match.
+  if (revoked.size > 0) {
+    for (const profile of trust.listProfiles()) {
+      if (profile.pairingState !== 'identity-verified' || !profile.fingerprint) continue;
+      const rk = deriveThreadlinePairingRecordKey(profile.fingerprint);
+      const revoke = rk ? revoked.get(rk) : undefined;
+      if (revoke && trust.revokeInheritedVerification(profile.fingerprint, revoke)) summary.revoked++;
+    }
+  }
+
+  // 2. Inheritance for peers whose records are not revoked.
   const fps = new Set<string>();
   for (const v of views) {
     if (typeof v.data.peerFp === 'string' && v.data.peerFp.length > 0) fps.add(v.data.peerFp.toLowerCase());
   }
   for (const fp of fps) {
     summary.peers++;
+    const rk = deriveThreadlinePairingRecordKey(fp);
+    if (rk && revoked.has(rk)) {
+      summary.revokeHeld++;
+      continue;
+    }
     const local: AgentTrustProfile | null = trust.getProfileByFingerprint(fp);
     if (local?.pairingState && LOCAL_AUTHORITY_STATES.has(local.pairingState)) {
       summary.localWins++;
@@ -162,8 +214,8 @@ export interface PairingReplicationWiringDeps {
   /** The live config (gate read once at construction). */
   config: { multiMachine?: { stateSync?: unknown } } | undefined;
   trust: InheritanceTrust & Pick<AgentTrustManager, 'republishInvitePairingMethods'>;
-  /** The merged replicated view (union + method witnesses). */
-  readViews: () => MergedPairingView[];
+  /** The merged replicated view (union + method witnesses) and the revokes in force. */
+  readState: () => PairingReplicatedState;
   /** Does THIS machine's own replicated stream already hold an 'invite' record for this
    *  peer and key? (the migration's idempotency marker) */
   alreadyPublishedInvite: (peerFp: string, peerIdentityPub: string) => boolean;
@@ -186,11 +238,12 @@ export interface PairingReplicationWiring {
 export function createPairingReplicationWiring(deps: PairingReplicationWiringDeps): PairingReplicationWiring | null {
   if (!isThreadlinePairingReplicationEnabled(deps.config)) return null;
   const log = deps.log ?? (() => {});
-  const empty = (): InheritanceSummary => ({ peers: 0, inherited: 0, unchanged: 0, localWins: 0, refused: 0 });
+  const empty = (): InheritanceSummary => ({ peers: 0, inherited: 0, unchanged: 0, localWins: 0, refused: 0, revoked: 0, revokeHeld: 0 });
   const applyNow = (): InheritanceSummary => {
     try {
-      const s = applyReplicatedPairingInheritance(deps.readViews(), deps.trust);
-      if (s.inherited > 0 || s.refused > 0) log(`pairing inheritance: ${JSON.stringify(s)}`);
+      const state = deps.readState();
+      const s = applyReplicatedPairingInheritance(state.views, deps.trust, state.revoked);
+      if (s.inherited > 0 || s.refused > 0 || s.revoked > 0) log(`pairing inheritance: ${JSON.stringify(s)}`);
       return s;
     } catch (err) {
       log(`pairing inheritance failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -214,6 +267,70 @@ export function createPairingReplicationWiring(deps: PairingReplicationWiringDep
     },
     applyNow,
   };
+}
+
+/** The journal-backed emitter the sender adapters use (ReplicatedRecordEmitter). */
+export interface PairingRecordEmitter {
+  emit(store: string, recordKey: string | null | undefined, build: BuildRecordData): void;
+}
+
+/**
+ * Everything server.ts wires for the pairing store, behind the explicit gate. Attaches the
+ * SENDER (verified results carry the method; revokes carry the key) to the trust manager,
+ * builds the read side over the replicated streams, creates the merge wiring and runs its
+ * startup pass (migration, then one inheritance/revoke pass). Returns the wiring whose
+ * `onRecordsCommitted` the journal applier's commit observer must call, or null with the
+ * gate off (nothing attached — strict no-op).
+ */
+export function attachThreadlinePairingReplication(deps: {
+  config: { multiMachine?: { stateSync?: unknown } } | undefined;
+  trust: InheritanceTrust & Pick<AgentTrustManager, 'republishInvitePairingMethods' | 'setPairingReplicationEmitter'>;
+  emitter: PairingRecordEmitter;
+  ownOrigin: string;
+  registry: ReplicatedKindRegistry;
+  stores: StateSyncStores | undefined;
+  streams: {
+    loadOriginRecords(store: string, recordKey: string): OriginRecord[];
+    listRecordKeys(store: string): string[];
+  };
+  droppedOrigins: DroppedOriginRegistry;
+  conflictStore: ConflictStore;
+  log?: (msg: string) => void;
+}): PairingReplicationWiring | null {
+  if (!isThreadlinePairingReplicationEnabled(deps.config)) return null;
+  const emitter = deps.emitter;
+  deps.trust.setPairingReplicationEmitter(
+    {
+      emitVerified: (result) =>
+        emitter.emit(
+          THREADLINE_PAIRING_STORE_KEY,
+          deriveThreadlinePairingRecordKey(result.peerFp),
+          (hlc, origin, observed) =>
+            buildThreadlinePairingRecordData({ result: { ...result, state: 'mutual-verified' }, hlc, origin, observed }),
+        ),
+      emitRevoke: (peerFp, deletedAt, peerIdentityPub) =>
+        emitter.emit(
+          THREADLINE_PAIRING_STORE_KEY,
+          deriveThreadlinePairingRecordKey(peerFp),
+          (hlc, origin, observed) =>
+            buildThreadlinePairingTombstoneData({ peerFp, hlc, origin, deletedAt, observed, peerIdentityPub }),
+        ),
+    },
+    deps.ownOrigin,
+  );
+  const source = buildPairingViewSource(deps);
+  const wiring = createPairingReplicationWiring({
+    config: deps.config,
+    trust: deps.trust,
+    readState: source.readState,
+    alreadyPublishedInvite: source.alreadyPublishedInvite,
+    log: deps.log,
+  });
+  const started = wiring?.start();
+  if (started) {
+    deps.log?.(`replication merge wired (re-sent ${started.republished}, inherited ${started.inheritance.inherited}, revoked ${started.inheritance.revoked}, peers ${started.inheritance.peers})`);
+  }
+  return wiring;
 }
 
 /**

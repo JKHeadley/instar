@@ -70,7 +70,7 @@ describe('invite trust states', () => {
     // The credential-authorization bit itself is dropped, not just the state.
     expect(t.getProfileByFingerprint(p.fp)!.source).not.toBe('mutual-verified');
     expect(t.isCredentialShareAllowedByFingerprint(p.fp)).toBe(false);
-    expect(replication.emitRevoke).toHaveBeenCalledWith(p.fp, expect.any(String));
+    expect(replication.emitRevoke).toHaveBeenCalledWith(p.fp, expect.any(String), p.key); // step 5b: the revoke names the key
   });
 
   it('states persist across a reload', () => {
