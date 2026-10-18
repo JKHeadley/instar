@@ -37,6 +37,7 @@ describe('feedback drain — one imperfect answer keeps the approval; a real bra
   let server: AgentServer;
   let port = 0;
   let reply = { raw: crossCite.raw, model: 'gpt-6-astra' };
+  const attention: Array<{ id: string; title: string; summary: string; description: string; priority: string }> = [];
   const db = () => (server as unknown as { feedbackDrain: { store: { db: import('better-sqlite3').Database } } }).feedbackDrain.store.db;
 
   beforeAll(async () => {
@@ -67,6 +68,11 @@ describe('feedback drain — one imperfect answer keeps the approval; a real bra
       sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never,
     });
     await server.start();
+    // The pause alarm rides the durable attention funnel (TelegramAdapter.createAttentionItem),
+    // read lazily from the server; stub it so the e2e sees exactly what the operator would get.
+    (server as unknown as { telegramAdapter: unknown }).telegramAdapter = {
+      createAttentionItem: async (item: { id: string; title: string; summary: string; description: string; priority: string }) => { attention.push(item); },
+    };
     port = ((server as unknown as { server: { address(): AddressInfo } }).server.address()).port;
     const created = await fetch(`http://127.0.0.1:${port}/feedback-factory/readiness-authorities`, {
       method: 'POST', headers: { Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1', 'Content-Type': 'application/json' },
@@ -130,5 +136,25 @@ describe('feedback drain — one imperfect answer keeps the approval; a real bra
     const refused = await runJob('refused');
     expect(refused.failure, refused.stdout).toMatch(/drain tick refused: HTTP 403 .*\(authority paused: The answer did not come from the approved model/);
     expect(runs()).toBe(before); // one refused request, no run admitted, no retry
+
+    // The pause was told once, at the moment it happened, in plain words — and the refused
+    // run that followed did not repeat it.
+    expect(attention).toHaveLength(1);
+    expect(attention[0]).toMatchObject({ id: 'feedback-drain:readiness-paused:feedback-readiness-default:1', title: 'Feedback sorting is paused', priority: 'HIGH' });
+    expect(attention[0].summary).toMatch(/did not come from the approved model/);
+    expect(attention[0].description).toMatch(/Feedback Drain tab/);
+  });
+
+  it('a pause that predates the process is told by the first refused tick (the live 2026-10-14 case)', async () => {
+    // A restarted server has no memory of having told anyone; the durable attention store
+    // dedupes by id, so the refusal path re-raising the same id is safe.
+    (server as unknown as { feedbackDrain: { service: { pauseAlarmsRaised: Set<string> } } }).feedbackDrain.service.pauseAlarmsRaised.clear();
+    attention.length = 0;
+    const refused = await runJob('refused-after-restart');
+    expect(refused.failure).toMatch(/drain tick refused: HTTP 403/);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // the refusal path raises fire-and-forget
+    expect(attention).toHaveLength(1);
+    expect(attention[0].id).toBe('feedback-drain:readiness-paused:feedback-readiness-default:1');
+    expect(db().prepare(`SELECT mode FROM authority_posture`).get()).toEqual({ mode: 'proposal-only' }); // never restored
   });
 });

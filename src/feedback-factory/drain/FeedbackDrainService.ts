@@ -6,6 +6,7 @@ import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js
 import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, ReadinessOutputRejected, outputExcerpt, type FeedbackReadinessArbiter, type ReadinessCallDiagnosis, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
 import { StageBudgetExceeded, unitsThatFit, withStageBudget } from './stageBudget.js';
+import { brakePlainWords } from './readinessAuthorityProposal.js';
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -50,7 +51,18 @@ export interface FeedbackDrainServiceOptions {
   maxWallClockMs?: number;
   sourceCompactionIntervalMs?: number;
   onRecoverableStall?: (reason: string) => void;
+  /**
+   * Durable attention enqueue (the same funnel triage uses). When wired, a paused readiness
+   * authority raises ONE item per (authority, generation) naming what stopped and what restores
+   * it. Signal only: it never restores, retries or changes the authority.
+   */
+  raiseAttention?: (item: ReadinessPauseAttention) => Promise<void>;
   clock?: () => number;
+}
+
+export interface ReadinessPauseAttention {
+  id: string; title: string; summary: string; description: string;
+  category: string; priority: 'HIGH' | 'NORMAL'; sourceContext: string;
 }
 
 export interface FeedbackDrainTickResult {
@@ -116,6 +128,8 @@ function diagnose(error: unknown, clusterIds: string[]): ReadinessCallDiagnosis 
 
 export class FeedbackDrainService {
   private readonly now: () => number;
+  /** Pause alarms already accepted by the attention store in this process (the store dedupes across restarts). */
+  private readonly pauseAlarmsRaised = new Set<string>();
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
@@ -144,6 +158,16 @@ export class FeedbackDrainService {
   }
 
   sourceClusterPresent(clusterId: string): boolean { return this.opts.processing.hasActiveCluster(clusterId); }
+
+  /**
+   * Called by the tick gateway when it refuses a tick (a paused authority refuses every tick, so
+   * no tick body ever runs to notice the pause). Fire-and-forget; raises the deduped pause alarm.
+   */
+  notifyIfReadinessPaused(): void {
+    const authority = this.opts.store.getAuthority(this.opts.authorityId);
+    if (!authority || authority.revoked || !this.opts.isCanonicalOwner()) return;
+    void this.alarmIfPaused(authority);
+  }
 
   canAgentMutateReadiness(agentId: string): boolean {
     const authority = this.opts.store.getAuthority(this.opts.authorityId);
@@ -288,6 +312,8 @@ export class FeedbackDrainService {
       } else if (due.length > 0) {
         for (const row of due) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-authority-unavailable', nextReviewAt: now + 15 * 60 * 1000 });
         out.reason = 'readiness-authority-unavailable';
+        // A pause that predates this process (or whose first alarm failed) is still told once.
+        if (authority && !authority.revoked) await this.alarmIfPaused(authority);
       }
 
       stopIfCancelled();
@@ -422,6 +448,7 @@ export class FeedbackDrainService {
       if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
         for (const row of pending) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
         this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
+        await this.alarmIfPaused(authority);
         out.reason = 'readiness-spend-brake';
         break;
       }
@@ -490,11 +517,45 @@ export class FeedbackDrainService {
       reviewedMs += this.now() - startedAt;
       reviewedCandidates += chunk.length;
     }
-    if (contractViolation) return;
+    if (contractViolation) {
+      await this.alarmIfPaused(authority);
+      return;
+    }
     if (succeededCalls > 0) {
       this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
     } else if (transientFailure && this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation) >= READINESS_TRANSIENT_FAILURE_LIMIT) {
       this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-authority-repeated-invocation-failure');
+      await this.alarmIfPaused(authority);
+    }
+  }
+
+  /**
+   * Tell the operator, once per (authority, generation), that the readiness authority is paused:
+   * what stopped, why, and that only their approval restores it. Deduped by item id in the durable
+   * attention store, so a re-raise on a later tick or after a restart is a no-op. Never throws.
+   */
+  private async alarmIfPaused(authority: AuthorityRecord): Promise<void> {
+    if (!this.opts.raiseAttention) return;
+    const posture = this.opts.store.authorityPosture(authority.authorityId, authority.generation);
+    if (posture.mode !== 'proposal-only') return;
+    const id = `feedback-drain:readiness-paused:${authority.authorityId}:${authority.generation}`;
+    if (this.pauseAlarmsRaised.has(id)) return;
+    try {
+      await this.opts.raiseAttention({
+        id,
+        title: 'Feedback sorting is paused',
+        summary: `${brakePlainWords(posture.reason)} New feedback reports are not becoming work items.`,
+        description: `${brakePlainWords(posture.reason)} The sorting model's approval was switched off on ` +
+          `${new Date(posture.updatedAt || this.now()).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC. Reports keep arriving and are saved, but none ` +
+          'is turned into a work item until you approve the sorting model again on the dashboard Feedback Drain tab. ' +
+          'Nothing switches it back on automatically.',
+        category: 'monitoring',
+        priority: posture.reason === 'readiness-schema-provenance-or-routing-failure' ? 'HIGH' : 'NORMAL',
+        sourceContext: 'feedback-drain:readiness-paused',
+      });
+      this.pauseAlarmsRaised.add(id);
+    } catch {
+      /* @silent-fallback-ok: the next tick that finds the authority still paused tries again */
     }
   }
 
