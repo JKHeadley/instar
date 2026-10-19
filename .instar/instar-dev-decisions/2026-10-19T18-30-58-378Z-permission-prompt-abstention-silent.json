@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-19T18:30:58.378Z",
+  "slug": "permission-prompt-abstention-silent",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 103,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/paneText.ts",
+      "src/monitoring/PermissionPromptAutoResolver.ts"
+    ],
+    "addedLines": 87,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

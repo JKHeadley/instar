@@ -31,7 +31,7 @@ import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
-import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
+import { extractGeminiFinalAssistantBlock, meaningfulTail, meaningfulNonBlankTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import type { DegradedTmuxGuard } from '../monitoring/DegradedTmuxGuard.js';
@@ -69,7 +69,7 @@ import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_L
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
-import { toPaneTailLines, type PermissionPromptAutoResolver } from '../monitoring/PermissionPromptAutoResolver.js';
+import { toPaneTailLines, type PermissionPromptAutoResolver, RESOLVER_PREGATE_RE } from '../monitoring/PermissionPromptAutoResolver.js';
 
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
@@ -2861,15 +2861,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const output = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
 
           // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──
-          // Cheap pre-gate on the already-captured 5-line tail, keyed on the
-          // MENU SHAPE (a glyph/❯-led numbered option, or a generic blocking
-          // affordance — all bottom-anchored, so reliably in the last 5 lines).
-          // Only on a hit do a fuller capture + evaluate, so the common
-          // (no-menu) case adds ZERO extra captures.
-          if (this.permissionPromptResolver && output &&
-              /(?:[>❯●○◉]\s*)?\d+\.\s|Esc to cancel|Do you want to proceed/i.test(output)) {
+          // Cheap pre-gate on the last 5 NON-BLANK rows, keyed on the MENU SHAPE
+          // (a glyph/❯-led numbered option, or a generic blocking affordance —
+          // all bottom-anchored). Only on a hit do a fuller capture + evaluate,
+          // so the common (no-menu) case adds ZERO extra captures.
+          // Non-blank, not raw rows: live 2026-10-19 a blocking menu sat above 17
+          // blank rows and one status line, so every raw-row tail was blanks plus
+          // that line and the resolver never saw the menu (see meaningfulNonBlankTail).
+          const resolverPregate = this.permissionPromptResolver && output
+            ? (await this.captureMeaningfulNonBlankTailMaybeAsync(session.tmuxSession, 5)) ?? output
+            : null;
+          if (this.permissionPromptResolver && resolverPregate && RESOLVER_PREGATE_RE.test(resolverPregate)) {
             try {
-              const full = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 16);
+              const full = await this.captureMeaningfulNonBlankTailMaybeAsync(session.tmuxSession, 16);
               if (full) {
                 await this.permissionPromptResolver.evaluate(session.tmuxSession, toPaneTailLines(full));
               }
@@ -5130,6 +5134,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const raw = await this.captureOutputAsync(tmuxSession, Math.max(lines * 4, 50));
     if (raw === null) return null;
     return meaningfulTail(raw, lines);
+  }
+
+  /**
+   * The last `lines` NON-BLANK rows (resolver pre-gate + evaluate). A wider physical
+   * window than captureMeaningfulTail, because the rows it must skip are the blank
+   * padding a host draws between a blocking menu and its bottom status line.
+   */
+  private async captureMeaningfulNonBlankTailMaybeAsync(tmuxSession: string, lines: number): Promise<string | null> {
+    const raw = this.tmuxAsyncEnabled
+      ? await this.captureOutputAsync(tmuxSession, Math.max(lines * 6, 80))
+      : this.captureOutput(tmuxSession, Math.max(lines * 6, 80));
+    if (raw === null) return null;
+    return meaningfulNonBlankTail(raw, lines);
   }
 
   /**

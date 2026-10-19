@@ -57,6 +57,30 @@ export const STATE_TTL_MS = 30 * 60 * 1000;
 
 /** How many trailing non-empty lines count as "the genuine bottom" of the menu. */
 const MENU_BOTTOM_WINDOW = 6;
+/**
+ * Layer 3's window. A host menu may draw a description sub-line under each option and a
+ * separator row (Claude Code's model-switch menu, live 2026-10-19: four options, two
+ * sub-lines, one separator, one footer = the ❯ row sits eight lines above the bottom), so
+ * the six-line window Layer 2 uses would never see its ❯ row. Layer 3 only observes.
+ */
+const LAYER3_MENU_BOTTOM_WINDOW = 12;
+/**
+ * A transient status line a host draws UNDER a live menu (live 2026-10-19: Claude Code's
+ * "✻ Waiting for API response · will retry in 2m 40s · check your network" at the pane
+ * bottom while its model-switch menu waited above; and the permission-mode status bar
+ * "⏵⏵ bypass permissions on (shift+tab to cycle)" Claude Code keeps at the bottom of every
+ * screen). It is not activity (the session is parked on the menu) and it is not menu
+ * structure, so without this rule the menu fails
+ * the genuine-bottom test and Layer 3 declines in silence. Layer 3 ignores trailing lines
+ * of this shape; Layer 2 (which presses a key) does not.
+ */
+const TRANSIENT_TRAILER_RE = /Waiting for API response|will retry in \d|bypass permissions on|shift\+tab to cycle|accept edits on|plan mode on/i;
+/**
+ * The monitor loop's cheap pre-gate on the last 5 NON-BLANK rows: a glyph-led numbered
+ * option, or a generic blocking affordance. Exported so the shape tested is the shape
+ * the loop uses.
+ */
+export const RESOLVER_PREGATE_RE = /(?:[>❯●○◉]\s*)?\d+\.\s|Esc to cancel|Do you want to proceed/i;
 
 /** The U+276F selector cursor glyph (❯) Claude Code paints on the focused option. */
 const SELECTOR_GLYPH = '❯';
@@ -384,8 +408,15 @@ function lastLineIsMenuStructure(tail: PaneTailLine[]): boolean {
   return !!last && isMenuStructureLine(last);
 }
 
-function withinBottomWindow(tail: PaneTailLine[], index: number): boolean {
-  return index >= tail.length - MENU_BOTTOM_WINDOW;
+function withinBottomWindow(tail: PaneTailLine[], index: number, window = MENU_BOTTOM_WINDOW): boolean {
+  return index >= tail.length - window;
+}
+
+/** Layer 3 only: drop trailing transient status lines (see TRANSIENT_TRAILER_RE), never the whole tail. */
+export function stripTransientTrailer(tail: PaneTailLine[]): PaneTailLine[] {
+  let end = tail.length;
+  while (end > 1 && TRANSIENT_TRAILER_RE.test(tail[end - 1].text)) end--;
+  return end === tail.length ? tail : tail.slice(0, end);
 }
 
 // ─── Layer 2 — load-bearing approval detector ────────────────────────────────────
@@ -504,11 +535,12 @@ export function detectApprovalPrompt(
  * waiting for input the agent cannot self-answer, worth one notice).
  */
 export function detectPersistingMenu(
-  tail: PaneTailLine[],
+  rawTail: PaneTailLine[],
   isGenerating: boolean,
 ): MenuMatch | null {
   if (isGenerating) return null;
-  if (!tail.length) return null;
+  if (!rawTail.length) return null;
+  const tail = stripTransientTrailer(rawTail);
 
   // The full option set (for the structure key) + the glyph-led subset (the trigger).
   const numberedLines: PaneTailLine[] = [];
@@ -517,7 +549,7 @@ export function detectPersistingMenu(
     const l = tail[i];
     if (!isOptionLine(l.text)) continue;
     numberedLines.push(l);
-    if (hasAnyLeadGlyph(l.leadGlyphs) && withinBottomWindow(tail, i)) {
+    if (hasAnyLeadGlyph(l.leadGlyphs) && withinBottomWindow(tail, i, LAYER3_MENU_BOTTOM_WINDOW)) {
       glyphLedNumberedInWindow = true;
     }
   }
@@ -566,7 +598,11 @@ export type ResolverOutcome =
   | 'cleared'
   | 'persisted-terminal'
   | 'send-failed'
-  | 'race-aborted';
+  | 'race-aborted'
+  /** Layer 3: a persisting menu this floor will not answer was first seen (one row per episode). */
+  | 'menu-observed'
+  /** Layer 3: that menu persisted to the threshold and the Terminal defect was raised. */
+  | 'menu-unanswered-terminal';
 
 /** One audit row. NEVER carries raw tail — only the static matched-pattern names. */
 export interface ResolverAuditRow {
@@ -844,12 +880,17 @@ export class PermissionPromptAutoResolver {
         terminalRaised: false,
       };
       this.persistMenus.set(key, st);
+      // An abstention leaves a record from its first tick: before 2026-10-19 a menu Layer 3
+      // declined (or never reached the threshold) left no row anywhere, so a silent wedge
+      // and a quiet session were indistinguishable in the audit.
+      this.audit(now, session, 'any', ['layer3-menu'], null, menuStructureKey, 0, 'menu-observed');
     }
     st.lastTick = now;
     if (st.terminalRaised) return;
     st.persistTicks += 1;
     if (st.persistTicks >= LAYER3_PERSIST_TICKS) {
       st.terminalRaised = true;
+      this.audit(now, session, 'any', ['layer3-menu'], null, menuStructureKey, st.persistTicks, 'menu-unanswered-terminal');
       this.deps.raiseDefect({
         sessionName: session,
         layer: 'layer3',
