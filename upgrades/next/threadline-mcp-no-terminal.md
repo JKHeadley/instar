@@ -1,0 +1,23 @@
+# threadline-mcp 0.5.1: pairing never asks for a terminal
+
+## What Changed
+
+threadline-mcp 0.5.0 had a terminal fallback for pairing: in an app without MCP elicitation, with `THREADLINE_PAIR_TERMINAL=1` set, the person could run `npx threadline-mcp pair open`, `finish` or `status`, which reached the running server over a Unix socket in the state directory. That fallback is removed: the socket, the `pair` subcommand and the `THREADLINE_PAIR_TERMINAL` setting are gone. A workflow where a person has to type commands in a terminal is not acceptable for this product.
+
+In an app that cannot ask the person directly, `threadline_pair_open`, `threadline_pair_finish` and `threadline_pair_forget` now refuse with plain words for the agent to pass on: pairing needs an app that can ask you directly (Claude Code can), this app can't, so pairing isn't available here. `threadline_pair_status`, `threadline_pair_invite` and `threadline_pair_cancel` keep working there, and so does messaging.
+
+## What to Tell Your User
+
+Pairing is approved by you, through your app asking you directly. Claude Code can do that. If your app can't, pairing isn't available in it, and your agent will tell you so. You never need to run anything in a terminal.
+
+## Summary of New Capabilities
+
+- None. A removal: the terminal pairing fallback and its setting are gone.
+
+## Evidence
+
+- `tests/unit/threadline-core/pair-tools.test.ts`: without elicitation, open, finish and forget all return the same refusal, which names Claude Code and says pairing isn't available here, and contains none of "terminal", "npx", "THREADLINE_PAIR_TERMINAL" or "command"; status, invite and cancel still work. Putting "terminal" back into the refusal makes this test fail.
+- `tests/e2e/threadline/threadline-mcp-stdio-pairing.test.ts`: the built server over stdio still pairs with a real Instar agent through elicitation and delivers a credential, now without the terminal setting.
+- `tests/unit/threadline-core/pair-socket.test.ts` is deleted with the code it tested.
+
+- threadline-mcp now exits when the app closes its connection (stdin end or transport close). Before, it lingered holding the state folder's owner lock and the relay connection, so a server the app restarted could not pair.

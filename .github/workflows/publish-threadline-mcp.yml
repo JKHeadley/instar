@@ -12,32 +12,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Build and smoke tests with NO secrets: dependency install scripts never run beside a token
+  # (Echo's review of #2192, SEC-2).
+  test:
+    name: Test threadline-mcp
+    runs-on: ubuntu-latest
+    if: "github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and build
+        working-directory: packages/threadline-mcp
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build
+
+      # The built server must load and reach the network before anything is published.
+      # 0.4.4 shipped green while every connect threw "require is not defined"; this step
+      # fails on that build and passes on the fix.
+      - name: Smoke test the built server
+        working-directory: packages/threadline-mcp
+        run: |
+          SD=$(mktemp -d)
+          OUT=$(THREADLINE_RELAY=ws://127.0.0.1:9/v1/connect THREADLINE_STATE_DIR="$SD" THREADLINE_SEND_PORT=1 timeout 8 node dist/server.js </dev/null 2>&1; echo "exit=$?")
+          echo "$OUT" | tail -5
+          if echo "$OUT" | grep -qE "ReferenceError|SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module|ERR_REQUIRE|require is not defined|Fatal:"; then echo "::error::the built server did not load"; exit 1; fi
+          if ! echo "$OUT" | grep -q "Initial relay connection failed: Error: connect ECONNREFUSED"; then echo "::error::the built server never reached the network"; exit 1; fi
+          echo "smoke ok"
+
+      # The PACKED package, installed the way a user installs it, must load too: this catches a
+      # missing file in "files", a dependency that is not on npm yet, or an exports mistake that
+      # the in-repo build cannot see (Echo's review of #2196).
+      - name: Smoke test the packed package as a consumer
+        working-directory: packages/threadline-mcp
+        run: |
+          TGZ=$(npm pack --silent | tail -1)
+          C=$(mktemp -d); SD=$(mktemp -d)
+          (cd "$C" && npm init -y >/dev/null && npm install --no-audit --no-fund "$GITHUB_WORKSPACE/packages/threadline-mcp/$TGZ")
+          BIN="$C/node_modules/threadline-mcp/dist/server.js"
+          OUT=$(THREADLINE_RELAY=ws://127.0.0.1:9/v1/connect THREADLINE_STATE_DIR="$SD" THREADLINE_SEND_PORT=1 timeout 8 node "$BIN" </dev/null 2>&1; echo "exit=$?")
+          echo "$OUT" | tail -5
+          if echo "$OUT" | grep -qE "ReferenceError|SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module|ERR_REQUIRE|require is not defined|Fatal:"; then echo "::error::the installed package did not load"; exit 1; fi
+          echo "$OUT" | grep -q "Initial relay connection failed: Error: connect ECONNREFUSED" || { echo "::error::the installed package never reached the network"; exit 1; }
+          PAIR=$(THREADLINE_STATE_DIR="$SD" node "$BIN" pair status 2>&1 || true)
+          echo "$PAIR" | grep -q "Nothing is listening for terminal pairing" || { echo "::error::the installed pair command did not answer"; echo "$PAIR"; exit 1; }
+          echo "packed smoke ok"
+
+  # Publishes only from main, only after the tests pass. The npm token is visible to the publish
+  # step alone; the release token only to the push of the version bump.
   publish:
     name: Publish threadline-mcp
+    needs: test
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    # Only main can deploy to this environment (repo setting), so a branch's edited copy of this
+    # workflow cannot reach what it holds (Echo's review of #2192, SEC-1).
+    environment: npm-publish
+    if: "github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
-          # RELEASE_TOKEN is a PAT that can bypass branch protection for version bump commits.
-          # Falls back to GITHUB_TOKEN but that will fail if branch protection is enabled.
-          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
+      - name: Install and build
         working-directory: packages/threadline-mcp
-        run: npm ci
-
-      - name: Build
-        working-directory: packages/threadline-mcp
-        run: npm run build
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build
 
       # The built server must load and reach the network before anything is published.
       # 0.4.4 shipped green while every connect threw "require is not defined"; this step
@@ -70,9 +126,15 @@ jobs:
             echo "Already at $LOCAL (remote: $REMOTE)"
           fi
 
+      # npm trusted publishing (OIDC, no stored npm token) needs npm 11.5.1 or later. NPM_TOKEN stays
+      # only as the fallback for the first publish of a new package; remove it from the repo once the
+      # package's trusted publisher (this repo, this workflow, environment npm-publish) is set on npmjs.com.
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
       - name: Publish to npm
         working-directory: packages/threadline-mcp
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -80,9 +142,10 @@ jobs:
         if: steps.check.outputs.bumped == 'true'
         env:
           HUSKY: '0'
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add packages/threadline-mcp/package.json packages/threadline-mcp/package-lock.json
           git commit -m "chore: release threadline-mcp v${{ steps.check.outputs.version }} [skip ci]"
-          git push origin main
+          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
