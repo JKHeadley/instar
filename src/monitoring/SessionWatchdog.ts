@@ -170,7 +170,7 @@ export interface InterventionEvent {
 
 export interface ProtectedWaitEvidence {
   protected: boolean;
-  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output' | 'test-runner' | 'test-runner-ancestor';
+  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output' | 'test-runner' | 'test-runner-ancestor' | 'timed-sleep';
   /**
    * True when the wall-clock floor had already expired and protection was held
    * open only because the subtree's CPU time was still advancing. Surfaced so
@@ -391,6 +391,30 @@ export function classifyTestRunnerProtection(
     : { protected: false };
 }
 
+/**
+ * `sleep N` is a wait that states its own length. While it has run no longer
+ * than it said it would (plus a minute of slack) it is doing exactly what it
+ * was asked to do and is not stuck. Poll loops and Monitor watch scripts sleep
+ * between checks; interrupting the sleep ends the loop, and the 2026-10-19
+ * coordinator twice reported a watch as armed after this watchdog had killed
+ * it. Parses `sleep 300`, `sleep 5m`, `sleep 1h 30m`, `sleep 0.5`; anything
+ * else (`sleep infinity`, extra flags) is not a timed sleep.
+ */
+export function timedSleepDurationMs(command: string): number | null {
+  const argv = command.trim().split(/\s+/);
+  if (path.basename(argv[0] ?? '') !== 'sleep' || argv.length < 2) return null;
+  const unit: Record<string, number> = { '': 1_000, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  let total = 0;
+  for (const arg of argv.slice(1)) {
+    const m = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(arg);
+    if (!m) return null;
+    total += Number(m[1]) * unit[m[2]];
+  }
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+const TIMED_SLEEP_SLACK_MS = 60_000;
+
 export function classifyProtectedWait(
   command: string,
   recentOutput = '',
@@ -403,6 +427,8 @@ export function classifyProtectedWait(
   // Protection is a bounded floor, not permanent immunity. Past two hours the
   // normal contextual judge gets authority even if the original argv matches.
   if (elapsedMs > MAX_PROTECTED_WAIT_MS) return { protected: false };
+  const sleepMs = timedSleepDurationMs(command);
+  if (sleepMs !== null && elapsedMs <= sleepMs + TIMED_SLEEP_SLACK_MS) return { protected: true, reason: 'timed-sleep' };
   const normalized = command.toLowerCase();
   const argv = normalized.trim().split(/\s+/);
   const executableIndex = /(?:^|\/)node(?:\.exe)?$/.test(argv[0] ?? '') ? 1 : 0;

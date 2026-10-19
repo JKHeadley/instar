@@ -414,23 +414,42 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   return 'retained';
 }
 
-/** §4.2 — three topics held on one standby within 1 h collapse to one item. */
+/** §4.2 — three topics held on one standby within 1 h collapse to one item.
+ *
+ * Item ids are EPISODE-scoped (`telegram-origin-held:<topic>:<episodeStart>`).
+ * The attention store dedupes by id forever, so a per-topic id raised once made
+ * every later hold on that topic silent: on 2026-10-19 a reply to topic 48154
+ * was held for hours while the item from 2026-10-11 still stood open, and no
+ * one was told. An episode is a topic's run of holds with gaps under the window;
+ * a hold after a quiet window is a new episode and a new item. */
 export class HeldForwardItemCollapser {
   readonly #held = new Map<number, number>();
+  readonly #since = new Map<number, number>();
+  #aggregateSince: number | null = null;
   constructor(private readonly deps: { now: () => number; windowMs?: number; threshold?: number }) {}
   /** Returns the item id to raise for this topic, or the aggregate id once the
    * threshold is crossed (and which per-topic ids the aggregate supersedes). */
   record(topicId: number): { itemId: string; aggregate: boolean; supersedes: string[] } {
     const now = this.deps.now(), windowMs = this.deps.windowMs ?? 3_600_000, threshold = this.deps.threshold ?? 3;
-    for (const [topic, at] of this.#held) if (now - at > windowMs) this.#held.delete(topic);
+    for (const [topic, at] of this.#held) if (now - at > windowMs) { this.#held.delete(topic); this.#since.delete(topic); }
+    if (this.#held.size === 0) this.#aggregateSince = null;
     this.#held.set(topicId, now);
+    if (!this.#since.has(topicId)) this.#since.set(topicId, now);
     if (this.#held.size >= threshold) {
-      return { itemId: 'telegram-origin-held:aggregate', aggregate: true, supersedes: [...this.#held.keys()].map(t => `telegram-origin-held:${t}`) };
+      this.#aggregateSince ??= now;
+      return { itemId: `telegram-origin-held:aggregate:${this.#aggregateSince}`, aggregate: true,
+        supersedes: [...this.#held.keys()].map(t => `telegram-origin-held:${t}:${this.#since.get(t)}`) };
     }
-    return { itemId: `telegram-origin-held:${topicId}`, aggregate: false, supersedes: [] };
+    return { itemId: `telegram-origin-held:${topicId}:${this.#since.get(topicId)}`, aggregate: false, supersedes: [] };
   }
   topics(): number[] { return [...this.#held.keys()]; }
-  clear(topicId: number): void { this.#held.delete(topicId); }
+  clear(topicId: number): void { this.#held.delete(topicId); this.#since.delete(topicId); }
+}
+
+/** One expiry item per expired operation: the store marks each expiry reported
+ * once, so a per-operation id never repeats and never folds into an older one. */
+export function heldExpiryItemId(row: Pick<HeldOperationRow, 'operationId' | 'destination'>): string {
+  return `telegram-origin-held:${row.destination.topicId ?? 'unknown'}:expired:${row.operationId}`;
 }
 
 /** Honest expiry wording (§4.2): a definite non-delivery vs an unknown one. */
