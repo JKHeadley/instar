@@ -50,12 +50,15 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { SafeFsExecutor } from '../dist/core/SafeFsExecutor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = path.join(ROOT, 'vitest.push.config.ts');
+const VITEST = path.join(ROOT, 'node_modules', '.bin', 'vitest');
 
 function parseArgs(argv) {
   const out = { slice: 6, runs: 2, json: false, missingOnly: false };
@@ -107,16 +110,104 @@ function rotatingSlice(items, size, dayKey) {
   return Array.from({ length: Math.min(size, items.length) }, (_, i) => items[(start + i) % items.length]);
 }
 
+function runResult(outcome, reason, status, structured = null) {
+  return {
+    outcome,
+    reason,
+    exitCode: Number.isInteger(status) ? status : null,
+    ...(structured ? { structured } : {}),
+  };
+}
+
+/**
+ * Classify only completed machine-readable evidence. Human reporter text is operator context,
+ * never verdict input; an absent, malformed, or internally inconsistent report stays unknown.
+ * This distinction improves the signal only — the script's unconditional exit-zero contract
+ * remains the authority boundary.
+ */
+function classifyStructuredResult(raw, status) {
+  let report;
+  try {
+    report = JSON.parse(raw);
+  } catch {
+    return runResult('errored', 'structured-report-unparseable', status);
+  }
+
+  const countFields = [
+    'numTotalTestSuites',
+    'numFailedTestSuites',
+    'numTotalTests',
+    'numPassedTests',
+    'numFailedTests',
+    'numPendingTests',
+    'numTodoTests',
+  ];
+  const schemaValid = report && typeof report === 'object' && !Array.isArray(report)
+    && typeof report.success === 'boolean'
+    && Array.isArray(report.testResults)
+    && countFields.every((field) => Number.isInteger(report[field]) && report[field] >= 0);
+  if (!schemaValid) return runResult('errored', 'structured-report-invalid', status);
+
+  const structured = {
+    success: report.success,
+    testSuites: report.numTotalTestSuites,
+    total: report.numTotalTests,
+    passed: report.numPassedTests,
+    failed: report.numFailedTests,
+    pending: report.numPendingTests,
+    todo: report.numTodoTests,
+  };
+  if (report.numTotalTestSuites === 0 || report.numTotalTests === 0) {
+    return runResult('errored', 'no-tests-executed', status, structured);
+  }
+
+  const assertions = report.testResults.flatMap((result) =>
+    Array.isArray(result?.assertionResults) ? result.assertionResults : []);
+  const failedAssertionObserved = assertions.some((assertion) => assertion?.status === 'failed');
+  const passedAssertionObserved = assertions.some((assertion) => assertion?.status === 'passed');
+
+  if (status !== 0 && report.success === false && report.numFailedTests > 0 && failedAssertionObserved) {
+    return runResult('fail', 'tests-failed', status, structured);
+  }
+  if (status === 0 && report.success === true && report.numFailedTests === 0
+      && report.numPassedTests > 0 && passedAssertionObserved) {
+    return runResult('pass', 'tests-passed', status, structured);
+  }
+  return runResult('errored', 'structured-report-inconsistent', status, structured);
+}
+
 function runOnce(file) {
-  const res = spawnSync(
-    process.execPath,
-    ['./node_modules/.bin/vitest', 'run', file, '--reporter=basic'],
-    { cwd: ROOT, encoding: 'utf-8', timeout: 300_000, env: { ...process.env } },
-  );
-  const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
-  if (res.status === 0) return 'pass';
-  if (res.error || res.status === null) return 'errored';
-  return /Tests\s+\d+\s+failed/.test(out) ? 'fail' : 'errored';
+  if (!fs.existsSync(VITEST)) return runResult('errored', 'runner-not-started', null);
+
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-parked-test-'));
+  const reportFile = path.join(reportDir, 'vitest.json');
+  try {
+    const res = spawnSync(
+      process.execPath,
+      [VITEST, 'run', file, '--reporter=basic', '--reporter=json', `--outputFile.json=${reportFile}`],
+      { cwd: ROOT, encoding: 'utf-8', timeout: 300_000, env: { ...process.env } },
+    );
+    if (res.error || res.status === null) {
+      const reason = res.error?.code === 'ENOENT' || res.error?.code === 'EACCES'
+        ? 'runner-not-started'
+        : 'runner-did-not-complete';
+      return runResult('errored', reason, res.status);
+    }
+
+    let raw;
+    try {
+      raw = fs.readFileSync(reportFile, 'utf-8');
+    } catch {
+      return runResult('errored', 'structured-report-missing', res.status);
+    }
+    return classifyStructuredResult(raw, res.status);
+  } finally {
+    SafeFsExecutor.safeRmSync(reportDir, {
+      recursive: true,
+      force: true,
+      operation: 'scripts/recheck-parked-tests.mjs:structured-report-cleanup',
+    });
+  }
 }
 
 const opts = parseArgs(process.argv);
@@ -134,7 +225,8 @@ const results = [];
 if (!opts.missingOnly) {
   const dayKey = new Date().toISOString().slice(0, 10);
   for (const file of rotatingSlice(present, opts.slice, dayKey)) {
-    const runs = Array.from({ length: opts.runs }, () => runOnce(file));
+    const runDetails = Array.from({ length: opts.runs }, () => runOnce(file));
+    const runs = runDetails.map((run) => run.outcome);
     const verdict = runs.every((r) => r === 'pass')
       ? 'deterministic-pass'
       : runs.every((r) => r === 'fail')
@@ -142,7 +234,7 @@ if (!opts.missingOnly) {
         : runs.includes('errored')
           ? 'could-not-run'
           : 'genuinely-flaky';
-    results.push({ file, runs, verdict });
+    results.push({ file, runs, runDetails, verdict });
   }
 }
 
@@ -171,7 +263,12 @@ if (opts.json) {
   }
   if (results.length) {
     console.log(`  RE-CHECKED THIS RUN (rotating slice of ${results.length}, ${opts.runs} runs each):`);
-    for (const r of results) console.log(`    ${r.verdict.padEnd(20)} ${r.file}`);
+    for (const r of results) {
+      console.log(`    ${r.verdict.padEnd(20)} ${r.file}`);
+      if (r.verdict === 'could-not-run') {
+        console.log(`      reasons: ${r.runDetails.map((run) => run.reason).join(', ')}`);
+      }
+    }
     const back = results.filter((r) => r.verdict === 'deterministic-pass');
     if (back.length) {
       console.log(`\n  ${back.length} entr${back.length === 1 ? 'y' : 'ies'} now pass deterministically HERE.`);
