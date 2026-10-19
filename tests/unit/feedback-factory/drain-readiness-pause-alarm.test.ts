@@ -18,7 +18,7 @@ import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { FeedbackProcessingService } from '../../../src/feedback-factory/processing/FeedbackProcessingService.js';
 import { DrainConflictError, FeedbackDrainStore } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { EVIDENCE_NOT_OWN, FeedbackReadinessArbiter } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService, READINESS_TRANSIENT_FAILURE_LIMIT, type ReadinessPauseAttention } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_STALL_NOTICE_TICKS, type ReadinessPauseAttention } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
 import type { FeedbackInitiativeConsumer } from '../../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures', 'feedback-readiness-cross-cite-shapes.json');
@@ -68,35 +68,60 @@ function setup(reply: (call: number) => { raw: string; model?: string }, raiseAt
 }
 
 describe('readiness pause alarm', () => {
-  it('three ticks with no usable answer → exactly one item, naming the cause and the restore path', async () => {
+  it('ticks with no usable answer never pause; after READINESS_STALL_NOTICE_TICKS ONE stall notice per episode', async () => {
+    // Live 2026-10-14: eight HTTP 429s on the approved model's lane paused the sorter for four
+    // days under the old three-strike rule. Spec line 121 closes the demotion list (a provider
+    // failure is not on it); line 270 forbids a feature-local retry loop. So: never demote,
+    // keep retrying on cadence, and say so once when it has gone on for a while.
     const items: ReadinessPauseAttention[] = [];
-    const ctx = setup(() => ({ raw: JSON.stringify({ decisions: [] }) }), async (item) => { items.push(item); });
-    for (let tick = 1; tick < READINESS_TRANSIENT_FAILURE_LIMIT; tick++) {
+    let failing = true;
+    const ctx = setup(() => ({ raw: failing ? JSON.stringify({ decisions: [] }) : crossCite.raw }), async (item) => { items.push(item); });
+    for (let tick = 1; tick < READINESS_STALL_NOTICE_TICKS; tick++) {
       await ctx.service.tick();
-      ctx.advance(16 * 60 * 1000);
+      expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('active');
+      expect(ctx.store.readinessProgress(AUTHORITY, 1).consecutiveFailedTicks).toBe(tick);
+      expect(items).toHaveLength(0);
+      ctx.advance(30 * 60 * 1000);
     }
-    expect(items).toHaveLength(0); // not paused yet → no alarm
     await ctx.service.tick();
-    expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('proposal-only');
+    expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('active'); // never demoted: nothing to approve
     expect(items).toHaveLength(1);
+    const since = ctx.store.readinessProgress(AUTHORITY, 1).stalledSince!;
+    expect(typeof since).toBe('number');
     expect(items[0]).toMatchObject({
-      id: `feedback-drain:readiness-paused:${AUTHORITY}:1`,
-      title: 'Feedback sorting is paused',
+      id: `feedback-drain:readiness-stalled:${AUTHORITY}:1:${since}`,
+      title: 'Feedback sorting is not making progress',
       priority: 'NORMAL',
-      sourceContext: 'feedback-drain:readiness-paused',
+      sourceContext: 'feedback-drain:readiness-stalled',
     });
-    expect(items[0].summary).toContain('Three runs in a row produced no usable answer');
-    expect(items[0].description).toContain('Feedback Drain tab');
-    expect(items[0].description).toContain('Nothing switches it back on automatically');
+    expect(items[0].summary).toContain(`${READINESS_STALL_NOTICE_TICKS} runs in a row`);
+    expect(items[0].summary).toContain('Nothing is paused and nothing needs your approval');
+    expect(items[0].summary).toContain('incomplete-decision-set'); // the last failure, named
+    expect(items[0].description).toContain('nothing to approve');
 
-    // Later ticks that find it still paused do not repeat it, and never restore the authority.
+    // Further failed ticks keep retrying on cadence and do not repeat the notice.
     for (let i = 0; i < 3; i++) {
-      ctx.advance(16 * 60 * 1000);
+      ctx.advance(30 * 60 * 1000);
       await ctx.service.tick();
     }
     expect(items).toHaveLength(1);
-    expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('proposal-only');
-    expect(ctx.calls()).toBe(READINESS_TRANSIENT_FAILURE_LIMIT); // no model call while paused
+    expect(ctx.calls()).toBe(READINESS_STALL_NOTICE_TICKS + 3); // a model call every tick: nothing paused
+
+    // A usable answer closes the episode; a later outage is a new episode with its own notice.
+    failing = false;
+    ctx.advance(30 * 60 * 1000);
+    expect(await ctx.service.tick()).toMatchObject({ result: 'succeeded' });
+    expect(ctx.store.readinessProgress(AUTHORITY, 1)).toMatchObject({ consecutiveFailedTicks: 0, stalledSince: null });
+    expect(typeof ctx.store.readinessProgress(AUTHORITY, 1).lastSuccessAt).toBe('number');
+    failing = true;
+    ctx.advance(25 * 60 * 60 * 1000); // the held rows come due again
+    for (let tick = 1; tick <= READINESS_STALL_NOTICE_TICKS; tick++) {
+      await ctx.service.tick();
+      ctx.advance(30 * 60 * 1000);
+    }
+    expect(items).toHaveLength(2);
+    expect(items[1].id).not.toBe(items[0].id);
+    expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('active');
   });
 
   it('a different model answering → HIGH item at once', async () => {

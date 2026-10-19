@@ -13,8 +13,17 @@ export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   stage: 'operated-drain',
 } as const;
 
-/** Consecutive transient authority invocation failures before the authority is demoted. */
-export const READINESS_TRANSIENT_FAILURE_LIMIT = 3;
+/**
+ * Ticks in a row with no usable readiness answer before ONE stall notice is raised: six ticks is
+ * about three hours at the 30-minute job cadence. Exposure only. Nothing is demoted on an
+ * invocation failure (a timeout, a provider error, a rate limit): the demotion list in
+ * docs/specs/feedback-factory-operating-drain.md line 121 is closed and does not include it, and
+ * the PIN restore path "is never the default throughput chokepoint". Nothing is retried out of
+ * cadence either (line 270: no feature-local retry workflow); the next tick retries as usual.
+ * Live 2026-10-14: eight HTTP 429s on the approved model's lane over twelve hours paused the
+ * sorter for four days under the earlier three-strike rule.
+ */
+export const READINESS_STALL_NOTICE_TICKS = 6;
 /**
  * Least time left for a readiness call after the first. Live 2026-10-01 a call cost ~9 s of
  * start-up plus ~2.4 s per candidate, which the pace estimate (no start-up term) only covers
@@ -130,6 +139,7 @@ export class FeedbackDrainService {
   private readonly now: () => number;
   /** Pause alarms already accepted by the attention store in this process (the store dedupes across restarts). */
   private readonly pauseAlarmsRaised = new Set<string>();
+  private readonly stallAlarmsRaised = new Set<string>();
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
@@ -456,8 +466,9 @@ export class FeedbackDrainService {
       const startedAt = this.now();
       // Only a decider that is not the approved one (model/framework/prompt/schema identity) or a
       // call outside the approved envelope demotes at once. A rejected answer, a refused store
-      // write, a timeout or a provider error fails this call: its rows retry in 15 minutes and
-      // the tick counts toward READINESS_TRANSIENT_FAILURE_LIMIT. Every failure is diagnosed.
+      // write, a timeout, a rate limit or a provider error fails this call: its rows retry in
+      // 15 minutes, the tick counts toward READINESS_STALL_NOTICE_TICKS, and nothing is demoted.
+      // Every failure is diagnosed.
       const failed = (error: unknown): void => {
         const rejected = error instanceof ReadinessOutputRejected;
         const rowReason = rejected ? 'readiness-output-rejected' : 'readiness-authority-failed';
@@ -523,9 +534,48 @@ export class FeedbackDrainService {
     }
     if (succeededCalls > 0) {
       this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
-    } else if (transientFailure && this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation) >= READINESS_TRANSIENT_FAILURE_LIMIT) {
-      this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-authority-repeated-invocation-failure');
-      await this.alarmIfPaused(authority);
+    } else if (transientFailure) {
+      // Counted, exposed (GET /feedback-factory/drain/status → readinessProgress), never demoted.
+      const streak = this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation);
+      if (streak >= READINESS_STALL_NOTICE_TICKS) await this.alarmIfStalled(authority, streak);
+    }
+  }
+
+  /**
+   * Tell the operator, once per stall episode, that readiness has produced no usable answer for
+   * a long run of ticks: what is failing, that nothing is paused, and that nothing needs approval.
+   * An episode starts at the first failed tick after a success and ends at the next success, so a
+   * later outage gets its own notice. Signal only: it never retries, restores or demotes.
+   */
+  private async alarmIfStalled(authority: AuthorityRecord, streak: number): Promise<void> {
+    if (!this.opts.raiseAttention) return;
+    const progress = this.opts.store.readinessProgress(authority.authorityId, authority.generation);
+    const id = `feedback-drain:readiness-stalled:${authority.authorityId}:${authority.generation}:${progress.stalledSince ?? 0}`;
+    if (this.stallAlarmsRaised.has(id)) return;
+    const last = this.opts.store.lastReadinessDiagnosis();
+    const causeParts = [last?.diagnosis?.check, last?.diagnosis?.message].filter((part): part is string => typeof part === 'string' && part.length > 0);
+    // Scrub a wide window first, then cut, so a secret straddling the cut is still recognised whole.
+    const cause = scrubForStore((causeParts.length > 0 ? causeParts.join(': ') : last?.raw || 'no usable answer').replace(/\s+/g, ' ').slice(0, 3_000), { maxBytes: 8_192 }).text.slice(0, 200);
+    const hours = progress.stalledSince ? Math.max(1, Math.round((this.now() - progress.stalledSince) / 3_600_000)) : null;
+    try {
+      await this.opts.raiseAttention({
+        id,
+        title: 'Feedback sorting is not making progress',
+        summary: `The sorting model has given no usable answer for ${streak} runs in a row` +
+          `${hours ? ` (about ${hours} hour${hours === 1 ? '' : 's'})` : ''}. Last failure: ${cause}. ` +
+          'New feedback reports are waiting. Nothing is paused and nothing needs your approval.',
+        description: 'Every run asks the approved sorting model about the waiting feedback reports, and each run since ' +
+          `${new Date(progress.stalledSince ?? this.now()).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC has failed. ` +
+          `The most recent failure: ${cause}. The drain keeps trying on its normal schedule and catches up by itself once the model answers again; ` +
+          'a rate limit or a short outage usually clears on its own. The approval has not been switched off, so there is nothing to approve. ' +
+          'If this keeps up, the exact error of the latest attempt is recorded in the drain status (lastReadinessFailure) and in the server log.',
+        category: 'monitoring',
+        priority: 'NORMAL',
+        sourceContext: 'feedback-drain:readiness-stalled',
+      });
+      this.stallAlarmsRaised.add(id);
+    } catch {
+      /* @silent-fallback-ok: the next failed tick past the threshold tries again */
     }
   }
 

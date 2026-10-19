@@ -104,6 +104,16 @@ export type FeedbackDrainCrashPoint =
   | 'run-after-transition' | 'run-after-commit'
   | 'restore-after-claims' | 'restore-after-runs' | 'restore-after-epoch' | 'restore-after-commit';
 
+/** Readiness progress age for one authority generation (spec feedback-factory-operating-drain.md line 270: exposed, never acted on). */
+export interface ReadinessProgress {
+  /** Ticks in a row in which no readiness call produced a usable answer. */
+  consecutiveFailedTicks: number;
+  /** When the current run of failed ticks started (ms epoch), or null when the last tick succeeded. */
+  stalledSince: number | null;
+  /** When a readiness call last succeeded (ms epoch), or null when none has been recorded. */
+  lastSuccessAt: number | null;
+}
+
 export interface AuthorityRecord {
   authorityId: string;
   agentId: string;
@@ -1130,17 +1140,47 @@ export class FeedbackDrainStore {
     this.setMeta('drain_owner_continuity', JSON.stringify(tenure?.host === host ? tenure : { host, sinceEpoch: epoch }));
   }
 
-  /** Count a transient (retryable) authority invocation failure; returns the consecutive count. */
+  /**
+   * Count a tick in which no readiness call produced a usable answer (timeout, provider error,
+   * rate limit, rejected answer); returns the consecutive count. Exposure only: the count never
+   * demotes (the demotion list in feedback-factory-operating-drain.md line 121 is closed, and an
+   * invocation failure is not on it). The first failure after a success opens a stall episode.
+   */
   recordAuthorityTransientFailure(authorityId: string, generation: number): number {
     const key = `authority_transient_failures:${authorityId}:${generation}`;
     const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key=?`).get(key) as { value: string } | undefined;
     const count = (Number(row?.value ?? 0) || 0) + 1;
     this.setMeta(key, String(count));
+    // Stamp the episode start on the first strike — or when no stamp exists yet (a store that
+    // upgraded mid-episode already holds a count from the old rule and would never see count 1).
+    const sinceKey = `authority_readiness_stall_since:${authorityId}:${generation}`;
+    const since = this.db.prepare(`SELECT 1 found FROM drain_meta WHERE key=?`).get(sinceKey) as { found: 1 } | undefined;
+    if (count === 1 || !since) this.setMeta(sinceKey, String(this.now()));
     return count;
   }
 
+  /** A tick with at least one usable answer closes any stall episode and stamps the last success. */
   clearAuthorityTransientFailures(authorityId: string, generation: number): void {
     this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_transient_failures:${authorityId}:${generation}`);
+    this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_readiness_stall_since:${authorityId}:${generation}`);
+    this.setMeta(`authority_readiness_last_success_at:${authorityId}:${generation}`, String(this.now()));
+  }
+
+  /**
+   * Readiness progress for one authority generation: how many ticks in a row produced no usable
+   * answer, when that run started, and when a call last succeeded (null = never recorded).
+   */
+  readinessProgress(authorityId: string, generation: number): ReadinessProgress {
+    const read = (prefix: string): number | null => {
+      const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key=?`).get(`${prefix}:${authorityId}:${generation}`) as { value: string } | undefined;
+      const value = Number(row?.value);
+      return Number.isFinite(value) ? value : null;
+    };
+    return {
+      consecutiveFailedTicks: read('authority_transient_failures') ?? 0,
+      stalledSince: read('authority_readiness_stall_since'),
+      lastSuccessAt: read('authority_readiness_last_success_at'),
+    };
   }
 
   /** Durably record why a readiness call failed (kind 'readiness-call', keyed by run id). */

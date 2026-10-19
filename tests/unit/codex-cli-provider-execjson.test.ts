@@ -206,6 +206,32 @@ exit 0
     );
   });
 
+  // Live 2026-10-14: eight feedback-readiness calls failed as "Codex CLI error (exec --json,
+  // exit 1)" and nothing else — in --json mode codex reports the cause on STDOUT (an `error`
+  // event or `turn.failed`), and stderr is empty. The cause was only recoverable four days
+  // later from the rollout files. The thrown Error now carries the LAST such message, bounded.
+  it('carries the last error/turn.failed message from the event stream into the thrown Error, bounded', async () => {
+    const script = path.join(fixtureDir, 'ratelimited.sh');
+    const filler = 'x'.repeat(1_000);
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+cat > /dev/null
+echo '{"type":"error","message":"Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings."}'
+echo '{"type":"turn.started"}'
+echo '{"type":"turn.failed","error":{"message":"exceeded retry limit, last status: 429 Too Many Requests ${filler}"}}'
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+    const err = await provider.evaluate('p').then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/^Codex CLI error \(exec --json, exit 1\) — last event: exceeded retry limit, last status: 429 Too Many Requests/);
+    expect(err!.message).not.toContain('unrecognized configuration'); // the LAST event, not the first warning
+    expect(err!.message.length).toBeLessThan(400); // bounded: the 1000-char tail is cut
+  });
+
   it('cleans up the per-call out-dir on success', async () => {
     // Snapshot the PRE-EXISTING out-dirs first — other tests in this file (and
     // other codex test files in the shared vitest pool) legitimately leave

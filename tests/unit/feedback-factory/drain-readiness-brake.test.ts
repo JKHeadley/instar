@@ -14,7 +14,7 @@ import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { FeedbackProcessingService } from '../../../src/feedback-factory/processing/FeedbackProcessingService.js';
 import { DrainConflictError, FeedbackDrainStore } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { EVIDENCE_NOT_OWN, FeedbackReadinessArbiter } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_STALL_NOTICE_TICKS } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
 import type { FeedbackInitiativeConsumer } from '../../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures', 'feedback-readiness-cross-cite-shapes.json');
@@ -94,15 +94,14 @@ describe('readiness brake: one imperfect answer never voids the approval', () =>
     expect(last.diagnosis!.callId).toMatch(/^readiness-call:/);
   });
 
-  it('demotes only after the limit of consecutive ticks with no usable answer', async () => {
+  it('ticks with no usable answer never demote, however many in a row (the demotion list is closed)', async () => {
     const ctx = setup(() => ({ raw: JSON.stringify({ decisions: [] }) }));
-    for (let tick = 1; tick < READINESS_TRANSIENT_FAILURE_LIMIT; tick++) {
+    for (let tick = 1; tick <= READINESS_STALL_NOTICE_TICKS + 2; tick++) {
       expect(await ctx.service.tick()).toMatchObject({ reason: 'readiness-output-rejected' });
       expect(ctx.store.authorityPosture(AUTHORITY, 1).mode).toBe('active');
+      expect(ctx.store.readinessProgress(AUTHORITY, 1).consecutiveFailedTicks).toBe(tick);
       ctx.advance(16 * 60 * 1000);
     }
-    await ctx.service.tick();
-    expect(ctx.store.authorityPosture(AUTHORITY, 1)).toMatchObject({ mode: 'proposal-only', reason: 'readiness-authority-repeated-invocation-failure' });
     expect(ctx.store.lastReadinessDiagnosis()?.diagnosis?.check).toBe('incomplete-decision-set');
   });
 
