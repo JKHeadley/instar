@@ -33,8 +33,13 @@ describe('PostUpdateMigrator — readiness authority brake wording', () => {
     expect(migrate(projectDir).upgraded).toContain('CLAUDE.md: updated Feedback Readiness Authority brake wording');
     const once = fs.readFileSync(file, 'utf8');
     expect(once).not.toContain('(spend cap or model mismatch)');
-    expect(once).toContain('a single timeout or rejected answer is just retried, and a restart on the same machine keeps the approval');
+    // 2026-10-19: the 10-02 wording ("three runs in a row") is itself migrated in the same pass —
+    // spec line 121 closes the demotion list, so an invocation failure never pauses the authority.
+    expect(once).not.toContain('three runs in a row');
+    expect(once).toContain('a rate limit or a rejected answer NEVER pauses it');
+    expect(once).toContain('a restart on the same machine keeps the approval');
     expect(once).toContain('`lastReadinessFailure` names the exact check');
+    expect(once).toContain('while `readinessProgress` says how many runs in a row');
     expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: updated Feedback Readiness Authority brake wording');
     expect(fs.readFileSync(file, 'utf8')).toBe(once);
   });
@@ -49,7 +54,8 @@ describe('PostUpdateMigrator — readiness authority brake wording', () => {
     expect(migrate(projectDir).upgraded).toContain('CLAUDE.md: updated Feedback Readiness Authority brake wording');
     const once = fs.readFileSync(file, 'utf8');
     expect(once).not.toContain('model/schema mismatch');
-    expect(once).toContain('answers that failed the checks');
+    expect(once).not.toContain('three timeouts or provider errors in a row');
+    expect(once).toContain('a rate limit or a rejected answer NEVER pauses it');
     expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: updated Feedback Readiness Authority brake wording');
     expect(fs.readFileSync(file, 'utf8')).toBe(once);
   });
