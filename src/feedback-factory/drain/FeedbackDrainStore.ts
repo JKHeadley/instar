@@ -1164,6 +1164,37 @@ export class FeedbackDrainStore {
     this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_transient_failures:${authorityId}:${generation}`);
     this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_readiness_stall_since:${authorityId}:${generation}`);
     this.setMeta(`authority_readiness_last_success_at:${authorityId}:${generation}`, String(this.now()));
+    this.clearReadinessWaiting();
+  }
+
+  /**
+   * Candidates still waiting for a readiness answer: collecting rows that are due now, or that a
+   * tick put back without an answer (no usable authority, a failed call, a rejected answer). A row
+   * the model answered "not yet" is rescheduled a day out under its own reason and is not waiting.
+   */
+  readinessWaitingCount(now = this.now()): number {
+    return Number((this.db.prepare(`SELECT COUNT(*) n FROM readiness WHERE state='collecting' AND next_review_at IS NOT NULL
+      AND (next_review_at<=? OR reason_code IN ('readiness-authority-unavailable','readiness-authority-failed','readiness-output-rejected'))`).get(now) as { n: number }).n);
+  }
+
+  /** When the current wait for any readiness answer began (ms epoch), or null when nothing waits. */
+  readinessWaitingSince(): number | null {
+    const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key='readiness_waiting_since'`).get() as { value: string } | undefined;
+    const value = Number(row?.value);
+    return row && Number.isFinite(value) ? value : null;
+  }
+
+  /** Stamp the start of a wait if none is open; returns the open wait's start. */
+  markReadinessWaiting(at = this.now()): number {
+    const existing = this.readinessWaitingSince();
+    if (existing !== null) return existing;
+    this.setMeta('readiness_waiting_since', String(at));
+    return at;
+  }
+
+  /** A successful readiness call, or nothing left waiting, closes the wait. */
+  clearReadinessWaiting(): void {
+    this.db.prepare(`DELETE FROM drain_meta WHERE key='readiness_waiting_since'`).run();
   }
 
   /**

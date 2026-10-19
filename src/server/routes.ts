@@ -14045,6 +14045,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       lastReadinessFailure: ctx.feedbackDrain.store.lastReadinessDiagnosis(),
       // Progress age (spec line 270): failed ticks in a row, when that run started, last success.
       readinessProgress: authority ? ctx.feedbackDrain.store.readinessProgress(authority.authorityId, authority.generation) : null,
+      // Wall-clock wait for any readiness answer (ACT-114): covers ticks that never run or never ask.
+      readinessProgressAge: ctx.feedbackDrain.service.readinessProgressAge(),
       consumerPromotion: (() => {
         const promotion = ctx.feedbackDrain!.promotion.read();
         return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
