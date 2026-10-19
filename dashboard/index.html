@@ -1119,6 +1119,14 @@
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
+    /* Feedback tab decision headline (ACT-003): one sentence + at most one button. */
+    .fd-decision { border: 1px solid var(--border, #2a2a2a); border-left-width: 4px; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .fd-decision-action { border-left-color: #eab308; }
+    .fd-decision-calm { border-left-color: #16a34a; }
+    .fd-decision .ph-headline { font-size: 22px; }
+    .fd-decision .ph-subline { margin-top: 0; }
+    .fd-decision-btn { align-self: flex-start; flex: 0 0 auto; text-decoration: none; text-align: center; }
+    #fdControls[open] > .ph-section:first-of-type { margin-top: 12px; }
     /* ── Machines tab (Multi-Machine Session Pool §L2) — reuses .ph-root calm type ── */
     .machine-card { border: 1px solid var(--border, #2a2a2a); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; max-width: 720px; background: var(--panel-bg, transparent); }
     .machine-head { display: flex; align-items: center; gap: 10px; }
@@ -3825,13 +3833,22 @@
         <h2 class="ph-title">Feedback Drain</h2>
         <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
-      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
-      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
-      <section id="fdAuthority" class="ph-section spend-arm-root"></section>
-      <section id="fdTriage" class="ph-section spend-arm-root"></section>
+      <p class="ph-intro">Reports from people using Instar come in here and are turned into fixes on their own. This page only needs you when it says so below.</p>
+      <div id="fdHeadline" class="ph-headline-wrap" aria-live="polite"><div class="fd-decision fd-decision-calm"><div class="ph-headline">Checking whether anything here needs you…</div></div></div>
+      <details id="fdControls" class="ph-detail">
+        <summary class="ph-detail-summary">Approvals and settings</summary>
+        <section id="fdAuthority" class="ph-section spend-arm-root"></section>
+        <section id="fdTriage" class="ph-section spend-arm-root"></section>
+      </details>
+      <details id="fdMore" class="ph-detail">
+        <summary class="ph-detail-summary">More detail</summary>
+        <div class="ph-detail-body">
+          <div class="ph-detail-row">State: <span id="fdPosture"></span></div>
+          <div class="ph-detail-row">Backlog: <span id="fdBacklog"></span></div>
+          <div class="ph-detail-row">Progress: <span id="fdProgress"></span></div>
+          <div class="ph-detail-row">Source integrity: <span id="fdSource"></span></div>
+        </div>
+      </details>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -10639,7 +10656,7 @@
           });
           const data = await response.json().catch(() => ({}));
           const note = M.resultNote(response.ok, data);
-          if (response.ok) { await loadFeedbackAuthority(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
+          if (response.ok) { await loadFeedbackAuthority(); void loadFeedbackHeadline(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
           return note;
         },
       });
@@ -10693,14 +10710,47 @@
           return note;
         },
       });
-      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; }
+      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; void loadFeedbackHeadline(); }
+    }
+    // Decision headline (ACT-003): one sentence naming what needs the operator and one
+    // button that brings the matching approval card into view. It has no PIN field, so it
+    // is safe to refresh on the poll. Reads the same GET routes the cards read.
+    let __fdhModule = null;
+    async function loadFeedbackHeadline() {
+      const root = document.getElementById('fdHeadline');
+      if (!root) return;
+      if (!__fdhModule) {
+        try { __fdhModule = await import('/dashboard/feedback-drain-headline.js'); }
+        catch (e) { console.error('[feedback-drain-headline] module load failed', e); return; }
+      }
+      const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
+      const [readiness, triageSummary, triageProposal, execute, queue] = await Promise.all([
+        get('/feedback-factory/readiness-authorities/proposal'), get('/feedback-factory/triage/summary'),
+        get('/feedback-factory/triage/authority/proposal'), get('/feedback-factory/execute/status'), get('/feedback-factory/triage/queue'),
+      ]);
+      const M = __fdhModule;
+      M.renderHeadline(document, root, M.decideHeadline({ readiness, triageSummary, triageProposal, execute, queue }), {
+        reveal: (todo) => {
+          const drawer = document.getElementById('fdControls');
+          if (drawer) drawer.open = true;
+          const card = document.getElementById(todo.target);
+          if (todo.press && card) {
+            const b = card.querySelector(`[data-ft-action="${todo.press}"]`);
+            if (b) b.click();
+          }
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          const field = todo.focus && document.getElementById(todo.focus);
+          if (field) setTimeout(() => field.focus({ preventScroll: true }), 300);
+        },
+      });
     }
     function startFeedbackDrain() {
       stopFeedbackDrain();
+      void loadFeedbackHeadline();
       void loadFeedbackAuthority();
       void loadFeedbackTriage();
       void loadFeedbackDrain();
-      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); void loadFeedbackHeadline(); }, 15000);
     }
     function stopFeedbackDrain() {
       if (__fdTimer) clearInterval(__fdTimer);
