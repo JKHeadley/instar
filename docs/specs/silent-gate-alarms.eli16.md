@@ -23,3 +23,5 @@ Triage checks the sorting model's usage before every call and pauses at 75% of a
 ## What a reader needs to decide
 
 Nothing. These are notices only.
+
+One detail from review: the "replies held on several topics" summary item starts a new episode whenever the number of held topics drops below three and then climbs back, not only when every hold has cleared. Otherwise one topic that kept getting held would pin the old summary and a later burst would be silent.

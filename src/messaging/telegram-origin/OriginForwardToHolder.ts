@@ -432,7 +432,11 @@ export class HeldForwardItemCollapser {
   record(topicId: number): { itemId: string; aggregate: boolean; supersedes: string[] } {
     const now = this.deps.now(), windowMs = this.deps.windowMs ?? 3_600_000, threshold = this.deps.threshold ?? 3;
     for (const [topic, at] of this.#held) if (now - at > windowMs) { this.#held.delete(topic); this.#since.delete(topic); }
-    if (this.#held.size === 0) this.#aggregateSince = null;
+    // An aggregate episode lasts while the held set stays at or above the threshold. It
+    // ends the moment the set drops below it (not only when it empties): one topic that
+    // keeps refreshing would otherwise pin the old aggregate id, and a later burst of
+    // three would be deduped silent under it.
+    if (this.#held.size < threshold) this.#aggregateSince = null;
     this.#held.set(topicId, now);
     if (!this.#since.has(topicId)) this.#since.set(topicId, now);
     if (this.#held.size >= threshold) {

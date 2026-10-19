@@ -13,7 +13,14 @@ Principle check: all three are signals. None blocks, retries, restarts or change
 7. **Multi-machine posture** — machine-local by design: holds, watchdog interventions and the triage quota reading are each owned by the machine that has them; triage runs only on the canonical owner.
 8. **Rollback cost** — revert the commit. No data migration; old open items keep their old ids.
 
-Second-pass review: required (watchdog). Not run in this session: it was produced by a forked worker that cannot spawn a reviewer. Flagged to the coordinating session; the PR carries the hold label until a reviewer concurs.
+Notes from review:
+- The sleep floor pre-empts the watchdog's 30-minute `hardCeilingSec` for a `sleep` between 30 min and 2 h, exactly as the other protected waits (`safe-merge-wait`, `github-run-watch`, `bounded-wait-output`) already do; the 2 h protected-wait bound is the ceiling for all of them.
+- Fixing the held-reply alarm in the id producer was a choice: `TelegramAdapter.upsertAttentionItem` (TelegramAdapter.ts:4276) is the existing reopen path and would also surface a new episode under the old id, but it reopens and rewrites the one item instead of recording each episode, and the per-topic `telegram-origin-held:<topic>` id has stood OPEN for a week on the Studio, so the per-episode id was the honest record.
+- The 2 h bound is exclusive (`>`): a sleep at exactly 2 h elapsed is still protected (pinned in the test). The `session:pid` dedupe can suppress a notice on PID reuse inside one session within the 500-entry window; accepted, the intervention is still in the audit log.
+
+## Second-pass review
+
+Reviewer (coordinating session, 2026-10-19): "Concur with the review" — all 118 tests in the three touched files pass in a clean worktree. Advisory note applied: `#aggregateSince` now resets when the held set drops below the threshold, not only when it empties, so a later ≥3-topic burst while one topic keeps refreshing gets its own aggregate id (test added). Confirmed by the reviewer, no change needed: the sleep floor matches only basename `sleep` with numeric args; the 2 h cap is checked before the sleep rule; the notice is one per session:pid and never precedes or blocks the kill; the test-runner floor and hard ceiling are untouched; held-reply ids are bounded at ≤1 item per topic per hour; the triage quota pause is one item per episode with `since` persisted.
 
 ## Class-Closure Declaration
 
