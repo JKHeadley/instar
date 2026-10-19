@@ -134,6 +134,22 @@ export function renderTriageSection(doc, target, data, handlers = {}) {
   const pin = el(doc, 'input', 'spend-arm-pin');
   pin.type = 'password'; pin.inputMode = 'numeric'; pin.id = 'ftPin'; pin.placeholder = 'Dashboard PIN'; pin.autocomplete = 'off';
   card.appendChild(pin);
+
+  // One confirm path per prepare-step. Pressing a prepare button twice must not stack
+  // identical confirm buttons — the operator pressed "Let it run anyway…" three times on
+  // 2026-10-19 (reasonably, since nothing visible happened) and got three identical
+  // "Confirm with PIN" buttons, which reads as "the system is confused".
+  const placeConfirm = (container, confirm) => {
+    for (const old of Array.from(container.querySelectorAll('.spend-arm-btn-commit'))) old.remove();
+    container.appendChild(confirm);
+  };
+  // The PIN input belongs to this authority card, but the executor's confirm button lives in
+  // a separate section that can be far below it. "Enter your PIN in the box above" is not
+  // enough to find it: take the operator there instead of describing where it is.
+  const revealPin = () => {
+    try { pin.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older webview */ }
+    try { pin.focus(); } catch { /* not focusable in every host */ }
+  };
   const note = el(doc, 'div', 'spend-arm-status');
   note.id = 'ftNote';
   note.setAttribute('aria-live', 'polite');
@@ -162,8 +178,9 @@ export function renderTriageSection(doc, target, data, handlers = {}) {
       const confirm = el(doc, 'button', 'spend-arm-btn spend-arm-btn-commit', 'Confirm with PIN');
       confirm.setAttribute('data-ft-action', 'commit-ignore-live');
       confirm.addEventListener('click', async () => { note.textContent = 'Working…'; note.textContent = await handlers.commitPlan(plan, (pin.value || '').trim()); });
-      btns.appendChild(confirm);
-      return 'Read the change above, enter your PIN, then confirm.';
+      placeConfirm(btns, confirm);
+      revealPin();
+      return 'Read the change above, then type your PIN in the "Dashboard PIN" box and press Confirm with PIN.';
     }).setAttribute('data-ft-action', 'plan-ignore-live');
   }
   card.appendChild(btns);
@@ -190,8 +207,9 @@ export function renderTriageSection(doc, target, data, handlers = {}) {
         const confirm = el(doc, 'button', 'spend-arm-btn spend-arm-btn-commit', 'Confirm with PIN');
         confirm.setAttribute('data-ft-action', `commit-${actionKey}`);
         confirm.addEventListener('click', async () => { note.textContent = 'Working…'; note.textContent = await handlers.commitPlan(plan, (pin.value || '').trim()); });
-        exBtns.appendChild(confirm);
-        note.textContent = 'Read the change above, enter your PIN in the box above, then confirm.';
+        placeConfirm(exBtns, confirm);
+        revealPin();
+        note.textContent = 'Read the change above, then type your PIN in the "Dashboard PIN" box (now focused, higher up this page) and press Confirm with PIN.';
       });
       exBtns.appendChild(b);
     };

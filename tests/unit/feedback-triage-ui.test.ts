@@ -98,6 +98,38 @@ describe('executor card', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).toEqual([['plan', { action: 'accept-approver-dependence' }], ['commit', 'p2', '4242'], ['plan', { action: 'publish-secret-shape', attemptId: 'i1:a1' }]]);
   });
+  it('pressing the prepare button repeatedly leaves ONE confirm button, not a stack', async () => {
+    // 2026-10-19: the operator pressed "Let it run anyway…" three times — reasonably, since
+    // nothing visible happened — and got three identical "Confirm with PIN" buttons, which
+    // reads as "the system is confused" and discourages pressing any of them.
+    const target = doc.getElementById('t');
+    renderTriageSection(doc, target, { summary: SUMMARY, proposal: PROPOSAL, queue: { items: [] }, execute: EXEC }, {
+      planExecutorAction: async () => ({ planId: 'p3', nonce: 'n3', renderedText: 'the plan' }),
+      commitPlan: async () => 'done',
+    });
+    const prepare = target.querySelector('[data-ft-action="plan-accept-approver-dependence"]');
+    for (let i = 0; i < 3; i++) { prepare.click(); await new Promise((r) => setTimeout(r, 0)); }
+    expect(target.querySelectorAll('[data-ft-action="commit-accept-approver-dependence"]')).toHaveLength(1);
+    expect(target.querySelectorAll('.spend-arm-btn-commit')).toHaveLength(1);
+  });
+
+  it('showing the confirm focuses the PIN field, which lives in a different card', async () => {
+    // The confirm button reads pin.value from an input appended to the AUTHORITY card, while
+    // the button itself is in the executor section — so "the box above" was unfindable. The
+    // fix takes the operator to the field rather than describing where it is.
+    const target = doc.getElementById('t');
+    renderTriageSection(doc, target, { summary: SUMMARY, proposal: PROPOSAL, queue: { items: [] }, execute: EXEC }, {
+      planExecutorAction: async () => ({ planId: 'p4', nonce: 'n4', renderedText: 'the plan' }),
+      commitPlan: async () => 'done',
+    });
+    target.querySelector('[data-ft-action="plan-accept-approver-dependence"]').click();
+    await new Promise((r) => setTimeout(r, 0));
+    // Compare IDs, not elements: asserting on the elements makes vitest serialise the DOM
+    // for its diff, which throws SecurityError on jsdom's opaque origin and hides the real reason.
+    expect(doc.activeElement && doc.activeElement.id).toBe('ftPin');
+    expect(target.textContent).toContain('Dashboard PIN');
+  });
+
   it('no executor buttons when nothing needs the operator', () => {
     const target = doc.getElementById('t');
     renderTriageSection(doc, target, { summary: SUMMARY, proposal: PROPOSAL, queue: { items: [] }, execute: { reason: 'ok', attempts: [] } }, { planExecutorAction: async () => null, commitPlan: async () => '' });
