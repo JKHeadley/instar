@@ -541,6 +541,7 @@ export function detectPersistingMenu(
   if (isGenerating) return null;
   if (!rawTail.length) return null;
   const tail = stripTransientTrailer(rawTail);
+  const trailerStripped = tail.length !== rawTail.length;
 
   // The full option set (for the structure key) + the glyph-led subset (the trigger).
   const numberedLines: PaneTailLine[] = [];
@@ -566,7 +567,12 @@ export function detectPersistingMenu(
     AFFORDANCE_RADIO_SELECT_RE.test(joined) ||
     // codex's blocking-menu footer — see AFFORDANCE_PRESS_ENTER_RE.
     AFFORDANCE_PRESS_ENTER_RE.test(joined) ||
-    numberedLines.length >= 2;
+    // Two numbered lines alone count only on an UNSTRIPPED tail. Once a trailer was
+    // dropped, the bottom is no longer the host's own last line, and a numbered list
+    // in a tool result (`⎿  1. …`) above a retry-wait line would read as a menu
+    // (second-pass review 2026-10-19, probe A). A real menu under a trailer always
+    // carries an affordance line (`Esc to cancel`, a footer), so it is unaffected.
+    (!trailerStripped && numberedLines.length >= 2);
   if (!hasAffordance) return null;
 
   // (iii) genuine bottom.

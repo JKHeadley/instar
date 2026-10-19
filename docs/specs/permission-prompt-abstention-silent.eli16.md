@@ -13,6 +13,7 @@ A throwaway session reproduced the first case exactly. Claude Code drew the menu
 - The watcher now counts only non-empty rows when it reads the bottom of the screen, so blank padding can no longer hide a menu.
 - When deciding whether to announce a menu (never when deciding to press a key), it ignores a trailing "waiting for API, will retry" line and Claude Code's permission-mode status bar, and it looks twelve lines up instead of six, because a menu may carry a description under each option.
 - It writes one audit row when it first sees a menu it will not answer, and one when it raises the alert. Before, an abstention left no trace at all.
+- A reviewer found one shape the wider rule would have mistaken for a menu: a numbered list the model printed inside a tool result, sitting above that same status line. The watcher now counts a bare numbered list as a menu only when no status line had to be ignored; a real menu always has its own footer line ("Esc to cancel"), so real menus are unaffected.
 
 The announce rule itself is unchanged: a menu that stays on screen for four checks raises one attention item.
 

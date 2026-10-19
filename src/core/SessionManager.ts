@@ -2858,7 +2858,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Skip sessions the SessionReaper has leased for a two-phase reap — it
         // is the single actor on them while reaping (§3.6).
         if (!this.config.protectedSessions.includes(session.tmuxSession) && !this.isReaping(session.id)) {
-          const output = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 5);
+          // One 80-row capture feeds the 5-row tail below AND the resolver's non-blank
+          // reads (second-pass review 2026-10-19: no second capture per tick).
+          const rawTail = await this.captureRawTailMaybeAsync(session.tmuxSession, 80);
+          const output = rawTail === null ? null : meaningfulTail(rawTail, 5);
 
           // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──
           // Cheap pre-gate on the last 5 NON-BLANK rows, keyed on the MENU SHAPE
@@ -2868,12 +2871,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // Non-blank, not raw rows: live 2026-10-19 a blocking menu sat above 17
           // blank rows and one status line, so every raw-row tail was blanks plus
           // that line and the resolver never saw the menu (see meaningfulNonBlankTail).
-          const resolverPregate = this.permissionPromptResolver && output
-            ? (await this.captureMeaningfulNonBlankTailMaybeAsync(session.tmuxSession, 5)) ?? output
-            : null;
+          const resolverPregate = this.permissionPromptResolver && rawTail ? meaningfulNonBlankTail(rawTail, 5) : null;
           if (this.permissionPromptResolver && resolverPregate && RESOLVER_PREGATE_RE.test(resolverPregate)) {
             try {
-              const full = await this.captureMeaningfulNonBlankTailMaybeAsync(session.tmuxSession, 16);
+              const full = meaningfulNonBlankTail(rawTail!, 16);
               if (full) {
                 await this.permissionPromptResolver.evaluate(session.tmuxSession, toPaneTailLines(full));
               }
@@ -5137,16 +5138,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
-   * The last `lines` NON-BLANK rows (resolver pre-gate + evaluate). A wider physical
-   * window than captureMeaningfulTail, because the rows it must skip are the blank
-   * padding a host draws between a blocking menu and its bottom status line.
+   * The raw last `rows` of a pane (no trim), for callers that derive more than one tail
+   * from a single capture. 80 rows is enough to skip the blank padding a host draws
+   * between a blocking menu and its bottom status line (17 rows, live 2026-10-19).
    */
-  private async captureMeaningfulNonBlankTailMaybeAsync(tmuxSession: string, lines: number): Promise<string | null> {
-    const raw = this.tmuxAsyncEnabled
-      ? await this.captureOutputAsync(tmuxSession, Math.max(lines * 6, 80))
-      : this.captureOutput(tmuxSession, Math.max(lines * 6, 80));
-    if (raw === null) return null;
-    return meaningfulNonBlankTail(raw, lines);
+  private async captureRawTailMaybeAsync(tmuxSession: string, rows: number): Promise<string | null> {
+    return this.tmuxAsyncEnabled ? this.captureOutputAsync(tmuxSession, rows) : this.captureOutput(tmuxSession, rows);
   }
 
   /**

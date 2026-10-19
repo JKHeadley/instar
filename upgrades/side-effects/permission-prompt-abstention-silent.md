@@ -21,7 +21,7 @@ Silent-gate instance #7 (feedback-pipeline silent-gate sweep, G8). Two blocking 
 
 ## 1. Over-block
 
-Nothing blocks. The widened Layer 3 can raise an attention item for a menu it previously missed; a false positive costs one deduped item after 4 consecutive ticks (≥20 s) and resets the moment the menu clears. A bare status bar under an idle prompt is tested not to match (no option lines).
+Nothing blocks. The widened Layer 3 can raise an attention item for a menu it previously missed; a false positive costs one deduped item after 4 consecutive ticks (≥20 s) and resets the moment the menu clears. A bare status bar under an idle prompt is tested not to match (no option lines). The second-pass review found a real false-positive shape (probe A: a numbered list inside a tool result, `⎿  1. …`, above the retry-wait line; probe B: a `│ 1.` quoted list above the status bar): closed by making the `≥2 numbered lines` fallback count only on an UNSTRIPPED tail — a real menu under a trailer always carries an affordance line. Both probes are now tests.
 
 ## 2. Under-block
 
@@ -48,7 +48,8 @@ No new heuristic at a competing-signals decision point; the window and trailer l
 
 - Layer 2 owns a tick it matches, so Layer 3's wider view cannot double-raise a Layer-2 wedge (unchanged ordering).
 - Dedup: the attention id is `perm-prompt:<session>|<menu digest>`; the TelegramAdapter attention store ignores an id it already holds, so one item per session per menu shape — the same bound as before.
-- The pre-gate's wider raw capture (80 rows, was 50) runs only when the 5-row non-blank tail shows a menu shape, so the common idle case still adds one cheap capture.
+- Cost: ONE 80-row raw capture per monitor tick (was one 50-row capture) feeds the 5-row tail, the pre-gate and the evaluate tail; no second capture per tick (the first cut captured twice; corrected on second-pass review).
+- A decline shape the review found (probe D): two `❯ 1. Yes` rows inside the 80-row window — Layer 2's cursor scan stops on the first from the top, which fails its window, so a genuine live prompt below a scrolled-back copy is declined (no key); Layer 3 raises after 4 ticks. Fail-closed, noted.
 
 ## 6. External surfaces
 
@@ -72,7 +73,8 @@ Closes a silent wedge the floor's own documentation promised to announce, with t
 
 ## Second-pass review (if required)
 
-_pending_
+**Reviewer:** independent reviewer subagent (general-purpose, read-only)
+**Independent read of the artifact: concern raised, applied** — Layer 3 false positive (probe A: `⎿  1. …` tool-result list above a retry-wait line; probe B: a quoted `│ 1.` list above the status bar) → the `≥2 numbered lines` affordance fallback now counts only on an unstripped tail, with both probes as tests. Advisory applied: the double capture per tick is folded into one 80-row capture (artifact §5 corrected). Advisory noted: probe D (two `❯ 1. Yes` rows in the window) is a fail-closed decline. Confirmed without change: Layer 2 receives the raw tail, keeps its 6-line window, its ≥2-named-pattern gate and its re-capture guard (`server.ts` re-capture still `captureMeaningfulTail(s, 16)`); the fixture cannot match Layer 2; audit rows carry no pane bytes and are bounded per (session, digest) episode. 70 tests across five files pass.
 
 ---
 

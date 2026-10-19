@@ -114,6 +114,17 @@ describe('stripTransientTrailer', () => {
     const only = toPaneTailLines('✻ Waiting for API response · will retry in 2s');
     expect(stripTransientTrailer(only)).toHaveLength(1);
   });
+  it('second-pass probe A/B: a numbered list in a tool result above a trailer is NOT a menu', () => {
+    // `⎿` is a lead glyph; three numbered lines; the retry-wait line is the pane bottom.
+    const toolResult = toPaneTailLines(['⏺ Here is the plan:', '  ⎿  1. Install deps', '     2. Run the build', '     3. Push', '✻ Waiting for API response · will retry in 2m 40s · check your network'].join('\n'));
+    expect(detectPersistingMenu(toolResult, false)).toBeNull();
+    const quoted = toPaneTailLines(['│ 1. first', '│ 2. second', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n'));
+    expect(detectPersistingMenu(quoted, false)).toBeNull();
+    // The same list with a real affordance line IS a menu (unchanged behaviour).
+    const realMenu = toPaneTailLines(['Pick one:', '❯ 1. first', '  2. second', '  Esc to cancel', '✻ Waiting for API response · will retry in 9s'].join('\n'));
+    expect(detectPersistingMenu(realMenu, false)).not.toBeNull();
+  });
+
   it('a bare status bar under an idle prompt is NOT a menu (no false Layer-3 episode)', () => {
     const idle = toPaneTailLines(['⏺ Done.', '❯ ', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n'));
     expect(detectPersistingMenu(idle, false)).toBeNull();
