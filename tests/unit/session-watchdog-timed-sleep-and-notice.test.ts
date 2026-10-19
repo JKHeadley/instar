@@ -32,6 +32,7 @@ describe('timed sleep floor', () => {
   });
 
   it('the two-hour protected-wait bound still applies to a very long sleep', () => {
+    expect(classifyProtectedWait('sleep 10500', '', 2 * 3_600_000)).toEqual({ protected: true, reason: 'timed-sleep' }); // the bound is exclusive
     expect(classifyProtectedWait('sleep 10500', '', 2 * 3_600_000 + 1)).toEqual({ protected: false });
     expect(classifyProtectedWait('sleep 10500', '', 3_600_000)).toEqual({ protected: true, reason: 'timed-sleep' });
   });

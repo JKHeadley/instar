@@ -350,6 +350,16 @@ describe('item collapse + wording + notice', () => {
     expect(a).toBe('telegram-origin-held:aggregate:0');
     expect(b).not.toBe(a);
   });
+  it('a burst after the set fell below the threshold is a new aggregate even if one topic kept refreshing', () => {
+    let now = 0; const c = new HeldForwardItemCollapser({ now: () => now });
+    c.record(1); c.record(2); const a = c.record(3).itemId;
+    // Topic 1 keeps holding every 20 min; 2 and 3 age out after an hour.
+    for (let i = 0; i < 4; i++) { now += 20 * 60_000; c.record(1); }
+    expect(c.topics()).toEqual([1]);
+    c.record(4); const b = c.record(5).itemId;
+    expect(b).not.toBe(a);
+    expect(b).toBe(`telegram-origin-held:aggregate:${now}`);
+  });
   it('an expiry item is per operation', () => {
     const row = { operationId: 'op-1', destination: { accountId: '1', chatId: '-1', topicId: '42' } };
     expect(heldExpiryItemId(row)).toBe('telegram-origin-held:42:expired:op-1');
