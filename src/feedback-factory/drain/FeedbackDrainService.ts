@@ -25,6 +25,27 @@ export const FEEDBACK_DRAIN_SERVICE_STAGE = {
  */
 export const READINESS_STALL_NOTICE_TICKS = 6;
 /**
+ * Wall-clock bound on waiting for ANY readiness answer before ONE no-progress notice is raised.
+ * It covers what the tick-counted notices cannot see: ticks that never run (the job off or
+ * refused), and ticks that run but ask nothing (no approved model, no model wired, the owner
+ * binding stale, the time budget spent before the call). Exposure only, per spec
+ * feedback-factory-operating-drain.md line 270: it never retries, restores or re-runs anything.
+ */
+export const READINESS_NO_PROGRESS_ALARM_MS = 6 * 60 * 60 * 1000;
+/** How often the canonical owner checks progress age (the server's timer; ticks need not run). */
+export const READINESS_PROGRESS_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+/** A last run older than this reads as "the drain has not run" (the job cadence is 30 minutes). */
+const DRAIN_NOT_RUNNING_MS = 2 * 60 * 60 * 1000;
+
+export interface ReadinessProgressAge {
+  /** Candidates waiting for a readiness answer now. */
+  waitingCandidates: number;
+  /** When the current wait began (ms epoch), or null when nothing waits. */
+  waitingSince: number | null;
+  ageMs: number | null;
+  alarmAfterMs: number;
+}
+/**
  * Least time left for a readiness call after the first. Live 2026-10-01 a call cost ~9 s of
  * start-up plus ~2.4 s per candidate, which the pace estimate (no start-up term) only covers
  * with ~23 s or more left.
@@ -66,6 +87,8 @@ export interface FeedbackDrainServiceOptions {
    * it. Signal only: it never restores, retries or changes the authority.
    */
   raiseAttention?: (item: ReadinessPauseAttention) => Promise<void>;
+  /** Override READINESS_NO_PROGRESS_ALARM_MS (tests). */
+  noProgressAlarmMs?: number;
   clock?: () => number;
 }
 
@@ -140,6 +163,7 @@ export class FeedbackDrainService {
   /** Pause alarms already accepted by the attention store in this process (the store dedupes across restarts). */
   private readonly pauseAlarmsRaised = new Set<string>();
   private readonly stallAlarmsRaised = new Set<string>();
+  private readonly noProgressAlarmsRaised = new Set<string>();
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
@@ -177,6 +201,91 @@ export class FeedbackDrainService {
     const authority = this.opts.store.getAuthority(this.opts.authorityId);
     if (!authority || authority.revoked || !this.opts.isCanonicalOwner()) return;
     void this.alarmIfPaused(authority);
+  }
+
+  /** Read-only progress age for the status route (never stamps or alarms). */
+  readinessProgressAge(): ReadinessProgressAge {
+    const now = this.now();
+    const waitingSince = this.opts.store.readinessWaitingSince();
+    return {
+      waitingCandidates: this.opts.store.readinessWaitingCount(now),
+      waitingSince,
+      ageMs: waitingSince === null ? null : Math.max(0, now - waitingSince),
+      alarmAfterMs: this.noProgressAlarmMs(),
+    };
+  }
+
+  /**
+   * Run by the server on a timer, independent of ticks. Stamps when a wait for a readiness
+   * answer began, closes it when nothing waits, and past the bound raises ONE no-progress item
+   * per wait, unless a notice that already names the cause covers it (the pause alarm for a
+   * paused authority, the stall notice for a run of failed calls) or the operator revoked the
+   * authority on purpose. Signal only. Never throws.
+   */
+  async checkReadinessProgress(): Promise<'not-owner' | 'idle' | 'waiting' | 'covered' | 'alarmed'> {
+    try {
+      if (!this.opts.isCanonicalOwner()) return 'not-owner';
+      const now = this.now();
+      const waiting = this.opts.store.readinessWaitingCount(now);
+      if (waiting === 0) { this.opts.store.clearReadinessWaiting(); return 'idle'; }
+      const since = this.opts.store.markReadinessWaiting(now);
+      if (now - since < this.noProgressAlarmMs()) return 'waiting';
+      const authority = this.opts.store.getAuthority(this.opts.authorityId);
+      if (authority) {
+        if (authority.revoked) return 'covered';
+        if (this.opts.store.authorityPosture(authority.authorityId, authority.generation).mode === 'proposal-only') return 'covered';
+        if (this.opts.store.readinessProgress(authority.authorityId, authority.generation).consecutiveFailedTicks >= READINESS_STALL_NOTICE_TICKS) return 'covered';
+      }
+      return await this.alarmNoProgress(since, waiting, authority, now) ? 'alarmed' : 'waiting';
+    } catch {
+      /* @silent-fallback-ok: a check that cannot read the store says nothing; the next timer tick retries */
+      return 'waiting';
+    }
+  }
+
+  private noProgressAlarmMs(): number {
+    const value = Number(this.opts.noProgressAlarmMs ?? READINESS_NO_PROGRESS_ALARM_MS);
+    return Number.isFinite(value) && value > 0 ? value : READINESS_NO_PROGRESS_ALARM_MS;
+  }
+
+  private async alarmNoProgress(since: number, waiting: number, authority: AuthorityRecord | null, now: number): Promise<boolean> {
+    if (!this.opts.raiseAttention) return false;
+    const id = `feedback-drain:readiness-no-progress:${since}`;
+    if (this.noProgressAlarmsRaised.has(id)) return true;
+    const lastRun = this.opts.store.lastRun();
+    const when = (at: number) => `${new Date(at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC`;
+    let cause: string;
+    let action: string;
+    if (!authority) {
+      cause = 'No sorting model has been approved, so nothing can decide which reports become work items.';
+      action = 'Approving a sorting model on the dashboard Feedback Drain tab starts it.';
+    } else if (!lastRun || now - lastRun.createdAt > DRAIN_NOT_RUNNING_MS) {
+      cause = lastRun ? `The drain has not run since ${when(lastRun.createdAt)}: its scheduled job is off or its runs are being refused.`
+        : 'The drain has never run: its scheduled job is off or its runs are being refused.';
+      action = 'Nothing is paused that an approval would restore; the job or the run refusal needs a look.';
+    } else {
+      cause = `The drain runs but asks the sorting model nothing (last run ${when(lastRun.createdAt)}, result: ${lastRun.reason || 'no reason recorded'}).`;
+      action = 'Nothing is paused that an approval would restore; why the runs skip the model needs a look.';
+    }
+    const hours = Math.max(1, Math.round((now - since) / 3_600_000));
+    try {
+      await this.opts.raiseAttention({
+        id,
+        title: 'Feedback sorting has made no progress',
+        summary: `${waiting} feedback report group${waiting === 1 ? '' : 's'} ha${waiting === 1 ? 's' : 've'} waited about ${hours} hour${hours === 1 ? '' : 's'} ` +
+          `for the sorting model and none has been sorted. ${cause}`,
+        description: `Since ${when(since)} no readiness call has succeeded while feedback was waiting. ${cause} ${action} ` +
+          'Nothing retries or repairs this automatically. The drain status shows the wait (readinessProgressAge) and the last run.',
+        category: 'monitoring',
+        priority: 'NORMAL',
+        sourceContext: 'feedback-drain:readiness-no-progress',
+      });
+      this.noProgressAlarmsRaised.add(id);
+      return true;
+    } catch {
+      /* @silent-fallback-ok: the next timer check past the bound tries again */
+      return false;
+    }
   }
 
   canAgentMutateReadiness(agentId: string): boolean {

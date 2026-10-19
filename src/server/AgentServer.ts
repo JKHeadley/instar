@@ -62,7 +62,7 @@ import { FeedbackProcessingService, resolveCanonicalStoreDir } from '../feedback
 import { FeedbackDrainStore } from '../feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackInitiativeConsumer } from '../feedback-factory/drain/FeedbackInitiativeConsumer.js';
 import { FeedbackReadinessArbiter } from '../feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_PROGRESS_CHECK_INTERVAL_MS } from '../feedback-factory/drain/FeedbackDrainService.js';
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
@@ -478,6 +478,8 @@ export class AgentServer {
   /** Feedback executor (docs/specs/feedback-triage-and-execution.md §4). Null when triage is dark → execute routes 503. */
   private feedbackExecute: import('../feedback-factory/execute/buildFeedbackExecutor.js').FeedbackExecuteRouteContext | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
+  /** Feedback readiness progress-age check (ACT-114): one no-progress item per wait, signal only. */
+  private feedbackDrainProgressTimer: ReturnType<typeof setInterval> | null = null;
   private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
   private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
   private parallelActivityIndex: ParallelActivityIndex | null = null;
@@ -2918,6 +2920,10 @@ export class AgentServer {
           }, 15 * 60 * 1000);
           this.feedbackDrainBackupTimer.unref?.();
         }
+        // Progress age runs on its own timer because the failure it exists for is ticks that never
+        // run or never reach the model. Read + one deduped item; never retries (spec line 270).
+        this.feedbackDrainProgressTimer = setInterval(() => { void service.checkReadinessProgress(); }, READINESS_PROGRESS_CHECK_INTERVAL_MS);
+        this.feedbackDrainProgressTimer.unref?.();
         this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled: true, developmentAgent: options.config.developmentAgent === true,
           sourceCheckout, hasCanonicalDataDir: true, dependenciesReady: true, initialized: true, ownerConfigured: ownerHost !== null });
         console.log(`[feedback-factory] operated drain live (consumer: ${service.stats().consumerLive ? 'live' : 'simulation'})`);
@@ -6891,6 +6897,7 @@ export class AgentServer {
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
       this.followMeConsumerTimer = null;
     }
+    try { if (this.feedbackDrainProgressTimer) clearInterval(this.feedbackDrainProgressTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
     try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
     this.feedbackDrainBackupTimer = null;
     // Stop the growth-digest publisher's cron + pending catch-up timer.

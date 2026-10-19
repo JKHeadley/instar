@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET, READINESS_NO_PROGRESS_MARKER, READINESS_NO_PROGRESS_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -7712,6 +7712,18 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added readiness stall-notice bullet');
     } else {
       result.skipped.push('CLAUDE.md: readiness stall-notice bullet already present');
+    }
+    // Readiness no-progress alarm (ACT-114, 2026-10-19): one bullet right after the stall-notice
+    // bullet (which the block above guarantees is present). Idempotent via its marker.
+    if (!content.includes(READINESS_NO_PROGRESS_MARKER)) {
+      const stallAt = content.indexOf(READINESS_STALL_NOTICE_BULLET);
+      content = stallAt >= 0
+        ? content.slice(0, stallAt + READINESS_STALL_NOTICE_BULLET.length) + '\n' + READINESS_NO_PROGRESS_BULLET + content.slice(stallAt + READINESS_STALL_NOTICE_BULLET.length)
+        : content + '\n' + READINESS_NO_PROGRESS_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added readiness no-progress bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: readiness no-progress bullet already present');
     }
 
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar

@@ -100,6 +100,10 @@ describe('feedback drain readiness brake — HTTP + production wiring', () => {
     // Progress age over HTTP (spec line 270): one failed tick is counted and dated, nothing paused.
     expect(body.readinessProgress).toMatchObject({ consecutiveFailedTicks: 1 });
     expect(typeof body.readinessProgress.stalledSince).toBe('number');
+    // Wall-clock wait (ACT-114): the rejected rows still wait for an answer. The GET is read-only:
+    // only the server's progress timer stamps when a wait began, so none is stamped yet.
+    expect(body.readinessProgressAge).toMatchObject({ waitingSince: null, ageMs: null, alarmAfterMs: 6 * 60 * 60 * 1000 });
+    expect(body.readinessProgressAge.waitingCandidates).toBeGreaterThan(0);
   });
 
   it('the recorded live cross-cite answer is accepted with the two cross-citing rows held back', async () => {
