@@ -454,11 +454,23 @@ describe('FeedbackDrainStore', () => {
       expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
     });
 
-    it('counts consecutive transient authority failures and clears on success', () => {
+    it('counts consecutive transient authority failures, exposes progress, and clears on success', () => {
+      expect(store.readinessProgress('frontier-reader', 1)).toEqual({ consecutiveFailedTicks: 0, stalledSince: null, lastSuccessAt: null });
       expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+      const since = store.readinessProgress('frontier-reader', 1).stalledSince;
+      expect(typeof since).toBe('number');
       expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(2);
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 2, stalledSince: since }); // the episode start holds
       store.clearAuthorityTransientFailures('frontier-reader', 1);
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 0, stalledSince: null });
+      expect(typeof store.readinessProgress('frontier-reader', 1).lastSuccessAt).toBe('number');
       expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+      // A store upgraded mid-episode holds a count from the old three-strike rule but no episode
+      // stamp; the next strike stamps it instead of waiting for a count of 1 that never comes.
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='authority_readiness_stall_since:frontier-reader:1'`).run();
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 1, stalledSince: null });
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(2);
+      expect(typeof store.readinessProgress('frontier-reader', 1).stalledSince).toBe('number');
     });
   });
 

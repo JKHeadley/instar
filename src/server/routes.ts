@@ -14043,6 +14043,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } : null,
       // Why the last readiness call failed: the exact check, a scrubbed excerpt, the candidates.
       lastReadinessFailure: ctx.feedbackDrain.store.lastReadinessDiagnosis(),
+      // Progress age (spec line 270): failed ticks in a row, when that run started, last success.
+      readinessProgress: authority ? ctx.feedbackDrain.store.readinessProgress(authority.authorityId, authority.generation) : null,
       consumerPromotion: (() => {
         const promotion = ctx.feedbackDrain!.promotion.read();
         return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;

@@ -128,9 +128,14 @@ describe('feedback drain — one imperfect answer keeps the approval; a real bra
     expect(braked.failure, braked.stdout).toMatch(/drain run degraded: readiness-authority-failed/);
     const status = await (await fetch(`http://127.0.0.1:${port}/feedback-factory/drain/status`, { headers: { Authorization: `Bearer ${AUTH}` } })).json() as {
       authority: { mode: string; pausedBecause: string }; lastReadinessFailure: { outcome: string; diagnosis: { check: string; resolvedModel: string } };
+      readinessProgress: { consecutiveFailedTicks: number; stalledSince: number | null; lastSuccessAt: number | null };
     };
     expect(status.authority.mode).toBe('proposal-only');
     expect(status.lastReadinessFailure).toMatchObject({ outcome: 'contract-violation', diagnosis: { check: 'resolved-model-mismatch', resolvedModel: 'gpt-5.5' } });
+    // Progress age is exposed on the production route (spec line 270): the earlier successful run
+    // stamped a success; a contract violation is not an invocation failure, so nothing is counted.
+    expect(status.readinessProgress).toMatchObject({ consecutiveFailedTicks: 0, stalledSince: null });
+    expect(typeof status.readinessProgress.lastSuccessAt).toBe('number');
 
     const before = runs();
     const refused = await runJob('refused');

@@ -8,7 +8,7 @@ import { FeedbackProcessingService } from '../../src/feedback-factory/processing
 import { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackInitiativeConsumer } from '../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 import { FeedbackReadinessArbiter } from '../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_STALL_NOTICE_TICKS } from '../../src/feedback-factory/drain/FeedbackDrainService.js';
 import { CodexExecJsonTimeoutError } from '../../src/providers/adapters/openai-codex/transport/codexSpawn.js';
 
 const dirs: string[] = [];
@@ -116,7 +116,7 @@ describe('FeedbackDrainService lifecycle', () => {
   });
 
   // Live 2026-10-01 run a49ad1e8: one CodexExecJsonTimeoutError demoted the authority for good.
-  it('retries a transient invocation failure and demotes only after a run of them', async () => {
+  it('retries a transient invocation failure at the next tick; the approval is never voided by it', async () => {
     let failing = true;
     const { service, store, advance } = setup(false, 50, false, { arbiterError: () => failing ? new CodexExecJsonTimeoutError(60_000, '') : undefined });
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -130,12 +130,17 @@ describe('FeedbackDrainService lifecycle', () => {
     expect(store.getReadiness('cluster-1')?.state).toBe('queued');
   });
 
-  it('demotes after the consecutive transient failure limit', async () => {
+  // Live 2026-10-14: eight 429s over twelve hours demoted the authority for four days. Spec
+  // feedback-factory-operating-drain.md line 121 closes the demotion list; an invocation
+  // failure is not on it, so a run of them is counted and exposed, never demoted.
+  it('never demotes on a run of invocation failures, however long; it counts them', async () => {
     const { service, store, advance } = setup(false, 50, false, { arbiterError: () => new CodexExecJsonTimeoutError(60_000, '') });
-    for (let attempt = 1; attempt < READINESS_TRANSIENT_FAILURE_LIMIT; attempt++) { await service.tick(); advance(16 * 60 * 1000); }
-    expect(store.authorityPosture('dev-readiness', 1).mode).toBe('active');
-    await service.tick();
-    expect(store.authorityPosture('dev-readiness', 1)).toMatchObject({ mode: 'proposal-only', reason: 'readiness-authority-repeated-invocation-failure' });
+    for (let attempt = 1; attempt <= READINESS_STALL_NOTICE_TICKS + 1; attempt++) {
+      await service.tick();
+      expect(store.authorityPosture('dev-readiness', 1).mode).toBe('active');
+      expect(store.readinessProgress('dev-readiness', 1).consecutiveFailedTicks).toBe(attempt);
+      advance(16 * 60 * 1000);
+    }
   });
 
   it('still demotes at once on a provenance violation', async () => {

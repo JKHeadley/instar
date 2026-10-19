@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -7673,6 +7673,21 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: updated Feedback Readiness Authority brake wording');
     }
+    // 2026-10-18: no run of invocation failures demotes any more (spec feedback-factory-operating-drain.md
+    // line 121 closes the demotion list); the status route exposes readinessProgress instead. Runs after
+    // the block above so an agent on the oldest wording is carried forward in one pass.
+    const readinessBrake1002 = '(spend cap, a different model or prompt answering, or three runs in a row with no usable answer: timeouts, provider errors, or answers that failed the checks; a single timeout or rejected answer is just retried, and a restart on the same machine keeps the approval);';
+    if (content.includes(readinessBrake1002)) {
+      content = content.replace(readinessBrake1002, '(the spend cap, or a different model or prompt answering; a timeout, a provider error, a rate limit or a rejected answer NEVER pauses it — that call is retried at the next run, a long run of them raises one notice instead, and a restart on the same machine keeps the approval);');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Feedback Readiness Authority brake wording — invocation failures never pause');
+    }
+    const readinessStatusOld = '(`at` says when; it stays after later calls succeed); `blockers` says';
+    if (content.includes(readinessStatusOld)) {
+      content = content.replace(readinessStatusOld, '(`at` says when; it stays after later calls succeed) while `readinessProgress` says how many runs in a row produced no usable answer, since when, and when one last succeeded; `blockers` says');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Feedback Readiness Authority status now names readinessProgress');
+    }
     // Readiness pause alarm: one bullet under the Feedback Readiness Authority section (after its
     // "When to use" line when present, else appended). Idempotent via its marker.
     if (!content.includes(READINESS_PAUSE_ALARM_MARKER)) {
@@ -7685,6 +7700,18 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added readiness pause-alarm bullet');
     } else {
       result.skipped.push('CLAUDE.md: readiness pause-alarm bullet already present');
+    }
+    // Readiness stall notice (2026-10-18): one bullet right after the pause-alarm bullet (which
+    // the block above guarantees is present). Idempotent via its marker.
+    if (!content.includes(READINESS_STALL_NOTICE_MARKER)) {
+      const pauseAt = content.indexOf(READINESS_PAUSE_ALARM_BULLET);
+      content = pauseAt >= 0
+        ? content.slice(0, pauseAt + READINESS_PAUSE_ALARM_BULLET.length) + '\n' + READINESS_STALL_NOTICE_BULLET + content.slice(pauseAt + READINESS_PAUSE_ALARM_BULLET.length)
+        : content + '\n' + READINESS_STALL_NOTICE_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added readiness stall-notice bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: readiness stall-notice bullet already present');
     }
 
     // Cross-Agent Communication Discipline (anti-confabulation) — codex-instar

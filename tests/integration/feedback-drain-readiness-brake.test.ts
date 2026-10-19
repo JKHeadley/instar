@@ -97,6 +97,9 @@ describe('feedback drain readiness brake — HTTP + production wiring', () => {
     expect(body.lastReadinessFailure).toMatchObject({ runId: run.runId, outcome: 'output-rejected', diagnosis: {
       check: 'invalid-json', candidateCount: 9, resolvedModel: 'gpt-6-astra', excerpt: 'These clusters look mostly ready to me.',
     } });
+    // Progress age over HTTP (spec line 270): one failed tick is counted and dated, nothing paused.
+    expect(body.readinessProgress).toMatchObject({ consecutiveFailedTicks: 1 });
+    expect(typeof body.readinessProgress.stalledSince).toBe('number');
   });
 
   it('the recorded live cross-cite answer is accepted with the two cross-citing rows held back', async () => {

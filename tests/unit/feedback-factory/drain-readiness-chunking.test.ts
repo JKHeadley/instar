@@ -15,7 +15,7 @@ import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { FeedbackProcessingService } from '../../../src/feedback-factory/processing/FeedbackProcessingService.js';
 import { FeedbackDrainStore } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackReadinessArbiter } from '../../../src/feedback-factory/drain/FeedbackReadinessArbiter.js';
-import { FeedbackDrainService, READINESS_CHUNK_SIZE, READINESS_TIME_EXHAUSTED, READINESS_TRANSIENT_FAILURE_LIMIT } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainService, READINESS_CHUNK_SIZE, READINESS_TIME_EXHAUSTED, READINESS_STALL_NOTICE_TICKS } from '../../../src/feedback-factory/drain/FeedbackDrainService.js';
 import { CodexExecJsonTimeoutError } from '../../../src/providers/adapters/openai-codex/transport/codexSpawn.js';
 import type { FeedbackInitiativeConsumer } from '../../../src/feedback-factory/drain/FeedbackInitiativeConsumer.js';
 
@@ -156,16 +156,15 @@ describe('readiness review in chunks (live latency shape)', () => {
     expect(ctx.store.authorityPosture('feedback-readiness-default', 1).mode).toBe('active');
   });
 
-  it('counts a tick whose every chunk failed as ONE transient failure, and demotes only after the limit', async () => {
+  it('counts a tick whose every chunk failed as ONE transient failure, and never demotes for it', async () => {
     const ctx = setup({ fault: () => 'timeout' });
-    for (let tick = 1; tick < READINESS_TRANSIENT_FAILURE_LIMIT; tick++) {
+    for (let tick = 1; tick <= READINESS_STALL_NOTICE_TICKS + 1; tick++) {
       expect(await ctx.service.tick()).toMatchObject({ result: 'degraded', reason: 'readiness-authority-failed' });
+      expect(ctx.store.readinessProgress('feedback-readiness-default', 1).consecutiveFailedTicks).toBe(tick);
+      expect(ctx.store.authorityPosture('feedback-readiness-default', 1).mode).toBe('active');
       ctx.advance(16 * 60 * 1000);
     }
-    expect(ctx.calls).toHaveLength(READINESS_TRANSIENT_FAILURE_LIMIT - 1);
-    expect(ctx.store.authorityPosture('feedback-readiness-default', 1).mode).toBe('active');
-    await ctx.service.tick();
-    expect(ctx.store.authorityPosture('feedback-readiness-default', 1)).toMatchObject({ mode: 'proposal-only', reason: 'readiness-authority-repeated-invocation-failure' });
+    expect(ctx.calls).toHaveLength(READINESS_STALL_NOTICE_TICKS + 1); // one call per tick, every tick
   });
 
   it('still demotes at once on a contract violation in a later chunk, keeping the earlier decisions', async () => {
