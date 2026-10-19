@@ -55,10 +55,18 @@ jobs:
           fi
           # Find an open issue tagged with our marker label, or create one.
           ISSUE_NUMBER="$(gh issue list --label docs-coverage --state open --json number --jq '.[0].number // empty')"
+          # GitHub rejects issue and comment bodies over 65536 characters.
+          # Cap the report and point at the run artifact for the rest.
+          REPORT="$(head -c 60000 "$REPORT_PATH")"
+          if [ "$(wc -c < "$REPORT_PATH")" -gt 60000 ]; then
+            REPORT="$REPORT
+
+          _Report truncated at 60000 characters. The full report is attached to the workflow run._"
+          fi
           BODY=$(cat <<EOF
           ## Weekly docs coverage snapshot — $(date -u +"%Y-%m-%d")
 
-          $(cat "$REPORT_PATH")
+          ${REPORT}
 
           ---
 
