@@ -271,7 +271,7 @@ describe('pre-push advisory (FD1 — warnings[] only, never errors[])', () => {
     );
     for (const f of [
       'pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs',
-      'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js',
+      'release-relevant-paths.mjs', 'release-cut-diff.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js',
     ]) {
       fs.copyFileSync(path.join(REPO_ROOT, 'scripts', f), path.join(scratch, 'scripts', f));
     }

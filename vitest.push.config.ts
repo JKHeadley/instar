@@ -230,6 +230,13 @@ const FLAKY_TESTS = [
 const ISOLATED_CACHE_DIR = process.env.INSTAR_VITEST_CACHE_DIR?.trim();
 
 export default defineConfig(withTestRunnerBound('push', {
+  // threadline-core is a workspace package that threadline-mcp imports by its published name.
+  // Tests resolve it to the live source so cross-implementation tests need no install or build
+  // (spec threadline-standalone-pairing). This mirrors vitest.config.ts: without it the push
+  // gate's sharded unit tests cannot LOAD the threadline tests, and a collection failure fails
+  // the whole shard — which is a REQUIRED check, so every pull request was blocked.
+  resolve: { alias: { '@sagemindai/threadline-core': new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname } },
+
   ...(ISOLATED_CACHE_DIR ? { cacheDir: ISOLATED_CACHE_DIR } : {}),
   test: {
     include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],

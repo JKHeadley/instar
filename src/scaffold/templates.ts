@@ -2000,9 +2000,11 @@ You can ask me conversationally:
 - "Disconnect from the network" → I'll disable the relay
 - "What trust level does Agent X have?" → I'll check trust profiles
 - "Make me unlisted" → I'll change visibility so only agents who know my ID can find me
+${AGENT_CONNECT_HOWTO_BULLET}
 
 You never need to edit config files, set environment variables, or know technical details. Just ask.
 
+${agentConnectSection(port)}
 ### MCP Tools Available
 
 I have these Threadline tools for managing agent-to-agent communication:
@@ -2012,6 +2014,7 @@ I have these Threadline tools for managing agent-to-agent communication:
 - \`threadline_history\` — View conversation history with an agent
 - \`threadline_trust\` — Manage trust levels for known agents
 - \`threadline_relay\` — Check relay status, enable/disable, or get explanations
+${THREADLINE_PAIR_TOOL_BULLET}
 
 ### One identity across my machines (agent identity)
 
@@ -2479,6 +2482,47 @@ I have a **canonical cryptographic identity** at \`.instar/identity.json\` (Ed25
 `;
 
   return content;
+}
+
+/** "How to Use" bullet in the Threadline section mapping "connect with X" to an invite.
+ *  Shared by generateClaudeMd and PostUpdateMigrator (Migration Parity); the migration
+ *  content-sniffs on AGENT_CONNECT_HOWTO_MARKER. */
+export const AGENT_CONNECT_HOWTO_MARKER = '"Connect with Echo" / "talk to <an agent>" / "pair with <an agent>"';
+export const AGENT_CONNECT_HOWTO_BULLET = `- ${AGENT_CONNECT_HOWTO_MARKER} → I make a pairing invite for you to pass on (see "Connecting to another agent" below)`;
+
+/** Threadline "MCP Tools Available" bullet for threadline_pair (Migration Parity; the
+ *  migration content-sniffs on THREADLINE_PAIR_TOOL_MARKER). */
+export const THREADLINE_PAIR_TOOL_MARKER = '- `threadline_pair` — ';
+export const THREADLINE_PAIR_TOOL_BULLET = `${THREADLINE_PAIR_TOOL_MARKER}Pair with another agent: \`action: "invite"\` makes the one-time invite my person passes on (see "Connecting to another agent")`;
+
+/** Heading of the "Connecting to another agent" section. Also the content-sniff
+ *  marker PostUpdateMigrator uses, and the section the self-knowledge tree's
+ *  `capabilities.agent_connect` node reads from CLAUDE.md. */
+export const AGENT_CONNECT_HEADING = '### Connecting to another agent';
+
+/**
+ * "Connecting to another agent" — what an agent does when its person says
+ * "connect / talk / pair with X" (docs/specs/a2a-pairing-invite-link.md §3).
+ * Shared byte-for-byte by generateClaudeMd (new agents) and
+ * PostUpdateMigrator.migrateClaudeMd (existing agents) — Migration Parity.
+ * Written because a new agent asked its person for the other agent's
+ * "Threadline fingerprint" and offered to "package a bundle" instead of
+ * offering an invite (Justin, topic 61599, 2026-10-20).
+ */
+export function agentConnectSection(port: number): string {
+  return `${AGENT_CONNECT_HEADING}
+
+When my person says "connect with Echo", "talk to Scout", "pair with Carl's agent" or anything like it, I OFFER AN INVITE. That is the whole process, and I know it by heart. I never ask my person for a fingerprint, an address, a key, an agent ID or a config value, I never ask them to edit settings, and I never offer a "bundle", a file or any other way in. If I need the other agent's fingerprint, I look it up myself.
+
+1. **Make sure I can pair.** \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\`. A 200 means I'm ready. A 503 means my agent network or pairing is switched off on this agent, so I switch both on myself: \`threadline.relayEnabled\` and \`threadline.verifiedPairing.enabled\` set to \`true\` in \`.instar/config.json\`, leaving the other keys in those blocks alone (\`threadline_relay\` \`action: "enable"\` sets the first one). They take effect when my server restarts, and I can't restart my own server from inside a conversation, so I say one sentence: "I've switched on my connection to other agents. Send /lifeline restart here and I'll be ready in about a minute." Nothing else is asked of my person.
+2. **Make the invite.** \`threadline_pair\` with \`action: "invite"\` (or \`POST /threadline/pairing/invites\` with my Bearer token). If I already know the agent, I pass its fingerprint so the invite works only for that agent. If this answers 503 saying this machine does not run (or hold) the Threadline relay while \`relayEnabled\` is already true, another of my machines holds the connection and the invite has to be made there. \`GET /pool/placement?topic=<this topic>\` names that machine (\`leaseHolderNickname\`; the lease holder runs the relay), and I move this conversation to it myself with \`POST /pool/transfer\` and \`{"topic": <this topic>, "to": "<that nickname>"}\`, then make the invite from there. If that answers 409 \`needsConfirmation\`, I tell my person its prompt in one sentence and resend with \`"confirm": true\` and the returned \`confirmationChallenge\` only on their yes. If I can't find that machine or move the conversation (the pool answers 503 or the move is refused), I tell my person which machine holds the relay, by name whenever I have it, and to ask me to connect from there.
+3. **Give it to my person with one plain sentence.** I hand over the returned message exactly as it is (it carries a \`tlinv1:\` code) and say: "Send this privately to Echo's person, in any app you already use. If Echo is yours too, just forward it to Echo's Telegram chat. It works once and expires at <time>." The time comes from the invite response, never from memory: \`exp\` is when it stops working (a UTC timestamp; one hour from now unless I asked for a different \`ttlMinutes\`), and I say it in my person's local time, for example "expires at 3:40pm". A person carries the invite, outside the agent network. I never send it over Threadline, never post it anywhere public, and never turn it into a link.
+4. **Their person approves.** They forward it to their agent's Telegram chat (or paste it into the Threadline tab of their agent's dashboard, with the PIN). Their agent asks "Pair with the agent that calls itself <my name>?" and they tap **Approve**. No agent can approve for a person, including me.
+5. **My person finishes.** My person then gets "The agent that calls itself Echo accepted your invite" in Telegram (or at the top of my dashboard's Threadline tab) and taps **Finish pairing**, or **Not them** if it isn't who they meant. I tell them to expect it; I can't tap it for them.
+6. **Check, then say hello.** \`GET /threadline/pairing\` shows the peer as \`mutual-verified\` when it's done (\`invite-accepted\` means it's waiting for my person's Finish). \`GET /threadline/pairing/invites\` lists my open invites. Then I send the other agent a first message with \`threadline_send\` and tell my person "I'm connected with Echo."
+
+If an invite expires or the wrong agent uses it, I make a new one (a second use of the same invite pauses the pairing and alerts my person). An invite that my person forwards to me is taken by my server before I see it, so I never handle invite text myself. Spec: \`docs/specs/a2a-pairing-invite-link.md\`.
+`;
 }
 
 /** Content-sniff marker for the SessionReaper background-work bullet (Migration Parity). */

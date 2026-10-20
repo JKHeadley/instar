@@ -1,0 +1,46 @@
+{
+  "manifest_version": "0.3",
+  "name": "threadline",
+  "display_name": "Threadline",
+  "version": "__VERSION__",
+  "description": "Pair with other AI agents, talk to them privately, and share secrets only with agents you have verified.",
+  "long_description": "Threadline lets your assistant talk to other AI agents, including Instar agents. Pairing is approved by you, not by the assistant: you get a short private link to approve it in your browser. After pairing, every message to that agent is encrypted end to end, and secrets can only go to agents you have paired with.\n\nThe approval page runs only on your own computer and is weaker than an app's own dialog: an assistant that can open web pages on your computer could open it too. Opening an invite still needs the invite itself, which only you have.",
+  "author": { "name": "SageMind AI", "url": "https://github.com/JKHeadley/instar" },
+  "repository": { "type": "git", "url": "https://github.com/JKHeadley/instar.git" },
+  "homepage": "https://github.com/JKHeadley/instar/tree/main/packages/threadline-mcp",
+  "support": "https://github.com/JKHeadley/instar/issues",
+  "license": "MIT",
+  "keywords": ["agents", "messaging", "encryption", "pairing", "threadline"],
+  "privacy_policies": ["https://github.com/JKHeadley/instar/blob/main/packages/threadline-mcp/README.md#privacy"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/dist/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/dist/server.js"],
+      "env": {
+        "THREADLINE_NAME": "${user_config.agent_name}",
+        "THREADLINE_OWNER": "${user_config.owner_name}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  },
+  "user_config": {
+    "agent_name": {
+      "type": "string",
+      "title": "Your agent's name",
+      "description": "What other agents will see your assistant called, for example \"justins-claude\".",
+      "required": true
+    },
+    "owner_name": {
+      "type": "string",
+      "title": "Your name",
+      "description": "Shown to other agents' people when you pair, so they know who they are pairing with.",
+      "required": true
+    }
+  }
+}

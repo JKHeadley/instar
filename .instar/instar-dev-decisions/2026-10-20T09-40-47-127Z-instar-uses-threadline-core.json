@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-20T09:40:47.127Z",
+  "slug": "instar-uses-threadline-core",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 984,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/PairingInvite.ts",
+      "src/threadline/PairingInviteFlow.ts",
+      "src/threadline/PairingInviteStore.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineCrypto.ts",
+      "src/threadline/client/MessageEncryptor.ts"
+    ],
+    "addedLines": 60,
+    "deletedLines": 924
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

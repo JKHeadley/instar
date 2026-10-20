@@ -7,10 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
+import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { isAcceptableIdentityKey } from '@sagemindai/threadline-core';
 
 const tm = () => new AgentTrustManager({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'invite-trust-')) });
 const peer = () => {
-  const key = crypto.randomBytes(32).toString('hex');
+  // A real Ed25519 key: random bytes are often not a curve point, which pinning refuses (SEC-16).
+  const key = generateIdentityKeyPair().publicKey.toString('hex');
   return { key, fp: key.slice(0, 32) };
 };
 
@@ -40,7 +43,10 @@ describe('invite trust states', () => {
   it('never silently swaps a pinned key', () => {
     const t = tm(); const p = peer();
     t.markInviteVerified(p.fp, { peerIdentityPub: p.key, via: 'x' });
-    const imposter = p.fp + crypto.randomBytes(16).toString('hex'); // same fingerprint, different key tail
+    // Same fingerprint, different key tail, and a VALID curve point, so only the never-swap rule
+    // (not the SEC-16 weak-key check) can be what refuses it.
+    let imposter = '';
+    do { imposter = p.fp + crypto.randomBytes(16).toString('hex'); } while (!isAcceptableIdentityKey(Buffer.from(imposter, 'hex')));
     expect(t.markInviteVerified(p.fp, { peerIdentityPub: imposter, via: 'x' })).toBe(false);
     expect(t.getProfileByFingerprint(p.fp)!.peerIdentityPub).toBe(p.key);
   });
@@ -70,7 +76,7 @@ describe('invite trust states', () => {
     // The credential-authorization bit itself is dropped, not just the state.
     expect(t.getProfileByFingerprint(p.fp)!.source).not.toBe('mutual-verified');
     expect(t.isCredentialShareAllowedByFingerprint(p.fp)).toBe(false);
-    expect(replication.emitRevoke).toHaveBeenCalledWith(p.fp, expect.any(String));
+    expect(replication.emitRevoke).toHaveBeenCalledWith(p.fp, expect.any(String), p.key); // step 5b: the revoke names the key
   });
 
   it('states persist across a reload', () => {

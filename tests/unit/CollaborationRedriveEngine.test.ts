@@ -20,6 +20,7 @@ import { CommitmentTracker, type Commitment } from '../../src/monitoring/Commitm
 import type { IntelligenceProvider } from '../../src/core/types.js';
 import { CompletionEvaluator } from '../../src/core/CompletionEvaluator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { EncryptToPinnedSendError } from '../../src/threadline/client/ThreadlineClient.js';
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'collab-redrive-test-'));
@@ -504,5 +505,56 @@ describe('CollaborationRedriveEngine — unreachable-escalation cooldown (flood 
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
     }
+  });
+});
+
+describe('CollaborationRedriveEngine — a nudge refused by encrypt-to-pinned is not a redrive (spec threadline-standalone-pairing D9)', () => {
+  let dir: string;
+  beforeEach(() => { dir = makeTmpDir(); });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/CollaborationRedriveEngine.test.ts cleanup' });
+  });
+
+  function engineWith(tracker: CommitmentTracker, sendPlaintext: (fp: string, text: string, threadId?: string) => string) {
+    return new CollaborationRedriveEngine(
+      {
+        commitmentTracker: tracker,
+        completionEvaluator: new CompletionEvaluator({ intelligence: makeStubIntelligence('NOT_MET') }),
+        relayClient: { sendPlaintext } as never,
+        knownAgentsPath: makeKnownAgents(dir, [{ name: 'dawn', publicKey: 'fp-dawn-1' }]),
+        now: () => Date.parse('2026-05-28T20:00:00Z'),
+        log: { log: () => undefined, warn: () => undefined },
+      },
+      { ...DEFAULT_REDRIVE_CONFIG, enabled: true, maxRedrives: 2, maxRedrivesPerTick: 10 },
+    );
+  }
+
+  it('EncryptToPinnedSendError: the increment is undone, nothing counted as sent, retried on a later tick', async () => {
+    const tracker = setupTracker(dir);
+    const c = recordThreadlineReplyCommitment(tracker, { lastReplyAt: '2026-05-28T18:00:00Z' });
+    const refused = engineWith(tracker, (fp) => { throw new EncryptToPinnedSendError(fp, new Error('pinned key unavailable (lookup-failed)'), 'lookup-failed'); });
+    const result = await refused.tick();
+    expect(result.sent).toBe(0);
+    expect(result.skipped[c.id]).toBe('encrypted-send-refused');
+    const after = tracker.get(c.id)!;
+    expect(after.redriveCount ?? 0).toBe(0);
+    expect(after.lastRedriveAt).toBeUndefined();
+    expect(after.lastRedriveText).toBeUndefined();
+    // Survives a restart (the undo went through mutate, i.e. to disk).
+    expect(setupTracker(dir).get(c.id)!.redriveCount ?? 0).toBe(0);
+    // Once the pinned send works again, the same commitment is nudged and counted normally.
+    const sent: string[] = [];
+    const ok = await engineWith(tracker, (_fp, text) => { sent.push(text); return 'm'; }).tick();
+    expect(ok.sent).toBe(1);
+    expect(sent).toHaveLength(1);
+    expect(tracker.get(c.id)!.redriveCount).toBe(1);
+  });
+
+  it('control: any OTHER send error keeps the spec behaviour (count already incremented)', async () => {
+    const tracker = setupTracker(dir);
+    const c = recordThreadlineReplyCommitment(tracker, { lastReplyAt: '2026-05-28T18:00:00Z' });
+    const result = await engineWith(tracker, () => { throw new Error('socket closed'); }).tick();
+    expect(result.sent).toBe(1);
+    expect(tracker.get(c.id)!.redriveCount).toBe(1);
   });
 });

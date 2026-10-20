@@ -102,6 +102,9 @@ describe.skipIf(!hasDeps)('threadline-mcp over stdio ↔ Instar', () => {
     elicitAnswers = [{ invite: inv.message }, { decision: 'approve' }];
     const opened = await call('threadline_pair_open');
     expect(opened.body).toMatchObject({ ok: true, result: 'approved' });
+    // A client that declares elicitation is asked through the app, never through the approval page (R2-3).
+    expect(opened.body).not.toHaveProperty('pending');
+    expect((await call('threadline_pair_status')).body).not.toHaveProperty('pendingApproval');
     expect(JSON.stringify(opened.body)).not.toContain('tlinv1:');
     expect(asked[1]).toContain('calls itself "echo"');
 

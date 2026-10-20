@@ -44,8 +44,18 @@ export interface StandaloneDeps {
   /** HTTP base of the relay (for the public a2a card), or null to skip the relay-key check. */
   relayHttpBase: string | null;
   now?: () => Date;
-  /** False when another threadline-mcp owns pairing for this state directory (see stateLock.ts). */
-  ownsPairing?: boolean;
+  /**
+   * False when another threadline-mcp owns pairing for this state directory (see stateLock.ts). A function
+   * is read live, so an instance that takes ownership later (the owner exited) acts as owner from then on;
+   * call becomeOwner() at that moment so the stores are re-read from disk.
+   */
+  ownsPairing?: boolean | (() => boolean);
+  /**
+   * One attempt to take pairing ownership (the owner may have exited), made before an inbound pairing op
+   * is decided, so the other side's accept or finish is not refused just because no tool call came first.
+   * Returns whether this instance owns pairing now. Defaults to the ownsPairing check.
+   */
+  claimOwnership?: () => boolean;
   fetchImpl?: typeof fetch;
 }
 
@@ -71,11 +81,12 @@ export function describePairingEvent(e: InviteEvent): string {
 }
 
 export class StandalonePairing {
-  readonly flow: PairingInviteFlow;
-  readonly keys: PinnedKeyStore;
-  readonly invites: PairingInviteStore;
+  // Replaced (re-read from disk) by becomeOwner(); read them through the instance, never cache them.
+  flow!: PairingInviteFlow;
+  keys!: PinnedKeyStore;
+  invites!: PairingInviteStore;
   readonly events = new EventEmitter();
-  private readonly crypto: EnvelopeCrypto;
+  private crypto!: EnvelopeCrypto;
   private readonly recent: StandaloneEvent[] = [];
   /** Store files set aside this run (unparseable): an attention item in status and the inbox. */
   readonly storeProblems: Array<{ at: string; message: string }> = [];
@@ -100,6 +111,35 @@ export class StandalonePairing {
     this.now = deps.now ?? (() => new Date());
     this.auditPath = path.join(deps.stateDir, 'threadline', 'pairing-audit.jsonl');
     this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.crypto = new EnvelopeCrypto(deps.identity.privateKey, deps.identity.publicKey);
+    this.loadStores();
+  }
+
+  /** Does this instance own pairing right now? */
+  /** Before deciding an inbound pairing op: try to take ownership if the owner has gone. */
+  private claim(): boolean {
+    return this.deps.claimOwnership ? this.deps.claimOwnership() : this.owns();
+  }
+
+  private owns(): boolean {
+    const o = this.deps.ownsPairing;
+    return typeof o === 'function' ? o() : o !== false;
+  }
+
+  /**
+   * This instance just took ownership (the previous owner exited): re-read pins, invites and the replay
+   * ledger from disk, and run the owner-only migration, so it continues from the owner's last state.
+   */
+  becomeOwner(): void {
+    this.loadStores();
+  }
+
+  /** Bumped on each reload; a replaced flow's pending Finish retries see a stale generation and do nothing. */
+  private flowGen = 0;
+
+  private loadStores(): void {
+    const deps = this.deps;
+    const gen = ++this.flowGen;
     // A store file that could not be parsed is set aside by threadline-core; the person must see that.
     const report = (message: string) => {
       this.storeProblems.push({ at: this.now().toISOString(), message });
@@ -108,7 +148,6 @@ export class StandalonePairing {
     };
     this.keys = new PinnedKeyStore(deps.stateDir, this.now, report);
     this.invites = new PairingInviteStore(deps.stateDir, this.now, report);
-    this.crypto = new EnvelopeCrypto(deps.identity.privateKey, deps.identity.publicKey);
     this.loadSeen();
     this.migrateLegacyEncryptedPeers();
     this.flow = new PairingInviteFlow({
@@ -121,12 +160,14 @@ export class StandalonePairing {
       notify: (event) => { this.recent.unshift({ at: this.now().toISOString(), event }); this.recent.splice(50); this.audit({ ...event }); this.events.emit('event', event); },
       ownName: deps.ownName,
       now: this.now,
+      // Disposal: when becomeOwner() replaces this flow, its scheduled Finish retries become no-ops.
+      schedule: (fn, ms) => { setTimeout(() => { if (gen === this.flowGen) fn(); }, ms).unref?.(); },
     });
   }
 
   /** Pins as they are on disk now: a non-owner re-reads them so a pairing the owner just made is honoured. */
   private readKeys(): PinnedKeyStore {
-    return this.deps.ownsPairing === false ? new PinnedKeyStore(this.deps.stateDir, this.now, () => {}) : this.keys;
+    return !this.owns() ? new PinnedKeyStore(this.deps.stateDir, this.now, () => {}) : this.keys;
   }
 
   /** An accepted pairing whose Finish never came: older than the longest invite lifetime plus 10 minutes. */
@@ -182,7 +223,7 @@ export class StandalonePairing {
     }
     let all: Record<string, unknown>;
     try { all = JSON.parse(text); if (!all || typeof all !== 'object') throw new Error('not an object'); } catch { this.legacyMarkUnreadable = true; return; }
-    if (this.deps.ownsPairing === false) return; // only the owner writes pairing state; the file is still honoured below
+    if (!this.owns()) return; // only the owner writes pairing state; the file is still honoured below
     for (const fp of Object.keys(all)) this.keys.markEncryptedSeen(fp);
     try { fs.renameSync(file, `${file}.migrated`); } catch { /* honoured from the pins either way */ }
     this.audit({ kind: 'encrypted-chat-marks-migrated', count: Object.keys(all).length });
@@ -206,7 +247,7 @@ export class StandalonePairing {
       }
       return true;
     }
-    if (this.deps.ownsPairing === false) {
+    if (!this.owns()) {
       // A non-owner has not migrated the legacy file; honour it alongside the pins.
       try { const all = JSON.parse(fs.readFileSync(this.legacyEncryptedPeersFile(), 'utf8')); if (all && all[fp.toLowerCase()]) return true; } catch { /* absent */ }
     }
@@ -286,7 +327,7 @@ export class StandalonePairing {
     if (inv === 'valid') { this.audit({ kind: 'invite-send-refused', to: fp }); return { sent: false, reason: INVITE_IN_MESSAGE }; }
     if (inv === 'lookalike') this.audit({ kind: 'invite-lookalike-sent', to: fp });
     const keys = this.readKeys();
-    if (opts.credential && this.deps.ownsPairing === false) return { sent: false, reason: 'not-pairing-owner' };
+    if (opts.credential && !this.owns()) return { sent: false, reason: 'not-pairing-owner' };
     if (opts.credential) {
       const d = credentialSendKey(keys, fp, this.deps.identity.publicKey.toString('hex'));
       this.audit({ kind: d.allow ? 'credential-sent' : 'credential-refused', to: fp, ...(d.allow ? {} : { reason: d.reason }) });
@@ -338,7 +379,7 @@ export class StandalonePairing {
       if (this.seen.has(id)) return { kind: 'refused', reason: 'replayed message (already received)' };
       this.rememberSeen(id);
       if (msg.type && INVITE_OPS.has(msg.type)) {
-        if (this.deps.ownsPairing === false) return { kind: 'refused', reason: 'pairing message reached an instance that does not own pairing' };
+        if (!this.claim()) return { kind: 'refused', reason: 'pairing message reached an instance that does not own pairing' };
         await this.flow.handleControl(msg.type, from, msg as unknown as Record<string, unknown>);
         return { kind: 'control' };
       }
@@ -355,7 +396,7 @@ export class StandalonePairing {
       }
       // The downgrade high-water mark: ordinary chat only. Pairing ops and credentials are always
       // encrypted, even from peers that still send ordinary chat in plaintext.
-      if (!credential && this.deps.ownsPairing !== false) this.markEncryptedChat(from);
+      if (!credential && this.owns()) this.markEncryptedChat(from);
       if (classifyInviteText(String(msg.content ?? '')) === 'valid') return this.inviteLeak(from);
       return { kind: 'message', text: String(msg.content ?? ''), type: msg.type, encrypted: true, credential };
     }
@@ -367,7 +408,7 @@ export class StandalonePairing {
     } catch { /* raw payload */ }
     if (type && INVITE_OPS.has(type)) {
       // Only the accept travels in plaintext; any other invite op in plaintext is dropped.
-      if (type === OP_ACCEPT && this.deps.ownsPairing !== false) {
+      if (type === OP_ACCEPT && this.claim()) {
         let payload: Record<string, unknown> = {};
         try { payload = JSON.parse(text); } catch { /* malformed: the engine refuses it */ }
         await this.flow.handleControl(type, from, payload);

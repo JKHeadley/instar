@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { wireTelegramRouting } from '../../src/commands/server.js';
-import { TopicOperatorStore } from '../../src/users/TopicOperatorStore.js';
+import { TopicOperatorStore, EVER_VERIFIED_KEY } from '../../src/users/TopicOperatorStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
@@ -92,7 +92,9 @@ describe('increment 2e — polling-path bind, integration', () => {
     expect(store.getOperator(222)?.uid).toBe(String(OPERATOR_UID));
     // And the durable file carries both.
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'topic-operators.json'), 'utf-8'));
-    expect(Object.keys(onDisk).sort()).toEqual(['111', '222']);
+    expect(Object.keys(onDisk).filter((k) => k !== EVER_VERIFIED_KEY).sort()).toEqual(['111', '222']);
+    // …beside the append-only record of every verified principal (pairing approval reads it).
+    expect(onDisk[EVER_VERIFIED_KEY]).toEqual({ telegram: ['555', String(OPERATOR_UID)] });
   });
 
   it('pre-construction lifecycle: messages before the server exists bind nothing (fail-safe); after late-bind resolution they bind', async () => {

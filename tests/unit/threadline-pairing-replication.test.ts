@@ -433,8 +433,8 @@ describe('flag-off = no replication (single-machine no-op)', () => {
     expect(manager.getProfileByFingerprint(PEER_FP)!.pairingState).toBe('mutual-verified');
   });
 
-  it('an attached emitter receives ONLY the 5-field result (no SAS) on a local verify', () => {
-    const seen: Array<{ peerFp: string; peerIdentityPub: string; verifiedAt: string; verifiedOnMachine: string }> = [];
+  it('an attached emitter receives ONLY the 5-field result + the pairing method (no SAS) on a local verify', () => {
+    const seen: Array<{ peerFp: string; peerIdentityPub: string; verifiedAt: string; verifiedOnMachine: string; pairingMethod?: string }> = [];
     const revokes: Array<{ peerFp: string; deletedAt: string }> = [];
     manager.setPairingReplicationEmitter({
       emitVerified: (r) => seen.push(r),
@@ -447,7 +447,9 @@ describe('flag-off = no replication (single-machine no-op)', () => {
     manager.markMutualVerified(PEER_FP, { pairingId: 'b'.repeat(32), operatorConfirm: true, ownFp: 'own-fp' });
 
     expect(seen).toHaveLength(1);
-    expect(Object.keys(seen[0]).sort()).toEqual(['peerFp', 'peerIdentityPub', 'verifiedAt', 'verifiedOnMachine'].sort());
+    // Rollout step 5b: the optional sixth field rides along (a capability fact, not a secret).
+    expect(Object.keys(seen[0]).sort()).toEqual(['peerFp', 'peerIdentityPub', 'verifiedAt', 'verifiedOnMachine', 'pairingMethod'].sort());
+    expect(seen[0].pairingMethod).toBe('sas');
     expect(JSON.stringify(seen[0])).not.toContain('abandon'); // SAS never reaches the emitter
 
     // verification-failed emits a revoke tombstone.

@@ -145,6 +145,12 @@ def fetch_npm_downloads():
         except json.JSONDecodeError:
             stats["daily_breakdown"] = []
 
+    # The point API's "end" lags the range API, which made fresh data read as
+    # stale. Prefer the newest daily_breakdown day with downloads > 0.
+    nonzero = [d["date"] for d in stats.get("daily_breakdown") or [] if d.get("downloads")]
+    if nonzero:
+        stats["end_date"] = max(nonzero)
+
     return stats
 
 
