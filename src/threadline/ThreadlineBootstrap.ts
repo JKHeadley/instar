@@ -45,6 +45,19 @@ import {
   relayUnknownSenderTrustCounters,
   type RelayUnknownSenderTrustMode,
 } from './relayUnknownSenderTrust.js';
+import {
+  createEncryptToPinnedResolver,
+  createEncryptToPinnedClientOptions,
+  encryptToPinnedCounters,
+  labelUnverifiedPinnedPlaintext,
+  type EncryptToPinnedMode,
+} from './encryptToPinned.js';
+import {
+  noteEncryptedChat,
+  refuseDowngradeCounters,
+  shouldRefuseDowngradedPlaintext,
+  type RefuseDowngradeMode,
+} from './refuseDowngrade.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -119,6 +132,18 @@ export interface ThreadlineBootstrapConfig {
    * omitted the check is off: every unknown sender is handled as before.
    */
   getRelayUnknownSenderTrustMode?: () => RelayUnknownSenderTrustMode;
+  /**
+   * Live reader for encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9,
+   * `threadline.encryptToPinned`). Supplied by server.ts. When omitted it is off: ordinary
+   * chat is encrypted only when the relay gave us the peer's keys, as before.
+   */
+  getEncryptToPinnedMode?: () => EncryptToPinnedMode;
+  /**
+   * Live reader for refuse-downgrade (docs/specs/threadline-standalone-pairing.md D6/D11,
+   * rollout step 6, `threadline.refuseDowngrade`). Supplied by server.ts. When omitted it is
+   * off: no mark is recorded and no plaintext is refused.
+   */
+  getRefuseDowngradeMode?: () => RefuseDowngradeMode;
 }
 
 export interface ThreadlineBootstrapResult {
@@ -427,6 +452,25 @@ export async function bootstrapThreadline(
       return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
     }
   };
+  // Encrypt-to-pinned (spec threadline-standalone-pairing D9): the live mode (off when
+  // server.ts supplies no reader).
+  const encryptToPinnedMode = (): EncryptToPinnedMode => {
+    try {
+      return config.getEncryptToPinnedMode?.() ?? { enabled: false, dryRun: true };
+    } catch {
+      return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
+    }
+  };
+
+  // Refuse-downgrade (spec threadline-standalone-pairing D6, step 6): the live mode (off when
+  // server.ts supplies no reader).
+  const refuseDowngradeMode = (): RefuseDowngradeMode => {
+    try {
+      return config.getRefuseDowngradeMode?.() ?? { enabled: false, dryRun: true };
+    } catch {
+      return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
+    }
+  };
 
   // Always create trust manager when relay is enabled — needed for processing
   // inbox entries even when the daemon handles the relay connection.
@@ -470,10 +514,28 @@ export async function bootstrapThreadline(
       if (p.pairingState !== 'pending-verification' && p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified' && p.pairingState !== 'invite-accepted') return null;
       return Buffer.from(p.peerIdentityPub, 'hex');
     });
+    // Ordinary chat to a peer paired BY INVITE goes encrypted to the pinned key, always
+    // (spec threadline-standalone-pairing D9, rollout step 5), behind the live switch
+    // `threadline.encryptToPinned` (off | watch | enforce). Only mutual-verified: an acceptor
+    // still waiting for the inviter's Finish holds a key the inviter cannot use yet, and a
+    // paused pin is back to unconfirmed. An `identity-verified` pairing inherited from a
+    // replicated record that says 'invite' counts too (rollout step 5b: same pinned key on
+    // every machine that can hold the relay). Only `pairingMethod: 'invite'`: both sides of one run
+    // 1.3.1352+, which decrypts to a pinned key without a cached key; an SAS-paired peer may
+    // not, and an inherited pairing whose record carried no method ('inherited'), so both keep the previous rule
+    // (encrypt when the relay gave us its keys).
+    relayClient.setEncryptToResolver(createEncryptToPinnedResolver({
+      trustManager: pinnedTrust,
+      mode: encryptToPinnedMode,
+      counters: encryptToPinnedCounters,
+    }), createEncryptToPinnedClientOptions({ mode: encryptToPinnedMode, counters: encryptToPinnedCounters }));
 
     // Invite pairing engine (docs/specs/a2a-pairing-invite-link.md). Identity is read fresh on
     // every use so a rotated key is never signed with stale material.
-    {
+    // The store comes from threadline-core: a corrupt file is moved aside and reported, and an
+    // unreadable one (permissions, I/O) makes the constructor throw rather than start empty and
+    // later overwrite it. That throw turns off invite pairing only, never the rest of Threadline.
+    try {
       const client = relayClient;
       const invStore = new PairingInviteStore(config.stateDir);
       const invEvents = new EventEmitter();
@@ -499,6 +561,16 @@ export async function bootstrapThreadline(
         ownName: () => ({ owner: config.ownerName ?? '', agent: config.agentName }),
       });
       pairingInvites = { flow, store: invStore, events: invEvents };
+    } catch (err) {
+      // Reported, not just logged: "invite pairing is off" shows in /health and the degradation
+      // digest until the store file is readable again.
+      DegradationReporter.getInstance().report({
+        feature: 'Threadline.pairingInvites',
+        primary: 'pair with another agent by invite (pairing-invites.json)',
+        fallback: 'invite pairing is off on this agent; the rest of Threadline keeps running and the file is left untouched',
+        reason: err instanceof Error ? err.message : String(err),
+        impact: 'invites cannot be sent, accepted or finished until threadline/pairing-invites.json can be read; it is never replaced with an empty file',
+      });
     }
 
     // Create inbound message gate (imports ThreadlineRouter lazily if needed)
@@ -526,6 +598,9 @@ export async function bootstrapThreadline(
     // Route inbound relay messages through the gate
     relayClient.on('message', async (msg: ReceivedMessage) => {
       if (!inboundGate) return;
+      // Encrypted ordinary chat from an invite peer, verified against its pinned key, records
+      // the encryptedSeen mark (step 6). Off: nothing. Never blocks delivery.
+      noteEncryptedChat({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, msg);
       const decision = await inboundGate.evaluate(msg);
       if (decision.action === 'pass' && decision.message) {
         // Gate passed — emit for ThreadlineRouter to handle
@@ -584,12 +659,28 @@ export async function bootstrapThreadline(
         return;
       }
 
+      // No downgrade after encryption (spec D6, step 6): an invite peer that has sent us
+      // encrypted chat does not get plaintext delivered in its name. Enforce refuses here,
+      // before anything is recorded or routed; watch only counts.
+      if (shouldRefuseDowngradedPlaintext({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, received.from, msgType)) {
+        console.warn(`Threadline: plaintext from ${received.from.slice(0, 12)} refused — that paired agent has sent encrypted messages before (possible downgrade by the relay)`);
+        return;
+      }
+
       handleRelayUnknownSender(
         {
           trustManager: trustManager!,
           mode: relayUnknownSenderTrustMode,
           counters: relayUnknownSenderTrustCounters,
-          emit: (decision) => { relayClient!.emit('gate-passed', decision); },
+          // Plaintext under an invite-paired peer's fingerprint is labelled unverified
+          // (never refused): the relay is the only evidence of who wrote it (spec D6/D9).
+          emit: (decision) => {
+            relayClient!.emit('gate-passed', labelUnverifiedPinnedPlaintext(
+              { trustManager, mode: encryptToPinnedMode, counters: encryptToPinnedCounters },
+              decision,
+              msgType,
+            ));
+          },
         },
         received,
         msgType,

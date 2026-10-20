@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { findInviteToken } from './PairingInvite.js';
 import type { InviteEvent, Result } from './PairingInviteFlow.js';
+import { isVerifiedTopicOperatorBinding } from '../users/TopicOperatorStore.js';
 
 export const CALLBACK_PREFIX = 'pi:';
 const TOKEN_TTL_MS = 24 * 60 * 60_000; // a button outlives no invite (24 h max)
@@ -39,6 +40,11 @@ export interface InviteTelegramDeps {
   send: (topicId: number, text: string, buttons?: Array<{ text: string; data: string }>) => Promise<void>;
   /** Answer a button tap (the small toast). */
   answer: (callbackQueryId: string | number, text: string) => Promise<void>;
+  /**
+   * The Telegram user id allowed to approve, or undefined when this agent has no owner it can
+   * name. Wire it through `resolveApprovalOwner` so a configured owner wins and, without one, only
+   * a single verified operator binding counts.
+   */
   ownerUserId: () => number | undefined;
   chatId: () => number | string | undefined;
   /** Where prompts that are not replies go (finish prompts, alarms): the operator's topic. */
@@ -66,6 +72,56 @@ export interface InviteCallback {
 }
 
 const DASHBOARD_HINT = 'Open the Threadline tab on the dashboard to do this with your PIN.';
+export const NOT_OWNER_REFUSAL = 'Only the agent\'s owner can do this.';
+export const NO_OWNER_REFUSAL = 'I can\'t approve this here because this agent hasn\'t been told who its owner is.';
+
+/**
+ * Who may approve a pairing in Telegram (spec §6.1 "the agent's configured operator user id").
+ *
+ * 1. A configured owner id (Telegram `ownerUserId`, `promptGate.ownerId`, or the agent's
+ *    `monitoring.promptGate.ownerId`) always wins. Agents that have one see no change.
+ * 2. With none configured, the agent's VERIFIED operator stands in, and only when it is
+ *    unambiguous over the machine's whole history, not just its current bindings:
+ *    - exactly ONE distinct Telegram user id has ever been verified on this machine
+ *      (`TopicOperatorStore.everVerifiedOperatorUids()`, append-only). A topic's binding is
+ *      replaced by whoever spoke there last, so current bindings alone would let a second group
+ *      member who spoke last in the owner's topic hide the owner; AND
+ *    - the current verified bindings name that same one id.
+ *    Bindings are written only from authenticated, authorized inbound Telegram messages (Know
+ *    Your Principal; `setAuthenticatedOperator`). Records made through the manual
+ *    POST /topic-operator route are assertions: they never count and never add to or remove from
+ *    the ever-verified record. Records replicated from another machine live in a separate store
+ *    and are never passed here. Anything else (none, two or more ever, a mismatch) is no owner.
+ *
+ * Every current record is re-checked with `isVerifiedTopicOperatorBinding`, so a caller that
+ * hands over raw bindings cannot make an asserted or legacy record count.
+ */
+export function resolveApprovalOwner(
+  configuredOwner: unknown,
+  operatorBindings: Iterable<unknown> | null | undefined,
+  everVerifiedUids: readonly string[] | null | undefined,
+): number | undefined {
+  // Config is raw JSON, so an id may arrive as a string. Any configured value decides on its own:
+  // a usable id is the owner, and an unusable one means no owner. A malformed setting must never
+  // hand the decision to the bindings instead.
+  if (configuredOwner !== undefined && configuredOwner !== null && configuredOwner !== '') {
+    const n = typeof configuredOwner === 'number' ? configuredOwner
+      : typeof configuredOwner === 'string' && /^\s*\d+\s*$/.test(configuredOwner) ? Number(configuredOwner) : NaN;
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  }
+  const uids = new Set<string>();
+  for (const b of operatorBindings ?? []) {
+    if (!isVerifiedTopicOperatorBinding(b)) continue;
+    if (b.platform !== 'telegram') continue;
+    uids.add(b.uid.trim());
+  }
+  if (uids.size !== 1) return undefined;
+  const ever = new Set((everVerifiedUids ?? []).map((u) => String(u).trim()));
+  const [only] = [...uids];
+  if (ever.size !== 1 || !ever.has(only)) return undefined;
+  const n = Number(only);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
 
 export class PairingInviteTelegram {
   private readonly tokens = new Map<string, Pending>();
@@ -90,7 +146,8 @@ export class PairingInviteTelegram {
     if (!this.deps.enforcing()) return 'Approving in Telegram is off on this agent until its listener protection is fully on.';
     if (!verified) return 'This tap did not come through the agent\'s own Telegram listener.';
     const owner = this.deps.ownerUserId();
-    if (owner === undefined || Number(fromUserId) !== owner) return 'Only the agent\'s owner can do this.';
+    if (owner === undefined) return NO_OWNER_REFUSAL;
+    if (Number(fromUserId) !== owner) return NOT_OWNER_REFUSAL;
     const chat = this.deps.chatId();
     if (chat !== undefined && chatId !== undefined && String(chatId) !== String(chat)) return 'Wrong chat.';
     return null;

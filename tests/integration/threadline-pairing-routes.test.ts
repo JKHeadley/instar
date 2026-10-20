@@ -23,6 +23,9 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
 import { createThreadlineRoutes } from '../../src/threadline/ThreadlineEndpoints.js';
 import { HandshakeManager } from '../../src/threadline/HandshakeManager.js';
+import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
+/** A real Ed25519 key: pinning refuses small-order and off-curve keys (SEC-16), so fixtures must be real. */
+const PEER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
 
 const PEER_FP = '8c7928aa9f04fbda947172a2f9b2d81a';
 const OWN_FP = '1111111111111111111111111111aaaa';
@@ -71,7 +74,7 @@ function appWith(opts: {
 function seedPending(tm: AgentTrustManager): void {
   tm.recordPendingVerification(PEER_FP, {
     pairingId: PAIRING_ID,
-    peerIdentityPub: 'deadbeef'.repeat(8),
+    peerIdentityPub: PEER_KEY,
     sasWords: SAS_WORDS,
     sasFingerprint: 'a1b2c3d4e5f60718',
     ownFp: OWN_FP,

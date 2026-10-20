@@ -35,6 +35,7 @@ import type { CompletionEvaluator } from '../core/CompletionEvaluator.js';
 import type { ThreadlineClient } from '../threadline/client/ThreadlineClient.js';
 import type { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { isEncryptToPinnedSendError } from '../threadline/encryptToPinned.js';
 
 // ── Public types ──────────────────────────────────────────────
 
@@ -295,13 +296,17 @@ export class CollaborationRedriveEngine {
 
       const sendIsoTime = new Date(nowMs).toISOString();
       let mutatedCommitment: Commitment | null = null;
+      let before: Pick<Commitment, 'redriveCount' | 'lastRedriveAt' | 'lastRedriveText'> | null = null;
       try {
-        mutatedCommitment = await this.deps.commitmentTracker.mutate(c.id, (prev) => ({
+        mutatedCommitment = await this.deps.commitmentTracker.mutate(c.id, (prev) => {
+          before = { redriveCount: prev.redriveCount, lastRedriveAt: prev.lastRedriveAt, lastRedriveText: prev.lastRedriveText };
+          return {
           ...prev,
           redriveCount: (prev.redriveCount ?? 0) + 1,
           lastRedriveAt: sendIsoTime,
           ...(typeof nudgeText === 'string' ? { lastRedriveText: nudgeText } : {}),
-        } as Commitment));
+        } as Commitment;
+        });
       } catch (err) {
         this.log.warn(`mutate failed for ${c.id} (no send attempted): ${err instanceof Error ? err.message : String(err)}`);
         result.skipped[c.id] = 'mutate-failed';
@@ -315,6 +320,25 @@ export class CollaborationRedriveEngine {
           this.log.warn(`no relayClient injected; nudge for ${c.id} not transmitted`);
         }
       } catch (err) {
+        if (isEncryptToPinnedSendError(err)) {
+          // Encrypt-to-pinned refused the nudge (spec threadline-standalone-pairing D9: the peer is
+          // pinned by invite and enforce fails closed). Nothing went on the wire, so this is NOT a
+          // redrive: undo the increment, count nothing, and try again on a later tick.
+          this.log.warn(`relay send refused for ${c.id} (pinned peer, encrypted send failed; not counted as a redrive): ${err instanceof Error ? err.message : String(err)}`);
+          const restore = before as Pick<Commitment, 'redriveCount' | 'lastRedriveAt' | 'lastRedriveText'> | null;
+          try {
+            await this.deps.commitmentTracker.mutate(c.id, (cur) => ({
+              ...cur,
+              redriveCount: restore?.redriveCount ?? Math.max(0, (cur.redriveCount ?? 1) - 1),
+              lastRedriveAt: restore?.lastRedriveAt,
+              lastRedriveText: restore?.lastRedriveText,
+            } as Commitment));
+          } catch (undoErr) {
+            this.log.warn(`could not undo the redrive count for ${c.id}: ${undoErr instanceof Error ? undoErr.message : String(undoErr)}`);
+          }
+          result.skipped[c.id] = 'encrypted-send-refused';
+          continue;
+        }
         this.log.warn(`relay send failed for ${c.id} (count already incremented per spec): ${err instanceof Error ? err.message : String(err)}`);
       }
 

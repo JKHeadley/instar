@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readStoreJson, defaultReporter, type StoreProblemReporter } from './storeFile.js';
 import { derivePairingId, edPublicToX25519, isAcceptableIdentityKey } from './crypto.js';
+import { earliestMark } from './encryptedSeen.js';
 
 export type PairingState = 'invite-accepted' | 'mutual-verified' | 'identity-verified' | 'pending-verification' | 'verification-failed';
 
@@ -156,6 +157,22 @@ export class PinnedKeyStore implements InviteTrust {
     if (!cur) return false;
     if (cur.encryptedSeenAt) return true;
     this.peers.set(fp, { ...cur, encryptedSeenAt: this.now().toISOString() });
+    this.save();
+    return true;
+  }
+
+  /**
+   * Fold in a mark another holder recorded for this peer (spec D11: a union keeping the earliest
+   * time). Applies only when `peerIdentityPub` is the key pinned here: a mark belongs to its pin.
+   * Never clears and never moves a mark later. Returns true when the stored mark changed.
+   */
+  mergeEncryptedSeen(peerFp: string, peerIdentityPub: string, at: string): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const cur = this.peers.get(fp);
+    if (!cur || cur.peerIdentityPub !== String(peerIdentityPub || '').toLowerCase()) return false;
+    const merged = earliestMark(cur.encryptedSeenAt, at);
+    if (merged === undefined || merged === cur.encryptedSeenAt) return false;
+    this.peers.set(fp, { ...cur, encryptedSeenAt: merged });
     this.save();
     return true;
   }

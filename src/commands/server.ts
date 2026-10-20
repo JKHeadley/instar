@@ -60,6 +60,8 @@ import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
+import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
+import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
 import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
@@ -5106,6 +5108,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     //    existing single-machine no-op. The generic record emitter is constructed below
     //    (it also needs the resolved stateSync flags).
     let replicatedPeerStreamReader: import('../core/ReplicatedPeerStreamReader.js').ReplicatedPeerStreamReader | undefined;
+    // Rollout step 5b (threadline-standalone-pairing D9/D11): late-bound replicated-pairing
+    // inheritance, attached in the threadline block below ONLY when
+    // multiMachine.stateSync.threadlinePairing.enabled is true. The peer-apply commit
+    // observer calls it when threadline-pairing-record entries land.
+    let _threadlinePairingWiring: import('../threadline/pairingReplicationWiring.js').PairingReplicationWiring | null = null;
     let replicatedRecordEmitter: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter | undefined;
     let replicatedHlcClock: import('../core/HybridLogicalClock.js').HybridLogicalClock | undefined;
     if (coherenceJournal && cjOwnMachineId) {
@@ -5139,6 +5146,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
           if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, senderMachineId);
+          // Merge path for replicated pairings (step 5b): null unless the gate is on.
+          _threadlinePairingWiring?.onRecordsCommitted(kind);
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
@@ -18399,6 +18408,26 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           config as { developmentAgent?: boolean; threadline?: { relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean } } },
         ),
+        // Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9). Read live per
+        // send: `enabled` omitted rides the developmentAgent gate, `dryRun` defaults true
+        // (count would-encrypt sends, send as today).
+        getEncryptToPinnedMode: () => resolveEncryptToPinnedMode(
+          {
+            enabled: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.enabled', undefined),
+            dryRun: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.dryRun', undefined),
+          },
+          config as { developmentAgent?: boolean; threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } } },
+        ),
+        // Refuse-downgrade (docs/specs/threadline-standalone-pairing.md D6, step 6). Read live
+        // per inbound message: `enabled` omitted rides the developmentAgent gate, `dryRun`
+        // defaults true (record marks, count would-refuse plaintext, deliver as today).
+        getRefuseDowngradeMode: () => resolveRefuseDowngradeMode(
+          {
+            enabled: liveConfig.get<boolean | undefined>('threadline.refuseDowngrade.enabled', undefined),
+            dryRun: liveConfig.get<boolean | undefined>('threadline.refuseDowngrade.dryRun', undefined),
+          },
+          config as { developmentAgent?: boolean; threadline?: { refuseDowngrade?: { enabled?: boolean; dryRun?: boolean } } },
+        ),
       });
       threadlineHandshake = threadline.handshakeManager;
       threadlineShutdown = threadline.shutdown;
@@ -18459,44 +18488,45 @@ export async function startServer(options: StartOptions): Promise<void> {
       // can never cross. Gated on the EXPLICIT `multiMachine.stateSync.threadlinePairing.enabled`
       // (default false ⇒ NOT attached ⇒ strict no-op, single-machine behavior). Attached only
       // when the journal-backed emitter exists (journal live) AND the store is enabled.
-      if (threadline.trustManager && replicatedRecordEmitter && cjOwnMachineId) {
-        const pairingStoreEnabled =
-          (config.multiMachine?.stateSync as { threadlinePairing?: { enabled?: boolean } } | undefined)
-            ?.threadlinePairing?.enabled === true;
-        if (pairingStoreEnabled) {
-          const emitter = replicatedRecordEmitter;
-          const {
-            THREADLINE_PAIRING_STORE_KEY,
-            deriveThreadlinePairingRecordKey,
-            buildThreadlinePairingRecordData,
-            buildThreadlinePairingTombstoneData,
-          } = await import('../core/ThreadlinePairingReplicatedStore.js');
-          threadline.trustManager.setPairingReplicationEmitter(
-            {
-              emitVerified: (result) =>
-                emitter.emit(
-                  THREADLINE_PAIRING_STORE_KEY,
-                  deriveThreadlinePairingRecordKey(result.peerFp),
-                  (hlc, origin, observed) =>
-                    buildThreadlinePairingRecordData({
-                      result: { ...result, state: 'mutual-verified' },
-                      hlc,
-                      origin,
-                      observed,
-                    }),
-                ),
-              emitRevoke: (peerFp, deletedAt) =>
-                emitter.emit(
-                  THREADLINE_PAIRING_STORE_KEY,
-                  deriveThreadlinePairingRecordKey(peerFp),
-                  (hlc, origin, observed) =>
-                    buildThreadlinePairingTombstoneData({ peerFp, hlc, origin, deletedAt, observed }),
-                ),
-            },
-            cjOwnMachineId,
-          );
-        }
+      //
+      // Rollout step 5b — the MERGE half lives in attachThreadlinePairingReplication too:
+      // replicated pairings are inherited (pin + method) and revokes forget inherited pins,
+      // run once at startup (after the invite-method migration) and again from the
+      // peer-apply commit observer above whenever threadline-pairing-record entries land.
+      // All of it is inside the module; this block only attaches it.
+      if (threadline.trustManager && replicatedRecordEmitter && cjOwnMachineId && replicatedPeerStreamReader) {
+        const { attachThreadlinePairingReplication } = await import('../threadline/pairingReplicationWiring.js');
+        _threadlinePairingWiring = attachThreadlinePairingReplication({
+          config,
+          trust: threadline.trustManager,
+          emitter: replicatedRecordEmitter,
+          ownOrigin: cjOwnMachineId,
+          registry: replicatedKindRegistry,
+          stores: _stateSyncStoresResolved,
+          streams: replicatedPeerStreamReader,
+          droppedOrigins: droppedOriginRegistry,
+          conflictStore,
+          log: (m) => console.log(pc.dim(`  [threadline-pairing] ${m}`)),
+        });
       }
+
+      // Rollout step 5b, item 7: enforce encrypt-to-pinned on a MULTI-machine agent needs
+      // pairing replication, or a machine that takes the relay over has no pin. Startup note only.
+      try {
+        const { encryptToPinnedMultiMachineNote, isThreadlinePairingReplicationEnabled } = await import('../threadline/pairingReplicationWiring.js');
+        const note = encryptToPinnedMultiMachineNote({
+          encryptToPinnedMode: encryptToPinnedModeName(resolveEncryptToPinnedMode(
+            {
+              enabled: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.enabled', undefined),
+              dryRun: liveConfig.get<boolean | undefined>('threadline.encryptToPinned.dryRun', undefined),
+            },
+            config as { developmentAgent?: boolean; threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } } },
+          )),
+          activeMachineCount: coordinator.enabled ? coordinator.managers.identityManager.getActiveMachines().length : 1,
+          pairingReplicationEnabled: isThreadlinePairingReplicationEnabled(config),
+        });
+        if (note) console.warn(pc.yellow(`  [threadline] ${note}`));
+      } catch { /* @silent-fallback-ok — an advisory startup note must never endanger boot */ }
 
       if (threadlineRelayClient) {
         // Wire relay message delivery through ThreadlineRouter (Phase 1).
@@ -18523,7 +18553,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         const { runRelayInboundWithLedger } = await import('../threadline/inboundIdLedgerWiring.js');
         const { InboundMessageGate: InboundGateStatics } = await import('../threadline/InboundMessageGate.js');
-        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string }) => {
+        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string; notice?: string }) => {
           // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md §1) — THE
           // COMMIT POINT: runRelayInboundWithLedger commits as the first statement
           // after the null-check and the probe exclusion, BEFORE every side effect
@@ -18538,7 +18568,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               annotate: (ledger, senderKey, messageId) => annotatePeerHandoff(config, ledger, senderKey, messageId),
             },
             (ledgerTicket, ledgerNotice) => handleGatePassedRelayMessage(
-              decision as typeof decision & { message: NonNullable<typeof decision.message> }, ledgerTicket, ledgerNotice),
+              decision as typeof decision & { message: NonNullable<typeof decision.message> }, ledgerTicket,
+              // A server-constant label from the inbound path (encrypt-to-pinned: unverified
+              // plaintext under a paired peer's fingerprint) rides the same server-notice slot.
+              [decision.notice, ledgerNotice].filter((n): n is string => !!n).join('; ') || null),
           );
         });
 
@@ -19485,7 +19518,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { resolvePeerDarkNoticeConfig, createPeerDarkAuditWriter, resolvePeerDarkAuditPath } = await import('../threadline/peerDark.js');
       const peerDarkCfg = resolvePeerDarkNoticeConfig(config as { developmentAgent?: boolean; threadline?: { peerDarkNotice?: Record<string, unknown> } });
       if ((a2aDelivCfg.enabled || peerDarkCfg.enabled) && a2aDeliveryTracker) {
-        const { A2ARedeliverySentinel, DEFAULT_A2A_REDELIVERY_CONFIG } = await import('../monitoring/A2ARedeliverySentinel.js');
+        const { A2ARedeliverySentinel, DEFAULT_A2A_REDELIVERY_CONFIG, createOutboxRedeliver } = await import('../monitoring/A2ARedeliverySentinel.js');
         const priorityMap: Record<string, 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'> = {
           high: 'HIGH', medium: 'NORMAL', low: 'LOW',
         };
@@ -19521,12 +19554,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             // sentinel leaves it awaiting-ack and escalates at the cap, never
             // fabricating a send). Only under the legacy gate.
             redeliver: (a2aDelivCfg.enabled && threadlineRelayClient && listenerManager)
-              ? (entry) => {
-                  const stored = listenerManager!.readCanonicalOutboxEntry(entry.messageId);
-                  if (!stored) return false;
-                  threadlineRelayClient!.sendAuto(entry.peerFp, stored.text, entry.threadId ?? stored.threadId);
-                  return true;
-                }
+              ? createOutboxRedeliver({
+                  readOutboxEntry: (id) => listenerManager!.readCanonicalOutboxEntry(id),
+                  sendAuto: (fp, text, threadId) => threadlineRelayClient!.sendAuto(fp, text, threadId),
+                })
               : undefined,
             raiseAttention: telegram
               ? async (item) => {

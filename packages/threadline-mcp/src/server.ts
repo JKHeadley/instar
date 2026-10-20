@@ -52,15 +52,15 @@ import http from 'node:http';
 import { WebSocket } from 'ws';
 import { StandalonePairing, INVITE_IN_MESSAGE } from './pairing.js';
 import { classifyInviteText } from '@sagemindai/threadline-core';
-import { PairTools, type Elicit } from './pairTools.js';
-import { acquireStateLock } from './stateLock.js';
+import { PairTools, notOwnerRefusal, notOwnerCredentialRefusal, PROXY_REFUSAL, type Elicit, type ToolResult } from './pairTools.js';
+import { ApprovalCoordinator, type ApprovalAction } from './approvalPage.js';
+import { PairingOwnership, friendlyAppName } from './stateLock.js';
 
 // ── Config ──────────────────────────────────────────────────────────
 
 const RELAY_URL = process.env.THREADLINE_RELAY || 'wss://threadline-relay.fly.dev/v1/connect';
 const CAPABILITIES = (process.env.THREADLINE_CAPS || 'chat').split(',').map(s => s.trim());
 const INVITE_REFUSAL = 'Refused: that message contains a pairing invite. An invite is given by your person, privately, in an app they already use (never over Threadline): it works once, and whoever sees it first is offered to your person.';
-const PROXY_NOTE = 'this threadline-mcp is sending through a local Threadline listener (THREADLINE_SEND_PORT, default 7711), which cannot encrypt for it. Run threadline-mcp with its own relay connection (set THREADLINE_SEND_PORT to an unused port) to pair or to message paired agents.';
 const STATE_DIR = process.env.THREADLINE_STATE_DIR || path.join(os.homedir(), '.threadline');
 const REGISTRY_ENABLED = process.env.THREADLINE_REGISTRY !== 'false';
 const REGISTRY_LISTED = process.env.THREADLINE_REGISTRY === 'true';
@@ -631,6 +631,8 @@ class RelayConnection {
   // Flag: true when using listener proxy mode (no direct relay connection)
   private listenerProxyMode = false;
   get isListenerProxy(): boolean { return this.listenerProxyMode; }
+  /** The app that owns pairing (for a non-owner's plain refusal), set by main(). */
+  ownerApp: () => string | null = () => null;
 
   async connect(): Promise<string> {
     if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
@@ -865,7 +867,7 @@ class RelayConnection {
         ? 'Refused: credentials only go to an agent you have paired with (threadline_pair_invite / threadline_pair_open).'
         : r.reason === INVITE_IN_MESSAGE ? INVITE_REFUSAL
         : r.reason === 'finish-not-received' ? 'Refused: you accepted this agent\'s invite, but its person never finished the pairing, so messages to it are neither safely encrypted nor sent in the clear. Unpair (threadline_pair_forget) and ask for a new invite.'
-        : r.reason === 'not-pairing-owner' ? `Refused: credentials are sent only by the threadline-mcp that owns pairing here (${process.env.THREADLINE_STATE_DIR || 'the default state directory'}).`
+        : r.reason === 'not-pairing-owner' ? notOwnerCredentialRefusal(this.ownerApp())
         : `Refused: ${r.reason}`);
       const kept = opts.credential ? `[credential, ${Buffer.byteLength(text, 'utf-8')} bytes]` : text;
       this.history.append(to, { id: crypto.randomUUID(), from: this.identity.agentId, to, text: kept, threadId: r.threadId, timestamp: new Date().toISOString(), direction: 'sent' });
@@ -875,7 +877,7 @@ class RelayConnection {
     if (opts.credential) throw new Error('Refused: credentials need a direct relay connection and a paired agent.');
     // The listener proxy sends plaintext under the listener's control: never to an agent we are paired with (no silent downgrade, spec D6).
     if (this.listenerProxyMode && this.pairing?.keys.getProfileByFingerprint(to.toLowerCase())?.peerIdentityPub) {
-      throw new Error(`Refused: you are paired with this agent, so messages to it must be encrypted, and ${PROXY_NOTE}`);
+      throw new Error(`Refused: you are paired with this agent, so messages to it must be encrypted. ${PROXY_REFUSAL}`);
     }
 
     const tid = threadId || `thread-${crypto.randomBytes(4).toString('hex')}`;
@@ -1073,19 +1075,28 @@ async function main() {
     try { const u = new URL(RELAY_URL); return `${u.protocol === 'ws:' ? 'http:' : 'https:'}//${u.host}`; } catch { return null; }
   })();
   const pubKey = Buffer.from(identity.publicKey, 'base64');
-  // One instance per state directory owns pairing (Echo's review, SEC-5).
-  const stateLock = acquireStateLock(STATE_DIR);
-  if (!stateLock.held) process.stderr.write(`[threadline-mcp] Another threadline-mcp (pid ${stateLock.holderPid}) owns pairing for ${STATE_DIR}; this one will message but not pair or send credentials.\n`);
-  process.on('exit', () => stateLock.release());
-  const NOT_OWNER = `another threadline-mcp (pid ${stateLock.holderPid}) is running for this state directory and owns pairing. Use the app that started it, or give this one its own THREADLINE_STATE_DIR.`;
+  // One instance per state directory owns pairing (Echo's review, SEC-5). Ownership is kept current:
+  // owns() is true only while the lock on disk still names this process, and ensure() makes one attempt
+  // to take over a stale lock (the owner exited). A non-owner calls it at each pairing tool call, each
+  // credential send and each inbound pairing op, then pairs, serves the approval page and handles
+  // inbound pairing ops from then on.
+  const ownership = new PairingOwnership(STATE_DIR, process.pid, (m) => process.stderr.write(`[threadline-mcp] ${m} (${STATE_DIR})\n`));
+  if (!ownership.owns()) process.stderr.write(`[threadline-mcp] Another threadline-mcp (pid ${ownership.holderPid}) owns pairing for ${STATE_DIR}; this one will message but not pair or send credentials, until that one exits.\n`);
+  process.on('exit', () => ownership.release());
+  const ensureOwner = (): boolean => ownership.ensure();
+  // The refusal names the owning app (recorded in its lock), never a pid or a setting (Echo review R2-2).
+  const notOwner = () => notOwnerRefusal(ownership.holderApp());
+  relay.ownerApp = () => ownership.holderApp();
   const pairing = new StandalonePairing({
-    ownsPairing: stateLock.held,
+    ownsPairing: () => ownership.owns(),
+    claimOwnership: () => ownership.ensure(),
     stateDir: STATE_DIR,
     identity: { fp: identity.agentId, publicKey: pubKey, privateKey: Buffer.from(identity.privateKey, 'base64') },
     ownName: () => ({ owner: process.env.THREADLINE_OWNER || os.userInfo().username, agent: profile.get().name }),
     sendEnvelope: (envelope) => relay.sendRawEnvelope(envelope),
     relayHttpBase,
   });
+  ownership.onAcquired = () => pairing.becomeOwner();
   relay.setPairing(pairing);
 
   try {
@@ -1119,7 +1130,7 @@ async function main() {
   const pairBase = {
     pairing,
     // Pairing ops travel on this server's own relay connection; through a listener proxy they cannot.
-    unavailable: () => (!stateLock.held ? `Pairing is unavailable: ${NOT_OWNER}` : relay.isListenerProxy ? `Pairing is unavailable: ${PROXY_NOTE}` : null),
+    unavailable: () => (!ensureOwner() ? notOwner() : relay.isListenerProxy ? PROXY_REFUSAL : null),
     knownAgents: () => contacts.getAll().map((c) => ({ fingerprint: c.agentId, name: c.name })),
     resolvePeer: (nameOrFp: string) => {
       const v = nameOrFp.trim().toLowerCase();
@@ -1128,8 +1139,34 @@ async function main() {
       return m.length === 1 ? m[0].agentId : null;
     },
   };
-  // Elicitation is offered per call: only when this client declared it can ask the person.
-  const toolsForCall = () => new PairTools({ ...pairBase, elicit: server.server.getClientCapabilities()?.elicitation ? elicit : null });
+  // Elicitation is offered per call: only when this client declared it can ask the person. The choice
+  // between the app's own dialog and the local approval page is made by that capability alone, never by
+  // the app's name (Echo review R2-3).
+  const hasElicitation = () => !!server.server.getClientCapabilities()?.elicitation;
+  const toolsForCall = () => { ensureOwner(); return new PairTools({ ...pairBase, elicit: hasElicitation() ? elicit : null }); };
+
+  // The owner records which app it serves, so another app's refusal can name it (R2-2).
+  const prevInitialized = server.server.oninitialized;
+  server.server.oninitialized = () => {
+    prevInitialized?.();
+    ownership.setApp(friendlyAppName(server.server.getClientVersion()?.name ?? ''));
+  };
+
+  // Without elicitation, the person answers on a local approval page that this process (the pairing
+  // owner) serves on 127.0.0.1 and opens in their browser (spec r4 D5). The tool returns at once.
+  const approvals = new ApprovalCoordinator({ timeoutMs: ELICIT_TIMEOUT_MS });
+  process.on('exit', () => approvals.close());
+  const personAct = async (action: ApprovalAction, run: (tools: PairTools) => Promise<ToolResult>): Promise<ToolResult> => {
+    if (hasElicitation()) return run(toolsForCall()); // unchanged: the app asks the person itself
+    if (!ensureOwner()) return { ok: false, error: notOwner() };
+    try {
+      return await approvals.start(action, (pageElicit) => run(new PairTools({ ...pairBase, elicit: pageElicit })));
+    } catch {
+      return run(new PairTools({ ...pairBase, elicit: null })); // the page could not listen: the plain refusal
+    }
+  };
+  const PAGE_BOUNDARY = 'In an app that cannot ask your person itself, Threadline instead opens a page in their browser and this returns at once with pending: true; pass the note on and check threadline_pair_status later. ' +
+    'Never open or answer that page yourself. It is weaker than the app\'s own dialog, because a program that can fetch local URLs could answer it; opening an invite still needs the invite itself, which you never have.';
   const asResult = (r: Record<string, unknown>) => ({
     content: [{ type: 'text' as const, text: JSON.stringify(r, null, 2) }],
     ...(r.ok === false ? { isError: true } : {}),
@@ -1149,30 +1186,31 @@ async function main() {
   server.tool(
     'threadline_pair_open',
     'Your person was sent a pairing invite and wants to accept it. Call this with NO arguments: Threadline asks your person to paste the invite directly ' +
-    '(it never passes through you) and to approve or decline. Do not paste invite text into any tool.',
+    '(it never passes through you) and to approve or decline. Do not paste invite text into any tool. ' + PAGE_BOUNDARY,
     {},
-    async () => asResult(await toolsForCall().open()),
+    async () => asResult(await personAct('open', (t) => t.open())),
   );
 
   server.tool(
     'threadline_pair_finish',
-    'Someone accepted one of your invites. Threadline asks your person whether that agent is who they meant (Finish) or not (Not them). You cannot decide this yourself.',
+    'Someone accepted one of your invites. Threadline asks your person whether that agent is who they meant (Finish) or not (Not them). You cannot decide this yourself. ' + PAGE_BOUNDARY,
     { iid: z.string().optional().describe('Which invite, if more than one accept is waiting') },
-    async (args) => asResult(await toolsForCall().finish(args)),
+    async (args) => asResult(await personAct('finish', (t) => t.finish(args))),
   );
 
   server.tool(
     'threadline_pair_status',
-    'Show pairings (with their state), open invites, accepts waiting for your person, and recent pairing events. Never shows invite secrets.',
+    'Show pairings (with their state), open invites, accepts waiting for your person, and recent pairing events. Never shows invite secrets. ' +
+    'pendingApproval: an approval page is open for your person; lastApproval: how the last one ended.',
     {},
-    async () => asResult(toolsForCall().status()),
+    async () => asResult({ ...toolsForCall().status(), ...approvals.statusFields() } as ToolResult),
   );
 
   server.tool(
     'threadline_pair_forget',
-    'Unpair from an agent. Your person confirms; you cannot unpair on your own. Use it when the other agent has a new identity (a new key means a new pairing).',
+    'Unpair from an agent. Your person confirms; you cannot unpair on your own. Use it when the other agent has a new identity (a new key means a new pairing). ' + PAGE_BOUNDARY,
     { peer: z.string().describe('Contact name or agent ID of the paired agent') },
-    async (args) => asResult(await toolsForCall().forget(args)),
+    async (args) => asResult(await personAct('forget', (t) => t.forget(args))),
   );
 
   server.tool(
@@ -1199,6 +1237,7 @@ async function main() {
     },
     async (args) => {
       try {
+        if (args.credential) ensureOwner(); // a non-owner takes over if the owner has exited
         if (!relay.getStatus().connected) {
           await relay.connect();
         }

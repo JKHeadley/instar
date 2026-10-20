@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-20T19:53:41.098Z",
+  "slug": "agent-connect-knowledge",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 72,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/knowledge/TreeGenerator.ts",
+      "src/knowledge/TreeTriage.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 71,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { StandalonePairing } from '../../../packages/threadline-mcp/src/pairing.js';
-import { PairTools, NO_ELICIT, type Elicit } from '../../../packages/threadline-mcp/src/pairTools.js';
+import { PairTools, NO_ELICIT, PROXY_REFUSAL, notOwnerRefusal, notOwnerCredentialRefusal, type Elicit } from '../../../packages/threadline-mcp/src/pairTools.js';
 import { generateIdentityKeyPair, findInviteToken } from '@sagemindai/threadline-core';
 
 type Env = Record<string, unknown> & { to: string };
@@ -40,6 +40,14 @@ function person(answers: Array<Record<string, string> | null>) {
   const asked: string[] = [];
   const elicit: Elicit = async (message) => { asked.push(message); return answers.shift() ?? null; };
   return { elicit, asked };
+}
+
+/** Plain words: no terminal, command, npx, setting name or file path, and no pid. */
+function expectPlain(text: string) {
+  for (const banned of ['terminal', 'npx', 'command', 'pid']) expect(text.toLowerCase()).not.toContain(banned);
+  expect(text).not.toMatch(/THREADLINE_[A-Z_]+/);
+  expect(text).not.toMatch(/(^|[\s"'(])(~\/|\/[\w.-]+\/)|[A-Za-z]:\\/); // absolute (or home-relative) paths
+  expect(text).not.toMatch(/\b\d{3,}\b/); // a pid or a port
 }
 
 describe('pair tools', () => {
@@ -166,8 +174,10 @@ describe('pair tools', () => {
       expect(r.error).toBe(NO_ELICIT);
       expect(r.error).toMatch(/Claude Code can/);
       expect(r.error).toMatch(/pairing isn't available here/);
-      for (const banned of ['terminal', 'npx', 'THREADLINE_PAIR_TERMINAL', 'command']) expect(r.error.toLowerCase()).not.toContain(banned.toLowerCase());
+      expectPlain(r.error);
     }
+    // Every other refusal a person may be shown: proxy mode, a non-owner's pairing and credential refusals.
+    for (const t of [PROXY_REFUSAL, notOwnerRefusal('Claude Desktop'), notOwnerRefusal(null), notOwnerCredentialRefusal('Cursor'), notOwnerCredentialRefusal(null)]) expectPlain(t);
     expect(wire.out).toHaveLength(0);
     // The steps that never ask the person keep working without elicitation.
     expect(tools.status()).toMatchObject({ ok: true });

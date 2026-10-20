@@ -55,11 +55,36 @@ import {
   type PeerDarkAuditRow,
   type PeerPresenceRead,
 } from '../threadline/peerDark.js';
+import { isEncryptToPinnedSendError } from '../threadline/encryptToPinned.js';
 
 /** A redelivery attempt: re-send the message body to the peer. Returns whether
  *  the transport accepted it. Resolving false (or throwing) leaves the message
  *  awaiting-ack for the next sweep. */
 export type A2ARedeliverFn = (entry: A2ADeliveryEntry) => Promise<boolean> | boolean;
+
+/**
+ * The server's redeliver: recover the body from the canonical outbox by messageId and re-emit it
+ * with `sendAuto`. Body missing → false (never a fabricated send). A send that encrypt-to-pinned
+ * refused (EncryptToPinnedSendError: the peer is pinned and the encrypted send could not be made,
+ * spec threadline-standalone-pairing D9, enforce fails closed) → false: NOT redelivered, nothing
+ * went on the wire, and the entry stays awaiting-ack. Any other error propagates (the sweep logs it).
+ */
+export function createOutboxRedeliver(deps: {
+  readOutboxEntry: (messageId: string) => { text: string; threadId?: string } | null | undefined;
+  sendAuto: (peerFp: string, text: string, threadId?: string) => unknown;
+}): A2ARedeliverFn {
+  return (entry) => {
+    const stored = deps.readOutboxEntry(entry.messageId);
+    if (!stored) return false;
+    try {
+      deps.sendAuto(entry.peerFp, stored.text, entry.threadId ?? stored.threadId);
+    } catch (err) {
+      if (isEncryptToPinnedSendError(err)) return false;
+      throw err;
+    }
+    return true;
+  };
+}
 
 /** Raise ONE aggregated attention item (P17 — never one per message). `id` is
  *  set on the per-peer / aggregate dark items (deterministic, §3.2 iii); the

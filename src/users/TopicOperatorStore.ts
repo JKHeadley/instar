@@ -106,9 +106,28 @@ export function isVerifiedTopicOperatorBinding(value: unknown): value is TopicOp
   return true;
 }
 
+/**
+ * Reserved key in `topic-operators.json` holding the append-only ever-verified
+ * record. Not a topic id (topic ids are numeric), never returned as a binding.
+ */
+export const EVER_VERIFIED_KEY = '_everVerifiedOperators';
+/** Distinct ids kept. Any count of two or more already means "not one principal". */
+const EVER_VERIFIED_CAP = 64;
+/** Only numeric Telegram ids are recorded, so the record can always be read back. */
+const NUMERIC_UID = /^\d+$/;
+
+function addDistinct(list: string[], uid: string): void {
+  if (!NUMERIC_UID.test(uid) || list.includes(uid) || list.length >= EVER_VERIFIED_CAP) return;
+  list.push(uid);
+}
+
 export class TopicOperatorStore {
   private readonly file: string;
   private cache: Record<string, TopicOperatorBinding> | null = null;
+  /** Append-only distinct Telegram uids ever verified here (see everVerifiedOperatorUids). */
+  private everVerified: string[] = [];
+  /** The persisted history was unreadable; sticky until repaired by hand (see the side-effects file). */
+  private everVerifiedUnreadable = false;
   /** WS2.6 topic-operator-record replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
   private operatorReplication: TopicOperatorReplicationEmitter | null = null;
 
@@ -128,30 +147,91 @@ export class TopicOperatorStore {
 
   private load(): Record<string, TopicOperatorBinding> {
     if (this.cache) return this.cache;
+    let map: Record<string, TopicOperatorBinding> = {};
+    // ABSENT file: a fresh agent, nothing to read — seed (empty). PRESENT but
+    // unreadable (unparseable, or a non-object top level): its history is lost,
+    // so it must fail CLOSED, never read as "pre-upgrade, seed from nothing"
+    // (that would make the next authorized speaker the sole approver).
+    let ever: unknown = undefined;
+    let fileUnreadable = false;
     try {
       if (fs.existsSync(this.file)) {
         const parsed: unknown = JSON.parse(fs.readFileSync(this.file, 'utf-8'));
         // The persisted boundary is untrusted. Valid JSON can still have the
         // wrong top-level shape (`null`, array, scalar); none of those proves a
         // binding population, and caching one would make verified reads throw.
-        this.cache = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? parsed as Record<string, TopicOperatorBinding>
-          : {};
-        return this.cache!;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const { [EVER_VERIFIED_KEY]: everRaw, ...rest } = parsed as Record<string, unknown>;
+          map = rest as Record<string, TopicOperatorBinding>;
+          ever = everRaw;
+        } else {
+          fileUnreadable = true;
+        }
       }
     } catch {
-      // @silent-fallback-ok — corrupt store, treat as empty (a missing operator
-      // is fail-safe: the guard then treats everything as unverifiable).
+      // @silent-fallback-ok — corrupt store: bindings read as empty (a missing
+      // operator is fail-safe), and the ever-verified history as UNREADABLE.
+      map = {};
+      fileUnreadable = true;
     }
-    this.cache = {};
+    this.cache = map;
+    const history = fileUnreadable
+      ? { uids: [], unreadable: true }
+      : this.readEverVerified(ever, map);
+    this.everVerified = history.uids;
+    this.everVerifiedUnreadable = history.unreadable;
     return this.cache;
+  }
+
+  /**
+   * The ever-verified record from disk, or — for state written before this record
+   * existed — SEEDED from the currently verified Telegram bindings. Seeding cannot
+   * recover a person whose binding was already overwritten before the upgrade.
+   * A present-but-malformed record, or one already marked `unreadable`, is lost
+   * history: it is kept as an explicit `unreadable: true` marker (fail closed,
+   * reason visible on disk), never read as empty.
+   */
+  private readEverVerified(raw: unknown, map: Record<string, TopicOperatorBinding>): { uids: string[]; unreadable: boolean } {
+    if (raw === undefined) {
+      const seeded: string[] = [];
+      for (const b of Object.values(map)) {
+        if (isVerifiedTopicOperatorBinding(b) && b.platform === 'telegram') addDistinct(seeded, b.uid.trim());
+      }
+      return { uids: seeded, unreadable: false };
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { uids: [], unreadable: true };
+    const rec = raw as { telegram?: unknown; unreadable?: unknown };
+    const list = rec.telegram;
+    if (!Array.isArray(list) || !list.every((u) => typeof u === 'string' && NUMERIC_UID.test(u))) {
+      return { uids: [], unreadable: true };
+    }
+    const uids = [...new Set(list as string[])].slice(0, EVER_VERIFIED_CAP);
+    return { uids, unreadable: rec.unreadable !== undefined && rec.unreadable !== false };
   }
 
   private save(map: Record<string, TopicOperatorBinding>): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(map, null, 2));
+    const record: Record<string, unknown> = { telegram: [...this.everVerified] };
+    if (this.everVerifiedUnreadable) record.unreadable = true;
+    const out: Record<string, unknown> = { ...map, [EVER_VERIFIED_KEY]: record };
+    fs.writeFileSync(this.file, JSON.stringify(out, null, 2));
     this.cache = map;
   }
+
+  /**
+   * Every distinct Telegram user id ever bound through `setAuthenticatedOperator`
+   * on this machine (append-only, distinct, capped). Assertions and legacy records
+   * never add to it, and a later overwrite of a topic's binding never removes from
+   * it. Used where "exactly one principal" must survive latest-only bindings
+   * (pairing approval, `resolveApprovalOwner`). Returns null when the persisted
+   * history was unreadable (fails closed).
+   */
+  everVerifiedOperatorUids(): string[] | null {
+    this.load();
+    // null = the history is unreadable: callers must treat that as "not one principal".
+    return this.everVerifiedUnreadable ? null : [...this.everVerified];
+  }
+
 
   /**
    * Compatibility writer for the manual API. This deliberately records an
@@ -202,6 +282,10 @@ export class TopicOperatorStore {
       },
     };
     if (!isVerifiedTopicOperatorBinding(candidate)) return null;
+    // Record the principal in the append-only ever-verified set BEFORE the
+    // idempotent early return, so it is durable even when the binding itself is
+    // unchanged. Only this verified path ever adds to it.
+    const everChanged = candidate.platform === 'telegram' && this.recordEverVerified(candidate.uid);
     // Preserve the evidence for the message that actually ESTABLISHED this
     // operator. Later authorized messages from the same principal prove
     // continuity but are not a new establishment and must not cause a write on
@@ -214,15 +298,17 @@ export class TopicOperatorStore {
       JSON.stringify(existing.names) === JSON.stringify(candidate.names) &&
       existing.boundAt === candidate.boundAt
     ) {
+      if (everChanged) this.save({ ...this.load() });
       return existing;
     }
-    return this.persistBinding(topicId, candidate, true) as TopicOperator;
+    return this.persistBinding(topicId, candidate, true, everChanged) as TopicOperator;
   }
 
   private persistBinding(
     topicId: number | string,
     record: TopicOperatorBinding,
     replicate: boolean,
+    everVerifiedChanged = false,
   ): TopicOperatorBinding {
     // Idempotency guard: both inbound ingress paths (lifeline-forward #909 and
     // the polling seam, increment 2e) re-bind on EVERY message from the operator.
@@ -230,6 +316,7 @@ export class TopicOperatorStore {
     // re-bind is then a pure read, not a per-message file rewrite.
     const existing = this.load()[String(topicId)];
     if (existing && JSON.stringify(existing) === JSON.stringify(record)) {
+      if (everVerifiedChanged) this.save({ ...this.load() });
       return existing;
     }
     const map = { ...this.load() };
@@ -253,6 +340,14 @@ export class TopicOperatorStore {
       }
     }
     return record;
+  }
+
+  /** Add a verified uid to the ever-verified set. Returns true when it was new. */
+  private recordEverVerified(uid: string): boolean {
+    this.load();
+    const before = this.everVerified.length;
+    addDistinct(this.everVerified, uid.trim());
+    return this.everVerified.length !== before;
   }
 
   /** Raw binding inspection. This carries no authority. */

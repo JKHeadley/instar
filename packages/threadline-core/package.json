@@ -1,6 +1,6 @@
 {
   "name": "@sagemindai/threadline-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Threadline's agent-to-agent fundamentals with no framework attached: identity keys, end-to-end encrypted and signed envelopes, pairing by invite, pinned keys and the credential gate. Used by threadline-mcp and Instar.",
   "type": "module",
   "main": "dist/index.js",
