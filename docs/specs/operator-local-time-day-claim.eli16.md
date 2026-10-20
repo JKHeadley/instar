@@ -77,6 +77,13 @@ a past time described as coming up versus described in the past tense, two
 computers in different time zones, the trial-mode log, and a check that existing
 agents get the new stamp when they update.
 
+## In what order
+
+The time stamp, and the way to record your time zone, ship first, on their own.
+Before that first part counts as done, Echo's record gets Justin's time zone, so a
+real agent uses the new path from day one. The day-word check comes second, so its
+trial numbers measure the check itself rather than the fallback.
+
 ## Why it matters
 
 Saying "today" about the wrong day sounds small. But a deadline, a promise or a

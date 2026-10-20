@@ -20,7 +20,7 @@ lessons-engaged:
 supervision: "tier0"
 approved: false
 approved-by: ""
-review-status: "pending review (Echo agreed the five points 2026-10-20; full spec review not yet run)"
+review-status: "pending review in PR #2237 (Echo approved the direction and the four open-question recommendations 2026-10-20; approved stays false until sign-off)"
 ---
 
 # Amendment — Operator-local time and the DAY_CLAIM advisory
@@ -102,7 +102,7 @@ The bash fallback is a degraded path that already exists today (the current `dat
 So **today the chain resolves to `machine-fallback` on every one of them.** Points 1 and 4 still work there. They run in the machine zone, honestly labelled, and on this workstation that zone happens to equal the operator's. But the operator-zone behaviour stays inert until the record exists. The amendment names two sub-cases and how each is closed, without a new config field:
 
 - **(a) User record exists but has no timezone** (echo, gemini). Closed by writing `preferences.timezone` onto the existing record. Proposed: a NEW narrow, Bearer-gated route `PUT /users/:id/timezone` (validates IANA, writes through `UserManager.upsertUser`), plus an `instar user timezone <zone>` CLI. No route updates user preferences today; this route would be new. While `zoneSource` is `machine-fallback` with reason `no-timezone` on a topic that has a verified operator, the CURRENT TIME block adds one line: *"Your operator's time zone is not recorded. Ask them once, then record it."*
-- **(b) No user record carries the operator's `telegramUserId`** (sagemind, ai-guy, meridian, pi-tas-agent). This amendment **does not auto-create or auto-link a user record**. `users.json` feeds sender validation (`src/core/senderValidationGate.ts`), and linking a uid to a profile is an identity decision, not a display one. The fallback line carries reason `no-user-record`, and the same one-line prompt directs the agent to the existing registration path (`UserManager.addUserInteractive` via onboarding). If review decides that linking is too heavy for this purpose, the honest alternative is a single agent-level `operatorTimezone` setting. That is the one case where the brief allows a new config field. It is listed under Open questions and **not** proposed as the default.
+- **(b) No user record carries the operator's `telegramUserId`** (sagemind, ai-guy, meridian, pi-tas-agent). This amendment **does not auto-create or auto-link a user record**. `users.json` feeds sender validation (`src/core/senderValidationGate.ts`), and linking a uid to a profile is an identity decision, not a display one. The fallback line carries reason `no-user-record`, and the same one-line prompt directs the agent to the existing registration path (`UserManager.addUserInteractive` via onboarding). The alternative, a single agent-level `operatorTimezone` setting (the one case where the brief allowed a new config field), was considered and **rejected** in review (resolved decision 1).
 
 **Pool requirement: the operator zone must resolve the same way on every machine, even when the machines sit in different zones.**
 
@@ -165,8 +165,15 @@ Each carve-out that suppresses a rule is logged as a `skipped` reason (below), s
   - `no-resend`: neither within 24 hours. This matches the existing repeated-ignore window, and the existing escalation to the operator already covers silent drops.
   `acked-unchanged` is the sender saying "this flag was wrong". That is the live false-positive signal for the inform phase.
 
+**Coverage denominator: checked in the code (main at 76d5a6098).** The existing audit already writes a row for every conversational preflight that reaches the route, clean ones included. `POST /messaging/preflight` (`src/server/routes.ts:17512`) calls `outboundAdvisoryAudit.recordPreflight(...)` unconditionally at `routes.ts:17580`, for automated and non-automated kinds alike. Non-automated rows are keyed `jobSlug: 'interactive-session'`. `OutboundAdvisoryAudit.recordPreflight` (`src/messaging/OutboundAdvisory.ts:306`) derives `action` as `'advised'` or `'clean'` (`:313`) and appends the row via `appendLine` (`:315`). So no new denominator row is needed. The coverage metric is **DAY_CLAIM `checkId`s in `logs/day-claim-checks.jsonl` ÷ rows in `logs/outbound-advisory.jsonl` with `action ∈ {clean, advised}` and `kind ≠ 'automated'`, over the same window**, joined per request on `(topicId, textHash)` with `ts` within 5 seconds. The metric is deliberately **not** computed from `day-claim-checks.jsonl` alone: a log cannot count the checks it failed to write, so a self-referential denominator would read 100% exactly when the gate is silently not running.
+
+That denominator does not see every conversational send. These paths produce no preflight row, so the metric cannot see them:
+- **Advisory switched off:** `outboundAdvisory.enabled = false` returns `{ advisories: [], disabled: true }` at `routes.ts:17531–17534`, before `recordPreflight`. No row is written there, by design. DAY_CLAIM adds nothing on this path either. Those sends are out of scope by operator choice, not missed.
+- **The preflight never reached the server:** `telegram-reply.sh` skips the preflight for `SENDER_CLASS=script` (`src/templates/scripts/telegram-reply.sh:299`), and skips it when building the request body failed (`:323`, the python3-unavailable fail-open). A curl timeout or connection error also sends with no server-side row. The coverage ratio is blind to these. They are measured separately as **preflight reach**: conversational `/telegram/reply` deliveries in a window ÷ conversational preflight rows in the same window. The implementation counts deliveries from the reply route's existing delivery record (whichever it is at build time; it is not named here, so as not to cite an API this spec has not read). Preflight reach is reported next to coverage at the day-14 and day-30 checks. It is not a flip condition, because it measures the transport, not DAY_CLAIM.
+- **A failed audit append** (`appendLine` swallows write errors, by contract) loses the row from both logs alike. It shows as a drop in total rows, not as a coverage gap.
+
 **Flip and rollback thresholds (numbers, so the flip has a forcing function):**
-- **dryRun → inform, R1 and R2:** at least 14 days live on development agents, **and** at least 30 adjudicated would-flags, **and** precision ≥ 90% (at most 3 false positives in 30), **and** check-row coverage ≥ 95% (DAY_CLAIM rows exist for at least 95% of the conversational preflights in `logs/outbound-advisory.jsonl` over the same window, which proves the logger and the gate are actually running). If 30 flags have not accumulated by day 30, decide on what exists and record the decision.
+- **dryRun → inform, R1 and R2:** at least 14 days live on development agents, **and** at least 30 adjudicated would-flags, **and** precision ≥ 90% (at most 3 false positives in 30), **and** check-row coverage ≥ 95%, as defined under "Coverage denominator" below. If 30 flags have not accumulated by day 30, decide on what exists and record the decision.
 - **dryRun → inform, R3 and R4 (low confidence):** a stricter bar: at least 20 adjudicated would-flags at precision ≥ 95%. They may stay dryRun indefinitely. The injected line is the main defence for those shapes.
 - **Rollback, inform → dryRun, per rule:** over the most recent 50 shown flags, `acked-unchanged` > 30%.
 - **Forcing function:** a scheduled check (the existing job/attention machinery; one deduped Attention item, fixed `sourceContext`) computes these numbers from the two logs on day 14 and day 30 and raises the decision to the operator with the figures. The flip itself is a config write, never automatic. The deadline is not left to memory.
@@ -217,7 +224,7 @@ All three tiers, following the parent spec's tests section.
 
 1. **Signal vs. Authority: "a deterministic rule withholds a message until resend/ack."** This is true of the existing NOT-SENT advisory slot, which TIME_CLAIM, JARGON, RAW_FILE_PATH and LOCALHOST_LINK already use (spec `outbound-jargon-filepath-gap`). The hold costs one re-run, and `--ack-advisory` always delivers unchanged. DAY_CLAIM does add a new *surface*: every conversational reply. That is why it ships dryRun (no hold at all) with numeric precision bars before any hold is shown, and with a per-rule rollback on the override rate. If review judges that a hold on ordinary chat is authority even so, the fallback design is to keep DAY_CLAIM permanently in a "deliver and annotate" mode: send, then log and inject the correction into the next turn. That trades catching the error before the operator reads it for zero friction.
 2. **A Refusal Stays a Refusal: "NOT-SENT exits 0."** This is pre-existing `telegram-reply.sh` behaviour, deliberate and commented in the script: a non-zero exit triggers queue/retry semantics in callers, and the first stdout line is the literal `NOT SENT — advisory …`. This amendment does not change it. Whether that contract should change is a question for the advisory spec, not this one.
-3. **Always a Multi-Machine Entity: "operator zone propagates only via dark-by-default replication."** Agreed, and stated in point 2. The mitigation here is that a machine without the input labels its fallback and never substitutes its own zone as the operator's, and that the zone is added to the replicated user record. A full fix means user-registry replication being on for pools, which is outside this amendment. See Open question 3.
+3. **Always a Multi-Machine Entity: "operator zone propagates only via dark-by-default replication."** Agreed, and stated in point 2. The mitigation here is that a machine without the input labels its fallback and never substitutes its own zone as the operator's, and that the zone is added to the replicated user record. A full fix means user-registry replication being on for pools, which is outside this amendment. Review decided this is not a precondition (resolved decision 3).
 4. **No Manual Work: "remediation asks the agent to ask and record."** The operator's zone is a fact only the operator can give. Inferring it, for example from the machine, is the very mistake this amendment exists to stop. The manual part is one question to the operator, once; the agent does the recording itself through the new route. Case 2b (linking a user record) stays manual on purpose because it is an identity decision.
 
 ## Decision points touched
@@ -234,18 +241,28 @@ All three tiers, following the parent spec's tests section.
 - Auto-creating or auto-linking user records for an operator (an identity decision; see 2b).
 - Rewriting the harness system-prompt `currentDate` (host-owned; the parent spec's B11 reconciliation still applies).
 
-## Open questions (for review)
+## Open questions: resolved
 
-1. Case 2b (no user record for the operator, the majority on this workstation): is "prompt the agent to register/link through the existing onboarding path" enough, or should this amendment take the one allowed exception and add an agent-level `operatorTimezone` setting? Recommendation: link through onboarding. A setting is a second source of truth for a fact that belongs to the person.
-2. Should `PUT /users/:id/timezone` also accept the operator's own words from a Telegram message ("I'm in Berlin this week")? Recommendation: no for v1. Explicit write only.
-3. For a multi-machine pool, should enabling `multiMachine.stateSync.userRegistry` become a precondition for the operator-zone behaviour (otherwise each machine labels its own fallback)? Recommendation: no precondition. Surface the per-machine `zoneSource` in the pool probe and let the divergence be visible.
-4. R3 and R4 may never clear their bar. Is it acceptable to ship them dryRun-only, permanently, as telemetry? Recommendation: yes, with the day-30 review deciding whether to delete them.
+Echo agreed with all four recommendations on 2026-10-20 (PR #2237). They now stand as decisions. `approved` stays `false` until formal sign-off.
 
-## Sequencing (each a gated PR)
+1. **Case 2b (no user record for the operator):** link through the existing onboarding path. No agent-level `operatorTimezone` setting; a setting would be a second source of truth for a fact that belongs to the person.
+2. **Zone from the operator's own words in chat:** no for v1. The zone is written only explicitly, through `PUT /users/:id/timezone` or the CLI.
+3. **User-registry replication as a precondition in pools:** no precondition. The per-machine `zoneSource` is surfaced in the pool probe, so divergence is visible.
+4. **R3 and R4 dryRun-only indefinitely:** acceptable, with the day-30 review deciding whether to delete them.
 
-1. `localTime.ts` zone extension + `zonedDateParts` + byte-identity tests.
-2. `resolveOperatorZone` + `operatorNow` on `/session/clock` + the pool test + the `buildUserRecordData` timezone field.
-3. The hook changes in `getSessionStartHook` / `getTelegramTopicContextHook` + migration-parity tests (points 1–2 become visible to agents here).
-4. `day-claim.ts` + `DAY_CLAIM` in `OutboundAdvisory.ts` + the per-check log + `DEV_GATED_FEATURES` entry, shipped dryRun.
-5. `PUT /users/:id/timezone` + CLI + the one-line "record your operator's zone" prompt.
-6. The day-14 / day-30 threshold check and the inform flip (config write after review of the numbers).
+## Sequencing: two increments, each step a gated PR
+
+**Increment 1, the injected operator-local line plus recording the zone. Ships first, on its own, with no DAY_CLAIM code in it.**
+
+*Precondition: a real agent exercises the operator-zone path from day one.* Before increment 1 is declared done, **echo's own user record must carry a timezone**, so at least one live agent resolves `zoneSource: 'operator-preference'` rather than the fallback. Echo is the agent this works on directly: its `users.json` holds user `telegram-7812716706` with `telegramUserId: 7812716706` and no `preferences.timezone`. Its `state/topic-operators.json` holds verified (`authenticated-inbound`) bindings to that same uid, for topics including 1 and 2169. So the chain resolves to that record as soon as the field exists. The zone to write is `America/Los_Angeles`, the operator's stated zone (Justin, 2026-10-20). It is written through the step-1d route once that route is live on echo, as the route's first real use, not by hand-editing `users.json`. Acceptance check: on echo, `GET /session/clock?topic=1` returns `operatorNow.zoneSource = 'operator-preference'` and `operatorNow.zone = 'America/Los_Angeles'`, and the next injected CURRENT TIME block reads `(operator: same as machine)` rather than `(machine zone, operator zone unknown)`. Until that check passes, increment 1 is shipped but not done.
+
+- **1a.** `localTime.ts` zone extension + `zonedDateParts` + byte-identity tests. *(Was step 1.)*
+- **1b.** `resolveOperatorZone` + `operatorNow` on `/session/clock` + the pool test + the `buildUserRecordData` timezone field. *(Was step 2.)*
+- **1c.** The hook changes in `getSessionStartHook` / `getTelegramTopicContextHook` + migration-parity tests. *(Was step 3; points 1–2 become visible to agents here.)*
+- **1d.** `PUT /users/:id/timezone` + `instar user timezone <zone>` CLI + the one-line "record your operator's zone" prompt. *(Was step 5. It must land in increment 1, or the precondition above has no sanctioned write path.)*
+- **1e.** The echo precondition above, then its acceptance check.
+
+**Increment 2, DAY_CLAIM. Starts only after increment 1 is done, including the echo acceptance check.** DAY_CLAIM evaluates day words against `operatorNow`, so building it on top of an operator zone no real agent has resolved would make every early would-flag a fallback-zone flag, and its dryRun numbers would measure the fallback rather than the rules.
+
+- **2a.** `day-claim.ts` + `DAY_CLAIM` in `OutboundAdvisory.ts` + `logs/day-claim-checks.jsonl` (per-check rows, `ran:false` rows, reaction rows) + the `DEV_GATED_FEATURES` entry, shipped dryRun. *(Was step 4.)*
+- **2b.** The day-14 / day-30 threshold check (coverage against the denominator defined in point 4, preflight reach reported next to it), then the inform flip as a config write after review of the numbers. *(Was step 6.)*
