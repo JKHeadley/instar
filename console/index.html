@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Instar Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+/* ─── tokens: light is the base set ───────────────────────────── */
+:root{
+  /* Dark-first — both real Instar surfaces are dark. Ground + teal ramp from
+     instar.sh (#0a0e17, #4ba8aa→#a7e0e1); neutrals are the site's slate scale;
+     --ok keeps the current dashboard's #4ade80, the one colour both themes share. */
+  --ground:#0A0E17;
+  --surface:#111827;
+  --surface-2:#1A2333;
+  --line:#243247;
+  --line-soft:#1A2434;
+  --text:#E2E8F0;
+  --text-2:#94A3B8;
+  --text-3:#64748B;
+
+  --accent:#6EC6C8;
+  --accent-ink:#A7E0E1;
+  --accent-wash:#13313A;
+
+  --ok:#4ADE80;
+  --warn:#F59E0B;      --warn-wash:#33260E;
+  --crit:#EF4444;      --crit-wash:#361A1A;
+  --unknown:#A78BFA;   --unknown-wash:#241F3A;
+
+  --radius:10px;
+  --rail:248px;
+  --shadow:0 1px 2px rgba(0,0,0,.45), 0 8px 24px -12px rgba(0,0,0,.7);
+
+  --f-display:'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --f-body:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --f-mono:'IBM Plex Mono', ui-monospace, monospace;
+}
+/* The current Instar dashboard is unconditionally dark — no light mode at all.
+   The console matches it: dark is the product's look, not an OS preference.
+   Light exists only as a deliberate opt-in via the toggle below. */
+:root[data-theme="light"]{
+  --ground:#EEF1F5; --surface:#FFFFFF; --surface-2:#F4F7F9;
+  --line:#CBD5E1; --line-soft:#E2E8F0;
+  --text:#0F172A; --text-2:#475569; --text-3:#64748B;
+  --accent:#2F8E90; --accent-ink:#1B6467; --accent-wash:#DDEFEF;
+  --ok:#15803D;
+  --warn:#B45309; --warn-wash:#FDF0D9;
+  --crit:#B91C1C; --crit-wash:#FBE3E3;
+  --unknown:#6D4FC4; --unknown-wash:#EAE5F8;
+  --shadow:0 1px 2px rgba(15,23,42,.06), 0 8px 24px -12px rgba(15,23,42,.2);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--text);
+  font-family:var(--f-body); font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit; background:none; border:0; cursor:pointer}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{animation:none !important; transition:none !important}}
+
+.eyebrow{
+  font-family:var(--f-display); font-weight:600; font-size:10.5px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--text-3);
+}
+.mono{font-family:var(--f-mono); font-variant-numeric:tabular-nums}
+
+/* ─── shell ───────────────────────────────────────────────────── */
+.app{min-height:100vh; display:flex; flex-direction:column}
+
+header.bar{
+  position:sticky; top:0; z-index:40;
+  display:flex; align-items:center; gap:10px;
+  padding:11px 16px;
+  background:color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line-soft);
+}
+.wordmark{font-family:var(--f-display); font-weight:700; font-size:13px; letter-spacing:.16em}
+.agent{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-2)}
+.pulse{width:6px;height:6px;border-radius:50%;background:var(--ok);
+  box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 60%,transparent); animation:p 2.6s infinite}
+@keyframes p{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 55%,transparent)}
+ 70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.bar-right{margin-left:auto; display:flex; align-items:center; gap:8px}
+.machine{
+  font-family:var(--f-mono); font-size:11px; color:var(--text-3);
+  border:1px solid var(--line); border-radius:99px; padding:3px 9px;
+}
+.ghost{border:1px solid var(--line); border-radius:8px; padding:5px 9px; font-size:12px; color:var(--text-2)}
+.ghost:hover{background:var(--surface-2)}
+
+/* attention bar — count AND reason, never a bare dot */
+.attn{
+  display:flex; align-items:center; gap:10px; width:100%;
+  padding:10px 16px; text-align:left;
+  background:var(--warn-wash); border-bottom:1px solid var(--line-soft);
+  position:sticky; top:47px; z-index:35;
+}
+.attn-n{
+  font-family:var(--f-display); font-weight:700; font-size:12px;
+  background:var(--warn); color:var(--ground); border-radius:99px;
+  min-width:20px; height:20px; display:grid; place-items:center; padding:0 6px;
+}
+.attn-txt{font-size:13.5px; color:var(--text)}
+.attn-txt b{font-weight:600}
+.attn svg{margin-left:auto; color:var(--text-2); flex:none}
+
+main{flex:1; padding:16px 16px 92px; max-width:860px; width:100%; margin:0 auto}
+
+/* ─── bottom nav (mobile) → left rail (desktop) ──────────────── */
+nav.dock{
+  position:fixed; inset:auto 0 0 0; z-index:40;
+  display:grid; grid-template-columns:repeat(5,1fr);
+  background:color-mix(in srgb,var(--surface) 94%, transparent);
+  backdrop-filter:blur(12px);
+  border-top:1px solid var(--line-soft);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.dock button{
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  padding:9px 2px 8px; color:var(--text-3); position:relative;
+}
+.dock button span{font-size:10px; font-weight:500; letter-spacing:.02em}
+.dock button[aria-current="page"]{color:var(--accent)}
+.dock button[aria-current="page"]::before{
+  content:''; position:absolute; top:0; left:50%; transform:translateX(-50%);
+  width:22px; height:2px; background:var(--accent); border-radius:0 0 2px 2px;
+}
+.badge{
+  position:absolute; top:5px; right:50%; margin-right:-18px;
+  background:var(--warn); color:var(--ground);
+  font-family:var(--f-display); font-size:9px; font-weight:700;
+  border-radius:99px; min-width:14px; height:14px; display:grid; place-items:center; padding:0 3px;
+}
+
+/* ─── cards ───────────────────────────────────────────────────── */
+.sect{margin:0 0 22px}
+.sect-head{display:flex; align-items:baseline; gap:8px; margin:0 0 9px}
+.sect-head h2{font-family:var(--f-display); font-size:15px; font-weight:600; margin:0; letter-spacing:-.01em}
+.sect-head .n{font-family:var(--f-mono); font-size:11.5px; color:var(--text-3)}
+.sect-head a{margin-left:auto; font-size:12px; color:var(--accent); text-decoration:none}
+
+.card{
+  background:var(--surface); border:1px solid var(--line-soft);
+  border-radius:var(--radius); overflow:hidden;
+}
+.row{
+  display:flex; gap:11px; align-items:flex-start; width:100%; text-align:left;
+  padding:12px 13px; border-bottom:1px solid var(--line-soft); position:relative;
+}
+.row:last-child{border-bottom:0}
+button.row:hover{background:var(--surface-2)}
+/* severity stripe appears only where severity exists */
+.row.sev::before{content:''; position:absolute; left:0; top:0; bottom:0; width:3px}
+.row.sev-warn::before{background:var(--warn)}
+.row.sev-crit::before{background:var(--crit)}
+.row.sev-unk::before{background:var(--unknown)}
+
+.row-main{flex:1; min-width:0}
+.row-title{font-weight:500; font-size:14.5px; display:flex; align-items:center; gap:7px}
+.row-sub{font-size:12.5px; color:var(--text-2); margin-top:2px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.row-meta{font-family:var(--f-mono); font-size:11px; color:var(--text-3); flex:none; text-align:right}
+
+.chip{
+  font-family:var(--f-display); font-size:9.5px; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase;
+  padding:2.5px 7px; border-radius:5px; flex:none;
+}
+.chip-live{background:color-mix(in srgb,var(--ok) 16%,transparent); color:var(--ok)}
+.chip-warn{background:var(--warn-wash); color:var(--warn)}
+.chip-crit{background:var(--crit-wash); color:var(--crit)}
+.chip-unk{background:var(--unknown-wash); color:var(--unknown)}
+.chip-idle{background:var(--surface-2); color:var(--text-3)}
+
+.why{
+  font-size:12.5px; color:var(--text-2); margin-top:6px;
+  padding-left:9px; border-left:2px solid var(--line);
+}
+.why b{color:var(--text); font-weight:600}
+
+/* quota meters */
+.meter{height:5px; background:var(--surface-2); border-radius:99px; overflow:hidden; margin-top:7px}
+.meter i{display:block; height:100%; border-radius:99px; background:var(--ok)}
+.meter i.hot{background:var(--warn)}
+.meter i.wall{background:var(--crit)}
+.qrow{display:flex; gap:14px; margin-top:8px; font-family:var(--f-mono); font-size:11px; color:var(--text-3)}
+
+/* platform group label */
+.pgroup{display:flex; align-items:center; gap:9px; margin:18px 0 8px}
+.pgroup .eyebrow{flex:none}
+.pgroup .rule{flex:1; height:1px; background:var(--line-soft)}
+.pdot{width:7px;height:7px;border-radius:2px;flex:none}
+
+/* unread */
+.unread{background:var(--accent); color:var(--ground); font-family:var(--f-display);
+  font-size:10px; font-weight:700; border-radius:99px; min-width:18px; height:18px;
+  display:grid; place-items:center; padding:0 5px; flex:none}
+
+/* ─── thread view ─────────────────────────────────────────────── */
+.thread-head{display:flex; align-items:center; gap:10px; margin:0 0 14px}
+.back{border:1px solid var(--line); border-radius:8px; width:32px; height:32px; display:grid; place-items:center; flex:none}
+.back:hover{background:var(--surface-2)}
+.msgs{display:flex; flex-direction:column; gap:10px}
+.msg{max-width:min(78%,520px); padding:9px 12px; border-radius:13px; font-size:14px}
+.msg .t{display:block; font-family:var(--f-mono); font-size:10px; color:var(--text-3); margin-top:5px}
+.msg.them{background:var(--surface); border:1px solid var(--line-soft); align-self:flex-start; border-bottom-left-radius:4px}
+.msg.me{background:var(--accent-wash); color:var(--text); align-self:flex-end; border-bottom-right-radius:4px}
+.composer{
+  display:flex; gap:8px; align-items:center; margin-top:16px;
+  background:var(--surface); border:1px solid var(--line); border-radius:99px; padding:6px 6px 6px 15px;
+}
+.composer input{flex:1; border:0; background:none; font:inherit; color:var(--text); outline:none; min-width:0}
+.composer input::placeholder{color:var(--text-3)}
+.send{background:var(--accent); color:var(--ground); width:32px; height:32px; border-radius:50%;
+  display:grid; place-items:center; flex:none}
+
+/* ─── approvals sheet ─────────────────────────────────────────── */
+.scrim{position:fixed; inset:0; background:rgba(8,12,13,.5); z-index:50; opacity:0; pointer-events:none; transition:opacity .18s}
+.scrim.on{opacity:1; pointer-events:auto}
+.sheet{
+  position:fixed; inset:auto 0 0 0; z-index:51; max-height:88vh; overflow-y:auto;
+  background:var(--ground); border-top:1px solid var(--line);
+  border-radius:16px 16px 0 0; padding:0 16px 24px;
+  transform:translateY(101%); transition:transform .22s cubic-bezier(.22,1,.36,1);
+}
+.sheet.on{transform:none}
+.grab{display:flex; justify-content:center; padding:9px 0 3px; position:sticky; top:0; background:var(--ground)}
+.grab i{width:36px;height:4px;border-radius:99px;background:var(--line); display:block}
+.sheet-h{display:flex; align-items:baseline; gap:8px; padding:4px 0 14px; position:sticky; top:28px; background:var(--ground)}
+.sheet-h h2{font-family:var(--f-display); font-size:17px; margin:0; font-weight:600}
+.sheet-h .n{font-family:var(--f-mono); font-size:12px; color:var(--text-3)}
+.sheet-h button{margin-left:auto; color:var(--text-2); font-size:13px}
+
+.appr{background:var(--surface); border:1px solid var(--line-soft); border-radius:var(--radius);
+  padding:14px; margin-bottom:12px}
+.appr.blocked{border-style:dashed}
+.appr-top{display:flex; gap:8px; align-items:center; margin-bottom:9px; flex-wrap:wrap}
+.effect{font-size:15px; font-weight:500; line-height:1.4; margin:0 0 10px}
+.facts{display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:12.5px; margin-bottom:11px}
+.facts dt{color:var(--text-3)}
+.facts dd{margin:0; font-family:var(--f-mono); font-size:12px}
+.untrusted{
+  background:var(--surface-2); border:1px dashed var(--line); border-radius:7px;
+  padding:9px 11px; margin-bottom:11px;
+}
+.untrusted .eyebrow{display:block; margin-bottom:4px; color:var(--text-3)}
+.untrusted p{margin:0; font-size:13px; color:var(--text-2); font-style:italic}
+.missing{display:flex; gap:7px; align-items:flex-start; font-size:12.5px; color:var(--warn);
+  background:var(--warn-wash); border-radius:7px; padding:8px 10px; margin-bottom:11px}
+.acts{display:flex; gap:8px; flex-wrap:wrap}
+.btn{border-radius:8px; padding:9px 15px; font-size:14px; font-weight:500}
+.btn-go{background:var(--accent); color:var(--ground); flex:1}
+.btn-no{border:1px solid var(--line); color:var(--text-2)}
+.standing{
+  display:flex; gap:9px; align-items:flex-start; margin-top:11px; padding-top:11px;
+  border-top:1px solid var(--line-soft); font-size:13px; color:var(--text-2);
+}
+.standing input{margin:3px 0 0; accent-color:var(--accent); flex:none}
+.standing b{color:var(--text); font-weight:600}
+.noappr{font-size:13px; color:var(--text-2); margin:0}
+.noappr b{color:var(--crit)}
+
+/* advanced drawer */
+.adv{margin-top:8px; border:1px solid var(--line-soft); border-radius:var(--radius); background:var(--surface)}
+.adv summary{padding:13px; font-size:14px; font-weight:500; cursor:pointer; list-style:none; display:flex; align-items:center; gap:9px}
+.adv summary::-webkit-details-marker{display:none}
+.adv summary .eyebrow{margin-left:auto}
+.adv-body{padding:0 13px 13px; display:flex; flex-wrap:wrap; gap:6px}
+.pill{border:1px solid var(--line); border-radius:99px; padding:5px 11px; font-size:12.5px; color:var(--text-2)}
+
+.note{font-size:12.5px; color:var(--text-3); margin:14px 2px 0; line-height:1.55}
+
+.rail-head{display:none}
+.view{display:none}
+.view.on{display:block}
+
+@media (min-width:900px){
+  nav.dock{
+    inset:0 auto 0 0; width:var(--rail); grid-template-columns:1fr;
+    grid-auto-rows:min-content; align-content:start; gap:2px;
+    border-top:0; border-right:1px solid var(--line-soft); padding:14px 10px;
+  }
+  .dock button{flex-direction:row; justify-content:flex-start; gap:11px; padding:10px 12px; border-radius:8px}
+  .dock button span{font-size:14px; font-weight:500; letter-spacing:0}
+  .dock button[aria-current="page"]{background:var(--accent-wash)}
+  .dock button[aria-current="page"]::before{display:none}
+  .badge{position:static; margin:0 0 0 auto}
+  .rail-head{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    padding:6px 12px 14px; margin-bottom:6px; border-bottom:1px solid var(--line-soft);
+  }
+  /* brand lives in the rail on desktop — stop repeating it in the top bar */
+  header.bar > .wordmark, header.bar > .agent, header.bar .machine{display:none}
+  header.bar, .attn{padding-left:calc(var(--rail) + 24px)}
+  header.bar{min-height:52px}
+  /* constrain reading width so the timestamp isn't a continent away from the title */
+  /* main must stop auto-centring on desktop: it is already offset by the rail,
+     so `margin:0 auto` + rail padding double-offsets and leaves a dead gap. */
+  main{padding:24px 24px 48px calc(var(--rail) + 28px); margin:0; max-width:none}
+  main > section{max-width:720px}
+  .sheet{left:var(--rail); border-radius:16px 16px 0 0}
+  .sheet > *{max-width:720px; margin-left:auto; margin-right:auto}
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="bar">
+    <span class="wordmark">INSTAR</span>
+    <span class="agent"><span class="pulse"></span>echo</span>
+    <div class="bar-right">
+      <span class="machine">studio</span>
+      <button class="ghost" id="themeBtn">Theme</button>
+    </div>
+  </header>
+
+  <!-- the one thing that must never be missed: count AND reason -->
+  <button class="attn" id="attnBar">
+    <span class="attn-n">2</span>
+    <span class="attn-txt"><b>2 need you</b> — 1 approval, 1 blocked by a conflict</span>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+  </button>
+
+  <main>
+    <!-- ═══ CHAT ═══ -->
+    <section class="view on" id="v-chat">
+      <div id="chatList">
+        <div class="sect-head"><h2>Conversations</h2><span class="n">11 across 3 platforms</span></div>
+
+        <div class="pgroup">
+          <span class="pdot" style="background:#29A9EA"></span>
+          <span class="eyebrow">Telegram</span><span class="rule"></span>
+          <span class="eyebrow">6</span>
+        </div>
+        <div class="card">
+          <button class="row" data-thread="makeover">
+            <div class="row-main">
+              <div class="row-title">Dashboard makeover</div>
+              <div class="row-sub">You: We are not "fixing" the 29 tabs. We are building…</div>
+            </div>
+            <div class="row-meta">12:25<br><span class="unread">3</span></div>
+          </button>
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">Instar 2.0</div>
+              <div class="row-sub">echo: Register replay is green on train-91.</div>
+            </div>
+            <div class="row-meta">11:02</div>
+          </button>
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">Lifeline</div>
+              <div class="row-sub">echo: Back up on v1.3.1362 after the bounce.</div>
+            </div>
+            <div class="row-meta">09:48</div>
+          </button>
+          <button class="row sev sev-warn">
+            <div class="row-main">
+              <div class="row-title">Attention <span class="chip chip-warn">2 open</span></div>
+              <div class="row-sub">Subscription needs sign-in — codey@…</div>
+            </div>
+            <div class="row-meta">08:15</div>
+          </button>
+        </div>
+
+        <div class="pgroup">
+          <span class="pdot" style="background:#5B2E58"></span>
+          <span class="eyebrow">Slack</span><span class="rule"></span>
+          <span class="eyebrow">3</span>
+        </div>
+        <div class="card">
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">#instar-dev</div>
+              <div class="row-sub">echo: PR #1184 is armed and waiting on CI.</div>
+            </div>
+            <div class="row-meta">10:31</div>
+          </button>
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">Mia — DM</div>
+              <div class="row-sub">Mia: can you pull the spend numbers for Q3?</div>
+            </div>
+            <div class="row-meta">Fri<br><span class="unread">1</span></div>
+          </button>
+        </div>
+
+        <div class="pgroup">
+          <span class="pdot" style="background:var(--accent)"></span>
+          <span class="eyebrow">Instar · native</span><span class="rule"></span>
+          <span class="eyebrow">2</span>
+        </div>
+        <div class="card">
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">Scratch — console design</div>
+              <div class="row-sub">Only here. No platform, no relay, no lease.</div>
+            </div>
+            <div class="row-meta">12:18</div>
+          </button>
+          <button class="row">
+            <div class="row-main">
+              <div class="row-title">codey ↔ echo</div>
+              <div class="row-sub">Agent-to-agent · 14 messages on this thread</div>
+            </div>
+            <div class="row-meta">Thu</div>
+          </button>
+        </div>
+
+        <p class="note">Every message above is stored by Instar first. Telegram and Slack are
+        delivery routes, not the record — so this view survives either going away.</p>
+      </div>
+
+      <!-- thread -->
+      <div id="chatThread" style="display:none">
+        <div class="thread-head">
+          <button class="back" id="backBtn" aria-label="Back to conversations">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <div>
+            <div style="font-family:var(--f-display);font-weight:600;font-size:15px">Dashboard makeover</div>
+            <div class="eyebrow" style="margin-top:1px">Telegram · topic 127504</div>
+          </div>
+        </div>
+        <div class="msgs">
+          <div class="msg them">The current Instar dashboard has some amazing functionality, but it is also, in many ways, a dumpster fire of a user experience.<span class="t">11:36</span></div>
+          <div class="msg me">29 tabs, almost all of it in one 480KB file. There's no single place a colour or spacing value lives — that's the root of it.<span class="t">11:46</span></div>
+          <div class="msg them">We are not "fixing" the 29 tabs. We are building from scratch.<span class="t">12:25</span></div>
+          <div class="msg me">Understood — on the side, no path to shipping until it's ready.<span class="t">12:26</span></div>
+        </div>
+        <div class="composer">
+          <input placeholder="Message echo…" aria-label="Message">
+          <button class="send" aria-label="Send">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h13M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ WORK ═══ -->
+    <section class="view" id="v-work">
+      <div class="sect">
+        <div class="sect-head"><h2>Running</h2><span class="n">3 sessions</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Dashboard makeover <span class="chip chip-live">Live</span></div>
+              <div class="row-sub">Opus 5 · studio · 1h 49m</div>
+              <div class="why">Building the console skeleton. <b>Next wake:</b> on your reply.</div>
+            </div>
+            <div class="row-meta">now</div>
+          </div>
+          <div class="row sev sev-warn">
+            <div class="row-main">
+              <div class="row-title">Register replay <span class="chip chip-warn">Blocked</span></div>
+              <div class="row-sub">Codex · mini · 22m</div>
+              <div class="why"><b>Blocked on:</b> your approval to push to a protected branch.
+              <b>Next wake:</b> when that lands.</div>
+            </div>
+            <div class="row-meta">22m</div>
+          </div>
+          <!-- honest state: unknown is a real answer and must give a reason -->
+          <div class="row sev sev-unk">
+            <div class="row-main">
+              <div class="row-title">Overnight audit <span class="chip chip-unk">Unknown</span></div>
+              <div class="row-sub">Opus 5 · mama-pc</div>
+              <div class="why"><b>Why unknown:</b> that machine stopped answering 14 minutes ago.
+              The run may still be working — I can't see it, so I won't claim either way.</div>
+            </div>
+            <div class="row-meta">14m</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="sect-head"><h2>Scheduled</h2><span class="n">next in 38m</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">git-sync</div>
+              <div class="row-sub">Every 30 min · last run clean</div>
+            </div>
+            <div class="row-meta">38m</div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">rope-health-digest <span class="chip chip-idle">Off</span></div>
+              <div class="row-sub">Daily · not turned on</div>
+            </div>
+            <div class="row-meta">—</div>
+          </div>
+        </div>
+        <p class="note">"Off" means you haven't turned it on — not that it failed.</p>
+      </div>
+    </section>
+
+    <!-- ═══ CAPACITY ═══ -->
+    <section class="view" id="v-cap">
+      <div class="sect">
+        <div class="sect-head"><h2>Subscriptions</h2><span class="n">4 accounts</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">echo@sagemind <span class="chip chip-live">Signed in</span></div>
+              <div class="meter"><i style="width:34%"></i></div>
+              <div class="qrow"><span>5h · 34%</span><span>week · 61%</span><span>resets 3h 12m</span></div>
+            </div>
+          </div>
+          <div class="row sev sev-warn">
+            <div class="row-main">
+              <div class="row-title">codey@sagemind <span class="chip chip-warn">Needs sign-in</span></div>
+              <div class="meter"><i class="hot" style="width:88%"></i></div>
+              <div class="qrow"><span>5h · 88%</span><span>week · 74%</span><span>resets 41m</span></div>
+              <div class="why">Signed out since 08:15. A repair is waiting on one tap from you.</div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">codex-primary <span class="chip chip-live">Signed in</span></div>
+              <div class="meter"><i style="width:12%"></i></div>
+              <div class="qrow"><span>5h · 12%</span><span>week · 29%</span><span>resets 4h 50m</span></div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">codex-bench <span class="chip chip-unk">Unknown</span></div>
+              <div class="meter"><i style="width:0%"></i></div>
+              <div class="why"><b>Why unknown:</b> no live reading yet on this machine.
+              Last usage file is 6 days old, which is history, not current quota.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="sect-head"><h2>Spend</h2><span class="n">today</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Paid routes</div>
+              <div class="row-sub">No paid door is armed — subscription only</div>
+            </div>
+            <div class="row-meta">$0.00</div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Tokens</div>
+              <div class="row-sub">Across 3 sessions · 61% is cache reads</div>
+            </div>
+            <div class="row-meta">4.1M</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ FILES ═══ -->
+    <section class="view" id="v-files">
+      <div class="sect">
+        <div class="sect-head"><h2>Files</h2><span class="n">agent home</span></div>
+        <div class="card">
+          <button class="row">
+            <div class="row-main"><div class="row-title">docs/</div>
+            <div class="row-sub">specs, audits, makeover notes</div></div>
+            <div class="row-meta">›</div>
+          </button>
+          <button class="row">
+            <div class="row-main"><div class="row-title">CLAUDE.md</div>
+            <div class="row-sub">Editable · 2,140 lines</div></div>
+            <div class="row-meta">12:01</div>
+          </button>
+          <button class="row">
+            <div class="row-main"><div class="row-title">.instar/config.json</div>
+            <div class="row-sub">Editable · careful</div></div>
+            <div class="row-meta">09:44</div>
+          </button>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">.instar/identity.json <span class="chip chip-idle">Never served</span></div>
+              <div class="row-sub">Key material. Not listed, read, or downloadable.</div>
+            </div>
+            <div class="row-meta">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ SYSTEM ═══ -->
+    <section class="view" id="v-sys">
+      <div class="sect">
+        <div class="sect-head"><h2>Posture</h2><span class="n">this machine</span></div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Guards <span class="chip chip-live">31 on</span></div>
+              <div class="row-sub">4 off by design · 1 waiting on a restart</div>
+              <div class="why">The one waiting: <b>reaper</b> picked up new limits but won't
+              apply them until it restarts.</div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Serving lease</div>
+              <div class="row-sub">Held by <span class="mono">studio</span> · epoch 23075</div>
+            </div>
+            <div class="row-meta">ok</div>
+          </div>
+          <div class="row sev sev-unk">
+            <div class="row-main">
+              <div class="row-title">mama-pc <span class="chip chip-unk">Unreachable</span></div>
+              <div class="row-sub">Last seen 14m ago · tailscale down, lan down</div>
+              <div class="why">Could be asleep or could be partitioned. I don't have enough
+              to tell you which, so I'm not guessing.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="sect-head"><h2>Machines</h2><span class="n">3</span></div>
+        <div class="card">
+          <div class="row"><div class="row-main">
+            <div class="row-title">studio <span class="chip chip-live">Serving</span></div>
+            <div class="row-sub">3 sessions · load ok · 34% quota used</div></div></div>
+          <div class="row"><div class="row-main">
+            <div class="row-title">mini <span class="chip chip-live">Online</span></div>
+            <div class="row-sub">1 session · load ok</div></div></div>
+          <div class="row"><div class="row-main">
+            <div class="row-title">mama-pc <span class="chip chip-unk">Unknown</span></div>
+            <div class="row-sub">No heartbeat since 12:11</div></div></div>
+        </div>
+      </div>
+
+      <details class="adv">
+        <summary>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+          Advanced &amp; diagnostics
+          <span class="eyebrow">16 surfaces</span>
+        </summary>
+        <div class="adv-body">
+          <span class="pill">Reap log</span><span class="pill">Routing map</span>
+          <span class="pill">LLM activity</span><span class="pill">Decision quality</span>
+          <span class="pill">Throughput</span><span class="pill">Evidence</span>
+          <span class="pill">Blockers</span><span class="pill">Process health</span>
+          <span class="pill">Message origins</span><span class="pill">Threadline</span>
+          <span class="pill">Mandates</span><span class="pill">Preferences</span>
+          <span class="pill">Feedback drain</span><span class="pill">PR pipeline</span>
+          <span class="pill">Resources</span><span class="pill">Benchmark drift</span>
+        </div>
+      </details>
+      <p class="note">Nothing was deleted. The deep surfaces moved here —
+      reachable in two taps, out of the way the other 99% of the time.</p>
+    </section>
+  </main>
+
+  <nav class="dock">
+    <div class="rail-head">
+      <span class="wordmark">INSTAR</span>
+      <span class="agent"><span class="pulse"></span>echo</span>
+      <span class="machine">studio</span>
+    </div>
+    <button data-v="chat" aria-current="page">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.4 8.4 0 01-9 8.4 9.5 9.5 0 01-2.8-.4L3 21l1.6-4.4A8.3 8.3 0 013 11.5 8.5 8.5 0 0112 3a8.5 8.5 0 019 8.5z"/></svg>
+      <span>Chat</span><i class="badge">4</i>
+    </button>
+    <button data-v="work">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+      <span>Work</span><i class="badge">1</i>
+    </button>
+    <button data-v="cap">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l5-6 4 3 4-7 5 5"/><path d="M3 21h18"/></svg>
+      <span>Capacity</span>
+    </button>
+    <button data-v="files">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/></svg>
+      <span>Files</span>
+    </button>
+    <button data-v="sys">
+      <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2-5 3 10 2-5h5"/></svg>
+      <span>System</span>
+    </button>
+  </nav>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" aria-label="Needs you">
+  <div class="grab"><i></i></div>
+  <div class="sheet-h">
+    <h2>Needs you</h2><span class="n">2</span>
+    <button id="closeSheet">Close</button>
+  </div>
+
+  <!-- approvable: plain-language effect, standing grant offered, non-editable -->
+  <div class="appr">
+    <div class="appr-top">
+      <span class="chip chip-warn">Irreversible</span>
+      <span class="eyebrow">asked 22m ago · expires in 38m</span>
+    </div>
+    <p class="effect">Push 3 commits to <span class="mono">main</span> in
+    <span class="mono">instar</span>, which will start a deploy.</p>
+    <dl class="facts">
+      <dt>Asked by</dt><dd>echo · register-replay</dd>
+      <dt>Branch</dt><dd>train-91 → main</dd>
+      <dt>Reaches</dt><dd>your fleet</dd>
+      <dt>Undo</dt><dd>revert commit only</dd>
+    </dl>
+    <div class="untrusted">
+      <span class="eyebrow">Text written by the requester</span>
+      <p>"Register replay is green — typecheck and unit both pass on train-91."</p>
+    </div>
+    <div class="acts">
+      <button class="btn btn-go">Approve</button>
+      <button class="btn btn-no">Decline</button>
+    </div>
+    <label class="standing">
+      <input type="checkbox">
+      <span>Also allow <b>pushes to main from train-* branches</b> for the next 8 hours,
+      so I stop asking you this every time.</span>
+    </label>
+  </div>
+
+  <!-- not approvable: says why, offers no dead button -->
+  <div class="appr blocked">
+    <div class="appr-top">
+      <span class="chip chip-crit">Can't approve</span>
+      <span class="eyebrow">asked 1h ago</span>
+    </div>
+    <p class="effect">Move the <span class="mono">Instar 2.0</span> conversation to
+    <span class="mono">mama-pc</span>.</p>
+    <div class="missing">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+      <span><b>Two machines both claim this conversation.</b> Approving either one now
+      could duplicate the work.</span>
+    </div>
+    <p class="noappr">There's no button here on purpose. <b>Nothing to approve until
+    the conflict clears</b> — I'm watching it and will ask again when it does.</p>
+  </div>
+
+  <p class="note" style="margin-bottom:0">Standing permissions you've already given are
+  honoured across handoffs and machine moves — if I've asked you twice for the same thing,
+  that's a bug, not a safeguard.</p>
+</aside>
+
+<script>
+(function(){
+  var views = {chat:'v-chat', work:'v-work', cap:'v-cap', files:'v-files', sys:'v-sys'};
+
+  document.querySelectorAll('.dock button').forEach(function(b){
+    b.addEventListener('click', function(){
+      var key = b.dataset.v;
+      Object.keys(views).forEach(function(k){
+        document.getElementById(views[k]).classList.toggle('on', k === key);
+      });
+      document.querySelectorAll('.dock button').forEach(function(o){
+        if (o === b) { o.setAttribute('aria-current','page'); }
+        else { o.removeAttribute('aria-current'); }
+      });
+      window.scrollTo(0,0);
+    });
+  });
+
+  // chat list <-> thread
+  var list = document.getElementById('chatList');
+  var thread = document.getElementById('chatThread');
+  document.querySelectorAll('[data-thread]').forEach(function(b){
+    b.addEventListener('click', function(){
+      list.style.display='none'; thread.style.display='block'; window.scrollTo(0,0);
+    });
+  });
+  document.getElementById('backBtn').addEventListener('click', function(){
+    thread.style.display='none'; list.style.display='block';
+  });
+
+  // approvals sheet
+  var sheet = document.getElementById('sheet'), scrim = document.getElementById('scrim');
+  function open(){ sheet.classList.add('on'); scrim.classList.add('on'); }
+  function shut(){ sheet.classList.remove('on'); scrim.classList.remove('on'); }
+  document.getElementById('attnBar').addEventListener('click', open);
+  document.getElementById('closeSheet').addEventListener('click', shut);
+  scrim.addEventListener('click', shut);
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') shut(); });
+
+  // theme toggle — cycles system → light → dark
+  var root = document.documentElement, btn = document.getElementById('themeBtn');
+  var order = ['', 'dark', 'light'], i = 0;
+  try { var s = localStorage.getItem('instar-proto-theme'); if (s !== null) { i = order.indexOf(s); if (i < 0) i = 0; } } catch(e){}
+  function apply(){
+    if (order[i]) { root.setAttribute('data-theme', order[i]); }
+    else { root.removeAttribute('data-theme'); }
+    btn.textContent = order[i] ? (order[i] === 'light' ? 'Light' : 'Dark') : 'Auto';
+    try { localStorage.setItem('instar-proto-theme', order[i]); } catch(e){}
+  }
+  apply();
+  btn.addEventListener('click', function(){ i = (i+1) % order.length; apply(); });
+})();
+</script>
+
+</body>
+</html>
