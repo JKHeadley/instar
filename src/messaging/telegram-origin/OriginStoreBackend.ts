@@ -244,11 +244,11 @@ export class OriginStoreBackend {
   }
 
   admit(input: OriginAdmission): AdmissionResult { return this.admitInternal(input, false); }
-  getBrowserRecoveryStates(): Array<{ profileId: string; nextAllowedAt: number; failingSince: number | null; failures: number; attentionPending: boolean; publicTransportAlternative: boolean }> {
+  getBrowserRecoveryStates(): Array<{ profileId: string; nextAllowedAt: number; failingSince: number | null; failures: number; failedBuilds: string[]; attentionPending: boolean; publicTransportAlternative: boolean }> {
     const rows = this.db.prepare('SELECT profile_id,state_json FROM telegram_origin_browser_recovery ORDER BY profile_id LIMIT 256').all() as Array<{ profile_id: string; state_json: string }>;
     return rows.map(row => { const state = JSON.parse(row.state_json) as BrowserRecoveryState;
       return { profileId: row.profile_id, nextAllowedAt: state.nextAllowedAt, failingSince: state.latch.failingSince,
-        failures: state.latch.failures, attentionPending: state.attentionId !== null && !state.attentionAccepted,
+        failures: state.latch.failures, failedBuilds: [...state.failedBuilds], attentionPending: state.attentionId !== null && !state.attentionAccepted,
         publicTransportAlternative: state.failedBuilds.length >= 2 }; });
   }
   browserRecovery(input: { profileId: string; action: BrowserRecoveryAction; now?: number }): BrowserRecoveryDecision {
