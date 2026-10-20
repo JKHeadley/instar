@@ -1,0 +1,35 @@
+⏺ Fable 5.1's safeguards stopped the response above · continuing once with that noted
+────────────────────────────────────────
+ ☐ Model switch
+
+│ Fable 5.1's safeguards flagged this message. Our intentionally broad safeguards allow us to deliver more capabilities faster, but can sometimes flag legitimate coding and cybersecurity tasks. Switch
+│ to Opus 4.8 and keep going whenever this happens? You can change this later in /config.
+
+❯ 1. Switch automatically
+     Continue on Opus 4.8 now, and switch without asking from now on
+  2. Stay on Fable 5.1
+     Stop here without switching, and ask me each time a message is flagged
+  3. Type something.
+────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✻ Waiting for API response · will retry in 2m 40s · check your network
+
