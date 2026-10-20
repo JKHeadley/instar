@@ -19,6 +19,10 @@ import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import type { ThreadlineMCPDeps } from '../../../src/threadline/ThreadlineMCPServer.js';
+import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+/** A real Ed25519 key: pinning refuses small-order and off-curve keys (SEC-16), so fixtures must be real. */
+const PEER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
+const OTHER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
 
 const PEER_FP = '8c7928aa9f04fbda947172a2f9b2d81a';
 const OWN_FP = '1111111111111111111111111111aaaa';
@@ -33,7 +37,7 @@ async function makeCtx(opts: { reload?: boolean; extra?: Record<string, unknown>
   const trustManager = new AgentTrustManager({ stateDir });
   trustManager.recordPendingVerification(PEER_FP, {
     pairingId: PAIRING_ID,
-    peerIdentityPub: 'deadbeef'.repeat(8),
+    peerIdentityPub: PEER_KEY,
     sasWords: SAS_WORDS,
     sasFingerprint: 'a1b2c3d4e5f60718',
     ownFp: OWN_FP,
@@ -85,7 +89,7 @@ describe('threadline_pair MCP tool (integration)', () => {
         // A second trust manager on the same state dir stands in for the agent server.
         const serverSide = new AgentTrustManager({ stateDir: ctx.stateDir });
         serverSide.recordPendingVerification('f'.repeat(32), {
-          pairingId: 'b'.repeat(32), peerIdentityPub: 'f'.repeat(64), sasWords: SAS_WORDS,
+          pairingId: 'b'.repeat(32), peerIdentityPub: OTHER_KEY, sasWords: SAS_WORDS,
           sasFingerprint: '0102030405060708', ownFp: OWN_FP, displayName: 'later',
         });
         serverSide.flush();

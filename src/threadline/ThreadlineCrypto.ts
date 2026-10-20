@@ -21,50 +21,21 @@ export interface KeyPair {
   privateKey: Buffer;  // 64 bytes (Ed25519) or 32 bytes (X25519)
 }
 
-// ── Key Generation ───────────────────────────────────────────────────
+// ── From threadline-core ─────────────────────────────────────────────
+//
+// Key generation, Ed25519 signing, X25519 key exchange and the Ed25519→X25519 public-key map are
+// the same code in `@sagemindai/threadline-core` (spec threadline-standalone-pairing D1, rollout
+// step 3), so they come from there, as does the v2 pairing id (core's `derivePairingId`, the same
+// length check, key order and HKDF info). `verify` stays here: core's returns false on a malformed
+// key where Instar's throws, so it is not the same behaviour.
 
-/**
- * Generate an Ed25519 identity key pair for an agent.
- * The identity key is long-lived — generated once and persisted.
- */
-export function generateIdentityKeyPair(): KeyPair {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-  return {
-    publicKey: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32),
-  };
-}
-
-/**
- * Generate an ephemeral X25519 key pair for Diffie-Hellman exchange.
- * Ephemeral keys are single-use per handshake.
- */
-export function generateEphemeralKeyPair(): KeyPair {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('x25519');
-  return {
-    publicKey: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32),
-  };
-}
+import {
+  generateIdentityKeyPair, generateEphemeralKeyPair, sign, ecdh, edPublicToX25519, isX25519BoundToIdentity,
+  derivePairingId as coreDerivePairingIdV2,
+} from '@sagemindai/threadline-core';
+export { generateIdentityKeyPair, generateEphemeralKeyPair, sign, ecdh, edPublicToX25519, isX25519BoundToIdentity };
 
 // ── Signing & Verification ───────────────────────────────────────────
-
-/**
- * Ed25519 sign a message.
- * Returns a 64-byte signature.
- */
-export function sign(privateKeyRaw: Buffer, message: Buffer): Buffer {
-  const privateKey = crypto.createPrivateKey({
-    key: Buffer.concat([
-      // Ed25519 PKCS#8 prefix (16 bytes) + 2 bytes (octet string tag + length)
-      Buffer.from('302e020100300506032b657004220420', 'hex'),
-      privateKeyRaw,
-    ]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  return Buffer.from(crypto.sign(null, message, privateKey));
-}
 
 /**
  * Ed25519 verify a signature.
@@ -80,37 +51,6 @@ export function verify(publicKeyRaw: Buffer, message: Buffer, signature: Buffer)
     type: 'spki',
   });
   return crypto.verify(null, message, publicKey, signature);
-}
-
-// ── Key Exchange ─────────────────────────────────────────────────────
-
-/**
- * X25519 Diffie-Hellman key exchange.
- * Returns a 32-byte shared secret.
- */
-export function ecdh(privateKeyRaw: Buffer, publicKeyRaw: Buffer): Buffer {
-  const privateKey = crypto.createPrivateKey({
-    key: Buffer.concat([
-      // X25519 PKCS#8 prefix
-      Buffer.from('302e020100300506032b656e04220420', 'hex'),
-      privateKeyRaw,
-    ]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const publicKey = crypto.createPublicKey({
-    key: Buffer.concat([
-      // X25519 SPKI prefix
-      Buffer.from('302a300506032b656e032100', 'hex'),
-      publicKeyRaw,
-    ]),
-    format: 'der',
-    type: 'spki',
-  });
-  return Buffer.from(crypto.diffieHellman({
-    privateKey,
-    publicKey,
-  }));
 }
 
 // ── Key Derivation ───────────────────────────────────────────────────
@@ -283,9 +223,7 @@ export function deriveSasFingerprintV2(sasBitsV2: Buffer): string {
  * identity key rotates, which is when a pairing must reset to pending (FD4 v2).
  */
 export function derivePairingIdV2(identityPubA: Buffer, identityPubB: Buffer): string {
-  return Buffer.from(
-    crypto.hkdfSync('sha256', sortedPair(identityPubA, identityPubB), Buffer.alloc(0), 'threadline-pairing-id-v2', 16),
-  ).toString('hex');
+  return coreDerivePairingIdV2(identityPubA, identityPubB);
 }
 
 // ── Ed25519 public key → X25519 public key (RFC 7748 birational map) ──
@@ -295,51 +233,7 @@ export function derivePairingIdV2(identityPubA: Buffer, identityPubB: Buffer): s
 // is a fixed function of the Ed25519 public key: u = (1 + y) / (1 - y) mod p. A receiver
 // can therefore compute a peer's encryption key from the PINNED identity key instead of
 // trusting whatever X25519 key the relay handed over (issue #2117 gap I).
-
-const P25519 = (1n << 255n) - 19n;
-
-function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
-  let result = 1n;
-  let b = ((base % mod) + mod) % mod;
-  let e = exp;
-  while (e > 0n) {
-    if (e & 1n) result = (result * b) % mod;
-    b = (b * b) % mod;
-    e >>= 1n;
-  }
-  return result;
-}
-
-/** Convert a raw 32-byte Ed25519 public key to its raw 32-byte X25519 public key. Throws on an invalid encoding. */
-export function edPublicToX25519(edPublicKey: Buffer): Buffer {
-  if (edPublicKey.length !== 32) throw new Error('Ed25519 public key must be 32 bytes');
-  // y is the little-endian integer with the sign bit (top bit of the last byte) cleared.
-  const le = Buffer.from(edPublicKey);
-  le[31] &= 0x7f;
-  let y = 0n;
-  for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(le[i]);
-  if (y >= P25519) throw new Error('Ed25519 public key y coordinate out of range');
-  const denom = (1n - y + P25519) % P25519;
-  if (denom === 0n) throw new Error('Ed25519 public key maps to the point at infinity');
-  const u = ((1n + y) * modPow(denom, P25519 - 2n, P25519)) % P25519;
-  const out = Buffer.alloc(32);
-  let v = u;
-  for (let i = 0; i < 32; i++) {
-    out[i] = Number(v & 0xffn);
-    v >>= 8n;
-  }
-  return out;
-}
-
-/** True iff `x25519PublicKey` is exactly the key derived from `edPublicKey` (never throws). */
-export function isX25519BoundToIdentity(edPublicKey: Buffer, x25519PublicKey: Buffer): boolean {
-  try {
-    const derived = edPublicToX25519(edPublicKey);
-    return x25519PublicKey.length === 32 && crypto.timingSafeEqual(derived, x25519PublicKey);
-  } catch {
-    return false;
-  }
-}
+// `edPublicToX25519` and `isX25519BoundToIdentity` are imported from threadline-core above.
 
 // ── Challenge Response ───────────────────────────────────────────────
 

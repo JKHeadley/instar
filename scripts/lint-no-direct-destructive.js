@@ -163,6 +163,22 @@ const ALLOWLIST = new Set([
   // CI-only; never executes on an agent's machine, and TS isn't compiled there
   // so it cannot import the SafeGitExecutor funnel. Per RELEASE-FRAGMENT-GATE-SPEC.
   'scripts/release-skip-annotate.mjs',
+  // Release-cut recogniser for the pre-push gate (§3b). READ-ONLY git
+  // (`merge-base`, `diff --name-status --no-renames`, `show <rev>:<path>`). Runs
+  // pre-compile from scripts/pre-push-gate.js, so it cannot import the TS
+  // SafeGitExecutor funnel.
+  'scripts/release-cut-diff.mjs',
+  // Operator-run local release (the publish.yml publish job, run on a
+  // workstation when CI is starved). Runs before dist/ exists (preflight), so it
+  // cannot import the SafeGitExecutor funnel. Its only mutating git ops are the
+  // ones publish.yml's commit step runs: `add`/`commit` (WITH hooks), an atomic
+  // push of main + tag with a fetch + `rebase` retry (only over release cuts;
+  // ABORTS on conflict, never a force push), and `tag`; its fs.unlinkSync
+  // removes the consumed upgrades/next/*.md exactly as publish.yml's `rm -f`
+  // does, and a pre-publish failure restores only its own edits (`checkout HEAD
+  // -- package.json package-lock.json upgrades`, `clean -- upgrades`) after a
+  // clean-tree preflight. Never executes on an agent's machine.
+  'scripts/release-local.mjs',
   // Tier-3 CI ratchet for the cartographer doc-tree (cartographer-doc-freshness
   // spec #2). A standalone .mjs (parity with docs-coverage.mjs) that runs in CI
   // with NO build step, so it cannot import the TS SafeGitExecutor funnel. All

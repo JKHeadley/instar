@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -8609,6 +8609,69 @@ Before I send another agent a credential, that peer must be **mutually verified*
         }
         patched = true;
       }
+    }
+
+    // "Connecting to another agent" (docs/specs/a2a-pairing-invite-link.md §3). Existing
+    // agents must know the invite flow by heart: offer an invite, a person carries it, the
+    // other person approves, mine finishes, never ask for a fingerprint. The Verified Pairing
+    // section above is framed around credentials, so "connect with Echo" never matched it
+    // (Justin, topic 61599, 2026-10-20). Byte-identical to the scaffold; placed before the
+    // Threadline "### MCP Tools Available" heading when present, else appended. Content-
+    // sniffed on the heading, so it is idempotent and never duplicates.
+    if (!content.includes(AGENT_CONNECT_HEADING)) {
+      const section = agentConnectSection(port);
+      const toolsIdx = content.indexOf('\n### MCP Tools Available\n');
+      content = toolsIdx >= 0
+        ? content.slice(0, toolsIdx + 1) + section + '\n' + content.slice(toolsIdx + 1)
+        : content + '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added "Connecting to another agent" (pairing by invite)');
+    } else {
+      result.skipped.push('CLAUDE.md: "Connecting to another agent" already present');
+    }
+
+    // The two bullets that point at that section (Migration Parity with generateClaudeMd):
+    // threadline_pair in the Threadline "### MCP Tools Available" list, and "Connect with
+    // Echo" under the Threadline "### How to Use" list. Each is content-sniffed on its own
+    // text, so each is idempotent and an agent that already has one is not given it twice.
+    // A bullet goes at the end of the list the template puts it in (found by a line that
+    // list always has); when that list is missing it goes just before the section above,
+    // which is always present by now.
+    const insertAfterList = (text: string, anchorLine: string, line: string): string | null => {
+      const at = text.indexOf('\n' + anchorLine);
+      if (at < 0) return null;
+      let end = at + 1; // start of the anchor line
+      while (text.startsWith('- ', end)) {
+        const nl = text.indexOf('\n', end);
+        if (nl < 0) return text + '\n' + line + '\n';
+        end = nl + 1;
+      }
+      return text.slice(0, end) + line + '\n' + text.slice(end);
+    };
+    const beforeConnectSection = (text: string, line: string): string => {
+      const at = text.indexOf(AGENT_CONNECT_HEADING);
+      return at >= 0 ? text.slice(0, at) + line + '\n\n' + text.slice(at) : text + '\n' + line + '\n';
+    };
+    if (!content.includes(THREADLINE_PAIR_TOOL_MARKER)) {
+      const toolsIdx = content.indexOf('\n### MCP Tools Available\n');
+      const relayIdx = toolsIdx >= 0 ? content.indexOf('\n- `threadline_relay` — ', toolsIdx) : -1;
+      const sendIdx = toolsIdx >= 0 ? content.indexOf('\n- `threadline_send` — ', toolsIdx) : -1;
+      const anchor = relayIdx >= 0 ? '- `threadline_relay` — ' : sendIdx >= 0 ? '- `threadline_send` — ' : null;
+      // Search from the tools heading so a same-named bullet elsewhere is never the anchor.
+      const placed = anchor ? insertAfterList(content.slice(toolsIdx), anchor, THREADLINE_PAIR_TOOL_BULLET) : null;
+      content = placed !== null ? content.slice(0, toolsIdx) + placed : beforeConnectSection(content, THREADLINE_PAIR_TOOL_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added threadline_pair to the Threadline tools list');
+    } else {
+      result.skipped.push('CLAUDE.md: threadline_pair tool bullet already present');
+    }
+    if (!content.includes(AGENT_CONNECT_HOWTO_MARKER)) {
+      const placed = insertAfterList(content, '- "Connect to the agent network" → ', AGENT_CONNECT_HOWTO_BULLET);
+      content = placed !== null ? placed : beforeConnectSection(content, AGENT_CONNECT_HOWTO_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added "Connect with <agent>" to Threadline How to Use');
+    } else {
+      result.skipped.push('CLAUDE.md: "Connect with <agent>" How to Use bullet already present');
     }
 
     // CMT-519 — Threadline hub topic + "open this"/bind guidance. Existing agents

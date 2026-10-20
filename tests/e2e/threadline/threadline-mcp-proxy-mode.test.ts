@@ -63,7 +63,7 @@ describe.skipIf(!hasDeps)('threadline-mcp through a listener proxy', () => {
     const c2 = new Client({ name: 'host', version: '1.0.0' }, { capabilities: { elicitation: {} } });
     await c2.connect(t2);
     const r = await c2.callTool({ name: 'threadline_pair_invite', arguments: {} });
-    expect(JSON.stringify(r.content)).not.toMatch(/Pairing is unavailable/);
+    expect(JSON.stringify(r.content)).not.toMatch(/another Threadline program|Pairing is open in/);
     await c2.close();
   });
 
@@ -72,7 +72,8 @@ describe.skipIf(!hasDeps)('threadline-mcp through a listener proxy', () => {
     expect(fs.existsSync(path.join(stateDir, 'pair.sock'))).toBe(false);
     const inv = await call('threadline_pair_invite');
     expect(inv.isError).toBe(true);
-    expect(JSON.stringify(inv.body)).toMatch(/Pairing is unavailable: .*local Threadline listener/);
+    expect(JSON.stringify(inv.body)).toMatch(/send through another Threadline program on this computer/);
+    expect(JSON.stringify(inv.body)).not.toMatch(/THREADLINE_[A-Z_]+|\d{4}/); // plain words: no setting, no port
     expect((await call('threadline_pair_open')).isError).toBe(true);
 
     const toPaired = await call('threadline_send', { to: peerFp, message: 'hello paired friend' });

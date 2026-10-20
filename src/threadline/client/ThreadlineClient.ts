@@ -85,6 +85,10 @@ export interface ReceivedMessage {
   content: PlaintextMessage;
   timestamp: string;
   envelope: MessageEnvelope;
+  /** The identity key the envelope's signature was verified against (decrypted messages only).
+   *  The refuse-downgrade mark (spec threadline-standalone-pairing D6, step 6) is recorded only
+   *  when this is the peer's PINNED key. */
+  senderIdentityPub?: Buffer;
 }
 
 /**
@@ -107,6 +111,49 @@ interface ClientAffinityEntry {
   lastUsedAt: number;
 }
 
+/**
+ * A send that had to go encrypted to a peer's PINNED key (spec threadline-standalone-pairing
+ * D9) and could not be built or handed to the relay. Nothing went on the wire, and no
+ * plaintext or relay-key fallback is attempted. The relay-send route answers it 502.
+ */
+export class EncryptToPinnedSendError extends Error {
+  readonly code = 'encrypted-send-to-pinned-failed';
+  /** Why: the pin was unavailable (lookup-failed / resolver-error / malformed-pinned-key) or the encrypted send itself failed. */
+  readonly reason: EncryptToFailureKind | 'send-failed';
+  constructor(recipientId: string, cause: unknown, reason: EncryptToFailureKind | 'send-failed' = 'send-failed') {
+    super(`Encrypted send to pinned peer ${recipientId.slice(0, 12)} failed; not sent (no plaintext fallback): ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'EncryptToPinnedSendError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Returned by an encrypt-to resolver when the peer's pairing could not be looked up while
+ * encrypt-to-pinned ENFORCES (spec threadline-standalone-pairing D9: enforce fails closed on
+ * an unresolvable pinned peer). Distinct from null ("not a pinned peer, send as before").
+ */
+export const ENCRYPT_TO_LOOKUP_FAILED: unique symbol = Symbol.for('instar.threadline.encryptTo.lookupFailed') as never;
+
+/** What an encrypt-to resolver returns: the pinned key, null (not pinned), or the fail-closed sentinel. */
+export type EncryptToResolverResult = Buffer | null | typeof ENCRYPT_TO_LOOKUP_FAILED;
+export type EncryptToResolver = (fp: string, use?: 'send' | 'check') => EncryptToResolverResult;
+
+/** Why the client could not use what the resolver gave it. */
+export type EncryptToFailureKind = 'lookup-failed' | 'resolver-error' | 'malformed-pinned-key';
+
+export interface EncryptToResolverOptions {
+  /** Whether a resolver throw or a malformed pinned key must fail the send (enforce). Default: true. */
+  failClosed?: () => boolean;
+  /** Told about every client-side failure (resolver threw, malformed key), with the use. */
+  onFailure?: (kind: Exclude<EncryptToFailureKind, 'lookup-failed'>, use: 'send' | 'check') => void;
+}
+
+/** The client's own reading of the resolver for one recipient. */
+type EncryptToResolution =
+  | { kind: 'key'; key: Buffer }
+  | { kind: 'none' }
+  | { kind: 'fail'; reason: EncryptToFailureKind };
+
 export class ThreadlineClient extends EventEmitter {
   private readonly config: ThreadlineClientConfig;
   private readonly identityManager: IdentityManager;
@@ -114,6 +161,9 @@ export class ThreadlineClient extends EventEmitter {
   private relayClient: RelayClient | null = null;
   private identity: IdentityInfo | null = null;
   private pinnedKeyResolver: ((fp: string) => Buffer | null) | null = null;
+  /** The pinned key to ALWAYS encrypt ordinary chat to, or null (spec threadline-standalone-pairing D6, step 9). */
+  private encryptToResolver: EncryptToResolver | null = null;
+  private encryptToOptions: EncryptToResolverOptions = {};
   private readonly knownAgents = new Map<AgentFingerprint, KnownAgent>();
   /** threadId of the most recent send()/sendPlaintext() envelope (synchronous; read by sendAutoWithThread). */
   private lastWireThreadId: string | null = null;
@@ -368,6 +418,23 @@ export class ThreadlineClient extends EventEmitter {
     /** inbound-id ledger §5: mark a same-id resend inside the signed body. */
     resend?: boolean,
   ): string {
+    // D9: a pinned invite peer is encrypted to its PINNED key, never to a relay-supplied one.
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
+    if (pinned.kind !== 'none') {
+      const baseMessage: PlaintextMessage = typeof content === 'string' ? { content } : content;
+      return this.sendPinnedOrFail(recipientId, pinned, resend ? { ...baseMessage, resend: true } : baseMessage, threadId, messageId);
+    }
+    return this.sendEncryptedKnown(recipientId, content, threadId, messageId, resend);
+  }
+
+  /** `send()` without the pinned check (the caller already resolved it). */
+  private sendEncryptedKnown(
+    recipientId: AgentFingerprint,
+    content: string | PlaintextMessage,
+    threadId?: string,
+    messageId?: string,
+    resend?: boolean,
+  ): string {
     if (!this.encryptor || !this.relayClient) {
       throw new Error('Not connected');
     }
@@ -425,7 +492,32 @@ export class ThreadlineClient extends EventEmitter {
     return this.sendPlaintextTyped(AUTO_ACK_TYPE, recipientId, content, threadId);
   }
 
+  /**
+   * Every typed plaintext send funnels here. Ordinary chat (`type: 'chat'`) to a pinned invite
+   * peer is NEVER sent as plaintext (spec D9): when the pin resolves, it goes ENCRYPTED to the
+   * pinned key instead (same path as sendAuto); when it cannot be resolved or is malformed, it
+   * throws EncryptToPinnedSendError and nothing goes on the wire. Acks and invite-control ops
+   * keep their plaintext envelopes.
+   */
   private sendPlaintextTyped(
+    type: string,
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
+  ): string {
+    if (type === 'chat') {
+      const pinned = this.resolveEncryptTo(recipientId, 'send');
+      if (pinned.kind !== 'none') {
+        return this.sendPinnedOrFail(recipientId, pinned, resend ? { content, resend: true } : { content }, threadId, callerMessageId);
+      }
+    }
+    return this.sendPlaintextRaw(type, recipientId, content, threadId, callerMessageId, resend);
+  }
+
+  /** The plaintext envelope itself, with no pinned check (callers have already decided). */
+  private sendPlaintextRaw(
     type: string,
     recipientId: AgentFingerprint,
     content: string,
@@ -470,14 +562,24 @@ export class ThreadlineClient extends EventEmitter {
     messageId?: string,
     resend?: boolean,
   ): string {
+    // A peer paired by invite is always sent encrypted, to the PINNED key, whether or not the
+    // relay has given us its keys this session (never a silent plaintext downgrade).
+    // If that send cannot be built or handed to the relay, it FAILS: it never falls through to
+    // the plaintext / relay-key paths below (spec D9).
+    // Enforce fails CLOSED: an unresolvable or malformed pin throws too.
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
+    if (pinned.kind !== 'none') {
+      return this.sendPinnedOrFail(recipientId, pinned, resend ? { content, resend: true } : { content }, threadId, messageId);
+    }
+
     // If we know the agent's keys, use encrypted send
     const known = this.knownAgents.get(recipientId);
     if (known?.publicKey && known?.x25519PublicKey) {
-      return this.send(recipientId, content, threadId, messageId, resend);
+      return this.sendEncryptedKnown(recipientId, content, threadId, messageId, resend);
     }
 
-    // Otherwise, use plaintext relay send
-    return this.sendPlaintext(recipientId, content, threadId, messageId, resend);
+    // Otherwise, use plaintext relay send (already resolved above: not a pinned peer)
+    return this.sendPlaintextRaw('chat', recipientId, content, threadId, messageId, resend);
   }
 
   /**
@@ -593,6 +695,10 @@ export class ThreadlineClient extends EventEmitter {
    * credential-bearing send when this returns false.
    */
   hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
+    const pinned = this.resolveEncryptTo(recipientId, 'check');
+    if (pinned.kind === 'key') return true;
+    // Fail closed: a pinned peer we cannot resolve has no encrypted path (its sends throw).
+    if (pinned.kind === 'fail') return false;
     const known = this.knownAgents.get(recipientId);
     return Boolean(known?.publicKey && known?.x25519PublicKey);
   }
@@ -1037,6 +1143,63 @@ export class ThreadlineClient extends EventEmitter {
     this.pinnedKeyResolver = resolver;
   }
 
+  /**
+   * Where ordinary chat to `fp` must always be encrypted: the pinned identity key when the
+   * pairing makes that safe (the bootstrap decides: invite-paired and mutual-verified), else null.
+   */
+  setEncryptToResolver(resolver: EncryptToResolver | null, options: EncryptToResolverOptions = {}): void {
+    this.encryptToResolver = resolver;
+    this.encryptToOptions = options;
+  }
+
+  /**
+   * `use`: 'send' for an actual send (counted by the bootstrap's watch mode), 'check' for a
+   * capability probe. Fails CLOSED in enforce (spec D9): the resolver's lookup-failed sentinel,
+   * a resolver that throws, and a pinned key that is not 32 bytes or does not belong to the
+   * recipient all come back as `fail`, which a send turns into EncryptToPinnedSendError. With
+   * `failClosed` false (watch/off) a throw or malformed key is reported and treated as `none`.
+   */
+  private resolveEncryptTo(fp: string, use: 'send' | 'check'): EncryptToResolution {
+    if (!this.encryptToResolver) return { kind: 'none' };
+    const want = String(fp).toLowerCase();
+    let failClosed = true;
+    try { failClosed = this.encryptToOptions.failClosed?.() ?? true; } catch { failClosed = true; /* @silent-fallback-ok — an unreadable mode fails closed */ }
+    const report = (kind: Exclude<EncryptToFailureKind, 'lookup-failed'>): EncryptToResolution => {
+      try { this.encryptToOptions.onFailure?.(kind, use); } catch { /* @silent-fallback-ok — counting never breaks a send */ }
+      return failClosed ? { kind: 'fail', reason: kind } : { kind: 'none' };
+    };
+    let got: EncryptToResolverResult;
+    try {
+      got = this.encryptToResolver(want, use) ?? null;
+    } catch {
+      return report('resolver-error');
+    }
+    if (got === ENCRYPT_TO_LOOKUP_FAILED) return { kind: 'fail', reason: 'lookup-failed' };
+    if (got === null) return { kind: 'none' };
+    if (!Buffer.isBuffer(got) || got.length !== 32 || got.subarray(0, 16).toString('hex') !== want) {
+      return report('malformed-pinned-key');
+    }
+    return { kind: 'key', key: got };
+  }
+
+  /** Send to the resolved pin, or throw EncryptToPinnedSendError (never plaintext). */
+  private sendPinnedOrFail(
+    recipientId: AgentFingerprint,
+    resolution: Exclude<EncryptToResolution, { kind: 'none' }>,
+    message: PlaintextMessage,
+    threadId?: string,
+    messageId?: string,
+  ): string {
+    if (resolution.kind === 'fail') {
+      throw new EncryptToPinnedSendError(String(recipientId), new Error(`pinned key unavailable (${resolution.reason})`), resolution.reason);
+    }
+    try {
+      return this.sendToPinned(recipientId, resolution.key.toString('hex'), message, threadId, messageId).messageId;
+    } catch (err) {
+      throw new EncryptToPinnedSendError(String(recipientId), err, 'send-failed');
+    }
+  }
+
   private resolvePinnedKey(fp: string): Buffer | null {
     try {
       const key = this.pinnedKeyResolver?.(String(fp).toLowerCase()) ?? null;
@@ -1266,6 +1429,7 @@ export class ThreadlineClient extends EventEmitter {
         content: plaintext,
         timestamp: envelope.timestamp,
         envelope,
+        senderIdentityPub: Buffer.from(sender?.publicKey && sender.x25519PublicKey ? sender.publicKey : senderPub),
       };
 
       this.emit('message', received);

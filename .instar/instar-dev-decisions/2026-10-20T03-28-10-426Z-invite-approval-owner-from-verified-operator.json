@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-20T03:28:10.426Z",
+  "slug": "invite-approval-owner-from-verified-operator",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 118,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts",
+      "src/users/TopicOperatorStore.ts"
+    ],
+    "addedLines": 100,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

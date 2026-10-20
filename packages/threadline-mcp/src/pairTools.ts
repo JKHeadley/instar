@@ -35,6 +35,25 @@ export type ToolResult = { ok: true; [k: string]: unknown } | { ok: false; error
  */
 export const NO_ELICIT = 'Tell your person this, in these words: "Pairing needs an app that can ask you directly, and Claude Code can. This app can\'t, so pairing isn\'t available here. Approving a pairing has to come from you, not from me."';
 
+/**
+ * A threadline-mcp that does not own pairing (another app's threadline-mcp does) says which app, in plain
+ * words, never a pid or a setting (Echo review R2-2). `app` is the owner's MCP client name from its lock.
+ */
+export function notOwnerRefusal(app: string | null): string {
+  return `Tell your person this, in these words: "Pairing is open in ${app || 'another app'}. Finish it there, or close that app and try again."`;
+}
+
+/**
+ * This threadline-mcp sends through a local Threadline listener (proxy mode), which cannot encrypt for it.
+ * Plain words: no setting, port or command (the person fixes it by choosing a different setup in their app).
+ */
+export const PROXY_REFUSAL = 'Tell your person this, in these words: "Threadline in this app is set up to send through another Threadline program on this computer, and that program can\'t encrypt for it. Pairing, and messages to agents you are paired with, aren\'t available in this setup."';
+
+/** A credential send from an instance that does not own pairing. */
+export function notOwnerCredentialRefusal(app: string | null): string {
+  return `Refused: credentials are sent only from the app that has pairing open. ${notOwnerRefusal(app)}`;
+}
+
 export class PairTools {
   constructor(private readonly deps: PairToolsDeps) {}
 
@@ -88,11 +107,11 @@ export class PairTools {
     const iid = String(r.iid);
     if (answer?.decision !== 'approve') {
       this.deps.pairing.flow.declineAccept(iid);
-      return { ok: true, result: 'declined', note: 'Nothing was paired.' };
+      return { ok: true, result: 'declined', agent: String(r.claimedAgent), note: 'Nothing was paired.' };
     }
     const a = this.deps.pairing.flow.approveAccept(iid);
     if (!a.ok) return { ok: false, error: a.reason };
-    return { ok: true, result: 'approved', inviter: a.inviterFp, note: 'Approved. The pairing completes when the other side finishes; check with threadline_pair_status.' };
+    return { ok: true, result: 'approved', inviter: a.inviterFp, agent: String(r.claimedAgent), note: 'Approved. The pairing completes when the other side finishes; check with threadline_pair_status.' };
   }
 
   /** threadline_pair_finish: the person confirms (or refuses) the agent that accepted their invite. */
@@ -114,7 +133,7 @@ export class PairTools {
     );
     if (answer?.decision === 'finish') {
       const r = this.deps.pairing.flow.approveFinish(target.iid);
-      return r.ok ? { ok: true, result: 'finished', peer: r.peerFp, note: 'Paired. Messages to this agent are now always encrypted, and you can send it credentials.' } : { ok: false, error: r.reason };
+      return r.ok ? { ok: true, result: 'finished', peer: r.peerFp, agent: String(target.acceptor?.agent ?? ''), note: 'Paired. Messages to this agent are now always encrypted, and you can send it credentials.' } : { ok: false, error: r.reason };
     }
     if (answer?.decision === 'not them') {
       const r = this.deps.pairing.flow.rejectFinish(target.iid);
@@ -160,7 +179,7 @@ export class PairTools {
     );
     if (answer?.decision !== 'unpair') return { ok: true, result: 'kept', note: 'Nothing changed.' };
     this.deps.pairing.keys.forget(fp);
-    return { ok: true, result: 'unpaired', peer: fp };
+    return { ok: true, result: 'unpaired', peer: fp, agent: pin.agent };
   }
 
   /** threadline_pair_cancel: revoke an open invite. */

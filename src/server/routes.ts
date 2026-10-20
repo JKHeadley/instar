@@ -214,7 +214,7 @@ import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConf
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { LifelineIngressGuard } from './LifelineIngressGuard.js';
-import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX } from '../threadline/PairingInviteTelegram.js';
+import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -570,6 +570,16 @@ import {
   relayUnknownSenderTrustCounters,
   resolveRelayUnknownSenderTrustMode,
 } from '../threadline/relayUnknownSenderTrust.js';
+import {
+  encryptToPinnedCounters,
+  encryptToPinnedModeName,
+  resolveEncryptToPinnedMode,
+} from '../threadline/encryptToPinned.js';
+import {
+  refuseDowngradeCounters,
+  refuseDowngradeModeName,
+  resolveRefuseDowngradeMode,
+} from '../threadline/refuseDowngrade.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
 import { buildResentNotice, isValidMessageId } from '../threadline/InboundIdLedger.js';
 import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLedgerWiring.js';
@@ -3370,7 +3380,17 @@ export function createRoutes(ctx: RouteContext): Router {
         await ctx.telegram!.sendToTopic(topicId, text);
       },
       answer: (id, text) => ctx.telegram!.answerCallback(id, text),
-      ownerUserId: () => ctx.telegram!.getOwnerUserId(),
+      // A configured owner wins (the Telegram block's ownerUserId / promptGate.ownerId, else the
+      // agent's monitoring.promptGate.ownerId, which the adapter itself never reads). With none,
+      // only a single VERIFIED operator binding from authenticated inbound Telegram counts —
+      // never an asserted record, a replicated one, or "whoever messaged" (resolveApprovalOwner),
+      // and only while exactly one person has EVER been verified here (bindings are latest-only).
+      // Scoped to pairing on purpose: getOwnerUserId() also addresses owner DMs and consent prompts.
+      ownerUserId: () => resolveApprovalOwner(
+        ctx.telegram!.getOwnerUserId() ?? ctx.config.monitoring?.promptGate?.ownerId,
+        Object.values(ctx.topicOperatorStore?.allBindings() ?? {}),
+        ctx.topicOperatorStore?.everVerifiedOperatorUids() ?? null,
+      ),
       chatId: () => ctx.telegram!.getChatId(),
       operatorTopicId: () => ctx.telegram!.getLifelineTopicId(),
       enforcing: () => lifelineIngressGuard.mode() === 'enforce'
@@ -5138,6 +5158,30 @@ export function createRoutes(ctx: RouteContext): Router {
             } catch { return null; /* @silent-fallback-ok — evidence only */ }
           })(),
         },
+        // Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9): the live mode
+        // (off | watch | enforce) and the process-wide counters. AUTHED only.
+        encryptToPinned: (() => {
+          const mode = resolveEncryptToPinnedMode(
+            {
+              enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.encryptToPinned.enabled', undefined),
+              dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.encryptToPinned.dryRun', undefined),
+            },
+            ctx.config as { developmentAgent?: boolean; threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } } },
+          );
+          return { ...mode, mode: encryptToPinnedModeName(mode), ...encryptToPinnedCounters };
+        })(),
+        // Refuse-downgrade (docs/specs/threadline-standalone-pairing.md D6, step 6): the live
+        // mode (off | watch | enforce) and the process-wide counters. AUTHED only.
+        refuseDowngrade: (() => {
+          const mode = resolveRefuseDowngradeMode(
+            {
+              enabled: ctx.liveConfig?.get<boolean | undefined>('threadline.refuseDowngrade.enabled', undefined),
+              dryRun: ctx.liveConfig?.get<boolean | undefined>('threadline.refuseDowngrade.dryRun', undefined),
+            },
+            ctx.config as { developmentAgent?: boolean; threadline?: { refuseDowngrade?: { enabled?: boolean; dryRun?: boolean } } },
+          );
+          return { ...mode, mode: refuseDowngradeModeName(mode), ...refuseDowngradeCounters };
+        })(),
       };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.
@@ -18989,6 +19033,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       case 'refused-failed':
         res.status(409).json({ error: 'this pairing was denied by an operator; clearing it requires the dashboard PIN (clearFailed: true)' });
+        return;
+      case 'unacceptable-key':
+        res.status(409).json({ error: 'that agent\'s identity key is a weak or non-canonical key, so it cannot be paired' });
         return;
       default:
         res.json({
@@ -38288,11 +38335,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(403).json({ success: false, refused: true, reason: 'credential-requires-encrypted-path', error: 'Credential-share refused: credential-requires-encrypted-path.' });
         return;
       }
-      const { messageId: relayMsgId, threadId: effectiveRelayThreadId } = pinnedForCredential
-        ? relayClient.sendCredentialToPinned(resolvedId, pinnedForCredential, message, relayLegThreadId, msgId, relayLegResend || undefined)
-        : relayLegResend
-          ? relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId, true)
-          : relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId);
+      let sent: { messageId: string; threadId: string };
+      try {
+        sent = pinnedForCredential
+          ? relayClient.sendCredentialToPinned(resolvedId, pinnedForCredential, message, relayLegThreadId, msgId, relayLegResend || undefined)
+          : relayLegResend
+            ? relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId, true)
+            : relayClient.sendAutoWithThread(resolvedId, message, relayLegThreadId, msgId);
+      } catch (err) {
+        // Encrypt-to-pinned (spec threadline-standalone-pairing D9): the peer must be sent
+        // encrypted to its pinned key and that send failed. Nothing went on the wire and
+        // nothing is retried in plaintext: a failed send, 502 like a relay refusal, so the
+        // >=400 finish handler releases any reply claim. A standby that forwarded this
+        // (relayForward) transcribes the 502 unchanged.
+        if ((err as { code?: unknown } | null)?.code !== 'encrypted-send-to-pinned-failed') throw err;
+        res.status(502).json({
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          reason: 'encrypted-send-to-pinned-failed',
+          accepted: false,
+          delivered: false,
+          resolvedAgent: resolvedId,
+          deliveryPath: 'relay',
+          deliveryOutcome: 'not sent: the encrypted send to this paired peer failed, and it is never sent in plaintext.',
+        });
+        return;
+      }
+      const { messageId: relayMsgId, threadId: effectiveRelayThreadId } = sent;
       // waitForReply: the reply listener is registered NOW, before any await, so
       // it runs concurrently with the verdict wait (no time comes off the reply
       // budget, and a fast reply can never land in a gap with no listener).
