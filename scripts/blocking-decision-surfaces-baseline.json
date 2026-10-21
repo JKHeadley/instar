@@ -106,6 +106,21 @@
       "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
     },
     {
+      "path": "src/templates/scripts/browser/chrome-js.sh",
+      "sha256": "207217aeeb1719fb39b27816a63b34a7e4c38683dd0d746337b8f65446979542",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-launch.sh",
+      "sha256": "df56a86f3c385c87d1e0efba3b601e12618da2db790dd2c5d56fb4c5e6feca9f",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-mainworld.sh",
+      "sha256": "d63cc4210d51313ed9d2dfaca910d3dde390b3fa1b21bb0f13d1289ef596aa01",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+    },
+    {
       "path": "src/templates/scripts/emit-session-clock.sh",
       "sha256": "6111425eed298b093b95677bd8dc8f0c751344e103b3b4fed7042b327852663b",
       "reason": "states 'signal-only: pure stdout, never blocks'; exits 0 on unsupported modes"

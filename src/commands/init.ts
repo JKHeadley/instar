@@ -39,7 +39,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -453,6 +453,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
+  installBrowserScripts(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS)`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -853,6 +855,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installBrowserScripts(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS)');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -1690,6 +1694,11 @@ export function installBuiltinSkills(skillsDir: string, port: number): void {
       name: 'subscription-signin',
       description: 'The standard, proven procedure for keeping Claude Code and Codex subscriptions signed in: Google-account profiles, normal-browser sign-in, repair, verification, hand-off.',
       content: SUBSCRIPTION_SIGNIN_SKILL_CONTENT,
+    },
+    'normal-chrome-browser': {
+      name: 'normal-chrome-browser',
+      description: 'Drive a real, signed-in, non-automated Chrome per account profile from the shell on macOS: read pages, click, run code in the page, find out why a button stays disabled.',
+      content: NORMAL_CHROME_BROWSER_SKILL_CONTENT,
     },
     'agent-readiness': {
       name: 'agent-readiness',
@@ -3996,6 +4005,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   // framework-neutral).
   installSerendipityCapture(projectDir);
   installSecretDropRetrieve(projectDir);
+  installBrowserScripts(projectDir);
 }
 
 /**
@@ -5010,6 +5020,36 @@ function installSecretGet(projectDir: string): void {
   }
 
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/** The normal-Chrome helper scripts shipped in src/templates/scripts/browser/. */
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+
+/**
+ * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
+ * /normal-chrome-browser skill. Built-in and non-customizable, so they are always
+ * overwritten (init, refreshScripts, and PostUpdateMigrator.migrateScripts all call
+ * this). Framework-neutral; the scripts themselves refuse to run off macOS.
+ * Returns the names written. Spec: docs/specs/normal-chrome-builtin-skill.md.
+ */
+export function installBrowserScripts(projectDir: string): string[] {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
+  const modDir = __dirname;
+  const written: string[] = [];
+  for (const name of BROWSER_SCRIPT_NAMES) {
+    const candidates = [
+      path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
+      path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),
+    ];
+    const source = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!source) continue;
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    const target = path.join(scriptsDir, name);
+    fs.writeFileSync(target, fs.readFileSync(source, 'utf-8'), { mode: 0o755 });
+    fs.chmodSync(target, 0o755); // writeFileSync's mode applies only on create; an existing copy keeps its old mode otherwise
+    written.push(name);
+  }
+  return written;
 }
 
 /**
