@@ -296,6 +296,30 @@ describe('canary judgement', () => {
   });
   const confinedOk = (c: string) => (/^(git |node -e .*better-sqlite3|npm run lint|npx vitest)/.test(c) ? 0 : 1);
 
+  it('every confined probe gets vitest/esbuild caches inside the attempt temp, never the denied agent home', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const envs: Array<Record<string, string>> = [];
+    const capture: ConfinedRunner = {
+      available: () => ({ ok: true, version: '0.0.77' }),
+      run: async (cmd) => { envs.push(cmd.env); return { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }; },
+    };
+    try {
+      await runRunnerCanary({ paths: p, fixture: fx, runner: capture, fullGate: { lintCommand: 'npm run lint', smokeTests: ['tests/a.test.ts'] } });
+      expect(envs.length).toBeGreaterThan(0);
+      // vitest and esbuild write caches next to the nearest package root, which resolves ABOVE the
+      // workspace into the agent home — denied by the confinement. Without the redirect the
+      // base-unit-smoke probe dies with EPERM and latches the whole executor for 24h.
+      for (const env of envs) {
+        expect(env.VITEST_CACHE_DIR).toBe(path.join(p.tmpDir, 'vitest'));
+        expect(env.ESBUILD_CACHE_DIR).toBe(path.join(p.tmpDir, 'esbuild'));
+        expect(env.TMPDIR).toBe(p.tmpDir);
+        expect(env.VITEST_CACHE_DIR.startsWith(p.agentHome + '/')).toBe(true);
+        expect(env.VITEST_CACHE_DIR.startsWith(p.tmpDir)).toBe(true);
+      }
+    } finally { await fx.close(); }
+  });
+
   it('all must-fail probes refused and all must-succeed probes passing → ok; a broken runner (everything fails) is NOT ok', async () => {
     const p = paths(tmp());
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });

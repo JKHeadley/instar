@@ -206,7 +206,18 @@ export async function runRunnerCanary(input: {
 }): Promise<CanaryProbeResult[]> {
   const { paths, fixture: fx, runner } = input;
   const settings = buildSandboxRuntimeSettings(paths);
-  const env = confinedEnv(process.env, { TMPDIR: paths.tmpDir });
+  // The must-succeed probes run the real lint and smoke-test commands, and vitest/esbuild write
+  // caches next to the nearest package root — which resolves ABOVE the workspace into the agent
+  // home, where the confinement denies reads. Without these two, `base-unit-smoke` dies with
+  // `EPERM ... open '<agentHome>/package.json'` and a probe failure latches the whole executor for
+  // 24h, which no route can clear. The executor's own check runs already pass exactly these two
+  // (FeedbackExecutorService: VITEST_CACHE_DIR/ESBUILD_CACHE_DIR under the attempt temp); the canary
+  // was simply missing the same redirect.
+  const env = confinedEnv(process.env, {
+    TMPDIR: paths.tmpDir,
+    VITEST_CACHE_DIR: path.join(paths.tmpDir, 'vitest'),
+    ESBUILD_CACHE_DIR: path.join(paths.tmpDir, 'esbuild'),
+  });
   const run = (command: string, timeoutMs = 120_000) => runner.run({ command, cwd: paths.workspace, settings, env, timeoutMs });
   const node = (code: string) => `node -e ${shq(code)}`;
   const results: CanaryProbeResult[] = [];
