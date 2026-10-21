@@ -1,87 +1,77 @@
-# Side-Effects Review — Classify POST /threadline/pairing/enable
+# Side-Effects Review — Declare POST /threadline/pairing/enable in the write-domain registry
+
+**Version / slug:** `write-domain-pairing-enable`
+**Date:** `2026-10-21`
+**Author:** `Echo`
+**Second-pass reviewer:** `not performed — a one-line declaration of existing behaviour; see §Second-pass review`
 
 ## Summary of the change
 
-`tests/unit/write-domain-conformance-ratchet.test.ts` (§3.5) was failing on `main`: `POST
-/threadline/pairing/enable` arrived with the enable-without-restart work carrying no write-domain
-declaration, and the ratchet's undeclared list may only shrink. One `reg.add` entry classifies it
-`cluster-shared`, matching every other route in the pairing family.
+`POST /threadline/pairing/enable` (PR #2248) is a mutating route with no write-domain declaration, so `tests/unit/write-domain-conformance-ratchet.test.ts` fails on `main`. This declares it `cluster-shared`, the same classification its four sibling pairing routes carry, and records in a code comment the argument for the other answer and what would change it. No behaviour change.
 
 ## Decision-point inventory
 
-- `buildWriteDomainRegistry()` — **add** — one route entry. Declarative metadata; no runtime branch.
+- `buildWriteDomainRegistry()` — add — one `reg.add({ route, POST, '/threadline/pairing/enable', domain: 'cluster-shared' })` entry.
 
 ## 1. Over-block
 
-The registry describes where a route's writes live; it adds no refusal of its own. `cluster-shared`
-is the stricter of the two candidate classifications, so if anything consults it for admission the
-effect is conservative, never permissive.
+`cluster-shared` means the write is admitted only for the machine that holds the lease, so a standby asking to switch its own pairing on is refused. That is the real risk of this classification, and it is argued rather than assumed: the route already answers `unavailable-here` on a machine without the relay identity, and the documented connect flow (CLAUDE.md, "Connecting to another agent") moves the conversation to the relay holder before enabling. A standby that enabled itself would not connect anyway — the relay admits one connection per agent identity, and a standby suppresses its own.
 
 ## 2. Under-block
 
-Could `cluster-shared` under-protect versus `machine-local`? No — it is the stricter claim. The
-registry's own comment says `cluster-shared` is "the conservative default, with no machine-local
-convergence claim to defend", and all 26 `machine-local` entries carry a `ConvergenceStory` while 0
-do not. Claiming machine-local here would assert a convergence story this change neither needs nor
-can defend, so the conservative sibling classification is correct.
+If the feature owner intends a standby to switch itself on, this declaration is too strict and the right answer is `machine-local` with a per-machine-path convergence story on both axes (I9). The code comment names that explicitly so the next reader does not have to re-derive it. Under-blocking is not a risk here: the alternative classification is *less* restrictive, never more.
 
 ## 3. Level-of-abstraction fit
 
-The alternatives were annotating the route `@write-domain:none` or adding it to the TODO-classify
-baseline. `none` is false — the route writes config flags and a state file. The baseline may only
-shrink, so adding to it is forbidden by the ratchet itself. Classifying is the only correct option.
+The registry is exactly the layer that answers "which machine may perform this write". Declaring a route there is the intended mechanism, not a workaround — the ratchet's failure message names this registry as option 1 of 3.
 
 ## 4. Signal vs authority compliance
 
-- [x] No — this change has no block/allow surface.
+**Required reference:** [docs/signal-vs-authority.md](../../docs/signal-vs-authority.md)
+
+- [x] No — the declaration is a static fact about a route, consumed by the existing write-admission layer. It introduces no new judgement and no new blocking authority; the admission decision it feeds already exists and already governs its four siblings.
 
 ## 4b. Judgment-point check (Judgment Within Floors standard)
 
-None added. The entry is a literal.
+No new judgement point. The one judgement *I* made — which of two existing classifications applies — is recorded in the code comment with its counter-argument and its falsifying condition, so it is reviewable rather than silent.
 
 ## 5. Interactions
 
-- **Shadowing:** the new `pathPrefix` is `/threadline/pairing/enable`; no sibling pattern matches it
-  (`/threadline/pairing/:peerFp/start` requires a `/start` suffix) and it shadows no existing entry.
-- **Double-fire / races / feedback loops:** none — the registry is built once and read.
+- **Shadowing:** none. The entry is a distinct path prefix; `/threadline/pairing/invites` and `/threadline/pairing/:peerFp/start` are unaffected.
+- **Double-fire:** not applicable — a registry entry performs nothing.
+- **Races:** none introduced. The write-admission layer that consumes this ships dev-gated and dry-run-first, so on the fleet this entry currently changes nothing at all.
+- **Feedback loops:** none.
 
 ## 6. External surfaces
 
-None. No operator-facing action, no network, no persisted state of its own, no timing dependence.
-Nothing requiring a phone-completable surface.
+No route added or changed, no config key, no schema, no message, no stored data. The only externally visible consequence appears if and when write-admission enforcement is enabled on a multi-machine agent: a standby's call to this route would be refused with the existing typed `write-refused` 409 naming the owner, rather than being admitted.
 
 ## 6b. Operator-surface quality (Operator-Surface Quality standard)
 
-No operator surface added or touched.
+No operator surface. The refusal path it feeds is the existing typed 409, whose wording this change does not touch.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-This change is *about* multi-machine posture: it records that the route's writes are shared across
-machines rather than local to one. It adds no replication and no lease interaction of its own.
+This change is *about* multi-machine posture: it says the lease holder is the single writer for this route. Single-machine agents are unaffected (the write-admission layer is a no-op there). No replication, no topic transfer, no URL, no new cross-machine state.
 
 ## 8. Rollback cost
 
-Delete the entry. The only consequence is the ratchet going red again.
+Delete the entry. The ratchet then fails again on `main` exactly as it does today; no data or state to clean up.
 
 ## Conclusion
 
-Proceed. Declarative, conservative, and it restores a red safety check to green.
+This closes a red ratchet with the declaration the ratchet asks for, at the conservative end of two defensible options, and leaves the alternative documented at the callsite with its falsifying condition. Clear to ship.
 
 ## Second-pass review (if required)
 
-Not required — Tier 1 (8 LOC, one file, no decision point; the gate's classifier computed
-`suggestedTier=1`, `riskFloor=1`).
+**Reviewer:** not performed. Recorded rather than claimed: the change is one declarative line with no behaviour change, verified by the ratchet it repairs plus a clean typecheck. The one point worth a reviewer's attention is §1 — whether a standby should be able to switch itself on — which belongs to the owner of PR #2248 and is called out in the code comment for exactly that reason.
 
 ## Evidence pointers
 
-- Before: `× RATCHET … expected [ Array(1) ] to deeply equal []` naming
-  `"POST /threadline/pairing/enable (routes.ts:19157)"`.
-- After: `tests/unit/write-domain-conformance-ratchet.test.ts` 6/6 pass.
-- The route region is byte-identical between this branch and `origin/main`, confirming the failure
-  originated on main (with PR #2248) and is not a regression from this branch's own work.
+- `tests/unit/write-domain-conformance-ratchet.test.ts` — 6/6 pass with the entry, fails without it (the failure is reproduced on `main` at `aa8ac670d`, shard 3/4).
+- `npx tsc --noEmit` — clean.
+- Sibling precedent: `src/core/WriteDomainRegistry.ts` lines 369–378.
 
 ## Class-Closure Declaration (display-only mirror)
 
-The class is "mutating routes with no write-domain declaration". The ratchet enumerates that class
-exhaustively on every run, and after this change its undeclared list is empty — so the class is
-closed by the check itself, not by inspection.
+`defectClass: undeclared-mutating-route`, `closure: guard`, `guardEvidence: { enforcementType: ratchet, citation: tests/unit/write-domain-conformance-ratchet.test.ts, howCaught: the ratchet enumerates every mutating route registration and fails on any that is neither classified in the registry, annotated @write-domain:none, nor in the shrink-only baseline — so this class cannot recur silently for a future route either }`.

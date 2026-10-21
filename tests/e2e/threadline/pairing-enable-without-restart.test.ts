@@ -16,7 +16,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
-import { useHermeticHome } from '../../setup/hermetic-home.js';
 import { createUnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { AgentServer } from '../../../src/server/AgentServer.js';
@@ -27,12 +26,13 @@ import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import { CONNECT_ENABLE_REQUESTED_BY } from '../../../src/threadline/connectEnable.js';
 import { startFakeLifeline, type FakeLifeline } from '../../helpers/fakeLifeline.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const AUTH = 'pp-auth';
-
-// bootstrapThreadline writes ~/.claude.json; move HOME for this file so the suite never
-// touches the operator's real home (tests/unit/test-setup-hermetic-codex-home.test.ts ratchet).
-useHermeticHome();
 
 describe('pairing switched on without a person-performed restart (production path)', () => {
   let relay: RelayServer;
