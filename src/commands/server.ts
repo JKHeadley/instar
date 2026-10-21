@@ -1682,6 +1682,7 @@ function wireTelegramCallbacks(
   // /interrupt — send Escape key to a tmux session
   telegram.onInterruptSession = async (sessionName: string): Promise<boolean> => {
     try {
+      // confined-write-allowed: operator /interrupt sends Escape only — a non-typing key that cancels (never accepts) a dialog
       execFileSync(detectTmuxPath()!, ['send-keys', '-t', `=${sessionName}:`, 'Escape'], {
         encoding: 'utf-8', timeout: 5000,
       });
@@ -1888,6 +1889,7 @@ function wireTelegramCallbacks(
 
           // Detect "press Enter to continue" prompt
           if (lower.includes('press enter') || lower.includes('press any key')) {
+            // confined-write-allowed: the setup-time login pane, never a confined session
             execFileSync(tmuxPath, ['send-keys', '-t', `=${loginSession}:`, 'Enter'], { timeout: 5000 });
             await new Promise(r => setTimeout(r, 2000));
 
@@ -17499,6 +17501,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         return false;
       },
       sendKeys(tmuxSession: string, text: string): boolean {
+        // D3 (docs/specs/confined-spawn-subscription-reroute.md): no Instar writer types into a confined session.
+        if (sessionManager.isConfinedWriteRefused(tmuxSession)) return false;
         try {
           const target = `=${tmuxSession}:`;
           // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
@@ -30012,6 +30016,7 @@ export async function stopServer(options: { dir?: string }): Promise<void> {
   // Send SIGTERM first for graceful shutdown, then force kill after timeout
   try {
     // Send C-c (SIGINT) to the foreground process in the session
+    // confined-write-allowed: C-c to the agent's own server pane, never a confined session
     execFileSync(tmuxPath, ['send-keys', '-t', `=${serverSessionName}:`, 'C-c'], { stdio: 'ignore' });
     console.log(`  Sent shutdown signal to ${serverSessionName}...`);
 

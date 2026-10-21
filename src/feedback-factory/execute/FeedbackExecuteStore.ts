@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS execution (
 CREATE INDEX IF NOT EXISTS idx_execution_state ON execution(state);
 CREATE INDEX IF NOT EXISTS idx_execution_initiative ON execution(initiative_id, attempt);
 CREATE TABLE IF NOT EXISTS execution_daily (utc_day TEXT PRIMARY KEY, starts INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS execution_refunds (attempt_id TEXT PRIMARY KEY, utc_day TEXT NOT NULL, refunded_at INTEGER NOT NULL);
 `;
 
 export interface ExecutionRow {
@@ -170,6 +171,30 @@ export class FeedbackExecuteStore {
       if (!dryRun) this.db.prepare('INSERT INTO execution_daily(utc_day,starts) VALUES (?,1) ON CONFLICT(utc_day) DO UPDATE SET starts=starts+1').run(day);
       return this.get(id);
     });
+  }
+
+  /**
+   * End an attempt the reroute lane had no capacity for, and give back its daily start at most once,
+   * in ONE owner-fenced transaction (docs/specs/confined-spawn-subscription-reroute.md, Cap contention):
+   * the attempt becomes `stopped` / `reroute-capacity`; the refund is keyed by attempt in its own
+   * ledger (`execution_refunds`) and reverses the debit of the UTC day the attempt was CLAIMED on;
+   * at most `dailyCap` refunds per claim day (past that the start is kept, so the start budget still
+   * bounds attempts under sustained contention). A second call changes nothing. Returns whether a
+   * refund happened. Floored at zero.
+   */
+  stopForRerouteCapacity(ownerEpoch: number, attemptIdValue: string, dailyCap: number): boolean {
+    return this.fenced(ownerEpoch, () => this.db.transaction(() => {
+      const row = this.db.prepare('SELECT created_at, state FROM execution WHERE attempt_id=?').get(attemptIdValue) as { created_at: number; state: string } | undefined;
+      if (!row || row.state === 'would-start') return false;
+      this.db.prepare(`UPDATE execution SET state='stopped', reason='reroute-capacity', lease_expires_at=NULL, updated_at=? WHERE attempt_id=? AND state IN ('claimed','running','stopped')`)
+        .run(this.now(), attemptIdValue);
+      const day = new Date(Number(row.created_at)).toISOString().slice(0, 10);
+      const used = (this.db.prepare('SELECT COUNT(*) n FROM execution_refunds WHERE utc_day=?').get(day) as { n: number }).n;
+      if (used >= dailyCap) return false;
+      const inserted = this.db.prepare('INSERT OR IGNORE INTO execution_refunds(attempt_id, utc_day, refunded_at) VALUES (?,?,?)').run(attemptIdValue, day, this.now()).changes === 1;
+      if (inserted) this.db.prepare('UPDATE execution_daily SET starts=MAX(0,starts-1) WHERE utc_day=?').run(day);
+      return inserted;
+    })());
   }
 
   /** Fenced patch of one attempt. A patch to a terminal row only updates bookkeeping fields, never its state. */
