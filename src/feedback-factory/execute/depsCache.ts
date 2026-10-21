@@ -21,6 +21,14 @@ import { scrubForStore } from '../../core/durableSecretScrub.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Sibling scripts that `scripts/fix-better-sqlite3.cjs` requires by relative path. node resolves a
+ * relative require from the SCRIPT's directory, so each must be copied next to it in the cache or the
+ * script dies with `Cannot find module` before doing any work. Ratcheted by a test that parses the
+ * script's own requires, so a future third sibling cannot be forgotten.
+ */
+export const FIX_SCRIPT_SIBLINGS = ['resolve-node-binary.cjs'] as const;
+
 export interface DepsCachePort {
   /** Ensure the cache for `baseSha` exists; returns its directory (holding node_modules). */
   ensure(sourceRepoPath: string, baseSha: string): Promise<{ ok: true; dir: string; hash: string } | { ok: false; reason: string }>;
@@ -121,9 +129,18 @@ export class DepsCache implements DepsCachePort {
     }
     if (needRebuild.length === 0) return;
     const fixScript = this.read(sourceRepoPath, baseSha, 'scripts/fix-better-sqlite3.cjs');
-    if (fixScript) {
+    // The fix script `require`s siblings by relative path, and node resolves those from the SCRIPT's
+    // own directory — so a sibling left behind makes it exit 1 with `Cannot find module` on its first
+    // line, after the rebuild itself already succeeded. Copying only fix-better-sqlite3.cjs is why
+    // every attempt reported `native rebuild failed (exit 1)` while the compile was fine.
+    const siblings = FIX_SCRIPT_SIBLINGS.map((name) => ({ name, text: this.read(sourceRepoPath, baseSha, `scripts/${name}`) }));
+    // If a declared sibling is missing at the base SHA, running the script is a GUARANTEED failure.
+    // Skip it instead: the rebuild above is what produces the binary, and the script only verifies it.
+    const fixScriptRunnable = Boolean(fixScript) && siblings.every((s) => Boolean(s.text));
+    if (fixScriptRunnable) {
       fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'scripts', 'fix-better-sqlite3.cjs'), fixScript);
+      fs.writeFileSync(path.join(dir, 'scripts', 'fix-better-sqlite3.cjs'), fixScript!);
+      for (const s of siblings) fs.writeFileSync(path.join(dir, 'scripts', s.name), s.text!);
     }
     const tmp = path.join(dir, '.tmp');
     fs.mkdirSync(tmp, { recursive: true });
@@ -139,7 +156,7 @@ export class DepsCache implements DepsCachePort {
     // the real home stays denied, we simply stop asking the toolchain to use it.
     const confinedHome = path.join(tmp, 'home');
     fs.mkdirSync(confinedHome, { recursive: true });
-    const command = `npm rebuild ${needRebuild.join(' ')}${fixScript ? ' && node scripts/fix-better-sqlite3.cjs' : ''}`;
+    const command = `npm rebuild ${needRebuild.join(' ')}${fixScriptRunnable ? ' && node scripts/fix-better-sqlite3.cjs' : ''}`;
     const result = await this.opts.runner.run({ command, cwd: dir, settings, env: confinedEnv(process.env, { TMPDIR: tmp, HOME: confinedHome }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS });
     // The runner captures both streams and this threw them away, so a one-line EPERM was only
     // recoverable by re-running the whole sandbox by hand. Carry a bounded, scrubbed tail instead.
@@ -205,9 +222,15 @@ async function defaultInstall(dir: string, tool: 'pnpm' | 'npm'): Promise<void> 
  * precedes the fatal `gyp ERR! stack Error: EPERM ...` and would otherwise mask it.
  */
 export function rebuildFailureTail(result: Pick<ConfinedResult, 'stderr' | 'stdout'>, limit = 150): string {
-  const signal = /(EPERM|EACCES|ENOENT|ENOTDIR|EROFS|not permitted|permission denied|ERR!\s+stack|command failed)/i;
-  const lines = `${result.stderr}\n${result.stdout}`.split('\n').map((l) => l.trim()).filter(Boolean);
-  const pick = lines.find((l) => signal.test(l) && !/\bwarn\b/i.test(l)) ?? lines.find((l) => signal.test(l)) ?? lines[lines.length - 1];
+  const signal = /(EPERM|EACCES|ENOENT|ENOTDIR|EROFS|not permitted|permission denied|Cannot find module|MODULE_NOT_FOUND|ERR!\s+stack|^Error:|command failed)/i;
+  const split = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const diagnostic = (lines: string[]) => lines.find((l) => signal.test(l) && !/\bwarn\b/i.test(l)) ?? lines.find((l) => signal.test(l)) ?? null;
+  const err = split(result.stderr);
+  const out = split(result.stdout);
+  // stderr FIRST, and its last line beats stdout's. The command is a chain (`rebuild && fix`), so a
+  // successful first half leaves an upbeat trailing stdout line ("rebuilt dependencies successfully")
+  // that silently masked the second half's failure the first time this ran for real.
+  const pick = diagnostic(err) ?? diagnostic(out) ?? err[err.length - 1] ?? out[out.length - 1];
   if (!pick) return '';
   // A scrub that cannot vouch for the text withholds it rather than risk carrying a credential.
   const scrubbed = scrubForStore(pick, { maxBytes: 4096 });

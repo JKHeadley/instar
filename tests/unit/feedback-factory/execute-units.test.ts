@@ -21,7 +21,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
-import { DepsCache, rebuildFailureTail } from '../../../src/feedback-factory/execute/depsCache.js';
+import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
 import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
@@ -629,5 +629,76 @@ describe('confined native rebuild: a writable HOME and a self-diagnosing failure
     expect(rebuildFailureTail({ stderr: 'something odd\nlast line here', stdout: '' })).toBe(': last line here');
     expect(rebuildFailureTail({ stderr: '', stdout: '' })).toBe('');
     expect(rebuildFailureTail({ stderr: `EPERM ${'x'.repeat(500)}`, stdout: '' }).length).toBeLessThanOrEqual(152);
+  });
+});
+
+describe('confined native rebuild: the fix script and its siblings', () => {
+  /** A cache whose base SHA carries the fix script and, optionally, its siblings. */
+  const withScripts = (root: string, siblingsPresent: boolean, run: NonNullable<ConstructorParameters<typeof DepsCache>[0]>['runner']['run']) => new DepsCache({
+    root: path.join(root, 'deps'), agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+    runner: { available: () => ({ ok: true, version: '0.0.77' }), run },
+    readAtCommit: (_s, _sha, f) => {
+      if (f === 'package.json') return '{"name":"x"}';
+      if (f === 'package-lock.json') return '{"lockfileVersion":3}';
+      if (f === 'scripts/fix-better-sqlite3.cjs') return "require('./resolve-node-binary.cjs');\n";
+      if (f.startsWith('scripts/')) return siblingsPresent ? '// sibling\n' : null;
+      return null;
+    },
+    listAtCommit: () => [],
+    install: async (dir) => {
+      const mod = path.join(dir, 'node_modules', 'better-sqlite3');
+      fs.mkdirSync(mod, { recursive: true });
+      fs.writeFileSync(path.join(mod, 'package.json'), '{"name":"better-sqlite3","version":"12.8.0"}');
+    },
+    hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+  });
+
+  it('copies every declared sibling next to the fix script, so its relative require resolves', async () => {
+    const root = tmp();
+    let cmd = '';
+    const r = await withScripts(root, true, async (c) => { cmd = c.command; return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }; })
+      .ensure('/src', 'a'.repeat(40));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(cmd).toContain('node scripts/fix-better-sqlite3.cjs');
+    expect(fs.existsSync(path.join(r.dir, 'scripts', 'fix-better-sqlite3.cjs'))).toBe(true);
+    for (const sibling of FIX_SCRIPT_SIBLINGS) {
+      expect(fs.existsSync(path.join(r.dir, 'scripts', sibling)), `${sibling} must be copied`).toBe(true);
+    }
+  });
+
+  it('a sibling missing at the base SHA SKIPS the fix script instead of running it to a certain failure', async () => {
+    const root = tmp();
+    let cmd = '';
+    const r = await withScripts(root, false, async (c) => { cmd = c.command; return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }; })
+      .ensure('/src', 'a'.repeat(40));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Running it without its sibling exits 1 on the first line; the rebuild is what makes the binary.
+    expect(cmd).not.toContain('fix-better-sqlite3.cjs');
+    expect(cmd).toContain('npm rebuild');
+    expect(fs.existsSync(path.join(r.dir, 'scripts', 'fix-better-sqlite3.cjs'))).toBe(false);
+  });
+
+  it('RATCHET: every relative require in the real fix script is declared in FIX_SCRIPT_SIBLINGS', () => {
+    const script = fs.readFileSync(path.join(process.cwd(), 'scripts', 'fix-better-sqlite3.cjs'), 'utf-8');
+    const required = [...script.matchAll(/require\(['"]\.\/([^'"]+)['"]\)/g)].map((m) => m[1]);
+    expect(required.length, 'the script requires at least one sibling (else this ratchet is vacuous)').toBeGreaterThan(0);
+    const missing = required.filter((r) => !(FIX_SCRIPT_SIBLINGS as readonly string[]).includes(r));
+    expect(missing, `siblings required but not declared (they will not be copied): ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('the failure tail names the failing half of the chain, not the successful half', () => {
+    // The real shape: `npm rebuild ... && node scripts/fix-better-sqlite3.cjs`. npm succeeds and
+    // leaves an upbeat trailing stdout line; the script then dies on stderr.
+    const t = rebuildFailureTail({
+      stderr: "node:internal/modules/cjs/loader:1215\n  throw err;\nError: Cannot find module './resolve-node-binary.cjs'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1212:15)\n",
+      stdout: 'rebuilt dependencies successfully\n',
+    });
+    expect(t).toContain('Cannot find module');
+    expect(t).not.toContain('rebuilt dependencies successfully');
+    // With nothing diagnostic anywhere, stderr's last line still beats stdout's cheerful one.
+    const q = rebuildFailureTail({ stderr: 'something went sideways\n', stdout: 'rebuilt dependencies successfully\n' });
+    expect(q).toBe(': something went sideways');
   });
 });
