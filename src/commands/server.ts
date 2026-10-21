@@ -10035,6 +10035,35 @@ export async function startServer(options: StartOptions): Promise<void> {
               next_attempt_at: input.next_attempt_at,
             })
           : undefined,
+        // Last resort when there is no lifeline topic. The gateway already
+        // reaches whichever platform this agent actually uses, so a Slack-only
+        // agent stops dropping every unbound-session notice it produces
+        // (indra, 2026-10-20: repeated no-topic outcomes, nothing delivered).
+        // Reports whether a destination existed so the notifier can record the
+        // honest outcome instead of guessing.
+        fallbackNotify: (text) => {
+          const hasTelegramDest = Boolean(_notifyState?.get<number>('agent-attention-topic'));
+          const hasSlackDest = Boolean(_slackAdapter && _notifyState?.get<string>('slack-attention-channel'));
+          if (!hasTelegramDest && !hasSlackDest) return false;
+          notify('SUMMARY', 'session-reap', text, undefined, {
+            producerId: 'reap-notifier',
+            author: unknownAutomationAuthor('reap-reason-author-unavailable'),
+          });
+          return true;
+        },
+        raiseNoDestination: (detail) => {
+          try {
+            void telegram?.createAttentionItem({
+              id: 'reap-notice-no-destination',
+              title: 'Notices about interrupted work have nowhere to go',
+              summary: 'no lifeline topic and no fallback channel',
+              description: detail,
+              category: 'session',
+              priority: 'HIGH',
+              sourceContext: 'reap-notifier',
+            });
+          } catch { /* @silent-fallback-ok: reporting the gap must never throw */ }
+        },
         recordNotify: (e) => reapLog.recordNotify(e),
         quietHoursEndAt: (now) => notificationBatcher.quietHoursEndAt(now),
         summaryReleaseAt: (now) => notificationBatcher.nextSummaryReleaseAt(now),
