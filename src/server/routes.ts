@@ -1,4 +1,5 @@
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
+import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * HTTP API routes — health, status, sessions, jobs, events.
@@ -18247,6 +18248,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     });
   }
+
+  // GET /telegram/system-topics — this machine's record of the agent-wide system
+  // topics (📢 Updates, 🔔 Attention, 🩺 Agent Health). A standby reads the lease
+  // holder's record here and adopts it instead of minting its own topics
+  // (src/messaging/SystemTopicAdoption.ts). Read-only.
+  router.get('/telegram/system-topics', (_req, res) => {
+    res.json({ topics: readSystemTopicIds((key) => ctx.state.get(key)), holdsLease: !ctx.state.readOnly });
+  });
 
   // POST /telegram/post-update — route an update/announcement message to the
   // Agent Updates topic, deterministically.

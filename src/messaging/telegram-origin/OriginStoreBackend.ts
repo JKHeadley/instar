@@ -754,6 +754,7 @@ export class OriginStoreBackend {
     if (input.holdReason !== undefined) id(input.holdReason);
     const rows = this.db.prepare(`SELECT o.*,d.chat_id,d.topic_id,d.account_id,
         json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.executionOwnerMachineId') execution_owner,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.producerKind') producer_kind,
         r.attempts recovery_attempts,r.next_attempt_at recovery_next
       FROM telegram_origin_operations o
       LEFT JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
@@ -762,13 +763,13 @@ export class OriginStoreBackend {
       WHERE o.kind='ordinary' AND (@reason IS NULL OR o.hold_reason=@reason)
         AND ((o.state='held' AND o.hold_reason IS NOT NULL) OR (o.state='expired' AND o.hold_reason IS NOT NULL AND o.hold_expiry_reported_at IS NULL))
       ORDER BY o.prepared_at,o.operation_id LIMIT @limit`).all({ reason: input.holdReason ?? null, limit }) as Array<DbOperation & {
-        chat_id: string | null; topic_id: string | null; account_id: string | null; execution_owner: string | null; recovery_attempts: number | null; recovery_next: number | null }>;
+        chat_id: string | null; topic_id: string | null; account_id: string | null; execution_owner: string | null; producer_kind: string | null; recovery_attempts: number | null; recovery_next: number | null }>;
     return rows.map(row => ({ operationId: row.operation_id, originId: row.origin_id, state: row.state as 'held' | 'expired',
       holdReason: row.hold_reason ?? null, holdDetail: row.hold_detail_json ? JSON.parse(row.hold_detail_json) as Record<string, unknown> : null,
       preparedAt: row.prepared_at, deadlineAt: row.deadline_at, executionOwnerMachineId: row.execution_owner ?? null,
       destination: { accountId: row.account_id ?? null, chatId: row.chat_id ?? null, topicId: row.topic_id ?? null },
       recovery: row.recovery_attempts === null ? null : { attempts: row.recovery_attempts, nextAttemptAt: row.recovery_next! },
-      expiryReportedAt: row.hold_expiry_reported_at ?? null }));
+      expiryReportedAt: row.hold_expiry_reported_at ?? null, producerKind: row.producer_kind ?? null }));
   }
   markHoldExpiryReported(input: { operationId: string; now?: number }): boolean {
     id(input.operationId);

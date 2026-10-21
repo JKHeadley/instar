@@ -23,6 +23,8 @@
 
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
+import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
+import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -2053,7 +2055,46 @@ const lifelineSecretRefusalRedrive: SelfActionController = {
   },
 };
 
+/**
+ * system-topic-adoption — a standby copies the lease holder's Updates /
+ * Attention / Agent Health topic ids (src/messaging/SystemTopicAdoption.ts,
+ * 30-min cadence). Convergence shape: adoption is idempotent (unchanged id ⇒
+ * no write) and the per-kind per-boot cap (withAdoptionBrake) is the brake —
+ * under the pinned worst case, a holder whose record FLAPS (a new id for every
+ * kind on every pass), the loop adopts at most MAX_ADOPTS_PER_KIND_PER_BOOT
+ * per kind and then holds, never following the flap.
+ */
+const systemTopicAdoption: SelfActionController = {
+  id: 'system-topic-adoption',
+  actionVerb: 'refresh-system-topic', // 'refresh' detector token: the local record is refreshed from the holder
+  models: 'src/messaging/SystemTopicAdoption.ts (adoptHolderSystemTopics + withAdoptionBrake; startSystemTopicAdoptionLoop 30-min cadence)',
+  modelsPath: 'src/messaging/SystemTopicAdoption.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-boot cap re-arms on restart; restarts are operator/updater-driven and themselves dampened (restart cascade dampener), so a flapping holder costs at most MAX_ADOPTS_PER_KIND_PER_BOOT adopts per kind per restart.' },
+  boundK: 3 * MAX_ADOPTS_PER_KIND_PER_BOOT, // three kinds × the per-kind cap
+  perTargetBoundK: MAX_ADOPTS_PER_KIND_PER_BOOT,
+  ticks: 50,
+  tickMs: SYSTEM_TOPIC_ADOPTION_INTERVAL_MS,
+  makeUnderPressure(f, sink) {
+    const local = new Map<string, number>();
+    const adopt = withAdoptionBrake((key, topicId) => { local.set(key, topicId); sink.emit({ verb: 'refresh-system-topic', target: key }); });
+    let pass = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        pass += 1;
+        // The pinned worst case: the holder answers, but with a NEW id for every kind on every pass.
+        const holder = f.targetAlwaysRejects()
+          ? { updates: 1000 + pass, attention: 2000 + pass, agentHealth: 3000 + pass }
+          : { updates: 1000, attention: 2000, agentHealth: 3000 };
+        // The same pure core the async loop runs (planAdoption → braked adopt).
+        for (const { kind, topicId } of planAdoption(readSystemTopicIds(k => local.get(k)), holder)) adopt(SYSTEM_TOPIC_STATE_KEYS[kind], topicId);
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  systemTopicAdoption,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   feedbackTriageTick,

@@ -24,7 +24,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -6699,6 +6699,22 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added forward-to-holder reply hold awareness');
     }
 
+    // The delayed-notice row now says the notice is only for held session replies.
+    {
+      const refreshed = refreshHeldNoticeAwareness(content);
+      if (refreshed !== content) {
+        content = refreshed;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: delayed-reply notice is session-reply-only');
+      }
+    }
+
+    if (!content.includes('/telegram/system-topics')) {
+      content += '\n' + telegramSystemTopicsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added agent-wide system topic record awareness');
+    }
+
     if (!content.includes('Message origins on your phone:')) {
       content += '\n' + telegramOriginDashboardAwareness();
       patched = true;
@@ -11953,6 +11969,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Queued-message review pacing:', telegramOriginRecoveryAwareness],
         ['Telegram send deadlines:', telegramOriginTransportAwareness],
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
+        ['/telegram/system-topics', telegramSystemTopicsAwareness],
         ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],

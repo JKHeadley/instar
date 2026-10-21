@@ -373,6 +373,9 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // conservative classification as /start.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
+  // Dismissing a restart notice (the marker for an invite a restart cleared) — same relay-holder-only
+  // surface as the invite routes, so the same conservative classification.
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/restart-notices', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const subscriptionReloginStory: ConvergenceStory = {
