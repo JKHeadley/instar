@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
 import { createUnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { AgentServer } from '../../../src/server/AgentServer.js';
@@ -28,6 +29,10 @@ import { CONNECT_ENABLE_REQUESTED_BY } from '../../../src/threadline/connectEnab
 import { startFakeLifeline, type FakeLifeline } from '../../helpers/fakeLifeline.js';
 
 const AUTH = 'pp-auth';
+
+// bootstrapThreadline writes ~/.claude.json; move HOME for this file so the suite never
+// touches the operator's real home (tests/unit/test-setup-hermetic-codex-home.test.ts ratchet).
+useHermeticHome();
 
 describe('pairing switched on without a person-performed restart (production path)', () => {
   let relay: RelayServer;
