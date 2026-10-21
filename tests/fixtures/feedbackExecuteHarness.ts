@@ -32,7 +32,9 @@ export interface ExecHarness extends Harness {
   epoch: { value: number };
   repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
-  admission: { saturated: boolean; shedding: boolean; updatePending: boolean };
+  admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
+  /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
+  spawnError: { value: Error | null };
   pushes: PushRecord[];
   prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; labels: string[]; title: string; body: string }>;
   reviews: Map<number, PrReview[]>;
@@ -90,7 +92,8 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.epoch = { value: 1 };
   h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
-  h.admission = { saturated: false, shedding: false, updatePending: false };
+  h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
+  h.spawnError = { value: null };
   h.pushes = [];
   h.prs = new Map();
   h.reviews = new Map();
@@ -167,6 +170,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   };
   const sessions: ConfinedSessionPort = {
     spawnConfined: async (input) => {
+      if (h.spawnError.value) throw h.spawnError.value;
       h.sessions.spawned.push({ name: input.name, prompt: input.prompt, cwd: input.cwd, settingsPath: input.settingsPath, trusted: false });
       if (input.name.startsWith('feedback-canary-')) {
         const reportPath = /write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)?.[1];
@@ -206,7 +210,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     triageStore: h.store, store: h.execStore, audit: h.audit,
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
-    admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending },
+    admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },
     identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
     rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
     enabled: () => h.enabled.value,
