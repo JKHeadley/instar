@@ -1,4 +1,5 @@
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
+import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -10881,28 +10882,9 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
-      // Add platform indicator and display name
-      if (ctx.telegram) {
-        const topicId = ctx.telegram.getTopicForSession?.(s.tmuxSession);
-        if (topicId) {
-          result.platform = 'telegram';
-          result.platformId = topicId;
-          const topicName = ctx.telegram.getTopicName?.(topicId);
-          if (topicName && !/^topic-\d+$/.test(topicName)) result.platformName = topicName;
-        }
-      }
-      if (!result.platform && ctx.slack) {
-        const channelId = ctx.slack.getChannelForSession(s.tmuxSession);
-        if (channelId) {
-          result.platform = 'slack';
-          result.platformId = channelId;
-          const registry = ctx.slack.getChannelRegistry();
-          if (registry[channelId]?.channelName) result.platformName = registry[channelId].channelName;
-        }
-      }
-      if (!result.platform) {
-        result.platform = 'headless';
-      }
+      // Add platform indicator and display name (shared with the dashboard
+      // WebSocket list so local and pooled rows can never disagree).
+      Object.assign(result, resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack));
 
       return result;
     });

@@ -280,6 +280,30 @@
       cursor: default;
     }
 
+    .legend-btn {
+      background: none;
+      border: 1px solid var(--border, #333);
+      color: var(--text-dim, #999);
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+    .session-legend {
+      margin: 0 12px 10px;
+      padding: 8px 10px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      background: #141414;
+      font-size: 12px;
+      color: var(--text-dim, #999);
+    }
+    .session-legend .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .session-legend .legend-row > :first-child { flex: 0 0 auto; }
+
     .session-telemetry {
       display: flex;
       align-items: center;
@@ -3130,10 +3154,19 @@
         <h2>Sessions</h2>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="session-count" id="sessionCount">0</span>
+          <button class="legend-btn" id="sessionLegendBtn" onclick="toggleSessionLegend()" title="What do the badges mean?" aria-expanded="false" aria-controls="sessionLegend">?</button>
           <button class="new-session-btn" onclick="openNewSessionModal()" title="New session">+</button>
         </div>
       </div>
       <div class="tab-purpose" style="padding:0 12px 8px">Your agent's live sessions — pick one to watch its terminal in real time.</div>
+      <div class="session-legend" id="sessionLegend" style="display:none">
+        <div class="legend-row"><span class="type-badge interactive">interactive</span><span>A conversation session. <span class="type-badge job">job</span> is a scheduled job run.</span></div>
+        <div class="legend-row"><span class="model-badge">MODEL</span><span>The model the session started on. A bare "OPUS" means it started on the default name, so the exact version isn't recorded.</span></div>
+        <div class="legend-row"><span class="platform-badge">✈️</span><span>Linked to a Telegram topic (💬 Slack, 📱 WhatsApp).</span></div>
+        <div class="legend-row"><span class="platform-badge">🖥️</span><span>No messaging app attached (headless, e.g. a background builder).</span></div>
+        <div class="legend-row"><span class="machine-badge">Machine</span><span>The machine the session runs on.</span></div>
+        <div class="legend-row"><span>3h 30m</span><span>How long the session has been running.</span></div>
+      </div>
       <div class="ntd-row" id="newTopicDefaultRow" style="display:none" onclick="openNewTopicDefaultSheet()" role="button" tabindex="0"></div>
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
@@ -4779,7 +4812,6 @@
 
         const platform = session.platform || 'headless';
         const platformIcon = platform === 'telegram' ? '✈️' : platform === 'slack' ? '💬' : platform === 'whatsapp' ? '📱' : '🖥️';
-        const platformLabel = platform.charAt(0).toUpperCase() + platform.slice(1);
 
         el.innerHTML = `
           <div class="session-name-row">
@@ -4787,12 +4819,12 @@
             <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}"${session.remote ? ` data-remote="1" data-uuid="${escapeHtml(session.id || '')}" data-machine-id="${escapeHtml(session.machineId || '')}" data-machine-nickname="${escapeHtml(session.machineNickname || '')}"` : ''} data-protected="${session.protected === true ? '1' : session.protected === false ? '0' : ''}"${closesInFlight.has(closeKey(session.remote ? session.machineId : null, session.tmuxSession)) ? ' disabled' : ''} onclick="event.stopPropagation();closeSessionFromBtn(this)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">
-            <span class="type-badge ${sType}">${sType}</span>
-            <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(model)}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
-            <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
+            <span class="type-badge ${sType}" title="${sType === 'job' ? 'Job: a scheduled job run' : 'Interactive: a conversation session'}">${sType}</span>
+            <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(modelBadgeTitle(model))}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
+            <span class="platform-badge ${platform}" title="${escapeHtml(platformBadgeTitle(platform))}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
-            <span>${elapsed}</span>
+            <span title="Running for ${elapsed}">${elapsed}</span>
           </div>
           ${telemetryHtml}
         `;
@@ -5416,6 +5448,29 @@
     // Friendly display name for a model id ("claude-opus-5-5" → "Opus 5.5").
     // Display only — option VALUES and every request keep the raw id. An id
     // this does not recognize is shown unchanged.
+    // Badge tooltips + the "?" legend (topic 112490: the operator could not tell
+    // what the row icons meant from the badges alone).
+    function modelBadgeTitle(model) {
+      const bare = /^(opus|sonnet|haiku|fable)$/i.test(String(model || ''));
+      return bare
+        ? `Model: started on the default name "${model}", so the exact version isn't recorded`
+        : `Model: ${model}`;
+    }
+    function platformBadgeTitle(platform) {
+      if (platform === 'telegram') return 'Telegram: linked to a Telegram topic';
+      if (platform === 'slack') return 'Slack: linked to a Slack conversation';
+      if (platform === 'whatsapp') return 'WhatsApp: linked to a WhatsApp chat';
+      return 'Headless: no messaging app attached';
+    }
+    function toggleSessionLegend() {
+      const el = document.getElementById('sessionLegend');
+      const btn = document.getElementById('sessionLegendBtn');
+      if (!el) return;
+      const open = el.style.display === 'none';
+      el.style.display = open ? 'block' : 'none';
+      if (btn) btn.setAttribute('aria-expanded', String(open));
+    }
+
     function friendlyModelName(id) {
       if (!id) return '';
       const cap = w => w.charAt(0).toUpperCase() + w.slice(1);

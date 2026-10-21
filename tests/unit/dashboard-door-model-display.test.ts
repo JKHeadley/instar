@@ -106,7 +106,9 @@ describe('page wiring', () => {
 
   it('badges show the friendly name, carry the raw id as a tooltip, and are escaped', () => {
     expect(HTML).toContain('escapeHtml(friendlyModelName(model))');
-    expect(HTML).toContain('title="${escapeHtml(model)}"');
+    expect(HTML).toContain('title="${escapeHtml(modelBadgeTitle(model))}"');
+    // The tooltip still carries the raw model id (legend work, topic 112490).
+    expect(HTML).toContain('`Model: ${model}`');
     expect(HTML).toContain('badge.textContent = friendlyModelName(session.model);');
   });
 

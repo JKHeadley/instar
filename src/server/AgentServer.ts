@@ -8,6 +8,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
@@ -576,6 +577,7 @@ export class AgentServer {
   // The burn-detection system needs this to route alerts; no other
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
+  private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
 
@@ -1177,6 +1179,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
     this.streamTicketStore = options.streamTicketStore;
@@ -6316,6 +6319,8 @@ export class AgentServer {
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
           poolStreamConnector: this.poolStreamConnector,
           selfMachineId: this.meshSelfId,
+          resolveSessionPlatform: (tmuxSession) =>
+            resolveSessionPlatform(tmuxSession, this.telegramAdapter, this.slackAdapter),
         });
 
         // Update route context with WebSocket manager (deferred — created after routes)
