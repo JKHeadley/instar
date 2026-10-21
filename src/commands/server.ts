@@ -131,6 +131,7 @@ import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProv
 import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import { computeSelfQuotaState } from '../core/selfQuotaState.js';
+import { SessionStartFailureTracker } from '../core/startFailureTracker.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -10956,6 +10957,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       }));
     }
 
+    // Consecutive session-startup deaths on THIS machine. Feeds the capacity
+    // heartbeat's placement-eligibility block, so a machine that cannot start
+    // work stops being handed conversations (spec: startFailureTracker.ts).
+    const startFailureTracker = new SessionStartFailureTracker();
+
     // A session whose process ended on its own (no reaper/operator/kill) lands in
     // the SAME reap-log as every other session end — `type:'exited'` with uptime
     // and the last startup-window pane tail. Before this, a self-exit was a
@@ -10986,6 +10992,41 @@ export async function startServer(options: StartOptions): Promise<void> {
         // @silent-fallback-ok — an audit write must never disturb the monitor loop.
         console.warn('[reap-log] recordExited failed (non-fatal):', err);
       }
+      // Placement eligibility: a session that died inside its startup window
+      // means this machine could not start work. Count it; past the threshold
+      // the capacity heartbeat reports the machine unable to start, placement
+      // stops sending it new conversations, and the operator is told ONCE.
+      // Before this, a machine whose every session died on arrival kept being
+      // chosen (Mac Mini, 2026-10-20: three deaths in 35 minutes, the
+      // conversation never moved, nothing raised).
+      if (e.reason === 'process-exited-during-startup') {
+        try {
+          const before = startFailureTracker.state().blocked;
+          startFailureTracker.recordStartFailure();
+          const after = startFailureTracker.state();
+          if (!before && after.blocked) {
+            console.warn(`[start-failure] this machine has failed to start ${after.consecutive} sessions in a row — dropping it from placement until one starts`);
+            void telegram?.createAttentionItem({
+              id: 'machine-cannot-start-sessions',
+              title: 'This machine cannot start sessions',
+              summary: `${after.consecutive} sessions in a row died during startup`,
+              description:
+                `${after.consecutive} sessions in a row have died while starting up on this machine, `
+                + 'so new conversations are no longer being sent here. They will go to another machine '
+                + 'instead. This clears itself the moment a session starts successfully. The usual '
+                + "causes are a login that has never answered Claude Code's folder-trust question, an "
+                + 'expired sign-in, or a missing executable.',
+              category: 'session',
+              priority: 'HIGH',
+              sourceContext: 'session-start-failure',
+            });
+          }
+        } catch { /* a placement signal must never disturb the monitor loop */ }
+      }
+    });
+    // The clearing signal: one successful start re-admits the machine.
+    sessionManager.on('sessionStartSucceeded', () => {
+      try { startFailureTracker.recordStartSuccess(); } catch { /* never disturb a launch */ }
     });
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator'; midWork?: boolean; workEvidence?: string[]; via?: string; seenWorkingPastAgeLimit?: boolean }) => {
       // ── F7: schedule a post-grace reachability verify for the affected topic. Both a
@@ -22090,7 +22131,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               // avoid it. (Live-test 2026-06-16: the Mini's circuit was open while its quota poll
               // said blocked:false → placement misrouted a session onto it; it died on arrival.)
               // Spec: docs/specs/placement-llm-circuit-aware-quota.md.
-              return computeSelfQuotaState(quotaTracker?.getState(), llmCircuitAvailable());
+              // Third cause: this machine cannot start a session at all.
+              return computeSelfQuotaState(
+                quotaTracker?.getState(), llmCircuitAvailable(), Date.now(),
+                startFailureTracker.state(),
+              );
             } catch { return undefined; /* unknown ≠ blocked */ }
           };
           // Platform/workspace reachability block riding the capacity heartbeat

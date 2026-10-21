@@ -8145,6 +8145,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (this.detectClaudePrompt(tmuxSession)) {
         console.log(`[SessionManager] Session ready in "${tmuxSession}" after ${Date.now() - start}ms`);
+        // The positive signal the start-failure tracker resets on: this machine
+        // has just demonstrated it CAN start a session, so any standing
+        // "cannot start" placement block is cleared without operator action.
+        this.emit('sessionStartSucceeded', { tmuxSession });
         return true;
       }
       await new Promise(r => setTimeout(r, 500));
@@ -8257,6 +8261,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (this.detectClaudePrompt(tmuxSession)) {
         console.log(`[SessionManager] Session ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
+        this.emit('sessionStartSucceeded', { tmuxSession });
         return true;
       }
       await new Promise(r => setTimeout(r, 1000));
