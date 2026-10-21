@@ -1,0 +1,23 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+- **`POST /threadline/pairing/enable` is declared in the write-domain registry.** It arrived with #2248 as a mutating route with no declaration, so `tests/unit/write-domain-conformance-ratchet.test.ts` — which refuses exactly that — was red on `main`. It is classified `cluster-shared` (single writer = the lease holder), the same classification its four sibling pairing routes carry. The route writes `threadline.relayEnabled` + `verifiedPairing.enabled` into this machine's config and raises its own supervised-restart flag, and both are per-machine paths, so `machine-local` is arguable; it takes the conservative sibling classification because the route already answers `unavailable-here` on a machine without the relay identity, and the documented connect flow routes the operation to the relay holder rather than enabling a standby where it would sit inert. The callsite comment and `upgrades/side-effects/write-domain-pairing-enable.md` state the falsifying condition rather than burying it: if a standby is meant to switch itself on, this becomes `machine-local` with a per-machine-path convergence story on both axes (I9), which is #2248's owner's decision.
+- **`tests/e2e/threadline/pairing-enable-without-restart.test.ts` isolates HOME.** It imports `bootstrapThreadline`, which registers the Threadline MCP server into the **user-scope** `~/.claude.json`, and it was missing the module-level `useHermeticHome()` its four siblings carry — so running it added a junk `projects["/var/folders/…"]` entry to the operator's real Claude config. The guard in `tests/unit/test-setup-hermetic-codex-home.test.ts` exists to refuse that, and it was refusing. Test-only.
+
+## What to Tell Your User
+
+Nothing changes for you right now. The first part is a declaration of who is allowed to do something I could already do — on a single machine it makes no difference at all, and on several machines it records that the machine currently in charge is the one that switches the agent network on. If that rule is ever enforced and you ask a standby machine to connect, it will tell you which machine owns that action instead of doing it there.
+
+The second part matters if you ever run my test suite yourself: one test was quietly writing into your own Claude settings file, and it no longer does.
+
+## Summary of New Capabilities
+
+No new capability. One registry declaration (`POST /threadline/pairing/enable` → `cluster-shared`) and one test-isolation call; both repair guards that were failing on `main`.
+
+## Evidence
+
+- Both reds reproduced on `main` at `aa8ac670d` (shards 2/4 and 3/4 of a full-suite pass); each guard passes with its repair and fails without it; `npx tsc --noEmit` clean.
+- Neither was caught by #2248's own CI, which did not run the shards holding those two guard files.
