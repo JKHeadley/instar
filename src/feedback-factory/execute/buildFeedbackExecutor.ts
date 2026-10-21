@@ -183,6 +183,7 @@ export function buildFeedbackExecutor(input: {
     },
     quotaShedding: input.quotaShedding,
     updatePending: input.updatePending,
+    rerouteSaturated: () => typeof sm?.confinedRerouteCapacity === 'function' && sm.confinedRerouteCapacity() === 'saturated',
   };
 
   const identity = input.overrides?.commitIdentity ?? (() => resolveCommitIdentity(resolveConfig().sourceRepoPath ?? agentHome, config.stateDir));

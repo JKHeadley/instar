@@ -23,6 +23,38 @@ on:
     types: [submitted, dismissed]
   workflow_dispatch:
 
+# Account-wide Actions concurrency is shared across EVERY repo this owner has, and
+# measurement on 2026-10-20 showed what that costs: instar-2 held 10 jobs running
+# and 25 queued while instar held 0 running and 21 queued, so this repo's CI crawled
+# at ~3 concurrent jobs against a 20-job allowance. A single PR here needs 8 unit
+# shards, so one PR took hours and a heavy run took 17-19h end to end.
+#
+# The avoidable half of that is supersession. Without this block every push to a
+# branch started a NEW 13-job run while the previous one kept consuming shared
+# slots — 126 stale runs had to be cancelled BY HAND in one night to let a
+# single-line test-config fix through. A superseded run is waste by definition:
+# nobody is waiting on its result.
+#
+# Keyed on the PR number AND the event name. The event name is load-bearing, not
+# decoration: `pull_request_review` is one of this workflow's triggers, so if a
+# review event shared a group with the push run, APPROVING a pull request would
+# CANCEL its in-flight required checks and restart them from zero. That trades
+# avoidable waste for a footgun. Scoping by event means push runs supersede push
+# runs (the 126-stale-run problem) while a review run can never cancel them.
+#
+# KNOWN AND DELIBERATELY NOT FIXED HERE: a review event therefore still starts its
+# own run, so approving a pull request costs a duplicate 13-job run. Narrowing that
+# needs job-level `if:` on the heavy jobs, and a job skipped by `if:` reports as
+# SUCCESS to required status checks — which would let a review-triggered run paint a
+# pull request green without the tests having run on that commit. That is a safety
+# hole, so it is a separate, carefully-designed change rather than a line slipped in
+# alongside a capacity fix.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # NEVER cancel main's post-merge run: that is the release gate and its record is
+  # the evidence a merge was sound. Only branch/PR runs supersede.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   invariants:
     name: Repo Invariants

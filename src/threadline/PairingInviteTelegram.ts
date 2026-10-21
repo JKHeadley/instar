@@ -20,6 +20,7 @@ import type { EventEmitter } from 'node:events';
 import { findInviteToken } from './PairingInvite.js';
 import type { InviteEvent, Result } from './PairingInviteFlow.js';
 import { isVerifiedTopicOperatorBinding } from '../users/TopicOperatorStore.js';
+import type { RestartNotice } from './PairingPendingAcceptMarkers.js';
 
 export const CALLBACK_PREFIX = 'pi:';
 const TOKEN_TTL_MS = 24 * 60 * 60_000; // a button outlives no invite (24 h max)
@@ -52,6 +53,39 @@ export interface InviteTelegramDeps {
   /** The lifeline ingress guard is in enforce mode (spec §6.1: observe mode turns Telegram approval off). */
   enforcing: () => boolean;
   now?: () => number;
+  /**
+   * Invites that were waiting for approval when the server restarted (the engine keeps them in
+   * memory only). Each is told to the operator once, then marked so it is never sent again.
+   */
+  restartNotices?: { list(): RestartNotice[]; markNotified(id: string): void };
+  /** The IANA time zone of the operator (`ownerUserId()`), when known, for the expiry in a restart notice. */
+  timeZone?: (ownerUserId: number | undefined) => string | undefined | Promise<string | undefined>;
+  /** For tests: replace setTimeout for restart-notice retries. */
+  schedule?: (fn: () => void, ms: number) => void;
+}
+
+const RESTART_NOTICE_RETRY_MS = 60_000;
+
+/** "Tue, 3:40 PM PDT" in the operator's zone when known and valid, else "Tue 22:40 UTC". */
+export function formatExpiry(exp: string, timeZone?: string): string {
+  const d = new Date(exp);
+  if (Number.isNaN(d.getTime())) return exp;
+  if (timeZone) {
+    try {
+      return d.toLocaleString('en-US', { timeZone, weekday: 'short', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+    } catch { /* @silent-fallback-ok — an invalid configured zone falls back to UTC, labelled */ }
+  }
+  const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()];
+  return `${day} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`;
+}
+
+/** The one Telegram line for an invite a restart cleared. Names are claimed, never verified. */
+export function restartNoticeText(n: Pick<RestartNotice, 'claimedAgent' | 'claimedOwner' | 'exp'>, timeZone?: string, now: number = Date.now()): string {
+  const owner = n.claimedOwner ? ` (it says it belongs to ${n.claimedOwner})` : '';
+  const ms = Date.parse(n.exp) - now;
+  const left = ms > 0 ? (ms >= 90 * 60_000 ? `, about ${Math.round(ms / 3_600_000)} h from now` : `, about ${Math.max(1, Math.round(ms / 60_000))} min from now`) : '';
+  return `An invite from "${n.claimedAgent || 'an agent'}"${owner} was waiting and was cleared by a restart. `
+    + `Forward or paste it again before ${formatExpiry(n.exp, timeZone)}${left}.`;
 }
 
 export interface ForwardedInvite {
@@ -126,10 +160,52 @@ export function resolveApprovalOwner(
 export class PairingInviteTelegram {
   private readonly tokens = new Map<string, Pending>();
   private readonly now: () => number;
+  private deliveringRestartNotices = false;
 
   constructor(private readonly deps: InviteTelegramDeps) {
     this.now = deps.now ?? (() => Date.now());
     deps.events.on('event', (e: InviteEvent) => { void this.onEvent(e); });
+    if (deps.restartNotices) void this.deliverRestartNotices();
+  }
+
+  /**
+   * Tell the operator, once each, about invites a restart cleared. A notice that could not be
+   * sent (no operator topic yet, Telegram down) is retried every minute until it is sent or its
+   * invite expires; a sent one is marked and never sent again.
+   */
+  async deliverRestartNotices(): Promise<number> {
+    const src = this.deps.restartNotices;
+    if (!src || this.deliveringRestartNotices) return 0; // one delivery at a time: never a double send
+    this.deliveringRestartNotices = true;
+    try {
+      return await this.deliverRestartNoticesOnce(src);
+    } finally {
+      this.deliveringRestartNotices = false;
+    }
+  }
+
+  private async deliverRestartNoticesOnce(src: NonNullable<InviteTelegramDeps['restartNotices']>): Promise<number> {
+    let pending: RestartNotice[];
+    try { pending = src.list().filter((n) => !n.telegramNotified); } catch { return 0; }
+    if (pending.length === 0) return 0;
+    const topic = this.deps.operatorTopicId();
+    let sent = 0;
+    if (topic !== undefined) {
+      let tz: string | undefined;
+      try { tz = await this.deps.timeZone?.(this.deps.ownerUserId()); } catch { tz = undefined; }
+      for (const n of pending) {
+        try {
+          await this.deps.send(topic, restartNoticeText(n, tz, this.now()));
+          src.markNotified(n.id);
+          sent++;
+        } catch { /* retried below */ }
+      }
+    }
+    if (sent < pending.length) {
+      const schedule = this.deps.schedule ?? ((fn: () => void, ms: number) => { setTimeout(fn, ms).unref?.(); });
+      schedule(() => { void this.deliverRestartNotices(); }, RESTART_NOTICE_RETRY_MS);
+    }
+    return sent;
   }
 
   /** True when the text carries an invite and must not reach a session. */

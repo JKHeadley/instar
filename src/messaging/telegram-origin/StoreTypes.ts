@@ -201,4 +201,8 @@ export interface HeldOperationRow {
   destination: { accountId: string | null; chatId: string | null; topicId: string | null };
   recovery: { attempts: number; nextAttemptAt: number } | null;
   expiryReportedAt: number | null;
+  /** Who authored the held send (`session` / `server-automation` / …), read from the
+   * sealed envelope. Null when unreadable. Gates the user-facing delayed-reply notice:
+   * background output never claims "I have your message". */
+  producerKind?: string | null;
 }

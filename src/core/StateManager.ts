@@ -55,6 +55,20 @@ function describeReadError(err: unknown, filePath: string): {
  *  long enough to collapse the many sub-second redundant calls into one disk read. */
 const SESSIONS_CACHE_TTL_MS = 1000;
 
+/**
+ * State keys holding the agent-wide system topic ids (📢 Updates, 🔔 Attention,
+ * 🩺 Agent Health). A standby may write these ONLY through `adoptSystemTopicId`,
+ * copying the lease holder's value: converging onto the holder's record cannot
+ * fork shared state, while refusing it left every standby creating its own
+ * topics on each boot (Mama PC minted 41 "Updates" topics this way).
+ */
+export const SYSTEM_TOPIC_STATE_KEYS = Object.freeze({
+  updates: 'agent-updates-topic',
+  attention: 'agent-attention-topic',
+  agentHealth: 'agent-health-topic',
+} as const);
+const SYSTEM_TOPIC_KEY_SET: ReadonlySet<string> = new Set(Object.values(SYSTEM_TOPIC_STATE_KEYS));
+
 export class StateManager {
   private stateDir: string;
   private _readOnly: boolean = false;
@@ -572,6 +586,18 @@ export class StateManager {
       });
       return null;
     }
+  }
+
+  /**
+   * Record a system topic id adopted from the lease holder. Permitted on a
+   * read-only standby (see SYSTEM_TOPIC_STATE_KEYS); refuses any other key and
+   * any value that is not a positive topic id.
+   */
+  adoptSystemTopicId(key: string, topicId: number): void {
+    if (!SYSTEM_TOPIC_KEY_SET.has(key)) throw new Error(`adoptSystemTopicId: not a system topic key: ${key}`);
+    if (!Number.isSafeInteger(topicId) || topicId <= 1) throw new Error(`adoptSystemTopicId: invalid topic id for ${key}`);
+    this.validateKey(key, 'state key');
+    this.atomicWrite(path.join(this.stateDir, 'state', `${key}.json`), JSON.stringify(topicId, null, 2));
   }
 
   set<T>(key: string, value: T): void {

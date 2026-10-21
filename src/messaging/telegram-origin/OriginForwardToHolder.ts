@@ -42,6 +42,32 @@ export function heldForwardNoticeText(holderNickname: string): string {
   return `I have your message; my reply is delayed while it is routed through ${holderNickname}.`;
 }
 
+/** How long one delayed-reply notice covers a topic. Matches the 6 h held-reply
+ * deadline: one notice per topic per hold episode, never one per held message. */
+export const HELD_NOTICE_TOPIC_COOLDOWN_MS = 6 * 3_600_000;
+export type HeldNoticeSuppression = 'automation' | 'already-noticed';
+/**
+ * Decides whether a held send may post the fixed "I have your message; my reply
+ * is delayed" notice into its topic. The notice is only true when a session was
+ * replying, so background output (`server-automation`: job results, status
+ * lines, restart notices) never triggers it, and a topic is told at most once
+ * per cooldown however many replies are held. The hold itself, its status row
+ * and its expiry report are unchanged; this gates the user-facing line only.
+ */
+export class HeldNoticeGate {
+  readonly #noticedAt = new Map<number, number>();
+  constructor(private readonly deps: { now: () => number; cooldownMs?: number }) {}
+  decide(input: { topicId: number; producerKind: string | null | undefined }): { send: true } | { send: false; reason: HeldNoticeSuppression } {
+    if (input.producerKind !== 'session') return { send: false, reason: 'automation' };
+    const now = this.deps.now(), cooldown = this.deps.cooldownMs ?? HELD_NOTICE_TOPIC_COOLDOWN_MS;
+    for (const [topic, at] of this.#noticedAt) if (now - at >= cooldown) this.#noticedAt.delete(topic);
+    if (this.#noticedAt.has(input.topicId)) return { send: false, reason: 'already-noticed' };
+    return { send: true };
+  }
+  /** Record a DELIVERED notice; an undelivered one leaves the topic eligible. */
+  recordSent(topicId: number): void { this.#noticedAt.set(topicId, this.deps.now()); }
+}
+
 export interface ForwardLeaseView {
   selfMachineId: string;
   leaseHolder(): string | null;
@@ -196,6 +222,8 @@ export interface ForwardDeps {
   hold: (operation: OriginPreparedBotOperation, detail: HeldForwardDetail) => Promise<boolean | void>;
   /** The fixed template through the holder; resolves true when the holder accepted it. */
   notify?: (holder: string, topicId: number) => Promise<boolean>;
+  /** Gates `notify`: background output and already-told topics get no notice. */
+  noticeGate?: HeldNoticeGate;
   audit?: (row: Record<string, unknown>) => void;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
@@ -205,7 +233,7 @@ export interface ForwardDeps {
 export type ForwardOutcome =
   | { kind: 'sent'; messageId: number; holder: string; operationId: string }
   | { kind: 'local' }
-  | { kind: 'held'; operationId: string; holder: string | null; lastAttempt: ForwardLastAttempt; reason: string; noticeDelivered: boolean };
+  | { kind: 'held'; operationId: string; holder: string | null; lastAttempt: ForwardLastAttempt; reason: string; noticeDelivered: boolean; noticeSuppressed?: HeldNoticeSuppression };
 
 /** §4.1 + §4.2 — settle, ONE forward attempt, then the durable hold. The
  * remaining ladder steps belong to the recovery tick (`recoverForwardedHold`). */
@@ -243,13 +271,18 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   const recorded = await deps.hold(operation, detail);
   audit({ phase: recorded === false ? 'hold-not-recorded' : 'held', holder: lastHolder, operationId: operation.record.operationId, lastAttempt, reason: lastReason, ladderNextAt: detail.ladder.nextAt });
   let noticeDelivered = false;
+  const gate = deps.noticeGate?.decide({ topicId: input.topicId, producerKind: operation.record.producerKind });
+  const noticeSuppressed = gate && !gate.send ? gate.reason : undefined;
   // The notice is never attempted at a holder whose last answer was unknown:
   // that machine may be mid-send of the very reply the notice would precede.
-  if (deps.notify && lastHolder && lastAttempt !== 'outcome-unknown') {
+  if (!noticeSuppressed && deps.notify && lastHolder && lastAttempt !== 'outcome-unknown') {
     try { noticeDelivered = await deps.notify(lastHolder, input.topicId); } catch { noticeDelivered = false; }
+    if (noticeDelivered) deps.noticeGate?.recordSent(input.topicId);
   }
-  audit({ phase: noticeDelivered ? 'notice-sent' : 'notice-not-sent', holder: lastHolder, operationId: operation.record.operationId });
-  return { kind: 'held', operationId: operation.record.operationId, holder: lastHolder, lastAttempt, reason: lastReason, noticeDelivered };
+  audit({ phase: noticeDelivered ? 'notice-sent' : noticeSuppressed ? 'notice-suppressed' : 'notice-not-sent', holder: lastHolder, operationId: operation.record.operationId,
+    ...(noticeSuppressed ? { suppressed: noticeSuppressed } : {}) });
+  return { kind: 'held', operationId: operation.record.operationId, holder: lastHolder, lastAttempt, reason: lastReason, noticeDelivered,
+    ...(noticeSuppressed ? { noticeSuppressed } : {}) };
 }
 
 export interface ForwardRecoveryDeps {

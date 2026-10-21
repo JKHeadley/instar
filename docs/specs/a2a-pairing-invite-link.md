@@ -138,6 +138,12 @@ to your agent's Telegram, or paste it in its dashboard. Keep it private; it expi
 Approval is an **operator act, not an agent act** (v2 FD7). The agent's Bearer token alone never
 approves, accepts or finishes.
 
+> *Security note (2026-10-19, `docs/specs/telegram-button-approval.md`):* "the Bearer token alone never
+> approves" holds for the token used as a header. The token can spawn a session (G11 there), and a session
+> can read the lifeline secret and forge a verified tap (G5) or read the PIN (G1, G3). The §6.1 honest
+> boundary already says this is cooperative; pairing's approve/finish taps are P-class and move to the
+> dashboard in the same release that stops posting the PIN into Telegram (§2 there).
+
 **6.1 Telegram (primary).** A Telegram approval counts only when ALL hold:
 - the update reached the server through the lifeline's ingress, carrying the **lifeline-only secret**
   (instar #2181, `LifelineIngressGuard`), with the guard in **enforce** mode. In observe mode, Telegram

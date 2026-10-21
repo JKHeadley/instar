@@ -38,6 +38,7 @@ const NOT_CHAT: Record<string, string> = {
   sendInviteControlPlaintext: 'invite accept: the inviter holds no key yet (spec §4.3); typed op, not chat',
   sendCredentialToPinned: 'always encrypted to the given pinned key',
   sendPairVerifyReceipt: 'always encrypted to the given pinned key',
+  sendNoticeToPinned: 'fixed server notice, always encrypted to the given pinned key',
   sendInviteControlToKey: 'always encrypted to the given key',
 };
 const PRIVATE = new Set(['sendPlaintextTyped', 'sendPlaintextRaw', 'sendToPinned', 'sendEncryptedKnown', 'sendPinnedOrFail']);

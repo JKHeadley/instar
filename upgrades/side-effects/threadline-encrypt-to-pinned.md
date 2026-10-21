@@ -95,3 +95,7 @@ Requested from Echo on the PR.
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action` — closure **n/a** (negative declaration). No repeated or self-triggered action is added; each send is caller-initiated, as before.
+
+## Revision (Justin 2026-10-20: ships on)
+
+The rollout posture above is superseded: encryptToPinned defaults to enforce and refuseDowngrade to watch on every agent, no longer dev-gated. See `upgrades/side-effects/threadline-encryption-ships-on.md`.

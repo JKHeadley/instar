@@ -17,8 +17,17 @@ import {
   refuseDowngradeModeName,
   resolveRefuseDowngradeMode,
   shouldRefuseDowngradedPlaintext,
+  createDowngradeRefusalLog,
+  reportDowngradeRefusal,
+  REFUSE_DOWNGRADE_DEFAULT,
+  readRefuseDowngradeMode,
+  DOWNGRADE_REFUSAL_REASON,
+  DOWNGRADE_REFUSAL_REMEDY,
+  DOWNGRADE_REFUSAL_NOTICE,
+  DOWNGRADE_NOTICE_MIN_INTERVAL_MS,
   type RefuseDowngradeMode,
 } from '../../../src/threadline/refuseDowngrade.js';
+import { applyDefaults, getMigrationDefaults } from '../../../src/config/ConfigDefaults.js';
 import { DEV_GATED_FEATURES, getConfigByPath } from '../../../src/core/devGatedFeatures.js';
 import { resolveGuardConfigSnapshot } from '../../../src/monitoring/guardPosture.js';
 
@@ -60,18 +69,32 @@ function sasPaired(): { t: AgentTrustManager; p: { key: string; fp: string } } {
 }
 
 describe('the switch', () => {
-  it('resolves like encryptToPinned: dev gate when enabled is omitted, dryRun true unless explicitly false', () => {
-    expect(resolveRefuseDowngradeMode({}, {})).toEqual(OFF);
+  it('ships at WATCH for every agent: no value resolves to watch, dev agent or not; only an explicit dryRun:false refuses', () => {
+    expect(REFUSE_DOWNGRADE_DEFAULT).toEqual(WATCH);
+    expect(resolveRefuseDowngradeMode({}, {})).toEqual(WATCH);
+    expect(resolveRefuseDowngradeMode({}, { developmentAgent: false })).toEqual(WATCH);
     expect(resolveRefuseDowngradeMode({}, { developmentAgent: true })).toEqual(WATCH);
+    expect(resolveRefuseDowngradeMode({}, { threadline: { refuseDowngrade: { enabled: true } } })).toEqual(WATCH);
     expect(resolveRefuseDowngradeMode({ enabled: true, dryRun: false }, {})).toEqual(ENFORCE);
+    expect(resolveRefuseDowngradeMode({}, { threadline: { refuseDowngrade: { dryRun: false } } })).toEqual(ENFORCE);
     expect(resolveRefuseDowngradeMode({}, { threadline: { refuseDowngrade: { enabled: true, dryRun: false } } })).toEqual(ENFORCE);
+    expect(resolveRefuseDowngradeMode({}, { developmentAgent: true, threadline: { refuseDowngrade: { enabled: false } } })).toEqual(OFF);
     // The live value wins over the file (live-read switch).
     expect(resolveRefuseDowngradeMode({ enabled: false }, { threadline: { refuseDowngrade: { enabled: true, dryRun: false } } })).toEqual({ enabled: false, dryRun: false });
     expect([OFF, WATCH, ENFORCE].map(refuseDowngradeModeName)).toEqual(['off', 'watch', 'enforce']);
   });
 
-  it('is registered as a dev-gated feature, so /guards shows it resolved (live on a dev agent, dark on the fleet)', () => {
-    expect(DEV_GATED_FEATURES.find((f) => f.name === 'a2aRefuseDowngrade')).toMatchObject({ configPath: 'threadline.refuseDowngrade.enabled' });
+  it('upgrade: no value gets watch; an explicit off or enforce is never overwritten', () => {
+    const defaults = getMigrationDefaults('standalone');
+    const resolved = (cfg: Record<string, unknown>) => { applyDefaults(cfg, defaults); return refuseDowngradeModeName(resolveRefuseDowngradeMode({}, cfg as never)); };
+    expect(resolved({})).toBe('watch');
+    expect(resolved({ developmentAgent: true, threadline: {} })).toBe('watch');
+    expect(resolved({ threadline: { refuseDowngrade: { enabled: false } } })).toBe('off');
+    expect(resolved({ threadline: { refuseDowngrade: { enabled: true, dryRun: false } } })).toBe('enforce');
+  });
+
+  it('is no longer a dev-gated feature, and /guards shows it on for dev and non-dev agents', () => {
+    expect(DEV_GATED_FEATURES.find((f) => f.name === 'a2aRefuseDowngrade')).toBeUndefined();
     const snap = (cfg: Record<string, unknown>) => {
       const d = dir();
       fs.mkdirSync(path.join(d, '.instar'), { recursive: true });
@@ -79,8 +102,63 @@ describe('the switch', () => {
       return getConfigByPath(resolveGuardConfigSnapshot(d).resolved, 'threadline.refuseDowngrade.enabled');
     };
     expect(snap({ developmentAgent: true })).toBe(true);
-    expect(snap({})).toBe(false);
+    expect(snap({})).toBe(true);
     expect(snap({ developmentAgent: true, threadline: { refuseDowngrade: { enabled: false } } })).toBe(false);
+  });
+});
+
+describe('a refusal is loud, never silent (Echo, 2026-10-20)', () => {
+  const setup = (now: { t: number }) => {
+    const { t, p } = invitePaired();
+    const log = createDowngradeRefusalLog({ now: () => now.t });
+    const warns: string[] = [];
+    const reports: Array<{ reason: string; impact: string }> = [];
+    const notices: Array<{ fp: string; key: string; text: string }> = [];
+    const deps = {
+      trustManager: t, log, warn: (l: string) => warns.push(l), report: (r: { reason: string; impact: string }) => reports.push(r),
+      sendNotice: (fp: string, key: string, text: string) => notices.push({ fp, key, text }),
+    };
+    return { t, p, log, warns, reports, notices, deps };
+  };
+
+  it('logs the named reason and the remedy, keeps a per-peer record, reports once, and sends one encrypted notice to the PINNED key', () => {
+    const now = { t: Date.parse('2026-10-20T19:00:00Z') };
+    const { p, log, warns, reports, notices, deps } = setup(now);
+    const rec = reportDowngradeRefusal(deps, p.fp.toUpperCase());
+    expect(rec).toMatchObject({ fingerprint: p.fp, count: 1, reason: DOWNGRADE_REFUSAL_REASON, remedy: DOWNGRADE_REFUSAL_REMEDY, noticesSent: 1, noticeFailures: 0 });
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(DOWNGRADE_REFUSAL_REASON);
+    expect(warns[0]).toContain(DOWNGRADE_REFUSAL_REMEDY);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].reason).toContain(DOWNGRADE_REFUSAL_REASON);
+    expect(notices).toEqual([{ fp: p.fp, key: p.key, text: DOWNGRADE_REFUSAL_NOTICE }]);
+
+    // A second refusal within the hour: logged and counted, but no second notice or report.
+    now.t += 60_000;
+    reportDowngradeRefusal(deps, p.fp);
+    expect(warns).toHaveLength(2);
+    expect(notices).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+    expect(log.snapshot()).toMatchObject([{ fingerprint: p.fp, count: 2, noticesSent: 1 }]);
+
+    // After the interval, one more notice.
+    now.t += DOWNGRADE_NOTICE_MIN_INTERVAL_MS;
+    reportDowngradeRefusal(deps, p.fp);
+    expect(notices).toHaveLength(2);
+    expect(log.snapshot()[0]).toMatchObject({ count: 3, noticesSent: 2 });
+  });
+
+  it('a notice that cannot be sent is counted as a failure, and the refusal is still recorded', () => {
+    const now = { t: 1_000 };
+    const { p, log, deps } = setup(now);
+    reportDowngradeRefusal({ ...deps, sendNotice: () => { throw new Error('not connected'); } }, p.fp);
+    expect(log.snapshot()[0]).toMatchObject({ count: 1, noticesSent: 0, noticeFailures: 1 });
+  });
+
+  it('the per-peer log is bounded', () => {
+    const log = createDowngradeRefusalLog({ maxPeers: 2, now: (() => { let t = 0; return () => ++t; })() });
+    log.record('a'); log.record('b'); log.record('c');
+    expect(log.snapshot().map((r) => r.fingerprint).sort()).toEqual(['b', 'c']);
   });
 });
 
@@ -245,9 +323,24 @@ describe('shouldRefuseDowngradedPlaintext per mode', () => {
     expect(c).toMatchObject({ lookupErrors: 2, refusedDowngrade: 1, wouldRefuseDowngrade: 1 });
   });
 
-  it('an unreadable mode is off', () => {
+  it('a mode reader that throws yields the SHIPPED DEFAULT (watch), never off (Echo, #2236): counted, delivered', () => {
+    const boom = (): RefuseDowngradeMode => { throw new Error('x'); };
+    expect(readRefuseDowngradeMode(boom)).toEqual(REFUSE_DOWNGRADE_DEFAULT);
+    expect(refuseDowngradeModeName(readRefuseDowngradeMode(boom))).toBe('watch');
     const { t, p } = marked();
-    expect(shouldRefuseDowngradedPlaintext({ trustManager: t, mode: () => { throw new Error('x'); } }, p.fp, undefined)).toBe(false);
+    const c = createRefuseDowngradeCounters();
+    expect(shouldRefuseDowngradedPlaintext({ trustManager: t, mode: boom, counters: c }, p.fp, undefined)).toBe(false);
+    expect(c.wouldRefuseDowngrade).toBe(1);
+    // Control: a reader that answers is used as-is.
+    expect(readRefuseDowngradeMode(() => OFF)).toEqual(OFF);
+  });
+
+  it('a mode reader that throws still records the mark (watch, not off)', () => {
+    const { t, p } = invitePaired();
+    const c = createRefuseDowngradeCounters();
+    expect(noteEncryptedChat({ trustManager: t, mode: () => { throw new Error('x'); }, counters: c }, chat(p))).toBe(true);
+    expect(t.getProfileByFingerprint(p.fp)!.encryptedSeenAt).toBeDefined();
+    expect(c.marksRecorded).toBe(1);
   });
 });
 

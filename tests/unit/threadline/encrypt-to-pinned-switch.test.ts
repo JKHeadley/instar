@@ -16,10 +16,15 @@ import {
   encryptToPinnedModeName,
   labelUnverifiedPinnedPlaintext,
   resolveEncryptToPinnedMode,
+  ENCRYPT_TO_PINNED_DEFAULT,
+  readEncryptToPinnedMode,
   UNVERIFIED_PINNED_PLAINTEXT_NOTICE,
   type EncryptToPinnedMode,
 } from '../../../src/threadline/encryptToPinned.js';
 import type { RelayUnknownSenderPassDecision } from '../../../src/threadline/relayUnknownSenderTrust.js';
+import { DEV_GATED_FEATURES, getConfigByPath } from '../../../src/core/devGatedFeatures.js';
+import { resolveGuardConfigSnapshot } from '../../../src/monitoring/guardPosture.js';
+import { applyDefaults, getInitDefaults, getMigrationDefaults } from '../../../src/config/ConfigDefaults.js';
 import { buildForwardAnswer } from '../../../src/threadline/relayForward.js';
 import { ThreadlineClient, EncryptToPinnedSendError, ENCRYPT_TO_LOOKUP_FAILED } from '../../../src/threadline/client/ThreadlineClient.js';
 
@@ -131,14 +136,56 @@ describe('pairingMethod backfill on load', () => {
 });
 
 describe('threadline.encryptToPinned mode', () => {
-  it('follows the relayUnknownSenderTrust gate: omitted enabled rides developmentAgent; dryRun defaults true', () => {
-    expect(resolveEncryptToPinnedMode({}, {})).toEqual(OFF);
-    expect(resolveEncryptToPinnedMode({}, { developmentAgent: true })).toEqual(WATCH);
-    expect(resolveEncryptToPinnedMode({}, { developmentAgent: true, threadline: { encryptToPinned: { enabled: false } } })).toEqual(OFF);
-    expect(resolveEncryptToPinnedMode({}, { threadline: { encryptToPinned: { enabled: true, dryRun: false } } })).toEqual(ENFORCE);
-    // live config wins over the boot config
+  it('ships ON for every agent (Justin 2026-10-20): no value anywhere resolves to enforce, dev agent or not', () => {
+    expect(ENCRYPT_TO_PINNED_DEFAULT).toEqual(ENFORCE);
+    expect(resolveEncryptToPinnedMode({}, {})).toEqual(ENFORCE);
+    expect(resolveEncryptToPinnedMode({}, { developmentAgent: false })).toEqual(ENFORCE);
+    expect(resolveEncryptToPinnedMode({}, { developmentAgent: true })).toEqual(ENFORCE);
+    // What the shipped config default writes (`enabled: true`, dryRun omitted) is enforce too.
+    expect(resolveEncryptToPinnedMode({}, { threadline: { encryptToPinned: { enabled: true } } })).toEqual(ENFORCE);
+  });
+
+  it('an explicit value always wins: off and watch stay reachable, on dev and non-dev agents alike', () => {
+    for (const developmentAgent of [false, true]) {
+      expect(resolveEncryptToPinnedMode({}, { developmentAgent, threadline: { encryptToPinned: { enabled: false } } })).toEqual({ enabled: false, dryRun: false });
+      expect(encryptToPinnedModeName(resolveEncryptToPinnedMode({}, { developmentAgent, threadline: { encryptToPinned: { enabled: false } } }))).toBe('off');
+      expect(resolveEncryptToPinnedMode({}, { developmentAgent, threadline: { encryptToPinned: { dryRun: true } } })).toEqual(WATCH);
+      expect(resolveEncryptToPinnedMode({}, { developmentAgent, threadline: { encryptToPinned: { enabled: true, dryRun: true } } })).toEqual(WATCH);
+    }
+    // live config wins over the boot config, both ways
     expect(resolveEncryptToPinnedMode({ enabled: true, dryRun: false }, { threadline: { encryptToPinned: { enabled: false } } })).toEqual(ENFORCE);
+    expect(resolveEncryptToPinnedMode({ enabled: false }, {})).toEqual({ enabled: false, dryRun: false });
+    expect(resolveEncryptToPinnedMode({ dryRun: true }, {})).toEqual(WATCH);
     expect(MODES.map(encryptToPinnedModeName)).toEqual(['off', 'watch', 'enforce']);
+  });
+
+  it('upgrade: an agent with no value gets the default; an explicit off or watch is never overwritten', () => {
+    const defaults = getMigrationDefaults('standalone');
+    const resolved = (cfg: Record<string, unknown>) => {
+      applyDefaults(cfg, defaults);
+      return encryptToPinnedModeName(resolveEncryptToPinnedMode({}, cfg as never));
+    };
+    expect(resolved({})).toBe('enforce');
+    expect(resolved({ threadline: { relayEnabled: true } })).toBe('enforce');
+    expect(resolved({ developmentAgent: true, threadline: {} })).toBe('enforce');
+    expect(resolved({ threadline: { encryptToPinned: { enabled: false } } })).toBe('off');
+    expect(resolved({ threadline: { encryptToPinned: { dryRun: true } } })).toBe('watch');
+    expect(resolved({ developmentAgent: true, threadline: { encryptToPinned: { enabled: true, dryRun: true } } })).toBe('watch');
+    // Fresh init writes enabled:true and leaves dryRun to the code default.
+    expect(getConfigByPath(getInitDefaults('managed-project'), 'threadline.encryptToPinned')).toEqual({ enabled: true });
+  });
+
+  it('is no longer a dev-gated feature, and /guards shows it on for dev and non-dev agents', () => {
+    expect(DEV_GATED_FEATURES.find((f) => f.configPath.startsWith('threadline.encryptToPinned'))).toBeUndefined();
+    const snap = (cfg: Record<string, unknown>) => {
+      const d = dir();
+      fs.mkdirSync(path.join(d, '.instar'), { recursive: true });
+      fs.writeFileSync(path.join(d, '.instar', 'config.json'), JSON.stringify(cfg));
+      return getConfigByPath(resolveGuardConfigSnapshot(d).resolved, 'threadline.encryptToPinned.enabled');
+    };
+    expect(snap({})).toBe(true);
+    expect(snap({ developmentAgent: true })).toBe(true);
+    expect(snap({ threadline: { encryptToPinned: { enabled: false } } })).toBe(false);
   });
 });
 
@@ -192,8 +239,19 @@ describe('the send resolver', () => {
     expect(createEncryptToPinnedResolver({ trustManager: t, mode: () => ENFORCE })(inv.fp, 'send')).toBeNull();
   });
 
-  it('a mode reader that throws: null (an unreadable mode is off)', () => {
-    expect(createEncryptToPinnedResolver({ trustManager: t, mode: () => { throw new Error('x'); } })(inv.fp, 'send')).toBeNull();
+  it('a mode reader that throws yields the SHIPPED DEFAULT (enforce), never off (Echo, #2236): the pinned key, fail-closed, the label', () => {
+    const boom = (): EncryptToPinnedMode => { throw new Error('x'); };
+    expect(readEncryptToPinnedMode(boom)).toEqual(ENCRYPT_TO_PINNED_DEFAULT);
+    expect(encryptToPinnedModeName(readEncryptToPinnedMode(boom))).toBe('enforce');
+    const counters = createEncryptToPinnedCounters();
+    const key = createEncryptToPinnedResolver({ trustManager: t, mode: boom, counters })(inv.fp, 'send');
+    expect(Buffer.isBuffer(key) && key.toString('hex')).toBe(inv.key);
+    expect(counters.encryptedToPinned).toBe(1);
+    expect(createEncryptToPinnedClientOptions({ mode: boom }).failClosed!()).toBe(true);
+    const d = { fingerprint: inv.fp, trustLevel: 'trusted' } as unknown as RelayUnknownSenderPassDecision;
+    expect(labelUnverifiedPinnedPlaintext({ trustManager: t, mode: boom, counters }, d, undefined)).toMatchObject({ notice: UNVERIFIED_PINNED_PLAINTEXT_NOTICE });
+    // Control: a reader that answers is used as-is.
+    expect(readEncryptToPinnedMode(() => OFF)).toEqual(OFF);
   });
 
   it('a trust lookup that throws: ENFORCE fails closed (the sentinel, not null); watch/off keep null; sends counted', () => {

@@ -1,4 +1,5 @@
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
+import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * HTTP API routes — health, status, sessions, jobs, events.
@@ -208,6 +209,7 @@ import {
   type PeerPresenceRead,
 } from '../threadline/peerDark.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
+import { hasMachinePick, resolveCreateMachineChoice, safeMachineLabel, type CreateMachineChoice, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
 import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
@@ -578,6 +580,7 @@ import {
 import {
   refuseDowngradeCounters,
   refuseDowngradeModeName,
+  downgradeRefusals,
   resolveRefuseDowngradeMode,
 } from '../threadline/refuseDowngrade.js';
 import { isRelayChainLoop } from '../messaging/MessageRouter.js';
@@ -1210,6 +1213,20 @@ export interface RouteContext {
     spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
     /** §3.3 2b — the pool seam, evaluated at call time. Absent ⇒ `dark`. */
     sessionPoolLocalClaim?: () => import('../core/dashboardTopicProfile.js').SessionPoolLocalClaimAnswer;
+    /** dashboard-new-session-machine-choice §3.4 step 3 — place a new topic on a
+     *  REMOTE machine and start it there (checked deliverMessage). Absent ⇒ a
+     *  remote machine pick answers `machine-choice-unavailable`. */
+    startTopicOnMachine?: (topicKey: string, targetMachineId: string, start: import('../core/dashboardMachineChoice.js').DashboardCreateStart, pin?: () => Promise<boolean> | boolean) => Promise<import('../core/dashboardMachineChoice.js').StartTopicOnMachineResult>;
+    /** §3.2 — is placement-pin replication (`ws13PinReplicate`) live here? A
+     *  machine pick requires it. Absent ⇒ false. */
+    pinReplicationLive?: () => boolean;
+    /** §3.2 — the start seam's inner function is bound (false during the boot
+     *  window before the router block ran). Absent ⇒ trust `startTopicOnMachine`. */
+    startSeamWired?: () => boolean;
+    /** §3.4 step 0 — ONE signed read-class mesh probe (`session-status`) to the
+     *  target, so the pre-flight covers the plane the start will use. Absent ⇒
+     *  no probe. */
+    probeMachineReachable?: (machineId: string) => Promise<boolean>;
   } | null;
   /** Playwright Profile Registry (docs/specs/playwright-profile-registry.md) —
    *  optional factory override. Production constructs the registry per-request
@@ -3395,6 +3412,16 @@ export function createRoutes(ctx: RouteContext): Router {
       operatorTopicId: () => ctx.telegram!.getLifelineTopicId(),
       enforcing: () => lifelineIngressGuard.mode() === 'enforce'
         && (ctx.telegram as unknown as { isPolling?: boolean }).isPolling !== true,
+      // Invites that were waiting for approval when the server restarted: told once each (spec §8).
+      restartNotices: ctx.pairingInvites.markers
+        ? { list: () => ctx.pairingInvites!.markers!.notices(), markNotified: (id: string) => ctx.pairingInvites!.markers!.markTelegramNotified(id) }
+        : undefined,
+      // The expiry in that notice is in the owner's own time zone when their user profile has one.
+      timeZone: async (owner) => {
+        if (owner === undefined) return undefined;
+        const { UserManager } = await import('../users/UserManager.js');
+        return new UserManager(ctx.config.stateDir).resolveFromTelegramUserId(owner)?.preferences?.timezone;
+      },
     })
     : null;
   ctx.guardRegistry?.register('telegramIngress.lifelineSecret', () => lifelineIngressGuard.guardStatus());
@@ -5180,7 +5207,9 @@ export function createRoutes(ctx: RouteContext): Router {
             },
             ctx.config as { developmentAgent?: boolean; threadline?: { refuseDowngrade?: { enabled?: boolean; dryRun?: boolean } } },
           );
-          return { ...mode, mode: refuseDowngradeModeName(mode), ...refuseDowngradeCounters };
+          // `refusals`: one record per peer whose plaintext was refused, with the named reason,
+          // the remedy and the notices sent back (Echo, 2026-10-20: never a silent drop).
+          return { ...mode, mode: refuseDowngradeModeName(mode), ...refuseDowngradeCounters, refusals: downgradeRefusals.snapshot() };
         })(),
       };
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
@@ -11216,7 +11245,57 @@ export function createRoutes(ctx: RouteContext): Router {
   /** §3.6 — seeds made from the default since boot (the sheet's count). */
   let newTopicDefaultSeedsSinceBoot = 0;
 
-  // §3.1 — what the dropdowns may offer on THIS machine.
+  // dashboard-new-session-machine-choice §3.4 step 0 — the TARGET's verdict on a
+  // door/model choice for a topic it is about to start (the parent's validator,
+  // against THIS machine's doors). Read-only; the intent header marks it as part
+  // of a create.
+  // @write-domain:none
+  router.post('/topic-profile/validate-choice', (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'validate-choice requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    const tp = ctx.topicProfile;
+    if (!tp) {
+      res.status(503).json({ ok: false, code: 'topic-profile-unavailable', error: 'Topic profiles not wired on this server' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const valid = validateDashboardProfileChoice(dashboardChoiceDeps(tp), { framework: body.framework, model: body.model });
+    if (!valid.ok) {
+      res.status(400).json({ ok: false, code: valid.code, error: valid.reason });
+      return;
+    }
+    res.json({ ok: true, framework: valid.framework, model: valid.model });
+  });
+
+  // §3.1 — what the dropdowns may offer on THIS machine. With ?machine=<id> for a
+  // peer (dashboard-new-session-machine-choice §3.4 step 0): that machine's doors
+  // and models, keeping THIS machine's new-topic default.
+  router.get('/topic-profile/options', async (req, res, next) => {
+    const machine = typeof req.query.machine === 'string' ? req.query.machine.trim() : '';
+    if (!machine || machine === ctx.meshSelfId) { next(); return; }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machine);
+    if (!peer) {
+      res.status(404).json({ error: `No reachable machine "${machine}"` });
+      return;
+    }
+    try {
+      const r = await fetch(`${peer.url}/topic-profile/options`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) {
+        res.status(502).json({ error: `That machine answered HTTP ${r.status}` });
+        return;
+      }
+      const remote = (await r.json()) as Record<string, unknown>;
+      const local = ctx.topicProfile?.newTopicDefault?.read() ?? null;
+      res.json({ ...remote, machine, newTopicDefault: { ...(local ?? { framework: null, model: null }), seedsSinceBoot: newTopicDefaultSeedsSinceBoot } });
+    } catch (err) {
+      res.status(502).json({ error: `Couldn't reach that machine: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
   router.get('/topic-profile/options', (_req, res) => {
     const tp = ctx.topicProfile;
     if (!tp) {
@@ -12015,9 +12094,127 @@ export function createRoutes(ctx: RouteContext): Router {
     const resolvedPlatform = platform || (headless ? 'headless' : (ctx.telegram ? 'telegram' : (ctx.slack ? 'slack' : 'headless')));
     const tp = ctx.topicProfile;
 
+    // dashboard-new-session-machine-choice §3.2 — a machine pick is a placement
+    // write, validated BEFORE anything is created. Automatic (absent / '' /
+    // 'auto') skips every rule here and behaves exactly as before.
+    let machineChoice: CreateMachineChoice = { kind: 'auto' };
+    let remoteStart: DashboardCreateStart | null = null;
+    const machineNotices: string[] = [];
+    if (hasMachinePick(body.machine)) {
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'Choosing a machine requires the X-Instar-Request: 1 intent header' });
+        return;
+      }
+      if (resolvedPlatform !== 'telegram' || !ctx.telegram) {
+        res.status(400).json({
+          ok: false,
+          code: 'machine-needs-telegram',
+          error: resolvedPlatform !== 'telegram'
+            ? `Choosing a machine needs a Telegram topic — "${resolvedPlatform}" sessions don't support it`
+            : 'Choosing a machine needs a Telegram topic, and Telegram is not connected on this server',
+        });
+        return;
+      }
+      const seamAnswer = tp?.sessionPoolLocalClaim?.() ?? { kind: 'dark' as const };
+      if (seamAnswer.kind === 'dark' || !ctx.topicPinStore) {
+        res.status(400).json({ ok: false, code: 'machine-choice-unavailable', reason: 'pool-dark', error: 'Choosing a machine needs the multi-machine session pool, which is not running on this agent. Use Automatic.' });
+        return;
+      }
+      // not-authoritative falls through to the existing placement pre-check below.
+      if (seamAnswer.kind === 'ready') {
+        if (!tp?.pinReplicationLive?.() || !ctx.replicatedRecordEmitter) {
+          res.status(400).json({ ok: false, code: 'machine-choice-unavailable', reason: 'pin-replication-dark', error: 'Choosing a machine needs machine pins to be shared between machines (multiMachine.seamlessness.ws13PinReplicate), which is off on this agent. Use Automatic.' });
+          return;
+        }
+        const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
+        const choice = resolveCreateMachineChoice({ machine: body.machine, selfMachineId: ctx.meshSelfId ?? null, capacities: caps });
+        if (choice.kind === 'error') {
+          res.status(choice.status).json({ ok: false, code: choice.code, error: choice.error, ...(choice.known ? { known: choice.known } : {}) });
+          return;
+        }
+        if (choice.kind === 'remote') {
+          const cap = caps.find((c) => c.machineId === choice.machineId);
+          if (cap && cap.clockSkewStatus === 'suspect-clock-removed') {
+            res.status(409).json({ ok: false, code: 'machine-clock-suspect', error: `${choice.nickname}'s clock is out of step with the other machines right now, so it can't take new topics. Pick another machine or Automatic.` });
+            return;
+          }
+          if (!tp.startTopicOnMachine || tp.startSeamWired?.() === false) {
+            res.status(400).json({ ok: false, code: 'machine-choice-unavailable', reason: 'start-not-wired', error: 'This server cannot start topics on other machines yet. Use Automatic.' });
+            return;
+          }
+          if (cap?.seamlessnessFlags?.dashboardCreateReceive !== true) {
+            res.status(409).json({ ok: false, code: 'machine-needs-update', error: `${choice.nickname} can't start dashboard topics yet (it needs the latest Instar version, the session pool and Telegram). Pick another machine or Automatic.` });
+            return;
+          }
+          if (choice.quotaBlocked) machineNotices.push('machine-quota-blocked');
+          // §3.4 step 0 — the mesh plane the start will ride is probed FIRST (one
+          // signed read-class `session-status`), so a target reachable over HTTP
+          // but not over the mesh is refused here, never pinned in `unknown`.
+          if (tp.probeMachineReachable) {
+            let reachable = false;
+            try { reachable = await tp.probeMachineReachable(choice.machineId); } catch { /* @silent-fallback-ok: refused below with 502 machine-unreachable */ reachable = false; }
+            if (!reachable) {
+              res.status(502).json({ ok: false, code: 'machine-unreachable', reason: 'mesh', step: 'validate-on-target', error: `Couldn't reach ${choice.nickname} over the machine-to-machine link (the one the start uses), so the topic was not created. Check its tunnel or local-network link, then try again.` });
+              return;
+            }
+          }
+          // §3.4 step 0 — the door/model is validated on the TARGET.
+          const def = hasPreference ? null : (tp.newTopicDefault?.read() ?? null);
+          const want = hasPreference
+            ? { framework: body.framework, model: body.model, source: 'dashboard-create' as const }
+            : def ? { framework: def.framework, model: def.model ?? null, source: 'new-topic-default' as const } : null;
+          let validated: { framework: string; model: string | null } | null = null;
+          if (want) {
+            const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === choice.machineId);
+            if (!peer) {
+              res.status(502).json({ ok: false, code: 'machine-unreachable', step: 'validate-on-target', error: `Couldn't reach ${choice.nickname} to check the door and model, so the topic was not created.` });
+              return;
+            }
+            let verdict: { ok?: boolean; framework?: string; model?: string | null; code?: string; error?: string } = {};
+            try {
+              const r = await fetch(`${peer.url}/topic-profile/validate-choice`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+                body: JSON.stringify({ framework: want.framework, model: want.model }),
+                signal: AbortSignal.timeout(5000),
+              });
+              if (r.status === 401 || r.status === 403) {
+                // The peer did not accept this machine's API token: the pool's
+                // Bearer read plane (every ?scope=pool view) fails to it the same
+                // way. Refuse by name — never start on an unchecked door.
+                res.status(502).json({ ok: false, code: 'machine-unreachable', reason: 'peer-auth', step: 'validate-on-target', error: `${choice.nickname} did not accept this machine's credentials for the door check (HTTP ${r.status}; its pool views fail the same way), so the topic was not created. The machines need matching API tokens for cross-machine reads.` });
+                return;
+              }
+              verdict = (await r.json().catch(() => ({}))) as typeof verdict;
+              if (!r.ok && verdict.ok === undefined) throw new Error(`HTTP ${r.status}`);
+            } catch (err) {
+              res.status(502).json({ ok: false, code: 'machine-unreachable', step: 'validate-on-target', error: `Couldn't reach ${choice.nickname} to check the door and model (${err instanceof Error ? err.message : String(err)}), so the topic was not created.` });
+              return;
+            }
+            if (verdict.ok === true && typeof verdict.framework === 'string') {
+              validated = { framework: verdict.framework, model: typeof verdict.model === 'string' ? verdict.model : null };
+            } else if (want.source === 'dashboard-create') {
+              res.status(400).json({ ok: false, code: verdict.code ?? 'choice-refused-on-target', step: 'validate-on-target', error: `${choice.nickname} can't run that choice: ${verdict.error ?? 'refused'}` });
+              return;
+            } else {
+              machineNotices.push('default-not-available-on-target');
+            }
+          }
+          remoteStart = {
+            framework: validated?.framework ?? null,
+            model: validated?.model ?? null,
+            source: validated ? want!.source : null,
+            machineNickname: choice.nickname,
+          };
+        }
+        machineChoice = choice;
+      }
+    }
+
     // §3.3 step 1 — a preference is a profile write: intent header, Telegram
-    // only, validated BEFORE anything is created.
-    if (hasPreference) {
+    // only, validated BEFORE anything is created. A remote machine pick was
+    // validated on the target above.
+    if (hasPreference && machineChoice.kind !== 'remote') {
       if (req.headers['x-instar-request'] !== '1') {
         res.status(403).json({ error: 'Choosing a door/model requires the X-Instar-Request: 1 intent header' });
         return;
@@ -12071,7 +12268,7 @@ export function createRoutes(ctx: RouteContext): Router {
         topicId = topic.topicId;
         reused = topic.reused === true;
       } catch (err) {
-        if (hasPreference) {
+        if (hasPreference || machineChoice.kind !== 'auto') {
           res.status(502).json({ ok: false, step: 'create-topic', error: `Telegram topic creation failed: ${err instanceof Error ? err.message : String(err)}` });
           return;
         }
@@ -12080,8 +12277,159 @@ export function createRoutes(ctx: RouteContext): Router {
 
       if (topicId !== undefined) {
         const key = String(topicId);
-        if (reused && hasPreference) {
-          res.status(409).json({ ok: false, code: 'topic-exists', topicId, step: 'create-topic', error: 'A topic with this name already exists — switch it from its session view.' });
+        if (reused && (hasPreference || machineChoice.kind !== 'auto')) {
+          res.status(409).json({ ok: false, code: 'topic-exists', topicId, step: 'create-topic', error: machineChoice.kind !== 'auto' ? 'A topic with this name already exists — a machine choice never moves an existing topic. Use "move this to <machine>" in that topic instead.' : 'A topic with this name already exists — switch it from its session view.' });
+          return;
+        }
+
+        // dashboard-new-session-machine-choice §3.3/§3.4 step 3d — pin the new
+        // topic to the chosen machine (the ONE-HLC pin funnel, same as POST
+        // /pool/transfer). Written AFTER ownership is placed (never for a refused
+        // start), so an ownership reconciler adopting a replicated pin can never race
+        // the placement. A pin failure after the placement is reported, never fatal —
+        // ownership already routes the topic.
+        const pinChosenMachine = async (machineId: string): Promise<boolean> => {
+          try {
+            const { setPinWithOneHlc } = await import('../core/TopicPinMutation.js');
+            setPinWithOneHlc(
+              { pinStore: ctx.topicPinStore!, emitter: ctx.replicatedRecordEmitter ?? null },
+              key,
+              machineId,
+              true,
+              { kind: 'agent', sessionRef: 'dashboard-create' },
+            );
+            return true;
+          } catch {
+            // @silent-fallback-ok: surfaced to the operator as the machine-pin-not-written notice
+            machineNotices.push('machine-pin-not-written');
+            return false;
+          }
+        };
+
+        // §3.4 — another machine: no local claim, seed or spawn.
+        if (machineChoice.kind === 'remote' && remoteStart) {
+          const target = machineChoice;
+          // step 2 — the lease may have moved since validation.
+          const again = tp?.sessionPoolLocalClaim?.() ?? { kind: 'dark' as const };
+          if (again.kind !== 'ready') {
+            // Nothing was placed, so a pin here cannot race a placement: write it so
+            // the new lease holder places the topic's first message on the target.
+            const pinned = await pinChosenMachine(target.machineId);
+            res.status(409).json({
+              ok: false, code: 'placement-not-authoritative-here', topicId, step: 'place', pinned,
+              error: pinned
+                ? `The topic was created and pinned to ${target.nickname}, but this machine stopped placing new topics before it could start it. Send the topic a message: it starts on ${target.nickname}.`
+                : `The topic was created, but this machine stopped placing new topics before it could start it on ${target.nickname}, and the pin could not be written. Send the topic a message, then move it with "move this to ${target.nickname}".`,
+            });
+            return;
+          }
+          // step 3 — place → checked deliver → settle → pin (3a–3d).
+          const label = safeMachineLabel(target.nickname, target.machineId);
+          const started = await tp!.startTopicOnMachine!(key, target.machineId, { ...remoteStart, machineNickname: label }, () => pinChosenMachine(target.machineId));
+          if (!started.ok && started.code === 'topic-owned-elsewhere') {
+            res.status(409).json({ ok: false, code: 'topic-owned-elsewhere', topicId, step: 'place', reason: started.reason, error: 'This topic is already owned by a machine — nothing was started.' });
+            return;
+          }
+          if (!started.ok && started.code === 'start-superseded') {
+            // step 3c — another machine took the topic during the deliver round
+            // trip: its placement stands; nothing pinned or posted from here.
+            const ownerCap = started.ownerNow ? (ctx.machinePoolRegistry?.getCapacities() ?? []).find((c) => c.machineId === started.ownerNow) : undefined;
+            const ownerLabel = ownerCap ? safeMachineLabel(ownerCap.nickname, ownerCap.machineId) : (started.ownerNow ?? 'another machine');
+            const sameTarget = started.ownerNow === target.machineId;
+            const whatHappened = started.statusNow === 'missing'
+              ? `The topic's ownership record disappeared while it was being started on ${target.nickname}, so this start is not asserted over it and the topic is not pinned to ${target.nickname}. Send the topic a message: placement starts it afresh.`
+              : started.ownerNow == null || started.statusNow === 'released'
+              ? `The topic's ownership record was released while it was being started on ${target.nickname} (another placement moved it on), so this start is not asserted over it and the topic is not pinned to ${target.nickname}. Send the topic a message: placement starts it afresh.`
+              : sameTarget
+                ? `The topic's ownership record moved on to a newer placement on ${target.nickname} while this start was in flight, so this start is not asserted over it and no pin was written here. Send the topic a message: it goes to ${target.nickname} under that newer placement.`
+                : `${ownerLabel} took ownership of the topic while it was being started on ${target.nickname}, so it is not pinned to ${target.nickname}. Send the topic a message: it goes to ${ownerLabel}.`;
+            res.status(202).json({
+              ok: true, session: null, name: topicName, topicId, slackChannelId: null, platform: resolvedPlatform,
+              headless: false, reused: false,
+              machine: { machineId: target.machineId, nickname: target.nickname },
+              started: started.delivered === 'rejected' ? 'refused' : started.delivered === 'accepted' ? 'requested' : 'unknown',
+              ownership: 'superseded',
+              ownerNow: { machineId: started.ownerNow, nickname: ownerCap?.nickname ?? null, status: started.statusNow, epoch: started.epochNow },
+              profileRequested: remoteStart.framework ? { framework: remoteStart.framework, model: remoteStart.model } : null,
+              profileValidatedOn: remoteStart.framework ? target.machineId : null,
+              notices: machineNotices,
+              error: `${whatHappened}${started.delivered === 'rejected' || sameTarget ? '' : ` If ${target.nickname} also started a session, the duplicate is closed automatically.`}`,
+            });
+            return;
+          }
+          if (!started.ok && started.code === 'start-failed') {
+            // step 3 rejected — released and NOT pinned (a refusing target is never
+            // pinned); the topic is free for ordinary placement on its next message.
+            if (!started.settled) machineNotices.push('ownership-not-confirmed');
+            res.status(502).json({
+              ok: false, code: 'start-remote-failed', step: 'start-remote', topicId, released: started.released,
+              notices: machineNotices,
+              error: started.settled
+                ? `${target.nickname} refused to start the session (${started.error}). The topic exists but is not pinned: send it a message and it starts wherever placement puts it, or pick ${target.nickname} again once it accepts starts. The chosen door and model were not applied.`
+                : `${target.nickname} refused to start the session (${started.error}), and this machine could not confirm the topic's ownership record. The topic exists and is not pinned. If your messages in it go unanswered, move it with "move this to ${target.nickname}". The chosen door and model were not applied.`,
+            });
+            return;
+          }
+          // step 3e — the creator's one line, once the start was handed over (or
+          // may have been): it describes the placement THIS machine just made and
+          // the door/model REQUESTED; the target posts only corrections.
+          const doorText = remoteStart.framework
+            ? ` Requested: ${frameworkLabel(remoteStart.framework)}${remoteStart.model ? ` · ${remoteStart.model}` : ''}.`
+            : '';
+          const line = started.ok
+            ? `This topic is assigned to ${label}; its session is starting there.${doorText}`
+            : `This topic is assigned to ${label}. No confirmation came back that its session started — send a message here and it goes to ${label}.${doorText}`;
+          try {
+            await (tp!.discloseCreationSeed?.(key, line) ?? Promise.resolve(undefined));
+          } catch {
+            machineNotices.push('machine-notice-not-sent');
+          }
+          const settled = (started as { settled?: boolean }).settled !== false;
+          if (!settled) {
+            machineNotices.push('ownership-not-confirmed');
+            res.status(202).json({
+              ok: true, session: null, name: topicName, topicId, slackChannelId: null, platform: resolvedPlatform,
+              headless: false, reused: false,
+              machine: { machineId: target.machineId, nickname: target.nickname },
+              started: started.ok ? 'requested' : 'unknown',
+              ownership: 'not-confirmed',
+              profileRequested: remoteStart.framework ? { framework: remoteStart.framework, model: remoteStart.model } : null,
+              profileValidatedOn: remoteStart.framework ? target.machineId : null,
+              notices: machineNotices,
+              error: `The start was sent to ${target.nickname}, but this machine could not confirm the topic's ownership record. If your messages in the topic go unanswered, move it with "move this to ${target.nickname}".`,
+            });
+            return;
+          }
+          if (!started.ok) {
+            // start-unknown — no definitive answer; ownership is kept on the target.
+            res.status(202).json({
+              ok: true, session: null, name: topicName, topicId, slackChannelId: null, platform: resolvedPlatform,
+              headless: false, reused: false,
+              machine: { machineId: target.machineId, nickname: target.nickname },
+              started: 'unknown',
+              detail: started.error,
+              profileRequested: remoteStart.framework ? { framework: remoteStart.framework, model: remoteStart.model } : null,
+              profileValidatedOn: remoteStart.framework ? target.machineId : null,
+              notices: machineNotices,
+              error: `No confirmation came back from ${target.nickname}, so the session may or may not have started there. Send the topic a message: it goes to ${target.nickname} either way. If the start never arrived, it begins on that machine's default door and model.`,
+            });
+            return;
+          }
+          res.status(201).json({
+            ok: true,
+            session: null,
+            name: topicName,
+            topicId,
+            slackChannelId: null,
+            platform: resolvedPlatform,
+            headless: false,
+            reused: false,
+            machine: { machineId: target.machineId, nickname: target.nickname },
+            started: 'requested',
+            profileRequested: remoteStart.framework ? { framework: remoteStart.framework, model: remoteStart.model } : null,
+            profileValidatedOn: remoteStart.framework ? target.machineId : null,
+            notices: machineNotices,
+          });
           return;
         }
 
@@ -12106,6 +12454,7 @@ export function createRoutes(ctx: RouteContext): Router {
             return;
           }
         }
+        if (machineChoice.kind === 'self' && !reused) await pinChosenMachine(machineChoice.machineId);
 
         // Step 3 — seed (explicit pick, else the new-topic default). Never on reuse.
         let seed: Awaited<ReturnType<typeof seedTopicProfileAtCreation>> | null = null;
@@ -12196,7 +12545,7 @@ export function createRoutes(ctx: RouteContext): Router {
             source: resolved.sources,
             label: frameworkLabel(resolved.framework),
           },
-          notices: resolved.notices,
+          notices: machineNotices.length ? [...resolved.notices, ...machineNotices] : resolved.notices,
           seed: seed
             ? (seed.outcome === 'seeded'
               ? { outcome: 'seeded', framework: seed.framework, model: seed.model, modelDropped: seed.modelDropped }
@@ -12204,6 +12553,7 @@ export function createRoutes(ctx: RouteContext): Router {
             : null,
           placement: settled,
           switchableAfterFirstMessage: true,
+          ...(machineChoice.kind === 'self' ? { machine: { machineId: machineChoice.machineId, nickname: machineChoice.nickname }, started: 'here' } : {}),
         });
         return;
       }
@@ -18237,6 +18587,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   }
 
+  // GET /telegram/system-topics — this machine's record of the agent-wide system
+  // topics (📢 Updates, 🔔 Attention, 🩺 Agent Health). A standby reads the lease
+  // holder's record here and adopts it instead of minting its own topics
+  // (src/messaging/SystemTopicAdoption.ts). Read-only.
+  router.get('/telegram/system-topics', (_req, res) => {
+    res.json({ topics: readSystemTopicIds((key) => ctx.state.get(key)), holdsLease: !ctx.state.readOnly });
+  });
+
   // POST /telegram/post-update — route an update/announcement message to the
   // Agent Updates topic, deterministically.
   //
@@ -18818,7 +19176,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       .filter((p) => typeof p.fingerprint === 'string' && /^[0-9a-f]{32}$/.test(p.fingerprint) && p.fingerprint !== ownFp
         && (!p.relayFirstContact || p.pairingState !== undefined))
       .map((p) => ({ fp: p.fingerprint as string, name: p.agent, pairingState: p.pairingState ?? null }));
-    res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts(), knownPeers });
+    // restartNotices: invites that were waiting for approval when the server restarted (their
+    // secret was in memory only, so they are gone). Secret-free: a hash id, claimed names, expiry.
+    let restartNotices: unknown[] = [];
+    try { restartNotices = (pi.markers?.notices() ?? []).map(({ id, claimedAgent, claimedOwner, exp }) => ({ id, claimedAgent, claimedOwner, exp })); } catch { restartNotices = []; }
+    res.json({ invites: pi.store.list(), pendingAccepts: pi.flow.listPendingAccepts(), knownPeers, restartNotices });
+  });
+
+  // Dismiss a restart notice. Bearer: dismissing a reminder grants nothing.
+  router.delete('/threadline/pairing/restart-notices/:id', (req, res) => {
+    const pi = invitesOrRefuse(req, res);
+    if (!pi) return;
+    const id = String(req.params.id || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(id)) {
+      res.status(400).json({ error: 'id must be 64 hex characters' });
+      return;
+    }
+    if (!pi.markers?.dismiss(id)) {
+      res.status(404).json({ error: 'no such notice' });
+      return;
+    }
+    res.json({ ok: true, id });
   });
 
   // Revoke an open invite (making it useless). Bearer: revoking only removes an option.
@@ -20912,6 +21290,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
+      // dashboard-new-session-machine-choice §3.5 — the page labels its OWN server.
+      selfMachineId: ctx.meshSelfId ?? null,
       router: sync
         ? {
             holder: sync.leaseHolder,
@@ -35559,46 +35939,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       credSend(res, 400, { error: 'accountId (string) is required' });
       return;
     }
-    const assignments = cr.ledger.getAssignments();
-    const sourceSlot = assignments.find((a) => a.accountId === accountId)?.slot;
-    if (!sourceSlot) {
-      credSend(res, 400, { error: `unknown account — ${accountId} is not a known ledger tenant`, knownAccounts: assignments.filter((a) => a.accountId).map((a) => a.accountId) });
-      return;
-    }
-    // Resolve the canonical default slot from the ledger (the assignment whose slot is ~/.claude).
-    const { credentialSlotKey } = await import('../core/OAuthRefresher.js');
-    const defaultKey = credentialSlotKey('~/.claude');
-    const defaultSlot = assignments.find((a) => credentialSlotKey(a.slot) === defaultKey)?.slot;
-    if (!defaultSlot) {
-      credSend(res, 400, { error: 'no default (~/.claude) slot is in the ledger — cannot set-default' });
-      return;
-    }
-    if (sourceSlot === defaultSlot) {
-      credSend(res, 200, { enabled: true, outcome: 'noop', reason: `${accountId} is already the default-slot tenant` });
-      return;
-    }
-    const verdict = cr.levers.evaluateSwap(sourceSlot, defaultSlot, force === true);
-    if (!verdict.allowed) {
-      cr.audit.audit({ event: 'set-default-refused', accountId, code: verdict.code, reason: verdict.reason });
-      credSend(res, 429, { error: verdict.reason, code: verdict.code });
-      return;
-    }
-    cr.audit.audit({ event: 'set-default-invoked', accountId, sourceSlot, defaultSlot, forced: verdict.forced });
     try {
-      const result = await cr.swapExecutor.swap(sourceSlot, defaultSlot);
-      if (result.outcome === 'swapped') cr.levers.recordSwap(sourceSlot, defaultSlot, verdict.forced);
-      void cr.audit.attention({
-        id: `credential-set-default:${accountId}`,
-        title: 'The default credential account was flipped',
-        summary: `set-default → ${accountId} into ~/.claude: ${result.outcome}${verdict.forced ? ' (FORCED)' : ''}. ${result.reason}`,
-        category: 'credential-repointing',
-        priority: 'NORMAL',
-        sourceContext: 'credential-set-default',
-      });
-      cr.audit.audit({ event: 'set-default-result', accountId, outcome: result.outcome });
-      credSend(res, 200, { enabled: true, accountId, forced: verdict.forced, ...result });
+      const { setDefaultCredentialAccount } = await import('../core/CredentialSetDefault.js');
+      const result = await setDefaultCredentialAccount(cr, accountId, { force, sourceContext: 'credential-set-default' });
+      if (!result.ok) {
+        const knownAccounts = result.code === 'unknown-account'
+          ? cr.ledger.getAssignments().filter((a) => a.accountId).map((a) => a.accountId)
+          : undefined;
+        credSend(res, result.status, { error: result.reason, code: result.code, ...(knownAccounts ? { knownAccounts } : {}) });
+        return;
+      }
+      const { ok: _ok, ...body } = result;
+      credSend(res, 200, { enabled: true, ...body });
     } catch (err) {
-      cr.audit.audit({ event: 'set-default-error', accountId, error: err instanceof Error ? err.message : 'unknown' });
       credSend(res, 500, { error: err instanceof Error ? err.message : 'set-default failed' });
     }
   });

@@ -2,8 +2,8 @@
  * E2E (HTTP) lifecycle test for the proactive pre-limit swap. Tier-3: boots a
  * REAL Express server. Key assertion: the feature is ALIVE — the routes answer
  * 200 in BOTH the dark state (no monitor → enabled:false, never 503) and the
- * live state (real ProactiveSwapMonitor wired → a pre-emptive swap of the
- * untagged interactive session is driven end-to-end over HTTP).
+ * live state (real ProactiveSwapMonitor wired → a Q3-safe default-slot
+ * re-point for the untagged interactive session is driven over HTTP).
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -50,7 +50,7 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
     expect(await check.json()).toEqual({ enabled: false, swapped: [], considered: 0, refreshed: false });
   });
 
-  it('LIVE: pre-emptively swaps the untagged interactive session off an at-pressure account, end-to-end', async () => {
+  it('LIVE: re-points the default slot for an untagged interactive session without changing its binding', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proactive-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
     pool.addFixture({ id: 'adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'a'), email: 'adriana@sagemindai.io' });
@@ -59,13 +59,19 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
     pool.update('adriana', { lastQuota: { sevenDay: { utilizationPct: 84, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
     pool.update('justin', { lastQuota: { sevenDay: { utilizationPct: 12, resetsAt: '2026-06-13T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
 
-    const swaps: Array<{ sessionName: string; exhaustedAccountId: string }> = [];
+    const sessionSwaps: Array<{ sessionName: string; exhaustedAccountId: string }> = [];
+    const defaultFlips: string[] = [];
     const monitor = new ProactiveSwapMonitor({
       listAccounts: () => pool.list(),
       // the primary interactive session — untagged, on the default login (adriana)
       listRunningSessions: () => [{ sessionName: 'echo-subscription-auth-standard', accountId: null, startedAt: '2026-06-09T11:00:00Z' }],
       resolveDefaultAccountId: async () => 'adriana',
-      swap: async (a) => { swaps.push({ sessionName: a.sessionName, exhaustedAccountId: a.exhaustedAccountId }); return { swapped: true, toAccountId: 'justin' }; },
+      swap: async (a) => { sessionSwaps.push({ sessionName: a.sessionName, exhaustedAccountId: a.exhaustedAccountId }); return { swapped: true, toAccountId: 'justin' }; },
+      defaultSlotRepoint: {
+        enabled: true,
+        dryRun: false,
+        setDefaultAccount: async (accountId) => { defaultFlips.push(accountId); return { ok: true, outcome: 'swapped' }; },
+      },
       now: () => Date.parse('2026-06-09T12:00:00Z'),
     });
     server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, proactiveSwapMonitor: monitor });
@@ -75,13 +81,14 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
     expect(status.status).toBe(200);
     expect((await status.json()).enabled).toBe(true);
 
-    // the deterministic "verify it works" lever drives a real pre-limit swap
+    // The deterministic check drives the slot-level rescue, never a session refresh.
     const check = await fetch(server.url + '/subscription-pool/proactive-swap/check', { method: 'POST' });
     expect(check.status).toBe(200);
     const body = await check.json();
     expect(body.enabled).toBe(true);
-    expect(body.swapped).toEqual(['echo-subscription-auth-standard']);
-    expect(swaps).toEqual([{ sessionName: 'echo-subscription-auth-standard', exhaustedAccountId: 'adriana' }]);
+    expect(body.swapped).toEqual([]);
+    expect(defaultFlips).toEqual(['justin']);
+    expect(sessionSwaps).toEqual([]);
   });
 
   it('LOGIN LOSS: the HTTP check keeps dry-run inert, then the promoted trigger is alive end-to-end', async () => {
@@ -123,7 +130,7 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
       listAccounts: () => pool.list(),
       listRunningSessions: () => [{
         sessionName: 'interactive-login-loss',
-        accountId: null,
+        accountId: 'lost',
         loginLossAccountId: 'lost',
         refreshable: true,
         startedAt: new Date(now - 60_000).toISOString(),

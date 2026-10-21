@@ -7,7 +7,7 @@
  * scratch dir and the script drives it in the repo.
  */
 
-import { classifyReleaseCut } from '../release-cut-diff.mjs';
+import { classifyReleaseCut, compareSemver } from '../release-cut-diff.mjs';
 
 /** The remotes whose `<remote>/main` pre-push-gate.js's pickRef may choose, in its order. */
 export const GATE_BASE_REMOTES = ['JKHeadley', 'origin', 'upstream'];
@@ -481,4 +481,104 @@ export function smokeFailureVerdict(viewState, name, version) {
     return { pending: false, message: `the post-publish smoke test failed, and ${name}@${version} IS visible on npm — the published tarball itself failed the smoke test` };
   }
   return { pending: true, message: `the post-publish smoke test failed: ${name}@${version} is not visible on npm yet (${viewState}).\n${npmPendingNotice(name, version)}` };
+}
+
+/**
+ * Is npm AHEAD of main? `latest` is `npm view <name> version`; `local` is
+ * main's package.json version. npm ahead means a release was published and its
+ * release commit never landed (1.3.1362, 2026-10-20: published by a session
+ * that never ran --push-only; main stayed at 1.3.1361). Not a bump to make
+ * silently: the version on npm has notes and consumed fragments that main
+ * still lacks.
+ */
+export function npmAheadOfMain(latest, local) {
+  const SEMVER = /^\d+\.\d+\.\d+$/;
+  if (!SEMVER.test(String(latest)) || !SEMVER.test(String(local))) return false;
+  return compareSemver(latest, local) > 0;
+}
+
+/** The refusal text for an unfinished release, naming both remedies. */
+export function unfinishedReleaseMessage(name, latest, local, remote = 'origin') {
+  return [
+    `${name}@${latest} is on npm but main's package.json is ${local}: release v${latest} was published and its`,
+    `release commit never landed on main. Finish it before cutting a new release, by either:`,
+    `  1. running --push-only from the worktree that still holds the v${latest} cut:`,
+    `       node scripts/release-local.mjs --push-only --remote ${remote}`,
+    `  2. or, if that worktree is gone, rebuilding the cut from the published tarball and landing it:`,
+    `       node scripts/release-local.mjs --reconcile ${latest} --remote ${remote}`,
+    `     (upgrades/${latest}.md verbatim from the tarball; the fragments that existed at its gitHead deleted;`,
+    `      package.json and package-lock.json bumped; committed with hooks on and pushed like --push-only).`,
+  ].join('\n');
+}
+
+/** The release-note fragments present under upgrades/next/ at `commit`. */
+export function consumedFragmentsAt(run, commit) {
+  const r = run('git', ['ls-tree', '--name-only', `${commit}:upgrades/next`]);
+  if (r.status !== 0) return { ok: false, paths: [] };
+  return { ok: true, paths: r.stdout.split('\n').filter((f) => f.endsWith('.md')).map((f) => `upgrades/next/${f}`) };
+}
+
+/**
+ * Set the version in package.json / package-lock.json text. The lock's root
+ * package entry is bumped too. 2-space JSON plus a newline, which is how npm
+ * writes both files (a round-trip of the current files is byte-identical).
+ */
+export function bumpVersionJson(text, version, { lock = false } = {}) {
+  const o = JSON.parse(text);
+  o.version = version;
+  if (lock && o.packages && o.packages['']) o.packages[''].version = version;
+  return JSON.stringify(o, null, 2) + '\n';
+}
+
+/**
+ * Does a fragment's text appear in the released guide? assemble-next-md
+ * replaces the H1 title and merges section bodies under one H2 each (keeping
+ * every H2 title), so the check is: every line of the fragment that is not its
+ * H1 title, an HTML comment or blank appears as a line of the guide. A fragment
+ * that fails this was never released, so --reconcile must not delete it.
+ * @returns {{ ok: boolean, missing: string[] }}
+ */
+export function fragmentReleasedIn(fragmentText, guideText) {
+  const guideLines = new Set(String(guideText).split('\n').map((l) => l.trim()));
+  const content = String(fragmentText).split('\n').map((l) => l.trim())
+    .filter((l) => l && !/^#\s/.test(l) && !/^<!--.*-->$/.test(l));
+  const missing = content.filter((l) => !guideLines.has(l));
+  return { ok: missing.length === 0, missing };
+}
+
+/**
+ * The highest vX.Y.Z tag in `git ls-remote --tags <remote>` output, if it is
+ * AHEAD of main's package.json version — a secondary unfinished-release
+ * signal that does not depend on npm visibility. Returns the version or null.
+ */
+export function remoteTagAheadOf(lsRemoteOutput, local) {
+  let best = null;
+  for (const line of String(lsRemoteOutput || '').split('\n')) {
+    const m = /refs\/tags\/v(\d+\.\d+\.\d+)(\^\{\})?$/.exec(line.trim());
+    if (!m) continue;
+    if (!best || compareSemver(m[1], best) > 0) best = m[1];
+  }
+  return best && /^\d+\.\d+\.\d+$/.test(String(local)) && compareSemver(best, local) > 0 ? best : null;
+}
+
+/** The refusal for a release left in flight on THIS clone (marker present). */
+export function inflightRefusal(marker, remote = 'origin') {
+  const v = marker && marker.version ? marker.version : '<unknown>';
+  return [
+    `A release of v${v} is in flight from this clone (started ${marker && marker.startedAt ? marker.startedAt : 'at an unknown time'}` +
+      `${marker && marker.worktree ? ` in ${marker.worktree}` : ''}). It was about to publish, or published, and never landed.`,
+    `npm may still be holding it in "Validating", so \`npm view\` can show the old latest. Finish it first:`,
+    `  node scripts/release-local.mjs --push-only --remote ${remote}   (from ${marker && marker.worktree ? marker.worktree : 'the worktree that holds the cut'})`,
+    `  or, once npm shows it and that worktree is gone: node scripts/release-local.mjs --reconcile ${v} --remote ${remote}`,
+    `Both clear the marker when they land the release.`,
+  ].join('\n');
+}
+
+/**
+ * After a failure, may the in-flight marker be cleared? Only if THIS run wrote
+ * it and nothing can have reached npm (publish confirmed absent, or never
+ * attempted). Pending, unknown and published all keep it.
+ */
+export function shouldClearInflightOnFailure({ wroteMarker, published, publishUnknown, npmPending }) {
+  return Boolean(wroteMarker) && !published && !publishUnknown && !npmPending;
 }

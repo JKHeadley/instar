@@ -1,0 +1,54 @@
+{
+  "ts": "2026-10-21T02:41:00.612Z",
+  "slug": "telegram-notice-spam-and-system-topics",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 13,
+  "loc": 480,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/StateManager.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/messaging/SystemTopicAdoption.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 460,
+    "deletedLines": 20
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2163
+    ],
+    "notes": "Bug 1: PR #2163 (forward-to-holder, CMT-706 §4) emitted the delayed notice for every held send with no author check and no per-topic dedupe; background sends dominate on a standby. Bug 2 is latent: ensureAgentUpdatesTopic/ensureAgentAttentionTopic predate the read-only-standby guard; on a standby the create succeeded and state.set threw, so the id was never saved and the next boot created another. Agent Health lane id was in-memory only."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "system-topic-adoption registered: adoption is idempotent (unchanged id = no write) and withAdoptionBrake caps re-adopts at 3 per kind per boot, so a flapping holder settles at boundK 9 / perTarget 3; the notice gate only suppresses an existing notify (once per topic per 6h cooldown)"
+    }
+  },
+  "verdict": "blocked"
+}

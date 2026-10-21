@@ -692,6 +692,8 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 
 **Backtrack-tell:** new "the agent can do X" surface without policy evaluation step.
 
+**A Telegram tap is not proof of who pressed it** (`docs/specs/telegram-button-approval.md` §1 is the binding definition, 2026-10-19). A callback's sender arrives in a request body a local session can forge, and a genuine press proves only that something logged into the operator's account pressed. A tap may therefore authorise only: **S** — acts that move toward less agent action and can be undone with an audit record (stop, hold, cancel, decline-as-reopenable, freeze, disarm a merge), never turning off a guard, monitor, alarm or armed safety kill, never suppressing or snoozing a notice, never reducing logging; and **R** — a re-grant a spec defines explicitly: byte-identical to a dashboard-approved envelope, within its caps, after a system-raised brake on an allow-list, never after the operator's own revoke. Everything else is **P** and stays on the dashboard gate; unclassified means P. The rung-1 "yes/no tap" in the Self-Unblock ladder describes how small the request is, not where the approval happens. Enforced by `src/data/telegramCallbackClasses.json` and its unit test once built. **Backtrack-tell:** a new `callback_data` prefix whose handler grants, widens, arms, publishes, restores, turns off a control or mutes a notice.
+
 ---
 
 ### L16. Project Scope (multi-spec plan persistence)

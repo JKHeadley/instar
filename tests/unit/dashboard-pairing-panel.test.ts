@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
 // @ts-expect-error — plain JS dashboard module
-import { renderPairing, renderPairings, renderPending, renderOpenInvites, finishPrompts, pendingCount, createController } from '../../dashboard/pairing.js';
+import { renderPairing, renderPairings, renderPending, renderOpenInvites, renderRestartNotices, finishPrompts, pendingCount, createController } from '../../dashboard/pairing.js';
 
 const FP = 'ab'.repeat(16);
 const IID = 'cd'.repeat(16);
@@ -20,7 +20,7 @@ const openInvite = { iid: IID, state: 'open', exp: later(60), createdAt: later(0
 const usedInvite = { iid: IID, state: 'used', exp: later(60), createdAt: later(0), acceptor: { fp: FP, key: 'k', agent: 'Carl', owner: 'Carl O', acceptedAt: later(1) } };
 const pendingAccept = { iid: 'ef'.repeat(16), claimedAgent: 'Scout', claimedOwner: 'Justin', inviterFp: FP, exp: later(30), checkCode: 'K7Q2' };
 
-interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[]; knownPeers?: any[] }
+interface Server { invites: any[]; pendingAccepts: any[]; pairings: any[]; knownPeers?: any[]; restartNotices?: any[]; down?: boolean }
 
 function setup(server: Server, reply: (url: string, opts: any) => { status: number; body: unknown } = () => ({ status: 200, body: { ok: true } })) {
   const dom = new JSDOM(`<button id="navToggle">&#9776; <span>Sessions</span></button><button class="tab" data-tab="threadline">Threadline</button>
@@ -33,7 +33,8 @@ function setup(server: Server, reply: (url: string, opts: any) => { status: numb
   const calls: Array<{ url: string; opts: any }> = [];
   const fetchImpl = async (url: string, opts: any = {}) => {
     calls.push({ url, opts });
-    if (url === '/threadline/pairing/invites' && !opts.method) return { status: 200, json: async () => ({ invites: server.invites, pendingAccepts: server.pendingAccepts, knownPeers: server.knownPeers ?? [] }) };
+    if (server.down) throw new TypeError('Failed to fetch'); // the server is restarting
+    if (url === '/threadline/pairing/invites' && !opts.method) return { status: 200, json: async () => ({ invites: server.invites, pendingAccepts: server.pendingAccepts, knownPeers: server.knownPeers ?? [], restartNotices: server.restartNotices ?? [] }) };
     if (url === '/threadline/pairing' && !opts.method) return { status: 200, json: async () => ({ pairings: server.pairings }) };
     const r = reply(url, opts);
     return { status: r.status, json: async () => r.body };
@@ -217,5 +218,83 @@ describe('pairing card — page wiring', () => {
     // the PIN field comes BEFORE the decisions it unlocks
     expect(html.indexOf('id="pairPinRow"')).toBeLessThan(html.indexOf('id="pairPending"'));
     expect(html).toMatch(/h\.version !== window\.__dashServerVersion/);
+  });
+});
+
+describe('pairing card — after a server restart', () => {
+  const notice = { id: '1f'.repeat(32), claimedAgent: 'Scout', claimedOwner: 'Justin', exp: later(40) };
+
+  it('an invite a restart cleared shows at the very top, names labelled as claimed, with the time left', () => {
+    const html = renderPending({ invites: [usedInvite], pendingAccepts: [pendingAccept], restartNotices: [notice] }, NOW);
+    expect(html.trimStart().startsWith('<div class="pair-card pair-alarm" data-restart-notice=')).toBe(true);
+    expect(html.indexOf('data-restart-notice')).toBeLessThan(html.indexOf('data-pending-accept'));
+    expect(html).toMatch(/An invite from the agent that calls itself <strong>Scout<\/strong>, which says it belongs to <strong>Justin<\/strong> was waiting for your approval and was cleared when the agent restarted/);
+    expect(html).toContain('40 min left');
+    expect(renderRestartNotices([{ ...notice, exp: later(-1) }], NOW)).toBe(''); // expired: nothing
+    expect(renderRestartNotices([{ ...notice, claimedAgent: '<img src=x onerror=alert(1)>' }], NOW)).not.toContain('<img');
+  });
+
+  it('the notice is not a decision: no count, no PIN field', async () => {
+    const server = { ...empty(), restartNotices: [notice] };
+    const { els, c } = setup(server);
+    await c.load();
+    expect(els.pending.querySelector('[data-restart-notice]')).not.toBeNull();
+    expect(els.tabButton.textContent).toBe('Threadline');
+    expect(els.pinRow.style.display).toBe('none');
+  });
+
+  it('Dismiss sends a Bearer DELETE (no PIN) and the notice goes on the next refresh', async () => {
+    const server = { ...empty(), restartNotices: [notice] };
+    const { els, c, calls } = setup(server, (url, opts) => {
+      if (opts.method === 'DELETE' && url === `/threadline/pairing/restart-notices/${notice.id}`) { server.restartNotices = []; return { status: 200, body: { ok: true } }; }
+      return { status: 500, body: {} };
+    });
+    await c.load();
+    await click(c, els.pending.querySelector('[data-dismiss-notice]'));
+    expect(calls.find((x) => x.opts.method === 'DELETE')!.url).toBe(`/threadline/pairing/restart-notices/${notice.id}`);
+    expect(JSON.parse(calls.find((x) => x.opts.method === 'DELETE')!.opts.body)).toEqual({});
+    expect(els.pending.querySelector('[data-restart-notice]')).toBeNull();
+  });
+
+  it('"Could not reach the agent" clears by itself once the server answers again', async () => {
+    const server = { ...empty(), pendingAccepts: [pendingAccept] };
+    const { els, c } = setup(server);
+    await c.load();
+    server.down = true;
+    await c.load();
+    expect(els.notice.textContent).toBe('Could not reach the agent: Failed to fetch');
+    expect(els.notice.className).toContain('mnd-notice-err');
+    await c.load(); // still down: still shown
+    expect(els.notice.textContent).toBe('Could not reach the agent: Failed to fetch');
+    server.down = false;
+    await c.load();
+    expect(els.notice.textContent).toBe('');
+    expect(els.notice.className).toBe('mnd-notice');
+  });
+
+  it('the same goes for an error from a button pressed while the server was down', async () => {
+    const server = { ...empty(), pendingAccepts: [pendingAccept] };
+    const { els, c } = setup(server);
+    await c.load();
+    server.down = true;
+    await click(c, els.pending.querySelector('[data-decline]'));
+    expect(els.notice.textContent).toBe('Could not reach the agent: Failed to fetch');
+    server.down = false;
+    await c.load();
+    expect(els.notice.textContent).toBe('');
+  });
+
+  it('a later message the operator should read is NOT cleared by a refresh', async () => {
+    const server = { ...empty(), pendingAccepts: [pendingAccept] };
+    const { els, c } = setup(server, () => ({ status: 409, body: { error: 'this invite has expired' } }));
+    await c.load();
+    server.down = true;
+    await c.load();
+    server.down = false;
+    els.pin.value = '135790';
+    await click(c, els.pending.querySelector('[data-approve]')); // a real refusal replaces the connection error
+    expect(els.notice.textContent).toBe("That didn't work: this invite has expired");
+    await c.load(); await c.load();
+    expect(els.notice.textContent).toBe("That didn't work: this invite has expired");
   });
 });

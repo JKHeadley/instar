@@ -8,6 +8,8 @@
  *  2. The standalone invites, Instar accepts, the standalone finishes: both mutual-verified.
  *  3. A credential goes standalone → Instar encrypted to the pinned key, and Instar reads it.
  *  4. An unpaired standalone's credential send is refused before anything leaves.
+ *  5. With verified pairing enforced, Instar's real InboundMessageGate PASSes the paired standalone's
+ *     ordinary message and credential (they travel as type 'message'; 0.6.0's 'chat' was refused).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
@@ -65,11 +67,11 @@ describe('threadline without Instar: standalone ↔ Instar', () => {
     return { fp, pairing, ws, project, events, received };
   }
 
-  async function instar(name: string, port: number) {
+  async function instar(name: string, port: number, verifiedPairing: { enabled: boolean; dryRun: boolean; credentialShareEnforced: boolean } = { enabled: true, dryRun: true, credentialShareEnforced: false }) {
     const project = createTempProject();
     const boot = await bootstrapThreadline({
       agentName: name, ownerName: `${name}-owner`, stateDir: project.stateDir, projectDir: project.dir, port, relayEnabled: true, relayUrl,
-      getVerifiedPairingConfig: () => ({ enabled: true, dryRun: true, credentialShareEnforced: false }),
+      getVerifiedPairingConfig: () => verifiedPairing,
     });
     expect(boot.relayClient?.connectionState).toBe('connected');
     const events: InviteEvent[] = [];
@@ -149,5 +151,38 @@ describe('threadline without Instar: standalone ↔ Instar', () => {
     expect(S.pairing.send(I.fp, 'secret', { credential: true })).toEqual({ sent: false, reason: 'peer-not-mutually-verified' });
     await new Promise((r) => setTimeout(r, 500));
     expect(I.inbox.length).toBe(before);
+  }, 60_000);
+  it('enforced verified pairing: Instar\'s inbound gate PASSes a paired standalone\'s ordinary message and credential', async () => {
+    // Strict: verified pairing on, live (not dryRun), credential sharing enforced.
+    const I = await instar('strict', 4274, { enabled: true, dryRun: false, credentialShareEnforced: true });
+    const S = await standalone('mcp-peer');
+    const gate = I.boot.inboundGate!;
+    const decisions: Array<{ from: string; action: string; reason?: string; text: string }> = [];
+    const evaluate = gate.evaluate.bind(gate);
+    vi.spyOn(gate, 'evaluate').mockImplementation(async (msg) => {
+      const d = await evaluate(msg);
+      decisions.push({ from: msg.from, action: d.action, reason: d.reason, text: JSON.stringify(msg.content) });
+      return d;
+    });
+
+    const inv = I.boot.pairingInvites!.flow.createInvite() as { ok: true; iid: string; message: string };
+    const r = await S.pairing.flow.receiveInvite(inv.message) as { ok: boolean; iid: string };
+    expect(S.pairing.flow.approveAccept(r.iid)).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(I.events.some((e) => e.kind === 'finish-prompt')).toBe(true), { timeout: 10_000 });
+    expect(I.boot.pairingInvites!.flow.approveFinish(inv.iid)).toMatchObject({ ok: true });
+    await vi.waitFor(() => {
+      expect(S.pairing.keys.isCredentialShareAllowedByFingerprint(I.fp)).toBe(true);
+      expect(I.boot.trustManager!.isCredentialShareAllowedByFingerprint(S.fp)).toBe(true);
+    }, { timeout: 10_000 });
+
+    expect(S.pairing.send(I.fp, 'an ordinary hello')).toMatchObject({ sent: true, encrypted: true });
+    expect(S.pairing.send(I.fp, 'the api key', { credential: true })).toMatchObject({ sent: true, encrypted: true });
+    const verdict = (needle: string) => decisions.find((d) => d.from === S.fp && d.text.includes(needle));
+    await vi.waitFor(() => {
+      expect(verdict('an ordinary hello')).toBeDefined();
+      expect(verdict('the api key')).toBeDefined();
+    }, { timeout: 10_000 });
+    expect(verdict('an ordinary hello')).toMatchObject({ action: 'pass' });
+    expect(verdict('the api key')).toMatchObject({ action: 'pass' });
   }, 60_000);
 });

@@ -10,26 +10,26 @@ Every route below except the Claude Desktop extension runs threadline-mcp with N
 
 ### Claude Desktop
 
-Download the one-click extension, [threadline-0.6.0.mcpb](https://github.com/JKHeadley/instar/releases/download/threadline-mcp-v0.6.0/threadline-0.6.0.mcpb), and open it. Claude Desktop shows an install window that asks for your agent's name and your own name; click Install. It doesn't need Node.js.
+Download the one-click extension, [threadline-0.6.1.mcpb](https://github.com/JKHeadley/instar/releases/download/threadline-mcp-v0.6.1/threadline-0.6.1.mcpb), and open it. Claude Desktop shows an install window that asks for your agent's name and your own name; click Install. It doesn't need Node.js.
 
 Claude Desktop can't ask you pairing questions inside the app, so Threadline opens a small page in your browser instead (see [Approving a pairing](#approving-a-pairing-in-an-app-that-cant-ask-you)).
 
 ### Cursor
 
-Click [Add Threadline to Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=threadline&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInRocmVhZGxpbmUtbWNwQDAuNi4wIl0sImVudiI6eyJUSFJFQURMSU5FX05BTUUiOiJ5b3VyLWFnZW50LW5hbWUiLCJUSFJFQURMSU5FX09XTkVSIjoiWW91ciBOYW1lIn19) and confirm in Cursor. If the page you're reading won't open the link, copy it into your browser's address bar:
+Click [Add Threadline to Cursor](cursor://anysphere.cursor-deeplink/mcp/install?name=threadline&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInRocmVhZGxpbmUtbWNwQDAuNi4xIl0sImVudiI6eyJUSFJFQURMSU5FX05BTUUiOiJ5b3VyLWFnZW50LW5hbWUiLCJUSFJFQURMSU5FX09XTkVSIjoiWW91ciBOYW1lIn19) and confirm in Cursor. If the page you're reading won't open the link, copy it into your browser's address bar:
 
 ```
-cursor://anysphere.cursor-deeplink/mcp/install?name=threadline&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInRocmVhZGxpbmUtbWNwQDAuNi4wIl0sImVudiI6eyJUSFJFQURMSU5FX05BTUUiOiJ5b3VyLWFnZW50LW5hbWUiLCJUSFJFQURMSU5FX09XTkVSIjoiWW91ciBOYW1lIn19
+cursor://anysphere.cursor-deeplink/mcp/install?name=threadline&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInRocmVhZGxpbmUtbWNwQDAuNi4xIl0sImVudiI6eyJUSFJFQURMSU5FX05BTUUiOiJ5b3VyLWFnZW50LW5hbWUiLCJUSFJFQURMSU5FX09XTkVSIjoiWW91ciBOYW1lIn19
 ```
 
 Then change the two names in Cursor's MCP settings.
 
 ### VS Code
 
-Click [Add Threadline to VS Code](vscode:mcp/install?%7B%22name%22%3A%22threadline%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22threadline-mcp%400.6.0%22%5D%2C%22env%22%3A%7B%22THREADLINE_NAME%22%3A%22your-agent-name%22%2C%22THREADLINE_OWNER%22%3A%22Your%20Name%22%7D%7D) and confirm in VS Code. If the link won't open, copy it into your browser's address bar:
+Click [Add Threadline to VS Code](vscode:mcp/install?%7B%22name%22%3A%22threadline%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22threadline-mcp%400.6.1%22%5D%2C%22env%22%3A%7B%22THREADLINE_NAME%22%3A%22your-agent-name%22%2C%22THREADLINE_OWNER%22%3A%22Your%20Name%22%7D%7D) and confirm in VS Code. If the link won't open, copy it into your browser's address bar:
 
 ```
-vscode:mcp/install?%7B%22name%22%3A%22threadline%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22threadline-mcp%400.6.0%22%5D%2C%22env%22%3A%7B%22THREADLINE_NAME%22%3A%22your-agent-name%22%2C%22THREADLINE_OWNER%22%3A%22Your%20Name%22%7D%7D
+vscode:mcp/install?%7B%22name%22%3A%22threadline%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22threadline-mcp%400.6.1%22%5D%2C%22env%22%3A%7B%22THREADLINE_NAME%22%3A%22your-agent-name%22%2C%22THREADLINE_OWNER%22%3A%22Your%20Name%22%7D%7D
 ```
 
 Then change the two names in VS Code's MCP settings.
@@ -39,7 +39,7 @@ Then change the two names in VS Code's MCP settings.
 In ChatGPT, open Settings, then MCP servers, then Add server, and choose STDIO. Fill in:
 
 - Command: `npx`
-- Arguments: `-y` and `threadline-mcp@0.6.0`
+- Arguments: `-y` and `threadline-mcp@0.6.1`
 - Environment: `THREADLINE_NAME` = your agent's name, `THREADLINE_OWNER` = your name
 
 ### Claude Code
@@ -55,7 +55,7 @@ Any app that reads an MCP config file can use this entry:
   "mcpServers": {
     "threadline": {
       "command": "npx",
-      "args": ["-y", "threadline-mcp@0.6.0"],
+      "args": ["-y", "threadline-mcp@0.6.1"],
       "env": { "THREADLINE_NAME": "your-agent-name", "THREADLINE_OWNER": "Your Name" }
     }
   }

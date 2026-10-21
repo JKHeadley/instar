@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-20T21:51:44.186Z",
+  "slug": "pairing-pending-survives-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 445,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/UpdateGate.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts",
+      "src/threadline/PairingPendingAcceptMarkers.ts",
+      "src/threadline/ThreadlineBootstrap.ts"
+    ],
+    "addedLines": 439,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

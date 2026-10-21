@@ -420,3 +420,48 @@ describe('StandalonePairing', () => {
     expect(await agent('d', wire, { relayHttpBase: null }).p.relayKeyFor(fp)).toBeNull();
   });
 });
+
+/**
+ * The wire type of ordinary chat (interop with Instar, 0.6.1). Instar's inbound gate reads
+ * `content.type` as the operation and allows `'message'`; 0.6.0 sent `'chat'`, which a strict
+ * Instar agent refused. Outbound now says `'message'` on every path; inbound accepts both.
+ */
+describe('StandalonePairing: ordinary chat travels as type "message"', () => {
+  const plaintextType = (e: Env) => JSON.parse(Buffer.from(String(e.payload), 'base64').toString('utf-8')).type;
+
+  it('all three send paths put type "message" on the wire: credential, pinned encrypted, and plaintext', async () => {
+    const wire = { out: [] as Env[] };
+    const A = agent('a', wire), B = agent('b', wire), C = agent('c', wire);
+    await pair(wire, A, B);
+    // credential (encrypted to the pin): B decrypts it and reports the type it carried
+    expect(A.p.send(B.fp, 'a secret', { credential: true })).toMatchObject({ sent: true, encrypted: true });
+    expect(await pump(wire, [A, B])).toEqual([{ kind: 'message', text: 'a secret', type: 'message', encrypted: true, credential: true }]);
+    // ordinary chat to a pinned peer (encrypted)
+    expect(A.p.send(B.fp, 'hello paired')).toMatchObject({ sent: true, encrypted: true });
+    expect(await pump(wire, [A, B])).toEqual([{ kind: 'message', text: 'hello paired', type: 'message', encrypted: true, credential: false }]);
+    // ordinary chat to an unpaired agent (plaintext): read the payload itself
+    expect(A.p.send(C.fp, 'hello stranger')).toMatchObject({ sent: true, encrypted: false });
+    const pt = wire.out.pop()!;
+    expect(pt).not.toHaveProperty('signature');
+    expect(plaintextType(pt)).toBe('message');
+    expect(await C.p.receive(pt as never)).toEqual({ kind: 'message', text: 'hello stranger', type: 'message', encrypted: false, credential: false });
+  });
+
+  it('inbound "chat" (older threadline-mcp) and "message" are both ordinary chat, encrypted and plaintext, and both set the encryptedSeen mark', async () => {
+    for (const type of ['chat', 'message']) {
+      const wire = { out: [] as Env[] };
+      const A = agent('a', wire), B = agent('b', wire), C = agent('c', wire);
+      await pair(wire, A, B);
+      // Encrypted, as an older peer would send it: built through the same encrypt path with the old type.
+      (A.p as unknown as { sendEncrypted(to: string, k: Buffer, m: Record<string, unknown>): string }).sendEncrypted(B.fp, B.key, { content: `enc ${type}`, type });
+      expect(await pump(wire, [A, B])).toEqual([{ kind: 'message', text: `enc ${type}`, type, encrypted: true, credential: false }]);
+      expect(B.p.encryptedChatSeen(A.fp)).toBe(true);
+      // An old-style credential (type 'chat' + metadata.credential) is still a credential.
+      (A.p as unknown as { sendEncrypted(to: string, k: Buffer, m: Record<string, unknown>): string }).sendEncrypted(B.fp, B.key, { content: 'old secret', type, metadata: { credential: true } });
+      expect(await pump(wire, [A, B])).toEqual([{ kind: 'message', text: 'old secret', type, encrypted: true, credential: true }]);
+      // Plaintext from an unpaired sender.
+      const pt = { from: C.fp, to: B.fp, messageId: `pt-${type}`, payload: Buffer.from(JSON.stringify({ type, text: `plain ${type}` })).toString('base64') };
+      expect(await B.p.receive(pt as never)).toEqual({ kind: 'message', text: `plain ${type}`, type, encrypted: false, credential: false });
+    }
+  });
+});

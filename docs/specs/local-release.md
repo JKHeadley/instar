@@ -130,6 +130,22 @@ A merge to `main` reaches agents only when `.github/workflows/publish.yml` gets 
 - `--push-only` cannot tell "accepted, under review" from "never published", because both read absent. So its notice adds: if the version was never published (for example the publish step itself failed), do not use `--push-only`; re-run release-local normally.
 - An `unknown` registry answer (npm could not answer) is handled differently on the two paths, on purpose. The smoke path runs only after `npm publish` was accepted, so it counts `unknown` as pending. `--push-only` has no evidence of an accepted upload, so it reports `unknown` as UNKNOWN (`publishUnknown`) and does not claim npm is reviewing the version. Both stop, keep the tree, and never re-publish.
 
+**An unfinished release blocks a new one; `--reconcile <version>` finishes it (added 2026-10-20, after approval, from the 1.3.1362 incident).** instar 1.3.1362 was published (gitHead 7cdc5d571) by a session that never ran `--push-only`, so main stayed at 1.3.1361 until the cut was rebuilt by hand from the tarball (76d5a6098).
+- **Preflight:** a real run refuses (a dry run warns) on any of three signals, each naming the version and the remedies (`--push-only` from the worktree that holds the cut, or `--reconcile <version>`):
+  - **npm ahead:** `npm view instar version` (latest, with the same npm auth args as `--reconcile`) is ahead of main's package.json. An unreadable answer also stops a real run.
+  - **In-flight marker:** this clone has one. That signal does not depend on npm, because npm can hold a version in "Validating" while `npm view` still shows the old latest, which is the 1.3.1362 case (Echo, #2234). The marker is `release-local-inflight.json` in the git common dir, so every worktree of the clone sees it. It is written right before `npm publish` and cleared once main and the tag land (by the main flow, `--push-only` and `--reconcile`). A failure clears it only when this run wrote it and nothing can have reached npm.
+  - **Remote tag ahead:** the remote has a `v*` tag ahead of main's package.json.
+- **`--reconcile <version>`** rebuilds the cut automatically and never publishes. It requires:
+  - a clean tree at `<remote>/main`;
+  - the version ahead of main's package.json;
+  - npm showing it;
+  - its `npm view instar@<v> gitHead` on main's history.
+- **The rebuild:**
+  - takes `upgrades/<v>.md` verbatim from `npm pack instar@<v>` (the download directory is always removed);
+  - deletes the `upgrades/next/*.md` fragments that existed at that gitHead and are still on main, while later fragments are kept. A fragment is deleted only if its blob on main equals its blob at gitHead and its text (every line except the H1 title and comments) appears in the released guide. Otherwise the rebuild stops and names the file;
+  - bumps package.json and package-lock.json.
+- **Landing:** it then lands the cut exactly like `--push-only`, which re-checks the cut rule, commits with hooks on, and pushes main and the tag atomically. Tests drive it against a bare remote with a fake registry and tarball. Checked against the real 1.3.1362 tarball and gitHead, it produces the same guide and removes the same fragment as the hand rebuild.
+
 **Code layout.** The decisions live in `scripts/lib/release-local-steps.mjs`: `refreshGateBaseRefs`, `pushReleaseAtomically`, `pushTagThenMain`, `isReleaseCutCommit` / `incomingCommits`, `workingTreeReleaseCut`, `headContainsRemoteMain`, `remoteTagSha`, `publishedStateAfterFailure`, `otpRequirement`, `ciRunState` / `activePublishRuns`, `ciGateAction` and `dirtyToolFilesOnly`. Each takes an injected `run(cmd, args)`, so the tests drive real git.
 
 **Docs.** CONTRIBUTING.md gets a "Releasing (maintainers)" section: local release is the default when CI is starved, the three commands, and the differences from CI.

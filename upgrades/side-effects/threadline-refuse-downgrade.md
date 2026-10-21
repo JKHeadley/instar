@@ -65,3 +65,7 @@ Set `threadline.refuseDowngrade` to off. Marks stay on the profiles and are only
 ## Class-Closure Declaration (display-only mirror)
 
 `unbounded-self-action`: closure **n/a**. The mark is written at most once per peer per pairing, on a received message.
+
+## Revision (Justin 2026-10-20: ships on)
+
+The rollout posture above is superseded: encryptToPinned defaults to enforce and refuseDowngrade to watch on every agent, no longer dev-gated. See `upgrades/side-effects/threadline-encryption-ships-on.md`.

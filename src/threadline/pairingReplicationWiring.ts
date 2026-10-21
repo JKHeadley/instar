@@ -390,5 +390,5 @@ export function encryptToPinnedMultiMachineNote(args: {
   pairingReplicationEnabled: boolean;
 }): string | null {
   if (args.encryptToPinnedMode !== 'enforce' || args.activeMachineCount < 2 || args.pairingReplicationEnabled) return null;
-  return `threadline.encryptToPinned is enforce on a ${args.activeMachineCount}-machine agent, but multiMachine.stateSync.threadlinePairing.enabled is off: another machine that takes the relay has no inherited pin, so invite peers get the older rule there (spec threadline-standalone-pairing D9, rollout step 5b).`;
+  return `threadline.encryptToPinned is enforce on a ${args.activeMachineCount}-machine agent, but multiMachine.stateSync.threadlinePairing.enabled is off: another machine that takes the relay has no inherited pin, so invite peers get the older rule there (encrypted only when the relay supplied their keys). This machine still always encrypts to them. Turn pairing replication on so every machine does (spec threadline-standalone-pairing D9, rollout step 5b).`;
 }

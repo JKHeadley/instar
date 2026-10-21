@@ -622,6 +622,15 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Send a fixed server notice to a peer, ENCRYPTED to its PINNED identity key (never a key the
+   * relay supplied, never plaintext). Used to tell a paired peer that a plaintext message in its
+   * name was refused (spec threadline-standalone-pairing D6). Throws when it cannot be sent.
+   */
+  sendNoticeToPinned(recipientId: AgentFingerprint, pinnedIdentityPubHex: string, content: string): { messageId: string; threadId: string } {
+    return this.sendToPinned(recipientId, pinnedIdentityPubHex, { content });
+  }
+
+  /**
    * Send the signed `pair-verify` receipt after this side's operator confirmed the words
    * (spec §3.4). The receipt is signed with our identity key and travels encrypted to the
    * peer's PINNED key, the same route as a credential: the receiver reads it from the

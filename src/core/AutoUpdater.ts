@@ -27,7 +27,7 @@ import type { StateManager } from './StateManager.js';
 import type { LiveConfig } from '../config/LiveConfig.js';
 import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
-import type { SessionManagerLike, SessionMonitorLike, SessionInfo } from './UpdateGate.js';
+import type { SessionManagerLike, SessionMonitorLike, SessionInfo, RestartHold } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
@@ -355,6 +355,15 @@ export class AutoUpdater {
   setSessionDeps(sessionManager: SessionManagerLike, sessionMonitor?: SessionMonitorLike | null): void {
     this.sessionManager = sessionManager;
     this.sessionMonitor = sessionMonitor ?? null;
+  }
+
+  /**
+   * Hold automatic update restarts while in-flight work a restart would LOSE exists (see
+   * UpdateGate "Restart holds"). Each hold ends at its own `until`, so the hold is bounded.
+   * A manual apply (POST /updates/apply) is an operator act and is not held.
+   */
+  setRestartHold(key: string, provider: () => RestartHold[]): void {
+    this.gate.setRestartHoldProvider(key, provider);
   }
 
   /**
@@ -733,6 +742,42 @@ export class AutoUpdater {
         return;
       }
       console.log(`[AutoUpdater] Cascade dampener: ${decision.reason}`);
+    }
+
+    // Restart holds — in-flight work that a restart would lose rather than resume (a pairing
+    // invite waiting for the operator; its secret lives only in memory). Uses the same durable
+    // deferral record and retry timer as session deferral. The retry runs at the next 5-minute
+    // check or when the soonest hold ends, whichever is first, so the restart proceeds once the
+    // work finishes or expires. Not applied to a manual apply (bypassWindow).
+    //
+    // Holds also respect the gate's maxDeferralHours, counted from this version's first durable
+    // deferral (whatever its cause): past it, holds are logged and no longer hold. A hold whose
+    // end comes from untrusted input (an inviter-written expiry) can therefore never hold an
+    // update longer than the session gate's own ceiling.
+    if (!bypassWindow) {
+      const maxDeferralMs = this.gate.getStatus().maxDeferralHours * 3_600_000;
+      const firstDeferredAt = this.getActiveRestartDeferral(newVersion)?.firstDeferredAt;
+      const deferredSince = firstDeferredAt ? Date.parse(firstDeferredAt) : Number.NaN;
+      const holdCeiling = Number.isFinite(deferredSince) ? deferredSince + maxDeferralMs : Date.now() + maxDeferralMs;
+      let holds = this.gate.getActiveHolds();
+      if (holds.length > 0 && Date.now() >= holdCeiling) {
+        console.log(`[AutoUpdater] Restart holds for v${newVersion} ignored: max deferral (${this.gate.getStatus().maxDeferralHours}h) reached (${holds.map((h) => h.name).join(', ')})`);
+        holds = [];
+      }
+      if (holds.length > 0) {
+        const soonest = holds[0];
+        const retryMs = Math.max(1_000, Math.min(DEFAULT_RESTART_RETRY_MS, soonest.until - Date.now() + 1_000, holdCeiling - Date.now() + 1_000));
+        const reason = `held for in-flight work: ${holds.map((h) => `${h.reason} (until ${new Date(h.until).toISOString()})`).join('; ')}`;
+        console.log(`[AutoUpdater] Restart deferred for v${newVersion}: ${reason}. Will retry in ${Math.ceil(retryMs / 1000)}s`);
+        this.recordRestartDeferral({
+          targetVersion: newVersion,
+          reason,
+          currentBlockers: holds.map((h) => h.name),
+          nextRetryAt: new Date(Date.now() + retryMs).toISOString(),
+        });
+        this.scheduleDeferredRestartRetry(newVersion, retryMs, 'restart hold re-check');
+        return;
+      }
     }
 
     // Restart window gate — defer restart until the configured window unless bypassed.

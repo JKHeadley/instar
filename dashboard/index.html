@@ -1119,6 +1119,14 @@
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
+    /* Feedback tab decision headline (ACT-003): one sentence + at most one button. */
+    .fd-decision { border: 1px solid var(--border, #2a2a2a); border-left-width: 4px; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .fd-decision-action { border-left-color: #eab308; }
+    .fd-decision-calm { border-left-color: #16a34a; }
+    .fd-decision .ph-headline { font-size: 22px; }
+    .fd-decision .ph-subline { margin-top: 0; }
+    .fd-decision-btn { align-self: flex-start; flex: 0 0 auto; text-decoration: none; text-align: center; }
+    #fdControls[open] > .ph-section:first-of-type { margin-top: 12px; }
     /* ── Machines tab (Multi-Machine Session Pool §L2) — reuses .ph-root calm type ── */
     .machine-card { border: 1px solid var(--border, #2a2a2a); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; max-width: 720px; background: var(--panel-bg, transparent); }
     .machine-head { display: flex; align-items: center; gap: 10px; }
@@ -3244,6 +3252,13 @@
         <select id="newSessionModel" onchange="updateCreateButtonLabel()"></select>
         <div class="modal-hint" id="newSessionDoorHint">You can change this again after the topic's first message.</div>
         <div class="modal-note warn" id="newSessionRegimeNote" style="display:none"></div>
+      </div>
+      <div class="modal-field" id="newSessionMachineField" style="display:none">
+        <label for="newSessionMachine">Machine</label>
+        <select id="newSessionMachine" onchange="onNewSessionMachineChange()"></select>
+        <div class="modal-hint" id="newSessionMachineHint">Automatic lets the agent pick. Choose a machine to run this topic there.</div>
+      </div>
+      <div class="modal-field">
         <div class="modal-note err" id="newSessionError" style="display:none"></div>
       </div>
       <!-- Keep hidden checkbox for backward compat -->
@@ -3825,13 +3840,22 @@
         <h2 class="ph-title">Feedback Drain</h2>
         <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
-      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
-      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
-      <section id="fdAuthority" class="ph-section spend-arm-root"></section>
-      <section id="fdTriage" class="ph-section spend-arm-root"></section>
+      <p class="ph-intro">Reports from people using Instar come in here and are turned into fixes on their own. This page only needs you when it says so below.</p>
+      <div id="fdHeadline" class="ph-headline-wrap" aria-live="polite"><div class="fd-decision fd-decision-calm"><div class="ph-headline">Checking whether anything here needs you…</div></div></div>
+      <details id="fdControls" class="ph-detail">
+        <summary class="ph-detail-summary">Approvals and settings</summary>
+        <section id="fdAuthority" class="ph-section spend-arm-root"></section>
+        <section id="fdTriage" class="ph-section spend-arm-root"></section>
+      </details>
+      <details id="fdMore" class="ph-detail">
+        <summary class="ph-detail-summary">More detail</summary>
+        <div class="ph-detail-body">
+          <div class="ph-detail-row">State: <span id="fdPosture"></span></div>
+          <div class="ph-detail-row">Backlog: <span id="fdBacklog"></span></div>
+          <div class="ph-detail-row">Progress: <span id="fdProgress"></span></div>
+          <div class="ph-detail-row">Source integrity: <span id="fdSource"></span></div>
+        </div>
+      </details>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -5160,11 +5184,100 @@
         showRegimeNote('newSessionRegimeNote');
         onNewSessionPlatformChange();
       });
+      loadNewSessionMachines();
+    }
+
+    // ── Machine choice (docs/specs/dashboard-new-session-machine-choice.md §3.5) ──
+    // Every server-supplied string is set with textContent / option.text.
+    let newSessionMachinesReq = 0;
+    let newSessionSelfMachineId = null;
+    // True while the shared door/model options hold ANOTHER machine's list; every
+    // way out of the box (close, create, a non-Telegram platform, Automatic)
+    // restores this machine's own list so other screens never see the peer's.
+    let newSessionRemoteOptions = false;
+    function restoreLocalTopicProfileOptions() {
+      if (!newSessionRemoteOptions) return;
+      newSessionRemoteOptions = false;
+      loadTopicProfileOptions();
+    }
+
+    async function loadNewSessionMachines() {
+      const field = document.getElementById('newSessionMachineField');
+      const sel = document.getElementById('newSessionMachine');
+      const reqId = ++newSessionMachinesReq;
+      sel.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = '';
+      auto.text = 'Automatic';
+      sel.appendChild(auto);
+      sel.value = '';
+      field.style.display = 'none';
+      let data = null;
+      try {
+        const r = await fetch('/pool', { headers: { 'Authorization': `Bearer ${token}` } });
+        data = r.ok ? await r.json() : null;
+      } catch { data = null; }
+      // A late answer for a closed or re-opened box is ignored.
+      if (reqId !== newSessionMachinesReq || document.getElementById('newSessionModal').style.display === 'none') return;
+      const machines = (data && Array.isArray(data.machines)) ? data.machines : [];
+      if (machines.length < 2) return;
+      newSessionSelfMachineId = data.selfMachineId || null;
+      for (const m of machines) {
+        if (!m || typeof m.machineId !== 'string') continue;
+        const opt = document.createElement('option');
+        opt.value = m.machineId;
+        let label = (typeof m.nickname === 'string' && m.nickname) ? m.nickname : m.machineId;
+        const offline = m.online !== true;
+        // Only the status placement itself removes; a once-seen divergence is still placeable.
+        const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
+        if (m.machineId === newSessionSelfMachineId) label += ' (this machine)';
+        if (offline) label += ' (offline)';
+        else if (clockOff) label += ' (clock out of step)';
+        else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
+        opt.text = label;
+        opt.disabled = offline || !!clockOff;
+        sel.appendChild(opt);
+      }
+      onNewSessionPlatformChange();
+    }
+
+    function newSessionMachineIsRemote() {
+      const v = document.getElementById('newSessionMachine').value;
+      return !!v && v !== newSessionSelfMachineId;
+    }
+
+    // A remote pick lists THAT machine's doors and models (§3.4 step 0).
+    async function onNewSessionMachineChange() {
+      const v = document.getElementById('newSessionMachine').value;
+      showNote('newSessionError', '');
+      if (newSessionMachineIsRemote()) {
+        try {
+          const r = await fetch('/topic-profile/options?machine=' + encodeURIComponent(v), { headers: { 'Authorization': `Bearer ${token}` } });
+          if (r.ok) {
+            topicProfileOptions = await r.json();
+            newSessionRemoteOptions = true;
+          } else {
+            const d = await r.json().catch(() => ({}));
+            showNote('newSessionError', d.error || 'Could not read that machine\'s doors and models.');
+          }
+        } catch {
+          showNote('newSessionError', 'Could not reach that machine to read its doors and models.');
+        }
+      } else {
+        newSessionRemoteOptions = false;
+        await loadTopicProfileOptions();
+      }
+      if (document.getElementById('newSessionMachine').value !== v) return;
+      const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+      fillDoorSelect('newSessionDoor', def && def.framework ? def.framework : '', true);
+      fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value, def && def.framework ? def.model : null);
+      onNewSessionPlatformChange();
     }
 
     function closeNewSessionModal(e) {
       if (e && e.target !== e.currentTarget) return;
       document.getElementById('newSessionModal').style.display = 'none';
+      restoreLocalTopicProfileOptions();
     }
 
     async function createNewSession() {
@@ -5194,6 +5307,10 @@
         payload.framework = pick.framework;
         payload.model = pick.model;
       }
+      const machineSel = document.getElementById('newSessionMachine');
+      if (machineSel && machineSel.value && document.getElementById('newSessionMachineField').style.display !== 'none') {
+        payload.machine = machineSel.value;
+      }
 
       try {
         const resp = await fetch('/sessions/create', {
@@ -5216,9 +5333,19 @@
         }
 
         const where = data.profile ? ` on ${data.profile.label}${data.profile.model ? ' · ' + data.profile.model : ''}` : '';
-        showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' + where : ' (headless)'}`, 'success');
+        if (data.ownership === 'superseded' || data.ownership === 'not-confirmed') {
+          // §3.5 — ownership unsettled: the server's own sentence, as a warning.
+          showToast(data.error || `"${name}" was created, but which machine owns it is not settled yet. Send it a message.`, 'warning');
+        } else if (data.started === 'unknown') {
+          showToast(data.error || `"${name}" may still be starting on ${data.machine ? data.machine.nickname : 'the chosen machine'}.`, 'warning');
+        } else if (data.started === 'requested' && data.machine) {
+          showToast(`Starting "${name}" on ${data.machine.nickname}.`, 'success');
+        } else {
+          showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' + where : ' (headless)'}${data.machine ? ' on ' + data.machine.nickname : ''}`, 'success');
+        }
         document.getElementById('newSessionModal').style.display = 'none';
-        if (data.seed && data.seed.outcome === 'seeded') loadTopicProfileOptions();
+        if (newSessionRemoteOptions) restoreLocalTopicProfileOptions();
+        else if (data.seed && data.seed.outcome === 'seeded') loadTopicProfileOptions();
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
       } finally {
@@ -5395,6 +5522,13 @@
       document.getElementById('newSessionDoorHint').textContent = off && topicProfileOptions
         ? 'Door and model apply to Telegram topics only.'
         : 'You can change this again after the topic\'s first message.';
+      const machineSel = document.getElementById('newSessionMachine');
+      const showMachine = p !== 'headless' && p !== 'slack' && machineSel && machineSel.options.length > 2;
+      document.getElementById('newSessionMachineField').style.display = showMachine ? 'block' : 'none';
+      if (!showMachine && machineSel && machineSel.value) {
+        machineSel.value = '';
+        if (newSessionRemoteOptions) { onNewSessionMachineChange(); return; }
+      }
       updateCreateButtonLabel();
     }
 
@@ -10639,7 +10773,7 @@
           });
           const data = await response.json().catch(() => ({}));
           const note = M.resultNote(response.ok, data);
-          if (response.ok) { await loadFeedbackAuthority(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
+          if (response.ok) { await loadFeedbackAuthority(); void loadFeedbackHeadline(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
           return note;
         },
       });
@@ -10693,14 +10827,47 @@
           return note;
         },
       });
-      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; }
+      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; void loadFeedbackHeadline(); }
+    }
+    // Decision headline (ACT-003): one sentence naming what needs the operator and one
+    // button that brings the matching approval card into view. It has no PIN field, so it
+    // is safe to refresh on the poll. Reads the same GET routes the cards read.
+    let __fdhModule = null;
+    async function loadFeedbackHeadline() {
+      const root = document.getElementById('fdHeadline');
+      if (!root) return;
+      if (!__fdhModule) {
+        try { __fdhModule = await import('/dashboard/feedback-drain-headline.js'); }
+        catch (e) { console.error('[feedback-drain-headline] module load failed', e); return; }
+      }
+      const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
+      const [readiness, triageSummary, triageProposal, execute, queue] = await Promise.all([
+        get('/feedback-factory/readiness-authorities/proposal'), get('/feedback-factory/triage/summary'),
+        get('/feedback-factory/triage/authority/proposal'), get('/feedback-factory/execute/status'), get('/feedback-factory/triage/queue'),
+      ]);
+      const M = __fdhModule;
+      M.renderHeadline(document, root, M.decideHeadline({ readiness, triageSummary, triageProposal, execute, queue }), {
+        reveal: (todo) => {
+          const drawer = document.getElementById('fdControls');
+          if (drawer) drawer.open = true;
+          const card = document.getElementById(todo.target);
+          if (todo.press && card) {
+            const b = card.querySelector(`[data-ft-action="${todo.press}"]`);
+            if (b) b.click();
+          }
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          const field = todo.focus && document.getElementById(todo.focus);
+          if (field) setTimeout(() => field.focus({ preventScroll: true }), 300);
+        },
+      });
     }
     function startFeedbackDrain() {
       stopFeedbackDrain();
+      void loadFeedbackHeadline();
       void loadFeedbackAuthority();
       void loadFeedbackTriage();
       void loadFeedbackDrain();
-      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); void loadFeedbackHeadline(); }, 15000);
     }
     function stopFeedbackDrain() {
       if (__fdTimer) clearInterval(__fdTimer);

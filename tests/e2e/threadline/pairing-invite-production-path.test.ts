@@ -19,7 +19,10 @@ import type { InstarConfig } from '../../../src/core/types.js';
 import type { InviteEvent } from '../../../src/threadline/PairingInviteFlow.js';
 import type { EncryptToPinnedMode } from '../../../src/threadline/encryptToPinned.js';
 import { UNVERIFIED_PINNED_PLAINTEXT_NOTICE } from '../../../src/threadline/encryptToPinned.js';
-import { refuseDowngradeCounters, type RefuseDowngradeMode } from '../../../src/threadline/refuseDowngrade.js';
+import {
+  refuseDowngradeCounters, downgradeRefusals, DOWNGRADE_REFUSAL_REASON, DOWNGRADE_REFUSAL_REMEDY, DOWNGRADE_REFUSAL_NOTICE,
+  type RefuseDowngradeMode,
+} from '../../../src/threadline/refuseDowngrade.js';
 
 const PIN = '135790';
 
@@ -48,13 +51,13 @@ describe('invite pairing — production path', () => {
   let relayUrl: string;
   const sides: Side[] = [];
 
-  async function bootSide(name: string, port: number, encryptToPinned?: EncryptToPinnedMode, refuseDowngrade?: () => RefuseDowngradeMode): Promise<Side> {
-    const project = createTempProject();
+  async function bootSide(name: string, port: number, encryptToPinned?: EncryptToPinnedMode | (() => EncryptToPinnedMode), refuseDowngrade?: () => RefuseDowngradeMode, reuseProject?: TempProject): Promise<Side> {
+    const project = reuseProject ?? createTempProject();
     const auth = `${name}-auth`;
     const boot = await bootstrapThreadline({
       agentName: name, ownerName: `${name}-owner`, stateDir: project.stateDir, projectDir: project.dir, port, relayEnabled: true, relayUrl,
       getVerifiedPairingConfig: () => ({ enabled: true, dryRun: true, credentialShareEnforced: false }),
-      ...(encryptToPinned ? { getEncryptToPinnedMode: () => encryptToPinned } : {}),
+      ...(encryptToPinned ? { getEncryptToPinnedMode: typeof encryptToPinned === 'function' ? encryptToPinned : () => encryptToPinned } : {}),
       ...(refuseDowngrade ? { getRefuseDowngradeMode: refuseDowngrade } : {}),
     });
     expect(boot.relayClient?.connectionState).toBe('connected');
@@ -349,5 +352,131 @@ describe('invite pairing — production path', () => {
     modeAtB = { enabled: false, dryRun: true };
     await sendPlaintext('plaintext, switch off again');
     await vi.waitFor(() => expect(passedAtB).toContain('plaintext, switch off again'), { timeout: 10_000 });
+  }, 60_000);
+
+  it('a server restart with an invite waiting: the invite is gone (its secret was in memory only), a notice says so, and pasting it again restores it', async () => {
+    const A = await bootSide('lyra', 4081);
+    const B = await bootSide('otto', 4082);
+    const made = await call(A, 'POST', '/threadline/pairing/invites', { ttlMinutes: 30 });
+    expect(made.status).toBe(200);
+    const message = made.body.message as string;
+    const exp = made.body.exp as string;
+    expect((await call(B, 'POST', '/threadline/pairing/invites/inspect', { invite: message })).status).toBe(200);
+    const before = await call(B, 'GET', '/threadline/pairing/invites');
+    expect((before.body.pendingAccepts as unknown[]).length).toBe(1);
+    expect(before.body.restartNotices).toEqual([]);
+
+    // Restart B: stop its server and Threadline, then boot both again on the same state dir.
+    await B.server.stop(); B.trust.shutdown(); await B.boot.shutdown();
+    sides.splice(sides.indexOf(B), 1);
+    const B2 = await bootSide('otto', 4082, undefined, undefined, B.project);
+    const after = await call(B2, 'GET', '/threadline/pairing/invites');
+    expect(after.status).toBe(200);
+    expect(after.body.pendingAccepts).toEqual([]);
+    const notices = after.body.restartNotices as Array<{ id: string; claimedAgent: string; claimedOwner: string; exp: string }>;
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ claimedAgent: 'lyra', claimedOwner: 'lyra-owner', exp });
+    expect(JSON.stringify(after.body)).not.toContain(message.slice(message.indexOf('tlinv1:'), message.indexOf('tlinv1:') + 40));
+
+    // Pasting the same invite again: waiting again, and the notice is gone.
+    expect((await call(B2, 'POST', '/threadline/pairing/invites/inspect', { invite: message })).status).toBe(200);
+    const again = await call(B2, 'GET', '/threadline/pairing/invites');
+    expect((again.body.pendingAccepts as unknown[]).length).toBe(1);
+    expect(again.body.restartNotices).toEqual([]);
+
+    // Dismiss: Bearer, 64-hex id; an unknown id is a 404, a malformed one a 400.
+    expect((await call(B2, 'DELETE', `/threadline/pairing/restart-notices/${'0'.repeat(64)}`)).status).toBe(404);
+    expect((await call(B2, 'DELETE', '/threadline/pairing/restart-notices/zz')).status).toBe(400);
+    expect((await call(B2, 'DELETE', `/threadline/pairing/restart-notices/${notices[0].id}`, undefined, false)).status).toBe(401);
+  }, 60_000);
+
+  it('enforcing refuse-downgrade (Echo, 2026-10-20): a pinned peer\'s plaintext is refused LOUDLY (named reason, per-peer record, encrypted notice back); an unpinned peer\'s plaintext still flows', async () => {
+    const ENFORCE_PINNED = { enabled: true, dryRun: false };
+    const ENFORCE_REFUSE: RefuseDowngradeMode = { enabled: true, dryRun: false };
+    const A = await bootSide('xeno', 4083, ENFORCE_PINNED);
+    const B = await bootSide('yara', 4084, ENFORCE_PINNED, () => ENFORCE_REFUSE);
+    const C = await bootSide('zola', 4085, ENFORCE_PINNED); // never paired with B
+    const forgetKeys = (s: Side) => (s.boot.relayClient as unknown as { knownAgents: Map<string, unknown> }).knownAgents.clear();
+    const send = (from: Side, to: Side, message: string) => call(from, 'POST', '/threadline/relay-send', { targetAgent: to.fp, message });
+
+    // What B delivers, by sender: decrypted chat ('message') and plaintext the unknown-sender path passed ('gate-passed').
+    const atB: Array<{ from: string; text: string }> = [];
+    B.boot.relayClient!.on('message', (m: { from: string; content: { content?: unknown } }) => atB.push({ from: m.from, text: String(m.content?.content) }));
+    B.boot.relayClient!.on('gate-passed', (d: { fingerprint?: string; message?: { content?: { content?: unknown }; envelope?: { ephemeralPubKey?: string } } }) => {
+      if (!d.message?.envelope?.ephemeralPubKey) atB.push({ from: String(d.fingerprint), text: String(d.message?.content?.content) });
+    });
+    // What A hears back from B, and whether it arrived encrypted.
+    const atA: Array<{ text: string; encrypted: boolean }> = [];
+    A.boot.relayClient!.on('message', (m: { from: string; content: { content?: unknown }; envelope?: { ephemeralPubKey?: string } }) => {
+      if (m.from === B.fp) atA.push({ text: String(m.content?.content), encrypted: !!m.envelope?.ephemeralPubKey });
+    });
+
+    // Pair A and B by invite; A's encrypted chat records the mark at B.
+    const inv = A.boot.pairingInvites!.flow.createInvite() as { ok: true; iid: string; message: string };
+    await B.boot.pairingInvites!.flow.receiveInvite(inv.message);
+    B.boot.pairingInvites!.flow.approveAccept(inv.iid);
+    await vi.waitFor(() => expect(A.events.some((e) => e.kind === 'finish-prompt')).toBe(true), { timeout: 10_000 });
+    A.boot.pairingInvites!.flow.approveFinish(inv.iid);
+    await vi.waitFor(() => expect(B.boot.trustManager!.getProfileByFingerprint(A.fp)?.pairingState).toBe('mutual-verified'), { timeout: 10_000 });
+    forgetKeys(A); forgetKeys(B);
+    expect((await send(A, B, 'encrypted from the pinned peer')).status).toBeLessThan(300);
+    await vi.waitFor(() => expect(B.boot.trustManager!.getProfileByFingerprint(A.fp)?.encryptedSeenAt).toBeDefined(), { timeout: 10_000 });
+    expect(B.boot.trustManager!.getProfileByFingerprint(C.fp)?.peerIdentityPub).toBeUndefined();
+
+    const refusedBefore = refuseDowngradeCounters.refusedDowngrade;
+    // A sends plaintext in its own name (as an older Instar would when the relay had not given it B's keys).
+    forgetKeys(A); forgetKeys(B);
+    A.boot.trustManager!.getProfileByFingerprint(B.fp)!.pairingMethod = 'sas';
+    try { expect((await send(A, B, 'plaintext from the pinned peer')).status).toBeLessThan(300); } finally {
+      A.boot.trustManager!.getProfileByFingerprint(B.fp)!.pairingMethod = 'invite';
+    }
+    // C, never paired, sends plaintext.
+    forgetKeys(C);
+    expect((await send(C, B, 'plaintext from the unpinned peer')).status).toBeLessThan(300);
+
+    // The unpinned peer's plaintext flows.
+    await vi.waitFor(() => expect(atB).toContainEqual({ from: C.fp, text: 'plaintext from the unpinned peer' }), { timeout: 10_000 });
+    // The pinned peer's plaintext is refused — and loudly: counted, recorded per peer with the
+    // named reason and remedy, and the sender is told, encrypted to its pinned key.
+    await vi.waitFor(() => expect(atA).toContainEqual({ text: DOWNGRADE_REFUSAL_NOTICE, encrypted: true }), { timeout: 10_000 });
+    expect(atB.some((m) => m.text === 'plaintext from the pinned peer')).toBe(false);
+    expect(refuseDowngradeCounters.refusedDowngrade).toBe(refusedBefore + 1);
+    const rec = downgradeRefusals.snapshot().find((r) => r.fingerprint === A.fp);
+    expect(rec).toMatchObject({ reason: DOWNGRADE_REFUSAL_REASON, remedy: DOWNGRADE_REFUSAL_REMEDY, noticesSent: 1, noticeFailures: 0 });
+    expect(downgradeRefusals.snapshot().some((r) => r.fingerprint === C.fp)).toBe(false);
+
+    // The refusal is on the authed /health, by peer.
+    const health = await call(B, 'GET', '/health');
+    expect(health.status).toBe(200);
+    const rd = (health.body as { threadline?: { refuseDowngrade?: { refusals?: Array<{ fingerprint: string; reason: string }> } } } | null)?.threadline?.refuseDowngrade;
+    expect(rd?.refusals).toEqual(expect.arrayContaining([expect.objectContaining({ fingerprint: A.fp, reason: DOWNGRADE_REFUSAL_REASON })]));
+  }, 60_000);
+  it('mode readers that THROW give the shipped defaults, never off (Echo, #2236): chat is still encrypted to the pin and the mark is still recorded', async () => {
+    const boomEnc = (): EncryptToPinnedMode => { throw new Error('config unreadable'); };
+    const boomRefuse = (): RefuseDowngradeMode => { throw new Error('config unreadable'); };
+    const A = await bootSide('kilo', 4087, boomEnc, boomRefuse);
+    const B = await bootSide('lima', 4088, boomEnc, boomRefuse);
+    const forgetKeys = (s: Side) => (s.boot.relayClient as unknown as { knownAgents: Map<string, unknown> }).knownAgents.clear();
+    const atB: Array<{ text: unknown; encrypted: boolean }> = [];
+    B.boot.relayClient!.on('message', (m: { from: string; content: { content?: unknown }; envelope: { ephemeralPubKey?: string } }) => {
+      if (m.from === A.fp) atB.push({ text: m.content?.content, encrypted: !!m.envelope?.ephemeralPubKey });
+    });
+    B.boot.relayClient!.on('unknown-sender', (env: { from?: string; payload?: string; ephemeralPubKey?: string }) => {
+      if (env.from !== A.fp || env.ephemeralPubKey) return;
+      try { atB.push({ text: JSON.parse(Buffer.from(String(env.payload), 'base64').toString('utf8')).text, encrypted: false }); } catch { /* not ours */ }
+    });
+    const inv = A.boot.pairingInvites!.flow.createInvite() as { ok: true; iid: string; message: string };
+    await B.boot.pairingInvites!.flow.receiveInvite(inv.message);
+    B.boot.pairingInvites!.flow.approveAccept(inv.iid);
+    await vi.waitFor(() => expect(A.events.some((e) => e.kind === 'finish-prompt')).toBe(true), { timeout: 10_000 });
+    A.boot.pairingInvites!.flow.approveFinish(inv.iid);
+    await vi.waitFor(() => expect(B.boot.trustManager!.getProfileByFingerprint(A.fp)?.pairingState).toBe('mutual-verified'), { timeout: 10_000 });
+    // No cached keys: only the pinned resolver (enforce) can encrypt; off would send plaintext.
+    forgetKeys(A); forgetKeys(B);
+    expect((await call(A, 'POST', '/threadline/relay-send', { targetAgent: B.fp, message: 'reader threw' })).status).toBeLessThan(300);
+    await vi.waitFor(() => expect(atB).toContainEqual({ text: 'reader threw', encrypted: true }), { timeout: 10_000 });
+    expect(atB).not.toContainEqual({ text: 'reader threw', encrypted: false });
+    // refuseDowngrade fell back to watch, so the encrypted chat recorded the mark.
+    await vi.waitFor(() => expect(B.boot.trustManager!.getProfileByFingerprint(A.fp)?.encryptedSeenAt).toBeDefined(), { timeout: 10_000 });
   }, 60_000);
 });

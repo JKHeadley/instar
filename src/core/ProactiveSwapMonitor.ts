@@ -50,9 +50,10 @@
 import {
   selectAccount,
   accountAtPressure,
+  bindingUtilization,
 } from './QuotaAwareScheduler.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
-import { requiresOwnerRelogin } from './SubscriptionPool.js';
+import { isLocallyExecutable, requiresOwnerRelogin } from './SubscriptionPool.js';
 import type { SwapAntiThrashEngine, AntiThrashKnobs } from './SwapAntiThrash.js';
 import type { WorkProbeResult } from './SwapWorkGate.js';
 import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
@@ -159,6 +160,14 @@ export interface ProactiveSwapMonitorConfig {
   loginLoss?: {
     enabled: boolean;
     dryRun: boolean;
+  };
+  /** Q3-safe rescue for an untagged interactive session. It re-points the
+   * DEFAULT credential slot and never mutates the session's account binding. */
+  defaultSlotRepoint?: {
+    enabled: boolean;
+    dryRun: boolean;
+    setDefaultAccount: (accountId: string) => Promise<{ ok: boolean; outcome?: string; reason?: string }>;
+    audit?: (record: Record<string, unknown>) => void;
   };
   /**
    * Degradation trigger: swap off an account that is SLOW or ERRORING, not just
@@ -282,6 +291,7 @@ export class ProactiveSwapMonitor {
     lastResult: ProactiveSwapTickResult | null;
     antiThrash?: { enabled: boolean; dryRun: boolean };
     loginLoss?: { enabled: boolean; dryRun: boolean };
+    defaultSlotRepoint?: { enabled: boolean; dryRun: boolean };
     brakes?: Record<string, unknown>;
     deferrals?: { active: number; sessions: string[] };
   } {
@@ -294,7 +304,10 @@ export class ProactiveSwapMonitor {
       running: this.timer !== null,
       lastResult: this.lastResult,
     };
-    if (!this.cfg.antiThrash) return base;
+    const defaultSlotRepoint = this.cfg.defaultSlotRepoint
+      ? { enabled: this.cfg.defaultSlotRepoint.enabled, dryRun: this.cfg.defaultSlotRepoint.dryRun }
+      : undefined;
+    if (!this.cfg.antiThrash) return { ...base, ...(defaultSlotRepoint ? { defaultSlotRepoint } : {}) };
     const knobs = this.safeKnobs();
     return {
       ...base,
@@ -302,6 +315,7 @@ export class ProactiveSwapMonitor {
       ...(this.cfg.loginLoss
         ? { loginLoss: { enabled: this.cfg.loginLoss.enabled, dryRun: this.cfg.loginLoss.dryRun } }
         : {}),
+      ...(defaultSlotRepoint ? { defaultSlotRepoint } : {}),
       brakes: this.cfg.antiThrash.engine.status(this.now()),
       deferrals: { active: this.deferrals.size, sessions: [...this.deferrals.keys()] },
     };
@@ -357,12 +371,71 @@ export class ProactiveSwapMonitor {
 
     if (engine && knobs?.enabled) engine.beginTick(accounts, nowMs, true);
     try {
+      await this.evaluateDefaultSlotRepoint(accounts, nowMs);
       if (live && engine && knobs) {
         return await this.evaluateBraked(engine, accounts, nowMs);
       }
       return await this.evaluateLegacy(accounts, nowMs, engineActive ? engine : null);
     } finally {
       if (engine && knobs?.enabled) engine.endTick(nowMs);
+    }
+  }
+
+  /**
+   * Untagged sessions intentionally stay outside normal session swapping (Q3).
+   * When one is riding a pressured default login, move the login served by the
+   * default slot instead. The target is the eligible same-framework account
+   * with the lowest binding utilization — literally the most remaining quota.
+   */
+  private async evaluateDefaultSlotRepoint(accounts: SubscriptionAccount[], nowMs: number): Promise<void> {
+    const feature = this.cfg.defaultSlotRepoint;
+    if (!feature?.enabled || !this.cfg.listRunningSessions().some((s) => s.accountId === null)) return;
+    let fromId: string | null = null;
+    try {
+      fromId = await this.cfg.resolveDefaultAccountId();
+    } catch {
+      return;
+    }
+    if (!fromId) return;
+    const source = accounts.find((a) => a.id === fromId);
+    if (!source || !accountAtPressure(source, this.thresholdPct)) return;
+    const target = accounts
+      .filter((a) =>
+        a.id !== source.id &&
+        a.framework === source.framework &&
+        isLocallyExecutable(a) &&
+        a.lastQuota !== null &&
+        a.lastQuota !== undefined &&
+        bindingUtilization(a.lastQuota) < this.thresholdPct,
+      )
+      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
+    if (!target) return;
+    const record = {
+      event: feature.dryRun ? 'proactive-default-slot-would-repoint' : 'proactive-default-slot-repoint-invoked',
+      fromAccountId: source.id,
+      toAccountId: target.id,
+      fromUtilPct: bindingUtilization(source.lastQuota),
+      toUtilPct: bindingUtilization(target.lastQuota),
+      nowMs,
+      dryRun: feature.dryRun,
+    };
+    feature.audit?.(record);
+    if (feature.dryRun) {
+      this.logger.log(`[ProactiveSwap] default slot would repoint ${source.id} → ${target.id} (${record.fromUtilPct}% → ${record.toUtilPct}%; dry-run; session binding untouched)`);
+      return;
+    }
+    try {
+      const result = await feature.setDefaultAccount(target.id);
+      feature.audit?.({ event: 'proactive-default-slot-repoint-result', fromAccountId: source.id, toAccountId: target.id, ...result });
+      if (result.ok) {
+        this.logger.log(`[ProactiveSwap] default slot repointed ${source.id} → ${target.id} (${record.fromUtilPct}% → ${record.toUtilPct}%; session binding untouched)`);
+      } else {
+        this.logger.warn(`[ProactiveSwap] default slot repoint ${source.id} → ${target.id} refused: ${result.reason ?? result.outcome ?? 'unknown'}`);
+      }
+    } catch (error) {
+      const errorClass = error instanceof Error ? error.constructor.name : 'Error';
+      feature.audit?.({ event: 'proactive-default-slot-repoint-error', fromAccountId: source.id, toAccountId: target.id, errorClass });
+      this.logger.warn(`[ProactiveSwap] default slot repoint ${source.id} → ${target.id} failed (${errorClass})`);
     }
   }
 
@@ -409,6 +482,7 @@ export class ProactiveSwapMonitor {
       defaultAccountId = null; // unknown default source holds safely
     }
     for (const s of this.cfg.listRunningSessions()) {
+      if (s.accountId === null) continue; // Q3: never mutate an untagged live session binding
       const effectiveAccountId = s.accountId ?? s.loginLossAccountId ?? defaultAccountId;
       currentAccountBySession.set(s.sessionName, effectiveAccountId);
       if (s.refreshable === false || !effectiveAccountId) continue;
@@ -827,6 +901,7 @@ export class ProactiveSwapMonitor {
     }
     const out: Candidate[] = [];
     for (const s of this.cfg.listRunningSessions()) {
+      if (s.accountId === null) continue; // Q3: default-slot rescue is the only proactive path
       const eff = s.accountId ?? defaultAcctId;
       if (!eff) continue;
       const acct = byId.get(eff);

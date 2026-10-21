@@ -170,6 +170,20 @@ export interface TelegramConfig {
    * topic.
    */
   getAttentionHubTopicId?: () => number | null | undefined;
+  /**
+   * The agent-wide system topic record (src/messaging/SystemTopicAdoption.ts).
+   * `canCreate` is false on a machine that does not hold the serving lease: it
+   * then uses the ids it adopted from the holder and NEVER mints a system topic
+   * of its own (a standby that could not save its id minted a new topic on every
+   * boot). Absent ⇒ single-machine behavior: create when needed.
+   */
+  systemTopics?: {
+    canCreate?: () => boolean;
+    getAgentHealthTopicId?: () => number | null | undefined;
+    recordAgentHealthTopicId?: (topicId: number) => void;
+    /** The holder's lazily created hub is recorded too, so standbys can adopt it. */
+    recordAttentionHubTopicId?: (topicId: number) => void;
+  };
 }
 
 /** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
@@ -4425,10 +4439,27 @@ export class TelegramAdapter implements MessagingAdapter {
     return topicId;
   }
 
+  /** False on a machine that does not hold the serving lease (see config.systemTopics). */
+  private canCreateSystemTopics(): boolean {
+    try { return this.config.systemTopics?.canCreate?.() ?? true; }
+    catch { return false; } // @silent-fallback-ok — an unreadable lease never mints a topic
+  }
+
   /** Lazily create (once) and return the reused "🩺 Agent Health" lane topic id. */
   private async ensureAgentHealthLaneTopic(): Promise<number | null> {
     if (this.agentHealthTopicId !== null) return this.agentHealthTopicId;
     if (this.agentHealthPending) return this.agentHealthPending;
+    // The agent-wide record first (persisted on the holder, adopted on a standby).
+    let recorded: number | null | undefined;
+    try { recorded = this.config.systemTopics?.getAgentHealthTopicId?.(); } catch { recorded = null; } // @silent-fallback-ok — an unreadable record falls through to find-or-create below
+    if (typeof recorded === 'number' && Number.isSafeInteger(recorded) && recorded > 1) {
+      this.agentHealthTopicId = recorded;
+      return recorded;
+    }
+    if (!this.canCreateSystemTopics()) {
+      console.log('[telegram] agent-health lane: no adopted lane topic yet and this machine does not hold the lease — not creating one');
+      return null;
+    }
 
     this.agentHealthPending = (async (): Promise<number | null> => {
       const name = this.agentHealthLaneCfg.topicName;
@@ -4437,6 +4468,9 @@ export class TelegramAdapter implements MessagingAdapter {
       // refuse (it exists to ABSORB the flood).
       const topic = await this.findOrCreateForumTopic(name, TOPIC_STYLE.SYSTEM.color, { origin: 'system', bounded: true, label: 'agent-health-lane' });
       this.agentHealthTopicId = topic.topicId;
+      // Persist so a restart reuses it and other machines can adopt it.
+      try { this.config.systemTopics?.recordAgentHealthTopicId?.(topic.topicId); }
+      catch (err) { console.warn(`[telegram] agent-health lane: could not record topic ${topic.topicId}: ${err}`); }
       if (!topic.reused) {
         const intro = [
           `This is your <b>calm agent-health lane</b>. When I notice something about my OWN sessions — one that looks stuck, a peer I can't reach — the routine heads-up lands HERE instead of spawning a new topic each time.`,
@@ -4633,6 +4667,12 @@ export class TelegramAdapter implements MessagingAdapter {
     if (this.attentionHubPending) return this.attentionHubPending;
 
     this.attentionHubPending = (async (): Promise<number | null> => {
+      // Only the lease holder may mint the hub; a standby waits for the id it
+      // adopts from the holder (routeToAttentionHub tries that injected id first).
+      if (!this.canCreateSystemTopics()) {
+        console.log('[telegram] attention hub: no adopted hub id yet and this machine does not hold the lease — not creating one');
+        return null;
+      }
       // 'system' + bounded: the single hub topic, create-once-then-reuse by
       // design — an exempt overflow surface the flood ceiling must never
       // refuse. Same name + label as the boot-created hub
@@ -4641,6 +4681,8 @@ export class TelegramAdapter implements MessagingAdapter {
       const topic = await this.findOrCreateForumTopic(`${TOPIC_STYLE.ALERT.emoji} Attention`, TOPIC_STYLE.ALERT.color, { origin: 'system', bounded: true, label: 'boot-attention' });
       this.attentionHubTopicId = topic.topicId;
       this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
+      try { this.config.systemTopics?.recordAttentionHubTopicId?.(topic.topicId); }
+      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); }
       return this.attentionHubTopicId;
     })();
 

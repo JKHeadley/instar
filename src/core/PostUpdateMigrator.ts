@@ -24,7 +24,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -6699,6 +6699,22 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added forward-to-holder reply hold awareness');
     }
 
+    // The delayed-notice row now says the notice is only for held session replies.
+    {
+      const refreshed = refreshHeldNoticeAwareness(content);
+      if (refreshed !== content) {
+        content = refreshed;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: delayed-reply notice is session-reply-only');
+      }
+    }
+
+    if (!content.includes('/telegram/system-topics')) {
+      content += '\n' + telegramSystemTopicsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added agent-wide system topic record awareness');
+    }
+
     if (!content.includes('Message origins on your phone:')) {
       content += '\n' + telegramOriginDashboardAwareness();
       patched = true;
@@ -10014,6 +10030,19 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.skipped.push('CLAUDE.md: standing-sessions bullet already present');
     }
 
+    // Rerouted-job expired-login bullet: placed right after the standing-sessions
+    // bullet when present, else appended. Idempotent via its marker.
+    if (!content.includes(REROUTED_LOGIN_EXPIRED_MARKER)) {
+      const stIdx = content.indexOf(STANDING_SESSIONS_BULLET);
+      content = stIdx >= 0
+        ? content.slice(0, stIdx + STANDING_SESSIONS_BULLET.length) + '\n' + REROUTED_LOGIN_EXPIRED_BULLET + content.slice(stIdx + STANDING_SESSIONS_BULLET.length)
+        : content + '\n' + REROUTED_LOGIN_EXPIRED_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added rerouted-job expired-login bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: rerouted-job expired-login bullet already present');
+    }
+
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
     // Recovery above (that one handles major.minor crossings; this one handles
@@ -11383,6 +11412,23 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       result.upgraded.push('CLAUDE.md: added dashboard door + model controls line to Topic Profile section');
     }
 
+    // Dashboard machine choice (docs/specs/dashboard-new-session-machine-choice.md
+    // §3.6) — one line right after the door + model line (else appended). Its own
+    // sniff string; idempotent.
+    if (!content.includes('- **Dashboard machine choice**')) {
+      const machineLine = `- **Dashboard machine choice** (Sessions tab): the New Session box also picks the Machine a new Telegram topic runs on — Automatic (default) or any machine in the pool (offline, clock-out-of-step and not-yet-updated machines are listed but refused, never quietly replaced). Picking another machine pins the topic there and starts its session there immediately, with the door/model checked on THAT machine first. API: add \`"machine":"<nickname|machineId>"\` to \`POST /sessions/create\` (needs \`X-Instar-Request: 1\`). Confirm where it runs from the pool sessions view (\`GET /sessions\` with \`scope=pool\`), read from that machine — never inferred from the placement record. PROACTIVE: when the user wants a new topic to run on a specific machine, point them at the Machine dropdown (or create it with the \`machine\` field) instead of creating it and moving it afterwards.`;
+      const doorLine = content.indexOf('- **Dashboard door + model controls**');
+      if (doorLine !== -1) {
+        const eol = content.indexOf('\n', doorLine);
+        const at = eol === -1 ? content.length : eol + 1;
+        content = content.slice(0, at) + (eol === -1 ? '\n' : '') + machineLine + '\n' + content.slice(at);
+      } else {
+        content += '\n' + machineLine + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard machine choice line to Topic Profile section');
+    }
+
     // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing
     // agents learn the lease/voice + prose-inertness + honest-ack semantics + the
     // /threadline/negotiator surface via this appended section (Agent Awareness
@@ -11870,6 +11916,8 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // boundary for the Topic Profile slice above and lets an existing shadow
       // that already carries the section still receive the new line.
       '- **Dashboard door + model controls**',
+      // Dashboard machine choice (dashboard-new-session-machine-choice §3.6).
+      '- **Dashboard machine choice**',
       // WS4.4 pool-stable links (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4):
       // framework-agnostic — a Codex/Gemini agent fronting a multi-machine pool
       // must know a /view/:id link proxies to the holder (and the security model:
@@ -11993,6 +12041,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Queued-message review pacing:', telegramOriginRecoveryAwareness],
         ['Telegram send deadlines:', telegramOriginTransportAwareness],
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
+        ['/telegram/system-topics', telegramSystemTopicsAwareness],
         ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],

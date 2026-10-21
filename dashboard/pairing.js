@@ -15,6 +15,11 @@
  *     memory (never storage) until the page is reloaded. A refused PIN is forgotten.
  *  3. Decisions waiting for the operator come first, with a count on the Threadline tab AND on
  *     the header menu button (the tabs sit behind it, so a count only on the tab is invisible).
+ *  4. An invite that was waiting for approval when the server restarted is gone (its secret
+ *     lived only in the server's memory). A notice saying so sits at the very top, until the
+ *     invite is pasted again, dismissed, or expires.
+ *  5. "Could not reach the agent" is about the connection, so it clears by itself on the next
+ *     refresh that reaches the agent (a server restart used to leave it up until a reload).
  *
  * Same shape as mandates.js: pure renderers + createController({ doc, els, fetchImpl }).
  */
@@ -60,8 +65,18 @@ export function pendingCount(data) {
   return finishPrompts(data?.invites).length + (data?.pendingAccepts || []).length;
 }
 
+/** Invites a server restart cleared while they waited for approval. */
+export function renderRestartNotices(notices, now = Date.now()) {
+  return (notices || []).filter((n) => Date.parse(n.exp) > now).map((n) => `<div class="pair-card pair-alarm" data-restart-notice="${esc(n.id)}">
+      <div>An invite from ${claimed(n.claimedAgent, n.claimedOwner)} was waiting for your approval and was cleared when the agent restarted.
+      Paste it again below (or forward it to the agent's Telegram) before it expires: ${esc(timeLeft(n.exp, now))}.</div>
+      <div class="pair-row"><button class="mnd-btn mnd-btn-quiet" data-dismiss-notice="${esc(n.id)}">Dismiss</button></div></div>`).join('');
+}
+
 export function renderPending(data, now = Date.now()) {
   const parts = [];
+  const restart = renderRestartNotices(data?.restartNotices, now);
+  if (restart) parts.push(restart);
   for (const a of alarms(data?.invites, now)) {
     parts.push(`<div class="pair-card pair-alarm" data-alarm="${esc(a.iid)}">
       <div><strong>Warning: your invite got out.</strong> Two agents used it, so I paused the first one: it cannot receive anything secret.
@@ -109,7 +124,8 @@ export function renderPairings(list) {
 export function createController({ doc, els, fetchImpl, now = () => Date.now() }) {
   let timer = null;
   let heldPin = '';           // §8.2: asked once per page, memory only
-  let data = { invites: [], pendingAccepts: [], pairings: [] };
+  let data = { invites: [], pendingAccepts: [], pairings: [], restartNotices: [] };
+  let connectionError = null;  // the text of a shown "could not reach" error, cleared on the next good refresh
   const lastHtml = new Map();  // section → last rendered HTML (§8.1: re-render only on change)
 
   async function fetchJson(url, opts) {
@@ -124,6 +140,21 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     if (!els.notice) return;
     els.notice.textContent = msg;
     els.notice.className = kind === 'error' ? 'mnd-notice mnd-notice-err' : kind === 'success' ? 'mnd-notice mnd-notice-ok' : 'mnd-notice';
+  }
+
+  /** A connection failure: shown like any error, but remembered so a later good refresh clears it. */
+  function noteUnreachable(msg) {
+    note(msg, 'error');
+    connectionError = msg;
+  }
+  /** The agent answered: a connection error still on screen is stale. A message shown since replaced it, and stays. */
+  function clearStaleConnectionError() {
+    if (!els.notice || connectionError === null) return;
+    if (els.notice.textContent === connectionError) {
+      els.notice.textContent = '';
+      els.notice.className = 'mnd-notice';
+    }
+    connectionError = null;
   }
 
   function setSection(el, key, html) {
@@ -171,18 +202,20 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
     try {
       const [inv, pr] = await Promise.all([fetchJson('/threadline/pairing/invites'), fetchJson('/threadline/pairing')]);
       if (inv.status === 503 || pr.status === 503) {
+        clearStaleConnectionError(); // the agent answered
         const off = /not enabled/.test(String(inv.body?.error ?? pr.body?.error ?? ''));
         setSection(els.list, 'list', off
           ? '<div class="mnd-hint">Pairing is turned off on this agent.</div>'
           : '<div class="mnd-hint">Pairing runs on the machine that holds this agent\'s Threadline identity. Open the dashboard on that machine.</div>');
         return;
       }
-      if (inv.status !== 200) { note(`Could not load invites: ${inv.body?.error ?? `HTTP ${inv.status}`}`, 'error'); return; }
-      data = { invites: inv.body?.invites ?? [], pendingAccepts: inv.body?.pendingAccepts ?? [], pairings: pr.status === 200 ? (pr.body?.pairings ?? []) : data.pairings };
+      if (inv.status !== 200) { noteUnreachable(`Could not load invites: ${inv.body?.error ?? `HTTP ${inv.status}`}`); return; }
+      clearStaleConnectionError();
+      data = { invites: inv.body?.invites ?? [], pendingAccepts: inv.body?.pendingAccepts ?? [], pairings: pr.status === 200 ? (pr.body?.pairings ?? []) : data.pairings, restartNotices: inv.body?.restartNotices ?? [] };
       renderForChoices(inv.body?.knownPeers ?? []);
       render();
     } catch (e) {
-      note(`Could not reach the agent: ${e?.message ?? e}`, 'error');
+      noteUnreachable(`Could not reach the agent: ${e?.message ?? e}`);
     }
   }
 
@@ -275,13 +308,17 @@ export function createController({ doc, els, fetchImpl, now = () => Date.now() }
         const { status, body } = await post(`/threadline/pairing/invites/${d.decline}/decline`, {});
         note(status === 200 ? 'Declined. Nothing was paired.' : `That didn't work: ${body?.error ?? `HTTP ${status}`}`, status === 200 ? 'success' : 'error');
         await load();
+      } else if (d.dismissNotice) {
+        const { status, body } = await post(`/threadline/pairing/restart-notices/${d.dismissNotice}`, {}, 'DELETE');
+        if (status !== 200 && status !== 404) note(`That didn't work: ${body?.error ?? `HTTP ${status}`}`, 'error');
+        await load();
       } else if (d.revoke) {
         const { status, body } = await post(`/threadline/pairing/invites/${d.revoke}`, {}, 'DELETE');
         note(status === 200 ? 'Cancelled. That invite no longer works.' : `That didn't work: ${body?.error ?? `HTTP ${status}`}`, status === 200 ? 'success' : 'error');
         await load();
       }
     } catch (e) {
-      note(`Could not reach the agent: ${e?.message ?? e}`, 'error');
+      noteUnreachable(`Could not reach the agent: ${e?.message ?? e}`);
     }
   }
 

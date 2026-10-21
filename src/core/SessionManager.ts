@@ -31,6 +31,11 @@ import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
+import { RerouteRefusedError } from './rerouteRefusedError.js';
+export { RerouteRefusedError } from './rerouteRefusedError.js';
+import { initialConfinedStartupState, stepConfinedStartup, classifyConfinedStartupPane, confinedPromptLine, LOGIN_REQUIRED, showsOtherPermissionMode, CONFINED_STARTUP_BUDGET_MS, type ConfinedStartupState, type ConfinedStartupObservation } from './confinedStartupDialogs.js';
+
+const squash = (text: string): string => text.replace(/\s+/g, '');
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
@@ -67,6 +72,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressure.js';
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
+import { classifyLoginExpired } from './LoginExpiredSignature.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 import { toPaneTailLines, type PermissionPromptAutoResolver } from '../monitoring/PermissionPromptAutoResolver.js';
@@ -330,6 +336,9 @@ export function deriveTargetKey(sessionId: string): DerivedTarget {
 /** Sessions younger than this get their pane tail sampled each monitor tick
  *  so a self-exit during startup leaves evidence (see `startupTails`). */
 const STARTUP_TAIL_WINDOW_MS = 120_000;
+/** How long a rerouted session must keep showing the expired-login frame before
+ *  the monitor ends it (one frame alone never ends a session). */
+const LOGIN_EXPIRED_DWELL_MS = 60_000;
 /** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
 export const RESUME_REOPEN_FAILED_NOTE =
   'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
@@ -626,6 +635,36 @@ export type InjectionConfirmation =
   | { state: 'submitted' }
   | { state: 'stuck' }
   | { state: 'queued-busy'; settle: () => Promise<InjectionSettlement> };
+
+/**
+ * The claude-code confinement adapter's permission + environment half, shared by the headless and
+ * the rerouted-interactive lanes so the two can never drift (spec "Shared adapter"): drop
+ * `--dangerously-skip-permissions`, add the confined permission args (before `-p` when present),
+ * assert both, and start the CLI from an empty environment plus an allowlist (`env -i`).
+ * Returns the tmux `-e` flags for the attempt temp directory.
+ */
+export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: string }, ids: { sessionId: string; tmuxSession: string }, configDir: string | undefined): string[] {
+  const envFlags = ['-e', `CLAUDE_CODE_TMPDIR=${confinement.tmpDir}`, '-e', `TMPDIR=${confinement.tmpDir}`];
+  const dangerous = argv.indexOf('--dangerously-skip-permissions');
+  if (dangerous >= 0) argv.splice(dangerous, 1);
+  const dashP = argv.indexOf('-p');
+  argv.splice(dashP > 0 ? dashP : argv.length, 0, ...CLAUDE_CONFINED_PERMISSION_ARGS);
+  if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk')) {
+    throw new Error('confinement-adapter-missing: the confined permission mode was not applied');
+  }
+  // Start the confined CLI from an EMPTY environment plus an allowlist (`env -i`): nothing the
+  // tmux server or this process carries (credentials under any name) reaches the session.
+  const allow: Record<string, string | undefined> = {
+    PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME, SHELL: process.env.SHELL,
+    LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, TERM: process.env.TERM ?? 'xterm-256color',
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_TMPDIR: confinement.tmpDir, TMPDIR: confinement.tmpDir,
+    INSTAR_SESSION_ID: ids.sessionId, INSTAR_SESSION_NAME: ids.tmuxSession,
+  };
+  const pairs = Object.entries(allow).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '' && !isCredentialEnvName(e[0])).map(([k, v]) => `${k}=${v}`);
+  argv.unshift('/usr/bin/env', '-i', ...pairs);
+  return envFlags;
+}
 
 export class SessionManager extends EventEmitter {
   private config: SessionManagerConfig;
@@ -991,6 +1030,14 @@ export class SessionManager extends EventEmitter {
    * dozen lines. Memory-only; never written anywhere except the redacted row.
    */
   private readonly startupTails = new Map<string, { tail: string; at: number }>();
+  /**
+   * First time each rerouted (completionMode 'pattern') session's live tail
+   * showed Claude Code's "Login expired · Please run /login" frame. A session
+   * still showing it LOGIN_EXPIRED_DWELL_MS later is ended (see the rerouted
+   * branch of the monitor tick). Evicted with the startup tails for sessions no
+   * longer running, and whenever the frame is no longer the live tail.
+   */
+  private readonly loginExpiredFirstSeen = new Map<string, number>();
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
@@ -1901,6 +1948,55 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * @returns `{ terminated: true }` on a kill performed by THIS call, or
    *          `{ terminated: false, skipped }` describing why it was a no-op.
    */
+  /**
+   * Rerouted-branch helper: if the session's live tail has shown Claude Code's
+   * dead-login frame for at least LOGIN_EXPIRED_DWELL_MS, terminate it (recorded
+   * as killed, so its job reruns on its next trigger, where placement can pick a
+   * signed-in account) and report a degradation naming the login folder.
+   * Returns true when the session was ended. Never throws into the tick.
+   */
+  private async endIfLoginExpired(session: Session): Promise<boolean> {
+    let pane = '';
+    try {
+      pane = (await this.captureOutputMaybeAsync(session.tmuxSession, 40)) || '';
+    } catch { /* @silent-fallback-ok — an unreadable pane is re-checked next tick */
+      return false;
+    }
+    const verdict = classifyLoginExpired(pane);
+    if (!verdict.loginExpired) {
+      this.loginExpiredFirstSeen.delete(session.tmuxSession);
+      return false;
+    }
+    const now = Date.now();
+    const firstSeen = this.loginExpiredFirstSeen.get(session.tmuxSession);
+    if (firstSeen === undefined) {
+      this.loginExpiredFirstSeen.set(session.tmuxSession, now);
+      return false;
+    }
+    if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return false;
+    const configHome = this.configHomeForSession(session.tmuxSession) ?? 'the default login';
+    console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
+    // workEvidence: [] — the killer proved the session idle (a REPL at the login screen can do
+    // nothing), so a live MCP child must not stamp it mid-work and queue a revival back onto
+    // the same dead login.
+    const killed = await this.terminateSession(session.id, 'rerouted-login-expired', {
+      finalStatus: 'killed',
+      disposition: 'terminal',
+      workEvidence: [],
+    });
+    this.loginExpiredFirstSeen.delete(session.tmuxSession);
+    if (killed.terminated) {
+      DegradationReporter.getInstance().report({
+        feature: 'SessionManager.monitorTick.reroutedLoginExpired',
+        primary: 'rerouted-interactive session runs under a signed-in login and completes via its sentinel',
+        fallback: 'ended as soon as its live tail showed an expired login, instead of holding its slot to the lifetime cap',
+        reason: `Session "${session.name}" launched under ${configHome}, which reports "${verdict.matchedLine}"`,
+        impact: 'That run did no work; its job reruns on its next trigger. The login itself needs a fresh sign-in.',
+      });
+    }
+    return killed.terminated;
+  }
+
   async terminateSession(
     sessionId: string,
     reason: string,
@@ -2522,6 +2618,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
+      if (this.loginExpiredFirstSeen.size > 0) {
+        const live = new Set(running.map(s => s.tmuxSession));
+        for (const key of this.loginExpiredFirstSeen.keys()) {
+          if (!live.has(key)) this.loginExpiredFirstSeen.delete(key);
+        }
+      }
       // Drop age-gate work memory for sessions that are no longer running
       // (bounded map — any exit path, not only an age kill).
       if (this.ageGateLastWorkingAt.size > 0 || this.ageGateConfirmedWorkPastLimit.size > 0) {
@@ -2676,6 +2778,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               continue;
             }
+          }
+          // (c) Dead login → end it now instead of at the lifetime cap. A
+          // rerouted session launched under a login whose interactive sign-in
+          // has expired prints "Login expired · Please run /login" and can never
+          // make progress; left alone it holds its scheduler slot until (b)
+          // fires 480 min later (2026-10-18: two such sessions stalled every job
+          // on the machine for a day). Signal-only classifier + a dwell so a
+          // single frame never ends a session; never touches pool status.
+          if (!this.config.protectedSessions.includes(session.tmuxSession) &&
+              !this.isStandingSession(session.tmuxSession)) {
+            if (await this.endIfLoginExpired(session)) continue;
           }
           // Still running, no sentinel, under lifetime — leave it; re-check next
           // tick. Skip the rest of the loop body (the default exit/idle paths
@@ -2866,7 +2979,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // affordance — all bottom-anchored, so reliably in the last 5 lines).
           // Only on a hit do a fuller capture + evaluate, so the common
           // (no-menu) case adds ZERO extra captures.
-          if (this.permissionPromptResolver && output &&
+          // A confined session's ONLY answerer is its own startup state machine, and only before
+          // delivery (docs/specs/confined-spawn-subscription-reroute.md D3): no generic auto-answerer
+          // may press a key in it — on the trust dialog Enter selects "No, exit", and after startup an
+          // auto-approval would be policy outside the policy.
+          const confinedSession = Boolean(session.confinedConfigHome);
+          if (confinedSession && session.confinedDeliveredAt && output && !this.confinedDialogReported.has(session.id) &&
+              (/Enter to confirm|Esc to cancel|Esc to keep/i.test(output) || LOGIN_REQUIRED.test(output))) {
+            this.confinedDialogReported.add(session.id);
+            this.reportConfinedDialog(session.tmuxSession, 'dialog-after-delivery', output);
+          }
+          if (this.permissionPromptResolver && output && !confinedSession &&
               /(?:[>❯●○◉]\s*)?\d+\.\s|Esc to cancel|Do you want to proceed/i.test(output)) {
             try {
               const full = await this.captureMeaningfulTailMaybeAsync(session.tmuxSession, 16);
@@ -2879,7 +3002,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           const isIdleAtPrompt = output && IDLE_PROMPT_PATTERNS.some(p => output.includes(p));
 
           // ── Prompt Gate: feed captured output to InputDetector ──
-          if (this.promptDetector && output) {
+          if (this.promptDetector && output && !confinedSession) {
             const fullOutput = await this.captureOutputMaybeAsync(session.tmuxSession, 50);
             if (fullOutput) {
               this.promptDetector.onCapture(session.tmuxSession, fullOutput);
@@ -3523,9 +3646,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.confinement && (headlessFramework !== options.confinement.framework || headlessFramework !== 'claude-code')) {
       throw new Error(`confinement-unsupported-framework: ${headlessFramework}`);
     }
-    if (options.confinement && await this.shouldRerouteToInteractive(headlessFramework)) {
-      throw new Error('confinement-reroute-unsupported: the subscription-path reroute would launch an unconfined interactive session');
-    }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
       const gate = this.evaluateRerouteGate(options.name);
       if (gate.allow) {
@@ -3675,25 +3795,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.confinement) {
       // Claude Code's own shell bookkeeping and its default writable temp follow CLAUDE_CODE_TMPDIR:
       // the attempt's temp directory, never the shared system temp.
-      omitAuthEnvFlags.push('-e', `CLAUDE_CODE_TMPDIR=${options.confinement.tmpDir}`, '-e', `TMPDIR=${options.confinement.tmpDir}`);
-      const dangerous = headlessSpec.argv.indexOf('--dangerously-skip-permissions');
-      if (dangerous >= 0) headlessSpec.argv.splice(dangerous, 1);
-      const dashP = headlessSpec.argv.indexOf('-p');
-      headlessSpec.argv.splice(dashP > 0 ? dashP : headlessSpec.argv.length, 0, ...CLAUDE_CONFINED_PERMISSION_ARGS);
-      if (headlessSpec.argv.includes('--dangerously-skip-permissions') || !headlessSpec.argv.includes('dontAsk')) {
-        throw new Error('confinement-adapter-missing: the confined permission mode was not applied');
-      }
-      // Start the confined CLI from an EMPTY environment plus an allowlist (`env -i`): nothing the
-      // tmux server or this process carries (credentials under any name) reaches the session.
-      const allow: Record<string, string | undefined> = {
-        PATH: process.env.PATH, HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME, SHELL: process.env.SHELL,
-        LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, TERM: process.env.TERM ?? 'xterm-256color',
-        CLAUDE_CONFIG_DIR: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR,
-        CLAUDE_CODE_TMPDIR: options.confinement.tmpDir, TMPDIR: options.confinement.tmpDir,
-        INSTAR_SESSION_ID: sessionId, INSTAR_SESSION_NAME: tmuxSession,
-      };
-      const pairs = Object.entries(allow).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '' && !isCredentialEnvName(e[0])).map(([k, v]) => `${k}=${v}`);
-      headlessSpec.argv.unshift('/usr/bin/env', '-i', ...pairs);
+      omitAuthEnvFlags.push(...applyClaudeConfinement(headlessSpec.argv, options.confinement, { sessionId, tmuxSession },
+        headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
     }
     try {
       // §B in-flight marker: this spawn is EXCLUDED from §A async conversion
@@ -3859,6 +3962,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *    pot still works; the host stays healthy).
    * Returns `{ allow: true }` when the reroute may proceed.
    */
+  /**
+   * Would a confined claude-code spawn be REFUSED for reroute capacity right now? Only `force`
+   * refuses (under `auto` a full lane degrades to headless; under `off` nothing reroutes). Same
+   * counters as `evaluateRerouteGate`. Read by the feedback executor's admission so it claims
+   * nothing while the lane is full (docs/specs/confined-spawn-subscription-reroute.md, Cap contention).
+   */
+  confinedRerouteCapacity(): 'available' | 'saturated' | 'not-rerouted' {
+    if ((this.config.subscriptionPathMode ?? 'off') !== 'force') return 'not-rerouted';
+    const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
+    const pressure = this.currentMemoryPressure();
+    return this.countReroutedInteractiveSessions() >= maxRerouted || pressure === 'high' || pressure === 'critical' ? 'saturated' : 'available';
+  }
+
   private evaluateRerouteGate(spawnName: string): { allow: boolean } {
     const mode = this.config.subscriptionPathMode ?? 'off';
     const maxRerouted = this.config.subscriptionMaxRerouted ?? 3;
@@ -3880,7 +3996,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         reason: `Cannot reroute: ${why}`,
         impact: `Job/A2A spawn "${spawnName}" refused under force-mode to protect the host; it will retry on its next trigger`,
       });
-      throw new Error(`Reroute refused (force-mode): ${why}`);
+      throw new RerouteRefusedError(why);
     }
     // 'auto' — degrade to the headless lane (host stays healthy). Caller falls
     // through to the headless build.
@@ -4017,8 +4133,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const extraClaudeFlags = claudeHeadlessExtraFlags({
       framework: 'claude-code',
       allowedTools: options.allowedTools,
-      disableProjectMcp: options.disableProjectMcp,
+      disableProjectMcp: options.disableProjectMcp || Boolean(options.confinement),
+      ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
     });
+    if (options.confinement && !extraClaudeFlags.includes('--settings')) {
+      throw new Error('confinement-adapter-missing: the --settings flag was not applied');
+    }
     if (extraClaudeFlags.length > 0) {
       launchSpec.argv.push(...extraClaudeFlags);
     }
@@ -4054,8 +4174,29 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const reroutedCredentialSource: 'store' | 'env' =
       (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
-    this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
-    const originEnvFlags = await this.originTokenEnvFlags({
+    // Confined (docs/specs/confined-spawn-subscription-reroute.md): the same guarantees as the
+    // headless confined launch — no agent authority in the tmux env, the shared adapter (G2/G4/G6),
+    // and the prompt delivered as a FILE behind one fixed typed line (D1), never typed itself.
+    const confinement = options.confinement;
+    let confinedEnvFlags: string[] = [];
+    let confinedPromptPath: string | null = null;
+    if (confinement) {
+      // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
+      // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
+      if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
+      for (const key of Object.keys(process.env).sort()) {
+        if (isCredentialEnvName(key) && key !== 'CLAUDE_CONFIG_DIR') confinedEnvFlags.push('-e', `${key}=`);
+      }
+      confinedEnvFlags.push('-e', 'GH_TOKEN=', '-e', 'GITHUB_TOKEN=', '-e', 'INSTAR_BIND_TOKEN=', '-e', 'INSTAR_FENCING_TOKEN=');
+      confinedEnvFlags.push(...applyClaudeConfinement(launchSpec.argv, confinement, { sessionId, tmuxSession },
+        launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
+      confinedPromptPath = path.join(path.resolve(confinement.tmpDir), `confined-prompt-${sessionId}.md`);
+      confinedPromptLine(confinedPromptPath); // validates the path shape before anything runs
+      fs.writeFileSync(confinedPromptPath, promptWithSentinel, { mode: 0o600, flag: 'wx' });
+    } else {
+      this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
+    }
+    const originEnvFlags = confinement ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
     });
@@ -4079,7 +4220,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...originEnvFlags,
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${confinement ? '' : this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -4106,9 +4247,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
-        ...this.ghTokenEnvFlags(), // P3b: per-agent vault GitHub token (empty when no vault token)
-        ...(workTreeFencingToken ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
-        ...(workTreeFencingToken ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
+        ...(confinement ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
+        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
         ...anthropicEnvFlags,
         // Same DB-credential isolation as every other spawn (Portal 2026-02-22).
@@ -4125,6 +4266,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
+        ...confinedEnvFlags,
         ...launchSpec.argv,
       ], { encoding: 'utf-8' }));
 
@@ -4161,9 +4303,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
       launchLane: 'rerouted-interactive',
       completionMode: 'pattern',
       completionPatterns: [sentinel],
-      maxLifetimeMinutes: lifetimeMinutes,
+      // A confined caller's own bound is its contract (the canary 10 min, a build its lease).
+      maxLifetimeMinutes: confinement ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
+      ...(confinement ? { confinedConfigHome: launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
     };
+    // Saved BEFORE any startup step: the monitor and both auto-answerers see this session only
+    // from this save on, and the save already carries the confinement marker (spec D3, Restart boundary).
     this.state.saveSession(session);
+
+    if (confinement && confinedPromptPath) {
+      this.runConfinedStartup(session, resolvedCwd, confinedPromptLine(confinedPromptPath)).catch((err) => {
+        // @silent-fallback-ok — runConfinedStartup reports its own failures; this guards only an unexpected rejection.
+        console.error(`[SessionManager] Confined startup for "${tmuxSession}" rejected unexpectedly: ${err}`);
+      });
+      this.retainFailedExitStatus(tmuxSession);
+      return session;
+    }
 
     // Deliver the prompt asynchronously — do NOT block spawnSession's return on
     // readiness (callers expect the Session back promptly; the ready-gate is
@@ -4179,6 +4334,111 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     this.retainFailedExitStatus(tmuxSession);
     return session;
+  }
+
+  /**
+   * Drive a confined interactive session from launch to its one typed line (spec D2): the pure
+   * state machine decides; this only captures, sends the keys it names, and types the fixed line.
+   * On failure: nothing is typed, the session is killed, and a degradation names what was seen.
+   */
+  private async runConfinedStartup(session: Session, workspace: string, line: string, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<boolean> {
+    const tmuxSession = session.tmuxSession;
+    let state: ConfinedStartupState = initialConfinedStartupState(Date.now());
+    // The VISIBLE screen only (no scrollback): a dialog that scrolled away is not the current state.
+    const capture = (): string => {
+      try {
+        return withSyncOp(() => execFileSync(this.config.tmuxPath, ['capture-pane', '-p', '-t', `=${tmuxSession}:`], { encoding: 'utf-8', timeout: 5000 }));
+      } catch { return ''; } // @silent-fallback-ok — an unreadable pane classifies as `starting`; the budget bounds it
+    };
+    const failNow = (rule: string, observation: ConfinedStartupObservation): void => {
+      state = { ...state, phase: 'failed', failure: { rule, observation } };
+    };
+    // Bounded twice: the state machine's wall-clock budget, and an iteration cap that holds even if
+    // the clock or the sleep misbehaves (No Unbounded Loops).
+    const maxIterations = Math.ceil(CONFINED_STARTUP_BUDGET_MS / 500) + 20;
+    this.confinedStartupHolders.add(tmuxSession);
+    try {
+    for (let iteration = 0; ; iteration++) {
+      if (iteration >= maxIterations) { failNow('startup-iteration-cap', 'starting'); break; }
+      await sleep(500);
+      if (!this.tmuxSessionExists(tmuxSession)) { failNow('session-exited-during-startup', 'starting'); break; }
+      const pane = capture();
+      const step = stepConfinedStartup(state, pane, workspace, Date.now());
+      const before = state.phase;
+      state = step.state;
+      if (step.action.kind === 'keys') {
+        for (const key of step.action.keys) this.sendKey(tmuxSession, key);
+      } else if (step.action.kind === 'type-line') {
+        // Type the fixed line WITHOUT submitting, confirm it is echoed at a ready prompt with no
+        // dialog on screen, and only then press Enter: a dialog that appeared in between must never
+        // receive the Enter (spec D2, `ready` row).
+        try {
+          // confined-write-allowed: the D2 startup driver itself, which holds this session in confinedStartupHolders; the line is instar-built from a validated path
+          withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(`=${tmuxSession}:`, line), { encoding: 'utf-8', timeout: 5000 }));
+        } catch { failNow('fixed-line-not-typed', 'ready'); break; }
+        await sleep(300);
+        const echoed = capture();
+        if (classifyConfinedStartupPane(echoed, workspace) !== 'ready' || !squash(echoed).includes(squash(line.slice(0, 60)))) {
+          failNow('fixed-line-not-confirmed-at-ready-prompt', classifyConfinedStartupPane(echoed, workspace));
+          break;
+        }
+        this.sendKey(tmuxSession, 'Enter');
+        // After the Enter: the session must still be in the confined permission mode with no dialog
+        // up. A dialog that slipped in between the last capture and the Enter could only have taken
+        // that Enter. Up to three samples over ~1 s: one clean frame passes; a positively bad frame
+        // (another mode, a dialog) fails at once; only half-drawn frames all the way to the window
+        // end fail (spec D2 residual; detection, not prevention).
+        let postSubmit: 'clean' | 'bad' | 'unclear' = 'unclear';
+        let after = '';
+        for (let sample = 0; sample < 3 && postSubmit === 'unclear'; sample++) {
+          await sleep(300);
+          after = capture();
+          if (showsOtherPermissionMode(after) || /Enter to confirm|Esc to cancel|Esc to keep/i.test(after)) postSubmit = 'bad';
+          else if (after.includes("don't ask on")) postSubmit = 'clean';
+        }
+        if (postSubmit !== 'clean') {
+          failNow(postSubmit === 'bad' ? 'post-submit-mode-or-dialog-check' : 'post-submit-frame-never-clean', classifyConfinedStartupPane(after, workspace));
+          break;
+        }
+        try {
+          const current = this.state.getSession(session.id) ?? session;
+          this.state.saveSession({ ...current, confinedDeliveredAt: new Date().toISOString() });
+        } catch (err) {
+          // @silent-fallback-ok — reported: an unrecorded delivery is killed at the next boot (never re-typed).
+          console.error(`[SessionManager] Confined startup: could not record delivery for "${tmuxSession}": ${err}`);
+        }
+      }
+      if (before !== state.phase || step.action.kind !== 'wait') {
+        console.log(`[SessionManager] confined-startup "${tmuxSession}": ${before} → ${state.phase} (action ${step.action.kind})`);
+      }
+      if (state.phase === 'delivered') return true;
+      if (state.phase === 'failed') break;
+    }
+    } finally {
+      this.confinedStartupHolders.delete(tmuxSession);
+    }
+    this.reportConfinedDialog(tmuxSession, `startup ${state.failure?.rule ?? 'unknown'} (observed ${state.failure?.observation ?? 'unknown'})`, capture());
+    try { this.killSession(session.id); } catch { /* @silent-fallback-ok — the lifetime cap still ends it */ }
+    return false;
+  }
+
+  /** Confined sessions whose post-delivery dialog was already reported (signal once per session). */
+  private readonly confinedDialogReported = new Set<string>();
+
+  /**
+   * Name what a confined session is stuck on (spec D2/D3): a degradation with the rule and the
+   * dialog's first line, bounded and printable-only. Signal only: nothing is pressed.
+   */
+  private reportConfinedDialog(tmuxSession: string, rule: string, pane: string): void {
+    const loginRequired = LOGIN_REQUIRED.test(pane);
+    const firstLine = (pane.split('\n').find((l) => /Enter to confirm|Esc to|\?|login/i.test(l)) ?? '').trim().replace(/[^\x20-\x7E]/g, '').slice(0, 120); // bounded-input-reviewed: a degradation-report label (the dialog's first line), never a model input or a decision input; 120 chars names it
+    DegradationReporter.getInstance().report({
+      feature: 'SessionManager.confinedSession',
+      primary: 'run a confined interactive session to its result',
+      fallback: loginRequired ? 'the session cannot run: its Claude login is missing or expired' : 'nothing pressed; the confined session waits or was ended',
+      reason: `${loginRequired ? 'login-required' : rule}${firstLine ? `: ${firstLine}` : ''}`,
+      impact: `Confined session "${tmuxSession}" produced no result; its caller sees it end without one`,
+    });
   }
 
   /**
@@ -5561,7 +5821,44 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Use for special keys like 'C-c' (Ctrl+C), 'Enter', 'Escape'.
    * Unlike sendInput() which uses -l (literal), this sends key names directly.
    */
+  /**
+   * A confined session whose task has been delivered takes no further keys or text from ANY
+   * Instar writer (sentinel nudges, prompt answers, recovery keys): its only answerer was the D2
+   * startup driver, and only before delivery (docs/specs/confined-spawn-subscription-reroute.md
+   * D3). Killing it stays allowed. Refusals are logged once per session.
+   */
+  private confinedWriteRefused(tmuxSession: string, what: string): boolean {
+    // The D2 startup driver is the ONLY writer allowed into a confined session, and only while it
+    // holds the session (from its first capture to `delivered` or `failed`).
+    //
+    // Both Sets below are class-field initialisers, so they exist only when the constructor ran.
+    // Narrow harnesses build this recovery surface with `Object.create(SessionManager.prototype)`
+    // (see the same note on fireStuckInputRecovery), where they are `undefined` — and an unguarded
+    // `.has()` threw a TypeError that BOTH enclosing catches swallowed, silently sending ZERO
+    // stuck-input recovery keys instead of the escalating four. Optional chaining keeps D3's teeth:
+    // the refusal verdict comes from `session.confinedConfigHome`, not from these Sets, so a
+    // genuinely confined session is still refused — only the holder allow-list and the
+    // once-per-session warning degrade, and both are additive.
+    if (this.confinedStartupHolders?.has(tmuxSession)) return false;
+    const session = this.state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmuxSession);
+    if (!session?.confinedConfigHome) return false;
+    if (!this.confinedWriteRefusals?.has(session.id)) {
+      this.confinedWriteRefusals?.add(session.id);
+      console.warn(`[SessionManager] refused ${what} into confined session "${tmuxSession}" (D3: only the startup driver may press a key in a confined session)`);
+    }
+    return true;
+  }
+  private readonly confinedWriteRefusals = new Set<string>();
+  /** tmux sessions the D2 startup driver currently holds (the one writer a confined session admits). */
+  private readonly confinedStartupHolders = new Set<string>();
+
+  /** Public form of the D3 guard for writers outside SessionManager (the server's tmuxOps.sendKeys). */
+  isConfinedWriteRefused(tmuxSession: string): boolean {
+    return this.confinedWriteRefused(tmuxSession, 'text');
+  }
+
   sendKey(tmuxSession: string, key: string): boolean {
+    if (this.confinedWriteRefused(tmuxSession, `key ${key}`)) return false;
     try {
       withSyncOp(() =>
         execFileSync(
@@ -5586,6 +5883,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * stays synchronous because its timing IS the correctness mechanism).
    */
   private async sendKeyAsync(tmuxSession: string, key: string): Promise<boolean> {
+    if (this.confinedWriteRefused(tmuxSession, `key ${key}`)) return false;
     if (this.tmuxInflightCount >= this.tmuxMaxInFlight) return false;
     this.tmuxInflightCount += 1;
     try {
@@ -5684,6 +5982,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
         });
         if (r.terminated) purged++;
         else skipped++; // not-lease-holder / protected — recorded, kept for next awake tick
+      } else if (session.launchLane === 'rerouted-interactive' && session.confinedConfigHome && !session.confinedDeliveredAt) {
+        // Confined startup never completed before the restart (spec Restart boundary): its in-memory
+        // startup state is gone and is never resumed, so the session is killed — nothing is typed twice.
+        const r = await this.#terminateSessionInternal(session.id, 'boot-reconcile-confined-undelivered', {
+          finalStatus: 'killed',
+          disposition: 'terminal',
+          origin: 'operator',
+        });
+        if (r.terminated) {
+          console.log(`[SessionManager] Startup reconcile: killed confined rerouted session "${session.name}" whose startup never completed.`);
+        }
+        kept++;
       } else if (session.launchLane === 'rerouted-interactive' && session.jobSlug) {
         // Boot reconciliation (june15-headless-spawn-reroute, PR2 finding O3):
         // a rerouted JOB session that survived a restart is still ALIVE in tmux,
@@ -7658,6 +7968,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Used by injectMessage after provenance checks pass.
    */
   private rawInject(tmuxSession: string, text: string, authoritativeConversationId?: string): boolean {
+    if (this.confinedWriteRefused(tmuxSession, 'text')) return false;
     // Strip any EMBEDDED bracketed-paste markers from the prompt content before
     // we wrap it in our own \x1b[200~…\x1b[201~ (june15-headless-spawn-reroute,
     // PR2 finding S2). A job/A2A prompt containing a literal \x1b[201~ would
@@ -7811,6 +8122,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** The sole tmux mutation body; Stage B calls it only while holding the physical-effect lease. */
   private performTmuxInjectionEffect(tmuxSession: string, text: string, framework: string | null): void {
+    // D3 (docs/specs/confined-spawn-subscription-reroute.md): the real text chokepoint. A confined
+    // session takes text from no Instar writer (prompt delivery, control commands, retries).
+    if (this.confinedWriteRefused(tmuxSession, 'text')) return;
     const exactTarget = `=${tmuxSession}:`;
     const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
@@ -7858,8 +8172,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Polling schedule in ms from injection. Each entry is the absolute
     // time-from-injection at which that attempt fires. Stops on success
     // (marker no longer at ❯) or after the last entry.
-    const markerCheckSchedule = [500, 1500, 3500, 6500];
+    // The last entry is a VERIFY-ONLY pass: it presses nothing and exists so a
+    // run that fired its whole ladder still reads the pane one last time and
+    // reports what actually happened. Without it the ladder's final keypress
+    // outcome was never observed, so "recovered" was an assumption.
+    const markerCheckSchedule = [500, 1500, 3500, 6500, 9000];
+    const verifyOnlyIdx = markerCheckSchedule.length - 1;
     let recoveryFiredOnce = false;
+    let recoveryRefusedOnce = false;
 
     const runCheck = (attempt: number): void => {
       try {
@@ -7892,8 +8212,53 @@ rm()  { "${shimRunner}" rm  "$@"; }
           return;
         }
 
-        // Still stuck. Fire escalating recovery action.
-        this.fireStuckInputRecovery(tmuxSession, attempt);
+        // Final pass: the ladder is spent and the marker is STILL at an idle
+        // prompt, so every rung we fired failed. Press nothing — say so. The
+        // persistent StuckInputSentinel owns recovery from here (it survives a
+        // server restart, which these in-process timers do not), and it is the
+        // layer that escalates; this report exists so the failure is on the
+        // record at the moment it is known rather than inferred later.
+        if (attempt >= verifyOnlyIdx) {
+          if (recoveryFiredOnce || recoveryRefusedOnce) {
+            console.warn(`[SessionManager] Injection recovery FAILED in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" is still at an idle prompt after the full ladder. The message is NOT delivered; handing off to StuckInputSentinel.`);
+            DegradationReporter.getInstance().report({
+              feature: 'SessionManager.verifyInjection',
+              primary: 'Bracketed paste + Enter submits injected message',
+              fallback: 'Persistent StuckInputSentinel continues recovery across server restarts',
+              reason: 'Marker still at an idle prompt after every in-process recovery rung',
+              impact: 'Message still unsubmitted — NOT recovered by the in-process verifier',
+            });
+          }
+          return;
+        }
+
+        // Still stuck. Fire escalating recovery action — and CONSUME its outcome.
+        // Ignoring the return value is how this reported success it had not
+        // earned: a `refused` verdict means no key was ever sent, yet the
+        // degradation below still read "Recovered without user intervention"
+        // while the operator's message sat at the prompt (indra, 2026-10-20).
+        const fired = this.fireStuckInputRecovery(tmuxSession, attempt);
+        if (fired.status === 'refused') {
+          if (!recoveryRefusedOnce) {
+            recoveryRefusedOnce = true;
+            console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" and recovery was REFUSED (${fired.reason ?? 'no reason given'}) — marker "${marker.slice(0, 30)}…" is still at the prompt and no key was sent. The message is NOT delivered.`);
+            DegradationReporter.getInstance().report({
+              feature: 'SessionManager.verifyInjection',
+              primary: 'Bracketed paste + Enter submits injected message',
+              fallback: 'None — the recovery keypress was refused before it was sent',
+              reason: `Recovery refused: ${fired.reason ?? 'unknown'}`,
+              impact: 'Message left unsubmitted at the prompt; the persistent StuckInputSentinel is the remaining backstop',
+            });
+          }
+          // Keep polling: a refusal can be transient (ownership moving), and
+          // the next rung re-asks rather than assuming the answer is permanent.
+          const nextRefusedIdx = attempt + 1;
+          if (nextRefusedIdx < markerCheckSchedule.length) {
+            const delay = markerCheckSchedule[nextRefusedIdx] - markerCheckSchedule[attempt];
+            setTimeout(() => runCheck(nextRefusedIdx), delay);
+          }
+          return;
+        }
 
         if (!recoveryFiredOnce) {
           recoveryFiredOnce = true;
@@ -7911,7 +8276,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             reason:
               'Enter after bracketed-paste-end did not submit; text left at the prompt ' +
               '(first observed on Claude Code TUI v2.1.105+, but the race is not framework-specific)',
-            impact: 'Recovered without user intervention',
+            // Reports what was DONE, not what it achieved. The outcome is not
+            // known at this point — the key has only just been sent — and the
+            // verify-only pass above is what states whether it worked. Claiming
+            // recovery here is what made a 28-minute undelivered message read
+            // as self-healed in the degradation record.
+            impact: 'Recovery keypress sent; outcome reported by the verification pass that follows',
           });
         }
 
@@ -8077,8 +8447,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const markerEvidence = this.strandedDraftMarkers?.get(tmuxSession);
     const deliveryId = markerEvidence?.deliveryId;
     const conversationId = markerEvidence?.conversationId ?? tmuxSession;
-    if (this.stageBActivation.active) {
-      if (!deliveryId || !this.inboundDeliveries || !this.trackedPhysicalEffects) {
+    // Stage B fences a recovery keypress behind the SAME durable delivery row
+    // that authorized the original injection, so a key can never be replayed
+    // against a conversation this machine no longer owns. That fence is only
+    // satisfiable where such a row exists — and rows are prepared for
+    // codex-cli ONLY (see the stageB branch in injectIntoSession). Requiring it
+    // for every framework turned every claude-code recovery into a permanent
+    // refusal: one agent logged 75,001 consecutive
+    // `refused/missing-durable-delivery-evidence` rows, every one at attempt 0,
+    // so the keypress ladder never advanced, never exhausted and never
+    // escalated. An operator's message sat unsubmitted at the prompt for 28
+    // minutes while the logs reported recovery (indra, 2026-10-20).
+    // Keep the fence wherever the evidence exists; where it structurally cannot
+    // exist, fall through to the pre-Stage-B best-effort keypress — the same
+    // untracked path this session's own injection still takes.
+    if (this.stageBActivation.active && deliveryId) {
+      if (!this.inboundDeliveries || !this.trackedPhysicalEffects) {
         return { status: 'refused', reason: 'missing-durable-delivery-evidence' };
       }
       const delivery = this.inboundDeliveries.get(conversationId, deliveryId);
@@ -8111,6 +8495,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   private performStuckInputKeyEffect(target: string, tmuxPath: string, attempt: number): void {
+    // D3: the stuck-input recovery keys are raw sends; a confined session takes none of them.
+    if (this.confinedWriteRefused(target.replace(/^=/, '').replace(/:$/, ''), 'stuck-input recovery key')) return;
     if (attempt === 0 || attempt === 1) {
       withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
     } else if (attempt === 2) {
@@ -8145,6 +8531,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (this.detectClaudePrompt(tmuxSession)) {
         console.log(`[SessionManager] Session ready in "${tmuxSession}" after ${Date.now() - start}ms`);
+        // The positive signal the start-failure tracker resets on: this machine
+        // has just demonstrated it CAN start a session, so any standing
+        // "cannot start" placement block is cleared without operator action.
+        this.emit('sessionStartSucceeded', { tmuxSession });
         return true;
       }
       await new Promise(r => setTimeout(r, 500));
@@ -8197,6 +8587,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // If we don't accept, any injected text selects "No" and crashes the session.
     const fullText = lines.join('\n');
     if (fullText.includes('Yes, I accept') && fullText.includes('No, exit')) {
+      // D3: a confined session's only answerer is its startup driver (exact-match frames); this
+      // generic auto-accept never presses a key in one. Readiness stays false; the driver decides.
+      if (this.confinedWriteRefused(tmuxSession, 'consent auto-accept keys')) return false;
       console.log(`[SessionManager] Consent dialog detected in "${tmuxSession}" — auto-accepting`);
       try {
         // Press Down to select "Yes, I accept", then Enter to confirm
@@ -8257,6 +8650,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (this.detectClaudePrompt(tmuxSession)) {
         console.log(`[SessionManager] Session ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
+        this.emit('sessionStartSucceeded', { tmuxSession });
         return true;
       }
       await new Promise(r => setTimeout(r, 1000));

@@ -16,8 +16,14 @@
  * pairingReplicationWiring.ts and threadline-core's encryptedSeen.ts). A mark kept on one machine
  * would let the relay downgrade a peer by aiming at whichever machine takes over.
  *
- * The switch `threadline.refuseDowngrade` follows `threadline.encryptToPinned` exactly:
- * `enabled` omitted rides the developmentAgent gate, `dryRun` defaults TRUE.
+ * The switch `threadline.refuseDowngrade` ships at WATCH for every agent (2026-10-20, beside
+ * Justin's ruling that encryption ships on): `enabled` omitted means ON, `dryRun` omitted means
+ * TRUE. Every agent records marks and counts what it would refuse; refusing needs an explicit
+ * `dryRun: false`. Why not enforce by default: an invite-paired peer on an Instar release
+ * older than the one that turned encryptToPinned on (or with it set off) encrypts only when
+ * the relay has given it our keys this session, so it can send encrypted chat (setting the
+ * mark) and later plaintext. Enforcing would refuse that peer's ordinary messages until it
+ * updates. The watch counters, per peer, show whether any such peer is still out there.
  *
  *  - off (`enabled` false): nothing is recorded and nothing is refused — today's behaviour.
  *  - watch (`enabled`, `dryRun` not false): marks are recorded (and replicated); plaintext that
@@ -28,15 +34,14 @@
  * only read while the switch is on), so turning it back on resumes the same protection.
  */
 
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { AgentTrustManager } from './AgentTrustManager.js';
 import { invitePinnedKey } from './encryptToPinned.js';
 import { classifyRelayPlaintextOperation } from './relayUnknownSenderTrust.js';
 
 export interface RefuseDowngradeMode {
-  /** Gate-resolved: `enabled` omitted ⇒ the developmentAgent gate decides. */
+  /** `enabled` omitted ⇒ ON for every agent (marks are recorded). */
   enabled: boolean;
-  /** Default TRUE: count would-refuse, deliver as today. */
+  /** Default TRUE: count would-refuse, deliver as today. Only an explicit `false` refuses. */
   dryRun: boolean;
 }
 
@@ -47,13 +52,16 @@ interface RefuseDowngradeConfigShape {
   threadline?: { refuseDowngrade?: { enabled?: boolean; dryRun?: boolean } };
 }
 
+/** The default when no value is set anywhere: watch, for every agent (see the header). */
+export const REFUSE_DOWNGRADE_DEFAULT: Readonly<RefuseDowngradeMode> = Object.freeze({ enabled: true, dryRun: true });
+
 /** The live mode. Read per inbound message. */
 export function resolveRefuseDowngradeMode(
   live: { enabled?: boolean; dryRun?: boolean },
   config: RefuseDowngradeConfigShape,
 ): RefuseDowngradeMode {
   const block = config.threadline?.refuseDowngrade;
-  const enabled = resolveDevAgentGate(live.enabled ?? block?.enabled, config);
+  const enabled = live.enabled ?? block?.enabled ?? REFUSE_DOWNGRADE_DEFAULT.enabled;
   // Only an explicit `false` leaves dry-run; anything else observes.
   const dryRun = (live.dryRun ?? block?.dryRun) !== false;
   return { enabled, dryRun };
@@ -98,9 +106,14 @@ export interface RefuseDowngradeDeps<T> {
   counters?: RefuseDowngradeCounters;
 }
 
-function readMode(mode: () => RefuseDowngradeMode): RefuseDowngradeMode {
-  try { return mode(); } catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — an unreadable mode is today's behaviour (off) */ }
+/**
+ * Read the live mode. A reader that throws yields the SHIPPED DEFAULT (watch), never off, so
+ * marks keep being recorded and would-refuse plaintext keeps being counted (Echo, review of #2236).
+ */
+export function readRefuseDowngradeMode(mode: () => RefuseDowngradeMode): RefuseDowngradeMode {
+  try { return mode(); } catch { return { ...REFUSE_DOWNGRADE_DEFAULT }; /* @silent-fallback-ok — an unreadable mode is the shipped default (watch), never off */ }
 }
+const readMode = readRefuseDowngradeMode;
 
 /**
  * An ENCRYPTED message arrived and was verified (ThreadlineClient 'message'). Record the mark when
@@ -162,4 +175,150 @@ export function shouldRefuseDowngradedPlaintext(
   }
   counters.refusedDowngrade++;
   return true;
+}
+
+// ── Loud refusal (Echo's review, 2026-10-20) ────────────────────────────────────────────────
+// A refused message must never vanish silently: the receiving agent logs it with a named reason
+// and a remedy, keeps a per-peer record on the authed /health, surfaces it through the
+// degradation channel, and — where it can — tells the SENDER, encrypted to the sender's pinned
+// key, so a real peer on older software learns its message was not delivered and why.
+
+/** The stable machine name of the refusal reason. */
+export const DOWNGRADE_REFUSAL_REASON = 'plaintext-from-peer-that-sent-encrypted' as const;
+
+/** What happened, in plain words (for logs, /health and the degradation report). */
+export const DOWNGRADE_REFUSAL_EXPLANATION =
+  'An unencrypted message claiming to be from an agent you paired with was not delivered, because that agent has sent you encrypted messages before. An unencrypted message in its name could have been written or changed by the relay.';
+
+/** What to do about it, in plain words. */
+export const DOWNGRADE_REFUSAL_REMEDY =
+  'If that agent really sent it, its software is not encrypting every message to agents it paired with: it should update (Instar encrypts all of them from this release on) and send the message again. If it did not send it, nothing needs doing: the refusal is the protection working.';
+
+/** The fixed notice sent back to the sender, encrypted to its pinned key. A server constant — never peer text. */
+export const DOWNGRADE_REFUSAL_NOTICE =
+  '[automatic notice] I did not deliver an unencrypted message that arrived in your name, because you have sent me encrypted messages before and an unencrypted one could have been changed by the relay. If you sent it, please update your Threadline software so that it encrypts every message to agents you paired with, then send it again. If you did not send it, someone tried to speak as you; nothing else is needed.';
+
+/** At most one notice per peer per this interval (a forging relay must not turn us into a sender). */
+export const DOWNGRADE_NOTICE_MIN_INTERVAL_MS = 60 * 60_000;
+const DOWNGRADE_REFUSAL_MAX_PEERS = 256;
+
+export interface DowngradeRefusalRecord {
+  fingerprint: string;
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  reason: typeof DOWNGRADE_REFUSAL_REASON;
+  explanation: string;
+  remedy: string;
+  /** Notices sent back to the sender (encrypted to its pinned key). */
+  noticesSent: number;
+  /** Notices that could not be sent (no pinned key, not connected, send threw). */
+  noticeFailures: number;
+  lastNoticeAt?: string;
+}
+
+export interface DowngradeRefusalLog {
+  /** Record one refusal; returns the record and whether a notice to the sender is due. */
+  record(fingerprint: string): { record: DowngradeRefusalRecord; noticeDue: boolean };
+  /** Record the outcome of a notice attempt. */
+  noteNotice(fingerprint: string, sent: boolean): void;
+  /** Every peer with a refusal this process, newest first. */
+  snapshot(): DowngradeRefusalRecord[];
+  reset(): void;
+}
+
+export function createDowngradeRefusalLog(opts: { now?: () => number; noticeIntervalMs?: number; maxPeers?: number } = {}): DowngradeRefusalLog {
+  const now = opts.now ?? Date.now;
+  const interval = opts.noticeIntervalMs ?? DOWNGRADE_NOTICE_MIN_INTERVAL_MS;
+  const maxPeers = opts.maxPeers ?? DOWNGRADE_REFUSAL_MAX_PEERS;
+  const records = new Map<string, DowngradeRefusalRecord>();
+  const lastNoticeMs = new Map<string, number>();
+  return {
+    record(fingerprint) {
+      const fp = String(fingerprint || '').toLowerCase();
+      const t = now();
+      const iso = new Date(t).toISOString();
+      let rec = records.get(fp);
+      if (!rec) {
+        if (records.size >= maxPeers) {
+          // Bounded: drop the peer refused longest ago.
+          let oldest: string | null = null;
+          for (const [k, v] of records) if (oldest === null || v.lastAt < records.get(oldest)!.lastAt) oldest = k;
+          if (oldest !== null) { records.delete(oldest); lastNoticeMs.delete(oldest); }
+        }
+        rec = {
+          fingerprint: fp, count: 0, firstAt: iso, lastAt: iso, reason: DOWNGRADE_REFUSAL_REASON,
+          explanation: DOWNGRADE_REFUSAL_EXPLANATION, remedy: DOWNGRADE_REFUSAL_REMEDY, noticesSent: 0, noticeFailures: 0,
+        };
+        records.set(fp, rec);
+      }
+      rec.count++;
+      rec.lastAt = iso;
+      const last = lastNoticeMs.get(fp);
+      const noticeDue = last === undefined || t - last >= interval;
+      if (noticeDue) lastNoticeMs.set(fp, t);
+      return { record: rec, noticeDue };
+    },
+    noteNotice(fingerprint, sent) {
+      const rec = records.get(String(fingerprint || '').toLowerCase());
+      if (!rec) return;
+      if (sent) { rec.noticesSent++; rec.lastNoticeAt = new Date(now()).toISOString(); } else rec.noticeFailures++;
+    },
+    snapshot() {
+      return [...records.values()].map((r) => ({ ...r })).sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+    },
+    reset() { records.clear(); lastNoticeMs.clear(); },
+  };
+}
+
+/** Process-wide refusal log (one relay client per server process), on the authed /health. */
+export const downgradeRefusals: DowngradeRefusalLog = createDowngradeRefusalLog();
+
+/** Tests only: clear the process-wide refusal log. */
+export function resetDowngradeRefusals(): void {
+  downgradeRefusals.reset();
+}
+
+/**
+ * Make a refusal loud. Call it exactly where shouldRefuseDowngradedPlaintext returned true.
+ * Logs the named reason and remedy, records the peer, reports through `report` (the degradation
+ * channel) when a notice is due, and sends the fixed notice back to the sender ENCRYPTED to its
+ * pinned key when one is due and the key is known. Never throws: a refusal that cannot be made
+ * loud is still a refusal.
+ */
+export function reportDowngradeRefusal(
+  deps: {
+    trustManager: TrustReader | undefined;
+    log?: DowngradeRefusalLog;
+    warn?: (line: string) => void;
+    report?: (r: { reason: string; impact: string }) => void;
+    /** Send `text` to `fingerprint` encrypted to `pinnedIdentityPubHex`. Throws on failure. */
+    sendNotice?: (fingerprint: string, pinnedIdentityPubHex: string, text: string) => void;
+  },
+  fingerprint: string,
+): DowngradeRefusalRecord | null {
+  try {
+    const log = deps.log ?? downgradeRefusals;
+    const fp = String(fingerprint || '').toLowerCase();
+    const { record, noticeDue } = log.record(fp);
+    (deps.warn ?? console.warn)(
+      `Threadline: refused plaintext from ${fp.slice(0, 12)} [${DOWNGRADE_REFUSAL_REASON}] (refusal ${record.count} from this agent). ${DOWNGRADE_REFUSAL_EXPLANATION} Remedy: ${DOWNGRADE_REFUSAL_REMEDY}`,
+    );
+    if (!noticeDue) return record;
+    try {
+      deps.report?.({ reason: `${DOWNGRADE_REFUSAL_REASON} from ${fp.slice(0, 12)}`, impact: `${DOWNGRADE_REFUSAL_EXPLANATION} ${DOWNGRADE_REFUSAL_REMEDY}` });
+    } catch { /* @silent-fallback-ok — the warn line above already carries it */ }
+    let sent = false;
+    try {
+      const pinned = invitePinnedKey(deps.trustManager, fp);
+      if (pinned && deps.sendNotice) {
+        deps.sendNotice(fp, pinned.toString('hex'), DOWNGRADE_REFUSAL_NOTICE);
+        sent = true;
+      }
+    } catch { /* counted below as a notice failure */ }
+    log.noteNotice(fp, sent);
+    return record;
+  } catch {
+    return null; // @silent-fallback-ok — the refusal itself already happened; loudness is best effort
+  }
 }

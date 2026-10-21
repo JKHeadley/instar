@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-21T03:31:38.607Z",
+  "slug": "stuck-input-undelivered-alarm",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 235,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StuckInputSentinel.ts"
+    ],
+    "addedLines": 227,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/stuck-input-undelivered-alarm.test.ts",
+      "howCaught": "Steady-state bound: at most maxAttempts (4) keypresses per stuck prompt text, asserted over 40 consecutive ticks. Settling brake: a refusal now consumes the same budget (consecutiveRefusals), so the previously unbounded refusal loop (75,001 consecutive refusals measured, all at attempt 0) terminates; undeliverableRaised makes the terminal alarm one-shot per wedge; record.exhausted stops all further firing until the prompt text changes."
+    }
+  },
+  "verdict": "blocked"
+}

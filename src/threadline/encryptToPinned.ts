@@ -11,8 +11,11 @@
  * method (`pairingMethod: 'inherited'`), keep the previous rule: encrypt when the relay gave
  * us the peer's keys this session.
  *
- * The switch `threadline.encryptToPinned` follows `threadline.relayUnknownSenderTrust`
- * exactly: `enabled` omitted rides the developmentAgent gate, `dryRun` defaults TRUE.
+ * The switch `threadline.encryptToPinned` SHIPS ON for every agent (Justin, 2026-10-20:
+ * "why is encryption shipped off? Please change it such that it ships on."): `enabled`
+ * omitted means ON and `dryRun` omitted means FALSE, so an agent with no value enforces. It
+ * was a developmentAgent-gated, dry-run-first switch until then. An explicit value always wins,
+ * so an operator can still choose `off` (`enabled: false`) or `watch` (`dryRun: true`).
  *
  *  - off (`enabled` false): the resolver returns null — today's behaviour.
  *  - watch (`enabled`, `dryRun` not false): the resolver returns null, and each SEND that
@@ -30,7 +33,6 @@
  * watching, it is only counted (`wouldLabelUnverified`).
  */
 
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { AgentTrustLevel, AgentTrustManager } from './AgentTrustManager.js';
 import { classifyRelayPlaintextOperation, type RelayUnknownSenderPassDecision } from './relayUnknownSenderTrust.js';
 import {
@@ -40,9 +42,9 @@ import {
 } from './client/ThreadlineClient.js';
 
 export interface EncryptToPinnedMode {
-  /** Gate-resolved: `enabled` omitted ⇒ the developmentAgent gate decides. */
+  /** `enabled` omitted ⇒ ON (ships on for every agent, dev or not). */
   enabled: boolean;
-  /** Default TRUE: count would-encrypt sends, send exactly as today. */
+  /** `dryRun` omitted ⇒ FALSE (enforce). Only an explicit `true` watches. */
   dryRun: boolean;
 }
 
@@ -53,16 +55,30 @@ interface EncryptToPinnedConfigShape {
   threadline?: { encryptToPinned?: { enabled?: boolean; dryRun?: boolean } };
 }
 
-/** The live mode. Read per send / per inbound message. */
+/** The default when no value is set anywhere: enforce, for every agent. */
+export const ENCRYPT_TO_PINNED_DEFAULT: Readonly<EncryptToPinnedMode> = Object.freeze({ enabled: true, dryRun: false });
+
+/**
+ * The live mode. Read per send / per inbound message. The live value wins over the file, the
+ * file wins over the default, and the default is enforce whatever `developmentAgent` says.
+ */
 export function resolveEncryptToPinnedMode(
   live: { enabled?: boolean; dryRun?: boolean },
   config: EncryptToPinnedConfigShape,
 ): EncryptToPinnedMode {
   const block = config.threadline?.encryptToPinned;
-  const enabled = resolveDevAgentGate(live.enabled ?? block?.enabled, config);
-  // Only an explicit `false` leaves dry-run; anything else observes.
-  const dryRun = (live.dryRun ?? block?.dryRun) !== false;
+  const enabled = live.enabled ?? block?.enabled ?? ENCRYPT_TO_PINNED_DEFAULT.enabled;
+  // Only an explicit `true` watches; omitted (or anything else) enforces.
+  const dryRun = (live.dryRun ?? block?.dryRun) === true;
   return { enabled, dryRun };
+}
+
+/**
+ * Read the live mode. A reader that throws yields the SHIPPED DEFAULT (enforce), never off:
+ * an unreadable switch must not silently stop encryption (Echo, review of #2236).
+ */
+export function readEncryptToPinnedMode(mode: () => EncryptToPinnedMode): EncryptToPinnedMode {
+  try { return mode(); } catch { return { ...ENCRYPT_TO_PINNED_DEFAULT }; /* @silent-fallback-ok — an unreadable mode is the shipped default (enforce), never off */ }
 }
 
 export function encryptToPinnedModeName(mode: EncryptToPinnedMode): EncryptToPinnedModeName {
@@ -125,8 +141,7 @@ export function createEncryptToPinnedResolver(deps: {
 }): (fp: string, use?: EncryptToUse) => EncryptToResolverResult {
   const counters = deps.counters ?? encryptToPinnedCounters;
   return (fp, use = 'check') => {
-    let mode: EncryptToPinnedMode;
-    try { mode = deps.mode(); } catch { return null; /* @silent-fallback-ok — an unreadable mode is today's behaviour (off) */ }
+    const mode = readEncryptToPinnedMode(deps.mode);
     if (!mode.enabled) return null;
     let key: Buffer | null;
     try {
@@ -148,7 +163,7 @@ export function createEncryptToPinnedResolver(deps: {
 
 /**
  * The options handed to ThreadlineClient.setEncryptToResolver beside the resolver: fail closed
- * only while enforcing (an unreadable mode counts as enforce there, so the client fails closed),
+ * only while enforcing (an unreadable mode is the shipped default, enforce, so the client fails closed),
  * and count the client-side failure paths on a send.
  */
 export function createEncryptToPinnedClientOptions(deps: {
@@ -157,7 +172,7 @@ export function createEncryptToPinnedClientOptions(deps: {
 }): EncryptToResolverOptions {
   const counters = deps.counters ?? encryptToPinnedCounters;
   return {
-    failClosed: () => encryptToPinnedModeName(deps.mode()) === 'enforce',
+    failClosed: () => encryptToPinnedModeName(readEncryptToPinnedMode(deps.mode)) === 'enforce',
     onFailure: (kind, use) => {
       if (use !== 'send') return;
       if (kind === 'resolver-error') counters.resolverErrors++;
@@ -191,8 +206,7 @@ export function labelUnverifiedPinnedPlaintext(
   wireType: unknown,
 ): LabelledRelayPassDecision {
   const counters = deps.counters ?? encryptToPinnedCounters;
-  let mode: EncryptToPinnedMode;
-  try { mode = deps.mode(); } catch { return decision; /* @silent-fallback-ok — unreadable mode = off */ }
+  const mode = readEncryptToPinnedMode(deps.mode);
   if (!mode.enabled) return decision;
   if (classifyRelayPlaintextOperation(wireType) !== 'message') return decision;
   let pinned: Buffer | null;

@@ -36,6 +36,8 @@ A single command, `npm run release:local`, that does exactly what the workflow d
 
 **A publish npm is still reviewing is not a failure.** npm sometimes holds a new version in an automated review ("Validating") for a long time, sometimes over 40 minutes, before anyone can download it. When that happens the tool says so, shows where the package owner can check, and says not to publish again. `--push-only` waits until npm shows the version and then finishes the release. But `--push-only` can't tell a version npm is still reviewing from one that was never published, so it also says: if the publish never happened, don't use `--push-only`; run the release again normally.
 
+**A release someone published but never finished can't be buried.** If npm already has a newer version than main (someone published it and never landed the release commit), the tool refuses to cut another release. It also refuses if this computer has a release still "in flight", or if GitHub has a version tag newer than main. Those two checks matter because npm can hide a new version while it reviews it. It says which version is unfinished and how to finish it. `--reconcile <version>` rebuilds that release commit from what npm actually shipped and lands it.
+
 **One decision is coming.** npm says tokens that skip two-factor checks stop working for publishing in January 2027, so local releases will need a different sign-in route by then. Justin is choosing which.
 
 **It never turns off the checks.** The release commit and push run every hook; there is no force push; a conflicting rebase stops instead of overwriting.

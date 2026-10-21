@@ -230,6 +230,10 @@ const FLAKY_TESTS = [
 const ISOLATED_CACHE_DIR = process.env.INSTAR_VITEST_CACHE_DIR?.trim();
 
 export default defineConfig(withTestRunnerBound('push', {
+  // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
+  // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
+  // read-denies the agent home around its workspace, so every confined vitest run failed.
+  css: { postcss: {} },
   // threadline-core is a workspace package that threadline-mcp imports by its published name.
   // Tests resolve it to the live source so cross-implementation tests need no install or build
   // (spec threadline-standalone-pairing). This mirrors vitest.config.ts: without it the push

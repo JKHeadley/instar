@@ -32,6 +32,16 @@ export interface StandaloneIdentity {
   privateKey: Buffer;
 }
 
+/**
+ * The wire `type` of an ordinary message (and of a credential, which is an ordinary message marked
+ * `metadata.credential`). Instar's inbound gate treats `content.type` as the OPERATION and checks it
+ * against the sender's allowed operations, whose ordinary entry is `'message'`. threadline-mcp up to
+ * 0.6.0 sent `'chat'`, which no default trust level allows, so a strict Instar agent refused every ordinary
+ * message from it without telling the sender. Receiving still accepts both: any type that is not a
+ * pairing op is ordinary chat, so older peers that send `'chat'` keep working.
+ */
+export const ORDINARY_MESSAGE_TYPE = 'message';
+
 /** A relay envelope as it arrives: encrypted (signature, ephemeralPubKey) or plaintext. */
 export type WireEnvelope = Partial<MessageEnvelope> & { from: string; to?: string; threadId?: string; messageId?: string; payload?: string; timestamp?: string };
 
@@ -332,7 +342,7 @@ export class StandalonePairing {
       const d = credentialSendKey(keys, fp, this.deps.identity.publicKey.toString('hex'));
       this.audit({ kind: d.allow ? 'credential-sent' : 'credential-refused', to: fp, ...(d.allow ? {} : { reason: d.reason }) });
       if (!d.allow) return { sent: false, reason: d.reason };
-      return { sent: true, encrypted: true, threadId: this.sendEncrypted(fp, d.peerIdentityPub, { content: text, type: 'chat', metadata: { credential: true } }, opts.threadId) };
+      return { sent: true, encrypted: true, threadId: this.sendEncrypted(fp, d.peerIdentityPub, { content: text, type: ORDINARY_MESSAGE_TYPE, metadata: { credential: true } }, opts.threadId) };
     }
     const pin = keys.getProfileByFingerprint(fp);
     // An acceptor whose pairing the inviter has not finished yet holds the inviter's key, but the
@@ -344,9 +354,9 @@ export class StandalonePairing {
     // margin, the Finish is not coming. Refuse rather than keep sending plaintext indefinitely.
     if (awaitingFinish && this.finishOverdue(pin)) return { sent: false, reason: 'finish-not-received' };
     if (pin?.peerIdentityPub && !awaitingFinish) {
-      return { sent: true, encrypted: true, threadId: this.sendEncrypted(fp, Buffer.from(pin.peerIdentityPub, 'hex'), { content: text, type: 'chat' }, opts.threadId) };
+      return { sent: true, encrypted: true, threadId: this.sendEncrypted(fp, Buffer.from(pin.peerIdentityPub, 'hex'), { content: text, type: ORDINARY_MESSAGE_TYPE }, opts.threadId) };
     }
-    return { sent: true, encrypted: false, threadId: this.sendPlaintextTyped(fp, 'chat', text, opts.threadId) };
+    return { sent: true, encrypted: false, threadId: this.sendPlaintextTyped(fp, ORDINARY_MESSAGE_TYPE, text, opts.threadId) };
   }
 
   /** Classify an incoming envelope: pairing ops are handled here; encrypted ones need a pinned sender. */
