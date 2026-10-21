@@ -116,12 +116,14 @@ describe('swap-continuity wiring integrity', () => {
     probe?: (s: string) => Promise<WorkProbeResult>;
     continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number }>;
     loginLoss?: { enabled: boolean; dryRun: boolean };
+    defaultSlotRepoint?: { enabled: boolean; dryRun: boolean };
     swapImpl?: (a: { sessionName: string; exhaustedAccountId: string; targetAccountId?: string }) => Promise<{ swapped: boolean; toAccountId: string | null; reason?: string }>;
   }) {
     const swap = vi.fn(
       over.swapImpl ??
         (async (a: { targetAccountId?: string }) => ({ swapped: true, toAccountId: a.targetAccountId ?? 'cool' })),
     );
+    const setDefaultAccount = vi.fn(async () => ({ ok: true, outcome: 'swapped' }));
     const monitor = new ProactiveSwapMonitor({
       listAccounts: () => over.accounts,
       listRunningSessions: () =>
@@ -137,6 +139,9 @@ describe('swap-continuity wiring integrity', () => {
       now: () => now,
       ...(over.engine ? { antiThrash: { engine: over.engine, getKnobs: knobs } } : {}),
       ...(over.loginLoss ? { loginLoss: over.loginLoss } : {}),
+      ...(over.defaultSlotRepoint
+        ? { defaultSlotRepoint: { ...over.defaultSlotRepoint, setDefaultAccount } }
+        : {}),
       ...(over.probe
         ? {
             workGate: {
@@ -153,7 +158,7 @@ describe('swap-continuity wiring integrity', () => {
           }
         : {}),
     });
-    return { monitor, swap };
+    return { monitor, swap, setDefaultAccount };
   }
 
   const idle: WorkProbeResult = { busy: false, turnLeg: 'idle', subagentLeg: 'ok', turnInFlight: false, subagents: [], reason: null };
@@ -224,42 +229,42 @@ describe('swap-continuity wiring integrity', () => {
       expect(second.swap).not.toHaveBeenCalled();
     });
 
-    it('bound untagged session swaps from the resolved default onto the freshest eligible account', async () => {
+    it('untagged session repoints the default slot to the freshest eligible account without mutating its binding', async () => {
       const engine = makeEngine();
       const soonReset = acct('soon-reset', 35);
       const freshest = acct('freshest', 7);
       if (soonReset.lastQuota?.sevenDay) soonReset.lastQuota.sevenDay.resetsAt = new Date(now + 60_000).toISOString();
       if (freshest.lastQuota?.sevenDay) freshest.lastQuota.sevenDay.resetsAt = new Date(now + 7 * 24 * 60 * 60_000).toISOString();
       expect(scoreAccount(soonReset, now)).toBeGreaterThan(scoreAccount(freshest, now));
-      const { monitor, swap } = makeMonitor({
+      const { monitor, swap, setDefaultAccount } = makeMonitor({
         engine,
         accounts: [acct('hot', 88), soonReset, freshest],
         sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
         defaultAccountId: 'hot',
         probe: async () => idle,
+        defaultSlotRepoint: { enabled: true, dryRun: false },
       });
       const r = await monitor.evaluate();
-      expect(r.swapped).toEqual(['untagged']);
-      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
-        exhaustedAccountId: 'hot',
-        targetAccountId: 'freshest',
-        sourceWasUntagged: true,
-      }));
+      expect(r).toEqual({ swapped: [], considered: 0 });
+      expect(swap).not.toHaveBeenCalled();
+      expect(setDefaultAccount).toHaveBeenCalledWith('freshest');
     });
 
     it('untagged session holds when no fresher eligible target survives the existing floors', async () => {
       const engine = makeEngine();
-      const { monitor, swap } = makeMonitor({
+      const { monitor, swap, setDefaultAccount } = makeMonitor({
         engine,
-        accounts: [acct('hot', 88), acct('also-hot', 70)],
+        accounts: [acct('hot', 88), acct('also-hot', 85)],
         sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
         defaultAccountId: 'hot',
         probe: async () => idle,
+        defaultSlotRepoint: { enabled: true, dryRun: false },
       });
       const r = await monitor.evaluate();
       expect(r.swapped).toEqual([]);
-      expect(r.considered).toBe(1);
+      expect(r.considered).toBe(0);
       expect(swap).not.toHaveBeenCalled();
+      expect(setDefaultAccount).not.toHaveBeenCalled();
     });
 
     it('known-unrefreshable background session is excluded before execution', async () => {
@@ -315,7 +320,7 @@ describe('swap-continuity wiring integrity', () => {
       }));
     });
 
-    it('correlates an untagged missing-login session from its real config-home account when auth status is gone', async () => {
+    it('never mutates an untagged missing-login session binding when the default slot is unresolved', async () => {
       const engine = makeEngine();
       const { monitor, swap } = makeMonitor({
         engine,
@@ -330,12 +335,8 @@ describe('swap-continuity wiring integrity', () => {
         probe: async () => idle,
         loginLoss: { enabled: true, dryRun: false },
       });
-      expect(await monitor.evaluate()).toEqual({ swapped: ['default-session'], considered: 1 });
-      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
-        exhaustedAccountId: 'lost',
-        sourceWasUntagged: true,
-        sourceTrigger: 'login-loss',
-      }));
+      expect(await monitor.evaluate()).toEqual({ swapped: [], considered: 0 });
+      expect(swap).not.toHaveBeenCalled();
     });
 
     it('dryRun keeps the LEGACY decision path (no targetAccountId funnel) while the engine shadows', async () => {

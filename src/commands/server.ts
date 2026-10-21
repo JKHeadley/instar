@@ -20535,6 +20535,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             enabled: resolveDevAgentGate(proactiveCfg.loginLoss?.enabled, config),
             dryRun: proactiveCfg.loginLoss?.dryRun !== false,
           },
+          defaultSlotRepoint: {
+            enabled:
+              resolveDevAgentGate(proactiveCfg.defaultSlotRepoint?.enabled, config) &&
+              resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config) &&
+              !credentialEnvTokenGate.evaluate().refused,
+            dryRun: proactiveCfg.defaultSlotRepoint?.dryRun !== false,
+            setDefaultAccount: async (accountId) => {
+              const { setDefaultCredentialAccount } = await import('../core/CredentialSetDefault.js');
+              const result = await setDefaultCredentialAccount(credentialRepointing, accountId, {
+                sourceContext: 'proactive-default-slot',
+              });
+              return result.ok
+                ? { ok: result.outcome === 'swapped' || result.outcome === 'dry-run' || result.outcome === 'noop', outcome: result.outcome, reason: result.reason }
+                : { ok: false, outcome: result.code, reason: result.reason };
+            },
+            audit: (record) => credentialAuditEmit.audit(record),
+          },
           // §4 — the in-flight work gate (proactive arm: defer, ceiling-drop).
           // The monitor owns the deferral lifecycle; the gate is stateless.
           workGate: _swapWorkGate

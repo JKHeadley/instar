@@ -1,0 +1,12 @@
+# ELI16 — Rescue the default login, not the live conversation
+
+An interactive session often has no account label of its own. It simply uses whichever subscription credential lives in the default login slot. The old proactive monitor could notice that this default account was nearly full, but its ordinary remedy was the wrong kind of movement: restart or refresh the live session onto another account. That violates the Q3 anti-thrash rule, because a background optimizer must not rewrite the account binding of a conversation someone is actively using.
+
+The fix separates two different objects that happened to look similar. A tagged background session may still be moved through the established session-swap path. An untagged default session is never sent down that path. Instead, the monitor checks the account currently occupying the default credential slot. If it is at the configured pressure threshold, the monitor considers only locally usable accounts from the same framework that have a measured quota reading below the threshold. It picks the account with the lowest binding utilization, which means the greatest remaining quota.
+
+The actual credential movement is not a second implementation. Both the operator's existing `/credentials/set-default` endpoint and this monitor call one shared set-default operation. That operation resolves the source and default slots from the existing credential-location ledger, applies the existing pair cooldown, and delegates to the existing credential swap executor. The executor keeps its identity verification, single-writer locking, staging, audit scrubbing, and dark gate. The session record is never edited.
+
+The new monitor arm is deliberately absent from the enabled defaults, so `resolveDevAgentGate` enables observation only on development agents while the fleet remains dark. Its separate `dryRun` default is true. During that soak the monitor logs and audits the exact source account, destination account, and utilization values, then returns before calling the shared set-default operation. Consequently this change cannot flip a real account in its shipping posture. Live actuation requires an explicit configuration promotion to `dryRun:false`, and even then the credential executor's own gate must permit the exchange.
+
+Rollback is a config change: disable the new arm, leaving the pre-existing tagged-session proactive monitor and manual set-default endpoint intact. No migration or parallel state must be unwound.
+

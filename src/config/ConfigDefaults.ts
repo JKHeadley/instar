@@ -2212,6 +2212,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       },
     },
     proactiveSwap: {
+      // Q3-safe default-login rescue — DEV-GATED: enabled deliberately omitted.
+      // A dev agent logs the exact default-slot flip but writes no credential
+      // until a deliberate dryRun:false promotion. Fleet remains dark.
+      defaultSlotRepoint: {
+        dryRun: true,
+      },
       // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
       // A dev agent evaluates the exact intent but performs no session kill
       // until a deliberate dryRun:false promotion. Fleet remains dark.

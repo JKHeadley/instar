@@ -4611,6 +4611,15 @@ export interface InstarConfig {
       cooldownMs?: number;
       /** Monitor tick cadence (ms). Default 180000 (3m). */
       tickMs?: number;
+      /** Q3-safe rescue for untagged/default sessions. Instead of mutating the
+       * live session binding, exchange the freshest eligible account into the
+       * default credential slot. DEV-GATED and dry-run-first. */
+      defaultSlotRepoint?: {
+        /** Deliberately omitted by default; resolved through resolveDevAgentGate. */
+        enabled?: boolean;
+        /** Exact would-flip audit/log only. Default true. */
+        dryRun?: boolean;
+      };
       /**
        * swap-continuity-antithrash §3/§7 — anti-thrash brakes on the proactive
        * swap. An ABSENT block resolves `enabled:true, dryRun:true` (dry-run

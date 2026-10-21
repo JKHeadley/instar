@@ -35557,46 +35557,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       credSend(res, 400, { error: 'accountId (string) is required' });
       return;
     }
-    const assignments = cr.ledger.getAssignments();
-    const sourceSlot = assignments.find((a) => a.accountId === accountId)?.slot;
-    if (!sourceSlot) {
-      credSend(res, 400, { error: `unknown account — ${accountId} is not a known ledger tenant`, knownAccounts: assignments.filter((a) => a.accountId).map((a) => a.accountId) });
-      return;
-    }
-    // Resolve the canonical default slot from the ledger (the assignment whose slot is ~/.claude).
-    const { credentialSlotKey } = await import('../core/OAuthRefresher.js');
-    const defaultKey = credentialSlotKey('~/.claude');
-    const defaultSlot = assignments.find((a) => credentialSlotKey(a.slot) === defaultKey)?.slot;
-    if (!defaultSlot) {
-      credSend(res, 400, { error: 'no default (~/.claude) slot is in the ledger — cannot set-default' });
-      return;
-    }
-    if (sourceSlot === defaultSlot) {
-      credSend(res, 200, { enabled: true, outcome: 'noop', reason: `${accountId} is already the default-slot tenant` });
-      return;
-    }
-    const verdict = cr.levers.evaluateSwap(sourceSlot, defaultSlot, force === true);
-    if (!verdict.allowed) {
-      cr.audit.audit({ event: 'set-default-refused', accountId, code: verdict.code, reason: verdict.reason });
-      credSend(res, 429, { error: verdict.reason, code: verdict.code });
-      return;
-    }
-    cr.audit.audit({ event: 'set-default-invoked', accountId, sourceSlot, defaultSlot, forced: verdict.forced });
     try {
-      const result = await cr.swapExecutor.swap(sourceSlot, defaultSlot);
-      if (result.outcome === 'swapped') cr.levers.recordSwap(sourceSlot, defaultSlot, verdict.forced);
-      void cr.audit.attention({
-        id: `credential-set-default:${accountId}`,
-        title: 'The default credential account was flipped',
-        summary: `set-default → ${accountId} into ~/.claude: ${result.outcome}${verdict.forced ? ' (FORCED)' : ''}. ${result.reason}`,
-        category: 'credential-repointing',
-        priority: 'NORMAL',
-        sourceContext: 'credential-set-default',
-      });
-      cr.audit.audit({ event: 'set-default-result', accountId, outcome: result.outcome });
-      credSend(res, 200, { enabled: true, accountId, forced: verdict.forced, ...result });
+      const { setDefaultCredentialAccount } = await import('../core/CredentialSetDefault.js');
+      const result = await setDefaultCredentialAccount(cr, accountId, { force, sourceContext: 'credential-set-default' });
+      if (!result.ok) {
+        const knownAccounts = result.code === 'unknown-account'
+          ? cr.ledger.getAssignments().filter((a) => a.accountId).map((a) => a.accountId)
+          : undefined;
+        credSend(res, result.status, { error: result.reason, code: result.code, ...(knownAccounts ? { knownAccounts } : {}) });
+        return;
+      }
+      const { ok: _ok, ...body } = result;
+      credSend(res, 200, { enabled: true, ...body });
     } catch (err) {
-      cr.audit.audit({ event: 'set-default-error', accountId, error: err instanceof Error ? err.message : 'unknown' });
       credSend(res, 500, { error: err instanceof Error ? err.message : 'set-default failed' });
     }
   });

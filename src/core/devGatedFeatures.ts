@@ -124,6 +124,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true and fleet-dark. On a development agent it only records the exact would-swap while retaining target freshness, work-in-flight, dwell, breaker, cycle-cap, and kill-boundary source revalidation; a real session refresh requires an explicit dryRun:false promotion.',
   },
   {
+    name: 'proactiveSwapDefaultSlotRepoint',
+    configPath: 'subscriptionPool.proactiveSwap.defaultSlotRepoint.enabled',
+    description: 'Q3-safe pre-limit rescue for untagged sessions by re-pointing the existing default credential slot instead of changing a live session binding.',
+    justification: 'Ships dryRun:true and fleet-dark. On a development agent it selects the exact freshest eligible same-framework account and records the intended default-slot flip, but performs no credential write while dryRun holds. Live actuation requires an explicit dryRun:false promotion and delegates to the existing CredentialSwapExecutor set-default path, retaining its dark gate, single-mover funnel, identity checks, audit scrubber, and cooldown. It never changes a session binding.',
+  },
+  {
     name: 'ownershipGatedSpawn',
     configPath: 'multiMachine.sessionPool.ownershipGatedSpawn.enabled',
     description: 'SpawnAdmission — the binding-verdict seam at every conversation-bound session-creating callsite (ownership-gated-spawn-and-judgment-within-floors §3.1, Layer A; the Ownership-Gated Side Effects standard). Consults resolveOwnershipSafe (tri-state, non-throwing) and the router verdict (TOCTOU consumption) before Telegram cold-spawn/respawn + Slack inbound/recovery spawns; never a bootleg local copy of an owned-elsewhere conversation.',
