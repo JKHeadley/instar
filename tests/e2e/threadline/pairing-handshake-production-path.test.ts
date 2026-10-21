@@ -26,6 +26,10 @@ import { PairingTopicStore } from '../../../src/threadline/PairingTopicStore.js'
 import { createTempProject, createMockSessionManager } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// bootstrapThreadline writes ~/.claude.json — keep it off the real HOME.
+useHermeticHome();
 
 const PIN = '135790';
 const OWNER = 7001;
