@@ -49,3 +49,21 @@ No credential or token is ever touched. A config file that cannot be parsed is
 still refused rather than rewritten, because it may still hold a recoverable login.
 Other folders' entries and their settings are preserved. Calling without a
 directory behaves exactly as it did before.
+
+## The first version of this broke something worse
+
+Worth recording, because the automated tests caught it and I would not have.
+
+To tick the per-folder box, the code has to ask "which folder?" — so it calls a
+small new accessor on the session manager. On paper that is safe: the type says
+the session manager is there, and the compiler was happy.
+
+In practice several callers hand that code a stripped-down stand-in carrying only
+the handful of methods that path needed before today. Those stand-ins have no such
+accessor, so the call did not just skip the box — it threw, and took the whole
+session-restart down with it. A missing safety tick had become a dead restart.
+
+Now the call is optional. If the folder cannot be determined, the login is prepared
+exactly as it was before this change — and a line is written saying the folder
+answer was not ticked, so the gap is visible instead of silent. Degrading quietly
+would have re-created the very problem this change exists to remove.
