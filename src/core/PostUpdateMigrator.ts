@@ -38,7 +38,39 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET, agentConnectStep1, AGENT_CONNECT_LIVE_ENABLE_MARKER, AGENT_CONNECT_STEP1_RESTART_ASK_MARKER, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
+// One symbol per line, sorted. This single import is the file's merge hot-spot: every change that
+// adds a CLAUDE.md awareness marker appends to it, so two branches adding different symbols always
+// collided on the same line (resolved by hand five times on 2026-10-21 alone). One line each means
+// two additions land in different places and git merges them without help. It reduces the collision
+// sharply rather than abolishing it: two symbols that sort adjacently can still touch.
+import {
+  AGENT_CONNECT_HEADING,
+  AGENT_CONNECT_HOWTO_BULLET,
+  AGENT_CONNECT_HOWTO_MARKER,
+  AGENT_CONNECT_LIVE_ENABLE_MARKER,
+  AGENT_CONNECT_STEP1_RESTART_ASK_MARKER,
+  agentConnectSection,
+  agentConnectStep1,
+  JEV_CORRECTION_CARD_V1_MARKER,
+  jevCirclesShadowAwareness,
+  jevCorrectionShadowAwareness,
+  jevJobCompletionAuditAwareness,
+  jevMemoryPickerAwareness,
+  jevReviewFlagShadowAwareness,
+  jevSignalLiveAwareness,
+  READINESS_PAUSE_ALARM_BULLET,
+  READINESS_PAUSE_ALARM_MARKER,
+  READINESS_STALL_NOTICE_BULLET,
+  READINESS_STALL_NOTICE_MARKER,
+  REAPER_BACKGROUND_WORK_BULLET,
+  REAPER_BACKGROUND_WORK_MARKER,
+  REROUTED_LOGIN_EXPIRED_BULLET,
+  REROUTED_LOGIN_EXPIRED_MARKER,
+  STANDING_SESSIONS_BULLET,
+  STANDING_SESSIONS_MARKER,
+  THREADLINE_PAIR_TOOL_BULLET,
+  THREADLINE_PAIR_TOOL_MARKER,
+} from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
