@@ -33,6 +33,26 @@ export function processStartMs(pid: number): number | null {
   }
 }
 
+/**
+ * The full command line of a live pid (`ps -o command=`), or null when nothing runs there or
+ * ps cannot say. Used to check a recorded pid still runs the program it is supposed to.
+ */
+export function processCommandLine(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const r = withSyncOp(() => spawnSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      env: { ...process.env, LC_ALL: 'C' },
+    }));
+    const out = (r.stdout ?? '').trim();
+    return r.status === 0 && out ? out : null;
+  } catch {
+    // @silent-fallback-ok — unreadable means unknown, which callers treat as "not it"
+    return null;
+  }
+}
+
 /** The identity fields a process records about itself next to its pid. */
 export function ownProcessIdentity(): { pid: number; procStart: number | null } {
   return { pid: process.pid, procStart: processStartMs(process.pid) };

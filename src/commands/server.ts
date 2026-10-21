@@ -12844,8 +12844,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // default when Updates is unset, preserving prior behavior for
           // agents without an Updates topic.
           const updatesTopicId = state.get<number>('agent-updates-topic') || undefined;
+          // A version-less request (a setting switched on, e.g. Threadline connect-enable or the
+          // money-layer enable) is not an update: never tell the person "update to vundefined".
           notify('IMMEDIATE', 'system',
-            `Applying update to v${request.targetVersion} — restarting now. Active sessions will resume automatically.`,
+            request.targetVersion
+              ? `Applying update to v${request.targetVersion} — restarting now. Active sessions will resume automatically.`
+              : `Restarting now to apply a setting change. Active sessions will resume automatically.`,
             updatesTopicId,
           );
         } else {

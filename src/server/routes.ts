@@ -217,6 +217,8 @@ import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js'
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { LifelineIngressGuard } from './LifelineIngressGuard.js';
 import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
+import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -19137,6 +19139,54 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (r.ok) res.json(r);
     else res.status(failStatus).json({ error: r.reason });
   };
+
+  // Switch the agent network and pairing on, at the operator's request, with no restart asked of
+  // the operator (upgrades/side-effects/threadline-enable-without-restart.md). Bearer: it only opts
+  // THIS agent in, as the operator would by editing config. Writes threadline.relayEnabled and
+  // threadline.verifiedPairing.enabled, then requests the server's existing supervised restart (the
+  // flag the auto-updater writes) when one is needed, safe and allowed (connectEnable.ts). The asking
+  // session survives the restart and waits. Idempotent: call again to read the state; `ready` once
+  // pairing works. Body: { sessionId?: string } (the asking session, excluded from the deferral check).
+  let connectEnable: ConnectEnableController | null = null;
+  // Read-only: is a deferred request still waiting, and did one give up (with why)? Bearer.
+  router.get('/threadline/pairing/enable', (req, res) => {
+    if (!pairingRouteAuthorized(req, res)) return;
+    const ready = verifiedPairingRouteEnabled() && !!ctx.pairingInvites;
+    res.json({ ready, ...(connectEnable ? connectEnable.status() : { deferred: false, deferredSince: null, last: readConnectEnableStatus(ctx.config.stateDir) }) });
+  });
+  router.post('/threadline/pairing/enable', (req, res) => {
+    if (!pairingRouteAuthorized(req, res)) return;
+    if (!connectEnable) {
+      connectEnable = new ConnectEnableController({
+        stateDir: ctx.config.stateDir,
+        isReady: () => verifiedPairingRouteEnabled() && !!ctx.pairingInvites,
+        bootRelayEnabled: () => ctx.config.threadline?.relayEnabled === true,
+        bootPairingEnabled: () => verifiedPairingRouteEnabled(),
+        ownsRelayAfterRestart: () => shouldOwnTelegramPoll(ctx.config as never),
+        blockers: (exclude) => ctx.autoUpdater?.getRestartBlockers((n) => exclude.includes(n)) ?? [],
+      });
+    }
+    // A session id is a short token; anything longer is not one, and is ignored rather than cut.
+    const rawSid = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+    const sid = rawSid.length <= 200 ? rawSid : '';
+    const exclude: string[] = [];
+    if (sid) {
+      exclude.push(sid);
+      try {
+        for (const s of ctx.sessionManager.listRunningSessions()) {
+          if (s.id === sid || s.name === sid || s.tmuxSession === sid) exclude.push(s.name, s.tmuxSession);
+        }
+      } catch { /* @silent-fallback-ok — no session list: only the given id is excluded */ }
+    }
+    try {
+      const r = connectEnable.request(exclude);
+      console.log(`[connect-enable] ${r.state}: ${r.reason}`);
+      res.status(r.state === 'unavailable-here' || r.state === 'not-ready-after-restart' ? 409
+        : r.state === 'restart-unavailable' ? 503 : r.state === 'ready' ? 200 : 202).json(r);
+    } catch (err) {
+      res.status(500).json({ error: `could not switch pairing on: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
 
   // Make an invite. Body: { ttlMinutes?: number (max 1440), bindFp?: string }.
   router.post('/threadline/pairing/invites', (req, res) => {

@@ -1479,7 +1479,7 @@ export class ThreadlineMCPServer {
               action: 'enabled',
               visibility,
               relayUrl: config.threadline.relayUrl ?? DEFAULT_RELAY_URL,
-              note: 'Relay enabled in config. Restart the server to connect.',
+              note: 'Relay enabled in config. It takes effect when the server restarts. To pair with another agent, use POST /threadline/pairing/enable instead: it also switches pairing on and restarts the server by itself, so never ask the operator to restart.',
               userMessage: `I've enabled the Threadline relay. Your agent will connect to the network on next restart. ` +
                 `Visibility is set to "${visibility}" — ` +
                 (visibility === 'public'

@@ -285,6 +285,25 @@ export class AutoUpdater {
   }
 
   /**
+   * What would hold a restart someone asked for right now, by the same rules an update
+   * restart follows: active sessions (UpdateGate classification; none under
+   * `updates.restartImmediately`) and active restart holds (in-flight work a restart would
+   * LOSE, e.g. a pairing invite awaiting approval; holds apply even under restartImmediately,
+   * as for updates). Pure: it never starts or advances the update deferral clock. `exclude`
+   * drops the asking session, which is the one waiting. Used by Threadline connect-enable,
+   * whose own 5-minute give-up bounds how long any of these can hold it.
+   */
+  getRestartBlockers(exclude: (sessionName: string) => boolean = () => false): string[] {
+    const holds = this.gate.getActiveHolds().map((h) => `hold:${h.name}`);
+    if (this.config.restartImmediately || !this.sessionManager) return holds;
+    return [
+      ...this.gate.getBlockingSessions(this.sessionManager, this.sessionMonitor).filter((n) => !exclude(n)),
+      ...holds,
+    ];
+  }
+
+
+  /**
    * Get current auto-updater status.
    */
   getStatus(): AutoUpdaterStatus {

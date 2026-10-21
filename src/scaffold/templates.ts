@@ -2505,6 +2505,23 @@ export const THREADLINE_PAIR_TOOL_BULLET = `${THREADLINE_PAIR_TOOL_MARKER}Pair w
  *  `capabilities.agent_connect` node reads from CLAUDE.md. */
 export const AGENT_CONNECT_HEADING = '### Connecting to another agent';
 
+/** Content-sniff marker for the live-enable version of step 1 (no restart asked of the person). */
+export const AGENT_CONNECT_LIVE_ENABLE_MARKER = '/threadline/pairing/enable';
+
+/**
+ * Step 1 of "Connecting to another agent": make sure pairing works, and switch it on
+ * WITHOUT asking the person for a restart or a setting (POST /threadline/pairing/enable
+ * requests the server's supervised restart itself; src/threadline/connectEnable.ts).
+ * Shared by the section below and the migration that replaces the earlier step 1.
+ */
+export function agentConnectStep1(port: number): string {
+  return `1. **Make sure I can pair.** \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\`. A 200 means I'm ready. A 503 means my agent network or pairing is off, and I switch both on myself with one call: \`curl -s -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d "{\\"sessionId\\": \\"$INSTAR_SESSION_ID\\"}" http://localhost:${port}${AGENT_CONNECT_LIVE_ENABLE_MARKER}\`. It sets \`threadline.relayEnabled\` and \`threadline.verifiedPairing.enabled\` and restarts my server by itself when needed; this conversation carries on through it. I tell my person its \`sayToPerson\` sentence, then check \`/threadline/pairing\` every 10 seconds, for up to five minutes, until it answers 200 (\`"deferred"\` means the restart waits for my other work to settle; the server finishes it by itself). \`"unavailable-here"\` means another of my machines holds the relay (step 2). On \`not-ready-after-restart\`, \`restart-unavailable\` or five minutes without a 200, I tell my person in one plain sentence that I couldn't switch it on by myself, and why. I never ask my person to restart anything or change a setting.`;
+}
+
+/** Step 1 as #2233 shipped it (asked the person for /lifeline restart). Frozen: the
+ *  migration recognises it in already-migrated CLAUDE.md files and replaces it. */
+export const AGENT_CONNECT_STEP1_RESTART_ASK_MARKER = "Send /lifeline restart here and I'll be ready in about a minute.";
+
 /**
  * "Connecting to another agent" — what an agent does when its person says
  * "connect / talk / pair with X" (docs/specs/a2a-pairing-invite-link.md §3).
@@ -2519,7 +2536,7 @@ export function agentConnectSection(port: number): string {
 
 When my person says "connect with Echo", "talk to Scout", "pair with Carl's agent" or anything like it, I OFFER AN INVITE. That is the whole process, and I know it by heart. I never ask my person for a fingerprint, an address, a key, an agent ID or a config value, I never ask them to edit settings, and I never offer a "bundle", a file or any other way in. If I need the other agent's fingerprint, I look it up myself.
 
-1. **Make sure I can pair.** \`curl -s -H "Authorization: Bearer $AUTH" http://localhost:${port}/threadline/pairing\`. A 200 means I'm ready. A 503 means my agent network or pairing is switched off on this agent, so I switch both on myself: \`threadline.relayEnabled\` and \`threadline.verifiedPairing.enabled\` set to \`true\` in \`.instar/config.json\`, leaving the other keys in those blocks alone (\`threadline_relay\` \`action: "enable"\` sets the first one). They take effect when my server restarts, and I can't restart my own server from inside a conversation, so I say one sentence: "I've switched on my connection to other agents. Send /lifeline restart here and I'll be ready in about a minute." Nothing else is asked of my person.
+${agentConnectStep1(port)}
 2. **Make the invite.** \`threadline_pair\` with \`action: "invite"\` (or \`POST /threadline/pairing/invites\` with my Bearer token). If I already know the agent, I pass its fingerprint so the invite works only for that agent. If this answers 503 saying this machine does not run (or hold) the Threadline relay while \`relayEnabled\` is already true, another of my machines holds the connection and the invite has to be made there. \`GET /pool/placement?topic=<this topic>\` names that machine (\`leaseHolderNickname\`; the lease holder runs the relay), and I move this conversation to it myself with \`POST /pool/transfer\` and \`{"topic": <this topic>, "to": "<that nickname>"}\`, then make the invite from there. If that answers 409 \`needsConfirmation\`, I tell my person its prompt in one sentence and resend with \`"confirm": true\` and the returned \`confirmationChallenge\` only on their yes. If I can't find that machine or move the conversation (the pool answers 503 or the move is refused), I tell my person which machine holds the relay, by name whenever I have it, and to ask me to connect from there.
 3. **Give it to my person with one plain sentence.** I hand over the returned message exactly as it is (it carries a \`tlinv1:\` code) and say: "Send this privately to Echo's person, in any app you already use. If Echo is yours too, just forward it to Echo's Telegram chat. It works once and expires at <time>." The time comes from the invite response, never from memory: \`exp\` is when it stops working (a UTC timestamp; one hour from now unless I asked for a different \`ttlMinutes\`), and I say it in my person's local time, for example "expires at 3:40pm". A person carries the invite, outside the agent network. I never send it over Threadline, never post it anywhere public, and never turn it into a link.
 4. **Their person approves.** They forward it to their agent's Telegram chat (or paste it into the Threadline tab of their agent's dashboard, with the PIN). Their agent asks "Pair with the agent that calls itself <my name>?" and they tap **Approve**. No agent can approve for a person, including me.

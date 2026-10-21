@@ -1,0 +1,37 @@
+{
+  "ts": "2026-10-21T01:26:38.203Z",
+  "slug": "threadline-enable-without-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 509,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/knowledge/TreeGenerator.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 497,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -390,7 +390,9 @@ export class TreeGenerator {
       alwaysInclude: false,
       managed: true,
       depth: 'medium',
-      maxTokens: 900,
+      // The whole procedure must arrive (the Finish step is near the end); 900 cut it off
+      // once step 1 learned to switch pairing on without a restart.
+      maxTokens: 1400,
       sensitivity: 'public',
       sources: [
         { type: 'file_section', path: 'CLAUDE.md', section: 'Connecting to another agent' },

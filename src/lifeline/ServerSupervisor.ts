@@ -1577,10 +1577,15 @@ export class ServerSupervisor extends EventEmitter {
 
       // RESTART LOOP DETECTION: If we've already restarted for this version,
       // the binary isn't actually updating (npx cache mismatch). Don't loop.
+      // Only an UPDATE restart (one naming a targetVersion) can loop that way.
+      // A config restart (money-layer enable, threadline connect-enable, the
+      // fix command) names none; counting those under one shared "undefined"
+      // version that never resets silently skipped every third one.
       const restartCountFile = path.join(this.stateDir!, 'state', 'restart-version-count.json');
+      const isUpdateRestart = typeof data.targetVersion === 'string' && data.targetVersion.length > 0;
       let restartCount = 0;
       try {
-        if (fs.existsSync(restartCountFile)) {
+        if (isUpdateRestart && fs.existsSync(restartCountFile)) {
           const countData = JSON.parse(fs.readFileSync(restartCountFile, 'utf-8'));
           if (countData.targetVersion === data.targetVersion) {
             restartCount = (countData.count ?? 0);
@@ -1596,8 +1601,8 @@ export class ServerSupervisor extends EventEmitter {
         return;
       }
 
-      // Increment restart count for this version
-      try {
+      // Increment restart count for this version (update restarts only)
+      if (isUpdateRestart) try {
         const stateSubdir = path.join(this.stateDir!, 'state');
         fs.mkdirSync(stateSubdir, { recursive: true });
         fs.writeFileSync(restartCountFile, JSON.stringify({
@@ -1624,7 +1629,9 @@ export class ServerSupervisor extends EventEmitter {
       this.clearPlannedExitMarker();
 
       // Initiate graceful restart
-      this.performGracefulRestart(`update to v${data.targetVersion}`);
+      this.performGracefulRestart(isUpdateRestart
+        ? `update to v${data.targetVersion}`
+        : `restart requested by ${String(data.requestedBy ?? 'unknown')}`);
     } catch {
       // Malformed flag — clean up
       try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:890' }); } catch { /* ignore */ }

@@ -38,7 +38,7 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
 import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
-import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
+import { jevJobCompletionAuditAwareness, jevMemoryPickerAwareness, jevSignalLiveAwareness, jevCorrectionShadowAwareness, JEV_CORRECTION_CARD_V1_MARKER, jevCirclesShadowAwareness, jevReviewFlagShadowAwareness, REAPER_BACKGROUND_WORK_MARKER, REAPER_BACKGROUND_WORK_BULLET, STANDING_SESSIONS_MARKER, STANDING_SESSIONS_BULLET, AGENT_CONNECT_HEADING, agentConnectSection, AGENT_CONNECT_HOWTO_MARKER, AGENT_CONNECT_HOWTO_BULLET, THREADLINE_PAIR_TOOL_MARKER, THREADLINE_PAIR_TOOL_BULLET, REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET, agentConnectStep1, AGENT_CONNECT_LIVE_ENABLE_MARKER, AGENT_CONNECT_STEP1_RESTART_ASK_MARKER, READINESS_PAUSE_ALARM_MARKER, READINESS_PAUSE_ALARM_BULLET, READINESS_STALL_NOTICE_MARKER, READINESS_STALL_NOTICE_BULLET } from '../scaffold/templates.js';
 import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
@@ -8684,6 +8684,28 @@ Before I send another agent a credential, that peer must be **mutually verified*
       result.upgraded.push('CLAUDE.md: added "Connecting to another agent" (pairing by invite)');
     } else {
       result.skipped.push('CLAUDE.md: "Connecting to another agent" already present');
+    }
+
+    // Step 1 of that section as first shipped asked the person to send /lifeline restart after
+    // the agent switched its relay and pairing on. POST /threadline/pairing/enable now requests
+    // the server's supervised restart itself, so an agent that already has the section gets the
+    // new step 1 in place of the old one (upgrades/side-effects/threadline-enable-without-restart.md).
+    // Only the step-1 line inside this section is touched, and only while it still carries the
+    // old restart ask, so a re-run (or an agent that rewrote the line) is left alone.
+    {
+      const secAt = content.indexOf(AGENT_CONNECT_HEADING);
+      const stepAt = secAt >= 0 ? content.indexOf('\n1. **Make sure I can pair.**', secAt) : -1;
+      const nextHeading = secAt >= 0 ? content.indexOf('\n#', secAt + AGENT_CONNECT_HEADING.length) : -1;
+      const inSection = stepAt >= 0 && (nextHeading < 0 || stepAt < nextHeading);
+      const lineEnd = inSection ? content.indexOf('\n', stepAt + 1) : -1;
+      const line = inSection ? content.slice(stepAt + 1, lineEnd < 0 ? content.length : lineEnd) : '';
+      if (inSection && line.includes(AGENT_CONNECT_STEP1_RESTART_ASK_MARKER) && !line.includes(AGENT_CONNECT_LIVE_ENABLE_MARKER)) {
+        content = content.slice(0, stepAt + 1) + agentConnectStep1(port) + (lineEnd < 0 ? '' : content.slice(lineEnd));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: "Connecting to another agent" step 1 no longer asks the person for a restart');
+      } else {
+        result.skipped.push('CLAUDE.md: "Connecting to another agent" step 1 already current');
+      }
     }
 
     // The two bullets that point at that section (Migration Parity with generateClaudeMd):
