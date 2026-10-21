@@ -1517,8 +1517,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * the util's contract); failures are logged, not fatal, because the worst
    * case is the pre-fix behavior, not a dead spawn path.
    */
+  /** The agent directory sessions launch in. Exposed because the folder-trust
+   *  acknowledgement a config home needs is keyed on this exact path, and the
+   *  callers that seed a swap target's home (SessionRefresh) only hold a
+   *  SessionManager. */
+  agentProjectDir(): string {
+    return this.config.projectDir;
+  }
+
   private ensurePinnedHomeInteractiveReady(configHome: string, lane: string): void {
-    const ready = ensureInteractiveReady(configHome);
+    // projectDir is what makes the folder-trust acknowledgement specific to the
+    // directory this session will actually launch in — without it the home can
+    // read as ready and still die at "Do you trust the files in this folder?".
+    const ready = ensureInteractiveReady(configHome, { projectDir: this.config.projectDir });
     if (ready.patched) {
       console.log(`[SessionManager] ${lane}: made ${configHome} interactive-ready (${ready.reason})`);
     } else if (ready.reason !== 'already interactive-ready') {

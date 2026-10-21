@@ -632,7 +632,12 @@ export class SessionRefresh {
       // Idempotent + fail-safe: a failure here is logged and the respawn
       // proceeds (worst case is the pre-fix behavior, not a dead refresh).
       if (accountSwap?.configHome) {
-        const ready = ensureInteractiveReady(accountSwap.configHome);
+        const ready = ensureInteractiveReady(accountSwap.configHome, {
+          // Without the agent directory the folder-trust acknowledgement is not
+          // seeded, and the swapped-in home can read as ready while still
+          // killing the respawned session at the trust dialog.
+          projectDir: this.deps.sessionManager.agentProjectDir(),
+        });
         console.log(
           `[SessionRefresh] account-swap onboarding-readiness: ${accountSwap.configHome} ` +
           `${ready.patched ? `patched (${ready.reason})` : ready.reason} (sessionName=${sessionName})`,

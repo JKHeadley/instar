@@ -3037,7 +3037,15 @@ export class PostUpdateMigrator {
         return;
       }
       for (const acct of claudeAccounts) {
-        const ready = ensureInteractiveReady(acct.configHome, { requireExistingHome: true });
+        // Migration parity: an agent already deployed only receives the
+        // folder-trust seed through this sweep. Without `projectDir` a home
+        // whose top-level flags are set reads as ready and still kills every
+        // session it launches at the trust dialog — the Mac Mini failure of
+        // 2026-10-20, which looked like an unresponsive agent for 35 minutes.
+        const ready = ensureInteractiveReady(acct.configHome, {
+          requireExistingHome: true,
+          projectDir: this.config.projectDir,
+        });
         if (ready.patched) {
           result.upgraded.push(
             `subscription-pool interactive-ready: ${acct.id} (${acct.configHome}) — ${ready.reason}`,
