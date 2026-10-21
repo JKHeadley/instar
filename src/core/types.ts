@@ -76,6 +76,10 @@ export interface Session {
    *  transcript under (`<home>/projects/<key>/<--session-id>.jsonl`), so trusted code can judge the
    *  sandbox canary by what actually reached the model. */
   confinedConfigHome?: string;
+  /** Confined sessions on the rerouted interactive lane only: when the fixed prompt line was typed
+   *  (docs/specs/confined-spawn-subscription-reroute.md, Restart boundary). Absent on a surviving
+   *  confined rerouted session ⇒ its startup never completed, and boot reconciliation kills it. */
+  confinedDeliveredAt?: string;
   /** Subscription & Auth Standard P1.3: which subscription-pool account this
    *  session is running under (the account whose config home it launched/resumed
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
@@ -2328,6 +2332,10 @@ export interface MachineCapacity {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
+    /** dashboard-new-session-machine-choice §3.4 — this machine can run the
+     *  owner-side dashboard-create start (pool not dark, Telegram configured,
+     *  topic-profile context wired). */
+    dashboardCreateReceive?: boolean;
     /** WS1.2: this machine can execute the owner-side `drain` verb (bounded
      *  turn-boundary drain + claim handoff for an active-topic transfer).
      *  ABSENT/false → the transfer sender degrades to today's pin-and-

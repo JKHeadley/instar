@@ -212,11 +212,11 @@ describe('confined spawn (feedback executor)', () => {
     expect(newSessionArgvs).toHaveLength(0);
   });
 
-  it('refuses a framework without a confinement adapter, and a launch the subscription reroute would make interactive', async () => {
+  it('refuses a framework without a confinement adapter', async () => {
     const codex = makeManager({ framework: 'codex-cli' }, tmpDir).manager;
     await expect(codex.spawnSession({ name: 'a', prompt: 'p', cwd: ws, omitAuthEnv: true, framework: 'codex-cli', confinement: confined() as never })).rejects.toThrow(/confinement-unsupported-framework/);
-    const forced = makeManager({ mode: 'force' }, tmpDir).manager;
-    await expect(forced.spawnSession({ name: 'b', prompt: 'p', cwd: ws, omitAuthEnv: true, framework: 'claude-code', confinement: confined() })).rejects.toThrow(/confinement-reroute-unsupported/);
     expect(newSessionArgvs).toHaveLength(0);
+    // A confined launch the subscription reroute would make interactive is no longer refused: it
+    // launches confined on the interactive lane (tests/unit/session-manager-confined-reroute.test.ts).
   });
 });

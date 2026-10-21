@@ -11343,6 +11343,23 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       result.upgraded.push('CLAUDE.md: added dashboard door + model controls line to Topic Profile section');
     }
 
+    // Dashboard machine choice (docs/specs/dashboard-new-session-machine-choice.md
+    // §3.6) — one line right after the door + model line (else appended). Its own
+    // sniff string; idempotent.
+    if (!content.includes('- **Dashboard machine choice**')) {
+      const machineLine = `- **Dashboard machine choice** (Sessions tab): the New Session box also picks the Machine a new Telegram topic runs on — Automatic (default) or any machine in the pool (offline, clock-out-of-step and not-yet-updated machines are listed but refused, never quietly replaced). Picking another machine pins the topic there and starts its session there immediately, with the door/model checked on THAT machine first. API: add \`"machine":"<nickname|machineId>"\` to \`POST /sessions/create\` (needs \`X-Instar-Request: 1\`). Confirm where it runs from the pool sessions view (\`GET /sessions\` with \`scope=pool\`), read from that machine — never inferred from the placement record. PROACTIVE: when the user wants a new topic to run on a specific machine, point them at the Machine dropdown (or create it with the \`machine\` field) instead of creating it and moving it afterwards.`;
+      const doorLine = content.indexOf('- **Dashboard door + model controls**');
+      if (doorLine !== -1) {
+        const eol = content.indexOf('\n', doorLine);
+        const at = eol === -1 ? content.length : eol + 1;
+        content = content.slice(0, at) + (eol === -1 ? '\n' : '') + machineLine + '\n' + content.slice(at);
+      } else {
+        content += '\n' + machineLine + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard machine choice line to Topic Profile section');
+    }
+
     // Threadline single-negotiator lock (Robustness Phase 1, CMT-1362). Existing
     // agents learn the lease/voice + prose-inertness + honest-ack semantics + the
     // /threadline/negotiator surface via this appended section (Agent Awareness
@@ -11830,6 +11847,8 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // boundary for the Topic Profile slice above and lets an existing shadow
       // that already carries the section still receive the new line.
       '- **Dashboard door + model controls**',
+      // Dashboard machine choice (dashboard-new-session-machine-choice §3.6).
+      '- **Dashboard machine choice**',
       // WS4.4 pool-stable links (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4):
       // framework-agnostic — a Codex/Gemini agent fronting a multi-machine pool
       // must know a /view/:id link proxies to the holder (and the security model:

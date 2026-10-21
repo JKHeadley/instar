@@ -38,6 +38,8 @@ import {
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
+import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
+import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import { canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
@@ -72,10 +74,15 @@ export interface ConfinedSessionPort {
   frameworkVersion(): Promise<string | null>;
 }
 
+/** Consecutive saturated admission checks before one degradation report (12 × 30 min ≈ 6 h). */
+export const REROUTE_SATURATION_REPORT_TICKS = 12;
+
 export interface ExecutorAdmission {
   spawnLimiterSaturated(): boolean;
   quotaShedding(): boolean;
   updatePending(): boolean;
+  /** True while a confined spawn would take the subscription reroute lane and that lane is full: claim nothing, consume no start. */
+  rerouteSaturated?(): boolean;
 }
 
 export interface ExecutorPaths {
@@ -441,6 +448,8 @@ export class FeedbackExecutorService {
     const candidates = this.candidates();
     if (candidates.length === 0) return 0;
     const admission = this.admissionVerdict(cfg);
+    // Counted once per tick, on the tick's first admission check.
+    if (admission === 'reroute-capacity') this.noteRerouteSaturated(); else this.rerouteSaturatedTicks = 0;
     if (admission) {
       this.setMeta(epoch, 'exec:admission', { at: this.now(), refused: admission, candidates: candidates.length });
       out.reason ??= `admission:${admission}`;
@@ -470,6 +479,26 @@ export class FeedbackExecutorService {
     return started;
   }
 
+  /** Consecutive admission checks that found the reroute lane full (in memory; an episode ends on the first free check). */
+  private rerouteSaturatedTicks = 0;
+
+  /**
+   * A full reroute lane only DEFERS a claim: nothing is claimed, cloned or spawned, so the brake is
+   * the job's own cadence. A sustained episode is still told once (No Silent Degradation): at
+   * REROUTE_SATURATION_REPORT_TICKS consecutive saturated checks, one degradation report.
+   */
+  private noteRerouteSaturated(): void {
+    this.rerouteSaturatedTicks++;
+    if (this.rerouteSaturatedTicks !== REROUTE_SATURATION_REPORT_TICKS) return;
+    DegradationReporter.getInstance().report({
+      feature: 'FeedbackExecutor.rerouteCapacity',
+      primary: 'start fix attempts on the subscription (rerouted interactive) lane',
+      fallback: 'no attempt claimed while the lane is full; retried at each scheduled tick',
+      reason: `the rerouted-session lane has been full for ${REROUTE_SATURATION_REPORT_TICKS} consecutive executor checks`,
+      impact: 'Feedback fixes are not being attempted until other rerouted sessions finish',
+    });
+  }
+
   /** Admission limits, enforced here (§4 step 1); null when admitted. */
   admissionVerdict(cfg: ExecuteLiveConfig): string | null {
     if (this.opts.store.liveCount() >= cfg.maxConcurrent) return 'max-concurrent';
@@ -478,6 +507,7 @@ export class FeedbackExecutorService {
     if (this.opts.admission.spawnLimiterSaturated()) return 'spawn-limiter-saturated';
     if (this.opts.admission.quotaShedding()) return 'quota-shedding';
     if (this.opts.admission.updatePending()) return 'update-pending';
+    if (this.opts.admission.rerouteSaturated?.()) return 'reroute-capacity';
     return null;
   }
 
@@ -559,14 +589,17 @@ export class FeedbackExecutorService {
         this.opts.audit.append('execute:unrecorded-session-stopped', { attemptId: row.attemptId, session: spawned.sessionName, stopped });
       }
       const reason = error instanceof DrainConflictError ? 'stale-epoch'
+        : error instanceof RerouteRefusedError ? 'reroute-capacity'
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown' });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
       try {
         if (reason === 'profile-unenforceable') await this.profileUnenforceable(epoch, [{ probe: 'confined-spawn', expect: 'succeed', ok: false, detail: error instanceof Error ? error.message.slice(0, 120) : 'refused' }]);
-        this.endAttempt(row, epoch, reason === 'profile-unenforceable' ? 'stopped' : 'failed', reason);
-        if (reason !== 'profile-unenforceable') await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+        // No capacity on the reroute lane is not the item's fault: stop, refund the start, no retry count.
+        if (reason === 'reroute-capacity') this.opts.store.stopForRerouteCapacity(epoch, row.attemptId, this.opts.config().maxStartsPerDay);
+        this.endAttempt(row, epoch, reason === 'profile-unenforceable' || reason === 'reroute-capacity' ? 'stopped' : 'failed', reason);
+        if (reason === 'prepare-failed') await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       } catch (recordError) {
         this.opts.audit.append('execute:prepare-failed-unrecorded', { attemptId: row.attemptId, error: recordError instanceof Error ? recordError.name : 'unknown' });
       }

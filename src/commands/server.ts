@@ -70,7 +70,8 @@ import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
-import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps } from '../core/dashboardTopicProfile.js';
+import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
+import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import {
   classifyProfileIntent,
   toProfilePatch,
@@ -643,6 +644,32 @@ let _placementReplicationOn = false;
  *  over the authoritative ownership registry, built next to the router (they own
  *  the CAS, the journal emit and the router nonce). Null until the router exists. */
 let _dashboardPoolClaimOps: import('../core/dashboardTopicProfile.js').ReadyPoolClaimOps | null = null;
+/** dashboard-new-session-machine-choice §3.4 step 0 — ONE signed read-class mesh
+ *  probe (`session-status`) to a target before anything is created. */
+let _dashboardProbeMachine: ((machineId: string) => Promise<boolean>) | null = null;
+/** dashboard-new-session-machine-choice §3.4 step 3 — place a brand-new topic on a
+ *  REMOTE machine and start it there by ONE checked deliverMessage (never through
+ *  the router's inbound queue). Built next to the router (shares its ownership
+ *  registry, nonce stream and journal emit). Null until the router exists. */
+/** dashboard-new-session-machine-choice §3.4 step 4 — owner-side start (assigned
+ *  where telegram + sessionManager are in scope; a no-op until then). */
+/** Topics whose dashboard start (seed → spawn) is running on THIS machine. */
+const _dashboardStartsInFlight = new Set<number>();
+/** Forwarded messages currently waiting on an in-flight dashboard start (§3.4 4b).
+ *  Bounded: past the cap a message takes the inbound error path at once. */
+let _dashboardStartWaiters = 0;
+const DASHBOARD_START_WAITERS_MAX = 32;
+let _runDashboardCreateStart: (topicId: number, start: DashboardCreateStart) => Promise<void> = async (topicId) => {
+  console.warn(`  [dashboard-machine-choice] start for topic ${topicId} arrived before the owner-side runner was wired — ignored`);
+};
+let _dashboardStartOnMachine: ((sessionKey: string, target: string, start: import('../core/dashboardMachineChoice.js').DashboardCreateStart, pin?: () => Promise<boolean> | boolean) => Promise<import('../core/dashboardMachineChoice.js').StartTopicOnMachineResult>) | null = null;
+/** Hoisted late-bound reference to the topic-profile route context (it is
+ *  constructed after the owner-side deliverMessage handler is wired). */
+let _topicProfileCtxRef: {
+  store: import('../core/TopicProfileStore.js').TopicProfileStore;
+  seedDeps: () => import('../core/dashboardTopicProfile.js').CreationSeedDeps;
+  spawnForTopic?: (topicId: number, name: string) => Promise<import('../core/dashboardTopicProfile.js').SpawnForTopicResult>;
+} | null = null;
 // ── Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md) ──
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
@@ -1654,6 +1681,7 @@ function wireTelegramCallbacks(
   // /interrupt — send Escape key to a tmux session
   telegram.onInterruptSession = async (sessionName: string): Promise<boolean> => {
     try {
+      // confined-write-allowed: operator /interrupt sends Escape only — a non-typing key that cancels (never accepts) a dialog
       execFileSync(detectTmuxPath()!, ['send-keys', '-t', `=${sessionName}:`, 'Escape'], {
         encoding: 'utf-8', timeout: 5000,
       });
@@ -1860,6 +1888,7 @@ function wireTelegramCallbacks(
 
           // Detect "press Enter to continue" prompt
           if (lower.includes('press enter') || lower.includes('press any key')) {
+            // confined-write-allowed: the setup-time login pane, never a confined session
             execFileSync(tmuxPath, ['send-keys', '-t', `=${loginSession}:`, 'Enter'], { timeout: 5000 });
             await new Promise(r => setTimeout(r, 2000));
 
@@ -17470,6 +17499,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         return false;
       },
       sendKeys(tmuxSession: string, text: string): boolean {
+        // D3 (docs/specs/confined-spawn-subscription-reroute.md): no Instar writer types into a confined session.
+        if (sessionManager.isConfinedWriteRefused(tmuxSession)) return false;
         try {
           const target = `=${tmuxSession}:`;
           // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
@@ -22199,7 +22230,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
@@ -23719,6 +23750,31 @@ export async function startServer(options: StartOptions): Promise<void> {
           // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
           // is already recorded + ACKed before this runs.
           onAccepted: (cmd) => {
+            // dashboard-new-session-machine-choice §3.4 step 4 — a dashboard
+            // create placed on THIS machine. Evaluated FIRST: a brand-new topic has
+            // nothing for the working-set / profile-carrier pulls to fetch, and the
+            // seed below is its only profile writer. Fires only for a payload
+            // OBJECT (never a string) under a matching dashboard-create messageId.
+            {
+              const dcStart = parseDashboardCreatePayload(cmd.payload);
+              if (dcStart && typeof cmd.messageId === 'string' && cmd.messageId.startsWith(`dashboard-create:${cmd.session}:`)) {
+                const dcTopic = Number(cmd.session);
+                if (Number.isFinite(dcTopic)) {
+                  _dashboardStartsInFlight.add(dcTopic);
+                  void _runDashboardCreateStart(dcTopic, dcStart)
+                    .catch((err) => console.warn(`  [dashboard-machine-choice] start for topic ${dcTopic} failed: ${err instanceof Error ? err.message : String(err)}`))
+                    .finally(() => {
+                      _dashboardStartsInFlight.delete(dcTopic);
+                      // The start carries no user text: once it has RUN (its outcome is
+                      // audited and any failure posted in the topic), its receipt is
+                      // settled so the inbound queue never reports it as a lost user
+                      // message. A crash before this leaves it unsettled — reported.
+                      _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                    });
+                  return;
+                }
+              }
+            }
             // Working-set move trigger (WORKING-SET-HANDOFF §3.3) — fire-and-forget,
             // BEFORE the stage gate (the coordinator carries its own gates; dark ⇒ undefined).
             {
@@ -23808,38 +23864,91 @@ export async function startServer(options: StartOptions): Promise<void> {
             // prior one died) — spawn the moved session with the relayed context, under a
             // clean topic-derived name. NEVER reuse the prefixed getSessionForTopic value
             // as the spawn name (that is the double-prefix defect above).
-            const spawnName = `topic-${topicId}`;
-            // bug #2: fetch the prior conversation from the router (this machine's local
-            // history for the topic is empty) so the moved session continues with context
-            // instead of starting blank. Best-effort — on any failure we spawn without it.
-            void (async (): Promise<string> => {
-              let movedContext: string | undefined;
-              try {
-                const url = _resolveRouterUrl?.() ?? null;
-                if (url) {
-                  const resp = await fetch(`${url}/telegram/topics/${topicId}/messages?limit=50`, {
-                    headers: { 'Authorization': `Bearer ${config.authToken}` },
-                  });
-                  if (resp.ok) {
-                    const j = (await resp.json()) as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] };
-                    movedContext = formatForwardedTopicContext(j.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
+            // dashboard-new-session-machine-choice §3.4 step 4b — a dashboard
+            // start for this topic is spawning right now: wait (bounded) for its
+            // binding and inject, never spawn a second session.
+            const spawnForwarded = (): void => {
+              const spawnName = `topic-${topicId}`;
+              // bug #2: fetch the prior conversation from the router (this machine's local
+              // history for the topic is empty) so the moved session continues with context
+              // instead of starting blank. Best-effort — on any failure we spawn without it.
+              void (async (): Promise<string> => {
+                let movedContext: string | undefined;
+                try {
+                  const url = _resolveRouterUrl?.() ?? null;
+                  if (url) {
+                    const resp = await fetch(`${url}/telegram/topics/${topicId}/messages?limit=50`, {
+                      headers: { 'Authorization': `Bearer ${config.authToken}` },
+                    });
+                    if (resp.ok) {
+                      const j = (await resp.json()) as { messages?: import('../core/ForwardedTopicContext.js').ForwardedHistoryMessage[] };
+                      movedContext = formatForwardedTopicContext(j.messages, tg.getTopicName?.(topicId) ?? undefined) || undefined;
+                    }
                   }
+                } catch {
+                  // @silent-fallback-ok — cross-machine context relay is best-effort
                 }
-              } catch {
-                // @silent-fallback-ok — cross-machine context relay is best-effort
+                return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
+              })()
+                .then((name) => {
+                  tg.registerTopicSession(topicId, name, spawnName);
+                  console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
+                  // Loss window 6: the forwarded message reached a real session.
+                  _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                })
+                .catch((err) => {
+                  console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+                  _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+                });
+            };
+            // dashboard-new-session-machine-choice §3.4 step 4b — a dashboard start
+            // for this topic is in flight (seeding or spawning): wait (bounded) for
+            // its binding and inject. If it never binds, fall through to the
+            // ordinary spawn — the message is never dropped and never spawns twice
+            // while the start is still running.
+            if (_dashboardStartsInFlight.has(topicId) || _spawningTopicsRegistryRef?.has(topicId)) {
+              if (_dashboardStartWaiters >= DASHBOARD_START_WAITERS_MAX) {
+                _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'dashboard-create-start-wait-capacity');
+                console.warn(`  [session-pool] forwarded message for topic ${topicId} not held: ${DASHBOARD_START_WAITERS_MAX} messages already waiting on in-flight starts — reported`);
+                return;
               }
-              return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text, undefined, undefined, movedContext);
-            })()
-              .then((name) => {
-                tg.registerTopicSession(topicId, name, spawnName);
-                console.log(pc.green(`  [session-pool] owner-side resume for forwarded topic ${topicId} → ${name}`));
-                // Loss window 6: the forwarded message reached a real session.
-                _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
-              })
-              .catch((err) => {
-                console.warn(`  [session-pool] owner-side resume failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+              _dashboardStartWaiters++;
+              void (async () => {
+                try {
+                for (let i = 0; i < 60 && (_dashboardStartsInFlight.has(topicId) || _spawningTopicsRegistryRef?.has(topicId)); i++) {
+                  await new Promise((r) => setTimeout(r, 1000));
+                }
+                const bound = tg.getSessionForTopic(topicId);
+                if (bound && sessionManager.isSessionAlive(bound)) {
+                  if (!text) return;
+                  try {
+                    const injected = sessionManager.injectTelegramMessage(bound, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                    if (injected !== false) {
+                      tg.trackMessageInjection(topicId, bound, text);
+                      _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
+                      return;
+                    }
+                    _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'inject-returned-false');
+                  } catch (err) {
+                    _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
+                  }
+                  return;
+                }
+                if (_dashboardStartsInFlight.has(topicId) || _spawningTopicsRegistryRef?.has(topicId)) {
+                  _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'dashboard-create-start-did-not-bind');
+                  console.warn(`  [session-pool] forwarded message for topic ${topicId} waited 60s on a dashboard start that is still running — reported, not spawned twice`);
+                  return;
+                }
+                spawnForwarded();
+                } finally {
+                  _dashboardStartWaiters--;
+                }
+              })().catch((err) => {
                 _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, err instanceof Error ? err.message : String(err));
               });
+              return;
+            }
+            spawnForwarded();
           },
         });
         // ── WS1.2 owner-side drain runner (MULTI-MACHINE-SEAMLESSNESS-SPEC) ──
@@ -25482,6 +25591,49 @@ export async function startServer(options: StartOptions): Promise<void> {
             emitPlacement,
             confirmLocal: (sk) => _confirmLocalSessionPoolClaim?.(sk) ?? false,
           });
+          // dashboard-new-session-machine-choice §3.4 step 3 — place → CHECKED
+          // deliver → claim (a failed deliver settles to `released`, never a
+          // resting `placing`). Same registry, nonce stream and journal as the router.
+          {
+            const dmcMod = await import('../core/dashboardMachineChoice.js');
+            // §3.4 step 0 — the pre-flight probes the SAME signed plane the start
+            // rides, with the read-class command any registered peer may answer.
+            _dashboardProbeMachine = async (machineId) => {
+              const url = peerUrl(machineId);
+              if (!url) return false;
+              try {
+                const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0, { timeoutMs: 5000 });
+                return !!res.ok;
+              } catch {
+                // @silent-fallback-ok: unreachable ⇒ the route answers 502 machine-unreachable to the operator
+                return false;
+              }
+            };
+            _dashboardStartOnMachine = (sk, target, start, pin) => dmcMod.startTopicOnMachine({
+              readOwnership: (key) => {
+                const r = ownReg.read(key);
+                return r ? { status: r.status, ownerMachineId: r.ownerMachineId ?? null, ownershipEpoch: r.ownershipEpoch } : null;
+              },
+              cas: (key, action) => {
+                const prevOwner = ownReg.read(key)?.ownerMachineId;
+                const r = ownReg.cas(action, { sessionKey: key, sender: meshSelfId, nonce: `${meshSelfId}:dmc-${action.type}:${++routerNonce}` });
+                emitPlacement(key, r, action.type === 'release' ? 'released' : 'placed', prevOwner);
+                return { ok: r.ok, epoch: ownReg.read(key)?.ownershipEpoch ?? 0, ...(r.ok ? {} : { reason: (r as { reason?: string }).reason }) };
+              },
+              deliver: async (machineId, env) => {
+                const url = peerUrl(machineId);
+                if (!url) return { kind: 'rejected' as const, detail: `no peer url for ${machineId}` };
+                const res = await meshClient.send(
+                  { machineId, url },
+                  { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch } as import('../core/MeshRpc.js').MeshCommand,
+                  env.ownershipEpoch,
+                  { timeoutMs: 5000 }, // the "5 s mesh timeout" the spec's shared-race note quotes
+                );
+                return dmcMod.classifyDeliverReply(res);
+              },
+              nonce: () => `${Date.now().toString(36)}-${++routerNonce}`,
+            }, sk, target, start, pin);
+          }
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(undefined, {
@@ -27350,7 +27502,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       orchestrator: TopicProfileOrchestrator | null;
       carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
     } & Pick<NonNullable<import('../server/routes.js').RouteContext['topicProfile']>,
-      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim'> | null =
+      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable'> | null =
       (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
         ? {
             store: _topicProfileStore,
@@ -27405,8 +27557,55 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ops,
               });
             },
+            // dashboard-new-session-machine-choice §3.4 step 3 + §3.2.
+            startTopicOnMachine: (topicKey, target, start, pin) => {
+              const fn = _dashboardStartOnMachine;
+              if (!fn) return Promise.resolve({ ok: false as const, code: 'start-failed' as const, error: 'the session router is not wired on this machine', released: false, settled: true });
+              return fn(topicKey, target, start, pin);
+            },
+            startSeamWired: () => !!_dashboardStartOnMachine,
+            probeMachineReachable: (machineId) => (_dashboardProbeMachine ? _dashboardProbeMachine(machineId) : Promise.resolve(false)),
+            pinReplicationLive: () => resolveDevAgentGate(
+              (config as { multiMachine?: { seamlessness?: { ws13PinReplicate?: boolean } } }).multiMachine?.seamlessness?.ws13PinReplicate,
+              config,
+            ),
           }
         : null;
+    // dashboard-new-session-machine-choice §3.4 step 4 — the owner-side branch
+    // reaches the topic-profile context through this late-bound ref.
+    if (_topicProfileCtx) {
+      const tpc = _topicProfileCtx;
+      _topicProfileCtxRef = {
+        store: tpc.store,
+        seedDeps: () => ({
+          enabledFrameworks: () => config.enabledFrameworks ?? config.sessions?.enabledFrameworks,
+          doorAdmissibility: (fw) => tpc.resolver.doorAdmissibility(fw),
+          store: tpc.store,
+          regime: () => tpc.surface.currentRegime(),
+          audit: (event) => tpc.audit?.(event),
+          // The creating machine already posted the topic's line (§3.4 step 3e).
+          disclose: () => Promise.resolve(undefined),
+        }),
+        spawnForTopic: tpc.spawnForTopic,
+      };
+    }
+    _runDashboardCreateStart = createDashboardCreateStartRunner({
+      telegramReady: () => !!telegram,
+      getSessionForTopic: (t) => telegram?.getSessionForTopic(t) ?? null,
+      isSessionAlive: (n) => sessionManager.isSessionAlive(n),
+      topicName: (t) => telegram?.getTopicName?.(t) ?? null,
+      seedDeps: () => _topicProfileCtxRef?.seedDeps() ?? null,
+      seed: seedTopicProfileAtCreation,
+      spawnForTopic: () => _topicProfileCtxRef?.spawnForTopic ?? null,
+      notice: (t, text) => {
+        if (!telegram) return;
+        void sendDeterministicTelegramNotice(telegram, 'topic-profile-creation-seed', t, text).catch(() => {
+          /* @silent-fallback-ok: a held/failed fixed notice is recorded by origin egress (held-send record + one attention item); the audit row is the durable record */
+        });
+      },
+      audit: (event) => { appendTopicProfileAudit(config.stateDir, event); },
+      selfLabel: () => safeMachineLabel((_listPoolMachines?.() ?? []).find((m) => m.machineId === _meshSelfId)?.nickname ?? null, _meshSelfId ?? 'this machine'),
+    });
 
     // ── StrandedTopicSentinel (stranded-inbound-self-heal) — PURE SIGNAL ──────
     // Detects a topic whose owner machine is online-by-heartbeat but unable to
@@ -29811,6 +30010,7 @@ export async function stopServer(options: { dir?: string }): Promise<void> {
   // Send SIGTERM first for graceful shutdown, then force kill after timeout
   try {
     // Send C-c (SIGINT) to the foreground process in the session
+    // confined-write-allowed: C-c to the agent's own server pane, never a confined session
     execFileSync(tmuxPath, ['send-keys', '-t', `=${serverSessionName}:`, 'C-c'], { stdio: 'ignore' });
     console.log(`  Sent shutdown signal to ${serverSessionName}...`);
 
