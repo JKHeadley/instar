@@ -691,7 +691,15 @@ export class FeedbackExecutorService {
   private async profileUnenforceable(epoch: number, probes: CanaryProbeResult[]): Promise<void> {
     const existing = this.metaJson<{ until: number; episode: number }>('exec:profile_unenforceable');
     const episode = existing && existing.until > this.now() - DAY_MS ? existing.episode : (existing?.episode ?? 0) + 1;
-    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + DAY_MS, episode, failed: probes.filter((p) => !p.ok).map((p) => p.probe) });
+    // Record WHY, not just which. A probe failure here is a 24h stop no route can clear, and the
+    // canary report that explains it is deleted with the attempt tree — so without this the cause is
+    // unrecoverable after the fact (it cost a full manual repro on 2026-10-21). Bounded and scrubbed:
+    // a probe detail quotes sandbox output, which must never carry a credential into durable state.
+    const failedDetail = probes.filter((p) => !p.ok).map((p) => {
+      const scrubbed = scrubForStore(p.detail, { maxBytes: 2048 });
+      return { probe: p.probe, detail: scrubbed.error ? '[detail withheld: scrub failed]' : scrubbed.text.slice(0, 300) };
+    });
+    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + DAY_MS, episode, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
     this.availability = null;
     await this.attention({
       id: `feedback-execute:profile-unenforceable:${episode}`,

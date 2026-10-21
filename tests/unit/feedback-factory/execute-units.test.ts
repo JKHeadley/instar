@@ -702,3 +702,46 @@ describe('confined native rebuild: the fix script and its siblings', () => {
     expect(q).toBe(': something went sideways');
   });
 });
+
+describe('canary: a failing probe names what it observed', () => {
+  const probePaths = (root: string) => {
+    const agentHome = path.join(root, 'home');
+    const workspace = path.join(agentHome, '.worktrees', 'feedback-y-a1');
+    for (const d of [path.join(workspace, '.git'), `${workspace}-publish`, `${workspace}-tmp`]) fs.mkdirSync(d, { recursive: true });
+    return { workspace, publishClone: `${workspace}-publish`, tmpDir: `${workspace}-tmp`, depsCache: path.join(agentHome, '.worktrees', '.feedback-deps', 'y'), agentHome, testRunnerHoldersFile: path.join(root, 'h.json'), homeDir: root };
+  };
+
+  /** Drive evaluateSessionCanary over a hand-written report and return the git-status probe. */
+  const gitProbe = async (outputs: Record<string, string> | null) => {
+    const root = tmp();
+    const p = probePaths(root);
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    try {
+      const reportPath = path.join(p.tmpDir, `canary-report-${fx.nonce}.json`);
+      if (outputs) fs.writeFileSync(reportPath, JSON.stringify({ attempted: [9], outputs }));
+      const probes = evaluateSessionCanary(p, fx, reportPath, null);
+      return probes.find((x) => x.probe === 'session-git-status')!;
+    } finally { await fx.close(); }
+  };
+
+  it('a MISSING outputs["9"] still fails, but the detail says it was absent rather than implying git broke', async () => {
+    const r = await gitProbe({ '1': 'ok' });
+    expect(r.ok).toBe(false);                       // verdict unchanged
+    expect(r.detail).toContain('absent');           // and now diagnosable
+    expect(r.detail).not.toContain('fatal:');
+  });
+
+  it('a genuine git failure fails and the detail quotes it', async () => {
+    const r = await gitProbe({ '9': 'fatal: not a git repository' });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('not a git repository');
+  });
+
+  it('clean git output passes, and the measured macOS xcrun cache noise does NOT fail it', async () => {
+    expect((await gitProbe({ '9': '' })).ok).toBe(true);
+    // Measured in the real sandbox: git exits 0 but prints this. It must not read as a failure.
+    const noisy = await gitProbe({ '9': "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-A' (errno=Operation not permitted)" });
+    expect(noisy.ok).toBe(true);
+    expect(noisy.detail).toContain('xcrun_db');
+  });
+});

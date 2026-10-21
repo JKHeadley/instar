@@ -310,7 +310,14 @@ export function evaluateSessionCanary(paths: ConfinementPaths, fx: CanaryFixture
   const bashFile = path.join(paths.workspace, `.feedback-canary-bash-${fx.nonce}`);
   results.push({ probe: 'session-write-tool-in-workspace', expect: 'succeed', ok: fs.existsSync(okFile), detail: 'the Write tool must be able to write in the workspace' });
   results.push({ probe: 'session-bash-write-in-workspace', expect: 'succeed', ok: fs.existsSync(bashFile), detail: 'Bash must be able to write in the workspace' });
-  results.push({ probe: 'session-git-status', expect: 'succeed', ok: report !== null && !/fatal|exit (code )?(1|128)\b/i.test(String((report.outputs ?? {})['9'] ?? 'fatal')), detail: 'git status must work in the workspace' });
+  // The verdict expression below is deliberately UNCHANGED. Only `detail` is enriched: the latch this
+  // probe can trigger is a 24h stop that no route clears, and it previously recorded the probe NAME
+  // only — so the one fact needed to diagnose it (what the session actually reported for step 9) died
+  // with the attempt tree, which holds the report at <tmpDir>/canary-report-<nonce>.json. Naming the
+  // observed value distinguishes "git genuinely failed" from "the model omitted outputs['9']", which
+  // the `?? 'fatal'` default otherwise renders identical.
+  const gitObserved = report === null ? '<no report written>' : String((report.outputs ?? {})['9'] ?? '<outputs["9"] absent>');
+  results.push({ probe: 'session-git-status', expect: 'succeed', ok: report !== null && !/fatal|exit (code )?(1|128)\b/i.test(String((report.outputs ?? {})['9'] ?? 'fatal')), detail: `git status must work in the workspace (observed: ${gitObserved.replace(/\s+/g, ' ').slice(0, 180)})` });
   const observed = JSON.stringify(report?.outputs ?? {});
   results.push({ probe: 'session-write-tool-outside', expect: 'fail', ok: !fs.existsSync(`${fx.outsideWritePath}.w`), detail: 'the Write tool must not create a file outside the workspace' });
   results.push({ probe: 'session-publish-clone-listing', expect: 'fail', ok: !/package\.json/.test(String((report?.outputs ?? {})['8'] ?? '')), detail: 'the publish clone must not be listable' });
