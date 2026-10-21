@@ -632,7 +632,29 @@ export class SessionRefresh {
       // Idempotent + fail-safe: a failure here is logged and the respawn
       // proceeds (worst case is the pre-fix behavior, not a dead refresh).
       if (accountSwap?.configHome) {
-        const ready = ensureInteractiveReady(accountSwap.configHome);
+        // Without the agent directory the folder-trust acknowledgement is not
+        // seeded, and the swapped-in home can read as ready while still killing
+        // the respawned session at the trust dialog.
+        //
+        // OPTIONAL CALL, deliberately. The declared type says SessionManager, so
+        // `tsc` accepts a direct call — but several callers (and every existing
+        // unit test of this path) inject a narrow stub that implements only the
+        // methods the refresh path used before today. A direct call threw
+        // `agentProjectDir is not a function` and took the whole refresh down
+        // with it, which is strictly worse than the bug being fixed. Absence
+        // degrades to the pre-fix behaviour and SAYS so, rather than silently
+        // skipping a safety seed.
+        const projectDir = this.deps.sessionManager.agentProjectDir?.();
+        if (!projectDir) {
+          console.warn(
+            `[SessionRefresh] account-swap onboarding-readiness: agent directory unavailable from this `
+            + `session manager — folder trust NOT seeded for ${accountSwap.configHome}; a respawn there `
+            + `may still die at the folder-trust dialog (sessionName=${sessionName}).`,
+          );
+        }
+        const ready = ensureInteractiveReady(accountSwap.configHome, {
+          ...(projectDir ? { projectDir } : {}),
+        });
         console.log(
           `[SessionRefresh] account-swap onboarding-readiness: ${accountSwap.configHome} ` +
           `${ready.patched ? `patched (${ready.reason})` : ready.reason} (sessionName=${sessionName})`,

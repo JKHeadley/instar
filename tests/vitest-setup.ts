@@ -1,5 +1,8 @@
 // Global vitest setup. Runs once before any test file loads.
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import supertest from 'supertest';
 import { installSupertestConnectRetry } from './setup/supertest-connect-retry.js';
 
@@ -63,6 +66,46 @@ for (const key of Object.keys(process.env)) {
   if (key.startsWith('INSTAR_') && !INSTAR_ENV_ALLOWLIST.has(key)) {
     delete process.env[key];
   }
+}
+
+// Force the Codex user-config home onto a per-process temp dir. Every test
+// in this process, and every child it spawns with `{ ...process.env }`, then
+// reads/writes `$CODEX_HOME/config.toml` HERE and never the operator's real
+// `~/.codex/config.toml`.
+//
+// This is not hypothetical either. On 2026-10-20 ThreadlineBootstrap still
+// wrote `[mcp_servers."threadline"]` into the shared Codex config on every
+// boot, and tests/e2e/threadline/identity-discovery-wiring.test.ts (which boots
+// the Threadline stack in-process) rewrote the operator's REAL ~/.codex/config.toml
+// to point at a worktree, a /var/folders temp state dir and `--agent-name
+// no-id-agent`. The boot-time write is gone (see src/commands/codex.ts for the
+// explicit `instar codex connect <agent>` replacement) — this line is the
+// structural guarantee that no test, present or future, can reach the real file
+// through CODEX_HOME's default. A test that wants to exercise the default-path
+// fallback sets CODEX_HOME itself, after this file runs (the registry
+// unit test does exactly that). A test that needs the operator's REAL Codex
+// login must opt in explicitly by copying auth.json into its own CODEX_HOME,
+// the way tests/e2e/codex-worker-local-api-lifecycle.test.ts already does.
+//
+// The guard test tests/unit/test-setup-hermetic-codex-home.test.ts fails if
+// this ever stops holding.
+{
+  const tmpCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-vitest-codex-home-'));
+  process.env.CODEX_HOME = tmpCodexHome;
+  // Raw fs.rmSync on purpose (allowlisted in scripts/lint-no-direct-destructive.js):
+  // this file runs BEFORE every test module, so importing SafeFsExecutor here
+  // would load src/core (and the real node:child_process) into the module
+  // cache ahead of any test's vi.mock — which silently un-mocked child_process
+  // for GitSync / ProfileCompiler / supervisor-preflight when first tried.
+  // The target is this process's own mkdtemp dir under os.tmpdir(), never the
+  // source tree.
+  process.once('exit', () => {
+    try {
+      fs.rmSync(tmpCodexHome, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup of a temp dir — never fail the run over it
+    }
+  });
 }
 
 // Pre-set git identity env vars so SafeGitExecutor's identity lookup

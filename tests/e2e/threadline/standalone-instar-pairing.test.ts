@@ -21,6 +21,11 @@ import type { TempProject } from '../../helpers/setup.js';
 import type { InviteEvent } from '../../../src/threadline/PairingInviteFlow.js';
 import { StandalonePairing } from '../../../packages/threadline-mcp/src/pairing.js';
 import { generateIdentityKeyPair, sign } from '@sagemindai/threadline-core';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 interface Standalone { fp: string; pairing: StandalonePairing; ws: WebSocket; project: TempProject; events: InviteEvent[]; received: Array<{ kind: string; text?: string; encrypted?: boolean; credential?: boolean }> }
 

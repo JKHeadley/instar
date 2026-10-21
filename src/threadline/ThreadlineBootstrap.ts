@@ -923,18 +923,19 @@ export async function bootstrapThreadline(
  * Register the Threadline MCP server into every framework config present.
  *
  * Claude Code: ~/.claude.json (local scope) + .mcp.json (project scope).
- * Codex CLI: `[mcp_servers."threadline"]` in ~/.codex/config.toml — added
- *   for the cross-framework portability audit (Gap 2). Before this, a
- *   Codex agent that joined the Threadline network had the relay running
- *   but no MCP tools advertised to its runtime. The Codex TOML format and
- *   path were empirically verified from a live ~/.codex/ (Codex CLI
- *   0.78.0); registration reuses the existing, tested
- *   OpenAiCodexMcpToolRegistry so the two writers cannot drift.
+ * Codex CLI: deliberately NOT written here. `~/.codex/config.toml` is ONE
+ *   file shared by every Codex on the machine, so a boot-time write of
+ *   `[mcp_servers."threadline"]` was last-writer-wins across agents AND
+ *   across tests (2026-10-20: an e2e run rewrote the operator's real
+ *   config.toml to point at a worktree + a /var/folders temp state dir).
+ *   Instar-launched Codex sessions never needed the shared entry — the
+ *   launch builders pin THIS agent's entry per spawn via
+ *   `-c mcp_servers.threadline.*` (frameworkSessionLaunch.ts). A
+ *   hand-started Codex that wants Threadline tools is connected on request
+ *   with `instar codex connect <agent>` (src/commands/codex.ts), the only
+ *   writer of the shared entry.
  *
  * The MCP server is a stdio process the framework launches as a subprocess.
- * Codex registration is gated on ~/.codex/ existing (Codex installed on
- * this machine) so a Claude-only host is never given a Codex config it
- * does not use.
  */
 async function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): Promise<void> {
   const absDir = path.resolve(projectDir);
@@ -998,31 +999,5 @@ async function registerThreadlineMcp(projectDir: string, agentName: string, stat
     fs.renameSync(tmpPath, mcpJsonPath);
   } catch {
     // Non-fatal
-  }
-
-  // ── 3. Also register in Codex's ~/.codex/config.toml (portability Gap 2) ──
-  // Gated on ~/.codex/ existing so a Claude-only host never gets a Codex
-  // config it does not use. Reuses the existing OpenAiCodexMcpToolRegistry
-  // (idempotent remove-then-append of the [mcp_servers."threadline"] table)
-  // so the TOML writer is never duplicated. Non-fatal, matching the Claude
-  // registration blocks above.
-  try {
-    const codexHome = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
-    if (fs.existsSync(codexHome)) {
-      const { createMcpToolRegistry } = await import(
-        '../providers/adapters/openai-codex/integration/mcpToolRegistry.js'
-      );
-      await createMcpToolRegistry().register(
-        {
-          kind: 'stdio',
-          name: 'threadline',
-          command: mcpEntry.command,
-          args: mcpEntry.args,
-        },
-        { scope: 'user' },
-      );
-    }
-  } catch {
-    // Non-fatal — Claude registration above is unaffected.
   }
 }

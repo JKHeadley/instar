@@ -10,6 +10,11 @@ import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 /** Write a canonical (unencrypted) identity.json and return its expected fingerprint + hex pubkey. */
 function seedCanonicalIdentity(stateDir: string): { fingerprint: string; publicKeyHex: string } {

@@ -211,4 +211,95 @@ describe('ensureInteractiveReady', () => {
     expect(r.patched).toBe(true);
     expect(readConfig(h).hasTrustDialogAccepted).toBe(true);
   });
+  // ── per-project folder trust (2026-10-20 Mac Mini incident) ───────
+  //
+  // Claude Code gates "Do you trust the files in this folder?" on the
+  // PER-PROJECT entry, not the top-level flag, and the dialog's default option
+  // is "No, exit". A pool home holding all three top-level flags was therefore
+  // declared ready here while every session it launched died in 16 seconds.
+  // Three died that way on the Mini inside 35 minutes; the operator saw only
+  // delivery receipts.
+
+  const AGENT_DIR = '/Users/someone/.instar/agents/echo';
+
+  it('seeds the per-project folder-trust entry when projectDir is given', () => {
+    const h = home();
+    const r = ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    expect(r.patched).toBe(true);
+    const cfg = readConfig(h) as { projects?: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(cfg.projects?.[AGENT_DIR]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('THE REGRESSION: a home with every top-level flag set but no project entry is still patched', () => {
+    const h = home();
+    fs.mkdirSync(h);
+    // Exactly the Mini's state once the top-level seeding had run: ready by the
+    // old check, fatal in practice.
+    const seeded: Record<string, unknown> = {};
+    for (const f of INTERACTIVE_ONBOARDING_FLAGS) seeded[f] = true;
+    seeded.projects = {};
+    fs.writeFileSync(path.join(h, '.claude.json'), JSON.stringify(seeded));
+
+    const r = ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    expect(r.patched).toBe(true);
+    expect(r.reason).toContain('folder trust');
+    const cfg = readConfig(h) as { projects?: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(cfg.projects?.[AGENT_DIR]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('is idempotent — a second call reports already-ready and rewrites nothing', () => {
+    const h = home();
+    ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    const before = fs.readFileSync(path.join(h, '.claude.json'), 'utf-8');
+    const r = ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    expect(r.patched).toBe(false);
+    expect(r.reason).toBe('already interactive-ready');
+    expect(fs.readFileSync(path.join(h, '.claude.json'), 'utf-8')).toBe(before);
+  });
+
+  it('gives the entry the shape a genuinely accepted folder carries', () => {
+    const h = home();
+    ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    const entry = (readConfig(h).projects as Record<string, Record<string, unknown>>)[AGENT_DIR];
+    expect(entry.allowedTools).toEqual([]);
+    expect(entry.mcpServers).toEqual({});
+    expect(entry.enabledMcpjsonServers).toEqual([]);
+    expect(entry.disabledMcpjsonServers).toEqual([]);
+  });
+
+  it('leaves OTHER folders\' entries and their settings untouched', () => {
+    const h = home();
+    fs.mkdirSync(h);
+    fs.writeFileSync(path.join(h, '.claude.json'), JSON.stringify({
+      oauthAccount: { emailAddress: 'someone@example.com' },
+      projects: {
+        '/Users/someone/other-project': { hasTrustDialogAccepted: true, allowedTools: ['Bash'] },
+      },
+    }));
+    ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    const cfg = readConfig(h) as {
+      oauthAccount?: { emailAddress?: string };
+      projects?: Record<string, { hasTrustDialogAccepted?: boolean; allowedTools?: string[] }>;
+    };
+    expect(cfg.oauthAccount?.emailAddress).toBe('someone@example.com');
+    expect(cfg.projects?.['/Users/someone/other-project']?.allowedTools).toEqual(['Bash']);
+    expect(cfg.projects?.[AGENT_DIR]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  it('without projectDir, behaviour is unchanged — no projects key is invented', () => {
+    const h = home();
+    const r = ensureInteractiveReady(h);
+    expect(r.patched).toBe(true);
+    expect(readConfig(h).projects).toBeUndefined();
+  });
+
+  it('repairs a projects value that is not an object rather than throwing', () => {
+    const h = home();
+    fs.mkdirSync(h);
+    fs.writeFileSync(path.join(h, '.claude.json'), JSON.stringify({ projects: 'nonsense' }));
+    const r = ensureInteractiveReady(h, { projectDir: AGENT_DIR });
+    expect(r.patched).toBe(true);
+    const cfg = readConfig(h) as { projects?: Record<string, { hasTrustDialogAccepted?: boolean }> };
+    expect(cfg.projects?.[AGENT_DIR]?.hasTrustDialogAccepted).toBe(true);
+  });
 });

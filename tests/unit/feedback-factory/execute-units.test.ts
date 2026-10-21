@@ -21,7 +21,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
-import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
+import { DepsCache, rebuildFailureTail } from '../../../src/feedback-factory/execute/depsCache.js';
 import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
@@ -538,5 +538,72 @@ describe('dependency cache', () => {
     expect(fs.readdirSync(path.join(root, 'deps'))).toHaveLength(0);
     const noLock = new DepsCache({ ...(cache as unknown as { opts: ConstructorParameters<typeof DepsCache>[0] }).opts, readAtCommit: () => null });
     expect(await noLock.ensure('/src', 'a'.repeat(40))).toEqual({ ok: false, reason: 'lockfile-missing-at-base' });
+  });
+});
+
+describe('confined native rebuild: a writable HOME and a self-diagnosing failure', () => {
+  /** A cache whose install plants a native module the agent home does not have, forcing the rebuild path. */
+  const forcingRebuild = (root: string, run: NonNullable<ConstructorParameters<typeof DepsCache>[0]>['runner']['run']) => new DepsCache({
+    root: path.join(root, 'deps'), agentHome: path.join(root, 'home'), trashRoot: path.join(root, '.instar', 'trash'),
+    runner: { available: () => ({ ok: true, version: '0.0.77' }), run },
+    readAtCommit: (_s, _sha, f) => (f === 'package.json' ? '{"name":"x"}' : f === 'package-lock.json' ? '{"lockfileVersion":3}' : null),
+    listAtCommit: () => [],
+    install: async (dir) => {
+      const mod = path.join(dir, 'node_modules', 'better-sqlite3');
+      fs.mkdirSync(mod, { recursive: true });
+      fs.writeFileSync(path.join(mod, 'package.json'), '{"name":"better-sqlite3","version":"12.8.0"}');
+    },
+    hasPnpm: () => false, testRunnerHoldersFile: path.join(root, 'h.json'),
+  });
+
+  it('points HOME at the attempt temp (never the real home) so node-gyp can write its devdir', async () => {
+    const root = tmp();
+    let seen: Record<string, string> | null = null;
+    const r = await forcingRebuild(root, async (cmd) => {
+      seen = cmd.env;
+      return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false };
+    }).ensure('/src', 'a'.repeat(40));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(seen).not.toBeNull();
+    const env = seen as unknown as Record<string, string>;
+    // The whole bug: HOME stayed on the real (confinement-denied) home, so `gyp configure` hit EPERM.
+    expect(env.HOME).toBe(path.join(r.dir, '.tmp', 'home'));
+    expect(env.HOME).not.toBe(os.homedir());
+    expect(env.TMPDIR).toBe(path.join(r.dir, '.tmp'));
+    expect(fs.existsSync(env.HOME)).toBe(true); // created, or node-gyp cannot use it
+  });
+
+  it('a failed rebuild carries the real cause into deps-unavailable instead of discarding it', async () => {
+    const root = tmp();
+    const stderr = [
+      'npm error prebuild-install warn install EPERM: operation not permitted, access \'/Users/x/.npm\'',
+      'npm error gyp ERR! configure error',
+      'npm error gyp ERR! stack Error: EPERM: operation not permitted, open \'/Users/x/Library/Caches/node-gyp/24.14.1/installVersion\'',
+      'npm error gyp ERR! not ok',
+      'npm error Log files were not written due to an error writing to the directory: /Users/x/.npm/_logs',
+      'npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal',
+    ].join('\n');
+    const r = await forcingRebuild(root, async () => ({ exitCode: 1, signal: null, stdout: '', stderr, timedOut: false, outputCapped: false })).ensure('/src', 'a'.repeat(40));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toContain('deps-install-failed');
+    expect(r.reason).toContain('native rebuild failed (exit 1)');
+    expect(r.reason).toContain('installVersion'); // the fatal line, not the preceding warn
+    expect(r.reason).not.toContain('loglevel=verbose'); // npm's epilogue is never the diagnosis
+    expect(r.reason.length).toBeLessThanOrEqual(400);
+  });
+
+  it('rebuildFailureTail prefers the fatal line over a warn, bounds length, and falls back to the last line', () => {
+    const fatal = rebuildFailureTail({
+      stderr: 'prebuild-install warn install EPERM: access \'/h/.npm\'\ngyp ERR! stack Error: EACCES: permission denied, open \'/h/cache\'\nnpm error done',
+      stdout: '',
+    });
+    expect(fatal).toContain('EACCES');
+    expect(fatal).not.toContain('warn');
+    // No signal line at all → the last line still tells the operator something.
+    expect(rebuildFailureTail({ stderr: 'something odd\nlast line here', stdout: '' })).toBe(': last line here');
+    expect(rebuildFailureTail({ stderr: '', stdout: '' })).toBe('');
+    expect(rebuildFailureTail({ stderr: `EPERM ${'x'.repeat(500)}`, stdout: '' }).length).toBeLessThanOrEqual(152);
   });
 });

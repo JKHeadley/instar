@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-21T06:23:02.907Z",
+  "slug": "watchdog-test-runner-progress",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 384,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/monitoring/testRunnerProgress.ts",
+      "src/monitoring/watchdog-notifications.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 373,
+    "deletedLines": 11
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The test-runner floor (ACT-069) was built to stop a busy suite being judged at ~190s, and it fixed that. Its expiry was never designed: one hour of wall clock, chosen as 'generous', with nothing checking health at the boundary. Because the hard ceiling is 30 minutes, the moment the floor lapses every fail-closed path already votes to interrupt, so the hour mark is not a handover to judgement but a scheduled kill for any run that long. Latent from the floor's introduction until a full suite genuinely needed more than an hour on a saturated machine (2026-10-20, 3610s), with a second instance the same night on a git push running a pre-push tier (3615s)."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
