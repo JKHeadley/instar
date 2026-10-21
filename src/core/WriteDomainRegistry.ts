@@ -376,9 +376,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Dismissing a restart notice writes the invite-marker store on the relay-holding machine; same
   // conservative classification as the invite routes.
   reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/restart-notices', domain: 'cluster-shared' });
-  // Switching the agent network + pairing on at the operator's request (writes the threadline
-  // config flags, requests the supervised restart) — same relay-holder-only surface as the other
-  // pairing routes, same conservative classification.
+  // Switching pairing on (docs/specs/threadline-enable-without-restart.md): writes
+  // threadline.relayEnabled + threadline.verifiedPairing.enabled into this machine's
+  // config and raises its own supervised-restart flag. Both targets are per-machine
+  // paths, so machine-local is arguable — but the route already carries an
+  // `unavailable-here` state for the machine that does not hold the relay identity,
+  // exactly like /start and the invite routes above, and the documented flow routes
+  // the operation to the relay holder rather than enabling a standby in place. So it
+  // takes the same conservative cluster-shared classification as its siblings, with
+  // no machine-local convergence claim to defend. If the owner of this feature
+  // intends a standby to be able to switch itself on, this becomes machine-local
+  // with a per-machine-path story on both axes (I9) — a deliberate change, not this
+  // ratchet repair.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });

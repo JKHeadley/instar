@@ -11487,6 +11487,11 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       patched = true;
       result.upgraded.push('CLAUDE.md: added command-watchdog test-runner floor awareness');
     }
+    if (!content.includes('A test run that is still working is not interrupted at the hour mark:')) {
+      content += `\n- **A test run that is still working is not interrupted at the hour mark:** the test-runner floor above used to expire on elapsed time alone, so a suite that genuinely needed longer than an hour was interrupted at 61 minutes — and because the hard ceiling is already exceeded by then, every fallback path votes to interrupt, which makes the kill arithmetic rather than a judgement. Past the hour, protection is now held open while the run's own CPU time keeps advancing, measured across its whole process subtree (the \`npm test\` parent waits while its workers do the work, so the parent's own CPU time is not the signal), up to a hard three-hour bound. A run that is alive but burning no CPU is released to the judge exactly as before, and a machine whose \`ps\` gives no readable CPU column behaves exactly as it did. **An interrupted test run is also announced now** — one plain line saying how long it had been running and that nothing it finished was kept — because the old behaviour was a silent Ctrl+C while the harness that launched the run could still report a clean exit. Audit: \`.instar/watchdog-interventions.jsonl\` (the row carries \`stuckCommandKind\`).\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added test-runner progress-extension + interruption-notice awareness');
+    }
     if (!content.includes('Crash-safe inbound delivery:')) {
       content += `\n- **Crash-safe inbound delivery:** Normal tmux injection and Codex stranded-draft key attempts use FULL-durable armed/started/terminal phases. A crash-open mutation becomes \`effect-unknown\` and is never blindly repeated. Diagnose privacy-safe counts at \`GET /sessions/inbound-delivery-status\`; no message body is exposed. Command-watchdog continuation is owned by the canonical continuation/recovery funnel, never an independent watchdog prompt.\n`;
       patched = true;

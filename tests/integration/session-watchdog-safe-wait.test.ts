@@ -5,6 +5,8 @@ import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classifyLongLivedServiceProcess, SessionWatchdog } from '../../src/monitoring/SessionWatchdog.js';
+import { TestRunnerProgressTracker } from '../../src/monitoring/testRunnerProgress.js';
+import { formatWatchdogUserMessage } from '../../src/monitoring/watchdog-notifications.js';
 
 describe('SessionWatchdog safe-wait pipeline', () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -41,7 +43,7 @@ describe('SessionWatchdog safe-wait pipeline', () => {
     expect((wd as any).temporaryExclusions.has(11)).toBe(false);
   });
 
-  function testRunnerWatchdog(opts: { command: string; elapsedMs: number; judge?: 'stuck' | 'legitimate' | 'throw' | 'none'; wd?: Record<string, unknown>; live?: () => any }) {
+  function testRunnerWatchdog(opts: { command: string; elapsedMs: number; judge?: 'stuck' | 'legitimate' | 'throw' | 'none'; wd?: Record<string, unknown>; live?: () => any; cpuMs?: () => number | undefined }) {
     const sm = {
       listRunningSessions: vi.fn(() => [{ tmuxSession: 'echo-test-runner', framework: 'claude-code' }]),
       captureOutput: vi.fn(() => ' RUN  v2.1.9 /repo\n ✓ tests/unit/a.test.ts (12 tests)'),
@@ -54,9 +56,13 @@ describe('SessionWatchdog safe-wait pipeline', () => {
       monitoring: { watchdog: { enabled: true, stuckCommandSec: 180, hardCeilingSec: 1800, ...(opts.wd ?? {}) } },
     } as any, sm as any, {} as any, { readLiveWatchdogConfig: opts.live });
     (wd as any).getClaudePid = vi.fn(async () => 10);
+    // Rows carry a CPU column only when a test asks for one: the pre-existing
+    // cases leave it absent, which is exactly how a platform with no readable
+    // `ps` time column behaves — and they must keep their old verdicts.
+    const cpu = () => (opts.cpuMs ? { cpuMs: opts.cpuMs() } : {});
     (wd as any).getChildProcesses = vi.fn(async () => [
-      { pid: 11, parentPid: 10, command: '/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && eval \'npm test\'', elapsedMs: opts.elapsedMs },
-      { pid: 12, parentPid: 11, command: opts.command, elapsedMs: opts.elapsedMs },
+      { pid: 11, parentPid: 10, command: '/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && eval \'npm test\'', elapsedMs: opts.elapsedMs, ...cpu() },
+      { pid: 12, parentPid: 11, command: opts.command, elapsedMs: opts.elapsedMs, ...cpu() },
       // Real test runs (and a git push running a test hook) have Vitest below
       // them; an ordinary command does not.
       ...(/^python/.test(opts.command) ? [] : [
@@ -341,4 +347,130 @@ describe('SessionWatchdog safe-wait pipeline', () => {
     expect(esbuild.signalCode).toBeNull();
     expect(closed).toBe(false);
   }, 15_000);
+
+  /**
+   * The floor expired on wall clock alone, so a healthy full suite was
+   * SIGINT-ed at 3610s on 2026-10-20. Past the floor the hard ceiling (1800s)
+   * is already exceeded, which is why every fail-closed path below votes to
+   * interrupt. Measured CPU progress is what holds the door open now.
+   */
+  function fastProgress(wd: SessionWatchdog) {
+    // Production compares samples ≥20s apart (one poll interval). The bound
+    // itself is unit-tested; here the pipeline is what matters, so the gap is
+    // shortened rather than sleeping a real 20s in CI.
+    (wd as any).testRunnerProgress = new TestRunnerProgressTracker({ minGapMs: 1, minCpuDeltaMs: 1 });
+  }
+
+  it('past the 60 min bound, a run whose CPU time is still climbing is neither judged nor interrupted', async () => {
+    let cpu = 40 * 60_000;
+    const { wd, evaluate, signal } = testRunnerWatchdog({
+      command: 'npm test', elapsedMs: 61 * 60_000, judge: 'stuck', cpuMs: () => cpu,
+    });
+    fastProgress(wd);
+    await (wd as any).checkSession('echo-test-runner'); // first poll: baseline only
+    await delay(5);
+    cpu += 25_000; // 25s of CPU burned since the previous snapshot
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(signal).not.toHaveBeenCalled();
+  });
+
+  it('past the bound, a run burning no CPU is handed to the judge exactly as before', async () => {
+    const { wd, evaluate, signal } = testRunnerWatchdog({
+      command: 'npm test', elapsedMs: 61 * 60_000, judge: 'stuck', cpuMs: () => 40 * 60_000,
+    });
+    fastProgress(wd);
+    await (wd as any).checkSession('echo-test-runner');
+    await delay(5);
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).toHaveBeenCalled();
+    expect(signal).toHaveBeenCalledWith(expect.objectContaining({ pid: 12 }), 'SIGINT');
+  });
+
+  it('a climbing run is still released at the three-hour absolute bound', async () => {
+    let cpu = 60 * 60_000;
+    const { wd, signal } = testRunnerWatchdog({
+      command: 'npm test', elapsedMs: 3 * 60 * 60_000 + 60_000, judge: 'stuck', cpuMs: () => cpu,
+    });
+    fastProgress(wd);
+    await (wd as any).checkSession('echo-test-runner');
+    await delay(5);
+    cpu += 25_000;
+    await (wd as any).checkSession('echo-test-runner');
+    expect(signal).toHaveBeenCalledWith(expect.objectContaining({ pid: 12 }), 'SIGINT');
+  });
+
+  it('the interruption it does perform is announced, with the run named as a test run', async () => {
+    const { wd, signal } = testRunnerWatchdog({
+      command: 'npm test', elapsedMs: 61 * 60_000, judge: 'stuck', cpuMs: () => 40 * 60_000,
+    });
+    fastProgress(wd);
+    const seen: any[] = [];
+    wd.on('intervention', (e) => seen.push(e));
+    await (wd as any).checkSession('echo-test-runner');
+    await delay(5);
+    await (wd as any).checkSession('echo-test-runner');
+    expect(signal).toHaveBeenCalled();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].stuckCommandKind).toBe('test-runner');
+    expect(seen[0].stuckElapsedMs).toBe(61 * 60_000);
+    // The wiring that was missing: an interrupted test run now produces a
+    // user-facing line instead of a silent audit row.
+    const msg = formatWatchdogUserMessage(seen[0]);
+    expect(msg).toMatch(/test run/i);
+    expect(msg).toMatch(/61 minutes/);
+  });
+
+  it('reads advancing CPU time for a real subtree out of the real process table', async () => {
+    const sm = {
+      listRunningSessions: vi.fn(() => [{ tmuxSession: 'real-cpu-subtree', framework: 'claude-code' }]),
+      captureOutput: vi.fn(() => 'RUN real test process'),
+      isSessionAlive: vi.fn(() => true),
+    };
+    const wd = new SessionWatchdog({
+      stateDir: '/tmp/watchdog-real-cpu-integration',
+      sessions: { tmuxPath: 'tmux' },
+      monitoring: { watchdog: { enabled: true, stuckCommandSec: 0 } },
+    } as any, sm as any, {} as any);
+
+    // A real process burning real CPU: this is the contract the extension
+    // rests on — `ps` must give a readable time column that advances.
+    const burner = spawn(process.execPath, ['-e', 'const end = Date.now() + 20000; while (Date.now() < end) Math.sqrt(Math.random());'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    let closed = false;
+    const joined = new Promise<void>(resolve => burner.once('close', () => { closed = true; resolve(); }));
+    cleanups.push(async () => {
+      if (!closed && burner.pid !== undefined) {
+        try { process.kill(burner.pid, 'SIGKILL'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      }
+      await joined;
+      expect(closed, 'owned CPU-burner fixture must be reaped').toBe(true);
+    });
+    expect(burner.pid, 'fixture must have a pid').toBeDefined();
+
+    const readRow = async () => {
+      const rows: Array<{ pid: number; cpuMs?: number }> = await (wd as any).getChildProcesses(process.pid);
+      return rows.find(r => r.pid === burner.pid);
+    };
+    let first = await readRow();
+    const deadline = performance.now() + 5000;
+    while (!first && performance.now() < deadline) { await delay(50); first = await readRow(); }
+    expect(first, 'the fixture must appear in the real process table within 5s').toBeDefined();
+    expect(first!.cpuMs, 'the real ps snapshot must carry a readable CPU column').toBeTypeOf('number');
+
+    // Long enough for the production bound: a process at full tilt accrues
+    // more than MIN_PROGRESS_CPU_DELTA_MS (1s of CPU) over this window.
+    await delay(1_500);
+    const second = await readRow();
+    expect(second?.cpuMs, 'a process at full tilt must show more CPU time on the next snapshot')
+      .toBeGreaterThan(first!.cpuMs!);
+
+    // And the tracker turns those two real readings into a progress verdict,
+    // at the real CPU-delta bound — not a loosened one.
+    const tracker = new TestRunnerProgressTracker({ minGapMs: 1 });
+    expect(tracker.observe(burner.pid!, first!.cpuMs, 1_000)).toBe('baseline');
+    expect(tracker.observe(burner.pid!, second!.cpuMs, 2_000)).toBe('progressed');
+  }, 20_000);
 });
