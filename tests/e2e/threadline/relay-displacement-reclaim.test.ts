@@ -20,6 +20,11 @@ import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypt
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const waitFor = async (cond: () => boolean, ms = 10_000): Promise<void> => {
   const start = Date.now();

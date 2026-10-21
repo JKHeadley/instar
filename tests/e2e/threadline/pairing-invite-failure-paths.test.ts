@@ -16,6 +16,11 @@ import { createTempProject } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
 import type { InviteEvent } from '../../../src/threadline/PairingInviteFlow.js';
 import { findInviteToken, createInvite, inviteMessage } from '../../../src/threadline/PairingInvite.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 interface Side {
   name: string; project: TempProject; port: number;

@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
 import { createUnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { AgentServer } from '../../../src/server/AgentServer.js';
@@ -26,6 +27,9 @@ import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import { CONNECT_ENABLE_REQUESTED_BY } from '../../../src/threadline/connectEnable.js';
 import { startFakeLifeline, type FakeLifeline } from '../../helpers/fakeLifeline.js';
+
+// bootstrapThreadline writes ~/.claude.json — keep it off the real HOME.
+useHermeticHome();
 
 const AUTH = 'pp-auth';
 

@@ -36,6 +36,11 @@ import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap
 import { InboundMessageGate } from '../../../src/threadline/InboundMessageGate.js';
 import { buildInboundIdLedgerController, RESENT_COPY_NOTICE, type InboundIdLedgerController } from '../../../src/threadline/InboundIdLedger.js';
 import { runRelayInboundWithLedger } from '../../../src/threadline/inboundIdLedgerWiring.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const TOKEN = 'backup-routes-int-token';
 

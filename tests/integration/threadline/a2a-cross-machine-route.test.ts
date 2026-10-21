@@ -58,6 +58,11 @@ import {
   type RelayForwardCounters,
   type TopicReplyInjectCommand,
 } from '../../../src/threadline/relayForward.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const TOKEN = 'cross-machine-int-token';
 const AGENT = `xm-agent-${process.pid}`;

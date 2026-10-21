@@ -123,6 +123,7 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      '### Hand-started Codex: `instar codex connect <agent>`', // codex-connect-explicit: the explicit shared-Codex-config writer card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key = the heading), framework-shadowed (the audience IS a Codex operator).
       '### Telegram message origin',
       'Telegram internal routes need the lifeline secret', // telegram-internal-route-lifeline-secret: full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key), framework-shadow marker
       'A2A ack waits for a live session', // ACT-091 follow-up: the ack-waits-for-delivery card — full parity: templates.ts generateClaudeMd + migrator migrateClaudeMd (sniff key `A2A ack waits for a live session`), framework-shadowed.

@@ -8,6 +8,8 @@
 
 - **Housekeeping:** `POST /threadline/pairing/enable` (merged in #2248) is now declared in the write-domain registry (cluster-shared, like the other pairing routes), so the write-domain conformance ratchet is green again.
 
+- **Housekeeping:** `tests/e2e/threadline/pairing-enable-without-restart.test.ts` (#2248) now isolates HOME with `useHermeticHome()`; the hermetic-home ratchet added in aa8ac670d was failing unit shard 2/4 on main and every PR.
+
 ## What to Tell Your User
 
 After a restart, my other machines now pick up the shared Updates and Attention topic ids within a couple of minutes instead of up to half an hour. Nothing changes in what you see; it just closes the window in which a freshly restarted machine would have no system topic to post to.

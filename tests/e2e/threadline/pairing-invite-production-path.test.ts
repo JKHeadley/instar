@@ -23,6 +23,11 @@ import {
   refuseDowngradeCounters, downgradeRefusals, DOWNGRADE_REFUSAL_REASON, DOWNGRADE_REFUSAL_REMEDY, DOWNGRADE_REFUSAL_NOTICE,
   type RefuseDowngradeMode,
 } from '../../../src/threadline/refuseDowngrade.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const PIN = '135790';
 

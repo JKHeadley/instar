@@ -40,6 +40,8 @@ No new static heuristic at a competing-signals decision point: "retry a read tha
 - Self-action convergence: the registered `system-topic-adoption` model's bounds hold — emits are gated by `withAdoptionBrake` (≤3 per kind per boot) and idempotence regardless of how often a pass runs; the short retry adds at most 10 extra READS, no extra writes. The retry carries the same `@self-action-controller: system-topic-adoption` marker.
 - Single-flight `running` guard unchanged; a retry that fires while a cadence pass is running is a no-op.
 
+- Test hygiene: `tests/e2e/threadline/pairing-enable-without-restart.test.ts` (#2248) gains `useHermeticHome()` so `bootstrapThreadline` writes into a temp HOME; this satisfies the hermetic-home ratchet (aa8ac670d) that was failing unit shard 2/4 on main. Test-only; no runtime surface.
+
 ## 6. External surfaces
 
 Up to 10 extra `GET /telegram/system-topics` calls to the holder in the first ~20 min after a standby boots. No user-visible messages. No operator-facing actions.

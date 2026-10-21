@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-21T05:54:29.366Z",
+  "slug": "per-folder-trust-seed",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionRefresh.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The readiness seed was built for the 2026-06-09 onboarding-wedge incident, which was about the top-level first-launch flags. The per-folder trust acknowledgement is a different question with a different storage location, and nothing connected the two: the seed's early-return on the three top-level flags made a fatal home report as ready. Latent from the seed's introduction until a pool home happened to have the top-level flags without the folder entry."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}
