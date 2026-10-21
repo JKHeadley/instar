@@ -16,7 +16,8 @@ import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../../core/SafeGitExecutor.js';
 import { removeAttemptTree } from './attemptFs.js';
 import { NATIVE_REBUILD_ALLOWLIST, NATIVE_REBUILD_NETWORK, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedEnv } from './executePolicy.js';
-import type { ConfinedRunner } from './ConfinedRunner.js';
+import type { ConfinedRunner, ConfinedResult } from './ConfinedRunner.js';
+import { scrubForStore } from '../../core/durableSecretScrub.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -95,7 +96,7 @@ export class DepsCache implements DepsCachePort {
       return { ok: true, dir, hash };
     } catch (error) {
       try { removeAttemptTree(dir, this.opts.trashRoot, 'feedback-execute discard failed deps cache'); } catch { /* @silent-fallback-ok: the next ensure() discards a partial cache before rebuilding */ }
-      return { ok: false, reason: `deps-install-failed: ${error instanceof Error ? error.message.slice(0, 200) : 'unknown'}` };
+      return { ok: false, reason: `deps-install-failed: ${error instanceof Error ? error.message.slice(0, 400) : 'unknown'}` };
     }
   }
 
@@ -132,9 +133,17 @@ export class DepsCache implements DepsCachePort {
     }, { network: NATIVE_REBUILD_NETWORK });
     // The cache is the rebuild's own working tree here (it is read-only only to attempt commands).
     settings.filesystem.denyWrite = settings.filesystem.denyWrite.filter((p) => p !== dir);
+    // npm and node-gyp keep caches under $HOME (macOS: ~/Library/Caches/node-gyp, ~/.npm), and the
+    // confinement denies the whole home — so node-gyp's `configure` died with EPERM opening its devdir
+    // and no rebuild could ever succeed here. Point HOME at the attempt's own writable temp instead:
+    // the real home stays denied, we simply stop asking the toolchain to use it.
+    const confinedHome = path.join(tmp, 'home');
+    fs.mkdirSync(confinedHome, { recursive: true });
     const command = `npm rebuild ${needRebuild.join(' ')}${fixScript ? ' && node scripts/fix-better-sqlite3.cjs' : ''}`;
-    const result = await this.opts.runner.run({ command, cwd: dir, settings, env: confinedEnv(process.env, { TMPDIR: tmp }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS });
-    if (result.exitCode !== 0) throw new Error(`native rebuild failed (exit ${String(result.exitCode)}${result.timedOut ? ', timed out' : ''})`);
+    const result = await this.opts.runner.run({ command, cwd: dir, settings, env: confinedEnv(process.env, { TMPDIR: tmp, HOME: confinedHome }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS });
+    // The runner captures both streams and this threw them away, so a one-line EPERM was only
+    // recoverable by re-running the whole sandbox by hand. Carry a bounded, scrubbed tail instead.
+    if (result.exitCode !== 0) throw new Error(`native rebuild failed (exit ${String(result.exitCode)}${result.timedOut ? ', timed out' : ''})${rebuildFailureTail(result)}`);
   }
 
   evict(inUse: Set<string>): number {
@@ -185,4 +194,24 @@ function defaultHasPnpm(): boolean {
 async function defaultInstall(dir: string, tool: 'pnpm' | 'npm'): Promise<void> {
   const args = tool === 'pnpm' ? ['install', '--frozen-lockfile', '--ignore-scripts'] : ['ci', '--ignore-scripts', '--no-audit', '--no-fund'];
   await execFileAsync(tool, args, { cwd: dir, timeout: 20 * 60_000, maxBuffer: 32 * 1024 * 1024, env: confinedEnv(process.env, {}) });
+}
+
+/**
+ * The one diagnostic line from a failed confined rebuild, bounded and secret-scrubbed.
+ *
+ * A plain tail is useless here: npm's last lines are its own epilogue ("Log files were not written",
+ * "You can rerun the command with --loglevel=verbose"), while the cause sits further up. So prefer the
+ * first line naming a real failure, skipping `warn` lines — a non-fatal `prebuild-install warn EPERM`
+ * precedes the fatal `gyp ERR! stack Error: EPERM ...` and would otherwise mask it.
+ */
+export function rebuildFailureTail(result: Pick<ConfinedResult, 'stderr' | 'stdout'>, limit = 150): string {
+  const signal = /(EPERM|EACCES|ENOENT|ENOTDIR|EROFS|not permitted|permission denied|ERR!\s+stack|command failed)/i;
+  const lines = `${result.stderr}\n${result.stdout}`.split('\n').map((l) => l.trim()).filter(Boolean);
+  const pick = lines.find((l) => signal.test(l) && !/\bwarn\b/i.test(l)) ?? lines.find((l) => signal.test(l)) ?? lines[lines.length - 1];
+  if (!pick) return '';
+  // A scrub that cannot vouch for the text withholds it rather than risk carrying a credential.
+  const scrubbed = scrubForStore(pick, { maxBytes: 4096 });
+  if (scrubbed.error) return ': [rebuild output withheld: scrub failed]';
+  const text = scrubbed.text.replace(/\s+/g, ' ').trim().slice(0, limit);
+  return text ? `: ${text}` : '';
 }
