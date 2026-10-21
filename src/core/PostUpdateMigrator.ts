@@ -219,6 +219,17 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+export function CODEX_CONNECT_CLAUDEMD_SECTION(): string {
+  return `
+
+### Hand-started Codex: \`instar codex connect <agent>\`
+
+The Codex CLI reads ONE shared user config (\`$CODEX_HOME/config.toml\`, default \`~/.codex/config.toml\`), so its \`[mcp_servers."threadline"]\` entry can point at ONE agent at a time. My server does NOT write that file at boot any more (it used to, and every boot — and every test run — overwrote whichever agent had it last). The Codex sessions Instar launches for me never needed it: each is started with its own \`-c mcp_servers.threadline.*\` override naming MY Threadline MCP server, so they are unaffected.
+- **When the operator starts a Codex by hand in a terminal and wants it to have my \`threadline_*\` tools** (PROACTIVE — this is the trigger), run \`instar codex connect <my agent name>\` (\`--dry-run\` prints the entry without writing; honors \`CODEX_HOME\`). It is the ONLY writer of the shared entry, it keeps the operator's other Codex settings, and re-running it is idempotent.
+- The entry names one agent: connecting a second agent replaces the first. If a hand-started Codex answers as the wrong agent, re-run connect for the agent you meant — never hand-edit the file.
+`;
+}
+
 export function SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION(port: number): string {
   return `\n### Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)
 
@@ -7186,6 +7197,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Machine Load Assessment section');
     }
 
+    // Hand-started Codex connect (ThreadlineBootstrap no longer writes the shared
+    // ~/.codex/config.toml at boot; `instar codex connect <agent>` is the explicit
+    // writer). Agent Awareness + Migration Parity: existing agents learn the
+    // command and the one-agent-at-a-time nature of the shared entry. Same text
+    // as generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('### Hand-started Codex: `instar codex connect <agent>`')) {
+      content += CODEX_CONNECT_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Hand-started Codex connect section');
+    }
+
     // Dark monitoring-route awareness: these two signal-only guards already
     // exist in the runtime and CapabilityIndex. Existing agents need the same
     // honest 503/dry-run posture and proactive read triggers as fresh installs.
@@ -11595,6 +11617,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Telegram message origin',
+      // Hand-started Codex connect: the audience IS a Codex-framework operator, so
+      // the AGENTS.md shadow must carry the command and the shared-entry caveat.
+      '### Hand-started Codex: `instar codex connect <agent>`',
       // a2a-single-agent-identity: the agent identity + coherence check are server-side and
       // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
       // not-provisioned posture and the adopt-from-a-sibling path honestly too).

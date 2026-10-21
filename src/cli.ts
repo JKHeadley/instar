@@ -598,6 +598,37 @@ worktreeCmd
     }
   });
 
+// ── Codex (hand-started Codex CLI) ────────────────────────────────
+
+const codexCmd = program
+  .command('codex')
+  .description(
+    'Tools for a Codex CLI the operator starts BY HAND. `connect <agent>` writes that ' +
+      "agent's Threadline MCP entry into the shared Codex user config " +
+      '($CODEX_HOME/config.toml, default ~/.codex/config.toml). Codex sessions Instar ' +
+      'launches never need this — each gets its own entry per session.',
+  );
+
+codexCmd
+  .command('connect <agent>')
+  .description(
+    "Point a hand-started Codex at ONE agent's Threadline MCP server by writing " +
+      '[mcp_servers."threadline"] into the shared Codex user config. The file is shared by ' +
+      'every Codex on this machine, so the entry names one agent at a time — the last one ' +
+      'connected. Honors CODEX_HOME.',
+  )
+  .option('--dry-run', 'Print the entry that would be written; write nothing')
+  .action(async (agent: string, opts: { dryRun?: boolean }) => {
+    const { connectCodex, formatConnectCodexReport } = await import('./commands/codex.js');
+    try {
+      const result = await connectCodex({ agent, dryRun: !!opts.dryRun });
+      console.log(formatConnectCodexReport(result));
+    } catch (err) {
+      console.error(pc.red(`codex connect failed: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
 // ── Spec review (standards-conformance gate) ─────────────────────
 
 const specCmd = program

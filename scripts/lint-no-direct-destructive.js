@@ -72,6 +72,14 @@ const ALLOWLIST = new Set([
   'src/core/SafeFsExecutor.ts',
   'tests/unit/SafeGitExecutor.test.ts',
   'tests/unit/SafeFsExecutor.test.ts',
+  // Shared vitest setup: removes ITS OWN mkdtemp CODEX_HOME dir (under
+  // os.tmpdir()) at process exit. It cannot import SafeFsExecutor: setupFiles
+  // run before every test module, so the import would cache src/core + the
+  // real node:child_process ahead of any test's vi.mock and silently un-mock
+  // child_process suite-wide (observed 2026-10-20: GitSync, ProfileCompiler,
+  // server-supervisor-preflight all went red). Same tmpdir-only class as the
+  // tmux-resilience entries below.
+  'tests/vitest-setup.ts',
   // tmux-event-loop-resilience Increment 1 tests: per-test cleanup of
   // mkdtempSync dirs under os.tmpdir() (the cross-process marker round-trip
   // needs a real on-disk mirror dir; the e2e needs a throwaway stateDir). The

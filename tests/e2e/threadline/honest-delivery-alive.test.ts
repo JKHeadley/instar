@@ -31,6 +31,11 @@ import { createRoutes } from '../../../src/server/routes.js';
 import { StateManager } from '../../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../../src/core/types.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 const TOKEN = 'alive-token';
 // Unique per run: agent discovery can remember names across runs on one machine.

@@ -30,6 +30,11 @@ import { generateAgentToken, deleteAgentToken } from '../../../src/messaging/Age
 import { createTempProject, createMockSessionManager } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 function configFor(project: TempProject, name: string, auth: string): InstarConfig {
   return {

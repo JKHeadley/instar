@@ -51,6 +51,18 @@ active; every other Codex agent's `threadline_send` loads the wrong agent's
 identity/server. Observed live: the shared entry pointed at `inspec`
 (monroe-workspace) while `instar-codey` was the agent actually running.
 
+### Defect B — resolution (2026-10-20)
+
+`ThreadlineBootstrap` no longer writes `~/.codex/config.toml` at all. The
+per-spawn `-c mcp_servers.threadline.*` override (Fix B below) already gives
+every Instar-launched Codex session its own agent's entry, so the boot-time
+shared write only ever served a Codex the operator started by hand — and it
+kept colliding (across agents, and across the test suite: an e2e boot rewrote
+the operator's real file on 2026-10-20). The shared entry is now written only
+on request, by `instar codex connect <agent>` (`src/commands/codex.ts`), and the
+test suite forces `CODEX_HOME` onto a temp dir in `tests/vitest-setup.ts` so no
+test can reach the real file.
+
 ## Fix
 
 ### Fix A — targeted MCP-permitting launch (reply workers only)

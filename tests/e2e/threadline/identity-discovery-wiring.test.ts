@@ -22,6 +22,11 @@ import { IdentityManager } from '../../../src/threadline/client/IdentityManager.
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 function readAgentInfo(stateDir: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(stateDir, 'threadline', 'agent-info.json'), 'utf-8'));

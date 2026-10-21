@@ -16,6 +16,11 @@ import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
 import { createTempProject } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 describe('invite store unreadable (production path)', () => {
   let relay: RelayServer;
