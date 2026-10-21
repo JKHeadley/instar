@@ -170,7 +170,7 @@ import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { AttentionConditionStore } from '../core/AttentionConditionStore.js';
 import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
-import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
+import { formatWatchdogUserMessage, formatWatchdogSessionNotice } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
 import { SessionMonitor } from '../monitoring/SessionMonitor.js';
@@ -12005,7 +12005,19 @@ export async function startServer(options: StartOptions): Promise<void> {
       watchdog.intelligence = sharedIntelligence ?? null;
       guardRegistry.register('monitoring.watchdog.enabled', () => watchdog!.guardStatus());
 
+      // The interrupted session is told once per process, whatever the level of
+      // user-facing noise: its own background waits (Monitor watches, poll
+      // loops) otherwise just stop and it keeps reporting them as running.
+      const watchdogNoticed = new Set<string>();
       watchdog.on('intervention', (event: any) => {
+        const sessionNotice = formatWatchdogSessionNotice(event);
+        const noticeKey = `${event.sessionName}:${event.stuckPid}`;
+        if (sessionNotice && !watchdogNoticed.has(noticeKey)) {
+          watchdogNoticed.add(noticeKey);
+          if (watchdogNoticed.size > 500) watchdogNoticed.delete(watchdogNoticed.values().next().value!);
+          try { sessionManager.injectMessage(event.sessionName, sessionNotice, { firstParty: { source: 'watchdog-intervention-notice' } }); }
+          catch { /* @silent-fallback-ok — the intervention is already recorded in watchdog-interventions.jsonl */ }
+        }
         // Routine recovery (Ctrl+C, SIGTERM) stays as console diagnostics only.
         // The user only hears when we had to force-kill (SIGKILL / session-kill) —
         // that's the "actual issue" threshold. See watchdog-notifications.ts.
@@ -27129,7 +27141,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const topicId = Number(row.destination.topicId);
                 heldAudit({ phase: 'expired', topicId: row.destination.topicId, operationId: row.operationId, lastAttempt: (row.holdDetail as { lastAttempt?: string } | null)?.lastAttempt ?? null });
                 if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
-                await telegram.createAttentionItem({ id: `telegram-origin-held:${row.destination.topicId ?? row.operationId}:expired`, category: 'telegram-origin', priority: 'HIGH',
+                await telegram.createAttentionItem({ id: originForwardMod.heldExpiryItemId(row), category: 'telegram-origin', priority: 'HIGH',
                   title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`, summary: originForwardMod.expiredForwardWording(row),
                   sourceContext: 'telegram-origin-forward-to-holder' }, { hubOnly: true });
               };

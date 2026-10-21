@@ -34,6 +34,8 @@ export const SELF_HEAL_LADDER_MS = [30 * 60_000, 60 * 60_000, 4 * 60 * 60_000] a
 export const SELF_HEAL_MAX_WALL_CLOCK_MS = 5.5 * 60 * 60_000;
 export const SELF_HEAL_FLAP_WINDOW_MS = 7 * DAY_MS;
 export const QUOTA_PAUSE_PERCENT = 75;
+/** A quota pause this old, with items waiting, raises one attention item per pause episode (signal only). */
+export const QUOTA_PAUSE_NOTICE_MS = 6 * 60 * 60 * 1000;
 export const TICK_MIN_INTERVAL_MS = 30_000;
 export const QUIET_GRADE_DAYS = 30;
 
@@ -276,7 +278,23 @@ export class FeedbackTriageService {
     const used = await this.opts.quotaUsedPercent(authority.provider).catch(() => null);
     if (used === null || used >= QUOTA_PAUSE_PERCENT) {
       out.reason = used === null ? 'quota-unreadable-pause' : 'quota-pause';
-      this.opts.store.fenced(epoch, () => this.opts.store.setMeta('quota_pause', JSON.stringify({ at: this.now(), usedPercent: used })));
+      // `since` survives every paused tick so the pause has an age; a quota reading that stays
+      // unreadable pauses triage indefinitely, and nothing else would ever say so.
+      const since = this.opts.store.metaJson<{ since?: number }>('quota_pause')?.since ?? this.now();
+      this.opts.store.fenced(epoch, () => this.opts.store.setMeta('quota_pause', JSON.stringify({ at: this.now(), since, usedPercent: used })));
+      if (this.now() - since >= QUOTA_PAUSE_NOTICE_MS && this.selectCandidates(initiativeById, clusterById).length > 0) {
+        await this.attention({
+          id: `feedback-triage:quota-paused:${since}`,
+          title: 'Feedback triage has been paused for hours',
+          summary: `Triage has made no decisions for about ${Math.round((this.now() - since) / 3_600_000)} hours because ` +
+            (used === null ? 'the sorting model\'s usage could not be read' : `its account is at ${Math.round(used)}% of a usage window`) +
+            ', and feedback items are waiting. It resumes by itself when the reading is below 75%. Nothing needs your approval.',
+          description: 'Triage checks the sorting model\'s subscription usage before every model call and pauses at 75% of either window, or when the reading is unavailable. ' +
+            'The current pause started ' + new Date(since).toISOString() + '. The drain status shows it as triage quotaPause. ' +
+            'An unreadable reading that persists usually means the usage source for that provider is broken, not that quota is spent.',
+          category: 'monitoring', priority: 'NORMAL', sourceContext: 'feedback-triage:quota-paused',
+        });
+      }
       return;
     }
     this.opts.store.fenced(epoch, () => this.opts.store.setMeta('quota_pause', 'null'));

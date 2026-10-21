@@ -22,3 +22,21 @@ export function formatWatchdogUserMessage(event: InterventionEvent): string | nu
   // Monitoring, Ctrl+C, SIGTERM — routine, silent to the user.
   return null;
 }
+
+/**
+ * The line told to the SESSION whose command the watchdog interrupted. The
+ * session's own tool call sees a foreground command fail, but a background
+ * command (a `run_in_background` shell, a Monitor watch, a poll loop) just
+ * stops, and the session goes on believing it is still running. One notice per
+ * interrupted process, on the first signal only (later escalation steps on the
+ * same process add nothing the session can act on). Never for a session-level
+ * kill: there is no session left to tell.
+ */
+export function formatWatchdogSessionNotice(event: InterventionEvent): string | null {
+  if (event.level !== EscalationLevel.CtrlC || event.effectScope !== 'target-process') return null;
+  if (event.action.startsWith('Retry')) return null;
+  const command = event.stuckCommand.replace(/\s+/g, ' ').trim().slice(0, 120); // bounded-input-reviewed: an identifying echo of the command; the pid and the record path that follow carry what the session acts on
+  return `[instar watchdog] I stopped a command in this session that looked stuck: \`${command}\` (pid ${event.stuckPid}). ` +
+    'If it was a deliberate wait (a poll loop, a Monitor watch, a background sleep), it is no longer running: start it again if you still need it, ' +
+    'and do not report it as running. Record: .instar/watchdog-interventions.jsonl';
+}

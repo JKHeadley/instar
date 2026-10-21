@@ -227,6 +227,39 @@ describe('spend and pauses', () => {
     expect((await h.service.tick()).reason).toBe('quota-unreadable-pause');
     expect(h.calls).toHaveLength(0);
   });
+  it('a quota pause past six hours with items waiting raises one attention item per pause, and none before', async () => {
+    h = await createHarness();
+    await h.addItem('a');
+    h.quota.value = null; // an unreadable reading: the case that can pause triage forever
+    await h.service.tick();
+    h.now.value += 5 * 3_600_000;
+    await h.service.tick();
+    expect(h.attention.filter((a) => a.sourceContext === 'feedback-triage:quota-paused')).toHaveLength(0);
+    h.now.value += 2 * 3_600_000;
+    await h.service.tick();
+    h.now.value += 31_000;
+    await h.service.tick();
+    const first = h.attention.filter((a) => a.sourceContext === 'feedback-triage:quota-paused');
+    expect(new Set(first.map((a) => a.id)).size).toBe(1); // same pause, same id (the store dedupes by id)
+    expect(first[0].summary).toContain('could not be read');
+    expect(first[0].summary).toContain('Nothing needs your approval');
+    // The pause ends, then a new one starts: a new episode gets its own id.
+    h.quota.value = 10; h.now.value += 31_000; await h.service.tick();
+    await h.addItem('b');
+    h.quota.value = 90; h.now.value += 31_000; await h.service.tick();
+    h.now.value += 7 * 3_600_000; await h.service.tick();
+    const ids = new Set(h.attention.filter((a) => a.sourceContext === 'feedback-triage:quota-paused').map((a) => a.id));
+    expect(ids.size).toBe(2);
+    expect(h.attention.at(-1)!.summary).toContain('90%');
+  });
+  it('a long quota pause with nothing waiting raises nothing', async () => {
+    h = await createHarness();
+    h.quota.value = 90;
+    await h.service.tick();
+    h.now.value += 7 * 3_600_000;
+    await h.service.tick();
+    expect(h.attention.filter((a) => a.sourceContext === 'feedback-triage:quota-paused')).toHaveLength(0);
+  });
   it('stops at maxCallsPerDay', async () => {
     h = await createHarness({ config: { maxCallsPerDay: 1, maxBatchChars: 4_000 } });
     for (const id of ['a', 'b', 'c']) await h.addItem(id, { description: 'x'.repeat(1_100) });

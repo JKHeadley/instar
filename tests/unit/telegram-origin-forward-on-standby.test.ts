@@ -13,7 +13,7 @@ import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   classifyLeaseRoute, settleLeaseRoute, forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, nextLadderState, FORWARD_SETTLE_TIMEOUT_MS, expiredForwardWording,
-  HeldForwardItemCollapser, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
+  HeldForwardItemCollapser, heldExpiryItemId, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
 } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { ForwardDeps, ForwardLeaseView, HolderSubmitResult, HeldForwardDetail } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { OriginPreparedBotOperation } from '../../src/messaging/telegram-origin/TelegramOriginService.js';
@@ -328,10 +328,42 @@ describe('submitOriginToHolder — one transport, one meaning per refusal', () =
 describe('item collapse + wording + notice', () => {
   it('three topics held on one standby within 1 h collapse to one item', () => {
     let now = 0; const c = new HeldForwardItemCollapser({ now: () => now });
-    expect(c.record(1)).toMatchObject({ itemId: 'telegram-origin-held:1', aggregate: false });
-    now += 10 * 60_000; expect(c.record(2)).toMatchObject({ itemId: 'telegram-origin-held:2', aggregate: false });
-    now += 10 * 60_000; expect(c.record(3)).toMatchObject({ itemId: 'telegram-origin-held:aggregate', aggregate: true, supersedes: ['telegram-origin-held:1', 'telegram-origin-held:2', 'telegram-origin-held:3'] });
+    expect(c.record(1)).toMatchObject({ itemId: 'telegram-origin-held:1:0', aggregate: false });
+    now += 10 * 60_000; expect(c.record(2)).toMatchObject({ itemId: 'telegram-origin-held:2:600000', aggregate: false });
+    now += 10 * 60_000; expect(c.record(3)).toMatchObject({ itemId: 'telegram-origin-held:aggregate:1200000', aggregate: true,
+      supersedes: ['telegram-origin-held:1:0', 'telegram-origin-held:2:600000', 'telegram-origin-held:3:1200000'] });
     now += 61 * 60_000; expect(c.record(4)).toMatchObject({ aggregate: false }); // the window has passed
+  });
+  it('a later hold on the same topic is a new episode with a new item id, not a fold into the old one', () => {
+    let now = 0; const c = new HeldForwardItemCollapser({ now: () => now });
+    const first = c.record(48154).itemId;
+    now += 30 * 60_000; expect(c.record(48154).itemId).toBe(first); // same episode: one item
+    now += 8 * 24 * 3_600_000; // a week later (the 2026-10-19 topic-48154 case)
+    const later = c.record(48154).itemId;
+    expect(later).not.toBe(first);
+    expect(later).toBe(`telegram-origin-held:48154:${now}`);
+  });
+  it('a later aggregate burst gets its own item', () => {
+    let now = 0; const c = new HeldForwardItemCollapser({ now: () => now });
+    c.record(1); c.record(2); const a = c.record(3).itemId;
+    now += 2 * 3_600_000; c.record(4); c.record(5); const b = c.record(6).itemId;
+    expect(a).toBe('telegram-origin-held:aggregate:0');
+    expect(b).not.toBe(a);
+  });
+  it('a burst after the set fell below the threshold is a new aggregate even if one topic kept refreshing', () => {
+    let now = 0; const c = new HeldForwardItemCollapser({ now: () => now });
+    c.record(1); c.record(2); const a = c.record(3).itemId;
+    // Topic 1 keeps holding every 20 min; 2 and 3 age out after an hour.
+    for (let i = 0; i < 4; i++) { now += 20 * 60_000; c.record(1); }
+    expect(c.topics()).toEqual([1]);
+    c.record(4); const b = c.record(5).itemId;
+    expect(b).not.toBe(a);
+    expect(b).toBe(`telegram-origin-held:aggregate:${now}`);
+  });
+  it('an expiry item is per operation', () => {
+    const row = { operationId: 'op-1', destination: { accountId: '1', chatId: '-1', topicId: '42' } };
+    expect(heldExpiryItemId(row)).toBe('telegram-origin-held:42:expired:op-1');
+    expect(heldExpiryItemId({ ...row, operationId: 'op-2' })).not.toBe(heldExpiryItemId(row));
   });
   it('expiry wording is honest about what is known', () => {
     const base: HeldOperationRow = { operationId: 'o', originId: 'o', state: 'expired', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: null, preparedAt: 0, deadlineAt: 6 * 3_600_000,
