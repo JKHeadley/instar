@@ -11362,6 +11362,45 @@ export async function startServer(options: StartOptions): Promise<void> {
         try { return Math.floor(fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs); }
         catch { return 0; }
       },
+      // A wedge that recovery genuinely gave up on used to end as one row in
+      // stuck-input-events.jsonl and nothing else — so a message typed into a
+      // session could sit unsubmitted indefinitely with no alarm anywhere
+      // (indra, 2026-10-20: 28 minutes, and the degradation record claimed it
+      // had recovered). Raise it once per wedge, and tell the conversation
+      // itself when we can resolve one, because the person waiting for a reply
+      // is the one who needs to know their words never arrived.
+      onUndeliverable: (info) => {
+        try {
+          void telegram?.createAttentionItem({
+            id: `stuck-input-undelivered:${info.tmuxSession}`,
+            title: 'A message is stuck unsent in a session',
+            summary: info.reason,
+            description:
+              `Session ${info.tmuxSession} has text sitting at its prompt that was never submitted, `
+              + `and every recovery attempt failed (${info.reason}). It has been there for `
+              + `${Math.round(info.stuckSinceMs / 1000)}s. Whoever sent it has not been answered.`,
+            category: 'session',
+            priority: 'HIGH',
+            sourceContext: 'stuck-input-sentinel',
+          });
+        } catch { /* observability must never throw into the sentinel */ }
+        try {
+          // Deterministic send — never the LLM-gated reply path, which can fail
+          // closed under exactly the conditions that produce a wedge.
+          let topicId: number | null = null;
+          for (const [tid, sessionName] of telegram?.getAllTopicSessions() ?? []) {
+            if (sessionName === info.tmuxSession) { topicId = tid; break; }
+          }
+          if (telegram && typeof topicId === 'number' && topicId > 0) {
+            void telegram.sendToTopic(
+              topicId,
+              'Your last message never reached me — it ended up sitting unsent in my own input and '
+              + 'I could not clear it. Nothing you sent was answered. Please send it again; I am '
+              + 'restarting that conversation on my side so the next one lands.',
+            );
+          }
+        } catch { /* a failed notice must not take the sentinel down */ }
+      },
     });
     stuckInputSentinel.start();
 

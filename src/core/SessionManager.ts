@@ -7858,8 +7858,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Polling schedule in ms from injection. Each entry is the absolute
     // time-from-injection at which that attempt fires. Stops on success
     // (marker no longer at ❯) or after the last entry.
-    const markerCheckSchedule = [500, 1500, 3500, 6500];
+    // The last entry is a VERIFY-ONLY pass: it presses nothing and exists so a
+    // run that fired its whole ladder still reads the pane one last time and
+    // reports what actually happened. Without it the ladder's final keypress
+    // outcome was never observed, so "recovered" was an assumption.
+    const markerCheckSchedule = [500, 1500, 3500, 6500, 9000];
+    const verifyOnlyIdx = markerCheckSchedule.length - 1;
     let recoveryFiredOnce = false;
+    let recoveryRefusedOnce = false;
 
     const runCheck = (attempt: number): void => {
       try {
@@ -7892,8 +7898,53 @@ rm()  { "${shimRunner}" rm  "$@"; }
           return;
         }
 
-        // Still stuck. Fire escalating recovery action.
-        this.fireStuckInputRecovery(tmuxSession, attempt);
+        // Final pass: the ladder is spent and the marker is STILL at an idle
+        // prompt, so every rung we fired failed. Press nothing — say so. The
+        // persistent StuckInputSentinel owns recovery from here (it survives a
+        // server restart, which these in-process timers do not), and it is the
+        // layer that escalates; this report exists so the failure is on the
+        // record at the moment it is known rather than inferred later.
+        if (attempt >= verifyOnlyIdx) {
+          if (recoveryFiredOnce || recoveryRefusedOnce) {
+            console.warn(`[SessionManager] Injection recovery FAILED in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" is still at an idle prompt after the full ladder. The message is NOT delivered; handing off to StuckInputSentinel.`);
+            DegradationReporter.getInstance().report({
+              feature: 'SessionManager.verifyInjection',
+              primary: 'Bracketed paste + Enter submits injected message',
+              fallback: 'Persistent StuckInputSentinel continues recovery across server restarts',
+              reason: 'Marker still at an idle prompt after every in-process recovery rung',
+              impact: 'Message still unsubmitted — NOT recovered by the in-process verifier',
+            });
+          }
+          return;
+        }
+
+        // Still stuck. Fire escalating recovery action — and CONSUME its outcome.
+        // Ignoring the return value is how this reported success it had not
+        // earned: a `refused` verdict means no key was ever sent, yet the
+        // degradation below still read "Recovered without user intervention"
+        // while the operator's message sat at the prompt (indra, 2026-10-20).
+        const fired = this.fireStuckInputRecovery(tmuxSession, attempt);
+        if (fired.status === 'refused') {
+          if (!recoveryRefusedOnce) {
+            recoveryRefusedOnce = true;
+            console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" and recovery was REFUSED (${fired.reason ?? 'no reason given'}) — marker "${marker.slice(0, 30)}…" is still at the prompt and no key was sent. The message is NOT delivered.`);
+            DegradationReporter.getInstance().report({
+              feature: 'SessionManager.verifyInjection',
+              primary: 'Bracketed paste + Enter submits injected message',
+              fallback: 'None — the recovery keypress was refused before it was sent',
+              reason: `Recovery refused: ${fired.reason ?? 'unknown'}`,
+              impact: 'Message left unsubmitted at the prompt; the persistent StuckInputSentinel is the remaining backstop',
+            });
+          }
+          // Keep polling: a refusal can be transient (ownership moving), and
+          // the next rung re-asks rather than assuming the answer is permanent.
+          const nextRefusedIdx = attempt + 1;
+          if (nextRefusedIdx < markerCheckSchedule.length) {
+            const delay = markerCheckSchedule[nextRefusedIdx] - markerCheckSchedule[attempt];
+            setTimeout(() => runCheck(nextRefusedIdx), delay);
+          }
+          return;
+        }
 
         if (!recoveryFiredOnce) {
           recoveryFiredOnce = true;
@@ -7911,7 +7962,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
             reason:
               'Enter after bracketed-paste-end did not submit; text left at the prompt ' +
               '(first observed on Claude Code TUI v2.1.105+, but the race is not framework-specific)',
-            impact: 'Recovered without user intervention',
+            // Reports what was DONE, not what it achieved. The outcome is not
+            // known at this point — the key has only just been sent — and the
+            // verify-only pass above is what states whether it worked. Claiming
+            // recovery here is what made a 28-minute undelivered message read
+            // as self-healed in the degradation record.
+            impact: 'Recovery keypress sent; outcome reported by the verification pass that follows',
           });
         }
 
@@ -8077,8 +8133,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const markerEvidence = this.strandedDraftMarkers?.get(tmuxSession);
     const deliveryId = markerEvidence?.deliveryId;
     const conversationId = markerEvidence?.conversationId ?? tmuxSession;
-    if (this.stageBActivation.active) {
-      if (!deliveryId || !this.inboundDeliveries || !this.trackedPhysicalEffects) {
+    // Stage B fences a recovery keypress behind the SAME durable delivery row
+    // that authorized the original injection, so a key can never be replayed
+    // against a conversation this machine no longer owns. That fence is only
+    // satisfiable where such a row exists — and rows are prepared for
+    // codex-cli ONLY (see the stageB branch in injectIntoSession). Requiring it
+    // for every framework turned every claude-code recovery into a permanent
+    // refusal: one agent logged 75,001 consecutive
+    // `refused/missing-durable-delivery-evidence` rows, every one at attempt 0,
+    // so the keypress ladder never advanced, never exhausted and never
+    // escalated. An operator's message sat unsubmitted at the prompt for 28
+    // minutes while the logs reported recovery (indra, 2026-10-20).
+    // Keep the fence wherever the evidence exists; where it structurally cannot
+    // exist, fall through to the pre-Stage-B best-effort keypress — the same
+    // untracked path this session's own injection still takes.
+    if (this.stageBActivation.active && deliveryId) {
+      if (!this.inboundDeliveries || !this.trackedPhysicalEffects) {
         return { status: 'refused', reason: 'missing-durable-delivery-evidence' };
       }
       const delivery = this.inboundDeliveries.get(conversationId, deliveryId);

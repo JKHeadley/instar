@@ -115,6 +115,21 @@ export interface StuckInputSentinelOptions {
   recoveryAuthority?: RecoveryActuationAuthority;
   /** Monotonic operator-stop signal (typically the durable stop flag mtime). */
   operatorStopEpoch?: () => number;
+  /** Called ONCE per wedge when recovery has genuinely given up and the text at
+   *  the prompt is therefore undelivered. Every terminal path used to end in
+   *  `exhausted = true` plus one row in a JSONL file nobody reads, so an
+   *  operator's message could sit unsubmitted indefinitely with nothing raised
+   *  anywhere (indra, 2026-10-20: 28 minutes). The sentinel stays signal-only —
+   *  the consumer owns the attention item and any user-facing notice. */
+  onUndeliverable?: (info: {
+    tmuxSession: string;
+    promptText: string;
+    reason: string;
+    attempts: number;
+    stuckSinceMs: number;
+    conversationId?: string;
+    deliveryId?: string;
+  }) => void;
 }
 
 /** In-memory record of what the sentinel has seen for a given session. */
@@ -135,6 +150,19 @@ interface SessionStuckRecord {
    *  been logged for this record's text (one observability row per stuck
    *  text, not one per tick). */
   ghostSkipLogged?: boolean;
+  /** How many consecutive ticks the recovery primitive has REFUSED to send a
+   *  key for this text. A refusal consumes no rung (nothing was sent), so
+   *  without its own budget the ladder never advances and the sentinel retries
+   *  the same impossible keypress forever: one agent accumulated 75,001
+   *  consecutive `refused/missing-durable-delivery-evidence` rows, every one at
+   *  attempt 0, never escalating and never alarming. */
+  consecutiveRefusals?: number;
+  /** Whether the one-per-wedge refusal row has already been written (the
+   *  refusal repeats every tick; its observability value does not). */
+  refusalLogged?: boolean;
+  /** Whether the operator has already been told about this wedge. One alarm
+   *  per stuck text — never one per tick. */
+  undeliverableRaised?: boolean;
   /** Deeper-tier escalation phase (after the keypress ladder exhausts).
    *   - 'none': not escalating (keypress ladder still running or escalation off).
    *   - 'requested': a tier-C recovery request is in flight to the lifeline;
@@ -157,7 +185,8 @@ export interface StuckInputEvent {
   attempt: number;
   action: 'Enter' | 'C-m' | 'Enter-sleep-Enter'
     | 'escalate-request' | 'escalate-recovered' | 'escalate-failed' | 'escalate-timeout'
-    | 'ghost-text-skip' | 'ghost-check-inconclusive';
+    | 'ghost-text-skip' | 'ghost-check-inconclusive'
+    | 'undeliverable';
   outcome: 'fired' | 'effect-unknown' | 'refused' | 'fire-error' | 'escalated' | 'recovered' | 'gave-up' | 'skipped';
   /** Recovery tier for escalation events (absent for keypress events). */
   tier?: RecoveryTier;
@@ -302,6 +331,7 @@ export class StuckInputSentinel {
   private readonly escalationTimeoutTicks: number;
   private readonly recoveryAuthority: RecoveryActuationAuthority | null;
   private readonly operatorStopEpoch: () => number;
+  private readonly onUndeliverable: StuckInputSentinelOptions['onUndeliverable'];
 
   /** Per-session sticky state. Keyed by tmuxSession. */
   private readonly records: Map<string, SessionStuckRecord> = new Map();
@@ -325,6 +355,44 @@ export class StuckInputSentinel {
     this.escalationTimeoutTicks = opts.escalationTimeoutTicks ?? 6;
     this.recoveryAuthority = opts.recoveryAuthority ?? null;
     this.operatorStopEpoch = opts.operatorStopEpoch ?? (() => 0);
+    this.onUndeliverable = opts.onUndeliverable;
+  }
+
+  /**
+   * Announce, exactly once per wedge, that the text at this prompt is not going
+   * to be delivered. Signal-only: it writes the terminal row and hands the fact
+   * to the consumer, which owns the attention item and any user-facing notice.
+   * A throwing consumer must never take the sentinel's tick loop down with it.
+   */
+  private raiseUndeliverable(
+    record: SessionStuckRecord, tmuxSession: string, stuckText: string, now: number, reason: string,
+  ): void {
+    if (record.undeliverableRaised) return;
+    record.undeliverableRaised = true;
+    const marker = this.sessionManager.getStrandedDraftMarker?.(tmuxSession);
+    this.recordEvent({
+      ts: new Date(now).toISOString(),
+      session: tmuxSession,
+      promptText: stuckText.slice(0, 200),
+      attempt: record.attempts,
+      action: 'undeliverable',
+      outcome: 'gave-up',
+      error: reason,
+    });
+    console.warn(`[StuckInputSentinel] UNDELIVERED input in "${tmuxSession}" — ${reason}. Text has been at the prompt for ${Math.round((now - record.firstSeenAt) / 1000)}s.`);
+    try {
+      this.onUndeliverable?.({
+        tmuxSession,
+        promptText: stuckText.slice(0, 200),
+        reason,
+        attempts: record.attempts,
+        stuckSinceMs: now - record.firstSeenAt,
+        conversationId: marker?.conversationId,
+        deliveryId: marker?.deliveryId,
+      });
+    } catch (err) {
+      console.error(`[StuckInputSentinel] onUndeliverable consumer threw for "${tmuxSession}": ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   start(): void {
@@ -481,6 +549,14 @@ export class StuckInputSentinel {
     if (existing.consecutiveTicks < this.minTicksBeforeFire) return;
     if (existing.attempts >= this.maxAttempts) {
       this.sessionManager.markStrandedDraftExhausted?.(tmuxSession);
+      // Every rung was sent and the text is STILL at an idle prompt, so it is
+      // undelivered. Announce that before escalating: tier C is dark on most
+      // installs, and its legacy branch just sets `exhausted = true`, which is
+      // how a wedge used to end in silence.
+      this.raiseUndeliverable(
+        existing, tmuxSession, stuckText, now,
+        `keypress ladder exhausted after ${existing.attempts} attempts; prompt unchanged`,
+      );
       // Keypress ladder (tier A) exhausted. Either escalate to deeper-tier
       // recovery (tier C: cross-process server restart + replay request) when
       // enabled, or fall back to the legacy "mark exhausted, stop" behavior.
@@ -544,6 +620,36 @@ export class StuckInputSentinel {
       errMsg = err instanceof Error ? err.message : String(err);
     }
 
+    // A refusal means no key reached the pane, so it consumes no rung — but it
+    // must still consume a BUDGET, or an impossible keypress is retried until
+    // the session dies, silently (the 75,001-row loop). Give refusals the same
+    // budget as the keypress ladder, then treat the ladder as spent so the
+    // existing terminal path runs and the wedge is announced exactly once.
+    if (outcome === 'refused') {
+      existing.consecutiveRefusals = (existing.consecutiveRefusals ?? 0) + 1;
+      const firstRefusal = !existing.refusalLogged;
+      if (firstRefusal) existing.refusalLogged = true;
+      if (firstRefusal) {
+        this.recordEvent({
+          ts: new Date(now).toISOString(),
+          session: tmuxSession,
+          promptText: stuckText.slice(0, 200),
+          attempt,
+          action,
+          outcome,
+          error: errMsg,
+        });
+      }
+      if (existing.consecutiveRefusals >= this.maxAttempts) {
+        this.raiseUndeliverable(existing, tmuxSession, stuckText, now, `recovery refused ${existing.consecutiveRefusals}x: ${errMsg ?? 'unknown'}`);
+        this.sessionManager.markStrandedDraftExhausted?.(tmuxSession);
+        this.handleEscalation(existing, tmuxSession, stuckText, now);
+      }
+      return;
+    }
+    existing.consecutiveRefusals = 0;
+    existing.refusalLogged = false;
+
     this.recordEvent({
       ts: new Date(now).toISOString(),
       session: tmuxSession,
@@ -561,7 +667,11 @@ export class StuckInputSentinel {
         primary: 'Bracketed paste + Enter submits injected message',
         fallback: 'Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)',
         reason: 'Prompt text persistent for ≥2 sentinel ticks with no activity indicator',
-        impact: 'Recovered without user intervention; survives server restart',
+        // Reports what was DONE. The outcome is unknown at this point — the key
+        // has only just been sent — and the next tick is what observes whether
+        // the prompt cleared. A wedge that never clears ends in the
+        // `undeliverable` row instead, which is the honest terminal state.
+        impact: 'Recovery keypress sent (survives server restart); outcome observed on the following tick',
       });
     }
   }
