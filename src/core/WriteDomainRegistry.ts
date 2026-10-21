@@ -376,6 +376,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Dismissing a restart notice writes the invite-marker store on the relay-holding machine; same
   // conservative classification as the invite routes.
   reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/restart-notices', domain: 'cluster-shared' });
+  // Switching the agent network + pairing on at the operator's request (writes the threadline
+  // config flags, requests the supervised restart) — same relay-holder-only surface as the other
+  // pairing routes, same conservative classification.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const subscriptionReloginStory: ConvergenceStory = {

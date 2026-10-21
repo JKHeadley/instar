@@ -196,3 +196,52 @@ describe('adoptHolderSystemTopics', () => {
       .toEqual({ updates: 7849, attention: 7848 });
   });
 });
+
+describe('startSystemTopicAdoptionLoop — a failed first pass retries soon, bounded, then the cadence owns it', () => {
+  it('retries every retryMs while the holder is unknown, stops retrying once a pass reads the holder, and never exceeds maxShortRetries', async () => {
+    vi.useFakeTimers();
+    try {
+      const { startSystemTopicAdoptionLoop } = await import('../../src/messaging/SystemTopicAdoption.js');
+      const store = new Map<string, unknown>();
+      let holderKnown = false;
+      const passes: string[] = [];
+      const stop = startSystemTopicAdoptionLoop({
+        holdsLease: () => false,
+        leaseHolder: () => { passes.push(holderKnown ? 'known' : 'unknown'); return holderKnown ? 'studio' : null; },
+        selfMachineId: 'mama-pc',
+        fetchHolder: async () => ({ topics: { updates: 48153, attention: 48154 } }),
+        get: k => store.get(k), adopt: (k, v) => { store.set(k, v); },
+      }, { firstDelayMs: 20_000, intervalMs: 30 * 60_000, retryMs: 2 * 60_000, maxShortRetries: 3 });
+      await vi.advanceTimersByTimeAsync(20_000);           // first pass: no holder
+      expect(passes).toEqual(['unknown']);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);       // short retry 1
+      await vi.advanceTimersByTimeAsync(2 * 60_000);       // short retry 2
+      expect(passes).toHaveLength(3);
+      holderKnown = true;
+      await vi.advanceTimersByTimeAsync(2 * 60_000);       // short retry 3 → adopts
+      expect(store.get('agent-updates-topic')).toBe(48153);
+      expect(passes).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);       // no 4th short retry: converged
+      expect(passes).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(30 * 60_000);      // the cadence still runs
+      expect(passes.length).toBeGreaterThanOrEqual(5);
+      stop();
+    } finally { vi.useRealTimers(); }
+  });
+  it('gives up short retries after maxShortRetries and leaves the cadence in charge', async () => {
+    vi.useFakeTimers();
+    try {
+      const { startSystemTopicAdoptionLoop } = await import('../../src/messaging/SystemTopicAdoption.js');
+      let passes = 0;
+      const stop = startSystemTopicAdoptionLoop({
+        holdsLease: () => false, leaseHolder: () => { passes++; return null; }, selfMachineId: 'x',
+        fetchHolder: async () => ({}), get: () => undefined, adopt: () => {},
+      }, { firstDelayMs: 1_000, intervalMs: 60 * 60_000, retryMs: 10_000, maxShortRetries: 2 });
+      await vi.advanceTimersByTimeAsync(1_000 + 10_000 * 5); // first + 2 retries, then nothing
+      expect(passes).toBe(3);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(passes).toBe(4);
+      stop();
+    } finally { vi.useRealTimers(); }
+  });
+});

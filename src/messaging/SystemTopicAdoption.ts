@@ -132,18 +132,39 @@ export function withAdoptionBrake(adopt: SystemTopicAdoptionDeps['adopt'], log?:
 /** Re-adopt on a cadence so a lease move or a holder-side record change converges. */
 export const SYSTEM_TOPIC_ADOPTION_INTERVAL_MS = 30 * 60_000;
 export const SYSTEM_TOPIC_ADOPTION_FIRST_DELAY_MS = 20_000;
+/**
+ * Until the first pass that actually READ the holder's record, a pass that could
+ * not (no lease holder known yet right after boot, the holder unreachable, or an
+ * empty answer) is retried on this short delay instead of waiting a full
+ * interval. Bounded: after `SYSTEM_TOPIC_ADOPTION_MAX_SHORT_RETRIES` the loop
+ * falls back to the cadence. (Mama PC, 2026-10-20: the +20 s pass ran before
+ * the lease holder was resolved, so adoption only landed at +30 min.)
+ */
+export const SYSTEM_TOPIC_ADOPTION_RETRY_MS = 2 * 60_000;
+export const SYSTEM_TOPIC_ADOPTION_MAX_SHORT_RETRIES = 10;
+const RETRY_OUTCOMES: ReadonlySet<SystemTopicAdoptionOutcome> = new Set(['no-holder', 'fetch-failed', 'holder-has-none']);
 
 /** Run `adoptHolderSystemTopics` once shortly after boot, then on a cadence. Returns a stop function. */
-export function startSystemTopicAdoptionLoop(deps: SystemTopicAdoptionDeps, timing: { firstDelayMs?: number; intervalMs?: number } = {}): () => void {
+export function startSystemTopicAdoptionLoop(deps: SystemTopicAdoptionDeps, timing: { firstDelayMs?: number; intervalMs?: number; retryMs?: number; maxShortRetries?: number } = {}): () => void {
   const braked: SystemTopicAdoptionDeps = { ...deps, adopt: withAdoptionBrake(deps.adopt, deps.log) };
-  let running = false;
+  const retryMs = timing.retryMs ?? SYSTEM_TOPIC_ADOPTION_RETRY_MS;
+  const maxShortRetries = timing.maxShortRetries ?? SYSTEM_TOPIC_ADOPTION_MAX_SHORT_RETRIES;
+  let running = false, stopped = false, shortRetries = 0, converged = false;
+  let retry: ReturnType<typeof setTimeout> | null = null;
   const tick = () => {
-    if (running) return;
+    if (running || stopped) return;
     running = true;
-    void adoptHolderSystemTopics(braked).finally(() => { running = false; });
+    void adoptHolderSystemTopics(braked).then(result => {
+      if (stopped || converged) return;
+      if (!RETRY_OUTCOMES.has(result.outcome)) { converged = true; return; }
+      if (shortRetries >= maxShortRetries) return; // the cadence owns it from here
+      shortRetries += 1;
+      retry = setTimeout(tick, retryMs); // a READ retry; the adopt emit above carries the controller marker
+      retry.unref?.();
+    }).finally(() => { running = false; });
   };
   const first = setTimeout(tick, timing.firstDelayMs ?? SYSTEM_TOPIC_ADOPTION_FIRST_DELAY_MS);
   const every = setInterval(tick, timing.intervalMs ?? SYSTEM_TOPIC_ADOPTION_INTERVAL_MS);
   first.unref?.(); every.unref?.();
-  return () => { clearTimeout(first); clearInterval(every); };
+  return () => { stopped = true; clearTimeout(first); clearInterval(every); if (retry) clearTimeout(retry); };
 }

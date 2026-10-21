@@ -1,0 +1,37 @@
+{
+  "ts": "2026-10-21T06:48:56.944Z",
+  "slug": "system-topic-adoption-first-pass-retry",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/messaging/SystemTopicAdoption.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2249
+    ],
+    "notes": "PR #2249 ran the first adoption pass 20 s after boot and then only on the 30-min cadence; on Mama PC the first pass ran before the lease holder was resolved (no-holder), so the record stayed empty for 30 min."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the short retry is count-bounded (10) and only re-runs a READ; writes stay behind withAdoptionBrake (3 per kind per boot) and idempotence, so the registered system-topic-adoption model's boundK 9 / perTarget 3 still holds"
+    }
+  },
+  "verdict": "pass"
+}
