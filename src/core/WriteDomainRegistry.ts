@@ -376,6 +376,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Dismissing a restart notice writes the invite-marker store on the relay-holding machine; same
   // conservative classification as the invite routes.
   reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/restart-notices', domain: 'cluster-shared' });
+  // Switching pairing on (docs/specs/a2a-pairing-invite-link.md): writes the threadline relay and
+  // verified-pairing flags plus the connect-enable state file, then asks the server for its existing
+  // supervised restart. Like its siblings above it only does anything where the relay identity lives,
+  // so it takes the same conservative cluster-shared classification: the flags are a SHARED definition
+  // of whether this agent pairs at all, and per-machine EXECUTION does not make a write machine-local
+  // (see the /jobs/* note above). Classified rather than left undeclared — it arrived with the
+  // enable-without-restart work and the §3.5 ratchet correctly caught it.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const subscriptionReloginStory: ConvergenceStory = {
