@@ -16,4 +16,5 @@ Nothing to do. My reviews of my own changes now stop once they stop changing wha
 
 ## Evidence
 
-- `tests/unit/PostUpdateMigrator-fractalEightyTwentyTriage.test.ts`
+- Before: `skills/spec-converge/SKILL.md` said "A smaller finding count is NOT convergence" with a 10-round cap; a single requested feature (topic 127831) ran 18 rounds and 9 commit attempts and absorbed 13 found problems, still unbuilt after 14 hours.
+- After: the bundled skills carry the 80/20 criterion, size tiers, triage rule and proportion line; `tests/unit/PostUpdateMigrator-fractalEightyTwentyTriage.test.ts` proves the content and that a stock installed copy (including one carrying the previous criterion's marker, and the prior autonomous skill from main) is upgraded once, idempotently, while a customized copy is left untouched.
