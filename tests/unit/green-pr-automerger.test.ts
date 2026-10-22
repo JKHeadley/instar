@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   GreenPrAutoMerger,
+  ORPHAN_UNRESOLVED_LINE,
   freshState,
   type GreenPrAutoMergerDeps,
   type GreenPrState,
@@ -515,6 +516,82 @@ describe('GreenPrAutoMerger — auto-merge-unavailable terminal-non-ladder', () 
     await new GreenPrAutoMerger(h.deps, cfg).tick();
     expect(h.state.episodes[100]?.attempts).toBe(1); // normal ladder advance
     expect(h.state.episodes[100]?.nextEligibleAt).toBeTruthy(); // backoff set
+  });
+});
+
+describe('GreenPrAutoMerger — unresolved merge-attempt orphan (ACT-141)', () => {
+  const prime = (h: Harness) => { h.state.lastActingEpoch = 1; };
+
+  it('skipped:orphan-unresolved never advances the ladder or the breaker, and posts its attention line ONCE across ticks', async () => {
+    const h = harness({ runResult: { outcome: 'skipped:orphan-unresolved', confirmedMerged: false } });
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    const r1 = await m.tick();
+    await m.tick();
+    await m.tick();
+    expect(r1.acted).toBe(false);
+    expect(h.runCalls.length).toBe(3); // re-tried each tick (resumes by itself once the orphan exits)
+    expect(h.state.episodes[100]?.attempts).toBe(0);
+    expect(h.state.episodes[100]?.state).toBe('active');
+    expect(h.state.episodes[100]?.nextEligibleAt).toBeUndefined();
+    expect(h.state.episodes[100]?.lastOutcome).toBe('skipped:orphan-unresolved');
+    expect(h.state.breaker.consecutiveDeadlineKills ?? 0).toBe(0);
+    expect(h.attentionLines.length).toBe(1);
+    expect(h.attentionLines[0]).toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('the paused line is dropped once a later attempt runs', async () => {
+    let outcome: MergeRunResult = { outcome: 'skipped:orphan-unresolved', confirmedMerged: false };
+    const h = harness();
+    h.deps.runner.run = async () => outcome;
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick();
+    expect(h.state.attentionLines).toContain(ORPHAN_UNRESOLVED_LINE);
+    outcome = { outcome: 'refused:red-checks', confirmedMerged: false };
+    await m.tick();
+    expect(h.state.attentionLines ?? []).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('clearing the paused line RE-POSTS the aggregate (the operator stops seeing it)', async () => {
+    let outcome: MergeRunResult = { outcome: 'skipped:orphan-unresolved', confirmedMerged: false };
+    const h = harness();
+    h.deps.runner.run = async () => outcome;
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick();
+    expect(h.attentionLines.at(-1)).toContain(ORPHAN_UNRESOLVED_LINE);
+    outcome = { outcome: 'refused:red-checks', confirmedMerged: false };
+    await m.tick();
+    expect(h.attentionLines.at(-1)).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('a successful warm-up reap clears and re-posts the paused line', async () => {
+    const h = harness();
+    h.state.attentionLines = [ORPHAN_UNRESOLVED_LINE];
+    h.deps.runner.reapOrphan = async () => ({ reaped: true, outcome: 'reaped-open' });
+    await new GreenPrAutoMerger(h.deps, cfg).tick(); // warm-up tick
+    expect(h.state.attentionLines).not.toContain(ORPHAN_UNRESOLVED_LINE);
+    expect(h.attentionLines.at(-1)).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('a presumed-foreign record (warm-up or start of run) is audited orphan-presumed-foreign', async () => {
+    const h = harness({ runResult: { outcome: 'refused:red-checks', confirmedMerged: false, priorRecord: 'orphan-presumed-foreign' } });
+    h.deps.runner.reapOrphan = async () => ({ reaped: true, outcome: 'orphan-presumed-foreign' });
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick(); // warm-up
+    expect(h.audits.filter(a => a.event === 'orphan-presumed-foreign').length).toBe(1);
+    prime(h);
+    await m.tick(); // acting tick — run() resolved a prior record
+    expect(h.audits.filter(a => a.event === 'orphan-presumed-foreign').length).toBe(2);
+  });
+
+  it('a kept (incomplete) warm-up reap is audited orphan-reap-incomplete, not orphan-reaped', async () => {
+    const h = harness();
+    h.deps.runner.reapOrphan = async () => ({ reaped: false, outcome: 'orphan-reap-incomplete' });
+    await new GreenPrAutoMerger(h.deps, cfg).tick(); // warm-up tick
+    expect(h.audits.some(a => a.event === 'orphan-reap-incomplete')).toBe(true);
+    expect(h.audits.some(a => a.event === 'orphan-reaped')).toBe(false);
   });
 });
 

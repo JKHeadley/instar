@@ -37,6 +37,7 @@
  *           contexts that --admin would bypass, then merges. Use only when the
  *           repo has auto-merge disabled.
  *           [--match-head-commit <sha>] [--extra-floor <ctx,ctx>]
+ *           [--attempt-token <hex>]  (caller identity only; ignored by the merge)
  *         node scripts/safe-merge.mjs --capabilities
  *
  * Exit codes: 0 merged (independently confirmed) · 1 refused · 2 usage/error
@@ -127,6 +128,7 @@ const ALLOWED_FLAGS = new Set([
 ]);
 const ALLOWED_VALUE_FLAGS = new Set([
   '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor', '--request-review-from',
+  '--attempt-token',
 ]);
 
 /** Strict argv parser — unknown flags are REJECTED (spec §3.1: a stale or
@@ -139,6 +141,10 @@ export function parseArgs(argv) {
     // Logins to request review from when the base branch requires a non-pusher
     // approval (2026-08-22). Empty ⇒ default to the repo owner at act time.
     requestReviewFrom: [],
+    // The MergeRunner's per-attempt token, carried on argv so a surviving
+    // orphan's identity can be confirmed with `ps -o args=` on macOS as well
+    // as Linux. Identity only — it changes nothing about the merge.
+    attemptToken: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -168,6 +174,9 @@ export function parseArgs(argv) {
           if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(l)) throw new UsageError(`--request-review-from must be GitHub logins, got: ${l}`);
         }
         out.requestReviewFrom = logins;
+      } else if (a === '--attempt-token') {
+        if (!/^[0-9a-f]{8,64}$/i.test(v)) throw new UsageError(`--attempt-token must be hex, got: ${v}`);
+        out.attemptToken = v;
       }
       continue;
     }
@@ -199,7 +208,7 @@ export function capabilities() {
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
       'native-auto-merge', 'auto-arm-unavailable-detection',
-      'approval-required-refusal', 'request-review-from', 'local-floor',
+      'approval-required-refusal', 'request-review-from', 'local-floor', 'attempt-token',
     ],
     floorModes: [...MERGE_FLOOR_MODES],
     exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },

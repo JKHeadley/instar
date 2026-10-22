@@ -44,6 +44,9 @@ import { selectMergeFloor, reviewPrecheckPasses, reviewRequired, type RulesetRev
 /** A namespace candidate's head must be unchanged this long before a verify is requested (§2). */
 export const VERIFY_HEAD_STABLE_MS = 5 * 60_000;
 
+/** The one attention line while an unresolved merge-attempt orphan blocks new merges. */
+export const ORPHAN_UNRESOLVED_LINE = 'Auto-merge is paused: an earlier merge attempt\'s process is still running and I could not confirm it is mine, so I will not start another or kill it. It resumes by itself once that process exits.';
+
 /**
  * The local-verify view the watcher reads (local-verify-merge-authority §2/§3),
  * late-bound because the service is built after the watcher. Every read that
@@ -86,6 +89,12 @@ export interface MergeRunResult {
    * owns the merge — confirmed later by the reconciliation tick, NOT here.
    */
   outcome: string;
+  /**
+   * How a surviving in-flight record from an EARLIER attempt was resolved at
+   * the start of this run (e.g. reaped-open, merged-by-other,
+   * orphan-presumed-foreign, orphan-reap-incomplete). Absent when there was none.
+   */
+  priorRecord?: string;
   /**
    * True only when an INDEPENDENT gh pr view confirmed MERGED (B10). ALWAYS
    * false for `armed` BY DESIGN — the merge has not landed at arm time, so an
@@ -853,6 +862,10 @@ export class GreenPrAutoMerger extends EventEmitter {
       this.inFlight = false;
     }
 
+    if (result.priorRecord && result.priorRecord !== 'orphan-reap-incomplete') {
+      this.deps.audit({ kind: 'green-pr-automerge', event: result.priorRecord === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: result.priorRecord, viaRun: true });
+    }
+
     if (result.deadlineKilled) {
       state.breaker = feedBreaker(state.breaker, 'deadline-kill', this.deps.now(), this.breakerCfg());
     }
@@ -876,6 +889,21 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {
+    // An earlier attempt's safe-merge may still be alive and its identity could
+    // not be confirmed, so the runner refused to start a second one. Not this
+    // PR's failure: no ladder attempt, no breaker feed. ONE attention line
+    // (posted only when new), cleared when the runner can attempt again.
+    if (outcome === 'skipped:orphan-unresolved') {
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      if (!(state.attentionLines ?? []).includes(ORPHAN_UNRESOLVED_LINE)) {
+        void this.refreshAggregate(state, [ORPHAN_UNRESOLVED_LINE]);
+      }
+      return;
+    }
+    this.clearOrphanUnresolvedLine(state);
     // auto-merge-unavailable (repo setting OFF) — terminal-non-ladder. A
     // PERMANENT condition; do NOT burn maxAttempts over three pointless ticks
     // and do NOT silently flip to --admin (signal, not authority). Record the
@@ -1105,10 +1133,21 @@ export class GreenPrAutoMerger extends EventEmitter {
   private async warmupReap(state: GreenPrState): Promise<void> {
     try {
       const r = await this.deps.runner.reapOrphan();
-      if (r.reaped) this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reaped', outcome: r.outcome });
+      if (r.reaped) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: r.outcome === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: r.outcome });
+        this.clearOrphanUnresolvedLine(state);
+      }
+      else if (r.outcome === 'orphan-reap-incomplete') this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: 'recorded safe-merge pid alive, identity unconfirmed — record kept, new attempts blocked until it exits' });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: String((e as Error)?.message).slice(0, 120) });
     }
+  }
+
+  /** Drop the "auto-merge is paused" line and RE-POST the aggregate so the operator stops seeing it. */
+  private clearOrphanUnresolvedLine(state: GreenPrState): void {
+    if (!state.attentionLines?.includes(ORPHAN_UNRESOLVED_LINE)) return;
+    state.attentionLines = state.attentionLines.filter((l) => l !== ORPHAN_UNRESOLVED_LINE);
+    void this.refreshAggregate(state, []);
   }
 
   // ---- aggregated attention (P17) ----------------------------------------
