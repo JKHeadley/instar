@@ -23,7 +23,17 @@ def get(path):
             ["curl", "-s", "--max-time", "30", "-H", f"Authorization: Bearer {AUTH}", BASE + path],
             capture_output=True, text=True, timeout=45)
         if r.returncode != 0:
-            return None, f"could not reach the agent ({r.returncode})"
+            # Plain words, not a curl exit code. A reader cannot act on "(7)", and a
+            # number they cannot act on reads as noise rather than as a reason.
+            why = {
+                7: "the agent is not answering on its port",
+                6: "the agent's address could not be resolved",
+                28: "the agent took too long to answer",
+                35: "the secure connection to the agent failed",
+                52: "the agent answered with nothing",
+                56: "the connection to the agent broke mid-answer",
+            }.get(r.returncode, "the connection failed")
+            return None, why
         if not r.stdout.strip():
             return None, "the agent returned nothing"
         return json.loads(r.stdout), None
@@ -32,7 +42,7 @@ def get(path):
     except json.JSONDecodeError:
         return None, "the agent's answer was not readable"
     except Exception as e:
-        return None, f"unexpected: {type(e).__name__}"
+        return None, "something unexpected went wrong reading this"
 
 def ago(iso):
     if not iso: return None

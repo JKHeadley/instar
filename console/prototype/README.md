@@ -65,6 +65,20 @@ know it was duplicating. A third had been running seven hours.
 Every one of those facts was already recorded. None were visible, including to the
 agent, including while it worked on the problem they describe.
 
+## Tested, not assumed
+
+The claim that a value which could not be read says so is easy to write and easy
+to get wrong. It was verified by pointing the generator at a port nothing listens
+on, so every source fails exactly as it would if the agent were down.
+
+Result in `example-output-degraded.html`: all six sections render, every one reads
+*"Can't tell: the agent is not answering on its port."*, and **no section
+fabricates a zero**. A reader cannot mistake an unreachable agent for a healthy
+quiet one.
+
+The failure wording is plain rather than numeric. It first said `(7)` — a curl
+exit code, which is noise to anyone who has to act on it.
+
 ## Honest limits
 
 - A snapshot generator, not an application: no interaction, no navigation.
