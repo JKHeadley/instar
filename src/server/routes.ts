@@ -22819,7 +22819,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               owner: r.record.ownerMachineId ?? '',
               ...(prevOwner ? { prevOwner } : {}),
               epoch: r.record.ownershipEpoch,
-              reason: 'user-move',
+              // A release replicates AS a release (status + normalized reason) —
+              // same contract as the server.ts emitPlacement funnel; without it this
+              // row materialized on peers as active(releaser) at the higher epoch.
+              reason: 'released',
+              status: 'released',
             });
           }
         } catch { /* observability never endangers the observed */ }

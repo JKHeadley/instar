@@ -620,7 +620,7 @@ export class JournalSyncApplier {
       if (raw.prevOwner !== undefined && typeof raw.prevOwner !== 'string') return false;
       // Fix #3 OPTIONAL handoff fields. Back-compat: an absent `status` is `active`.
       // A present-but-malformed field rejects the record (never a silent partial accept).
-      if (raw.status !== undefined && raw.status !== 'active' && raw.status !== 'transferring') return false;
+      if (raw.status !== undefined && raw.status !== 'active' && raw.status !== 'transferring' && raw.status !== 'released') return false;
       if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
       if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
       if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;

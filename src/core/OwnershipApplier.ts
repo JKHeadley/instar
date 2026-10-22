@@ -129,6 +129,9 @@ export interface OwnershipApplyResult {
   pageCeilingHit?: boolean;
   /** True when the reader exposes no cursor, so only a single page could be read. */
   pagingUnavailable?: boolean;
+  /** Same-epoch records whose status was corrected active→released (the applier's own
+   *  earlier mis-materialization of a release row). Absent when zero. */
+  statusCorrected?: number;
 }
 
 export class OwnershipApplier {
@@ -160,6 +163,7 @@ export class OwnershipApplier {
   tick(): OwnershipApplyResult {
     let examined = 0;
     let materialized = 0;
+    let statusCorrected = 0;
     let pagesScanned = 0;
     let pageCeilingHit = false;
     let pagingUnavailable = false;
@@ -169,7 +173,7 @@ export class OwnershipApplier {
       // target materializes the `transferring` intermediate, not just `active`.
       type Best = {
         owner: string; epoch: number; streamOwner: string;
-        status: 'active' | 'transferring'; transferTo?: string;
+        status: 'active' | 'transferring' | 'released'; transferTo?: string;
         timestamp?: number; drainInFlight?: boolean;
       };
       const bestByTopic = new Map<string, Best>();
@@ -238,7 +242,17 @@ export class OwnershipApplier {
           const cur = bestByTopic.get(key);
           const cand: Best = {
             owner, epoch, streamOwner: e.machine,
-            status: e.data.status === 'transferring' ? 'transferring' : 'active',
+            // A RELEASE must replicate as a release. Before this, a `released` placement
+            // (status absent, reason 'released') materialized on every peer as
+            // active(owner = the releasing machine) at the HIGHER epoch — so a topic a
+            // machine let go of looked, everywhere else, like that machine still owned
+            // it, and a pin to another machine could never actuate (observed live
+            // 2026-10-21: topic 127648 stuck owner=Mini active@3 on the Studio while the
+            // Mini's own record was released@3). `reason === 'released'` is honored too,
+            // so rows already in the journal (and rows from older peers that never carry
+            // `status`) converge without a re-emit.
+            status: (e.data.status === 'released' || e.data.reason === 'released') ? 'released'
+              : e.data.status === 'transferring' ? 'transferring' : 'active',
             transferTo: typeof e.data.transferTo === 'string' ? e.data.transferTo : undefined,
             timestamp: typeof e.data.timestamp === 'number' && Number.isFinite(e.data.timestamp) ? e.data.timestamp : undefined,
             drainInFlight: e.data.drainInFlight === true ? true : undefined,
@@ -285,6 +299,29 @@ export class OwnershipApplier {
       for (const [sessionKey, best] of bestByTopic) {
         const local = this.d.store.read(sessionKey);
         const localEpoch = local?.ownershipEpoch ?? 0;
+        // Same-epoch status correction: a `released` row this applier ALREADY
+        // materialized — as `active`, before the release fix — is wrong at the epoch
+        // it holds, and no fresh higher-epoch row is coming (a released topic is
+        // quiet by definition). The store lands the correction ONLY when the local
+        // record is the applier's own write of this exact (owner, epoch) — never a
+        // local CAS decision (the store's predicate checks the nonce on both sides).
+        if (local && best.epoch === localEpoch && best.status === 'released' && local.status === 'active'
+          && typeof this.d.store.correctMaterializedStatus === 'function') {
+          const corrected: SessionOwnershipRecord = {
+            sessionKey,
+            ownerMachineId: best.owner,
+            ownershipEpoch: best.epoch,
+            status: 'released',
+            nonce: `applier:${best.owner}:${best.epoch}`,
+            timestamp: local.timestamp,
+            updatedAt: new Date(this.now()).toISOString(),
+          };
+          if (this.d.store.correctMaterializedStatus(corrected)) {
+            statusCorrected++;
+            this.log(`corrected topic ${sessionKey} @epoch ${best.epoch}: active(${best.owner}) → RELEASED (the applier's own earlier materialization of a release row)`);
+          }
+          continue;
+        }
         if (best.epoch <= localEpoch) continue; // not newer → nothing to adopt (fast-forward only)
         // Epoch fence (Finding SE2): a corrupt huge epoch jump can't wedge a topic forever.
         if (best.epoch - localEpoch > maxEpochJump) {
@@ -295,11 +332,13 @@ export class OwnershipApplier {
         // Resolve the materialized status. A `transferring` entry whose `transferTo` is
         // target-less / unknown / == owner is DOWNGRADED to active(owner) — never materialized
         // as an un-claimable permanently-stuck record (Findings AD3/SE1).
-        let status: 'active' | 'transferring' = 'active';
+        let status: 'active' | 'transferring' | 'released' = 'active';
         let transferTo: string | undefined;
         let drainInFlight: boolean | undefined;
         let timestamp = now;
-        if (best.status === 'transferring') {
+        if (best.status === 'released') {
+          status = 'released';
+        } else if (best.status === 'transferring') {
           const t = best.transferTo;
           const validTarget = !!t && t !== best.owner && (!known || known.has(t));
           if (validTarget) {
@@ -339,7 +378,9 @@ export class OwnershipApplier {
           const self = this.resolveSelf();
           this.log(
             `materialized topic ${sessionKey} → owner ${best.owner} @epoch ${best.epoch}` +
-              (self && best.owner === self
+              (status === 'released'
+                ? ' (RELEASED — no live owner; the next message or the pin target re-places it)'
+                : self && best.owner === self
                 ? ' (SELF — this machine now serves it)'
                 : self
                   ? ' (peer — route forwards there)'
@@ -356,6 +397,7 @@ export class OwnershipApplier {
       examined,
       materialized,
       pagesScanned,
+      ...(statusCorrected ? { statusCorrected } : {}),
       ...(pageCeilingHit ? { pageCeilingHit: true } : {}),
       ...(pagingUnavailable ? { pagingUnavailable: true } : {}),
     };

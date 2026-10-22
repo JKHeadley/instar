@@ -23421,10 +23421,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                   state.getCoherenceJournal()?.emitPlacement(topicNum, {
                     owner: rr.ownerMachineId ?? '',
                     epoch: rr.ownershipEpoch,
-                    reason: 'reconcile',
+                    reason: rr.status === 'released' ? 'released' : 'reconcile',
                     // Fix #3 (Finding INT2): a reconciler cooperative transfer emits the
                     // `transferring` intermediate so the target machine claims cross-machine.
-                    ...(rr.status === 'transferring'
+                    // A released record (none yields one today) replicates AS a release.
+                    ...(rr.status === 'released'
+                      ? { status: 'released' as const }
+                      : rr.status === 'transferring'
                       ? {
                           status: 'transferring' as const,
                           ...(rr.transferTo ? { transferTo: rr.transferTo } : {}),
@@ -23655,11 +23658,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               owner: rec.ownerMachineId ?? '',
               ...(prevOwner ? { prevOwner } : {}),
               epoch: rec.ownershipEpoch,
-              reason,
+              // A released record replicates AS a release (reason normalized + explicit
+              // status) — otherwise every peer's applier materialized it as active
+              // ownership by the releasing machine at the higher epoch (the 2026-10-21
+              // 'pin never actuates / topic stuck on a machine that let it go' bug).
+              reason: rec.status === 'released' ? 'released' : reason,
               // Cross-machine convergence (Fix #3 / Finding INT2): carry the `transferring`
               // intermediate so the target's OwnershipApplier materializes it and the target's
               // reconciler claims (completing the handoff cross-machine). Absent for `active`.
-              ...(rec.status === 'transferring'
+              ...(rec.status === 'released'
+                ? { status: 'released' as const }
+                : rec.status === 'transferring'
                 ? {
                     status: 'transferring' as const,
                     ...(rec.transferTo ? { transferTo: rec.transferTo } : {}),
