@@ -93,6 +93,22 @@ describe('parseArgs — strict argv', () => {
   });
 });
 
+describe('parseArgs — --attempt-token (ACT-141: argv identity for orphan reap)', () => {
+  it('accepts a hex token and records it without changing the merge', () => {
+    const a = parseArgs(['5', '--squash', '--attempt-token', 'abcd1234abcd1234']);
+    expect(a.attemptToken).toBe('abcd1234abcd1234');
+    expect(a.method).toBe('--squash');
+    expect(a.pr).toBe('5');
+  });
+  it('rejects a missing or non-hex value', () => {
+    expect(() => parseArgs(['5', '--attempt-token'])).toThrow(/requires a value/);
+    expect(() => parseArgs(['5', '--attempt-token', 'not-hex!'])).toThrow(/must be hex/);
+  });
+  it('advertises the attempt-token capability', () => {
+    expect(capabilities().features).toContain('attempt-token');
+  });
+});
+
 describe('capabilities — contract probe', () => {
   it('reports the contract version and feature set', () => {
     const c = capabilities();

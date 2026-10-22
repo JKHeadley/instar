@@ -14,10 +14,14 @@
  *    (B10). The record is cleared on classification.
  *  - reapOrphan(): at boot/warm-up, reaps a surviving orphan from a crash —
  *    verifies the recorded pid/pgid identity via a unique attempt token before
- *    signalling (pid-reuse safe), handles the dead-leader/live-group corner
- *    (orphan-reap-incomplete), and re-verifies PR state via gh. A pid-less
- *    in-flight record is treated as attempt-of-unknown-outcome (re-verify,
- *    never assume not-spawned).
+ *    signalling (pid-reuse safe), and re-verifies PR state via gh. The token is
+ *    read from the child's argv (`ps -o args=`, macOS + Linux), with
+ *    /proc/<pid>/environ as a Linux fallback. A LIVE process whose identity
+ *    cannot be confirmed is never signalled and its record is KEPT
+ *    (orphan-reap-incomplete): run() refuses new attempts
+ *    (skipped:orphan-unresolved) until that pid is gone, then re-verifies PR
+ *    state and clears it. A pid-less in-flight record is treated as
+ *    attempt-of-unknown-outcome (re-verify, never assume not-spawned).
  *
  * The guarantee survives the server's own death: the watcher's merges trigger
  * releases → auto-update restarts, so a restart mid-attempt is a NORMAL
@@ -40,7 +44,8 @@
  *                re-verifies, so a misread here can only refuse, never over-merge.
  */
 
-import { spawn as realSpawn } from 'node:child_process';
+import { execFile, spawn as realSpawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -108,6 +113,10 @@ export interface MergeRunnerDeps {
   isAlive?: (pid: number) => boolean;
   /** Kill a process group (SIGKILL the negative pid). */
   killGroup?: (pgid: number) => void;
+  /** A live pid's command line (`ps -o args=`), null when unreadable. */
+  readProcessArgs?: (pid: number) => string | null | Promise<string | null>;
+  /** A live pid's environment block (Linux /proc/<pid>/environ), null when unreadable. */
+  readProcessEnviron?: (pid: number) => string | null;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -122,7 +131,30 @@ export interface InFlightRecord {
   /** Patched in AFTER the spawn (phase 2). Null until then. */
   pid: number | null;
   pgid: number | null;
+  /**
+   * Set when a reap found the recorded pid ALIVE but could not confirm its
+   * identity. The record is kept and blocks new attempts until the pid is gone.
+   */
+  reapIncompleteAt?: number;
+  /**
+   * The `--deadline-ms` this attempt's safe-merge was given. Past startedAt +
+   * deadlineMs + kill grace + ORPHAN_FOREIGN_MARGIN_MS, a live unconfirmed pid
+   * whose argv reads successfully and shows no safe-merge is presumed foreign.
+   * (Elapsed time alone is not evidence: a hung safe-merge can outlive its
+   * deadline.) Absent on older records; mergeTimeoutMs is used.
+   */
+  deadlineMs?: number;
 }
+
+/** Margin past an attempt's own deadline + kill grace before a live pid is presumed foreign. */
+export const ORPHAN_FOREIGN_MARGIN_MS = 5 * 60_000;
+/** Outcome when a live, unconfirmed pid past its bound reads as a non-safe-merge process and the record was cleared unsignalled. */
+export const ORPHAN_PRESUMED_FOREIGN = 'orphan-presumed-foreign';
+
+/** Outcome of run() while an unresolved orphan record blocks new attempts. */
+export const ORPHAN_UNRESOLVED_OUTCOME = 'skipped:orphan-unresolved';
+/** Outcome of reapOrphan() when a live, uncorroborated record was kept. */
+export const ORPHAN_REAP_INCOMPLETE = 'orphan-reap-incomplete';
 
 export class DefaultMergeRunner implements MergeRunner {
   private readonly cfg: MergeRunnerConfig;
@@ -130,6 +162,8 @@ export class DefaultMergeRunner implements MergeRunner {
   private readonly now: () => number;
   /** Pinned per-attempt: the probed script's hash + path. */
   private pinnedHash: string | null = null;
+  /** Whether the probed safe-merge accepts `--attempt-token` (argv identity). */
+  private argvToken = false;
 
   constructor(cfg: MergeRunnerConfig, deps: MergeRunnerDeps) {
     this.cfg = cfg;
@@ -163,6 +197,7 @@ export class DefaultMergeRunner implements MergeRunner {
       const json = JSON.parse(out.stdout.trim());
       const version = Number(json?.contract);
       if (version !== this.cfg.expectedContractVersion) return { ok: false, version };
+      this.argvToken = Array.isArray(json?.features) && json.features.includes('attempt-token');
       // Pin the script's content hash for the attempt (re-verified before exec).
       this.pinnedHash = this.hashScript();
       return { ok: this.pinnedHash !== null, version };
@@ -189,26 +224,31 @@ export class DefaultMergeRunner implements MergeRunner {
   // ---- run ----------------------------------------------------------------
 
   async run(attempt: MergeAttempt): Promise<MergeRunResult> {
+    // A surviving record from an earlier attempt is resolved first. A live,
+    // uncorroborated one blocks: starting a new attempt alongside a live old
+    // safe-merge is the double-attempt class the durable record exists to close.
+    let priorRecord: string | undefined;
+    const prior = this.readInFlight();
+    if (prior) {
+      const r = await this.reapRecord(prior);
+      if (r.kept) {
+        this.log(`in-flight record for #${prior.pr} (pid ${prior.pid}) unresolved — refusing #${attempt.pr}`);
+        return { outcome: ORPHAN_UNRESOLVED_OUTCOME, confirmedMerged: false, priorRecord: r.outcome };
+      }
+      priorRecord = r.outcome;
+    }
     // Pre-exec hash re-verify (round-5): a checkout swap between probe and exec
     // must refuse — the spawn runs the VERIFIED bytes.
     const currentHash = this.hashScript();
     if (!this.pinnedHash || currentHash !== this.pinnedHash) {
       this.log(`safe-merge hash changed between probe and exec — refusing (${attempt.pr})`);
-      return { outcome: 'skipped:safe-merge-contract', confirmedMerged: false };
+      return { outcome: 'skipped:safe-merge-contract', confirmedMerged: false, ...(priorRecord ? { priorRecord } : {}) };
     }
     const githubEnv = this.cfg.resolveGitHubEnv();
     if (!githubEnv) {
       this.log(`explicit GitHub runtime unavailable — refusing (${attempt.pr})`);
-      return { outcome: 'skipped:github-runtime-unavailable', confirmedMerged: false };
+      return { outcome: 'skipped:github-runtime-unavailable', confirmedMerged: false, ...(priorRecord ? { priorRecord } : {}) };
     }
-
-    const attemptToken = crypto.randomBytes(8).toString('hex');
-    // Phase 1: durable intent record BEFORE the spawn.
-    const record: InFlightRecord = {
-      pr: attempt.pr, headRefOid: attempt.headRefOid, repo: this.cfg.repo,
-      attemptToken, startedAt: this.now(), pid: null, pgid: null,
-    };
-    this.writeInFlight(record);
 
     // Strategy select (mergerunner-auto-arm-handoff). The default arm path spawns
     // `safe-merge … --auto` (GitHub native auto-merge; returns in seconds) with a
@@ -224,6 +264,14 @@ export class DefaultMergeRunner implements MergeRunner {
       ? (this.cfg.armTimeoutMs ?? 60_000)
       : this.cfg.mergeTimeoutMs;
 
+    const attemptToken = crypto.randomBytes(8).toString('hex');
+    // Phase 1: durable intent record BEFORE the spawn.
+    const record: InFlightRecord = {
+      pr: attempt.pr, headRefOid: attempt.headRefOid, repo: this.cfg.repo,
+      attemptToken, startedAt: this.now(), pid: null, pgid: null, deadlineMs: pathTimeoutMs,
+    };
+    this.writeInFlight(record);
+
     let out: SpawnOutcome;
     try {
       out = await this.spawn({
@@ -233,6 +281,9 @@ export class DefaultMergeRunner implements MergeRunner {
           '--repo', this.cfg.repo, '--squash', '--delete-branch', ...strategyFlags,
           '--match-head-commit', attempt.headRefOid,
           '--deadline-ms', String(pathTimeoutMs),
+          // On argv as well as env so `ps -o args=` can corroborate an orphan's
+          // identity on macOS (no /proc). Only when the probed script accepts it.
+          ...(this.argvToken ? ['--attempt-token', attemptToken] : []),
         ],
         // INSTAR_MERGE_FLOOR is a manual override for a human running safe-merge;
         // the server's own environment must never carry it into the watcher's merges.
@@ -247,7 +298,7 @@ export class DefaultMergeRunner implements MergeRunner {
       });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       this.clearInFlight();
-      return { outcome: `error:spawn-${String((e as Error)?.message).slice(0, 40)}`, confirmedMerged: false };
+      return { outcome: `error:spawn-${String((e as Error)?.message).slice(0, 40)}`, confirmedMerged: false, ...(priorRecord ? { priorRecord } : {}) };
     }
 
     const raw = parseResultLine(out.stdout) ?? (out.deadlineKilled ? 'refused:checks-timeout' : 'error:no-result-line');
@@ -265,7 +316,7 @@ export class DefaultMergeRunner implements MergeRunner {
       catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ confirmedMerged = false; }
     }
     this.clearInFlight();
-    const result: MergeRunResult = { outcome, confirmedMerged, deadlineKilled: out.deadlineKilled };
+    const result: MergeRunResult = { outcome, confirmedMerged, deadlineKilled: out.deadlineKilled, ...(priorRecord ? { priorRecord } : {}) };
     if (outcome === 'armed') result.armedHead = attempt.headRefOid;
     return result;
   }
@@ -275,30 +326,57 @@ export class DefaultMergeRunner implements MergeRunner {
   async reapOrphan(): Promise<{ reaped: boolean; outcome?: string }> {
     const record = this.readInFlight();
     if (!record) return { reaped: false };
+    const r = await this.reapRecord(record);
+    return { reaped: !r.kept, outcome: r.outcome };
+  }
 
+  /**
+   * Resolve one surviving in-flight record. Returns kept:true when the recorded
+   * pid is ALIVE and its identity could not be corroborated: nothing is
+   * signalled, the record stays (it is the only handle on that process), and
+   * the outcome is orphan-reap-incomplete. Every other case re-verifies PR
+   * state and clears the record.
+   */
+  private async reapRecord(record: InFlightRecord): Promise<{ kept: boolean; outcome: string }> {
     const isAlive = this.deps.isAlive ?? ((pid: number) => { try { process.kill(pid, 0); return true; } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return false; } });
     const killGroup = this.deps.killGroup ?? ((pgid: number) => { try { process.kill(-pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ /* best-effort */ } });
 
     // A pid-less record = attempt-of-unknown-outcome (crash between phase 1 and 2).
     if (record.pid === null || record.pgid === null) {
-      const cleared = await this.reverifyAndClear(record);
-      return { reaped: true, outcome: cleared };
+      return { kept: false, outcome: await this.reverifyAndClear(record) };
     }
 
     if (isAlive(record.pid)) {
       // Verify identity before signalling (pid-reuse safe): the live process must
-      // carry our attempt token. If we cannot confirm identity, do NOT kill an
-      // unrelated process — surface orphan-reap-incomplete and re-verify PR state.
-      const identityOk = this.verifyAttemptToken(record.pid, record.attemptToken);
-      if (identityOk) {
-        killGroup(record.pgid);
-      } else {
-        this.log(`orphan pid ${record.pid} identity unconfirmed — not signalling (orphan-reap-incomplete)`);
-        // Leave the record; re-verify PR state so a completed merge is recorded.
+      // carry our attempt token. If we cannot confirm identity, do NOT kill a
+      // possibly-unrelated process, and do NOT drop the record either.
+      const id = await this.verifyAttemptToken(record.pid, record.attemptToken);
+      if (!id.confirmed) {
+        // Bound on the pid-reuse wedge, on POSITIVE evidence only. Elapsed time
+        // alone proves nothing: the --auto path's gh calls carry no timeout, so
+        // a hung safe-merge can outlive its deadline. Past the attempt's
+        // deadline + kill grace + margin, the record is cleared (WITHOUT a kill,
+        // after re-verifying PR state) only when the argv read SUCCEEDED and
+        // shows no safe-merge at all — a foreign process reusing the pid. A
+        // failed read, or a safe-merge argv without our token (e.g. an older
+        // attempt), keeps the record.
+        const deadline = record.deadlineMs ?? this.cfg.mergeTimeoutMs;
+        const pastBound = this.now() > record.startedAt + deadline + this.cfg.mergeKillGraceMs + ORPHAN_FOREIGN_MARGIN_MS;
+        if (pastBound && id.argsRead && !id.safeMergeOnArgv) {
+          const pr = await this.reverifyAndClear(record);
+          this.log(`orphan pid ${record.pid} alive past its attempt deadline, identity unconfirmed — presumed foreign, record cleared unsignalled (PR #${record.pr}: ${pr})`);
+          return { kept: false, outcome: ORPHAN_PRESUMED_FOREIGN };
+        }
+        this.log(`orphan pid ${record.pid} alive, identity unconfirmed — not signalling, record kept (${ORPHAN_REAP_INCOMPLETE})`);
+        if (record.reapIncompleteAt == null) {
+          record.reapIncompleteAt = this.now();
+          this.writeInFlight(record);
+        }
+        return { kept: true, outcome: ORPHAN_REAP_INCOMPLETE };
       }
+      killGroup(record.pgid);
     }
-    const outcome = await this.reverifyAndClear(record);
-    return { reaped: true, outcome };
+    return { kept: false, outcome: await this.reverifyAndClear(record) };
   }
 
   private async reverifyAndClear(record: InFlightRecord): Promise<string> {
@@ -311,16 +389,31 @@ export class DefaultMergeRunner implements MergeRunner {
     return outcome;
   }
 
-  /** Best-effort identity check: does the live pid's argv carry our token? */
-  private verifyAttemptToken(pid: number, token: string): boolean {
-    // On Linux, /proc/<pid>/environ carries the token. On other platforms we
-    // cannot cheaply confirm — be conservative (return false → do not kill).
-    try {
-      const environ = fs.readFileSync(`/proc/${pid}/environ`, 'utf-8');
-      return environ.includes(`GREEN_PR_ATTEMPT_TOKEN=${token}`);
-    } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
-      return false;
+  /**
+   * Identity check: does the live pid carry our attempt token? argv first
+   * (`ps -o args=`: works on macOS and Linux; the token rides `--attempt-token`),
+   * then the Linux /proc environ (GREEN_PR_ATTEMPT_TOKEN) for an attempt spawned
+   * by a safe-merge that predates the argv flag. Unreadable ⇒ false ⇒ no kill.
+   */
+  private async verifyAttemptToken(pid: number, token: string): Promise<{ confirmed: boolean; argsRead: boolean; safeMergeOnArgv: boolean }> {
+    const readArgs = this.deps.readProcessArgs ?? defaultReadProcessArgs;
+    const readEnviron = this.deps.readProcessEnviron ?? defaultReadProcessEnviron;
+    const args = await readArgs(pid);
+    const argsRead = typeof args === 'string' && args.length > 0;
+    // The pinned script (or any safe-merge.mjs — conservative: an argv that
+    // looks like a safe-merge is never presumed foreign).
+    const scriptOnArgv = argsRead && (args.includes(this.cfg.safeMergePath) || args.includes(path.resolve(this.cfg.safeMergePath)));
+    const safeMergeOnArgv = scriptOnArgv || (argsRead && args.includes(path.basename(this.cfg.safeMergePath)));
+    if (argsRead) {
+      const words = args.split(/\s+/);
+      const tokenPair = words.some((w, i) => w === '--attempt-token' && words[i + 1] === token);
+      // Also require the pinned safe-merge script on the command line: a token
+      // pair alone could ride an unrelated process's argv.
+      if (tokenPair && scriptOnArgv) return { confirmed: true, argsRead, safeMergeOnArgv };
     }
+    const environ = readEnviron(pid);
+    const confirmed = !!environ && environ.split('\0').includes(`GREEN_PR_ATTEMPT_TOKEN=${token}`);
+    return { confirmed, argsRead, safeMergeOnArgv };
   }
 
   // ---- durable in-flight record ------------------------------------------
@@ -367,7 +460,25 @@ export class DefaultMergeRunner implements MergeRunner {
   }
 }
 
-/** Parse safe-merge's classified `safe-merge-result: {...}` line from stdout. */
+const execFileAsync = promisify(execFile);
+
+async function defaultReadProcessArgs(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'args=', '-p', String(pid)], { timeout: 5_000 });
+    return stdout.trim() || null;
+  } catch { /* @silent-fallback-ok: unreadable identity keeps the record (orphan-reap-incomplete) */
+    return null;
+  }
+}
+
+function defaultReadProcessEnviron(pid: number): string | null {
+  try {
+    return fs.readFileSync(`/proc/${pid}/environ`, 'utf-8');
+  } catch { /* @silent-fallback-ok: no /proc (macOS) or unreadable — the argv read is the primary identity source */
+    return null;
+  }
+}
+
 /** The child env without the manual INSTAR_MERGE_FLOOR override. Exported for tests. */
 export function withoutMergeFloorOverride(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
@@ -375,6 +486,7 @@ export function withoutMergeFloorOverride(env: NodeJS.ProcessEnv): NodeJS.Proces
   return out;
 }
 
+/** Parse safe-merge's classified `safe-merge-result: {...}` line from stdout. */
 export function parseResultLine(stdout: string): string | null {
   const lines = stdout.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
