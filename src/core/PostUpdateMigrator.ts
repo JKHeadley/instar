@@ -1779,7 +1779,7 @@ export class PostUpdateMigrator {
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
-    this.migrateConvergeDesignClassCriterion(result);
+    this.migrateFractalEightyTwentyTriage(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
@@ -2244,51 +2244,51 @@ export class PostUpdateMigrator {
     }
   }
 
-  // Deliver the corrected CONVERGENCE STOP CRITERION to already-installed agents
-  // (Migration Parity, "updating existing skill content").
-  //
-  // PR #1673 replaced "no material new issues" with "no DESIGN-class findings for
-  // TWO consecutive rounds", because the old rule could not terminate on a spec
-  // that appends its own review history — the reviewable surface grows every
-  // round, so a diligent reviewer always finds precision to add.
-  //
-  // WHY THIS NEEDS ITS OWN MIGRATION, and it is the finding that produced it:
-  // migrateConformanceGateAutoInvoke above already delivers this same file, but
-  // its idempotency guard returns early once the installed copy contains the
-  // marker from THAT change. Every agent that took it is therefore permanently
-  // short-circuited for EVERY LATER change to spec-converge/SKILL.md — a one-shot
-  // wearing idempotent's clothes. Verified live on this agent 2026-07-27: the
-  // conformance marker present, the corrected criterion absent, so #1673 could
-  // never arrive. Caught one command before running the OLD criterion and
-  // reporting its verdict as evidence.
-  //
-  // This follows the established per-change pattern (each content change carries
-  // its own marker-keyed migration) rather than redesigning the guard — the
-  // general fix is a CONTENT-FINGERPRINT guard, which is fleet-migration
-  // machinery above this change's risk floor and is tracked as ACT-1420.
-  // Customized files stay untouched; idempotent; safe to run repeatedly.
-  private migrateConvergeDesignClassCriterion(result: MigrationResult): void {
-    const MARKER = 'No DESIGN-class findings for TWO consecutive rounds';
-    try {
-      const installed = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
-      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
-      const current = fs.readFileSync(installed, 'utf8');
-      if (current.includes(MARKER)) return; // already updated — idempotent
-      if (!current.includes('# /spec-converge')) {
-        result.skipped.push('spec-converge SKILL (design-class criterion): customized — left untouched');
-        return;
+  // Deliver fractal 80/20 convergence, plain size tiers, the found-problem triage
+  // rule and the proportion signal (CMT-917, operator-approved 2026-10-22, topic
+  // 127831) to already-installed agents (Migration Parity, "updating existing skill
+  // content"). Supersedes migrateConvergeDesignClassCriterion: its marker ("No
+  // DESIGN-class findings for TWO consecutive rounds") is gone from the bundled
+  // file, so it could never deliver again; this migration also reaches copies that
+  // carry it, because each change keys on its own marker (the lesson that migration
+  // recorded: a sibling's marker must never short-circuit a later change).
+  // Per file: re-copy the bundled version only when the installed copy lacks the
+  // marker and still looks stock (fingerprint guard); customized files are left
+  // untouched and reported. Idempotent. /autonomous is delivered by its own marker
+  // chain in migrateAutonomousSkill (FRACTAL_8020_TRIAGE step).
+  private migrateFractalEightyTwentyTriage(result: MigrationResult): void {
+    const MARKER = 'FRACTAL_8020_TRIAGE';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      { rel: ['skills', 'spec-converge', 'SKILL.md'], fingerprint: '# /spec-converge', label: 'spec-converge SKILL (fractal 80/20 convergence)' },
+      { rel: ['skills', 'instar-dev', 'SKILL.md'], fingerprint: '# /instar-dev', label: 'instar-dev SKILL (size tiers + found-problem triage)' },
+      { rel: ['skills', 'build', 'SKILL.md'], fingerprint: 'Rigorous Build Skill', label: 'build SKILL (size tiers + found-problem triage)' },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        // build ships from the package's .claude/skills; the others from skills/.
+        const bundled = f.rel[1] === 'build'
+          ? path.join(__dirname, '..', '..', '.claude', ...f.rel)
+          : path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
-      if (!fs.existsSync(bundled)) return;
-      const next = fs.readFileSync(bundled, 'utf8');
-      if (next.includes(MARKER)) {
-        fs.writeFileSync(installed, next);
-        result.upgraded.push('spec-converge SKILL (design-class convergence criterion)');
-      }
-    } catch (err) {
-      result.errors.push(`spec-converge SKILL (design-class criterion): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
 
   // ── WS3.2 commitment owner backfill (MULTI-MACHINE-SEAMLESSNESS-SPEC, F19) ──
   //
@@ -5573,6 +5573,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'CHECKBOX_TASK_LIST',
       'W32_PREPARING_LIVENESS',
       'skills/autonomous/SKILL.md (dash-bullet task checkboxes)',
+    );
+    // FRACTAL_8020_TRIAGE (CMT-917): found problems are triaged (fix now / spin off /
+    // queue) instead of accreting into the run, and the final report carries a
+    // proportion line.
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'FRACTAL_8020_TRIAGE',
+      'CHECKBOX_TASK_LIST',
+      'skills/autonomous/SKILL.md (found-problem triage + proportion line)',
     );
   }
 

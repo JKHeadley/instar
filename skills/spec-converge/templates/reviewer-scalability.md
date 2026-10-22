@@ -39,3 +39,5 @@ Produce a SHORT report (under 400 words):
 - Specific findings with spec-section references and concrete resolutions.
 
 Be rigorous — things that work in dev often fail at scale.
+
+**Classify every finding (required).** Label each finding `DESIGN` (changes what would be built or how it behaves, or the spec is factually wrong about the system) or `PRECISION` (wording, naming, caveats, examples, or a long-tail edge case whose cost is out of proportion to its likelihood). Only DESIGN findings send the spec back for another round; PRECISION findings are listed as left behind. If your lens does not apply to this change, say so in one line and raise nothing.

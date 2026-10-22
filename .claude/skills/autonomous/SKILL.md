@@ -268,6 +268,25 @@ sweep is the enforcement. If deferral is genuinely right, ASK the operator in th
 and only the verified operator's reply binds it. The operator can also ratify from the dashboard
 (PIN-gated).
 
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
+### Found problems (applies to the scope-accretion sweep): triage, never accrete
+
+Finding problems along the way is good. Triage each one on the spot; only the first kind joins this work:
+
+1. **Blocks the current work?** Fix it now.
+2. **A major issue** (broken for users, a safety/security/data-loss risk, or more than about a day of work)? Spin it off: a new topic with its own session (dashboard New Session, or `POST /sessions/create`) whose brief starts an `/autonomous` run to complete it under these same 80/20 + triage rules; tell the operator in one line.
+3. **Everything else** → a queue, and say which: an instar defect or improvement → the feedback queue (`/feedback`); an improvement to this agent's own process → the evolution queue (`/commit-action`).
+
+Never add a found problem to the task list silently, and never draft a spec or audit for a non-blocking one inside this run.
+
+This is how accretion and triage fit: work you CREATE for the goal joins your bar (above); a
+problem you merely FIND is triaged. A spun-off or queued problem is not a deferral of your goal —
+it was never your goal. The server's completion sweep cannot tell whose files are whose, though: it
+counts every new worktree and commit in this agent home since the run started, including the
+spun-off session's. So when you spin one off, ask in the topic right away to "ratify deferral" of
+its paths (and of any artifact you already drafted for a found problem), so they do not hold your
+run. Do the asked-for work first; an unrelated fix never goes ahead of it.
+
 ### The Defer-to-Future-Self Trap
 
 **This is the #1 failure mode.** It looks like:
@@ -351,7 +370,9 @@ genuinely done:
 2. Run `npx tsc --noEmit` — zero errors
 3. Run relevant tests
 4. Write learnings to MEMORY.md
-5. Send final report via messaging
+5. Send final report via messaging. Include a **proportion line**: what was asked, the size of
+   what shipped, review rounds and commit/gate attempts used, and each found problem with its
+   triage. Say plainly if the effort was out of line with the size (a signal, never a gate).
 6. Output: `<promise>ALL_TASKS_COMPLETE</promise>`
 
 The stop hook detects the promise and allows exit.
@@ -401,8 +422,13 @@ Remaining:
 - [task 4]
 
 Issues: none
+Found (triaged): none
 EOF
 ```
+
+The FINAL report, on every completion path, adds the proportion line from Step 4: asked vs
+shipped, rounds and gate attempts, found problems with their triage, and a one-line flag if the
+effort was out of line with the size.
 
 ---
 
