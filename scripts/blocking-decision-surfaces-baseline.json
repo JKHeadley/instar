@@ -127,7 +127,7 @@
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
-      "sha256": "c7a8edbdf9c8f8a83e200b8b126d122fe700e71adef3582b699233ceb145acad",
+      "sha256": "e3d8025e7abcd36e0d0897b065b2fe75d1da896df68b0a63e3253afd76a89729",
       "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
     },
     {

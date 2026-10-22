@@ -373,7 +373,7 @@ cleanup() {
       # keys on, the driver's pid is written to the survivor record now, and the 1200 s sweep removes the
       # folder later.
       if [ -f "$BRIDGE_WDIR_U/pid.txt" ] && [ ! -f "$CACHE_DIR/survivor" ]; then
-        cl_p="$(tr -d '\r\n ' < "$BRIDGE_WDIR_U/pid.txt")"; cl_s="$(tr -d '\r\n ' < "$BRIDGE_WDIR_U/pidstart.txt" 2>/dev/null)"
+        cl_p="$(tr -d '\r\n ' < "$BRIDGE_WDIR_U/pid.txt")"; cl_s="$(tr -d '\r\n ' 2>/dev/null < "$BRIDGE_WDIR_U/pidstart.txt")"
         case "$cl_p" in ''|*[!0-9]*) ;; *) printf '%s %s %s\n' "$cl_p" "${cl_s:--}" "$(date +%s)" > "$CACHE_DIR/survivor" 2>/dev/null ;; esac
       fi
       # An interrupted INPUT command leaves the page state unknown: the latch is set here too.
@@ -455,7 +455,7 @@ sweep_stale() {
         sv_v="$(tr -d '\r\n ' < "$d/verdict.txt" 2>/dev/null)"
         case "$sv_v" in
           ''|driver-still-running|driver-unverified-live)
-            sv_p="$(tr -d '\r\n ' < "$d/pid.txt")"; sv_s="$(tr -d '\r\n ' < "$d/pidstart.txt" 2>/dev/null)"
+            sv_p="$(tr -d '\r\n ' < "$d/pid.txt")"; sv_s="$(tr -d '\r\n ' 2>/dev/null < "$d/pidstart.txt")"
             case "$sv_p" in ''|*[!0-9]*) ;; *)
               # `at` = when pid.txt was written (the instant the driver started), the same meaning cleanup gives it
               printf '%s %s %s\n' "$sv_p" "${sv_s:--}" "$(stat -c %Y "$d/pid.txt" 2>/dev/null || stat -f %m "$d/pid.txt" 2>/dev/null || echo "$now")" > "$CACHE_DIR/survivor" 2>/dev/null
@@ -735,7 +735,7 @@ try {
     # (pid + start time) so the next call's orphan guard can wait for it; the running-task count alone
     # would not see it once its task is stopped.
     if [ -f "$wdir_u/pid.txt" ] && ! grep -qE 'driver-(stopped|gone|not-identified)' "$wdir_u/bridge.out" 2>/dev/null; then
-      sv_start="$(tr -d '\r\n ' < "$wdir_u/pidstart.txt" 2>/dev/null)"
+      sv_start="$(tr -d '\r\n ' 2>/dev/null < "$wdir_u/pidstart.txt")"
       if ! printf '%s %s %s\n' "$(tr -d '\r\n ' < "$wdir_u/pid.txt")" "${sv_start:--}" "$(date +%s)" > "$CACHE_DIR/survivor" 2>/dev/null; then
         echo "warning: could not write the survivor record $CACHE_DIR/survivor; the bridge work folder is kept as the marker instead" >&2; SURVIVOR_WRITE_FAILED=1
       fi

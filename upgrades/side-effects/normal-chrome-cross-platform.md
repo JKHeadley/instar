@@ -146,3 +146,7 @@ Not required (see header).
 `defectClass: unbounded-self-action`, `closure: n/a`, `reason: one-shot user-driven action, not a self-triggered loop: every ndrive.sh call is one operator-asked driver command; its probe retries are one each, its waits are bounded by ND_LOCK_WAIT/ND_BRIDGE_TIMEOUT (wall time), and nothing in it re-triggers itself across calls`.
 
 No agent-authored-artifact defect — not applicable. (This change adds no self-triggered controller either: nothing fires on its own; the bridge's wait loop is bounded and runs only inside one operator-invoked call.)
+
+## Redirect order at the three pidstart reads
+
+The fourth Windows live run (bytes `c7a8edbd…`, PASS) surfaced one cosmetic leak: when a bridge work folder has `pid.txt` but no `pidstart.txt`, the read `tr -d '\r\n ' < pidstart.txt 2>/dev/null` printed `No such file or directory` on stderr, because bash applies redirections left to right and the failing input redirect ran before stderr was silenced. The stderr redirect now comes first at the three sites (cleanup trap, sweep adoption, timeout survivor). Side effects: none on behaviour. The value was already empty on that path and the start-time-less fallback already applied; only the stray line is gone. The decision-surface baseline is re-pinned to the new bytes, and those bytes get their own wrapper live run (the fifth and last permitted) before the PR opens.
