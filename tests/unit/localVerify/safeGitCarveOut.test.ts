@@ -31,7 +31,10 @@ function rawGit(cwd: string, args: string[]): string {
 
 /** An instar-shaped agent home (itself a checkout) with base on main and head on a branch. */
 function agentHome(name = 'agent', root?: string): { root: string; home: string; base: string; head: string; verify: string; bare: string } {
-  const r = root ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'verify-carve-')));
+  // Under /tmp directly, never under TMPDIR: inside a local-verify run TMPDIR is itself
+  // an `lv-` temp dir, which the deletion scope admits, so the guard that refuses would
+  // change (found by the first server-run verify, PR 2294).
+  const r = root ?? fs.realpathSync(fs.mkdtempSync(path.join(localVerifyTempRoot(), 'verify-carve-')));
   if (!root) dirs.push(r);
   const home = path.join(r, name);
   fs.mkdirSync(home);

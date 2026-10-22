@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-22T10:01:49.623Z",
+  "slug": "local-verify-installed-safe-merge",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
