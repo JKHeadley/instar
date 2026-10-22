@@ -124,6 +124,71 @@ Named rather than smoothed over, because the gaps are where the remaining value 
 
 ---
 
+## The two gaps, now closed (observed 2026-10-21)
+
+Earlier passes recorded permission-asking mid-task and failure/degraded states as
+**unobserved** — and noted that for an operator console the second is most of what
+matters, since no marketing screenshot ever shows it. Both have now been seen.
+
+The task given was deliberately two-part, one half impossible: *send an email
+summarising our comparison, and fetch `https://this-host-does-not-exist-12345.invalid/data.json`
+and tell me what it contains.*
+
+**Before acting, it said what it expected:**
+
+> "I'll try both and report the outcome separately. The .invalid address is likely
+> to fail, but I'll check it rather than assume it contains data."
+
+Predicting the failure and verifying anyway, rather than reasoning from the name
+to a conclusion. That is the discipline an operator console needs and the one
+these products are least often shown doing.
+
+**The permission ask — adopt, and note the ordering**
+
+> "The email has not been sent: I don't currently have an email connection. Add
+> Gmail here if you'd like me to send it from that account, or tell me which email
+> service you prefer."
+
+Three things right, and they are exactly what Grok Bot gets wrong (see
+`../grokbot/README.md`, item 15):
+
+1. It **attempted first**, then reported the boundary. The ask is grounded in work
+   the user just watched fail, so they can judge it.
+2. The scope is **the task's scope** — send one email — not "search, read, draft
+   and manage".
+3. It offers an **alternative** ("tell me which email service you prefer"), so the
+   grant is not the only path forward.
+
+Grok Bot asks for read access to all your mail before it has done anything. Dots
+asks for one capability after demonstrating it needs it. Same company category,
+opposite ordering — and the contrast is the clearest argument in this whole
+research for the rule I'd want Instar to hold: **earn the grant with visible work,
+then ask for the narrowest scope that work needs.**
+
+**The failure report — adopt**
+
+> "The URL fetch also failed: the web tool reported that the address was
+> inaccessible and returned no JSON, so I can't tell you it contains any data."
+
+It names which tool failed, what it reported, and — the important half — refuses
+to characterise content it never received. No fabricated summary, no "appears to
+be unavailable" hedge dressed as an answer. The two halves of the task are also
+reported **separately**, so a partial failure does not contaminate the part that
+worked.
+
+**The always-visible state panel — adopt**
+
+The right-hand panel shows, without being asked: the agent's name and when it was
+last active ("Active 5 hours ago"), the state of its computer ("Ready"), recent
+activity ("No recent activity" — stated, not left blank), and its outputs. Every
+one of those is a fact about the agent rather than a feature of the product, and
+"No recent activity" being written out instead of omitted is the small honesty
+that makes the panel trustworthy.
+
+![Dots: permission ask and failure report](permission-and-failure.jpg)
+
+---
+
 ## Screenshots
 
 Captured first-hand from the live product on a real account, 2026-10-21. 8 of the larger set taken during this exploration.

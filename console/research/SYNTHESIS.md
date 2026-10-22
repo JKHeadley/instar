@@ -111,6 +111,27 @@ approve-without-reading. This is the one place Instar is positioned to beat all
 three rather than catch up — and the one most likely to be quietly dropped,
 because measuring your own approval surface is unflattering.
 
+**The same question, answered two opposite ways — and one of them is right.**
+This is the single most useful comparison in the research, because both products
+hit the identical situation and diverged.
+
+*Grok Bot*, before doing any work at all, offers one **Authorize** button over all
+of your Gmail — search, read, draft, manage — reassuring you about *sending* while
+the scope grants *reading*.
+
+*Dots*, given a task that needed email, tried it, failed, and said:
+
+> "The email has not been sent: I don't currently have an email connection. Add
+> Gmail here if you'd like me to send it from that account, or tell me which email
+> service you prefer."
+
+Attempt first, then report the boundary. Scope the ask to the task. Offer an
+alternative so the grant is not the only way forward. The user is deciding about a
+failure they just watched, rather than a hypothetical they cannot evaluate.
+
+**The rule to carry into Instar: earn the grant with visible work, then ask for the
+narrowest scope that work needs** — and never make the grant the only path.
+
 **Asking for the broadest grant at the moment of least context.** Watching Grok
 Bot's onboarding first-hand turned this from theory into an example. Its opening
 move, before the agent has done anything at all, is an **Authorize** button over
@@ -147,6 +168,22 @@ these three products show any sign of designing for it. Instar should treat
 "slow vs stuck vs silently failed" as a first-class display state, not an edge case.
 
 ---
+
+### Honest failure reporting, observed — *(Dots)*
+Asked to fetch a deliberately unreachable address, Dots reported:
+
+> "The URL fetch also failed: the web tool reported that the address was
+> inaccessible and returned no JSON, so I can't tell you it contains any data."
+
+It names the failing tool, repeats what that tool said, and refuses to characterise
+content it never received — no fabricated summary, no hedge dressed as an answer.
+It had also said beforehand that it expected the address to fail *and would check
+rather than assume*. Both halves of a two-part task were reported separately, so a
+partial failure did not contaminate the half that worked.
+
+This is the closest any of the three came to the failure class this research kept
+hitting (an instrument reporting health, or nothing, while something was broken),
+and it is worth copying verbatim as a reporting standard.
 
 ## What Instar already has that is stronger
 
