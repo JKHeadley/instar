@@ -136,6 +136,43 @@ def machines_block():
         note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
     return "".join(rows) + note
 
+# ---- can I actually reach you? --------------------------------------------
+def delivery_block():
+    """Whether replies are reaching the operator at all.
+
+    This is the section that would have made 2026-10-22 visible on the night it
+    happened: 26 replies had already been held and expired undelivered across 11
+    days, recorded correctly the whole time, displayed nowhere. An agent that
+    cannot reach its operator cannot report that it cannot reach its operator —
+    so the count belongs on the screen, not in a log.
+    """
+    if h_err:
+        return '<p class="err">Can\'t tell: ' + e(h_err) + '.</p>'
+    hf = ((health or {}).get("telegramOrigin") or {}).get("heldForward") or {}
+    count = hf.get("count")
+    if count is None:
+        return '<p class="empty">No delivery backlog reported.</p>'
+    if not count:
+        return '<p class="empty">Nothing waiting — replies are reaching you.</p>'
+    topics = hf.get("topics") or []
+    oldest = hf.get("oldestSince")
+    age = ''
+    if oldest:
+        try:
+            hrs = (datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000 - float(oldest)) / 3600000
+            age = '%.1f h' % hrs
+        except Exception:
+            age = ''
+    parts = ['<div class="stat alarm"><b>' + str(count) + '</b><span>replies not delivered</span></div>']
+    if topics:
+        parts.append('<div class="stat"><b>' + str(len(topics)) + '</b><span>conversations</span></div>')
+    if age:
+        parts.append('<div class="stat warnst"><b>' + e(age) + '</b><span>oldest</span></div>')
+    note = ('<p class="note alarmtext">These are written and waiting. They are retried, and some do '
+            'get through — but a reply that cannot be handed over in time is deleted, and its text '
+            'goes with it.</p>')
+    return '<div class="stats">' + "".join(parts) + '</div>' + note
+
 # ---- sessions, across every machine ---------------------------------------
 def session_rows():
     """Sessions across the whole pool, grouped by machine.
@@ -298,6 +335,9 @@ footer{{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:
 </style></head><body>
 <h1>Echo</h1>
 <div class="sub">Console prototype · built from live data, {e(now)}</div>
+
+<h2>Can I reach you</h2>
+{delivery_block()}
 
 <h2>What needs you</h2>
 {needs_you()}
