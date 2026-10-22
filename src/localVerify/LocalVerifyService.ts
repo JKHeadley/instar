@@ -484,6 +484,10 @@ export class LocalVerifyService {
     } else {
       for (const o of result.overlaps) this.audit({ event: 'overlap', where: `before-${o.beforeLane}`, holders: o.holders });
       const rec = this.complete(result.record, 'run');
+      if (rec && rec.outcome !== 'success') {
+        // Why it went red, bounded: reasons plus each failed file's first error.
+        this.audit({ event: 'run-detail', pr: rec.pr, headSha: rec.headSha, outcome: rec.outcome, reasons: result.reasons.slice(0, 40), failures: (result.failures ?? []).slice(0, 30) });
+      }
       if (rec && rec.outcome === 'error') this.handleErrorRetry(f.entry);
     }
     const waiters = this.idleWaiters;

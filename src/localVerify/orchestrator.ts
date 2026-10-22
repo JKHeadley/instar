@@ -105,6 +105,17 @@ export interface VerifyRunInput {
   deadlines?: LocalVerifyDeadlines;
 }
 
+/** The first failing test of a failed file, bounded (spec §2: the full detail lives in the audit, not the status). */
+export interface FailureDetail {
+  file: string;
+  lane: string;
+  failed: number;
+  message: string;
+}
+
+/** At most this many failure details travel with a result. */
+export const FAILURE_DETAILS_MAX = 30;
+
 export interface Overlap {
   at: number;
   beforeLane: LaneName;
@@ -112,7 +123,7 @@ export interface Overlap {
 }
 
 export type VerifyRunResult =
-  | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null }
+  | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[] }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] };
 
@@ -248,7 +259,6 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   delete runEnv.CI;
   runEnv.TMPDIR = tmpDir;
   runEnv.TMUX_TMPDIR = tmuxDir;
-  runEnv.HUSKY = '0';
   // A UTF-8 locale, as GitHub's runners have (LANG=C.UTF-8). Without one, tmux
   // fixtures behave differently: found on the first full real run, where
   // dead-job-pane-cleanup failed only because the server had no locale set.
@@ -270,6 +280,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
 
   let failureReason: string | null = null;
   let evaluationReasons: string[] = [];
+  let failures: FailureDetail[] = [];
   let outcome: LocalVerifyRecord['outcome'] = 'success';
   let errorStep: string | undefined;
 
@@ -306,7 +317,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     seams.fs.mkdirp(p.reportsDir);
 
     // ── 2. Install ──
-    const ci = await exec('npm', ['ci', '--no-audit', '--no-fund'], 'npm-ci', budget(d.npmCiMs));
+    // HUSKY=0 for the install only: set for the lanes it makes husky's prepare
+    // script print "HUSKY=0 skip install" on stdout, which breaks every test that
+    // parses `npm pack --json` (found on the first full real runs).
+    const ci = await exec('npm', ['ci', '--no-audit', '--no-fund'], 'npm-ci', budget(d.npmCiMs), { ...runEnv, HUSKY: '0' });
     if (ci.status !== 0) throw new RunError('npm-ci', `exit ${ci.status ?? ci.signal}`);
 
     // ── 3. Build, then the lint command list, then the lanes ──
@@ -365,6 +379,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const inventory = computeInventory(tree.split('\n').filter(Boolean));
     const ev = evaluateRun(inventory, laneRuns);
     evaluationReasons = ev.reasons;
+    failures = Object.entries(ev.perFile)
+      .filter(([, c]) => c.failed > 0)
+      .slice(0, FAILURE_DETAILS_MAX)
+      .map(([file, c]) => ({ file, lane: c.lane, failed: c.failed, message: c.message ?? '' }));
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -400,7 +418,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
   seams.log({ event: 'run-finished', pr: input.pr, headSha: input.headSha, outcome, errorStep, failureReason, reasons: evaluationReasons.slice(0, 20) });
-  return { kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept };
+  return { kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures };
 
   // ── helpers (closures over the run) ──
 

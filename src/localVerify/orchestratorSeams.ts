@@ -25,8 +25,22 @@ const OUTPUT_TAIL = 64 * 1024;
 const KILL_GRACE_MS = 5_000;
 const TEMP_PREFIX = 'lv-';
 
+/**
+ * Where per-run temp folders go: `/tmp` when it exists (POSIX), else the OS temp dir.
+ * macOS's per-user temp dir is ~50 characters deep, and tests that open a Unix socket
+ * under TMPDIR then exceed the 104-character socket-path limit (`listen EINVAL`):
+ * found on the first full real runs, where four socket tests failed only under the
+ * verifier.
+ */
+export function localVerifyTempRoot(): string {
+  try {
+    if (process.platform !== 'win32' && fs.statSync('/tmp').isDirectory()) return fs.realpathSync('/tmp');
+  } catch { /* @silent-fallback-ok — no /tmp: the OS temp dir is the only option */ }
+  return os.tmpdir();
+}
+
 /** True when `target` is one of the run's own temp directories (`<tmpdir>/lv-…`). */
-export function isLocalVerifyTempPath(target: string, tmpRoot = os.tmpdir()): boolean {
+export function isLocalVerifyTempPath(target: string, tmpRoot = localVerifyTempRoot()): boolean {
   const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
   const root = real(tmpRoot);
   const t = real(target);
@@ -110,7 +124,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
       writeFile: (p, data) => { fs.writeFileSync(p, data); },
       readFile: (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
-      mkdtemp: (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
+      mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
       removeTree: (p) => removeScopedTree(p, verifyRoot),
     },
     now: () => Date.now(),

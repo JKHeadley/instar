@@ -27,6 +27,9 @@ export interface ParsedLaneReport {
   files: Map<string, FileCounts>;
 }
 
+/** Bound on a stored failure message (record and audit stay small). */
+export const FAILURE_MESSAGE_MAX = 400;
+
 export class LaneReportParseError extends Error {}
 
 function relativize(name: string, rootDir: string): string {
@@ -73,12 +76,19 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
       else {
         c.failed++;
         assertionFailures++;
+        // Keep the first failing test's title and message (bounded) so a red record says why.
+        if (!c.message) {
+          const t = (a as { title?: unknown }).title;
+          const fm = (a as { failureMessages?: unknown }).failureMessages;
+          const first = Array.isArray(fm) && typeof fm[0] === 'string' ? fm[0] : '';
+          c.message = `${typeof t === 'string' ? t : 'test'}: ${first}`.slice(0, FAILURE_MESSAGE_MAX);
+        }
       }
     }
     if (r.status !== 'passed' && assertionFailures === 0) {
       c.failed++;
     }
-    if (typeof r.message === 'string' && r.message) c.message = r.message;
+    if (typeof r.message === 'string' && r.message && !c.message) c.message = r.message.slice(0, FAILURE_MESSAGE_MAX);
     files.set(path, c);
   }
   return { files };

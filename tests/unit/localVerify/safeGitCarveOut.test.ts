@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor, isLocalVerifyClonePath, isWellFormedLocalVerifyRoot, type SafeGitOptions } from '../../../src/core/SafeGitExecutor.js';
 import { SourceTreeGuardError } from '../../../src/core/SourceTreeGuard.js';
-import { isLocalVerifyTempPath, removeScopedTree } from '../../../src/localVerify/orchestratorSeams.js';
+import { isLocalVerifyTempPath, localVerifyTempRoot, removeScopedTree } from '../../../src/localVerify/orchestratorSeams.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'safeGitCarveOut.test.ts' }); });
@@ -208,7 +208,7 @@ describe('removeScopedTree (anchored)', () => {
     fs.mkdirSync(inside, { recursive: true });
     await removeScopedTree(inside, verify);
     expect(fs.existsSync(inside)).toBe(false);
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lv-tmp-'));
+    const tmp = fs.mkdtempSync(path.join(localVerifyTempRoot(), 'lv-tmp-'));
     expect(isLocalVerifyTempPath(tmp)).toBe(true);
     await removeScopedTree(tmp, verify);
     expect(fs.existsSync(tmp)).toBe(false);
@@ -218,8 +218,15 @@ describe('removeScopedTree (anchored)', () => {
     fs.mkdirSync(otherRun, { recursive: true });
     await expect(removeScopedTree(otherRun, verify)).rejects.toThrow(/refuses/);
     expect(fs.existsSync(otherRun)).toBe(true);
-    expect(isLocalVerifyTempPath(os.tmpdir())).toBe(false);
-    expect(isLocalVerifyTempPath(path.join(os.tmpdir(), 'other'))).toBe(false);
+    expect(isLocalVerifyTempPath(localVerifyTempRoot())).toBe(false);
+    expect(isLocalVerifyTempPath(path.join(localVerifyTempRoot(), 'other'))).toBe(false);
+  });
+
+  it('the per-run temp root is short enough that a test socket under it stays inside the 104-character limit', () => {
+    const root = localVerifyTempRoot();
+    // A real failing socket path was <TMPDIR>/lv-tmp-XXXXXX/instar-origin-store-XXXXXX/origin-notice.sock.
+    const sock = path.join(root, 'lv-tmp-XXXXXX', 'instar-origin-store-XXXXXX', 'origin-notice.sock');
+    if (process.platform !== 'win32') expect(sock.length).toBeLessThan(104);
   });
 
   it("SafeFsExecutor's scope option admits only the named root", () => {

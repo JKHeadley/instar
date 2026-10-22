@@ -234,6 +234,16 @@ describe('runVerify — happy path', () => {
     for (const c of f.execCalls) expect(c.env.LANG).toBe('C.UTF-8');
   });
 
+  it('sets HUSKY=0 for npm ci only, never for the lanes (it breaks npm pack --json output)', async () => {
+    const f = fake();
+    await runVerify(input(), f.seams);
+    const ci = f.execCalls.find((c) => c.args[0] === 'ci');
+    expect(ci?.env.HUSKY).toBe('0');
+    const lanes = f.execCalls.filter((c) => c.args.includes('--config'));
+    expect(lanes.length).toBe(3);
+    for (const l of lanes) expect(l.env.HUSKY).toBeUndefined();
+  });
+
   it("keeps the operator's own locale when one is set", async () => {
     const f = fake();
     await runVerify({ ...input(), baseEnv: { ...input().baseEnv, LC_ALL: 'en_US.UTF-8' } }, f.seams);

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseVitestJson, evaluateRun, LaneReportParseError, type LaneRunInput } from '../../../src/localVerify/laneReport.js';
+import { parseVitestJson, evaluateRun, LaneReportParseError, FAILURE_MESSAGE_MAX, type LaneRunInput } from '../../../src/localVerify/laneReport.js';
 import { computeInventory, LANES, type LaneDefinition } from '../../../src/localVerify/inventory.js';
 
 const ROOT = '/Users/x/.instar/agents/echo/.worktrees/.verify/runs/abcdef012345';
@@ -48,6 +48,13 @@ describe('parseVitestJson', () => {
   it('a file-level failure with failed assertions is not double counted', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['failed'])]), ROOT);
     expect(r.files.get('tests/unit/a.test.ts')!.failed).toBe(1);
+  });
+  it("keeps the first failing test's title and message, bounded", () => {
+    const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['passed', 'failed', 'failed'])]), ROOT);
+    expect(r.files.get('tests/unit/a.test.ts')!.message).toBe('t1: boom');
+    const long = file('tests/unit/b.test.ts', ['failed']);
+    long.assertionResults[0].failureMessages = ['x'.repeat(5000)];
+    expect(parseVitestJson(report([long]), ROOT).files.get('tests/unit/b.test.ts')!.message!.length).toBe(FAILURE_MESSAGE_MAX);
   });
   it('rejects non-JSON and the wrong shape', () => {
     expect(() => parseVitestJson('not json', ROOT)).toThrow(LaneReportParseError);
