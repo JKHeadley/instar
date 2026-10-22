@@ -23,7 +23,7 @@ displays none of it. The four sections are that conclusion, built:
 | Section | Source | Why |
 |---|---|---|
 | **Can I reach you** | `/health` | Replies written but not delivered, and how old the oldest is. **First**, because an agent that cannot reach its operator cannot report that it cannot reach its operator. |
-| **What needs you** | `/attention` | The queue with no human-facing surface. First because an item nobody sees is an item nobody acts on. |
+| **What needs you** | `/attention?scope=pool` | The queue with no human-facing surface. First because an item nobody sees is an item nobody acts on. |
 | **What I'm doing** | `/sessions?scope=pool` | Live sessions across **every** machine, grouped by machine. Names any peer that could not be reached — a fleet view that quietly drops an unreachable machine is indistinguishable from one where everything is fine. |
 | **What I've promised** | `/commitments` | Open commitments with what each is blocked on. A follow-through store with no face on it. |
 | **Where I'm running** | `/pool`, `/health` | Which machines exist and which holds the right to speak. |
@@ -70,7 +70,7 @@ agent, including while it worked on the problem they describe.
 - A snapshot generator, not an application: no interaction, no navigation.
 - `focus`/`lastAction` in the parallel-work index are empty on this agent, so
   "what each session is doing" has no real source yet and says so.
-- Sessions are pool-scoped; the other sections still read local state only.
+- Sessions and attention are pool-scoped; promises and guards still read local state only.
 - The highest-value finding in the research — Grok's *"Take over / I'm done"*
   hand-off — is **not** built here. It needs a session-level mechanism, not a
   screen.

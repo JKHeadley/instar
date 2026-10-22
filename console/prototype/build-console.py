@@ -51,90 +51,9 @@ e = html.escape
 sessions, s_err = get("/sessions?scope=pool")
 commits, c_err = get("/commitments")
 guards, g_err = get("/guards")
-atten, a_err = get("/attention")
+atten, a_err = get("/attention?scope=pool")
 pool, p_err = get("/pool")
 health, h_err = get("/health")
-
-# ---- what needs you -------------------------------------------------------
-def needs_you():
-    """The attention queue, which today has no human-facing surface at all.
-
-    Shown FIRST because an item nobody sees is an item nobody acts on — and the
-    count is the point: a queue that has quietly accumulated is indistinguishable
-    from an empty one unless something displays it.
-    """
-    if a_err:
-        return '<p class="err">Can\'t tell: ' + e(a_err) + '.</p>'
-    items = atten.get("items", atten) if isinstance(atten, dict) else (atten or [])
-    open_ = [i for i in items if str(i.get("status", "")).upper() == "OPEN"]
-    if not open_:
-        return '<p class="empty">Nothing waiting on you.</p>'
-    high = [i for i in open_ if str(i.get("priority", "")).upper() in ("HIGH", "URGENT")]
-    parts = []
-    if high:
-        parts.append('<div class="stat alarm"><b>' + str(len(high)) + '</b><span>need you</span></div>')
-    parts.append('<div class="stat"><b>' + str(len(open_)) + '</b><span>open in total</span></div>')
-    rows = []
-    for i in sorted(high, key=lambda x: str(x.get("createdAt") or ""), reverse=True)[:5]:
-        when = ago(i.get("createdAt"))
-        title = (i.get("title") or "(untitled)").strip()
-        rows.append(
-            '<div class="row"><div class="row-head"><span class="dot bad"></span><strong>'
-            + e(title[:110]) + '</strong></div><div class="meta">'
-            + (e(when) if when else "time not recorded") + '</div></div>')
-    tail = ''
-    if len(high) > 5:
-        tail = '<p class="note">…and ' + str(len(high) - 5) + ' more marked high.</p>'
-    note = ('<p class="note">These accumulated with nowhere to be seen. That is the argument '
-            'for this screen: a queue nobody looks at reads exactly like an empty one.</p>')
-    return '<div class="stats">' + "".join(parts) + '</div>' + "".join(rows) + tail + note
-
-# ---- where I'm running ----------------------------------------------------
-def machines_block():
-    """Which machines exist, and which one currently holds the right to speak.
-
-    This is the view that would have made tonight's lost replies visible: a
-    conversation can be assigned to one machine while the right to answer on
-    Telegram sits with another, and nothing anywhere said so.
-    """
-    if p_err:
-        return '<p class="err">Can\'t tell: ' + e(p_err) + '.</p>'
-    ms = (pool or {}).get("machines", []) if isinstance(pool, dict) else []
-    if not ms:
-        return '<p class="empty">Only one machine — nothing to coordinate.</p>'
-    holder = None
-    if isinstance(health, dict):
-        holder = (health.get("multiMachine", {}).get("syncStatus", {}) or {}).get("leaseHolder")
-    self_id = (pool or {}).get("selfMachineId")
-    rows = []
-    for m in ms:
-        mid = m.get("machineId")
-        nick = m.get("nickname") or (mid or "?")[:10]
-        tags = []
-        if mid and holder and mid == holder:
-            tags.append('<span class="pill speak">holds the right to speak</span>')
-        if mid and self_id and mid == self_id:
-            tags.append('<span class="pill">this machine</span>')
-        online = m.get("online")
-        dot = 'live' if online else 'bad'
-        state = 'online' if online else 'offline'
-        skew = m.get("clockSkewStatus")
-        if skew and str(skew).lower() not in ("ok", "none", "normal"):
-            tags.append('<span class="pill warn">clock ' + e(str(skew)) + '</span>')
-        rows.append(
-            '<div class="row"><div class="row-head"><span class="dot ' + dot + '"></span><strong>'
-            + e(str(nick)) + '</strong><span class="meta">' + state + '</span>'
-            + "".join(tags) + '</div></div>')
-    note = ''
-    if holder and self_id and holder != self_id:
-        note = ('<p class="note alarmtext">The machine answering you is not this one. '
-                'A reply written here has to be handed over, and if that fails it is held, '
-                'retried, and expires after six hours. That is what cost 26 replies.</p>')
-    elif holder and self_id and holder == self_id:
-        note = '<p class="note">This machine can answer you directly.</p>'
-    else:
-        note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
-    return "".join(rows) + note
 
 # ---- can I actually reach you? --------------------------------------------
 def delivery_block():
@@ -172,6 +91,62 @@ def delivery_block():
             'get through — but a reply that cannot be handed over in time is deleted, and its text '
             'goes with it.</p>')
     return '<div class="stats">' + "".join(parts) + '</div>' + note
+
+# ---- what needs you, across every machine ---------------------------------
+def needs_you():
+    """The attention queue across the whole pool.
+
+    Shown near the top because an item nobody sees is an item nobody acts on, and
+    pool scope is the point: this machine alone reported 130 open items while the
+    fleet held 526. A per-machine view of a multi-machine agent understates the
+    backlog by whatever the other machines are carrying.
+    """
+    if a_err:
+        return '<p class="err">Can\'t tell: ' + e(a_err) + '.</p>'
+    data = atten or {}
+    items = data.get("items", data) if isinstance(data, dict) else (data or [])
+    open_ = [i for i in items if str(i.get("status", "")).upper() == "OPEN"]
+    meta = data.get("pool") if isinstance(data, dict) else None
+
+    header = ''
+    if isinstance(meta, dict):
+        failed = meta.get("failed") or []
+        if failed:
+            header = ('<p class="note alarmtext">Could not reach ' + str(len(failed))
+                      + ' machine(s); the counts below are incomplete.</p>')
+    if not open_:
+        return header + '<p class="empty">Nothing waiting on you.</p>'
+
+    high = [i for i in open_ if str(i.get("priority", "")).upper() in ("HIGH", "URGENT")]
+    parts = []
+    if high:
+        parts.append('<div class="stat alarm"><b>' + str(len(high)) + '</b><span>need you</span></div>')
+    parts.append('<div class="stat"><b>' + str(len(open_)) + '</b><span>open in total</span></div>')
+
+    by = {}
+    for i in high:
+        by[i.get("machineNickname") or "this machine"] = by.get(i.get("machineNickname") or "this machine", 0) + 1
+    split = ''
+    if len(by) > 1:
+        split = ('<p class="note">' + e(", ".join(
+            str(k) + ": " + str(v) for k, v in sorted(by.items(), key=lambda kv: -kv[1]))) + '</p>')
+
+    rows = []
+    for i in sorted(high, key=lambda x: str(x.get("createdAt") or ""), reverse=True)[:5]:
+        when = ago(i.get("createdAt"))
+        title = (i.get("title") or "(untitled)").strip()
+        where = i.get("machineNickname")
+        rows.append(
+            '<div class="row"><div class="row-head"><span class="dot bad"></span><strong>'
+            + e(title[:105]) + '</strong></div><div class="meta">'
+            + (e(when) if when else "time not recorded")
+            + (' · ' + e(str(where)) if where else '') + '</div></div>')
+    tail = ''
+    if len(high) > 5:
+        tail = '<p class="note">…and ' + str(len(high) - 5) + ' more marked high.</p>'
+    note = ('<p class="note">These accumulated with nowhere to be seen. That is the argument for '
+            'this screen: a queue nobody looks at reads exactly like an empty one.</p>')
+    return header + '<div class="stats">' + "".join(parts) + '</div>' + split + "".join(rows) + tail + note
 
 # ---- sessions, across every machine ---------------------------------------
 def session_rows():
@@ -228,6 +203,53 @@ def session_rows():
                 + ('<span class="pill">protected</span>' if s.get("protected") else '')
                 + '</div><div class="doing">' + doing + '</div></div>')
     return "\n".join(out)
+
+# ---- where I'm running ----------------------------------------------------
+def machines_block():
+    """Which machines exist, and which one currently holds the right to speak.
+
+    This is the view that would have made tonight's lost replies visible: a
+    conversation can be assigned to one machine while the right to answer on
+    Telegram sits with another, and nothing anywhere said so.
+    """
+    if p_err:
+        return '<p class="err">Can\'t tell: ' + e(p_err) + '.</p>'
+    ms = (pool or {}).get("machines", []) if isinstance(pool, dict) else []
+    if not ms:
+        return '<p class="empty">Only one machine — nothing to coordinate.</p>'
+    holder = None
+    if isinstance(health, dict):
+        holder = (health.get("multiMachine", {}).get("syncStatus", {}) or {}).get("leaseHolder")
+    self_id = (pool or {}).get("selfMachineId")
+    rows = []
+    for m in ms:
+        mid = m.get("machineId")
+        nick = m.get("nickname") or (mid or "?")[:10]
+        tags = []
+        if mid and holder and mid == holder:
+            tags.append('<span class="pill speak">holds the right to speak</span>')
+        if mid and self_id and mid == self_id:
+            tags.append('<span class="pill">this machine</span>')
+        online = m.get("online")
+        dot = 'live' if online else 'bad'
+        state = 'online' if online else 'offline'
+        skew = m.get("clockSkewStatus")
+        if skew and str(skew).lower() not in ("ok", "none", "normal"):
+            tags.append('<span class="pill warn">clock ' + e(str(skew)) + '</span>')
+        rows.append(
+            '<div class="row"><div class="row-head"><span class="dot ' + dot + '"></span><strong>'
+            + e(str(nick)) + '</strong><span class="meta">' + state + '</span>'
+            + "".join(tags) + '</div></div>')
+    note = ''
+    if holder and self_id and holder != self_id:
+        note = ('<p class="note alarmtext">The machine answering you is not this one. '
+                'A reply written here has to be handed over, and if that fails it is held, '
+                'retried, and expires after six hours. That is what cost 26 replies.</p>')
+    elif holder and self_id and holder == self_id:
+        note = '<p class="note">This machine can answer you directly.</p>'
+    else:
+        note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
+    return "".join(rows) + note
 
 # ---- promises -------------------------------------------------------------
 def promise_rows():
