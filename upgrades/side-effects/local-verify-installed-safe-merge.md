@@ -80,6 +80,10 @@ Revert the commit.
 
 ---
 
+## Test fix found by the first server-run verify
+
+The first verify the server ran itself (this PR, 2026-10-22, 45 minutes) failed one unit test: `safeGitCarveOut.test.ts` built its fake agent home under `os.tmpdir()`. Inside a verify run TMPDIR is itself an `lv-` temp dir, which `removeScopedTree`'s scope admits, so the refusal came from the next guard ("Refusing…") instead of the expected "refuses". The deletion was still blocked. The test now builds its fixture under `/tmp` directly; checked that the old test fails and the new one passes with TMPDIR set to an `lv-` dir.
+
 ## Conclusion
 
 One-line fix so the status loop uses the installed safe-merge; the watcher's equivalent is tracked for before the flip.
