@@ -271,3 +271,22 @@ describe('validateTimeoutInvariant (B24)', () => {
     expect(r.reason).toMatch(/must exceed/);
   });
 });
+
+describe('classifyCandidate — local floor (local-verify-merge-authority §3)', () => {
+  it('local + a record → eligible even while the Actions rollup is PENDING', () => {
+    expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo', { floor: 'local', hasRecord: true })).toEqual({ eligible: true });
+  });
+  it('local + no record → no-verify-record even when the rollup is SUCCESS', () => {
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'local', hasRecord: false }).skip).toBe('no-verify-record');
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'local' }).skip).toBe('no-verify-record');
+  });
+  it('local keeps the namespace filter, holds and mergeability', () => {
+    expect(classifyCandidate(basePr({ headRefName: 'dawn/x' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('not-agent-namespace');
+    expect(classifyCandidate(basePr({ labels: ['hold'] }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('held');
+    expect(classifyCandidate(basePr({ mergeable: 'CONFLICTING' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('not-mergeable');
+  });
+  it('actions floor ignores hasRecord and still needs a SUCCESS rollup', () => {
+    expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo', { floor: 'actions', hasRecord: true }).skip).toBe('not-settled-green');
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'actions', hasRecord: false })).toEqual({ eligible: true });
+  });
+});
