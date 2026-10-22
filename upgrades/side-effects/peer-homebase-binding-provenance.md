@@ -188,3 +188,35 @@ stopped being obvious.
 sniff string. It was first nested under the pool-read guard, which would have meant an agent
 that already had that card could never receive this one — caught and fixed, and pinned by a test
 that asserts the two guards are independent.
+
+---
+
+# Increment 5 — the integration tier, and the tier that is still missing
+
+**Change:** `tests/integration/peer-homebase-create-and-record.test.ts` — `ensurePeerHomebase`
+against a REAL `AgentTrustManager` (file-backed, real persistence) with the Telegram primitive
+faked at its boundary.
+
+What it adds over the unit tier, which used injected deps for everything: the recorded id
+actually survives a reload from disk; a second pass makes **no external call at all** rather
+than merely returning a no-op verdict; and the gate and the lease check both stop execution
+BEFORE the topic primitive is reached, asserted by observing that the fake was never called
+rather than by trusting the return value.
+
+**The tier that is NOT covered, stated plainly.** Testing Integrity asks for all three tiers,
+and the Tier-3 "feature is alive through the HTTP pipeline" test does not exist for this
+feature. Driving `POST /threadline/pairing/:peerFp/verify` requires reproducing the pairing
+handshake — two in-process identities deriving a real SAS — which the existing
+`tests/e2e/threadline-verified-pairing-alive.test.ts` harness does and which I did not
+replicate inside the remaining time. What I did instead: ran that existing e2e against the
+modified route and confirmed it still passes 8/8, so the route is not broken, but nothing yet
+asserts that a homebase topic appears when a real pairing completes through the real server.
+
+That is a genuine gap, not a technicality, and it is the single most valuable test still owed
+for this feature. Recorded here rather than left for someone to discover from the absence.
+
+1. **Over/under-block:** a test file; blocks nothing. The under-coverage is named above.
+2. **Abstraction fit / signal vs authority / interactions / external surfaces:** none — no
+   production code changed in this increment.
+3. **Multi-machine posture:** not applicable (test-only).
+4. **Rollback:** delete the file.
