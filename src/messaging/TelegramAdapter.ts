@@ -47,6 +47,7 @@ import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionConte
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
+import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
@@ -63,6 +64,11 @@ export interface TelegramConfig {
   token: string;
   /** Forum chat ID (the supergroup where topics live) */
   chatId: string;
+  /**
+   * Optional second forum chat for issue topics ("<agent> Bugs"). Its topics get
+   * internal ids in a disjoint range (see telegramTopicSpace.ts). Absent = off.
+   */
+  issuesChatId?: string;
   /** Polling interval in ms */
   pollIntervalMs?: number;
   /** Authorized Telegram user IDs (only these users' messages are processed) */
@@ -196,6 +202,8 @@ export interface TelegramConfig {
 interface PendingPromptReply {
   prompt: DetectedPrompt;
   relayMessageId: number;
+  /** Chat the relay prompt was sent to (the issues group for an issues topic). */
+  relayChatId?: number | string;
   createdAt: number;
   reminderSent?: boolean;
 }
@@ -923,6 +931,11 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error(
         `Invalid Telegram chatId "${config.chatId}". Chat IDs must be numeric (e.g., -1001234567890). ` +
         `Update messaging.config.chatId in your instar.config.json with a valid numeric ID.`,
+      );
+    }
+    if (config.issuesChatId && !/^-?\d+$/.test(String(config.issuesChatId))) {
+      throw new Error(
+        `Invalid Telegram issuesChatId "${config.issuesChatId}". Chat IDs must be numeric (e.g., -1001234567890).`,
       );
     }
     // HARDENED (v1.3.270 boot-crash incident): when the secrets merge fails, the
@@ -1692,9 +1705,10 @@ export class TelegramAdapter implements MessagingAdapter {
   async createForumTopic(
     name: string,
     iconColor?: number,
-    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean },
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean; space?: 'main' | 'issues' },
   ): Promise<{ topicId: number; name: string }> {
-    if (this.notAForum) {
+    const inIssues = opts?.space === 'issues' && !!this.config.issuesChatId;
+    if (this.notAForum && !inIssues) {
       throw new Error('Chat is not a forum — topic creation skipped');
     }
 
@@ -1729,7 +1743,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     const params: Record<string, unknown> = {
-      chat_id: this.config.chatId,
+      chat_id: inIssues ? this.config.issuesChatId : this.config.chatId,
       name,
     };
     if (iconColor !== undefined) {
@@ -1741,15 +1755,17 @@ export class TelegramAdapter implements MessagingAdapter {
         message_thread_id: number;
         name: string;
       };
+      // Issues-group topics live in their own id range (telegramTopicSpace.ts).
+      const topicId = inIssues ? ISSUES_TOPIC_OFFSET + result.message_thread_id : result.message_thread_id;
 
-      this.topicToName.set(result.message_thread_id, name);
+      this.topicToName.set(topicId, name);
       this.saveRegistry();
 
-      console.log(`[telegram] Created forum topic: "${name}" (ID: ${result.message_thread_id})`);
-      return { topicId: result.message_thread_id, name: result.name };
+      console.log(`[telegram] Created forum topic: "${name}" (ID: ${topicId}${inIssues ? ', issues group' : ''})`);
+      return { topicId, name: result.name };
     } catch (err) {
       const errStr = String(err);
-      if (errStr.includes('not a forum') || errStr.includes('FORUM_REQUIRED')) {
+      if (!inIssues && (errStr.includes('not a forum') || errStr.includes('FORUM_REQUIRED'))) {
         this.notAForum = true;
         if (!this.notAForumWarned) {
           this.notAForumWarned = true;
@@ -1793,10 +1809,12 @@ export class TelegramAdapter implements MessagingAdapter {
   async findOrCreateForumTopic(
     name: string,
     iconColor?: number,
-    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean },
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean; space?: 'main' | 'issues' },
   ): Promise<{ topicId: number; name: string; reused: boolean }> {
     const normalizedName = name.toLowerCase().trim();
+    const wantIssues = opts?.space === 'issues' && !!this.config.issuesChatId;
     for (const [topicId, existingName] of this.topicToName) {
+      if (isIssuesTopicId(topicId) !== wantIssues) continue; // a name only matches inside its own group
       if (existingName.toLowerCase().trim() === normalizedName) {
         console.log(`[telegram] Reusing existing topic ${topicId} for "${name}"`);
         return { topicId, name: existingName, reused: true };
@@ -2668,15 +2686,16 @@ export class TelegramAdapter implements MessagingAdapter {
         text: '.', // minimal probe message — deleted immediately after
         message_thread_id: topicId,
         reply_to_message_id: topicId,
-      }) as { message_id: number; reply_to_message?: { forum_topic_created?: { name: string } } };
+      }) as { message_id: number; chat?: { id: number }; reply_to_message?: { forum_topic_created?: { name: string } } };
 
       // Extract topic name from the reply target
       const name = result.reply_to_message?.forum_topic_created?.name;
 
-      // Delete the probe message immediately
+      // Delete the probe message immediately (in the chat it landed in — the issues
+      // group for an issues topic)
       try {
         await this.apiCall('deleteMessage', {
-          chat_id: this.config.chatId,
+          chat_id: result.chat?.id ?? this.config.chatId,
           message_id: result.message_id,
         });
       } catch {
@@ -5010,6 +5029,16 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process a single Telegram update (text, voice, photo, or callback query).
    */
+  /** True when an issues group ("<agent> Bugs") is configured for issue topics. */
+  hasIssuesGroup(): boolean {
+    return !!this.config.issuesChatId;
+  }
+
+  /** This adapter's Telegram chats, for the issues-group topic mapping. */
+  private topicSpace(): { mainChatId: string; issuesChatId?: string } {
+    return { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId };
+  }
+
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     // Handle callback queries from inline keyboard buttons (Prompt Gate)
     if (update.callback_query) {
@@ -5019,6 +5048,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const msg = update.message;
     if (!msg) return;
+    // Issues-group messages get their internal topic id before anything reads it.
+    normalizeInboundThread(msg, this.topicSpace());
 
     // A pairing invite carries a one-time secret: it never reaches a session, the message log
     // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). With a pairing handler
@@ -5546,7 +5577,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const text = this.formatPromptMessage(prompt);
 
-    let result: { message_id: number };
+    let result: { message_id: number; chat?: { id: number } };
 
     if (prompt.options && prompt.options.length > 0) {
       // Add numbered options to the message body so full text is visible.
@@ -5578,7 +5609,7 @@ export class TelegramAdapter implements MessagingAdapter {
         reply_markup: { inline_keyboard: [keyboard] },
         parse_mode: 'HTML',
         _formatMode: 'html',
-      }) as { message_id: number };
+      }) as { message_id: number; chat?: { id: number } };
     } else {
       // No options — text reply expected (clarifying question)
       result = await this.apiCall('sendMessage', {
@@ -5587,13 +5618,14 @@ export class TelegramAdapter implements MessagingAdapter {
         text,
         parse_mode: 'HTML',
         _formatMode: 'html',
-      }) as { message_id: number };
+      }) as { message_id: number; chat?: { id: number } };
     }
 
     // Track pending reply for text-input prompts
     this.pendingPromptReply.set(topicId, {
       prompt,
       relayMessageId: result.message_id,
+      relayChatId: result.chat?.id,
       createdAt: Date.now(),
     });
 
@@ -5644,6 +5676,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * Handle a Telegram callback query from an inline keyboard button press.
    */
   private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    normalizeInboundThread(query.message as { chat?: { id?: number }; message_thread_id?: number } | undefined, this.topicSpace());
     if (!query.data) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
@@ -5762,7 +5795,9 @@ export class TelegramAdapter implements MessagingAdapter {
       if (query.message) {
         await this.editMessageWithRetry(
           query.message.message_id,
-          '\u274C Session expired before response received'
+          '\u274C Session expired before response received',
+          3,
+          query.message.chat?.id,
         );
       }
       return;
@@ -5788,7 +5823,9 @@ export class TelegramAdapter implements MessagingAdapter {
     if (query.message) {
       await this.editMessageWithRetry(
         query.message.message_id,
-        `\u2705 Responded: ${context.key}`
+        `\u2705 Responded: ${context.key}`,
+        3,
+        query.message.chat?.id,
       );
     }
 
@@ -5882,7 +5919,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Update the relay message to show it was answered
     this.editMessageWithRetry(
       pending.relayMessageId,
-      `\u2705 Answered: "${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''}"`
+      `\u2705 Answered: "${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''}"`,
+      3,
+      pending.relayChatId,
     ).catch(() => {});
 
     console.log(`[prompt-gate] Text reply intercepted: session="${pending.prompt.sessionName}" text="${sanitized.slice(0, 50)}"`);
@@ -5928,7 +5967,9 @@ export class TelegramAdapter implements MessagingAdapter {
         // Update the relay message
         this.editMessageWithRetry(
           pending.relayMessageId,
-          '\u274C Session ended before response received'
+          '\u274C Session ended before response received',
+          3,
+          pending.relayChatId,
         ).catch(() => {});
       }
     }
@@ -5953,7 +5994,9 @@ export class TelegramAdapter implements MessagingAdapter {
         this.pendingPromptReply.delete(topicId);
         this.editMessageWithRetry(
           pending.relayMessageId,
-          '\u23f0 Prompt expired — no response received. Check the dashboard to respond manually.'
+          '\u23f0 Prompt expired — no response received. Check the dashboard to respond manually.',
+          3,
+          pending.relayChatId,
         ).catch(() => {});
 
         // Release relay lease
@@ -6009,6 +6052,10 @@ export class TelegramAdapter implements MessagingAdapter {
     // PR2: run the formatter on sendMessage / editMessageText when a non-legacy
     // mode is configured. Legacy-passthrough (default) preserves the caller's
     // parse_mode byte-for-byte. See docs/specs/TELEGRAM-MARKDOWN-RENDERER-SPEC.md.
+    // Issues-group topics carry internal ids in a disjoint range; route them to the
+    // issues chat with the real thread id (idempotent; no-op for main-group topics).
+    // docs/specs/telegram-issues-group.md
+    params = toWireParams(params, this.topicSpace());
     const sendParams = applyTelegramFormatter(
       method,
       params,

@@ -17873,7 +17873,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { name, color, firstMessage } = req.body;
+    const { name, color, firstMessage, kind } = req.body;
+    if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
+      res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
+      return;
+    }
     if (!name || typeof name !== 'string' || name.trim().length < 1) {
       res.status(400).json({ error: '"name" is required (non-empty string)' });
       return;
@@ -17903,7 +17907,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const iconColor = typeof color === 'number' ? color : 9367192;
 
     try {
-      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor, { origin: 'user' });
+      // An issue topic goes to the agent's issues group when one is configured
+      // (docs/specs/telegram-issues-group.md); otherwise the main group, as before.
+      const space = kind === 'issue' && ctx.telegram.hasIssuesGroup?.() === true ? 'issues' : 'main';
+      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor, { origin: 'user', space });
 
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
@@ -17920,6 +17927,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         created: !topic.reused,
         reused: topic.reused,
         messageSent,
+        group: space,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
