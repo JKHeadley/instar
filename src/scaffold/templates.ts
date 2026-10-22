@@ -11,6 +11,7 @@
 
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
+import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
 
@@ -1838,6 +1839,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
     content += '\n' + telegramOriginForwardAwareness(port);
     content += '\n' + telegramSystemTopicsAwareness();
     content += '\n' + poolReadSelectionAwareness();
+    content += '\n' + peerHomebaseAwareness();
     content += '\n' + telegramDashboardEditAwareness();
     content += `
 ## Telegram Relay

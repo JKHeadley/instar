@@ -142,3 +142,49 @@ calling these from the trust-verify path are NOT in this commit.
 
 **Honest status:** the record exists and nothing writes to it in production yet. Creating the
 topic and calling this from the verify path is the remaining increment.
+
+---
+
+# Increment 4 — wiring: the topic is created on mutual-verify
+
+**Change:** `ensurePeerHomebase` in `peerHomebase.ts`, called from the pairing-confirm route
+(`POST /threadline/pairing/:peerFp/verify`) downstream of `markMutualVerified`; the awareness
+card (`peerHomebaseAwareness`) in both the template and the migration, each with its own guard.
+
+1. **Over-block:** nothing is blocked. The call cannot fail a pairing: it is in a `try/catch`
+   beside the existing best-effort receipt, and every internal failure path returns a reason
+   instead of throwing. A peer with no homebase routes to existing behaviour.
+2. **Under-block:** creation is only attempted when a pairing is CONFIRMED, so peers verified
+   before this shipped get nothing until their next verify — the §6 no-backfill cut. A deleted
+   topic leaves a stale recorded id, also §6.
+3. **Abstraction fit:** at the route, downstream of the trust write, because the spec requires
+   the trust single-writer to stay a single writer and an external side-effect must not sit
+   inside it. The decision logic stays in the pure module; the route supplies the deps.
+4. **Signal vs authority:** it creates and records; it gates nothing and refuses nothing. The
+   one authority-shaped choice — `origin: 'user'` on the topic creation — is justified by the
+   operator-ratified exception in spec §2.5 and is bounded by pairing being human-gated.
+5. **Interactions:** sits beside the receipt send, which already establishes the
+   "best-effort after confirmation" pattern, so the handler's success path is unchanged except
+   for an added optional `homebaseTopicId` in the response. `findOrCreateForumTopic` is the
+   funnelled primitive, so the universal topic-creation ceiling still applies.
+   The handler became `async`, which Express already supports on this router.
+6. **External surfaces:** **yes — this creates a Telegram topic**, the first increment with a
+   user-visible effect. One per mutually-verified peer, holder-only, gated. The response gains
+   an optional field. No new route.
+7. **Multi-machine posture:** **machine-local creation by lease** · the record is **unified**
+   (it rides the trust profile). A standby creates nothing — the 41-duplicate-"Updates" failure
+   — enforced by `holdsLease: !ctx.state.readOnly`, the same signal the system-topic route uses.
+8. **Rollback:** the gate. `threadline.peerHomebase.enabled: false` makes it a strict no-op
+   (asserted by a test that the topic primitive is never touched when disabled). Reverting the
+   commit removes the call. Topics already created are left alone — they may carry messages.
+
+**Second pass:** this is the first increment with an external side-effect, so the Phase 5 list
+is worth re-checking: it makes no block/allow decision on messaging or dispatch, touches no
+session lifecycle, no compaction, no coherence gate, idempotency check or trust level. It
+creates a topic. Recorded as `not-required`, but noted as the increment where that judgment
+stopped being obvious.
+
+**Migration parity:** the card is in `generateClaudeMd()` AND `migrateClaudeMd()` under its OWN
+sniff string. It was first nested under the pool-read guard, which would have meant an agent
+that already had that card could never receive this one — caught and fixed, and pinned by a test
+that asserts the two guards are independent.

@@ -7,6 +7,7 @@ import {
   decideHomebaseBind,
   selectConversationToBind,
   HOMEBASE_FP_SUFFIX_LEN,
+  ensurePeerHomebase,
 } from '../../src/threadline/peerHomebase.js';
 
 describe('homebaseTopicName', () => {
@@ -89,5 +90,74 @@ describe('selectConversationToBind', () => {
   it('passes the preserve verdict through for a single protected conversation', () => {
     const r = selectConversationToBind([{ boundTopicId: 9, boundTopicSource: 'operator' }]);
     expect('verdict' in r && r.verdict).toEqual({ bind: false, reason: 'operator' });
+  });
+});
+
+describe('ensurePeerHomebase', () => {
+  const base = () => ({
+    enabled: true,
+    holdsLease: true,
+    findOrCreateTopic: async (_n: string) => ({ topicId: 500, reused: false }),
+    getRecorded: (_fp: string) => undefined as number | undefined,
+    record: (_fp: string, _t: number) => true,
+  });
+
+  it('creates and records for a verified peer', async () => {
+    const calls: string[] = [];
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(),
+      findOrCreateTopic: async (n) => { calls.push(n); return { topicId: 500, reused: false }; },
+    });
+    expect(r).toEqual({ created: true, topicId: 500, reused: false });
+    expect(calls).toEqual(['pp · Threadline · abcdef']);
+  });
+
+  it('is a strict no-op when the gate is off — an un-flipped agent behaves exactly as before', async () => {
+    let touched = false;
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(), enabled: false,
+      findOrCreateTopic: async (n) => { touched = true; return { topicId: 1, reused: false }; },
+    });
+    expect(r).toEqual({ created: false, reason: 'disabled' });
+    expect(touched).toBe(false);
+  });
+
+  it('a standby creates NOTHING — the 41-duplicate-topics failure', async () => {
+    let touched = false;
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(), holdsLease: false,
+      findOrCreateTopic: async () => { touched = true; return { topicId: 1, reused: false }; },
+    });
+    expect(r).toEqual({ created: false, reason: 'not-lease-holder' });
+    expect(touched).toBe(false);
+  });
+
+  it('does not create a second topic when one is already recorded', async () => {
+    let touched = false;
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(), getRecorded: () => 42,
+      findOrCreateTopic: async () => { touched = true; return { topicId: 1, reused: false }; },
+    });
+    expect(r).toEqual({ created: false, reason: 'already-recorded', topicId: 42 });
+    expect(touched).toBe(false);
+  });
+
+  it('reports a create failure instead of throwing — a pairing must never fail on this', async () => {
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(), findOrCreateTopic: async () => { throw new Error('Chat is not a forum'); },
+    });
+    expect(r).toEqual({ created: false, reason: 'create-failed' });
+  });
+
+  it('surfaces a refused record rather than swallowing it', async () => {
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', { ...base(), record: () => false });
+    expect(r).toEqual({ created: false, reason: 'record-refused' });
+  });
+
+  it('passes the reused flag through, so a found topic is distinguishable from a new one', async () => {
+    const r = await ensurePeerHomebase('abcdef0011', 'pp', {
+      ...base(), findOrCreateTopic: async () => ({ topicId: 9, reused: true }),
+    });
+    expect(r).toEqual({ created: true, topicId: 9, reused: true });
   });
 });

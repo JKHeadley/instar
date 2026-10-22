@@ -1,5 +1,6 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
+import { peerHomebaseAwareness } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -6961,6 +6962,17 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + poolReadSelectionAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool-read selection + failure-reason awareness');
+    }
+
+    // peer-conversation-homebase-topic — where a peer agent's notices go.
+    // Its OWN sniff string, deliberately: nesting it under the pool-read guard above would
+    // mean an agent that already received that card could never receive this one, which is
+    // the Migration Parity defect the standard exists to prevent (a feature that only
+    // reaches new agents is a broken feature).
+    if (!content.includes('per-peer homebase topic')) {
+      content += '\n' + peerHomebaseAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
     }
 
     if (!content.includes('/telegram/system-topics')) {

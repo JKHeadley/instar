@@ -19589,7 +19589,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Operator confirm/deny of a pairing — PIN-GATED (FD7). The local human SAS
   // comparison is the load-bearing security event; the agent Bearer token CANNOT
   // confirm. checkMandatePin is the EXACT mechanism /mandate/issue uses.
-  router.post('/threadline/pairing/:peerFp/verify', (req, res) => {
+  router.post('/threadline/pairing/:peerFp/verify', async (req, res) => {
     if (!verifiedPairingRouteEnabled()) {
       res.status(503).json({ error: 'verified pairing not enabled' });
       return;
@@ -19707,7 +19707,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       console.warn(`[pairing] receipt to ${peerFp.slice(0, 12)} not sent: ${err instanceof Error ? err.message : String(err)}`);
     }
-    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent });
+    // ── Per-peer homebase topic (peer-conversation-homebase-topic §2.1) ──
+    // Downstream of the trust write and best-effort, exactly like the receipt above: a
+    // notice about a peer used to land in whatever topic its thread happened to start in
+    // (the 2026-10-21 `pp` incident), and the fix is a topic of its own. Creating a Telegram
+    // topic is an external side-effect, so a failure here must never fail or delay a
+    // confirmed pairing — every path returns a reason instead of throwing, and the peer
+    // simply has no homebase, which routes to existing behaviour.
+    let homebaseTopicId: number | null = null;
+    try {
+      const { ensurePeerHomebase } = await import('../threadline/peerHomebase.js');
+      const hbCfg = (ctx.config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
+      const confirmed = trustManager.getProfileByFingerprint(peerFp);
+      const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
+        enabled: resolveDevAgentGate(hbCfg?.enabled, ctx.config),
+        // A standby that created one would mint a fresh topic per boot — the failure that
+        // produced 41 duplicate "Updates" topics before the system-topic pattern existed.
+        holdsLease: !ctx.state.readOnly,
+        findOrCreateTopic: async (name) => {
+          if (!ctx.telegram) throw new Error('no telegram adapter');
+          const r = await ctx.telegram.findOrCreateForumTopic(name, undefined, {
+            // `user`: the operator asked for one topic per paired agent (§2.5 records his
+            // words). Pairing is human-gated, so the agent cannot grow the set on its own.
+            origin: 'user',
+            label: 'peer-homebase',
+          });
+          return { topicId: r.topicId, reused: r.reused };
+        },
+        getRecorded: (fp) => trustManager.getHomebaseTopic(fp),
+        record: (fp, topicId) => trustManager.setHomebaseTopic(fp, topicId),
+        log: (m) => console.log(m),
+      });
+      if (outcome.created) homebaseTopicId = outcome.topicId;
+      else if (outcome.reason === 'already-recorded') homebaseTopicId = outcome.topicId;
+    } catch (err) {
+      console.warn(`[homebase] skipped for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent, ...(homebaseTopicId !== null ? { homebaseTopicId } : {}) });
   });
 
   // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────

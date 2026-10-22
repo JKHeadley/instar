@@ -83,3 +83,74 @@ export function selectConversationToBind<T extends HomebaseBindCandidate>(
   const only = conversations[0]!;
   return { conversation: only, verdict: decideHomebaseBind(only) };
 }
+
+// ── Creation ────────────────────────────────────────────────────────────────
+
+export interface EnsureHomebaseDeps {
+  /** Gate. Absent/false ⇒ strict no-op, so an un-flipped agent behaves exactly as before. */
+  enabled: boolean;
+  /**
+   * Only the serving-lease holder creates. A standby that creates would mint a second topic
+   * per boot — the failure that produced 41 duplicate "Updates" topics before the
+   * system-topic pattern existed.
+   */
+  holdsLease: boolean;
+  /** Idempotent on the name: an existing topic with it is reused, never duplicated. */
+  findOrCreateTopic: (name: string) => Promise<{ topicId: number; reused: boolean }>;
+  /** The peer's already-recorded homebase, if any. */
+  getRecorded: (peerFp: string) => number | undefined;
+  /** Records it. Returns false if it refuses (e.g. a different id already stands). */
+  record: (peerFp: string, topicId: number) => boolean;
+  log?: (msg: string) => void;
+}
+
+export type EnsureHomebaseResult =
+  | { created: false; reason: 'disabled' | 'not-lease-holder' | 'no-fingerprint' }
+  | { created: false; reason: 'already-recorded'; topicId: number }
+  | { created: false; reason: 'create-failed' | 'record-refused' }
+  | { created: true; topicId: number; reused: boolean };
+
+/**
+ * Ensure a mutually-verified peer has a homebase topic.
+ *
+ * Called DOWNSTREAM of the trust write and never inside it: creating a Telegram topic is an
+ * external side-effect, and a failure here must never fail or delay a pairing. Every failure
+ * path therefore returns a reason rather than throwing, and the caller treats it as
+ * best-effort — the peer simply has no homebase, which routes to existing behaviour.
+ *
+ * It does NOT bind any conversation. An unbound conversation already resolves to the homebase
+ * at routing time, so a write would add risk for no behavioural gain, and re-pointing an
+ * already-bound one is an explicit operator action (spec §2N.4).
+ */
+export async function ensurePeerHomebase(
+  peerFp: string,
+  peerName: string,
+  d: EnsureHomebaseDeps,
+): Promise<EnsureHomebaseResult> {
+  if (!d.enabled) return { created: false, reason: 'disabled' };
+  if (!peerFp) return { created: false, reason: 'no-fingerprint' };
+  if (!d.holdsLease) return { created: false, reason: 'not-lease-holder' };
+
+  const existing = d.getRecorded(peerFp);
+  if (typeof existing === 'number') return { created: false, reason: 'already-recorded', topicId: existing };
+
+  const name = homebaseTopicName(peerName, peerFp);
+  let topicId: number;
+  let reused: boolean;
+  try {
+    const r = await d.findOrCreateTopic(name);
+    topicId = r.topicId;
+    reused = r.reused;
+  } catch (err) {
+    d.log?.(`[homebase] create failed for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
+    return { created: false, reason: 'create-failed' };
+  }
+
+  if (!d.record(peerFp, topicId)) {
+    // A different id already stands. The topic just created (or reused) is left alone rather
+    // than deleted — it may carry messages — and the refusal is surfaced, not swallowed.
+    d.log?.(`[homebase] record refused for ${peerFp.slice(0, 12)} (topic ${topicId})`);
+    return { created: false, reason: 'record-refused' };
+  }
+  return { created: true, topicId, reused };
+}
