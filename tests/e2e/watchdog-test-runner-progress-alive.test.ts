@@ -53,11 +53,23 @@ describe('E2E: a real test run past the floor is spared while it is still workin
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-real-suite-'));
     // A real package whose `npm test` burns CPU — a genuine test-runner argv
     // with a genuine subtree below it, not a process pretending to be one.
+    //
+    // The burner is a local `vitest` bin, so the subtree carries a recognisable
+    // runner below npm. On Linux npm's title is cut back to its first value,
+    // `npm` (entry.js sets that before the full `npm test`, and the kernel-side
+    // title cannot grow past it), so the npm row alone does not classify. A
+    // real suite is spared there through its vitest descendant, and this
+    // fixture now has one too.
+    const bin = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'vitest'),
+      `#!/usr/bin/env node\nconst end=Date.now()+${BURN_MS}; while(Date.now()<end) Math.sqrt(Math.random());\n`,
+      { mode: 0o755 });
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
       name: 'watchdog-e2e-fixture',
       version: '0.0.0',
       private: true,
-      scripts: { test: `node -e "const end=Date.now()+${BURN_MS}; while(Date.now()<end) Math.sqrt(Math.random());"` },
+      scripts: { test: 'vitest' },
     }));
     child = spawn('npm', ['test', '--silent'], { cwd: dir, stdio: ['ignore', 'ignore', 'ignore'] });
     joined = new Promise<void>((resolve) => child.once('close', () => { closed = true; resolve(); }));
@@ -132,7 +144,7 @@ describe('E2E: a real test run past the floor is spared while it is still workin
     const deadline = performance.now() + 15_000;
     while (performance.now() < deadline) {
       const rows = await snapshot();
-      if (rows.some((r) => /(?:^|\/)npm\b/.test(r.command) && /\btest\b/.test(r.command))) return rows;
+      if (rows.some((r) => /(?:^|\/)vitest\b/.test(r.command))) return rows;
       await delay(100);
     }
     return [];
