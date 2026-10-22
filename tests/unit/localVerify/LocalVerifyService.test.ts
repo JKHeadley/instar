@@ -707,7 +707,9 @@ describe('restore race', () => {
       .concat(snap.inFlight && snap.inFlight.kind !== 'main' ? [snap.inFlight.pr] : []).sort();
     expect(prs).toEqual([1, 2, 5]);
     // FIFO kept: the restored entries are ahead of the POST that arrived during the restore.
-    expect(snap.queue.filter((x) => x.kind !== 'main').map((x) => x.pr)).toEqual([1, 2, 5]);
+    // (the running one, if a PR, came off the head of that order)
+    const order = (snap.inFlight && snap.inFlight.kind !== 'main' ? [snap.inFlight.pr] : []).concat(snap.queue.filter((x) => x.kind !== 'main').map((x) => x.pr));
+    expect(order).toEqual([1, 2, 5]);
     const after = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8')).entries.map((x: { pr: number }) => x.pr).sort();
     expect(after).toEqual([1, 2, 5]);
   });

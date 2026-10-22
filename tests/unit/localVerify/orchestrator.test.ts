@@ -37,13 +37,16 @@ const PKG = JSON.stringify({
 });
 const UNIT_SRC = `import { it } from 'vitest'; it('a', () => {});`;
 
-function vitestReport(rel: string, statuses: string[]): string {
+function vitestReport(rel: string, statuses: string[], msg = 'boom'): string {
+  return vitestReportMany({ [rel]: statuses }, msg);
+}
+function vitestReportMany(byFile: Record<string, string[]>, msg = 'boom'): string {
   return JSON.stringify({
-    testResults: [{
+    testResults: Object.entries(byFile).map(([rel, statuses]) => ({
       name: path.join(P.runDir, rel), status: statuses.includes('failed') ? 'failed' : 'passed', message: '',
       startTime: 0, endTime: 1,
-      assertionResults: statuses.map((s, i) => ({ status: s, title: `t${i}`, fullName: `t${i}`, ancestorTitles: [], failureMessages: [], meta: {} })),
-    }],
+      assertionResults: statuses.map((s, i) => ({ status: s, title: `t${i}`, fullName: `t${i}`, ancestorTitles: [], failureMessages: s === 'failed' ? [msg] : [], meta: {} })),
+    })),
   });
 }
 
@@ -61,6 +64,20 @@ interface FakeOpts {
   shows?: Record<string, string>;
   /** Holders seen before each lane, consumed in order of calls. */
   holders?: Array<number[]>;
+  /** A lane with several files: file → statuses of its first run (replaces the lane's single file). */
+  laneFiles?: Partial<Record<'unit' | 'integration' | 'e2e', Record<string, string[]>>>;
+  /** Isolation re-run outcome per file (default passes); 'deadline' = the re-run hits its deadline. */
+  rerun?: Record<string, string[] | 'deadline'>;
+  /** Duration of each isolation re-run (default 1000 ms). */
+  rerunMs?: number;
+  /** Unhandled errors the trusted reporter records per lane run (default 0). */
+  unhandled?: Partial<Record<'unit' | 'integration' | 'e2e', number>>;
+  /** Unhandled errors in an isolation re-run (default 0). */
+  rerunUnhandled?: number;
+  /** No trusted reporter available (unknown unhandled count). */
+  noReporter?: boolean;
+  /** Relative import graph per test file (default: the file alone). */
+  imports?: Record<string, string[]>;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -95,7 +112,10 @@ function fake(o: FakeOpts = {}) {
         return ok();
       }
       case 'status': return ok(o.porcelain ?? '');
-      case 'ls-tree': return ok(['package.json', 'src/index.ts', ...TEST_FILES, 'tests/fixtures/x.test.ts'].join('\n') + '\n');
+      case 'ls-tree': {
+        const extra = Object.values(o.laneFiles ?? {}).flatMap((m) => Object.keys(m ?? {}));
+        return ok(['package.json', 'src/index.ts', ...TEST_FILES, ...extra, 'tests/fixtures/x.test.ts'].join('\n') + '\n');
+      }
       case 'merge-base': return ok(`${MB}\n`);
       case 'diff': return ok(o.diff ?? 'M\ttests/unit/a.test.ts\nM\tsrc/index.ts\n');
       case 'show': {
@@ -134,6 +154,27 @@ function fake(o: FakeOpts = {}) {
       if (key === 'build') return r(0);
       const out = args.find((a) => a.startsWith('--outputFile='))!.slice('--outputFile='.length);
       const lane = key as 'unit' | 'integration' | 'e2e';
+      const errFile = opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
+      const isRerun = args.slice(1).some((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--config');
+      if (errFile && args.includes('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js')) {
+        files.set(errFile, JSON.stringify({ v: 1, unhandledErrors: isRerun ? (o.rerunUnhandled ?? 0) : (o.unhandled?.[lane] ?? 0), messages: [] }));
+      }
+      const positional = args.slice(1).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--config');
+      if (positional.length > 0) {
+        // An isolation re-run of one file.
+        const file = positional[0];
+        const outcome = o.rerun?.[file] ?? ['passed'];
+        const rd = o.rerunMs ?? 1000;
+        if (outcome === 'deadline' || rd > opts.deadlineMs) { t += opts.deadlineMs; return { ...r(null), signal: 'SIGTERM', deadlineKilled: true }; }
+        t += rd - dur; // (dur was already added)
+        files.set(out, vitestReport(file, outcome, 'boom again'));
+        return r(outcome.includes('failed') ? 1 : 0);
+      }
+      const many = o.laneFiles?.[lane];
+      if (many) {
+        files.set(out, vitestReportMany(many));
+        return r(Object.values(many).some((x) => x.includes('failed')) ? 1 : 0);
+      }
       const file = TEST_FILES.find((f) => f.includes(`/${lane}/`))!;
       const statuses = o.laneStatuses?.[lane] ?? ['passed'];
       files.set(out, vitestReport(file, statuses));
@@ -151,6 +192,11 @@ function fake(o: FakeOpts = {}) {
     sleep: async (ms) => { t += ms; },
     foreignSuiteHolders: () => (o.holders?.[holderCall++] ?? []).map((pid) => ({ pid })),
     log: (e) => { logs.push(e); },
+    unhandledErrorsReporter: () => (o.noReporter ? null : '/opt/instar/dist/localVerify/unhandledErrorsReporter.js'),
+    importGraph: (fs2) => fs2.flatMap((abs) => {
+      const rel = path.relative(P.runDir, abs);
+      return [abs, ...(o.imports?.[rel] ?? []).map((x) => path.join(P.runDir, x))];
+    }),
   };
   return { seams, files, dirs, removed, gitCalls, execCalls, logs, now: () => t };
 }
@@ -160,7 +206,8 @@ function input(over: Partial<VerifyRunInput> = {}): VerifyRunInput {
     repo: 'JKHeadley/instar', pr: 42, headSha: HEAD, baseSha: BASE, baseRefName: 'main', agentHome: HOME,
     remoteUrl: 'https://github.com/JKHeadley/instar.git', nodeVersion: 'v24.1.0', machineId: 'm_studio',
     verifierVersion: '1.3.1204', policyHash: 'f'.repeat(64), protectedList: ['.github/', 'scripts/safe-merge.mjs'],
-    baseEnv: { PATH: '/usr/bin:/bin', HOME: '/Users/x', CI: 'true' }, ...over,
+    baseEnv: { PATH: '/usr/bin:/bin', HOME: '/Users/x', CI: 'true' },
+    isolation: { allowed: true, notCleanOnGreenMain: [] }, ...over,
   };
 }
 
@@ -333,8 +380,8 @@ describe('runVerify — errors', () => {
 });
 
 describe('runVerify — failures', () => {
-  it('a failed test is a failure and the worktree is kept', async () => {
-    const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] } }).seams);
+  it('a failed test that fails again on its isolation re-run is a failure and the worktree is kept', async () => {
+    const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] }, rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } }).seams);
     expect(r.kind).toBe('record');
     if (r.kind !== 'record') return;
     expect(r.record.outcome).toBe('failure');
@@ -444,5 +491,132 @@ describe('runVerify — repository pinning and the init-skip check', () => {
     await runVerify(input(), f.seams);
     expect(f.removed).not.toContain(P.bare);
     expect(f.gitCalls.some((c) => c.args[0] === 'init')).toBe(false);
+  });
+});
+
+describe('runVerify — isolation re-run of failed files (evidence-per-run known-flaky)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  it('one flaky file: re-run once alone with the same lane flags, the lane passes, the record names it', async () => {
+    const f = fake({ laneStatuses: { integration: ['passed', 'failed'] } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(r.kind === 'record' && r.record.flakyRetried).toEqual([{ file: 'tests/integration/b.test.ts', lane: 'integration', firstMessage: expect.stringContaining('boom') }]);
+    const calls = vitestCalls(f);
+    expect(calls).toHaveLength(4);
+    const re = calls[2];
+    expect(re.args).toContain('tests/integration/b.test.ts');
+    expect(re.args).toContain('--allowOnly=false');
+    expect(re.args[re.args.indexOf('--config') + 1]).toBe('vitest.integration.config.ts');
+    expect(r.kind === 'record' && r.keptWorktree).toBeNull();
+  });
+  it('two failed files, one fails again: a real failure carrying both messages; the other is still recorded flaky', async () => {
+    const f = fake({
+      laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/x.test.ts': ['failed'], 'tests/unit/y.test.ts': ['passed', 'failed'] } },
+      rerun: { 'tests/unit/x.test.ts': ['failed'] },
+    });
+    const r = await runVerify(input(), f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('failure');
+    expect(r.failures).toEqual([expect.objectContaining({ file: 'tests/unit/x.test.ts', message: expect.stringContaining('boom'), rerunMessage: expect.stringContaining('boom again') })]);
+    expect(r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/unit/y.test.ts']);
+  });
+  it('four failed files: a real break, no re-run', async () => {
+    const four = Object.fromEntries(['p', 'q', 'r', 's'].map((n) => [`tests/unit/${n}.test.ts`, ['failed']]));
+    const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], ...four } } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'too-many-failures')).toBe(true);
+  });
+  it('no re-run when the lane has another failure (a file that collected nothing)', async () => {
+    const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/x.test.ts': ['failed'], 'tests/unit/z.test.ts': [] } } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+  });
+  it('the re-run respects the lane deadline: a re-run that hits it is a failure, never a pass or an error', async () => {
+    const unitBudget = LOCAL_VERIFY_DEADLINES.lanes.unit;
+    const f = fake({ laneStatuses: { unit: ['passed', 'failed'] }, durations: { unit: unitBudget - 30_000 }, rerunMs: 60_000, diff: 'M\tsrc/index.ts\n' });
+    const r = await runVerify(input(), f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('failure');
+    expect(r.failures?.[0].rerunMessage).toMatch(/deadline/);
+    const re = vitestCalls(f)[1];
+    expect(re.deadlineMs).toBeLessThanOrEqual(30_000);
+  });
+  it('the cap covers the whole verify: 2 + 2 failed files re-run only the first lane\'s 2', async () => {
+    const f = fake({
+      laneFiles: {
+        unit: { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/x.test.ts': ['failed'], 'tests/unit/y.test.ts': ['failed'] },
+        integration: { 'tests/integration/b.test.ts': ['passed'], 'tests/integration/m.test.ts': ['failed'], 'tests/integration/n.test.ts': ['failed'] },
+      },
+    });
+    const r = await runVerify(input(), f.seams);
+    expect(vitestCalls(f)).toHaveLength(5); // 3 lanes + 2 re-runs
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'rerun-budget-spent')).toBe(true);
+  });
+});
+
+describe('runVerify — isolation re-run safety (second pass)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  const oneFlake = { laneStatuses: { integration: ['passed', 'failed'] } } as const;
+  it('a failed file the PR changed is a real failure: no re-run', async () => {
+    const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'related-to-change')).toBe(true);
+  });
+  it('a failed file that imports a file the PR changed is a real failure: no re-run', async () => {
+    const f = fake({ ...oneFlake, diff: 'M\tsrc/core/thing.ts\n', imports: { 'tests/integration/b.test.ts': ['tests/helpers/h.ts', 'src/core/thing.ts'] } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+  });
+  it('a PR verify with no green main record on this machine never re-runs', async () => {
+    const f = fake(oneFlake);
+    const r = await runVerify(input({ isolation: { allowed: false, notCleanOnGreenMain: [] } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+  });
+  it('a file that was not clean on the last green main is not re-run', async () => {
+    const f = fake(oneFlake);
+    const r = await runVerify(input({ isolation: { allowed: true, notCleanOnGreenMain: ['tests/integration/b.test.ts'] } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+  });
+  it('a main verify keeps the plain rule (changed-file rule does not apply)', async () => {
+    const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
+    const r = await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(r.kind === 'record' && r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/integration/b.test.ts']);
+  });
+  it('an unhandled error in the lane is never hidden: no re-run, the lane fails', async () => {
+    const f = fake({ ...oneFlake, unhandled: { integration: 1 } });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'unhandled-errors')).toBe(true);
+  });
+  it('an unknown unhandled-error count (no trusted reporter) means no re-run', async () => {
+    const f = fake({ ...oneFlake, noReporter: true });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(vitestCalls(f)).toHaveLength(3);
+  });
+  it('a re-run that passes its tests but raises an unhandled error does not pass', async () => {
+    const f = fake({ ...oneFlake, rerunUnhandled: 2 });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+  });
+  it('each re-run gets a fresh TMPDIR and TMUX_TMPDIR, cleaned up afterwards', async () => {
+    const f = fake(oneFlake);
+    await runVerify(input(), f.seams);
+    const [lane, , rerun] = [vitestCalls(f)[1], null, vitestCalls(f)[2]];
+    expect(rerun.env.TMPDIR).toMatch(/lv-tmp-/);
+    expect(rerun.env.TMPDIR).not.toBe(lane.env.TMPDIR);
+    expect(rerun.env.TMUX_TMPDIR).not.toBe(lane.env.TMUX_TMPDIR);
+    expect(f.removed).toContain(rerun.env.TMPDIR);
+    expect(rerun.args).toContain('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js');
   });
 });

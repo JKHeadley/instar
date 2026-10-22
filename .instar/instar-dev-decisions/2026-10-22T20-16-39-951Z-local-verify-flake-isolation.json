@@ -1,0 +1,42 @@
+{
+  "ts": "2026-10-22T20:16:39.951Z",
+  "slug": "local-verify-flake-isolation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 705,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/mainHealth.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/policy.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/serviceSeams.ts",
+      "src/localVerify/unhandledErrorsReporter.ts",
+      "src/localVerify/verifierVersion.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 675,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Isolation re-runs are bounded at 3 files once each per verify, and fair share keeps main starts >=2 h apart when healthy and never twice in a row while PRs wait; both are new convergence models driving the real decision functions."
+    }
+  },
+  "verdict": "pass"
+}

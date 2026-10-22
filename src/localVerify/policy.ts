@@ -40,6 +40,12 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   /** Poll interval while waiting in place. */
   holderPollMs: 30_000,
   queueCap: 10,
+  /**
+   * Isolation re-run (Throughput budget, evidence-per-run "known-flaky"): a lane whose ONLY
+   * problem is 1..N failed files re-runs exactly those files once, one at a time. More than N
+   * failed files is a real break (no re-run). N is also the cap across a whole verify.
+   */
+  isolationRerunMaxFiles: 3,
   /** Oldest queued entry waiting longer than this (capacity waits included) raises `local-verify:starved`. */
   starvedAfterMs: 3 * 60 * MIN,
   /** Automatic re-runs of an `error` outcome. */

@@ -56,6 +56,19 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       const sha = out?.trim() ?? '';
       return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
     },
+    async commitInfo(sha: string): Promise<{ subject: string; parents: string[]; files: Array<{ filename: string; patch?: string | null }> | null } | null> {
+      if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+      const out = await gh(['api', `repos/${opts.repo}/commits/${sha}`, '--jq', '{subject: (.commit.message | split("\n")[0]), parents: [.parents[].sha], files: [(.files // [])[] | {filename, patch}]}']);
+      if (!out) return null;
+      try {
+        const o = JSON.parse(out) as { subject?: unknown; parents?: unknown; files?: unknown };
+        if (typeof o.subject !== 'string' || !Array.isArray(o.parents) || !o.parents.every((x) => typeof x === 'string')) return null;
+        const files = Array.isArray(o.files) && o.files.every((x) => !!x && typeof (x as { filename?: unknown }).filename === 'string')
+          ? (o.files as Array<{ filename: string; patch?: unknown }>).map((x) => ({ filename: x.filename, patch: typeof x.patch === 'string' ? x.patch : null }))
+          : null;
+        return { subject: o.subject, parents: o.parents as string[], files };
+      } catch { return null; } // @silent-fallback-ok: unreadable ⇒ verify as usual
+    },
     async isPrOpen(pr: number): Promise<boolean | null> {
       const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'state']);
       if (!out) return null;

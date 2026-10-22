@@ -19,7 +19,15 @@ import path from 'node:path';
 import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { getHostTestRunnerSemaphore } from '../core/hostTestRunnerSemaphore.js';
+import { fileURLToPath } from 'node:url';
 import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams } from './orchestrator.js';
+import { localImportGraph } from './verifierVersion.js';
+
+/** The trusted unhandled-errors reporter installed next to this module (dist), or null. */
+export function installedUnhandledErrorsReporter(): string | null {
+  const f = path.join(path.dirname(fileURLToPath(import.meta.url)), 'unhandledErrorsReporter.js');
+  return fs.existsSync(f) ? f : null;
+}
 
 const OUTPUT_TAIL = 64 * 1024;
 const KILL_GRACE_MS = 5_000;
@@ -140,5 +148,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
       }
     },
     log,
+    importGraph: (files) => localImportGraph(files),
+    unhandledErrorsReporter: installedUnhandledErrorsReporter,
   };
 }

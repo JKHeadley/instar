@@ -1,0 +1,23 @@
+## What Changed
+
+- **local-verify re-runs a lane's few failed files once, alone, before calling it red** (spec `docs/specs/local-verify-merge-authority.md`, Throughput budget). On 2026-10-22 the first two server-run `main` verifies each failed exactly one file that passes alone; with `main` moving often, every new head's first failure re-entered `main-suspect`, so one flake per run kept `main` suspect and stopped PR verifies. Now a lane whose only problem is 1–3 failed files re-runs exactly those files once, one at a time, with the same config, env and flags, under what is left of the lane budget (the cap of 3 covers the whole verify). On a PR verify a file the PR changed (or that imports a changed file), or any file when this machine has no green `main` record, is never re-run; a lane with an unhandled error is never re-run, and each re-run gets a fresh temp dir. A file that passes goes in the record's new `flakyRetried` field and the lane passes; one that fails again is a real failure with both messages; more than 3 failed files is a real break (no re-run).
+- **Each flaky file becomes a tracked item:** one deduped attention item per file (`local-verify:flaky:<file>`), re-raised with the count when the same file keeps flaking (3 times in 7 days), and `GET /local-verify/status` (and `GET /local-verify`) report `flakyFiles` (file → count, last seen, lane).
+- **Main verifies explain themselves (ACT-151):** a `main` verify writes the same bounded `run-detail` audit line as a PR verify (reasons, failures with first and re-run messages, flaky re-runs), and the `local-verify:main-red` item carries it.
+- **Fair share for the single slot:** with `main` healthy, a `main` verify starts ahead of waiting PR verifies once its oldest unverified merge is 90 minutes old; while `main` is suspect or red it keeps priority but takes at most every other start while PRs wait. A release commit (`chore: release v… [skip ci]`) that touches only release files and whose only parent this machine already verified (or has queued) triggers no `main` verify of its own.
+
+## What to Tell Your User
+
+Nothing to do. My own test runs no longer treat a test that fails once and then passes on its own as a broken build: they re-check it, keep going, and flag that test so it can be fixed. Checks on the main branch also stop crowding out checks on waiting changes.
+
+## Summary of New Capabilities
+
+- `flakyFiles` on `GET /local-verify/status` and `GET /local-verify`.
+- `flakyRetried` on local-verify records; `local-verify:flaky:<file>` attention items.
+- `run-detail` audit lines for `main` verifies.
+
+## Evidence
+
+- Unit (`tests/unit/localVerify/orchestrator.test.ts`): one flaky file passes after its re-run and is recorded; two failed files with one failing again ⇒ failure with both messages; four ⇒ no re-run; a zero-collected file ⇒ no re-run; the re-run respects the lane deadline; the per-verify cap.
+- Unit (`tests/unit/localVerify/mainHealth.test.ts`): main run-detail and main-red payload; one deduped signal per flaky file and `flakyFiles` across PR and main records; a main whose only failures were flakes leaves main health unchanged; fair share both sides (healthy 2 h window, unhealthy every-other start, unchanged order without inputs) and in the service; release collapse both sides.
+- `tests/unit/self-action-convergence.test.ts`: new models `local-verify-flake-rerun` (≤ 3 re-runs per verify, each file once) and `local-verify-main-fair-share` (main starts ≥ 2 h apart while PRs wait; never two in a row).
+- Each guard was removed in turn and a test failed (fair share, the re-run, its deadline cap, its per-verify cap, signal dedupe, main run-detail, release collapse).

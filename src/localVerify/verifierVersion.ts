@@ -44,7 +44,7 @@ const TYPE_ONLY_IMPORT = /^\s*(?:import|export)\s+type\b[\s\S]*?\bfrom\s*(['"])[
  * they import config and HTTP plumbing that changes with most releases and never alters a
  * verdict.
  */
-export const VERIFIER_ROOTS: readonly string[] = Object.freeze(['runVerifyMain', 'LocalVerifyService', 'mainHealth', 'record', 'policy', 'StatusReconciler']);
+export const VERIFIER_ROOTS: readonly string[] = Object.freeze(['runVerifyMain', 'LocalVerifyService', 'mainHealth', 'record', 'policy', 'StatusReconciler', 'unhandledErrorsReporter']);
 
 function rootFile(dir: string, name: string): string | null {
   for (const ext of ['.js', '.ts']) {

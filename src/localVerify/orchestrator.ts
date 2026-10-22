@@ -17,10 +17,11 @@
 
 import path from 'node:path';
 import { computeInventory, LANES, type LaneName } from './inventory.js';
-import { evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
+import { readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, type ChangedTestFile } from './skipRatchet.js';
 import { classifyHarness, protectedPath as isProtectedPath } from './harnessClassifier.js';
-import { validateRecord, type LocalVerifyRecord } from './record.js';
+import { FLAKY_RETRIED_MAX, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
 
 // ── Seams ──────────────────────────────────────────────────────────────
@@ -79,6 +80,10 @@ export interface OrchestratorSeams {
   /** Live full-suite holders of the host test-runner bound that are not one of `ours`. */
   foreignSuiteHolders(ours: ReadonlySet<number>): Array<{ pid: number }>;
   log(event: Record<string, unknown>): void;
+  /** Every file reachable through relative imports from `files` (absolute paths; roots included). */
+  importGraph?(files: string[]): string[];
+  /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
+  unhandledErrorsReporter?(): string | null;
 }
 
 // ── Input / output ─────────────────────────────────────────────────────
@@ -101,6 +106,13 @@ export interface VerifyRunInput {
   policyHash: string;
   /** The watcher's protected-path list (prefix semantics). */
   protectedList: readonly string[];
+  /**
+   * PR verifies only: whether an isolation re-run may treat a failed file as possibly flaky.
+   * `allowed` is false when this machine has no green `main` record; `notCleanOnGreenMain`
+   * lists files that did not pass cleanly there (they were themselves re-run-passed). Absent
+   * on a PR verify ⇒ no re-run. `main` verifies ignore it (the plain rule).
+   */
+  isolation?: { allowed: boolean; notCleanOnGreenMain: readonly string[] };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -113,6 +125,8 @@ export interface FailureDetail {
   lane: string;
   failed: number;
   message: string;
+  /** Set when the file was re-run alone and failed again: the re-run's message. */
+  rerunMessage?: string;
 }
 
 /** At most this many failure details travel with a result. */
@@ -125,7 +139,7 @@ export interface Overlap {
 }
 
 export type VerifyRunResult =
-  | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[] }
+  | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[] }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
   | { kind: 'invalid'; errors: string[] };
 
@@ -283,6 +297,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let failureReason: string | null = null;
   let evaluationReasons: string[] = [];
   let failures: FailureDetail[] = [];
+  const flakyRetried: FlakyRetry[] = [];
+  const firstMessages = new Map<string, string>();
+  const rerunMessages = new Map<string, string>();
+  let rerunBudget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
+  const reporter = seams.unhandledErrorsReporter?.() ?? null;
+  let changedForIsolation: Set<string> | null = null;
   let outcome: LocalVerifyRecord['outcome'] = 'success';
   let errorStep: string | undefined;
 
@@ -349,6 +369,18 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
     }
 
+    // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
+    if (input.kind !== 'main') {
+      try {
+        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
+        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff')).map((r) => r.path));
+      } catch { changedForIsolation = null; }
+    }
+
+    // The inventory comes first: the isolation re-run needs each lane's assigned files.
+    const tree = await gitOk(['ls-tree', '-r', '--name-only', mergeCommit], 'inventory');
+    const inventory = computeInventory(tree.split('\n').filter(Boolean));
+
     for (let i = 0; i < LANES.length; i++) {
       const lane = LANES[i];
       await singleFlight(lane.name, i === 0);
@@ -359,10 +391,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         env.AUDIT_CHANGE_BASE_SHA = input.baseSha;
         env.AUDIT_CHANGE_HEAD_SHA = input.headSha;
       }
+      const errorsPath = path.join(p.reportsDir, `${lane.name}.errors.json`);
+      if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
       const t = seams.now();
       const r = await exec(
         path.join(binDir, 'vitest'),
-        ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', `--outputFile=${reportPath}`],
+        ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`],
         lane.name, budget(d.lanes[lane.name]), env,
       );
       let report: ParsedLaneReport | null = null;
@@ -370,7 +404,28 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (text != null) {
         try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
       }
-      laneRuns.push({ lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode: r.status });
+      let exitCode = r.status;
+      // Isolation re-run: a lane whose only problem is 1..3 failed files re-runs exactly
+      // those files once, one at a time, under what is left of the lane budget.
+      const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
+      const failedHere = report ? [...report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f) : [];
+      const decision = decideIsolationRerun({
+        report, laneFiles: inventory.byLane[lane.name] ?? [],
+        maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: rerunBudget,
+        unhandledErrors: unhandled,
+        ineligible: failedHere.length > 0 ? await ineligibleFor(failedHere) : new Set<string>(),
+      });
+      if (decision.rerun.length > 0 && report) {
+        rerunBudget -= decision.rerun.length;
+        const laneDeadlineAt = t + d.lanes[lane.name];
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, env, laneDeadlineAt);
+        // The exit code is cleared only when the failed files explain it: they all passed alone
+        // AND the lane reported zero unhandled errors (checked before the re-run).
+        if (allPassed && unhandled === 0) exitCode = 0;
+      } else if (decision.reason !== 'no-failures') {
+        seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason });
+      }
+      laneRuns.push({ lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode });
     }
 
     // ── 5. Tree must be clean, then the inventory rule ──
@@ -380,14 +435,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (st.status !== 0) throw new RunError('porcelain', st.stderr.trim().slice(0, 200));
     const dirty = st.stdout.trim().length > 0;
 
-    const tree = await gitOk(['ls-tree', '-r', '--name-only', mergeCommit], 'inventory');
-    const inventory = computeInventory(tree.split('\n').filter(Boolean));
     const ev = evaluateRun(inventory, laneRuns);
     evaluationReasons = ev.reasons;
     failures = Object.entries(ev.perFile)
       .filter(([, c]) => c.failed > 0)
       .slice(0, FAILURE_DETAILS_MAX)
-      .map(([file, c]) => ({ file, lane: c.lane, failed: c.failed, message: c.message ?? '' }));
+      .map(([file, c]) => ({ file, lane: c.lane, failed: c.failed, message: firstMessages.get(file) ?? c.message ?? '', ...(rerunMessages.has(file) ? { rerunMessage: rerunMessages.get(file)! } : {}) }));
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -420,13 +473,92 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   };
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
+  if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };
   seams.log({ event: 'run-finished', pr: input.pr, headSha: input.headSha, outcome, errorStep, failureReason, reasons: evaluationReasons.slice(0, 20) });
-  return { kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures };
+  return { kind: 'record', record, reasons: evaluationReasons, overlaps, keptWorktree: kept, failures, ...(flakyRetried.length ? { flakyRetried } : {}) };
 
   // ── helpers (closures over the run) ──
+
+  /**
+   * Failed files that must NOT be treated as possibly flaky (PR verifies): every one when the
+   * PR rule cannot be applied (no green `main` record, no isolation input, unreadable diff);
+   * otherwise files the PR changed, files importing a changed file (static relative-import
+   * scan), and files that did not pass cleanly in the last green `main` verify. A `main`
+   * verify uses the plain rule (nothing is ineligible).
+   */
+  async function ineligibleFor(failed: readonly string[]): Promise<Set<string>> {
+    if (input.kind === 'main') return new Set();
+    const iso = input.isolation;
+    if (!iso || !iso.allowed || changedForIsolation === null) return new Set(failed);
+    const out = new Set<string>();
+    const notClean = new Set(iso.notCleanOnGreenMain);
+    for (const f of failed) {
+      if (changedForIsolation.has(f) || notClean.has(f)) { out.add(f); continue; }
+      let graph: string[] = [];
+      try { graph = seams.importGraph ? seams.importGraph([path.join(p.runDir, f)]) : []; } catch { graph = []; }
+      if (!seams.importGraph) { out.add(f); continue; } // no import scan available ⇒ cannot rule a change out
+      const rel = graph.map((g) => path.relative(p.runDir, g).split(path.sep).join('/'));
+      if (rel.some((g) => changedForIsolation!.has(g))) out.add(f);
+    }
+    if (out.size) seams.log({ event: 'isolation-rerun-ineligible', files: [...out].slice(0, 10) });
+    return out;
+  }
+
+  /* @self-action-controller: local-verify-flake-rerun */
+  /**
+   * Re-run each failed file alone, once, with the lane's own config, env and flags. A file
+   * that passes replaces its counts in the lane report and is recorded as flaky; one that
+   * fails again keeps the first run's counts and both messages. A re-run that would start
+   * past the lane deadline, or hits it, counts as failing again (never an infrastructure
+   * error: the lane itself finished in time). Returns true when every re-run passed.
+   */
+  async function isolationRerun(
+    lane: LaneName, config: string, files: readonly string[], report: ParsedLaneReport, env: NodeJS.ProcessEnv, laneDeadlineAt: number,
+  ): Promise<boolean> {
+    let all = true;
+    for (let k = 0; k < files.length; k++) {
+      const file = files[k];
+      const first = report.files.get(file)!;
+      firstMessages.set(file, first.message ?? '');
+      const ms = Math.min(laneDeadlineAt - seams.now(), remaining());
+      if (ms <= 0) {
+        rerunMessages.set(file, 'isolation re-run not started: lane budget spent');
+        seams.log({ event: 'isolation-rerun', lane, file, outcome: 'no-budget' });
+        all = false;
+        continue;
+      }
+      const out = path.join(p.reportsDir, `${lane}-rerun-${k}.json`);
+      const errs = path.join(p.reportsDir, `${lane}-rerun-${k}.errors.json`);
+      // A fresh TMPDIR and TMUX_TMPDIR for each re-run (nothing from the lane run leaks in).
+      const rTmp = seams.fs.mkdtemp('lv-tmp-');
+      const rTmux = seams.fs.mkdtemp('lv-tmux-');
+      tempDirs.push(rTmp, rTmux);
+      const rEnv: NodeJS.ProcessEnv = { ...env, TMPDIR: rTmp, TMUX_TMPDIR: rTmux, ...(reporter ? { LOCAL_VERIFY_UNHANDLED_ERRORS_FILE: errs } : {}) };
+      const r = await seams.exec(
+        path.join(binDir, 'vitest'),
+        ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
+        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); } },
+      );
+      let again: ParsedLaneReport | null = null;
+      const text = r.deadlineKilled ? null : seams.fs.readFile(out);
+      if (text != null) { try { again = parseVitestJson(text, p.runDir); } catch { again = null; } }
+      const c = again?.files.get(file);
+      const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
+      const passed = !!c && c.failed === 0 && c.passed > 0 && r.status === 0 && rerunUnhandled === 0;
+      seams.log({ event: 'isolation-rerun', lane, file, outcome: passed ? 'passed' : r.deadlineKilled ? 'deadline' : 'failed' });
+      if (passed) {
+        report.files.set(file, { ...c!, message: '' });
+        flakyRetried.push({ file, lane, firstMessage: (first.message ?? '').slice(0, 400) });
+      } else {
+        all = false;
+        rerunMessages.set(file, r.deadlineKilled ? 'isolation re-run hit the lane deadline' : (c?.message || `isolation re-run exit ${r.status ?? r.signal}`));
+      }
+    }
+    return all;
+  }
 
   async function singleFlight(lane: LaneName, first: boolean): Promise<void> {
     let holders = seams.foreignSuiteHolders(ourPids);

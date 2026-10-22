@@ -38,7 +38,24 @@ export interface LocalVerifyRecord {
    * Absent on every PR record.
    */
   kind?: 'main';
+  /**
+   * Files that failed in their lane and then passed when re-run alone, once, in the same
+   * verify (the evidence-per-run form of the spec's "known-flaky" idea, Throughput budget).
+   * Present only when at least one file was re-run and passed; the lane then counted as
+   * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
+   */
+  flakyRetried?: FlakyRetry[];
 }
+
+export interface FlakyRetry {
+  file: string;
+  lane: string;
+  /** The first run's failure (first failing test + message), bounded. */
+  firstMessage: string;
+}
+
+/** At most this many flaky entries on a record (the re-run cap is smaller). */
+export const FLAKY_RETRIED_MAX = 10;
 
 /** The `pr` value a `main` verify carries (records keyed by PR never use it). */
 export const MAIN_VERIFY_PR = 0;
@@ -92,6 +109,14 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (x.errorStep !== undefined && typeof x.errorStep !== 'string') errors.push('errorStep');
   for (const k of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
     if (typeof x[k] !== 'boolean') errors.push(k);
+  }
+  if (x.flakyRetried !== undefined) {
+    const ok = Array.isArray(x.flakyRetried) && x.flakyRetried.length <= FLAKY_RETRIED_MAX && x.flakyRetried.every((f) => {
+      const r = f as Record<string, unknown>;
+      return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
+        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
+    });
+    if (!ok) errors.push('flakyRetried');
   }
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }

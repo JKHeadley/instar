@@ -204,6 +204,7 @@ describe('local-verify routes (integration)', () => {
       takeoverFloorCheck: 'not-built',
       lastPass: { outcome: 'ok', heads: 1 },
       mainHealth: { mainHead: sha('b') },
+      flakyFiles: {}, // file → { count, lastSeen, lane } once an isolation re-run finds a flaky file
     });
     expect(calls.some((c) => c.includes('POST'))).toBe(false);
     // The would-post is audited (the PR is on the actions floor until the settings make local effective).

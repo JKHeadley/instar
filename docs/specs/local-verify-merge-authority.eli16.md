@@ -30,6 +30,10 @@ The pass mark is tied to one exact version of the code, so an old result, or a r
 
 Honest limits: the tests report their own result (exactly as on GitHub today), and the mark is posted with the same GitHub login the agents use, so a session that deliberately set out to fake it could. That is deliberate tampering, which this design does not try to stop; it stops the accidental case, which is the one that actually happens.
 
+## Flaky tests and taking turns
+
+A few tests fail now and then for no real reason, especially when the whole suite runs at once. When a run fails only one to three files, the checker re-runs just those files on their own. If they pass, the run counts as passing, and each such test is logged as something to fix. It does not do this when the PR touched that test or the code it uses, because then the failure may be real. Checks of the main branch and checks of pull requests also take turns now, so the main branch can't keep the checker busy while PRs wait.
+
 ## How it rolls out
 
 First the faster tests. Then the server starts posting the mark on every open pull request, while GitHub's checks keep working as today. After 10 real checks, Echo sends Justin the measured numbers, and on his yes switches merges over and sends him the one-tap link for the branch-rule setting. One setting puts everything back the way it is today.
