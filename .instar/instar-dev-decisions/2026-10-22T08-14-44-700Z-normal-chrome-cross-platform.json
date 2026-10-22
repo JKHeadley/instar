@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-22T08:14:44.700Z",
+  "slug": "normal-chrome-cross-platform",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/templates/scripts/browser/ndrive.sh"
+    ],
+    "addedLines": 5,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: every ndrive.sh call is one operator-asked driver command; its probe retries are one each, its waits are bounded by ND_LOCK_WAIT/ND_BRIDGE_TIMEOUT (wall time), and nothing in it re-triggers itself across calls"
+  },
+  "verdict": "pass"
+}

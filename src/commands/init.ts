@@ -454,7 +454,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
-  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS)`);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -856,7 +856,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
   installBrowserScripts(projectDir);
-  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS)');
+  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -1697,7 +1697,7 @@ export function installBuiltinSkills(skillsDir: string, port: number): void {
     },
     'normal-chrome-browser': {
       name: 'normal-chrome-browser',
-      description: 'Drive a real, signed-in, non-automated Chrome per account profile from the shell on macOS: read pages, click, run code in the page, find out why a button stays disabled.',
+      description: 'Drive a real, signed-in, non-automated Chrome per account profile from the shell on macOS (Apple Events) or Windows (real OS input + UI Automation): read pages, click, type, run code in the page, find out why a button stays disabled.',
       content: NORMAL_CHROME_BROWSER_SKILL_CONTENT,
     },
     'agent-readiness': {
@@ -5022,15 +5022,22 @@ function installSecretGet(projectDir: string): void {
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
 }
 
-/** The normal-Chrome helper scripts shipped in src/templates/scripts/browser/. */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+/**
+ * The normal-Chrome helper scripts shipped in src/templates/scripts/browser/: the three macOS tools
+ * (Apple Events) and the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
+ * with its WSL wrapper (ndrive.sh). All five install everywhere; each refuses the wrong platform itself.
+ */
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
+/** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
+export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
 
 /**
  * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
  * /normal-chrome-browser skill. Built-in and non-customizable, so they are always
  * overwritten (init, refreshScripts, and PostUpdateMigrator.migrateScripts all call
- * this). Framework-neutral; the scripts themselves refuse to run off macOS.
- * Returns the names written. Spec: docs/specs/normal-chrome-builtin-skill.md.
+ * this). Framework-neutral; each script refuses to run on the wrong platform.
+ * Returns the names written. Specs: docs/specs/normal-chrome-builtin-skill.md,
+ * docs/specs/normal-chrome-cross-platform.md.
  */
 export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');

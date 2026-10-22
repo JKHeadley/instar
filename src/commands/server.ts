@@ -170,7 +170,7 @@ import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/gua
 import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { AttentionConditionStore } from '../core/AttentionConditionStore.js';
-import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
@@ -185,7 +185,11 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
-import { resolveMeshPeerUrl } from '../core/resolveMeshPeerUrl.js';
+import {
+  resolveMeshPeerUrl,
+  resolveMeshPeerPreferredSelection,
+  type RopeRefusal,
+} from '../core/resolveMeshPeerUrl.js';
 import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -779,7 +783,15 @@ let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwne
 let _resolveRouterUrl: (() => string | null) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
-let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null = null;
+let _resolvePeerUrls:
+  | (() => Array<{
+      machineId: string;
+      url: string;
+      kind: PeerEndpointKind;
+      /** Ropes the credential guard skipped before this one was chosen. */
+      ropeRefusals: RopeRefusal[];
+    }>)
+  | null = null;
 // a2a-single-agent-identity §1–§2 — late-bound seams (the pieces are constructed in
 // different blocks; every consumer reads these lazily).
 let _identityLeaseEligible: () => boolean = () => true;
@@ -819,7 +831,7 @@ async function annotatePeerHandoff(
         .map((p) => ({ ...p, cap: _machinePoolRegistryForAnnotation?.getCapacity(p.machineId) ?? null }))
         .filter((p) => p.cap?.online !== false)
         .map((p) => ({ machineId: p.machineId, url: p.url, routerReceivedAt: p.cap?.routerReceivedAt ?? null })),
-      isUrlAllowed: (url) => isPeerUrlAllowedForCredentials(url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok,
+      isUrlAllowed: (url) => isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok,
       authToken: config.authToken ?? '',
       agentId: config.projectName,
       counters: {
@@ -18554,7 +18566,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const m = _listPoolMachines().find((x) => x.machineId === machineId);
             if (!m?.lastKnownUrl) return null;
             const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-            if (!isPeerUrlAllowedForCredentials(m.lastKnownUrl, extra).ok) return null;
+            if (!isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extra).ok) return null;
             const r = await fetch(`${m.lastKnownUrl}/guards`, {
               headers: { Authorization: `Bearer ${config.authToken}` },
               signal: AbortSignal.timeout(5000),
@@ -22239,6 +22251,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
+            // An automatic update restart waits for a running verify (a manual apply does not).
+            wiring.registerLocalVerifyRestartHold(autoUpdater, svc);
             localVerifyTimer = setInterval(() => { void svc.tick().catch(() => { /* a failed tick retries next interval */ }); }, 30_000);
             localVerifyTimer.unref();
             console.log(pc.green('  local-verify enabled (server-run test verification for merges)'));
@@ -22810,7 +22824,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const entry = registry.machines?.[channelRoot];
             if (entry?.status === 'active' && !entry.revokedAt) {
               const url = entry.lastKnownUrl ?? entry.endpoints?.[0]?.url;
-              if (url && isPeerUrlAllowedForCredentials(url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) try {
+              if (url && isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) try {
                 const requestNonce = randomBytes(32).toString('hex');
                 const body = { requestNonce };
                 const headers = machineAuthMod.signRequest(meshSelfId, meshIdMgr.loadSigningKey(), body);
@@ -25166,12 +25180,40 @@ export async function startServer(options: StartOptions): Promise<void> {
           // routing and lease traffic. A freshly enrolled peer can have live
           // LAN/Tailscale endpoints without the legacy lastKnownUrl field; the
           // old filter silently omitted that online machine from every pool view.
+          // Carries the endpoint KIND alongside the url: the credential guard
+          // requires it (so a caller cannot forget it), and selection now prefers
+          // the best ADMISSIBLE rope rather than the best rope — the fix for pool
+          // reads dead-ending on an inadmissible highest-ranked candidate.
           _resolvePeerUrls = () =>
             meshIdMgr
               .getActiveMachines()
               .filter((m) => m.machineId !== meshSelfId)
-              .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) }))
-              .filter((m): m is { machineId: string; url: string } => m.url != null);
+              .map((m) => {
+                const entry = m.entry;
+                const selection = resolveMeshPeerPreferredSelection(
+                  meshResolver,
+                  m.machineId,
+                  entry?.endpoints,
+                  entry?.lastKnownUrl,
+                  (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+                );
+                return {
+                  machineId: m.machineId,
+                  url: selection?.selection.url ?? null,
+                  kind: selection?.selection.kind ?? null,
+                  // Which ropes the guard skipped on the way to this one — so a
+                  // caller can report them instead of them vanishing.
+                  ropeRefusals: selection?.refusals ?? [],
+                };
+              })
+              .filter(
+                (m): m is {
+                  machineId: string;
+                  url: string;
+                  kind: PeerEndpointKind;
+                  ropeRefusals: RopeRefusal[];
+                } => m.url != null && m.kind != null,
+              );
           // EVERY registered non-revoked machine — URL or not — so the /guards
           // pool view can account for each by name (no-known-url is a NAMED row,
           // never a silent omission — GUARD-POSTURE-ENDPOINT-SPEC §2.3).
@@ -28497,7 +28539,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           })),
           fetchPeerState: async (peer, timeoutMs) => {
             if (!peer.url) return { ok: false, reason: 'no-known-url' };
-            if (!isPeerUrlAllowedForCredentials(peer.url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+            if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) return { ok: false, reason: 'url-rejected' };
             try {
               const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
                 headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-Machine-Id': pkSelfId }, signal: AbortSignal.timeout(timeoutMs),
@@ -28761,7 +28803,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       return await Promise.all(peers.map(async (peer) => {
-        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) {
+        if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) {
           return { machineId: peer.machineId, status: 'url-rejected' };
         }
         try {
@@ -28892,7 +28934,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
         if (!peer) return 'pending';
         const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+        if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return 'pending';
         try {
           const manager = coordinator.managers.identityManager;
           const self = manager.loadIdentity();
@@ -28941,7 +28983,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
           if (!peer) return 'pending';
           const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return 'pending';
           try {
             const manager = coordinator.managers.identityManager;
             const self = manager.loadIdentity();
@@ -29206,7 +29248,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const peers = _resolvePeerUrls?.() ?? [];
         const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         await Promise.all(peers.map(async (peer) => {
-          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return;
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return;
           try {
             const projectionNonce = randomBytes(32).toString('hex');
             const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/projection/by-machine/${encodeURIComponent(machineId)}?nonce=${projectionNonce}`, {

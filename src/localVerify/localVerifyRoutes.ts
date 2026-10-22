@@ -40,6 +40,7 @@ export function statusForResult(r: RequestResult): number {
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
     case 'main-unhealthy': return 409;
+    case 'stopping': return 503;
     default: return 500;
   }
 }

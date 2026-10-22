@@ -245,7 +245,7 @@ import {
 } from '../monitoring/guardAcceptedFallbacks.js';
 import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
-import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -1882,7 +1882,14 @@ export interface RouteContext {
   kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
-  resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
+  resolvePeerUrls?:
+    | (() => Array<{
+        machineId: string;
+        url: string;
+        kind: PeerEndpointKind;
+        ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+      }>)
+    | null;
   /** WS4.4(f) global pool-cache unification (MULTI-MACHINE-SEAMLESSNESS-SPEC
    *  §WS4.4 clause (f)): the ONE shared per-peer poll cache that every
    *  pool-scope surface routes its per-peer fetch through, so a dashboard
@@ -9913,7 +9920,7 @@ export function createRoutes(ctx: RouteContext): Router {
         failed.push({ machineId: machine.machineId, error: 'offline' });
         return;
       }
-      if (!isPeerUrlAllowedForCredentials(url, extraAllowlist).ok) {
+      if (!isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, extraAllowlist).ok) {
         // Credentials are never attached to a rejected URL.
         failed.push({ machineId: machine.machineId, error: 'url-rejected' });
         return;
@@ -10524,7 +10531,7 @@ export function createRoutes(ctx: RouteContext): Router {
           failed.push({ machineId: m.machineId, reason: 'offline' });
           return;
         }
-        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        const verdict = isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist);
         if (!verdict.ok) {
           // The Bearer token was NEVER attached (spec §3(c)) — visible, named.
           failed.push({ machineId: m.machineId, reason: 'url-rejected' });
@@ -12050,7 +12057,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const nickname = ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machine.nickname;
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
       ?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) {
+    if (!isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist).ok) {
       // The pool Bearer token NEVER travels to a non-allowlisted URL —
       // stronger here than on the read fan-out because this verb is
       // destructive (§2.1 shipping dependency).
@@ -13384,7 +13391,7 @@ export function createRoutes(ctx: RouteContext): Router {
         if (!m.lastKnownUrl) { failed.push({ machineId: m.machineId, reason: 'no-known-url' }); return; }
         if (capacity && capacity.online === false) { failed.push({ machineId: m.machineId, reason: 'offline' }); return; }
         const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        const verdict = isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist);
         if (!verdict.ok) { failed.push({ machineId: m.machineId, reason: 'url-rejected' }); return; }
         peersQueried++;
         try {
@@ -20222,7 +20229,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === intent.targetMachineId);
     if (!machine || !machine.lastKnownUrl) return 'queued';
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) return 'queued';
+    if (!isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist).ok) return 'queued';
     try {
       const r = await fetch(`${machine.lastKnownUrl}/attention/${encodeURIComponent(intent.itemId)}`, {
         method: 'PATCH',
@@ -21565,7 +21572,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remote: Array<Record<string, unknown>> = [];
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, jpExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, jpExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, error: 'url-rejected' });
             return;
           }
@@ -21818,7 +21825,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remotePoints: Array<Record<string, unknown>> = [];
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, dqExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, dqExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, error: 'url-rejected' });
             return;
           }
@@ -21961,7 +21968,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let peersOk = 0;
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, bdExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, bdExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, reason: 'url-rejected' });
             return;
           }
@@ -28909,7 +28916,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (ctx.fetchPasskeyPeerState) return ctx.fetchPasskeyPeerState(peer, timeoutMs);
     if (!peer.url) return { ok: false, reason: 'no-known-url' };
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+    if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: 'last-known-url' }, extraAllowlist).ok) return { ok: false, reason: 'url-rejected' };
     try {
       const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
         headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'X-Instar-Machine-Id': passkeySelfMachineId() },
@@ -29763,7 +29770,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const failed: Array<{ machineId: string; error: string }> = [];
     let remainingBytes = 256 * 1024;
     await Promise.all(peers.map(async (peer) => {
-      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extraAllowlist).ok) {
         failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
       }
       try {
@@ -32578,7 +32585,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (let i = 0; i < peers.length; i += 4) {
       await Promise.all(peers.slice(i, i + 4).map(async p => {
         if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
-        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, extraAllowlist).ok) {
           failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
         }
         try {

@@ -171,7 +171,7 @@ import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js'
 import { BlockerLifecycleService } from '../monitoring/BlockerLifecycleService.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
-import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials , type PeerEndpointKind } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
 import { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
 import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
@@ -891,7 +891,12 @@ export class AgentServer {
     /** Kick the working-set carrier on the machine that just acquired a topic. */
     kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
-    resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
+    resolvePeerUrls?: () => Array<{
+      machineId: string;
+      url: string;
+      kind: PeerEndpointKind;
+      ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+    }>;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -1643,7 +1648,9 @@ export class AgentServer {
             holderMachineId: () =>
               options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : options.meshSelfId ?? 'local',
             resolvePeerUrls: options.resolvePeerUrls ?? null,
-            isPeerUrlAllowed: (url) => isPeerUrlAllowedForCredentials(url, peerExtraAllowlist).ok,
+            // Only a URL is known at this injected boundary, so the kind is the explicit
+      // `last-known-url` value rather than an absent argument.
+      isPeerUrlAllowed: (url) => isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, peerExtraAllowlist).ok,
             authToken: options.config.authToken,
           });
         } catch (err) {

@@ -41,7 +41,8 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
 import { MainHealth, MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
-import { LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
+import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
+import type { RestartHold } from '../core/UpdateGate.js';
 import type { VerifyRunInput, VerifyRunResult } from './orchestrator.js';
 
 // ── Eligibility ────────────────────────────────────────────────────────
@@ -71,6 +72,13 @@ export interface ChildHandle {
 }
 
 export interface LocalVerifyServiceSeams {
+  /**
+   * The CURRENT head of a base branch (`gh api repos/{repo}/branches/{b}`), or null on
+   * read failure. A PR's `baseRefOid` is the base as of the PR's last update, which
+   * can be days stale; a verify must test the merge with today's base. Absent ⇒ the
+   * PR view's `baseRefOid` is used (test seams only).
+   */
+  baseHead?(baseRefName: string): Promise<string | null>;
   /** `gh pr view <pr> --json author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid`; null on read failure. */
   prView(pr: number): Promise<PrView | null>;
   /** true/false, or null when it cannot be read (the entry is then kept out of the index but not deleted). */
@@ -90,6 +98,8 @@ export interface LocalVerifyServiceSeams {
   isAncestor?(ancestor: string, descendant: string): Promise<boolean | null>;
   /** Synchronous hook after every main-health state change (event-driven withdrawal). */
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
+  /** The AutoUpdater state rule (b) needs (narrow seam; absent or null ⇒ never pauses). */
+  updatePending?(): UpdatePendingState | null;
   /** Deduped attention signal (`local-verify:main-red`, `local-verify:main-unverified`). */
   signal?(key: string, detail: Record<string, unknown>): void;
   now?(): number;
@@ -136,6 +146,8 @@ export interface QueueEntry {
   kind?: 'main';
   /** Not started before this time (backoff of a `main` error re-run). */
   notBefore?: number;
+  /** Time spent paused for a pending update; subtracted from the starved clock. */
+  pausedMs?: number;
 }
 
 export { MAIN_VERIFY_LIMITS };
@@ -199,7 +211,7 @@ export interface InFlightIntent {
 export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' };
 
 interface InFlight {
   entry: QueueEntry;
@@ -208,6 +220,68 @@ interface InFlight {
   inputPath: string;
   resultPath: string;
   cancelled: boolean;
+  /** When the run child started (restart-hold bound). */
+  startedAt: number;
+}
+
+/** A queue entry as persisted in `state/local-verify/queue.json` (PR verifies only; `main` is re-derived). */
+export interface PersistedQueueEntry {
+  pr: number;
+  headSha: string;
+  baseSha: string;
+  baseRefName: string;
+  firstQueuedAt: number;
+  attempts: number;
+  errorRetries: number;
+  starvedRaised: boolean;
+  /** Time spent paused for a pending update (never counts toward starved). */
+  pausedMs?: number;
+  /** Present on the entry that was RUNNING when the file was written: found at boot ⇒ an unclean exit. */
+  inFlight?: true;
+}
+
+/** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
+export interface UpdatePendingState {
+  /** autoApply is on and an update is pending (pendingUpdate set, or coalescingUntil holds a time). */
+  pending: boolean;
+  /** When the pending update was first detected (pendingUpdateDetectedAt), ms; null if unknown. */
+  pendingSinceMs: number | null;
+  /** Something other than this verifier's own hold is delaying the restart (sessions, other holds). */
+  otherBlockers: boolean;
+}
+
+export const UPDATE_PAUSE_MAX_MS = 120 * 60_000;
+
+/**
+ * Spec §2 Restarts rule (b): while an update is pending and this verifier's own hold is the
+ * only thing delaying the restart, NO NEW verify starts (the running one finishes and the
+ * restart goes ahead). Starts resume once the update has been pending > 120 min, or when
+ * something else is delaying the restart anyway. Unknown state never pauses.
+ */
+export function decideUpdatePause(u: UpdatePendingState | null, now: number, maxMs: number = UPDATE_PAUSE_MAX_MS): boolean {
+  if (!u || !u.pending || u.otherBlockers) return false;
+  if (u.pendingSinceMs !== null && now - u.pendingSinceMs > maxMs) return false;
+  return true;
+}
+
+/**
+ * The longest a verify that started at `startedAt` can still be running: its whole
+ * active-work budget plus the in-place waits it may make before lanes 2 and 3 (the
+ * child's own hard bounds — the server cannot see how much of either it has used, so
+ * this is the run's own ceiling, never longer). Capped at `now + maxDeferralMs`.
+ */
+export function restartHoldUntil(
+  startedAt: number,
+  now: number,
+  maxDeferralMs: number,
+  limits: { totalActiveMs: number; waitInPlaceMs: number; inPlaceWaits: number } = {
+    totalActiveMs: LOCAL_VERIFY_DEADLINES.totalActiveMs,
+    waitInPlaceMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs,
+    inPlaceWaits: 2,
+  },
+): number {
+  const runCeiling = startedAt + limits.totalActiveMs + limits.inPlaceWaits * limits.waitInPlaceMs;
+  return Math.min(runCeiling, now + maxDeferralMs);
 }
 
 interface JournalLine {
@@ -221,6 +295,8 @@ interface JournalLine {
 export class LocalVerifyService {
   private readonly cfg: LocalVerifyServiceConfig;
   private readonly seams: LocalVerifyServiceSeams;
+  /** Late-bound rule (b) source (the AutoUpdater is wired after the service is built). */
+  setUpdatePendingProvider(fn: (() => UpdatePendingState | null) | null): void { this.updateProvider = fn; }
   private readonly now: () => number;
   private readonly policyHash: string;
   private readonly queue: QueueEntry[] = [];
@@ -237,6 +313,15 @@ export class LocalVerifyService {
     { head: null, since: 0, firstUnverifiedAt: null, handled: null, immediate: true, oldestUnverifiedAt: null };
   private readonly mainErrorRetries = new Map<string, number>();
   private readonly pendingMainWork: Array<Promise<unknown>> = [];
+  /** Set by shutdown(): nothing new starts, no timers are armed. */
+  private stopped = false;
+  /** Set while restoreQueue() runs: request() waits behind it, pump() starts nothing, nothing is persisted. */
+  private restoring: Promise<unknown> | null = null;
+  /** The last queue.json content written (write only on change). */
+  private lastQueueJson: string | null = null;
+  /** Rule (b) pause bookkeeping. */
+  private pausedSince: number | null = null;
+  private updateProvider: (() => UpdatePendingState | null) | null = null;
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
@@ -258,6 +343,7 @@ export class LocalVerifyService {
   private get lvStateDir(): string { return path.join(this.cfg.stateDir, 'state', 'local-verify'); }
   get journalPath(): string { return path.join(this.lvStateDir, 'journal.jsonl'); }
   get inFlightPath(): string { return path.join(this.lvStateDir, 'inflight.json'); }
+  get queuePath(): string { return path.join(this.lvStateDir, 'queue.json'); }
   private get closedSeenPath(): string { return path.join(this.lvStateDir, 'closed-seen.json'); }
   private get runsDir(): string { return path.join(this.lvStateDir, 'runs'); }
   get auditPath(): string { return path.join(this.cfg.stateDir, 'logs', 'local-verify.jsonl'); }
@@ -313,8 +399,89 @@ export class LocalVerifyService {
   async boot(): Promise<void> {
     this.health.load();
     this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
+    // Order matters: the orphan reap runs first, and a still-blocked reap keeps every
+    // restored entry waiting (pump refuses while blockedBy is set).
     await this.reapOrphan();
     await this.rebuildIndex();
+    await this.restoreQueue();
+  }
+
+  /**
+   * The restart hold for the AutoUpdater: while a verify runs, an automatic update
+   * restart waits until the run's own ceiling (capped by `maxDeferralMs`). A manual
+   * apply is not held (the AutoUpdater skips holds for it).
+   */
+  restartHolds(maxDeferralMs: number): RestartHold[] {
+    const f = this.inFlight;
+    if (!f || f.cancelled || this.stopped) return [];
+    const now = this.now();
+    const what = f.entry.kind === 'main' ? `main ${f.entry.headSha.slice(0, 12)}` : `PR #${f.entry.pr} at ${f.entry.headSha.slice(0, 12)}`;
+    return [{
+      name: f.entry.kind === 'main' ? 'local-verify:main' : `local-verify:pr-${f.entry.pr}`,
+      until: restartHoldUntil(f.startedAt, now, maxDeferralMs),
+      reason: `a local verify of ${what} is running`,
+    }];
+  }
+
+  /**
+   * Restore the durable queue written before the last stop. An entry is dropped when its
+   * PR is closed or its head (or base branch) moved since; one already recorded is not
+   * re-queued. An unreadable PR is kept (it refuses at request time if it stays so).
+   */
+  async restoreQueue(): Promise<{ restored: number; dropped: number }> {
+    const run = this.doRestoreQueue();
+    this.restoring = run;
+    try {
+      return await run;
+    } finally {
+      this.restoring = null;
+      this.persistQueue(); // the next tick (or request) starts work: never before the boot finishes
+    }
+  }
+
+  private async doRestoreQueue(): Promise<{ restored: number; dropped: number }> {
+    const saved = this.readQueueFile();
+    let restored = 0;
+    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0 };
+    for (const e of saved) {
+      if (this.queue.some((q) => q.pr === e.pr) || (this.inFlight && this.inFlight.entry.pr === e.pr)) { drops.duplicate++; continue; }
+      const open = await this.seams.isPrOpen(e.pr).catch(() => null);
+      const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
+      const why = open === false ? 'closed'
+        : view && (view.headRefOid !== e.headSha || view.baseRefName !== e.baseRefName) ? 'head-or-base-moved'
+          : this.getRecord(e.pr, e.headSha, e.baseRefName)?.outcome === 'success' ? 'already-recorded' : null;
+      if (why) {
+        drops[why]++;
+        this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: why });
+        continue;
+      }
+      if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) { drops['queue-full']++; continue; }
+      const entry: QueueEntry = {
+        id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
+        baseSha: view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha,
+        baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
+        errorRetries: e.errorRetries, starvedRaised: e.starvedRaised, priority: 0,
+        ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
+      };
+      if (e.inFlight) {
+        // It was running when the server died without a clean shutdown: that is one error
+        // retry; past the limit it stops with an `error` record instead of re-running forever.
+        const d = decideVerifyRetry(entry, 'error');
+        if (d.action !== 're-run') {
+          drops['server-restarted']++;
+          this.complete(this.syntheticError(entry, 'server-restarted'), 'run');
+          this.audit({ event: 'queue-restore-stopped', pr: e.pr, headSha: e.headSha, reason: 'server-restarted' });
+          continue;
+        }
+        entry.errorRetries = d.errorRetries;
+        this.audit({ event: 'queue-restore-unclean', pr: e.pr, headSha: e.headSha, errorRetries: entry.errorRetries });
+      }
+      this.queue.push(entry);
+      restored++;
+    }
+    const dropped = Object.values(drops).reduce((a, b) => a + b, 0);
+    this.audit({ event: 'queue-restored', restored, dropped, drops });
+    return { restored, dropped };
   }
 
   /**
@@ -455,6 +622,8 @@ export class LocalVerifyService {
   async request(pr: number, opts: { explicit?: boolean; force?: boolean } = {}): Promise<RequestResult> {
     const explicit = opts.explicit ?? true;
     if (!isValidPr(pr)) return { ok: false, code: 'invalid-pr' };
+    if (this.stopped) return { ok: false, code: 'stopping' };
+    if (this.restoring) await this.restoring.catch(() => undefined);
     // While `main` is unhealthy the watcher requests no PR verifies (they fail by
     // construction); POSTed ones still run, which is how a repair gets its record.
     if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
@@ -464,9 +633,15 @@ export class LocalVerifyService {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       return { ok: false, code: 'untrusted-head' };
     }
-    if (!isValidSha(view.headRefOid) || !isValidSha(view.baseRefOid)) return { ok: false, code: 'pr-invalid-shas' };
+    // Verify against the base branch's current head, never the PR's stale baseRefOid.
+    let currentBase: string | null = view.baseRefOid;
+    if (this.seams.baseHead) {
+      currentBase = await this.seams.baseHead(view.baseRefName).catch(() => null);
+      if (!currentBase) return { ok: false, code: 'pr-unreadable' };
+    }
+    if (!isValidSha(view.headRefOid) || !isValidSha(currentBase)) return { ok: false, code: 'pr-invalid-shas' };
     const headSha = view.headRefOid;
-    const baseSha = view.baseRefOid;
+    const baseSha = currentBase;
     const baseRefName = view.baseRefName;
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
 
@@ -483,6 +658,7 @@ export class LocalVerifyService {
         return { ok: true, status: 'already-queued', position: pendingIdx };
       }
       this.queue.splice(pendingIdx, 1);
+      this.persistQueue();
       this.audit({ event: 'dequeued', pr, reason: 'head-or-base-moved', headSha: e.headSha });
     }
 
@@ -525,6 +701,7 @@ export class LocalVerifyService {
   /** Periodic driver: orphan unblock, starvation signal, start the next run. */
   async tick(): Promise<void> {
     if (this.blockedBy) await this.reapOrphan();
+    this.notePause();
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
     this.pump();
@@ -534,9 +711,24 @@ export class LocalVerifyService {
     return this.queue.reduce((n, e) => n + (e.kind === 'main' ? 0 : 1), 0);
   }
 
-  /** Server shutdown: stop the in-flight run (its group) — a restart re-queues lazily. */
+  /**
+   * Server shutdown: stop the in-flight run's group and start nothing else. The
+   * cancelled entry goes back to the head of the durable queue (not as an attempt),
+   * so the next boot resumes it. No timer is armed (the process is exiting); a group
+   * that survives SIGTERM is found by the next boot's orphan reap.
+   */
   shutdown(): void {
-    if (this.inFlight) this.cancelInFlight('shutdown');
+    if (this.stopped) return;
+    this.stopped = true;
+    const f = this.inFlight;
+    if (f && !f.cancelled) {
+      this.cancelInFlight('shutdown', { armKillTimer: false });
+      if (f.entry.kind !== 'main') {
+        f.entry.attempts = Math.max(0, f.entry.attempts - 1);
+        this.queue.unshift(f.entry);
+      }
+    }
+    this.persistQueue();
   }
 
   // ---- internals ----
@@ -545,7 +737,8 @@ export class LocalVerifyService {
     const prs = this.queue.filter((e) => e.kind !== 'main');
     if (prs.length === 0) return;
     const oldest = prs.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
-    const { raise, waitedMs: waited } = decideStarved(oldest, this.now());
+    // Time paused for a pending update never counts toward starved.
+    const { raise, waitedMs: waited } = decideStarved({ ...oldest, firstQueuedAt: oldest.firstQueuedAt + (oldest.pausedMs ?? 0) }, this.now());
     if (raise) {
       oldest.starvedRaised = true;
       this.audit({ event: 'starved', pr: oldest.pr, headSha: oldest.headSha, waitedMs: waited });
@@ -553,8 +746,26 @@ export class LocalVerifyService {
     }
   }
 
+  /** Rule (b): is starting a new verify paused for a pending update right now? Also accrues paused time. */
+  private notePause(): boolean {
+    const now = this.now();
+    let state: UpdatePendingState | null = null;
+    try { state = (this.updateProvider ?? this.seams.updatePending)?.() ?? null; } catch { state = null; }
+    const paused = decideUpdatePause(state, now);
+    if (this.pausedSince !== null) {
+      const dt = Math.max(0, now - this.pausedSince);
+      for (const e of this.queue) if (e.kind !== 'main') e.pausedMs = (e.pausedMs ?? 0) + dt;
+    }
+    if (paused && this.pausedSince === null) this.audit({ event: 'update-pause', pendingSinceMs: state?.pendingSinceMs ?? null });
+    if (!paused && this.pausedSince !== null) this.audit({ event: 'update-pause-ended' });
+    this.pausedSince = paused ? now : null;
+    return paused;
+  }
+
   private pump(): void {
-    if (this.inFlight || this.blockedBy || this.queue.length === 0) return;
+    this.persistQueue();
+    if (this.stopped || this.restoring || this.inFlight || this.blockedBy || this.queue.length === 0) return;
+    if (this.notePause()) return; // an update is waiting only on us: let the running verify end, start nothing
     const holders = this.seams.foreignSuiteHolders();
     if (holders.length > 0) {
       // A capacity wait: not an attempt, the entry keeps its place.
@@ -612,18 +823,20 @@ export class LocalVerifyService {
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
     this.writeInFlight(intent);
-    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false };
+    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
+    this.persistQueue();
     this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts });
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
   }
 
-  private cancelInFlight(reason: string): void {
+  private cancelInFlight(reason: string, opts: { armKillTimer?: boolean } = {}): void {
     const f = this.inFlight;
     if (!f || f.cancelled) return;
     f.cancelled = true;
     this.audit({ event: 'cancel', pr: f.entry.pr, headSha: f.entry.headSha, reason });
     try { this.seams.killGroup(f.pgid, 'SIGTERM'); } catch { /* @silent-fallback-ok: group may already be gone */ }
+    if (opts.armKillTimer === false) return;
     const setTimer = this.seams.setTimer ?? ((fn: () => void, ms: number) => { const t = setTimeout(fn, ms); t.unref?.(); });
     setTimer(() => {
       if (this.seams.isGroupAlive(f.pgid)) {
@@ -651,7 +864,9 @@ export class LocalVerifyService {
         this.completeMain(result.record, f.entry);
       }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
-      const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
+      const step = !result ? 'crash'
+        : result.kind === 'crash' ? (String(result.detail ?? '').startsWith('verifier-mismatch') ? 'verifier-mismatch' : 'crash')
+          : 'invalid-record';
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
       this.complete(this.syntheticError(f.entry, step), 'run');
       this.handleErrorRetry(f.entry);
@@ -776,6 +991,7 @@ export class LocalVerifyService {
           this.complete({ ...record, pr: e.pr, baseRefName: e.baseRefName }, 'derived');
         }
       }
+      this.persistQueue();
     }
     return record;
   }
@@ -787,6 +1003,67 @@ export class LocalVerifyService {
     const tmp = this.inFlightPath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 }); /* state-registry: local-verify-inflight */
     fs.renameSync(tmp, this.inFlightPath);
+  }
+
+  /**
+   * Persist the PR queue (the in-flight PR entry first, then the pending ones) with an
+   * atomic write. `main` entries are not persisted: the reconcile loop re-derives them.
+   */
+  private persistQueue(): void {
+    if (this.restoring) return; // restore writes once it has the whole picture
+    try {
+      const entries: QueueEntry[] = [];
+      const f = this.inFlight;
+      if (f && !f.cancelled && f.entry.kind !== 'main') entries.push(f.entry);
+      for (const e of this.queue) if (e.kind !== 'main' && !entries.includes(e)) entries.push(e);
+      const out: PersistedQueueEntry[] = entries.map((e) => ({
+        pr: e.pr, headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName,
+        firstQueuedAt: e.firstQueuedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
+        ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
+        // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
+        // entry found at boot means the server died mid-run.
+        ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
+      }));
+      const json = JSON.stringify({ v: 1, entries: out });
+      if (json === this.lastQueueJson) return; // unchanged: no write
+      fs.mkdirSync(this.lvStateDir, { recursive: true });
+      const tmp = this.queuePath + '.tmp';
+      fs.writeFileSync(tmp, json, { mode: 0o600 }); /* state-registry: local-verify-queue */
+      fs.renameSync(tmp, this.queuePath);
+      this.lastQueueJson = json;
+    } catch (e) {
+      this.audit({ event: 'queue-persist-failed', detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /**
+   * Read the saved queue. A file that exists but cannot be parsed (or has the wrong shape)
+   * is moved aside to `queue.json.corrupt-<ts>` and audited `queue-restore-unreadable`, so
+   * the evidence survives and the next write starts clean. Individually invalid entries are
+   * skipped and counted.
+   */
+  private readQueueFile(): PersistedQueueEntry[] {
+    let text: string;
+    try { text = fs.readFileSync(this.queuePath, 'utf-8'); } catch { return []; } // @silent-fallback-ok: no saved queue (first boot)
+    let o: { v?: number; entries?: unknown } | null = null;
+    try { o = JSON.parse(text) as { v?: number; entries?: unknown }; } catch { o = null; }
+    if (!o || o.v !== 1 || !Array.isArray(o.entries)) {
+      const aside = `${this.queuePath}.corrupt-${this.now()}`;
+      try { fs.renameSync(this.queuePath, aside); } catch { /* @silent-fallback-ok: audited below either way */ }
+      this.audit({ event: 'queue-restore-unreadable', movedTo: path.basename(aside), bytes: text.length });
+      return [];
+    }
+    const valid = o.entries.filter((e): e is PersistedQueueEntry => {
+      const x = e as PersistedQueueEntry;
+      return !!x && isValidPr(x.pr) && isValidSha(x.headSha) && isValidSha(x.baseSha) && typeof x.baseRefName === 'string'
+        && Number.isFinite(x.firstQueuedAt) && Number.isFinite(x.attempts) && Number.isFinite(x.errorRetries);
+    }).map((x) => ({
+      ...x, starvedRaised: x.starvedRaised === true,
+      pausedMs: Number.isFinite(x.pausedMs) && (x.pausedMs as number) > 0 ? x.pausedMs : undefined,
+      inFlight: x.inFlight === true ? true as const : undefined,
+    }));
+    if (valid.length !== o.entries.length) this.audit({ event: 'queue-restore-invalid-entries', skipped: o.entries.length - valid.length });
+    return valid;
   }
 
   private readInFlight(): InFlightIntent | null {

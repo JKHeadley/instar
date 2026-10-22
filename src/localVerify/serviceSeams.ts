@@ -50,6 +50,12 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       if (!out) return null;
       try { return JSON.parse(out) as PrView; } catch { return null; }
     },
+    async baseHead(baseRefName: string): Promise<string | null> {
+      if (!/^[A-Za-z0-9._/-]{1,200}$/.test(baseRefName)) return null;
+      const out = await gh(['api', `repos/${opts.repo}/branches/${baseRefName}`, '--jq', '.commit.sha']);
+      const sha = out?.trim() ?? '';
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    },
     async isPrOpen(pr: number): Promise<boolean | null> {
       const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'state']);
       if (!out) return null;
