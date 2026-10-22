@@ -30440,6 +30440,23 @@ export async function stopServer(options: { dir?: string }): Promise<void> {
  *
  * Without autostart, falls back to stop + start.
  */
+/**
+ * Stop the server's tmux session (`<project>-server`) if one exists; silent no-op
+ * otherwise (no tmux, or the server runs as the service's main process).
+ * Agent sessions live in their own tmux sessions and are not touched.
+ */
+async function stopServerSessionIfPresent(options: { dir?: string }): Promise<void> {
+  const config = loadConfig(options.dir);
+  const tmuxPath = detectTmuxPath();
+  if (!tmuxPath) return;
+  try {
+    execFileSync(tmuxPath, ['has-session', '-t', `=${config.projectName}-server`], { stdio: 'ignore' });
+  } catch {
+    return; // @silent-fallback-ok: no server tmux session — nothing to stop
+  }
+  await stopServer(options);
+}
+
 export async function restartServer(options: { dir?: string }): Promise<void> {
   const config = loadConfig(options.dir);
 
@@ -30458,6 +30475,11 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
 
       // Wait for process to die
       await new Promise(r => setTimeout(r, 1000));
+
+      // The lifeline runs the server in its own tmux session, which outlives the
+      // lifeline. Stop it too, or the new lifeline adopts the old server and this
+      // "restart" never loads new server code.
+      await stopServerSessionIfPresent(options);
 
       // Bootstrap it back (loads + starts)
       try {
@@ -30481,7 +30503,13 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
     if (fs.existsSync(servicePath)) {
       console.log(`  Restarting via systemd (${serviceName})...`);
       try {
-        execFileSync('systemctl', ['--user', 'restart', serviceName], { stdio: 'pipe' });
+        // stop → stop the server's own tmux session → start. With KillMode=process
+        // (the unit default since 2026-10-22) a plain `restart` only restarts the
+        // lifeline and the new lifeline would adopt the old server. Stopping the
+        // lifeline first means nothing respawns the server while it is going down.
+        execFileSync('systemctl', ['--user', 'stop', serviceName], { stdio: 'pipe' });
+        await stopServerSessionIfPresent(options);
+        execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'pipe' });
         console.log(pc.green(`  Server restarted via systemd (${serviceName})`));
       } catch (err) {
         console.log(pc.red(`  Failed to restart via systemd: ${err instanceof Error ? err.message : err}`));
