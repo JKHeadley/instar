@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
-import { MainHealth, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import type { VerifyRunInput, VerifyRunResult } from './orchestrator.js';
@@ -138,17 +138,52 @@ export interface QueueEntry {
   notBefore?: number;
 }
 
-const MIN = 60_000;
-export const MAIN_VERIFY_LIMITS = Object.freeze({
-  priority: 100,
-  /** Starts once `main`'s head has been unchanged this long… */
-  debounceMs: 10 * MIN,
-  /** …but no later than this after the first unverified head. */
-  debounceCapMs: 30 * MIN,
-  /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
-  errorRetries: 3,
-  errorBackoffMs: 5 * MIN,
-});
+export { MAIN_VERIFY_LIMITS };
+
+// ---- the queue's self-action decisions (pure; the service calls these, and the
+//      self-action registry drives the SAME functions under sustained pressure —
+//      tests/unit/self-action-convergence.test.ts) ----
+
+export type VerifyRetryAction = 're-run' | 'requeue' | 'stop';
+
+/**
+ * What happens to a queue entry after a run ends:
+ *   'error'   — re-run at once, at most `errorAutoRetries` times per entry (per (pr, head)),
+ *               then stop: the record stays `error` until the head moves or someone asks.
+ *   'requeue' — a capacity wait: back to the front of the queue and the attempt is NOT counted.
+ */
+export function decideVerifyRetry(
+  entry: { attempts: number; errorRetries: number },
+  outcome: 'error' | 'requeue',
+  limits: { errorAutoRetries: number } = LOCAL_VERIFY_LIMITS,
+): { action: VerifyRetryAction; attempts: number; errorRetries: number } {
+  if (outcome === 'requeue') return { action: 'requeue', attempts: Math.max(0, entry.attempts - 1), errorRetries: entry.errorRetries };
+  if (entry.errorRetries < limits.errorAutoRetries) return { action: 're-run', attempts: entry.attempts, errorRetries: entry.errorRetries + 1 };
+  return { action: 'stop', attempts: entry.attempts, errorRetries: entry.errorRetries };
+}
+
+/** The starved signal: once per entry, when it has waited (capacity waits included) longer than `starvedAfterMs`. */
+export function decideStarved(
+  entry: { firstQueuedAt: number; starvedRaised: boolean },
+  now: number,
+  limits: { starvedAfterMs: number } = LOCAL_VERIFY_LIMITS,
+): { raise: boolean; waitedMs: number } {
+  const waitedMs = now - entry.firstQueuedAt;
+  return { raise: waitedMs > limits.starvedAfterMs && !entry.starvedRaised, waitedMs };
+}
+
+/**
+ * Start admission for the (priority-sorted) queue: a foreign full suite holding the
+ * slot is a capacity wait (not an attempt, the entry keeps its place); otherwise the
+ * first entry whose backoff has elapsed starts.
+ */
+export function decideStart(
+  i: { foreignHolders: number; queue: ReadonlyArray<{ notBefore?: number }>; now: number },
+): { kind: 'capacity-wait' } | { kind: 'idle' } | { kind: 'start'; index: number } {
+  if (i.foreignHolders > 0) return { kind: 'capacity-wait' };
+  const index = i.queue.findIndex((e) => e.notBefore === undefined || e.notBefore <= i.now);
+  return index < 0 ? { kind: 'idle' } : { kind: 'start', index };
+}
 
 export interface InFlightIntent {
   pr: number;
@@ -307,28 +342,25 @@ export class LocalVerifyService {
     }
     const now = this.now();
     const o = this.mainObs;
-    if (sha !== o.head) { o.head = sha; o.since = now; }
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
-    if (sha === o.handled) return;
-    if (o.firstUnverifiedAt === null) o.firstUnverifiedAt = now;
-    const ready = o.immediate
-      || now - o.since >= MAIN_VERIFY_LIMITS.debounceMs
-      || now - o.firstUnverifiedAt >= MAIN_VERIFY_LIMITS.debounceCapMs;
-    if (!ready) return;
-    o.immediate = false;
-    o.handled = sha;
-    o.firstUnverifiedAt = null;
-    this.enqueueMain(sha, 'head-changed');
+    const d = decideMainHeadEnqueue(o, sha, now);
+    o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
+    o.handled = d.next.handled; o.immediate = d.next.immediate;
+    if (d.enqueue) this.enqueueMain(sha, 'head-changed');
   }
 
+  /* @self-action-controller: local-verify-main-schedule */
   private enqueueMain(sha: string, why: 'head-changed' | 'rerun'): void {
     const f = this.inFlight;
-    if (why !== 'rerun' && f?.entry.kind === 'main' && f.entry.headSha === sha && !f.cancelled) return;
     const i = this.queue.findIndex((e) => e.kind === 'main');
-    if (i >= 0) {
+    const d = decideMainEnqueue({
+      sha, why,
+      inFlightMain: f?.entry.kind === 'main' ? { headSha: f.entry.headSha, cancelled: f.cancelled } : null,
+      pendingMainHead: i >= 0 ? this.queue[i].headSha : null,
+    });
+    if (d.action === 'skip') return;
+    if (d.action === 'replace') {
       const old = this.queue[i];
-      if (old.headSha === sha) return;
-      if (why === 'rerun') return; // a newer pending head already covers it
       this.queue.splice(i, 1); // a newer head replaces a pending one; a running one is never cancelled
       this.audit({ event: 'main-replaced', oldHead: old.headSha, newHead: sha });
     }
@@ -513,8 +545,8 @@ export class LocalVerifyService {
     const prs = this.queue.filter((e) => e.kind !== 'main');
     if (prs.length === 0) return;
     const oldest = prs.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
-    const waited = this.now() - oldest.firstQueuedAt;
-    if (waited > LOCAL_VERIFY_LIMITS.starvedAfterMs && !oldest.starvedRaised) {
+    const { raise, waitedMs: waited } = decideStarved(oldest, this.now());
+    if (raise) {
       oldest.starvedRaised = true;
       this.audit({ event: 'starved', pr: oldest.pr, headSha: oldest.headSha, waitedMs: waited });
       this.seams.onStarved?.({ pr: oldest.pr, headSha: oldest.headSha, waitedMs: waited });
@@ -530,10 +562,9 @@ export class LocalVerifyService {
       return;
     }
     this.queue.sort((a, b) => b.priority - a.priority); // stable: FIFO within a priority
-    const now = this.now();
-    const i = this.queue.findIndex((e) => e.notBefore === undefined || e.notBefore <= now);
-    if (i < 0) return;
-    const [entry] = this.queue.splice(i, 1);
+    const d = decideStart({ foreignHolders: 0, queue: this.queue, now: this.now() });
+    if (d.kind !== 'start') return;
+    const [entry] = this.queue.splice(d.index, 1);
     this.start(entry);
   }
 
@@ -626,9 +657,9 @@ export class LocalVerifyService {
       this.handleErrorRetry(f.entry);
     } else if (result.kind === 'requeue') {
       // A capacity wait is never an attempt.
-      f.entry.attempts = Math.max(0, f.entry.attempts - 1);
+      f.entry.attempts = decideVerifyRetry(f.entry, 'requeue').attempts;
       this.audit({ event: 'requeued', pr: f.entry.pr, reason: result.reason, overlaps: result.overlaps.length });
-      this.queue.unshift(f.entry);
+      this.retry(f.entry);
     } else {
       for (const o of result.overlaps) this.audit({ event: 'overlap', where: `before-${o.beforeLane}`, holders: o.holders });
       const rec = this.complete(result.record, 'run');
@@ -644,12 +675,19 @@ export class LocalVerifyService {
     this.pump();
   }
 
+  /* @self-action-controller: local-verify-error-rerun */
   private handleErrorRetry(entry: QueueEntry): void {
-    if (entry.errorRetries < LOCAL_VERIFY_LIMITS.errorAutoRetries) {
-      entry.errorRetries++;
-      this.audit({ event: 'error-auto-retry', pr: entry.pr, headSha: entry.headSha });
-      this.queue.unshift(entry);
-    }
+    const d = decideVerifyRetry(entry, 'error');
+    if (d.action !== 're-run') return;
+    entry.errorRetries = d.errorRetries;
+    this.audit({ event: 'error-auto-retry', pr: entry.pr, headSha: entry.headSha });
+    this.retry(entry);
+  }
+
+  /* @self-action-controller: local-verify-capacity-requeue */
+  /** The automatic re-run emit: back to the front of the queue (an error re-run or a capacity requeue). */
+  private retry(entry: QueueEntry): void {
+    this.queue.unshift(entry);
   }
 
   private syntheticError(entry: QueueEntry, step: string): LocalVerifyRecord {
@@ -675,10 +713,11 @@ export class LocalVerifyService {
     this.audit({ event: 'main-record', headSha: head, outcome: record.outcome, errorStep: record.errorStep });
     if (record.outcome === 'error') {
       // Only `failure` counts as red; an error re-queues with backoff, at most 3 times per head.
-      const n = (this.mainErrorRetries.get(head) ?? 0) + 1;
+      const d = decideMainErrorRetry({ priorRetries: this.mainErrorRetries.get(head) ?? 0, mainPending: this.queue.some((e) => e.kind === 'main'), now: this.now() });
+      const n = d.retries;
       this.mainErrorRetries.set(head, n);
-      if (n <= MAIN_VERIFY_LIMITS.errorRetries && !this.queue.some((e) => e.kind === 'main')) {
-        this.queue.push({ ...entry, id: crypto.randomBytes(6).toString('hex'), notBefore: this.now() + MAIN_VERIFY_LIMITS.errorBackoffMs * n });
+      if (d.requeue) {
+        this.queue.push({ ...entry, id: crypto.randomBytes(6).toString('hex'), notBefore: d.notBefore });
         this.audit({ event: 'main-error-retry', headSha: head, attempt: n });
       }
       return;

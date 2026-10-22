@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-22T05:15:28.588Z",
+  "slug": "local-verify-status",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 603,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/StatusReconciler.ts",
+      "src/localVerify/mainHealth.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 545,
+    "deletedLines": 58
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Six registry models drive the real local-verify decision functions under the pinned sustained-pressure fixture: one automatic error re-run per (pr, head); capacity requeues never count as attempts and the starved signal fires once; main verifies at most one per debounce window and at most 1+3 per head; status posts at most one batch per 60s pass with the 30/min cap (withdrawals bounded by heads holding success); PR-list failures back off at least 2 min."
+    }
+  },
+  "verdict": "pass"
+}

@@ -66,6 +66,90 @@ export const MAIN_HEALTH_LIMITS = Object.freeze({
   unverifiedSuspectMs: 3 * 60 * 60 * 1000,
 });
 
+const MIN = 60_000;
+export const MAIN_VERIFY_LIMITS = Object.freeze({
+  priority: 100,
+  /** Starts once `main`'s head has been unchanged this long… */
+  debounceMs: 10 * MIN,
+  /** …but no later than this after the first unverified head. */
+  debounceCapMs: 30 * MIN,
+  /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
+  errorRetries: 3,
+  errorBackoffMs: 5 * MIN,
+});
+
+// ---- the `main` verify scheduling decisions (pure; LocalVerifyService calls these,
+//      and the self-action registry drives the SAME functions under sustained
+//      pressure — tests/unit/self-action-convergence.test.ts) ----
+
+/** The debounce state LocalVerifyService keeps for the observed remote `main` head. */
+export interface MainHeadObservation {
+  head: string | null;
+  since: number;
+  firstUnverifiedAt: number | null;
+  handled: string | null;
+  immediate: boolean;
+}
+
+/**
+ * A valid `main` head was observed at `now`: the next debounce state, and whether a
+ * `main` verify is enqueued for it now. Enqueued once per head (`handled`), after 10
+ * minutes of an unchanged head, or 30 minutes after the first unverified head, or at
+ * once after boot / lease acquisition (`immediate`).
+ */
+export function decideMainHeadEnqueue(
+  prev: MainHeadObservation,
+  sha: string,
+  now: number,
+  limits: { debounceMs: number; debounceCapMs: number } = MAIN_VERIFY_LIMITS,
+): { next: MainHeadObservation; enqueue: boolean } {
+  const next: MainHeadObservation = { ...prev };
+  if (sha !== next.head) { next.head = sha; next.since = now; }
+  if (sha === next.handled) return { next, enqueue: false };
+  if (next.firstUnverifiedAt === null) next.firstUnverifiedAt = now;
+  const ready = next.immediate
+    || now - next.since >= limits.debounceMs
+    || now - next.firstUnverifiedAt >= limits.debounceCapMs;
+  if (!ready) return { next, enqueue: false };
+  next.immediate = false;
+  next.handled = sha;
+  next.firstUnverifiedAt = null;
+  return { next, enqueue: true };
+}
+
+export type MainEnqueueDecision = { action: 'skip' } | { action: 'push' } | { action: 'replace' };
+
+/**
+ * Queue admission of a `main` verify for `sha`: at most one pending `main` entry; a
+ * newer head replaces a pending one; a running one is never cancelled; a re-run never
+ * displaces a newer pending head.
+ */
+export function decideMainEnqueue(i: {
+  sha: string;
+  why: 'head-changed' | 'rerun';
+  /** The in-flight `main` verify, if the in-flight run is one. */
+  inFlightMain: { headSha: string; cancelled: boolean } | null;
+  /** The pending `main` entry's head, if one is queued. */
+  pendingMainHead: string | null;
+}): MainEnqueueDecision {
+  if (i.why !== 'rerun' && i.inFlightMain && i.inFlightMain.headSha === i.sha && !i.inFlightMain.cancelled) return { action: 'skip' };
+  if (i.pendingMainHead !== null) {
+    if (i.pendingMainHead === i.sha) return { action: 'skip' };
+    if (i.why === 'rerun') return { action: 'skip' }; // a newer pending head already covers it
+    return { action: 'replace' };
+  }
+  return { action: 'push' };
+}
+
+/** A `main` verify ended in `error`: re-queue with backoff, at most `errorRetries` times per head, never beside a pending one. */
+export function decideMainErrorRetry(
+  i: { priorRetries: number; mainPending: boolean; now: number },
+  limits: { errorRetries: number; errorBackoffMs: number } = MAIN_VERIFY_LIMITS,
+): { retries: number; requeue: boolean; notBefore: number } {
+  const retries = i.priorRetries + 1;
+  return { retries, requeue: retries <= limits.errorRetries && !i.mainPending, notBefore: i.now + limits.errorBackoffMs * retries };
+}
+
 export class MainHealth {
   private snap: MainHealthSnapshot;
   private readonly file: string;

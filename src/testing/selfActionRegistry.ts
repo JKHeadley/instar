@@ -26,6 +26,10 @@ import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/E
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
+import { decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
+import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
+import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -2154,7 +2158,309 @@ const systemTopicAdoption: SelfActionController = {
   },
 };
 
+
+// ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
+// Every model below drives the SAME exported pure decision functions the real
+// LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
+// decideStart, decideMainHeadEnqueue, decideMainEnqueue, decideMainErrorRetry,
+// admitStatusPost, postRetryDue, nextPostRetry, orderSubmissions,
+// passBackoffDelay) — not re-implementations. Invariants the sink cannot express
+// (per-minute cap, once-per-entry signals) are asserted inside the model by
+// throwing, which fails the ratchet.
+
+const LV_HEAD = 'a'.repeat(40);
+
+/**
+ * local-verify-error-rerun — an `error` verify outcome re-runs automatically at
+ * most once per queue entry (per (pr, head)), then stops: the record stays
+ * `error` until the head moves or someone asks. Pinned worst case: EVERY verify
+ * errors (targetAlwaysRejects). Three queued PRs ⇒ exactly three automatic
+ * re-runs, then nothing, horizon-independent.
+ */
+const localVerifyErrorRerun: SelfActionController = {
+  id: 'local-verify-error-rerun',
+  actionVerb: 'retry-errored-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (handleErrorRetry → decideVerifyRetry; pump → decideStart)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The queue is in memory; after a restart an errored (pr, head) keeps its journaled error record, and a non-explicit request returns that record instead of re-running, so a restart adds no automatic re-run.' },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 30_000, // the service tick
+  makeUnderPressure(f, sink) {
+    const queue = [101, 102, 103].map((pr) => ({ pr, attempts: 0, errorRetries: 0, notBefore: undefined as number | undefined }));
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = decideStart({ foreignHolders: 0, queue, now: f.clock.nowMs() });
+        if (d.kind !== 'start') return;
+        const [entry] = queue.splice(d.index, 1);
+        entry.attempts += 1;
+        if (!f.targetAlwaysRejects()) return; // a non-error outcome ends the entry
+        const r = decideVerifyRetry(entry, 'error');
+        if (r.action !== 're-run') return; // stays `error` until the head moves or someone asks
+        entry.errorRetries = r.errorRetries;
+        sink.emit({ verb: 'retry-errored-verify', target: `${entry.pr}:${LV_HEAD}` });
+        queue.unshift(entry);
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-capacity-requeue — a run that finds a foreign full suite holding
+ * the slot waits in place 30 minutes, then re-queues at the front WITHOUT
+ * counting an attempt. Pinned worst case (everySessionBusy): the foreign suite
+ * starts right after the pre-start check, so every run waits the full 30 minutes
+ * and re-queues, forever. A declared rate-floored loop: re-starts are ≥ 30 min
+ * apart (one run at a time, each holding the slot for the full wait). Asserted in
+ * the model: attempts never exceed 1 (requeues are not attempts) and the starved
+ * signal fires at most once per entry — and does fire.
+ */
+const localVerifyCapacityRequeue: SelfActionController = {
+  id: 'local-verify-capacity-requeue',
+  actionVerb: 'retry-requeued-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (onExit requeue → decideVerifyRetry(…, "requeue"); checkStarved → decideStarved) + orchestrator.ts wait-in-place',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: re-starts are floored by the 30-minute wait-in-place (one run at a time); the starved signal (once per entry, after 3 h) tells the operator',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The queue is in memory; a restart drops it and entries are re-queued lazily by the next request, so a restart re-arms at most one starved signal per entry and cannot shorten the wait-in-place floor.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'a capacity-blocked verify re-queues after each full 30-minute wait in place; never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
+  makeUnderPressure(f, sink) {
+    const t0 = f.clock.nowMs();
+    const queue = [201, 202].map((pr) => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, notBefore: undefined as number | undefined }));
+    let running: { entry: (typeof queue)[number]; until: number } | null = null;
+    let restarted = false;
+    const starved = new Map<number, number>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (running && now >= running.until && f.everySessionBusy()) {
+          // The wait in place ran out with the suite still holding the slot: requeue, not an attempt.
+          const r = decideVerifyRetry(running.entry, 'requeue');
+          running.entry.attempts = r.attempts;
+          queue.unshift(running.entry);
+          running = null;
+          restarted = true;
+        }
+        if (queue.length > 0) {
+          const oldest = queue.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
+          const s = decideStarved(oldest, now);
+          if (s.raise) {
+            oldest.starvedRaised = true;
+            starved.set(oldest.pr, (starved.get(oldest.pr) ?? 0) + 1);
+            if (starved.get(oldest.pr)! > 1) throw new Error(`local-verify starved signal raised twice for pr ${oldest.pr}`);
+          }
+        }
+        if (running) return;
+        const d = decideStart({ foreignHolders: 0, queue, now }); // the suite starts right after this check
+        if (d.kind !== 'start') return;
+        const [entry] = queue.splice(d.index, 1);
+        entry.attempts += 1;
+        if (entry.attempts > 1) throw new Error(`local-verify capacity requeue counted as an attempt (pr ${entry.pr})`);
+        running = { entry, until: now + LOCAL_VERIFY_LIMITS.waitInPlaceMs };
+        if (restarted) {
+          sink.emit({ verb: 'retry-requeued-verify', target: String(entry.pr) });
+          sink.emitTimesMs.push(now);
+        }
+        if (now - t0 > LOCAL_VERIFY_LIMITS.starvedAfterMs + 30 * 60_000 && starved.size === 0) {
+          throw new Error('local-verify starved signal never fired under sustained capacity pressure');
+        }
+      },
+    };
+  },
+};
+
+/** The shared `main`-verify pass driver: one reconcile pass per tick observes `headAt(pass)`. */
+function makeMainVerifyPasses(
+  f: PressureFixture,
+  sink: ActionSink,
+  opts: { headAt: (pass: number) => string; verifyErrors: boolean; recordTimes: boolean },
+): { tick(): void } {
+  let obs: MainHeadObservation = { head: null, since: 0, firstUnverifiedAt: null, handled: null, immediate: true };
+  let pending: { headSha: string; notBefore?: number } | null = null;
+  const errorRetries = new Map<string, number>();
+  let pass = 0;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const sha = opts.headAt(pass++);
+      const h = decideMainHeadEnqueue(obs, sha, now);
+      obs = h.next;
+      if (h.enqueue) {
+        const q = decideMainEnqueue({ sha, why: 'head-changed', inFlightMain: null, pendingMainHead: pending?.headSha ?? null });
+        if (q.action !== 'skip') pending = { headSha: sha }; // push, or replace the pending one: never two
+      }
+      if (!pending) return;
+      const d = decideStart({ foreignHolders: 0, queue: [pending], now });
+      if (d.kind !== 'start') return;
+      const run = pending;
+      pending = null;
+      sink.emit({ verb: 'retry-main-verify', target: run.headSha });
+      if (opts.recordTimes) sink.emitTimesMs.push(now);
+      if (!opts.verifyErrors) return;
+      const r = decideMainErrorRetry({ priorRetries: errorRetries.get(run.headSha) ?? 0, mainPending: pending !== null, now });
+      errorRetries.set(run.headSha, r.retries);
+      if (r.requeue) pending = { headSha: run.headSha, notBefore: r.notBefore };
+    },
+  };
+}
+
+/**
+ * local-verify-main-schedule — the post-merge `main` verify: at most one pending,
+ * one verify per head, and an `error` re-queues with backoff at most 3 times per
+ * head. Pinned worst case: `main` sits on one head and EVERY verify errors
+ * (targetAlwaysRejects) ⇒ 1 + 3 = 4 verifies, then nothing, horizon-independent.
+ */
+const localVerifyMainSchedule: SelfActionController = {
+  id: 'local-verify-main-schedule',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue; enqueueMain → decideMainEnqueue; completeMain → decideMainErrorRetry) + mainHealth.ts',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so a restart costs at most one main verify plus its bounded error re-runs; restarts are operator/updater-driven and dampened.' },
+  boundK: 1 + MAIN_VERIFY_LIMITS.errorRetries,
+  perTargetBoundK: 1 + MAIN_VERIFY_LIMITS.errorRetries,
+  ticks: 60,
+  tickMs: RECONCILER_LIMITS.intervalMs, // the reconcile pass feeds noteMainHead
+  makeUnderPressure(f, sink) {
+    return makeMainVerifyPasses(f, sink, { headAt: () => LV_HEAD, verifyErrors: f.targetAlwaysRejects(), recordTimes: false });
+  },
+};
+
+/**
+ * local-verify-main-debounce — the same scheduling under a `main` head that never
+ * settles (targetAlwaysRejects: every pass reads a new head). The debounce never
+ * matures, so the 30-minute cap paces it: at most one head-changed verify per
+ * debounce window (declared floor 10 min; the cap makes the real gap ≥ 30 min).
+ * Error re-runs are bounded per head by local-verify-main-schedule.
+ */
+const localVerifyMainDebounce: SelfActionController = {
+  id: 'local-verify-main-debounce',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 180,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'a never-settling main head gets at most one verify per debounce window', rateFloorMs: MAIN_VERIFY_LIMITS.debounceMs },
+  makeUnderPressure(f, sink) {
+    return makeMainVerifyPasses(f, sink, {
+      headAt: (pass) => (f.targetAlwaysRejects() ? pass.toString(16).padStart(40, '0') : LV_HEAD),
+      verifyErrors: false,
+      recordTimes: true,
+    });
+  },
+};
+
+/**
+ * local-verify-status-post — the reconciler's status posts. Pinned worst case:
+ * EVERY post answers 403 and GitHub's settings are unreadable
+ * (targetAlwaysRejects), with 40 open heads of which 10 must withdraw a
+ * `success`. A failed post is retried only by the 60-second pass, after its
+ * per-head backoff (30 s doubling, capped at 10 min) — so it is a rate-floored
+ * loop: at most one posting batch per pass. Asserted in the model: non-withdrawal
+ * posts never exceed 30 in a rolling minute, and withdrawals (exempt from the cap)
+ * never exceed the number of withdrawing heads in one pass.
+ */
+const localVerifyStatusPost: SelfActionController = {
+  id: 'local-verify-status-post',
+  actionVerb: 'retry-status-post',
+  models: 'src/localVerify/StatusReconciler.ts (passInner → postRetryDue + orderSubmissions; send → admitStatusPost, nextPostRetry)',
+  modelsPath: 'src/localVerify/StatusReconciler.ts',
+  delegatedGiveUp: 'none needed: posts ride only the 60-second pass, the 30/minute cap bounds non-withdrawals, and withdrawals are bounded by the heads that hold a success',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Retries, the post window and the observed cache are in memory and rebuilt from GitHub after a restart, never by blind re-posting; the first pass is still under the 30/minute cap with withdrawals bounded by heads.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 15,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'at most one posting batch per 60-second pass; the batch is capped (30/min, withdrawals bounded by heads)', rateFloorMs: RECONCILER_LIMITS.intervalMs },
+  makeUnderPressure(f, sink) {
+    const heads = Array.from({ length: 40 }, (_, k) => ({ head: k.toString(16).padStart(40, 'b'), withdraw: k < 10 }));
+    const withdrawing = heads.filter((h) => h.withdraw).length;
+    const retries = new Map<string, { attempts: number; nextAt: number }>();
+    const settled = new Set<string>();
+    let postTimes: number[] = [];
+    let ordinaryTimes: number[] = [];
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const due = heads.filter((h) => !settled.has(h.head) && postRetryDue(retries.get(h.head), now));
+        let posted = 0;
+        let withdrawals = 0;
+        for (const t of orderSubmissions(due)) {
+          const a = admitStatusPost({ withdrawal: t.withdraw, postTimes, now });
+          postTimes = a.postTimes;
+          if (!a.admit) continue; // deferred to the next pass
+          postTimes.push(now);
+          posted += 1;
+          if (t.withdraw) withdrawals += 1;
+          else ordinaryTimes.push(now);
+          if (f.targetAlwaysRejects()) retries.set(t.head, nextPostRetry(retries.get(t.head), now));
+          else settled.add(t.head);
+        }
+        ordinaryTimes = ordinaryTimes.filter((x) => now - x < 60_000);
+        if (ordinaryTimes.length > RECONCILER_LIMITS.postsPerMinute) throw new Error(`local-verify posted ${ordinaryTimes.length} non-withdrawal statuses in a minute (cap ${RECONCILER_LIMITS.postsPerMinute})`);
+        if (withdrawals > withdrawing) throw new Error(`local-verify posted ${withdrawals} withdrawals for ${withdrawing} withdrawing heads`);
+        if (posted === 0) return;
+        sink.emit({ verb: 'retry-status-post', target: 'status-post-pass' });
+        sink.emitTimesMs.push(now);
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-status-pass-backoff — a failed open-PR listing posts nothing and
+ * backs the whole pass off (2 min doubling, capped at 15). Pinned worst case:
+ * EVERY listing fails (targetAlwaysRejects). Listing attempts (and the settings
+ * read that precedes each) are ≥ 2 minutes apart.
+ */
+const localVerifyStatusPassBackoff: SelfActionController = {
+  id: 'local-verify-status-pass-backoff',
+  actionVerb: 'retry-pr-list',
+  models: 'src/localVerify/StatusReconciler.ts (passInner nextPassAt gate; backoffPass → passBackoffDelay)',
+  modelsPath: 'src/localVerify/StatusReconciler.ts',
+  delegatedGiveUp: 'none needed: the pass backoff floors listing attempts at 2 minutes (15 at steady state) and a failed listing posts nothing',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart begins with one immediate pass and then re-enters the same backoff after its first failure; restarts are operator/updater-driven and dampened.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 60,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'a failing PR listing is retried at most once per backoff interval (2 to 15 minutes)', rateFloorMs: RECONCILER_LIMITS.passBackoffBaseMs },
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextPassAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextPassAt) return;
+        sink.emit({ verb: 'retry-pr-list', target: 'open-pr-list' });
+        sink.emitTimesMs.push(now);
+        if (!f.targetAlwaysRejects()) { failures = 0; nextPassAt = 0; return; }
+        failures += 1;
+        nextPassAt = now + passBackoffDelay(failures);
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  localVerifyErrorRerun,
+  localVerifyCapacityRequeue,
+  localVerifyMainSchedule,
+  localVerifyMainDebounce,
+  localVerifyStatusPost,
+  localVerifyStatusPassBackoff,
   systemTopicAdoption,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,

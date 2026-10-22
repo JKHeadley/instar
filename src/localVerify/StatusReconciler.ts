@@ -44,6 +44,63 @@ export const RECONCILER_LIMITS = Object.freeze({
   rollupTruncationAt: 100,
 });
 
+// ---- the reconciler's self-action decisions (pure; the reconciler calls these, and
+//      the self-action registry drives the SAME functions under sustained pressure —
+//      tests/unit/self-action-convergence.test.ts) ----
+
+/**
+ * Post admission against the global per-minute cap. A withdrawal (a post away from
+ * `success`) is exempt and is never delayed; any other post is admitted only while
+ * fewer than `postsPerMinute` posts happened in the last rolling minute. Returns the
+ * post-time window pruned to that minute (unchanged for a withdrawal).
+ */
+export function admitStatusPost(
+  i: { withdrawal: boolean; postTimes: readonly number[]; now: number },
+  limits: { postsPerMinute: number } = RECONCILER_LIMITS,
+): { admit: boolean; reason: 'withdrawal-exempt' | 'under-cap' | 'rate-limited'; postTimes: number[] } {
+  if (i.withdrawal) return { admit: true, reason: 'withdrawal-exempt', postTimes: [...i.postTimes] };
+  const pruned = pruneWindow(i.postTimes, i.now);
+  return pruned.length >= limits.postsPerMinute
+    ? { admit: false, reason: 'rate-limited', postTimes: pruned }
+    : { admit: true, reason: 'under-cap', postTimes: pruned };
+}
+
+/** Drop leading post times older than one minute (the array is time-ordered). */
+function pruneWindow(postTimes: readonly number[], now: number): number[] {
+  let k = 0;
+  while (k < postTimes.length && now - postTimes[k] >= MIN) k++;
+  return postTimes.slice(k);
+}
+
+/** A head's failed-post backoff has elapsed (or it never failed): the pass may re-submit it. */
+export function postRetryDue(r: { nextAt: number } | undefined, now: number): boolean {
+  return !r || r.nextAt <= now;
+}
+
+/** After a failed post: per-head backoff, base doubling, capped. */
+export function nextPostRetry(
+  prev: { attempts: number } | undefined,
+  now: number,
+  limits: { retryBaseMs: number; retryMaxMs: number } = RECONCILER_LIMITS,
+): { attempts: number; nextAt: number; delayMs: number } {
+  const attempts = (prev?.attempts ?? 0) + 1;
+  const delayMs = Math.min(limits.retryBaseMs * 2 ** (attempts - 1), limits.retryMaxMs);
+  return { attempts, nextAt: now + delayMs, delayMs };
+}
+
+/** The backoff after `failures` consecutive PR-listing (or check-run read) failures: 2 min doubling, capped at 15. */
+export function passBackoffDelay(
+  failures: number,
+  limits: { passBackoffBaseMs: number; passBackoffMaxMs: number } = RECONCILER_LIMITS,
+): number {
+  return Math.min(limits.passBackoffBaseMs * 2 ** (failures - 1), limits.passBackoffMaxMs);
+}
+
+/** Submission order for one pass: withdrawals first (the per-minute cap never delays them), stable otherwise. */
+export function orderSubmissions<T extends { withdraw: boolean }>(list: readonly T[]): T[] {
+  return [...list].sort((a, b) => Number(b.withdraw) - Number(a.withdraw));
+}
+
 export type RollupEntry =
   | { kind: 'status'; context: string; state: string }
   | { kind: 'check'; name: string; status: string | null; conclusion: string | null };
@@ -306,6 +363,7 @@ export class StatusReconciler {
   }
 
   private async passInner(at: string): Promise<PassResult> {
+    /* @self-action-controller: local-verify-status-pass-backoff */
     if (this.seams.now() < this.nextPassAt) {
       return { at, outcome: 'backoff', heads: 0, submitted: 0, floorState: this.floorGate.state() };
     }
@@ -424,8 +482,7 @@ export class StatusReconciler {
       if (desired.state !== seen && !this.retryNotDue(head, now)) toSubmit.push({ head, trigger: 'pass', withdraw: seen === 'success' });
     }
     // Withdrawals (away from success) go first; the per-minute cap never delays them.
-    toSubmit.sort((a, b) => Number(b.withdraw) - Number(a.withdraw));
-    for (const t of toSubmit) { void this.submit(t.head, t.trigger); submitted++; }
+    for (const t of orderSubmissions(toSubmit)) { void this.submit(t.head, t.trigger); submitted++; }
     if (this.stuckSince.size === 0) this.raised.delete('local-verify:status-stuck');
     this.passFailures = 0;
     this.nextPassAt = 0;
@@ -434,22 +491,22 @@ export class StatusReconciler {
 
   /** A failed post's backoff has not elapsed: the pass is the one retry path. */
   private retryNotDue(head: string, now: number): boolean {
-    const r = this.retries.get(head);
-    return !!r && r.nextAt > now;
+    return !postRetryDue(this.retries.get(head), now);
   }
 
   private backoffPass(): void {
     this.passFailures++;
-    const delay = Math.min(RECONCILER_LIMITS.passBackoffBaseMs * 2 ** (this.passFailures - 1), RECONCILER_LIMITS.passBackoffMaxMs);
+    const delay = passBackoffDelay(this.passFailures);
     this.nextPassAt = this.seams.now() + delay;
     this.seams.audit({ event: 'pass-backoff', failures: this.passFailures, delayMs: delay });
   }
 
-  /** Global posts-per-minute cap; true ⇒ defer to the next pass. */
-  private rateLimited(): boolean {
-    const now = this.seams.now();
-    while (this.postTimes.length && now - this.postTimes[0] >= MIN) this.postTimes.shift();
-    return this.postTimes.length >= RECONCILER_LIMITS.postsPerMinute;
+  /** Global posts-per-minute cap (withdrawals exempt); false ⇒ defer to the next pass. */
+  private admitPost(withdrawal: boolean): boolean {
+    const a = admitStatusPost({ withdrawal, postTimes: this.postTimes, now: this.seams.now() });
+    this.postTimes.length = 0;
+    this.postTimes.push(...a.postTimes);
+    return a.admit;
   }
 
   private floorOf(pr: OpenPr, enabled: boolean): { eligible: boolean; floor: FloorMode } {
@@ -474,7 +531,7 @@ export class StatusReconciler {
         this.mirrorRuns.set(head, { fp, runs });
         if (runs === null) {
           const failures = (rb?.failures ?? 0) + 1;
-          const delay = Math.min(RECONCILER_LIMITS.passBackoffBaseMs * 2 ** (failures - 1), RECONCILER_LIMITS.passBackoffMaxMs);
+          const delay = passBackoffDelay(failures);
           this.checkRunBackoff.set(head, { failures, nextAt: this.seams.now() + delay });
           this.seams.audit({ event: 'check-runs-unreadable', head, failures, delayMs: delay });
         } else {
@@ -565,6 +622,7 @@ export class StatusReconciler {
 
   // ---- the single serialized writer per head ----
 
+  /* @self-action-controller: local-verify-status-post */
   submit(head: string, trigger: string): Promise<void> {
     const prev = this.chains.get(head) ?? Promise.resolve();
     const next = prev.then(() => this.send(head, trigger)).catch((e) => {
@@ -603,7 +661,7 @@ export class StatusReconciler {
       return;
     }
     const withdrawal = o?.state === 'success' && d.state !== 'success';
-    if (!withdrawal && this.rateLimited()) {
+    if (!this.admitPost(withdrawal)) {
       this.seams.audit({ event: 'post-deferred-rate', head, state: d.state, trigger, perMinute: RECONCILER_LIMITS.postsPerMinute });
       return; // the next pass re-submits (the projection still differs)
     }
@@ -624,9 +682,9 @@ export class StatusReconciler {
       return;
     }
     const r = this.retries.get(head) ?? { attempts: 0, nextAt: 0, lastError: '' };
-    r.attempts++;
-    const delay = Math.min(RECONCILER_LIMITS.retryBaseMs * 2 ** (r.attempts - 1), RECONCILER_LIMITS.retryMaxMs);
-    r.nextAt = this.seams.now() + delay;
+    const next = nextPostRetry(r, this.seams.now());
+    r.attempts = next.attempts;
+    r.nextAt = next.nextAt;
     r.lastError = res.status !== null ? `HTTP ${res.status}` : res.detail.slice(0, 120);
     this.retries.set(head, r);
     // No timer: the 60-second pass is the one retry path, and it waits for nextAt.
