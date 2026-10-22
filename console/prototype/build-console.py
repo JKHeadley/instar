@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Generate the prototype console's first screen from LIVE agent data.
+
+Design follows console/research/SYNTHESIS.md:
+  - convergence 1: show what the agent is doing AND what it is allowed to do,
+    together, always visible.
+  - the Dots finding: write empty states out in words ("No recent activity")
+    rather than omitting them or printing a 0.
+  - the failure this research kept hitting: distinguish working / slow /
+    quietly-failed. A field we could not read says so; it never renders as fine.
+"""
+import json, subprocess, html, datetime, sys, os
+
+BASE = "http://127.0.0.1:4040"
+CFG = "/home/echo/.instar/agents/echo/.instar/config.json"
+OUT = "/home/echo/.instar/agents/echo/.instar/proto-serve/console.html"
+AUTH = json.load(open(CFG))["authToken"]
+
+def get(path):
+    """Return (data, error). An unreadable source is NEVER silently empty."""
+    try:
+        r = subprocess.run(
+            ["curl", "-s", "--max-time", "30", "-H", f"Authorization: Bearer {AUTH}", BASE + path],
+            capture_output=True, text=True, timeout=45)
+        if r.returncode != 0:
+            return None, f"could not reach the agent ({r.returncode})"
+        if not r.stdout.strip():
+            return None, "the agent returned nothing"
+        return json.loads(r.stdout), None
+    except subprocess.TimeoutExpired:
+        return None, "the agent did not answer in time"
+    except json.JSONDecodeError:
+        return None, "the agent's answer was not readable"
+    except Exception as e:
+        return None, f"unexpected: {type(e).__name__}"
+
+def ago(iso):
+    if not iso: return None
+    try:
+        t = datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        secs = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
+    except Exception:
+        return None
+    if secs < 90: return "just now"
+    if secs < 5400: return f"{int(secs//60)} min ago"
+    if secs < 172800: return f"{int(secs//3600)} hours ago"
+    return f"{int(secs//86400)} days ago"
+
+e = html.escape
+
+sessions, s_err = get("/sessions")
+commits, c_err = get("/commitments")
+guards, g_err = get("/guards")
+atten, a_err = get("/attention")
+pool, p_err = get("/pool")
+health, h_err = get("/health")
+
+# ---- what needs you -------------------------------------------------------
+def needs_you():
+    """The attention queue, which today has no human-facing surface at all.
+
+    Shown FIRST because an item nobody sees is an item nobody acts on — and the
+    count is the point: a queue that has quietly accumulated is indistinguishable
+    from an empty one unless something displays it.
+    """
+    if a_err:
+        return '<p class="err">Can\'t tell: ' + e(a_err) + '.</p>'
+    items = atten.get("items", atten) if isinstance(atten, dict) else (atten or [])
+    open_ = [i for i in items if str(i.get("status", "")).upper() == "OPEN"]
+    if not open_:
+        return '<p class="empty">Nothing waiting on you.</p>'
+    high = [i for i in open_ if str(i.get("priority", "")).upper() in ("HIGH", "URGENT")]
+    parts = []
+    if high:
+        parts.append('<div class="stat alarm"><b>' + str(len(high)) + '</b><span>need you</span></div>')
+    parts.append('<div class="stat"><b>' + str(len(open_)) + '</b><span>open in total</span></div>')
+    rows = []
+    for i in sorted(high, key=lambda x: str(x.get("createdAt") or ""), reverse=True)[:5]:
+        when = ago(i.get("createdAt"))
+        title = (i.get("title") or "(untitled)").strip()
+        rows.append(
+            '<div class="row"><div class="row-head"><span class="dot bad"></span><strong>'
+            + e(title[:110]) + '</strong></div><div class="meta">'
+            + (e(when) if when else "time not recorded") + '</div></div>')
+    tail = ''
+    if len(high) > 5:
+        tail = '<p class="note">…and ' + str(len(high) - 5) + ' more marked high.</p>'
+    note = ('<p class="note">These accumulated with nowhere to be seen. That is the argument '
+            'for this screen: a queue nobody looks at reads exactly like an empty one.</p>')
+    return '<div class="stats">' + "".join(parts) + '</div>' + "".join(rows) + tail + note
+
+# ---- where I'm running ----------------------------------------------------
+def machines_block():
+    """Which machines exist, and which one currently holds the right to speak.
+
+    This is the view that would have made tonight's lost replies visible: a
+    conversation can be assigned to one machine while the right to answer on
+    Telegram sits with another, and nothing anywhere said so.
+    """
+    if p_err:
+        return '<p class="err">Can\'t tell: ' + e(p_err) + '.</p>'
+    ms = (pool or {}).get("machines", []) if isinstance(pool, dict) else []
+    if not ms:
+        return '<p class="empty">Only one machine — nothing to coordinate.</p>'
+    holder = None
+    if isinstance(health, dict):
+        holder = (health.get("multiMachine", {}).get("syncStatus", {}) or {}).get("leaseHolder")
+    self_id = (pool or {}).get("selfMachineId")
+    rows = []
+    for m in ms:
+        mid = m.get("machineId")
+        nick = m.get("nickname") or (mid or "?")[:10]
+        tags = []
+        if mid and holder and mid == holder:
+            tags.append('<span class="pill speak">holds the right to speak</span>')
+        if mid and self_id and mid == self_id:
+            tags.append('<span class="pill">this machine</span>')
+        online = m.get("online")
+        dot = 'live' if online else 'bad'
+        state = 'online' if online else 'offline'
+        skew = m.get("clockSkewStatus")
+        if skew and str(skew).lower() not in ("ok", "none", "normal"):
+            tags.append('<span class="pill warn">clock ' + e(str(skew)) + '</span>')
+        rows.append(
+            '<div class="row"><div class="row-head"><span class="dot ' + dot + '"></span><strong>'
+            + e(str(nick)) + '</strong><span class="meta">' + state + '</span>'
+            + "".join(tags) + '</div></div>')
+    note = ''
+    if holder and self_id and holder != self_id:
+        note = ('<p class="note alarmtext">The machine answering you is not this one. '
+                'A reply written here has to be handed over, and if that fails it is held, '
+                'retried, and expires after six hours. That is what cost 26 replies.</p>')
+    elif holder and self_id and holder == self_id:
+        note = '<p class="note">This machine can answer you directly.</p>'
+    else:
+        note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
+    return "".join(rows) + note
+
+# ---- sessions -------------------------------------------------------------
+def session_rows():
+    if s_err: return f'<p class="err">Can\'t tell: {e(s_err)}.</p>'
+    live = [s for s in (sessions or []) if s.get("status") in ("running", "starting")]
+    if not live:
+        return '<p class="empty">Nothing running right now.</p>'
+    out = []
+    for s in live:
+        started = ago(s.get("startedAt"))
+        bits = []
+        if s.get("framework"): bits.append(e(s["framework"]))
+        if s.get("machineNickname"): bits.append("on " + e(s["machineNickname"]))
+        if started: bits.append("started " + e(started))
+        # The `prompt` field is the session's INTERNAL bootstrap instruction — a file
+        # path and harness scaffolding, not a description of the work. Printing it was
+        # worse than printing nothing: it looked like an answer. Until a real source is
+        # populated (the parallel-work index carries focus/lastAction, both empty here),
+        # say so plainly.
+        prompt = (s.get("prompt") or "").strip().replace("\n", " ")
+        internal = (not prompt) or prompt.startswith("[") or "/.instar/" in prompt or "bootstrap-" in prompt
+        doing = ('<span class="unknown">Not recorded. The activity index has nothing for '
+                 'this session — the field exists, it is empty.</span>'
+                 if internal else e(prompt[:150] + ("…" if len(prompt) > 150 else "")))
+        out.append(f'''<div class="row">
+  <div class="row-head"><span class="dot live"></span><strong>{e(s.get("name") or "unnamed")}</strong>
+    <span class="meta">{" · ".join(bits) if bits else ""}</span>
+    {'<span class="pill">protected</span>' if s.get("protected") else ''}</div>
+  <div class="doing">{doing}</div>
+</div>''')
+    return "\n".join(out)
+
+# ---- promises -------------------------------------------------------------
+def promise_rows():
+    if c_err: return f'<p class="err">Can\'t tell: {e(c_err)}.</p>'
+    items = commits.get("commitments", commits) if isinstance(commits, dict) else (commits or [])
+    open_ = [i for i in items if i.get("status") not in ("delivered", "withdrawn", "cancelled")]
+    if not open_:
+        return '<p class="empty">No open promises.</p>'
+    out = []
+    for i in sorted(open_, key=lambda x: str(x.get("createdAt") or ""), reverse=True)[:8]:
+        text = (i.get("agentResponse") or "").strip().replace("\n", " ")
+        blocked = i.get("blockedOn")
+        tag = ""
+        if blocked and blocked != "none":
+            tag = f'<span class="pill warn">waiting on {e(str(blocked))}</span>'
+        when = ago(i.get("createdAt"))
+        out.append(f'''<div class="row">
+  <div class="doing">{e(text[:190] + ("…" if len(text) > 190 else "")) or "(no text recorded)"}</div>
+  <div class="meta">{e(when) if when else "time not recorded"}{tag}</div>
+</div>''')
+    return "\n".join(out)
+
+# ---- authority ------------------------------------------------------------
+def authority_block():
+    """Read the endpoint's OWN summary rather than recomputing it.
+
+    The first version did `if g.get("effective")`. `effective` is a STRING
+    ("off", "on-confirmed", "on-dry-run", ...), and "off" is truthy in Python — so it
+    rendered 91 guards as "on" when 54 were off. It was caught only because the number
+    looked implausible and the page was actually looked at. That is precisely the
+    failure this console exists to make impossible, committed by the console.
+    """
+    if g_err: return f'<p class="err">Can\'t tell: {e(g_err)}.</p>'
+    if not isinstance(guards, dict) or "summary" not in guards:
+        return '<p class="err">Can\'t tell: this agent did not report a guard summary.</p>'
+    sm = guards["summary"]
+    parts = [
+        f'<div class="stat"><b>{sm.get("onConfirmed",0)}</b><span>on, confirmed</span></div>',
+        f'<div class="stat"><b>{sm.get("onUnverified",0)}</b><span>on, unverified</span></div>',
+        f'<div class="stat"><b>{sm.get("offDarkDefault",0)}</b><span>off by design</span></div>',
+    ]
+    if sm.get("onDryRun"):
+        parts.append(f'<div class="stat warnst"><b>{sm["onDryRun"]}</b><span>watching only</span></div>')
+    if sm.get("offDeviant"):
+        parts.append(f'<div class="stat alarm"><b>{sm["offDeviant"]}</b><span>off that should be on</span></div>')
+    if sm.get("offRuntimeDivergent"):
+        parts.append(f'<div class="stat alarm"><b>{sm["offRuntimeDivergent"]}</b><span>says on, isn\'t</span></div>')
+    if sm.get("missing"):
+        parts.append(f'<div class="stat warnst"><b>{sm["missing"]}</b><span>can\'t tell</span></div>')
+
+    notes = []
+    gaps = sm.get("loadBearingGapKeys") or []
+    if gaps:
+        notes.append('<p class="note alarmtext">Something a critical path depends on is not running — '
+                     + str(len(gaps)) + ': ' + e(", ".join(sorted(gaps)[:4]))
+                     + ('…' if len(gaps) > 4 else '') + '</p>')
+    if sm.get("offRuntimeDivergent"):
+        notes.append('<p class="note alarmtext">At least one guard reports itself on while its runtime says '
+                     'otherwise. The contradiction is shown rather than resolved in its favour.</p>')
+    if sm.get("onDryRun"):
+        notes.append('<p class="note">' + str(sm["onDryRun"]) +
+                     ' are observing but not acting — on, and deliberately toothless.</p>')
+    notes.append('<p class="note">' + str(sm.get("offDarkDefault",0)) +
+                 ' are off because they ship off. Normal, not an alarm.</p>')
+    enriched = sm.get("runtimeEnriched")
+    if enriched:
+        notes.append('<p class="note">Live runtime state could be read for ' + e(str(enriched)) +
+                     '; the rest report what they are configured to do, not what they are doing.</p>')
+    return '<div class="stats">' + "".join(parts) + '</div>' + "".join(notes)
+
+now = datetime.datetime.now().strftime("%-d %B %Y, %H:%M")
+page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Echo — console prototype</title>
+<style>
+:root{{--ground:#0A0E17;--panel:#111828;--line:#1E2838;--ink:#E8EDF5;--dim:#8A94A6;--teal:#6EC6C8;--ok:#4ADE80;--warn:#FBBF24;--bad:#F87171}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:22px 16px 70px;max-width:760px;margin-inline:auto}}
+h1{{font-size:21px;margin:0 0 2px}}
+.sub{{color:var(--dim);font-size:13.5px;margin-bottom:26px}}
+h2{{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--teal);margin:30px 0 10px;font-weight:600}}
+.row{{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px;margin-bottom:9px}}
+.row-head{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}}
+.dot{{width:8px;height:8px;border-radius:50%;flex:0 0 auto}}
+.dot.bad{{background:var(--bad);box-shadow:0 0 0 3px rgba(248,113,113,.15)}}
+.dot.live{{background:var(--ok);box-shadow:0 0 0 3px rgba(74,222,128,.15)}}
+.meta{{color:var(--dim);font-size:13px}}
+.doing{{font-size:15px}}
+.unknown{{color:var(--dim);font-style:italic}}
+.pill{{font-size:11.5px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--dim);margin-left:4px}}
+.pill.speak{{color:var(--teal);border-color:rgba(110,198,200,.45)}}
+.pill.warn{{color:var(--warn);border-color:rgba(251,191,36,.35)}}
+.empty{{color:var(--dim);font-size:14.5px;margin:0 0 9px}}
+.err{{color:var(--warn);font-size:14.5px;margin:0 0 9px}}
+.stats{{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:11px}}
+.stat{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px;min-width:92px}}
+.stat b{{display:block;font-size:21px;line-height:1.15}}
+.stat span{{color:var(--dim);font-size:12.5px}}
+.stat.alarm{{border-color:rgba(248,113,113,.45)}} .stat.alarm b{{color:var(--bad)}}
+.stat.warnst{{border-color:rgba(251,191,36,.4)}} .stat.warnst b{{color:var(--warn)}}
+.note{{color:var(--dim);font-size:13.5px;margin:5px 0}}
+.alarmtext{{color:var(--bad)}}
+footer{{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:var(--dim);font-size:12.5px}}
+</style></head><body>
+<h1>Echo</h1>
+<div class="sub">Console prototype · built from live data, {e(now)}</div>
+
+<h2>What needs you</h2>
+{needs_you()}
+
+<h2>What I'm doing</h2>
+{session_rows()}
+
+<h2>What I've promised</h2>
+{promise_rows()}
+
+<h2>Where I'm running</h2>
+{machines_block()}
+
+<h2>What I'm allowed to do</h2>
+{authority_block()}
+
+<footer>Prototype — not the live dashboard, nothing here changes anything.
+Every number is read from this agent right now; a value that could not be read says so
+rather than showing zero.</footer>
+</body></html>"""
+open(OUT, "w").write(page)
+print("wrote", OUT, len(page), "bytes")
