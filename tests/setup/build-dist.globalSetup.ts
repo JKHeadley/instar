@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registryAssetIsStale } from './registryAssetFreshness.js';
+import { analyzeVitestArgv } from '../../src/core/testRunnerRunClassifier.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -53,6 +54,10 @@ function newestSrcMtime(dir: string): number {
  * constraint expressible instead of accidental.
  */
 export default function setup(): void {
+  // `vitest list` runs every globalSetup but executes no test, so it needs no dist.
+  // Building here made the pre-push smoke's affected-test listing run a full `tsc`
+  // and time out, which skipped the smoke tier on every push.
+  if (analyzeVitestArgv(process.argv).isList) return;
   ensureDistBuilt();
   ensureRegistryAsset();
 }

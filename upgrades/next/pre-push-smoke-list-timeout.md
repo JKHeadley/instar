@@ -1,0 +1,20 @@
+## What Changed
+
+- **The pre-push smoke tier runs again.** Every push printed `PRE_PUSH_SMOKE_RESULT=SKIPPED reason=affected-set-indeterminate tests_run=0`: the step that lists the affected tests ran a full TypeScript build (a test global setup builds `dist/`) and then collected every affected test, which took 6–9 minutes on a change touching a widely used file, far past its 2-minute limit. The listing no longer builds `dist/` (`vitest list` runs no test), and the smoke script first lists file names only (about 35 s, no test imported). If that is over the 80-file cap it reports "too broad" at once; otherwise it collects test cases for the small set and runs it.
+- **Pushes no longer queue behind full suites.** With the host test-runner bound enforcing, the push config (one worker) sat in the one-at-a-time suite lane, behind full suites whose p95 hold is about 41 minutes. It now uses the small-run lane (6 slots), chosen by its resolved worker count, so a push with pool-widening flags still lands in the suite lane.
+- **The suite-lane wait is host-tunable and longer (CMT-908).** The wait budget was env-only and 2 minutes (10 interactive), so a run waiting its turn failed with exit 75. The default is now 45 minutes for both run classes, and `acquireMs` / `acquireMsInteractive` (milliseconds, 10 s to 4 h) in `~/.instar/host-test-runner-tuning.json` set it host-wide. The environment variables still override.
+
+## What to Tell Your User
+
+Nothing to do. Instar's own pre-push test check had been silently skipping on every push since the test limit was switched on; it runs again, and a push no longer waits behind long test runs.
+
+## Summary of New Capabilities
+
+- `acquireMs` / `acquireMsInteractive` in the host test-runner tuning file set how long a test run waits for its turn.
+
+## Evidence
+
+- `tests/unit/host-test-runner-semaphore.test.ts` (budget resolution, tuning-file budget in `acquire()`, push-config lane routing)
+- `tests/unit/scripts/pre-push-scope.test.ts` (files-only listing parser)
+- `tests/unit/test-runner-budget-awareness.test.ts` (template + existing-agent line replacement)
+- Measured on the Studio under the enforcing bound: listing a change that reaches 591 test files went from 6m30s–8m52s (timed out at 2 min) to 35 s ("too broad"); a narrow change ran its 3 files / 74 tests in the small-run lane and passed.
