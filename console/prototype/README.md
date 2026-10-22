@@ -74,7 +74,20 @@ on, so every source fails exactly as it would if the agent were down.
 Result in `example-output-degraded.html`: all six sections render, every one reads
 *"Can't tell: the agent is not answering on its port."*, and **no section
 fabricates a zero**. A reader cannot mistake an unreachable agent for a healthy
-quiet one.
+ quiet one.
+
+The *slow* case is tested separately, because it is the one that actually caused
+trouble: an agent that accepts the connection and never answers. Against an
+endpoint that holds every connection open, the generator still completes — it does
+not hang — and every section reads *"Can't tell: the agent took too long to
+answer."* (`example-output-slow.html`).
+
+Dead and slow are therefore distinguishable on the page. That is the distinction
+the research argues an operator console must make, and the one whose absence cost
+this project several hours when the agent's own instruments reported a healthy
+server as unreachable. The cost is latency: against a fully-hung agent each build
+takes about three minutes rather than seconds, because every source waits out its
+own timeout.
 
 The failure wording is plain rather than numeric. It first said `(7)` — a curl
 exit code, which is noise to anyone who has to act on it.
