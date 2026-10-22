@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-22T07:15:28.955Z",
+  "slug": "convergence-check-operator-reachable-links",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 27,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

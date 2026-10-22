@@ -1,0 +1,37 @@
+## What Changed
+
+The convergence check that stops an agent sending a confabulated URL also refused
+two things it should not have:
+
+- **Tailscale Funnel hosts (`*.ts.net`)** — agent-controlled ingress on the
+  machine's own tailnet, the same class as the already-exempt quick-tunnel case.
+  When the Cloudflare tunnel is down, a Funnel link is the agent's only way to hand
+  the operator a working URL, and it was being refused.
+- A new **`CLAUDE_LINK`** check blocks the opposite mistake: a `claude.ai` /
+  `claude.com` artifact link handed to the operator. That domain sits in the
+  well-known allowlist, so URL_PROVENANCE never caught it — the operator does not
+  necessarily have access to the Claude account that owns the page, and must never
+  be asked to sign in to Claude to read work their own agent produced.
+
+Also adds `grok.com` and `x.ai` to the well-known allowlist, which already carried
+`openai.com`, `anthropic.com`, `claude.ai` and `x.com`.
+
+## Evidence
+
+- `tests/unit/convergence-check-operator-reachable-links.test.ts` — 16 cases
+  against the real template, including negative controls (`evil-notts.net`,
+  `totally-made-up-host.xyz`) and a case pinning the deliberate decision that an
+  arbitrary `*.ts.net` host passes.
+- The guards had to be re-applied to a deployed agent four times before this PR.
+  The addendum in the side-effects review explains why: they lived only on an
+  unmerged branch, and every update overwrote the deployed copy from a shipped
+  template that never had them.
+
+## What to Tell Your User
+
+Your agent can hand you a working link again when its main tunnel is down, and it
+can no longer hand you a Claude artifact link you may not be able to open.
+
+## Summary of New Capabilities
+
+None — this is a correctness fix to an existing guard.
