@@ -6,8 +6,10 @@ parent-principle: "Structure beats Willpower"
 ships-staged: true
 supervision: tier0
 lessons-engaged: [P1-structure-beats-willpower, P2-signal-vs-authority, P4-testing-integrity, P6-zero-failure, P14-distrust-temporary-success, P19-no-unbounded-loops, P20-verify-the-state, P3-migration-parity, P5-agent-awareness, P21-multi-machine-entity, P22-self-heal-before-notify, unmeasured-instruments, L14-external-pr-parity, B10-verify-landed-before-claiming, challenge-the-mechanism, bounded-blast-radius, close-the-loop, 80-20-convergence, reuse-1x-first]
-status: draft
-approved: false
+status: approved
+review-convergence: "2026-10-21 — NOT formally converged: 10-round cap reached with design findings every round (round-10 changes not re-reviewed). Operator accepted the 80/20 path and approved as-is; residuals carried into the build. See reports/local-verify-merge-authority-convergence.md"
+approved: true
+approved-by: "Justin (Telegram topic 128243, 2026-10-21 17:36 PDT)"
 ---
 
 ## Problem statement

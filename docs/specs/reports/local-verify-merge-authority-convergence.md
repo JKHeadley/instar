@@ -2,7 +2,7 @@
 
 **Spec:** [docs/specs/local-verify-merge-authority.md](../local-verify-merge-authority.md)
 **Slug:** `local-verify-merge-authority`
-**Status:** `convergence-failed` at the 10-round cap (2026-10-21). Not stamped; the operator decides.
+**Status:** `convergence-failed` at the 10-round cap (2026-10-21). Operator (Justin) approved as-is on 2026-10-21 17:36 PDT (Telegram topic 128243), choosing the 80/20 path: the build surfaces what remains.
 **Iterations:** 10
 **Final-round design findings:** 13 (all applied to the spec; none re-reviewed)
 
@@ -63,3 +63,7 @@ What the trajectory shows, honestly:
 - Rounds 8–10 found operational edges of the required-status design (reconciling with GitHub, restarts, lease moves, the order of the operator's two edits). The findings were narrower each round but did not reach zero.
 
 The spec author's reading: the core design (parallel lanes, a server-run verify of the merge tree, a server-posted required status, a post-merge `main` verify, two ordered operator edits) has been stable since round 8; the remaining findings are about lifecycle edges, each with a concrete rule now in the spec. The operator's options are: approve as is and let the build surface what remains (the 80/20 path); or ask for one more targeted round on the round-10 changes only.
+
+## Operator decision
+
+2026-10-21 17:36 PDT, Justin, Telegram topic 128243: "Approved", in reply to the two options above. The spec carries a descriptive `review-convergence` tag stating it is not formally converged. Round-10 reviewer points not yet folded in are carried into the build as its first items: the advisory known-flaky lane must be reflected consistently in the inventory and predicate; capacity waits need their own oldest-wait alarm; a stuck-status canary (green record, posted status differs for >N minutes); fencing of an outstanding status write across a lease move; §4's Node-20 drop must not strand the pinned Actions contexts; nightly Linux run needs a failure consumer.
