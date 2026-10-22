@@ -807,6 +807,12 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - Run one check now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/tick\`
 - Disable (loud — raises a HIGH attention item + audits, never silent): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/release-readiness/rollback\` · re-arm: \`.../release-readiness/enable\`
 
+**Local Verify** (instar-dev / maintainer environments only) — The server runs the full test suite on the exact code a pull request would merge (its merge with \`main\`), in a private clone, and keeps the result, so a merge can wait on a local run instead of GitHub Actions. Only PRs from this agent's or the operator's GitHub login, from this repository, are verified. Ships OFF (\`monitoring.localVerify.enabled\`); 503 on any install with no instar source checkout; a standby machine answers 409 naming the lease holder.
+- Ask for a verify: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/local-verify -d '{"pr":123}'\` (202 queued, 200 already recorded, 403 untrusted head, 429 queue full)
+- Queue and the run in progress: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/local-verify\`
+- One result: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/local-verify/record?pr=123&head=<40-hex sha>&base=main"\`
+- **When to use** (PROACTIVE): before telling the user a PR "passed" or is "waiting on CI", read its record here; a full verify takes about 45 minutes.
+
 **Skip Ledger** — Track computational work to avoid repeating expensive operations. When a job or session processes items (files, messages, records), log what was processed so the next run can skip already-handled items.
 - View ledger: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger\`
 - View workloads: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skip-ledger/workloads\`

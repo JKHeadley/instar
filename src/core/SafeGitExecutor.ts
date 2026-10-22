@@ -43,6 +43,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import {
   assertNotInstarSourceTree,
   SourceTreeGuardError,
@@ -80,6 +81,10 @@ export const DESTRUCTIVE_GIT_VERBS: ReadonlySet<string> = new Set([
   'switch',
   'tag',
   'update-ref',
+  // Object-database writers (no ref or working-tree change); destructive-classified so
+  // they route through execSync. local-verify's merge-tree/commit-tree path (§2 step 1).
+  'merge-tree',
+  'commit-tree',
   'worktree', // shape-checked: `worktree list` is read-only
   'prune',
   'notes',
@@ -1038,6 +1043,32 @@ export interface SafeGitOptions {
    * applies to the agent's own checkout or any other tree.
    */
   feedbackAttemptCloneOk?: boolean;
+  /**
+   * Opt-in: allow local-verify's trusted git operations inside THIS agent's private bare clone
+   * and run worktrees (docs/specs/local-verify-merge-authority.md §2 step 1). The run worktrees
+   * are copies of the instar source, so SourceTreeGuard would refuse every write; this carve-out
+   * admits only an enumerated verb set and only when ALL of these hold:
+   *  - every target (cwd, -C, the explicit git dir and work tree, worktree path args resolved
+   *    against cwd) has a realpath at or below `verifyRoot` (itself realpath'd);
+   *  - repository discovery is closed: the executor sets `GIT_DIR=gitDir` (and `GIT_WORK_TREE`
+   *    when given) plus `GIT_CEILING_DIRECTORIES=<parent of verifyRoot>` on the child, overriding
+   *    the env denylist for these three keys only;
+   *  - `git rev-parse --absolute-git-dir`, run with the same cwd and env, resolves inside
+   *    `verifyRoot` (a damaged clone fails here instead of git searching upward to the agent's
+   *    own checkout).
+   * Otherwise it falls through to the normal guard, which refuses. The shared read tier
+   * (`sourceTreeReadOk`) is not widened.
+   */
+  localVerifyCloneOk?: LocalVerifyCloneScope;
+}
+
+export interface LocalVerifyCloneScope {
+  /** `<agentHome>/.worktrees/.verify` of the agent doing the verify. */
+  verifyRoot: string;
+  /** The repository: the bare clone, or `<bare>/worktrees/<name>` for a run worktree. */
+  gitDir: string;
+  /** The run worktree, for steps that read or write its working tree. */
+  workTree?: string;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -1067,7 +1098,8 @@ export class SafeGitExecutor {
    * Throws SafeGitExecutorError on classification mismatch or arg errors.
    */
   static execSync(args: readonly string[], opts: SafeGitOptions): string {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const targets = withLocalVerifyTargets(rawTargets, opts);
     const verbArgs = sliceAfterVerb(args, verb);
 
     // Run source-tree assertion against every target — unless the caller
@@ -1098,7 +1130,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const env = gitChildEnv(opts);
 
     let stdout: string;
     try {
@@ -1123,7 +1155,8 @@ export class SafeGitExecutor {
    * Async/streaming variant. Same guard semantics as execSync.
    */
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const targets = withLocalVerifyTargets(rawTargets, opts);
     const verbArgs = sliceAfterVerb(args, verb);
     if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
@@ -1145,7 +1178,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const env = gitChildEnv(opts);
     const spawnOpts: SpawnOptions = {
       cwd: opts.cwd,
       stdio: opts.stdio ?? 'pipe',
@@ -1161,7 +1194,8 @@ export class SafeGitExecutor {
    * leaving stdout consumption and process completion checks to the caller.
    */
   static readStream(args: readonly string[], opts: SafeGitOptions): ChildProcess {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const targets = withLocalVerifyTargets(rawTargets, opts);
     const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
     if (ambiguousReadOnly === false) {
@@ -1182,7 +1216,7 @@ export class SafeGitExecutor {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const env = gitChildEnv(opts);
     audit('git', opts.operation, verb, targets[0], 'allowed');
     return nodeSpawn('git', args as string[], {
       cwd: opts.cwd,
@@ -1200,7 +1234,8 @@ export class SafeGitExecutor {
    *     against repo-local aliases that could rebind a "read-only" verb).
    */
   static readSync(args: readonly string[], opts: SafeGitOptions): string {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const targets = withLocalVerifyTargets(rawTargets, opts);
 
     // Verb classification first, BEFORE source-tree check, so callers
     // misusing this method get a clear "use execSync" error rather than
@@ -1230,7 +1265,7 @@ export class SafeGitExecutor {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const env = gitChildEnv(opts);
     let stdout: string;
     try {
       stdout = execFileSync('git', args as string[], {
@@ -1282,6 +1317,7 @@ function isSourceTreeCheckBypassed(
 ): boolean {
   if (opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb)) return true;
   if (opts.feedbackAttemptCloneOk && isFeedbackAttemptCloneInvocation(verb, verbArgs, targets)) return true;
+  if (opts.localVerifyCloneOk && isLocalVerifyCloneInvocation(verb, verbArgs, targets, opts)) return true;
   if (opts.sourceTreeWorktreeManagerOk && isSourceTreeWorktreeManagerInvocation(verb, verbArgs)) {
     return true;
   }
@@ -1307,6 +1343,131 @@ function isFeedbackAttemptCloneInvocation(verb: string, verbArgs: readonly strin
   if (verb === 'config') return isWorktreeIdentityConfigWrite(verbArgs);
   if (verb === 'checkout') return verbArgs.includes('--detach') && !verbArgs.some((a) => a === '--' || a.startsWith('-b') || a === '-B' || a === '--orphan');
   return FEEDBACK_ATTEMPT_CLONE_VERBS.has(verb);
+}
+
+const LOCAL_VERIFY_CLONE_VERBS: ReadonlySet<string> = new Set([
+  'fetch', 'merge-tree', 'commit-tree', 'update-ref', 'checkout', 'diff', 'merge-base', 'status',
+  // Reads the orchestrator needs over the merge tree (file text, object checks).
+  'show', 'rev-parse', 'cat-file', 'ls-tree',
+]);
+
+/** Realpath of `p`, or of its nearest existing ancestor joined with the rest (for paths not yet created). */
+function realpathOrAncestor(p: string): string {
+  let cur = path.resolve(p);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...rest);
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(p);
+      rest.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/** True when `target`'s realpath is `verifyRoot`'s realpath or below it. */
+/**
+ * A verify root is admitted only in its expected shape: an absolute path ending in
+ * `.worktrees/.verify` whose `.verify` entry is a real directory, not a symlink. A root
+ * that is (or resolves to) anything else — the agent home itself, a symlink into the
+ * source tree — would exempt that whole tree from SourceTreeGuard. Missing is fine
+ * (the orchestrator creates it).
+ */
+export function isWellFormedLocalVerifyRoot(verifyRoot: string): boolean {
+  if (!verifyRoot || !path.isAbsolute(verifyRoot)) return false;
+  const norm = path.resolve(verifyRoot);
+  if (path.basename(norm) !== '.verify' || path.basename(path.dirname(norm)) !== '.worktrees') return false;
+  try {
+    if (fs.lstatSync(norm).isSymbolicLink()) return false;
+  } catch {
+    return true; // @silent-fallback-ok — absent root: nothing to escape through; the orchestrator creates it as a real directory
+  }
+  const real = realpathOrAncestor(norm);
+  return path.basename(real) === '.verify' && path.basename(path.dirname(real)) === '.worktrees';
+}
+
+export function isLocalVerifyClonePath(target: string, verifyRoot: string): boolean {
+  if (!isWellFormedLocalVerifyRoot(verifyRoot)) return false;
+  const root = realpathOrAncestor(verifyRoot);
+  const t = realpathOrAncestor(target);
+  return t === root || t.startsWith(root + path.sep);
+}
+
+/** The three env keys the carve-out sets itself (overriding the denylist for them only). */
+function localVerifyEnv(scope: LocalVerifyCloneScope): Record<string, string> {
+  const env: Record<string, string> = {
+    GIT_DIR: path.resolve(scope.gitDir),
+    GIT_CEILING_DIRECTORIES: path.dirname(realpathOrAncestor(scope.verifyRoot)),
+  };
+  if (scope.workTree) env.GIT_WORK_TREE = path.resolve(scope.workTree);
+  return env;
+}
+
+/** The env a git child runs with: sanitized, plus the carve-out's discovery pins when opted in. */
+function gitChildEnv(opts: SafeGitOptions): NodeJS.ProcessEnv {
+  const env = sanitizeEnv(opts.env, opts.cwd);
+  if (opts.localVerifyCloneOk) Object.assign(env, localVerifyEnv(opts.localVerifyCloneOk));
+  return env;
+}
+
+/** The explicit git dir and work tree are targets too (checked by the guard when not bypassed). */
+function withLocalVerifyTargets(targets: string[], opts: SafeGitOptions): string[] {
+  const scope = opts.localVerifyCloneOk;
+  if (!scope) return targets;
+  const extra = [scope.gitDir, ...(scope.workTree ? [scope.workTree] : [])].map((t) => canonicalize(t));
+  return dedupeTargets([...targets, ...extra]);
+}
+
+function isLocalVerifyCloneInvocation(
+  verb: string, verbArgs: readonly string[], targets: readonly string[], opts: SafeGitOptions,
+): boolean {
+  const scope = opts.localVerifyCloneOk;
+  if (!scope) return false;
+  const root = scope.verifyRoot;
+  const inRoot = (t: string) => isLocalVerifyClonePath(t, root);
+  if (targets.length === 0 || !targets.every(inRoot)) return false;
+  if (!inRoot(scope.gitDir) || (scope.workTree !== undefined && !inRoot(scope.workTree))) return false;
+  const cwd = opts.cwd ?? process.cwd();
+  const positional = (from: number) => verbArgs.slice(from).filter((a) => !a.startsWith('-'));
+
+  let allowed: boolean;
+  if (verb === 'worktree') {
+    const sub = verbArgs.find((a) => !a.startsWith('-'));
+    if (sub !== 'add' && sub !== 'remove' && sub !== 'prune') return false;
+    // `remove --force` is denied: the verifier falls back to a scoped directory delete +
+    // `worktree prune` instead, so there is no case that needs git to discard a dirty tree.
+    if (sub === 'remove' && verbArgs.some((a) => /^--force(=|$)/.test(a) || /^-f/.test(a))) return false;
+    const rest = positional(verbArgs.indexOf(sub) + 1);
+    // Path args resolve against the invocation cwd, then realpath, before the scope check.
+    if ((sub === 'add' || sub === 'remove') && (rest.length === 0 || !inRoot(path.resolve(cwd, rest[0])))) return false;
+    allowed = true;
+  } else if (verb === 'init') {
+    // Init creates the repo, so there is nothing to probe yet; the dir must be the pinned GIT_DIR.
+    const dirs = positional(0);
+    return verbArgs.includes('--bare') && dirs.every((a) => path.resolve(cwd, a) === path.resolve(scope.gitDir));
+  } else if (verb === 'config') {
+    allowed = isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
+  } else {
+    allowed = LOCAL_VERIFY_CLONE_VERBS.has(verb);
+  }
+  if (!allowed) return false;
+  return localVerifyGitDirResolvesInside(opts, scope);
+}
+
+/** Probe: with the same cwd and env, does git resolve its repository inside verifyRoot? */
+function localVerifyGitDirResolvesInside(opts: SafeGitOptions, scope: LocalVerifyCloneScope): boolean {
+  try {
+    const out = withSyncOp(() => execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: opts.cwd, env: gitChildEnv(opts), encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }) as string);
+    const resolved = out.trim();
+    return resolved !== '' && isLocalVerifyClonePath(resolved, scope.verifyRoot);
+  } catch {
+    // @silent-fallback-ok: an unresolvable repository is refused by the normal guard.
+    return false;
+  }
 }
 
 function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly string[]): boolean {

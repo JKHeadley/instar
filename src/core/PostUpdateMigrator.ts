@@ -8877,6 +8877,21 @@ A repo-gated watchdog that makes a stalled instar release impossible to miss: it
       result.upgraded.push('CLAUDE.md: added Release Readiness watchdog awareness (release-readiness-visibility)');
     }
 
+    // local-verify-merge-authority (Agent Awareness + Migration Parity):
+    // existing agents learn the local-verify routes. Content-sniff on the route.
+    if (!content.includes('/local-verify')) {
+      const lvSection = `
+### Local Verify (instar-dev / maintainer environments only)
+
+The server runs the full test suite on the exact code a pull request would merge, in a private clone, and keeps the result, so a merge can wait on a local run instead of GitHub Actions. Only PRs from this agent's or the operator's login, from this repository, are verified. Ships OFF (\`monitoring.localVerify.enabled\`); 503 with no instar source checkout; a standby answers 409 naming the lease holder.
+- Ask: \`POST /local-verify\` with \`{"pr":123}\` · Queue: \`GET /local-verify\` · Result: \`GET /local-verify/record?pr=&head=&base=\`
+- Before telling the user a PR "passed" or is "waiting on CI", read its record; a full verify takes about 45 minutes.
+`;
+      content += '\n' + lvSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify awareness (local-verify-merge-authority)');
+    }
+
     // codex-usage-visibility (Agent Awareness + Migration Parity): existing
     // agents must learn they can check codex `/status` usage over HTTP without
     // the interactive TUI. Content-sniff on the route marker.

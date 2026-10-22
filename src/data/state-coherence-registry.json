@@ -1612,6 +1612,61 @@
         "maxAgeMs": 2592000000,
         "note": "Trash is emptied every executor tick; a held change set is removed when it is published; settings and canary files are small and per attempt."
       }
+    },
+    {
+      "category": "local-verify-journal",
+      "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority §2 step 6).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/journal.jsonl",
+        "state/local-verify/closed-seen.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 500,
+        "note": "Compacted at every boot: records kept while the PR is open plus 14 days after it is first seen closed, newest 500."
+      }
+    },
+    {
+      "category": "local-verify-inflight",
+      "description": "local-verify two-phase in-flight intent (attempt token written before the run child is spawned, pid/pgid patched after) plus the run child's transient input/result/log files. Machine-local by construction: it names a process group on this host.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/inflight.json",
+        "state/local-verify/runs/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One run at a time; the intent is cleared on exit and the run's input/result files are removed then."
+      }
+    },
+    {
+      "category": "local-verify-audit",
+      "description": "local-verify metadata-only audit log (queue, start, cancel, overlap, record, orphan-reap events). No test output or PR content.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/local-verify.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 5242880,
+        "keepSegments": 10,
+        "note": "Rotates at 5 MB; 10 files kept (spec local-verify-merge-authority §2 step 8)."
+      }
     }
   ]
 }

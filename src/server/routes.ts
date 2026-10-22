@@ -1,3 +1,4 @@
+import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
@@ -1177,6 +1178,8 @@ export interface RouteContext {
   /** GreenPrAutoMerger (green-pr-automerge-enforcement). Null on installs with no
    *  analyzable instar repo + safe-merge, or when disabled in config. */
   greenPrAutoMerger: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger | null;
+  /** local-verify (spec local-verify-merge-authority §2); null → routes 503. */
+  localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService | null;
   /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
   guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   messageRouter: MessageRouter | null;
@@ -15925,6 +15928,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     ctx.releaseReadinessSentinel.enable();
     res.json({ ok: true, enabled: true });
+  });
+
+  // ── local-verify (local-verify-merge-authority §2) ─────────────────────
+  // The server runs the full suite on a PR's merge tree and keeps the result.
+  // 503 when not constructed; a standby answers 409 naming the lease holder.
+  registerLocalVerifyRoutes(router, {
+    service: () => ctx.localVerify ?? null,
+    lease: ctx.coordinator
+      ? {
+          holdsLease: () => ctx.coordinator!.holdsLease(),
+          holderMachineId: () => ctx.coordinator!.getSyncStatus().leaseHolder ?? null,
+        }
+      : undefined,
   });
 
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
