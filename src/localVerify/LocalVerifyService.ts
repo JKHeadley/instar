@@ -71,6 +71,13 @@ export interface ChildHandle {
 }
 
 export interface LocalVerifyServiceSeams {
+  /**
+   * The CURRENT head of a base branch (`gh api repos/{repo}/branches/{b}`), or null on
+   * read failure. A PR's `baseRefOid` is the base as of the PR's last update, which
+   * can be days stale; a verify must test the merge with today's base. Absent ⇒ the
+   * PR view's `baseRefOid` is used (test seams only).
+   */
+  baseHead?(baseRefName: string): Promise<string | null>;
   /** `gh pr view <pr> --json author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid`; null on read failure. */
   prView(pr: number): Promise<PrView | null>;
   /** true/false, or null when it cannot be read (the entry is then kept out of the index but not deleted). */
@@ -464,9 +471,15 @@ export class LocalVerifyService {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       return { ok: false, code: 'untrusted-head' };
     }
-    if (!isValidSha(view.headRefOid) || !isValidSha(view.baseRefOid)) return { ok: false, code: 'pr-invalid-shas' };
+    // Verify against the base branch's current head, never the PR's stale baseRefOid.
+    let currentBase: string | null = view.baseRefOid;
+    if (this.seams.baseHead) {
+      currentBase = await this.seams.baseHead(view.baseRefName).catch(() => null);
+      if (!currentBase) return { ok: false, code: 'pr-unreadable' };
+    }
+    if (!isValidSha(view.headRefOid) || !isValidSha(currentBase)) return { ok: false, code: 'pr-invalid-shas' };
     const headSha = view.headRefOid;
-    const baseSha = view.baseRefOid;
+    const baseSha = currentBase;
     const baseRefName = view.baseRefName;
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
 

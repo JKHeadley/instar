@@ -133,6 +133,21 @@ describe('checkEligibility', () => {
 });
 
 describe('request + queue', () => {
+  it("verifies against the base branch's CURRENT head, not the PR's stale baseRefOid", async () => {
+    const s = setup({ views: { 1: view({ baseRefOid: sha('b') }) } });
+    (s.svc as unknown as { seams: { baseHead?: (b: string) => Promise<string | null> } }).seams.baseHead = async (b) => (b === 'main' ? sha('c') : null);
+    expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'queued' });
+    const input = JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+    expect(input.baseSha).toBe(sha('c'));
+  });
+
+  it('refuses rather than fall back to the stale base when the current base cannot be read', async () => {
+    const s = setup({ views: { 1: view() } });
+    (s.svc as unknown as { seams: { baseHead?: (b: string) => Promise<string | null> } }).seams.baseHead = async () => null;
+    expect(await s.svc.request(1)).toEqual({ ok: false, code: 'pr-unreadable' });
+    expect(s.spawned).toHaveLength(0);
+  });
+
   it('refuses an untrusted head, an unreadable PR and an invalid number', async () => {
     const s = setup({ views: { 1: view({ isCrossRepository: true }) } });
     expect(await s.svc.request(1)).toEqual({ ok: false, code: 'untrusted-head' });
