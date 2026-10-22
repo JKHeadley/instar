@@ -23,7 +23,7 @@ displays none of it. The four sections are that conclusion, built:
 | Section | Source | Why |
 |---|---|---|
 | **What needs you** | `/attention` | The queue with no human-facing surface. First because an item nobody sees is an item nobody acts on. |
-| **What I'm doing** | `/sessions` | Live sessions, with machine and uptime. |
+| **What I'm doing** | `/sessions?scope=pool` | Live sessions across **every** machine, grouped by machine. Names any peer that could not be reached — a fleet view that quietly drops an unreachable machine is indistinguishable from one where everything is fine. |
 | **What I've promised** | `/commitments` | Open commitments with what each is blocked on. A follow-through store with no face on it. |
 | **Where I'm running** | `/pool`, `/health` | Which machines exist and which holds the right to speak. |
 | **What I'm allowed to do** | `/guards` | Guard posture, read from the endpoint's own summary. |
@@ -54,12 +54,22 @@ them high, of which 26 were replies to the operator that had been held and then
 expired undelivered — the oldest eleven days old, three expired that same day.
 Every one had been recorded correctly the whole time. Nothing displayed them.
 
+## What the fleet view surfaced immediately
+
+Twelve sessions across three machines. Two of them on a second machine were named
+`held-probe` / `held-probe2` — another of this agent's own sessions already
+investigating the held-reply fault, which the session writing this had no way to
+know it was duplicating. A third had been running seven hours.
+
+Every one of those facts was already recorded. None were visible, including to the
+agent, including while it worked on the problem they describe.
+
 ## Honest limits
 
 - A snapshot generator, not an application: no interaction, no navigation.
 - `focus`/`lastAction` in the parallel-work index are empty on this agent, so
   "what each session is doing" has no real source yet and says so.
-- Single machine's view. `/pool` lists peers but the sections read local state.
+- Sessions are pool-scoped; the other sections still read local state only.
 - The highest-value finding in the research — Grok's *"Take over / I'm done"*
   hand-off — is **not** built here. It needs a session-level mechanism, not a
   screen.

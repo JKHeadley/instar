@@ -48,7 +48,7 @@ def ago(iso):
 
 e = html.escape
 
-sessions, s_err = get("/sessions")
+sessions, s_err = get("/sessions?scope=pool")
 commits, c_err = get("/commitments")
 guards, g_err = get("/guards")
 atten, a_err = get("/attention")
@@ -136,35 +136,60 @@ def machines_block():
         note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
     return "".join(rows) + note
 
-# ---- sessions -------------------------------------------------------------
+# ---- sessions, across every machine ---------------------------------------
 def session_rows():
-    if s_err: return f'<p class="err">Can\'t tell: {e(s_err)}.</p>'
-    live = [s for s in (sessions or []) if s.get("status") in ("running", "starting")]
+    """Sessions across the whole pool, grouped by machine.
+
+    Uses scope=pool so this answers "what are ALL of my agents doing" rather than
+    "what is this one doing" — the question the research says a console must
+    answer. A peer that could not be reached is NAMED, never silently omitted:
+    an incomplete fleet view that looks complete is the failure this whole screen
+    exists to avoid.
+    """
+    if s_err:
+        return '<p class="err">Can\'t tell: ' + e(s_err) + '.</p>'
+    data = sessions or {}
+    ss = data.get("sessions", data) if isinstance(data, dict) else (data or [])
+    live = [s for s in ss if s.get("status") in ("running", "starting")]
+    meta = data.get("pool") if isinstance(data, dict) else None
+
+    header = ''
+    if isinstance(meta, dict):
+        failed = meta.get("failed") or []
+        asked, ok = meta.get("peersQueried"), meta.get("peersOk")
+        if failed:
+            names = ", ".join(str(f.get("machineNickname") or f.get("machineId", "?"))[:18] for f in failed if isinstance(f, dict))
+            header = ('<p class="note alarmtext">Could not reach ' + str(len(failed))
+                      + ' machine(s): ' + e(names or 'unnamed') + '. What follows is incomplete.</p>')
+        elif asked is not None:
+            header = ('<p class="note">All ' + str((ok or 0) + 1) + ' machines answered.</p>')
+
     if not live:
-        return '<p class="empty">Nothing running right now.</p>'
-    out = []
+        return header + '<p class="empty">Nothing running on any machine.</p>'
+
+    by = {}
     for s in live:
-        started = ago(s.get("startedAt"))
-        bits = []
-        if s.get("framework"): bits.append(e(s["framework"]))
-        if s.get("machineNickname"): bits.append("on " + e(s["machineNickname"]))
-        if started: bits.append("started " + e(started))
-        # The `prompt` field is the session's INTERNAL bootstrap instruction — a file
-        # path and harness scaffolding, not a description of the work. Printing it was
-        # worse than printing nothing: it looked like an answer. Until a real source is
-        # populated (the parallel-work index carries focus/lastAction, both empty here),
-        # say so plainly.
-        prompt = (s.get("prompt") or "").strip().replace("\n", " ")
-        internal = (not prompt) or prompt.startswith("[") or "/.instar/" in prompt or "bootstrap-" in prompt
-        doing = ('<span class="unknown">Not recorded. The activity index has nothing for '
-                 'this session — the field exists, it is empty.</span>'
-                 if internal else e(prompt[:150] + ("…" if len(prompt) > 150 else "")))
-        out.append(f'''<div class="row">
-  <div class="row-head"><span class="dot live"></span><strong>{e(s.get("name") or "unnamed")}</strong>
-    <span class="meta">{" · ".join(bits) if bits else ""}</span>
-    {'<span class="pill">protected</span>' if s.get("protected") else ''}</div>
-  <div class="doing">{doing}</div>
-</div>''')
+        by.setdefault(s.get("machineNickname") or (s.get("machineId") or "?")[:10], []).append(s)
+
+    out = [header]
+    for machine in sorted(by):
+        out.append('<div class="mgroup">' + e(str(machine))
+                   + ' <span class="meta">' + str(len(by[machine])) + '</span></div>')
+        for s in by[machine]:
+            started = ago(s.get("startedAt"))
+            bits = []
+            if s.get("framework"): bits.append(e(str(s["framework"])))
+            if started: bits.append("started " + e(started))
+            prompt = (s.get("prompt") or "").strip().replace("\n", " ")
+            internal = (not prompt) or prompt.startswith("[") or "/.instar/" in prompt or "bootstrap-" in prompt
+            doing = ('<span class="unknown">Not recorded.</span>'
+                     if internal else e(prompt[:130] + ("…" if len(prompt) > 130 else "")))
+            out.append(
+                '<div class="row"><div class="row-head"><span class="dot live"></span><strong>'
+                + e(str(s.get("name") or "unnamed")) + '</strong><span class="meta">'
+                + " · ".join(bits) + '</span>'
+                + ('<span class="pill">protected</span>' if s.get("protected") else '')
+                + '</div><div class="doing">' + doing + '</div></div>')
     return "\n".join(out)
 
 # ---- promises -------------------------------------------------------------
@@ -247,6 +272,7 @@ body{{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-s
 h1{{font-size:21px;margin:0 0 2px}}
 .sub{{color:var(--dim);font-size:13.5px;margin-bottom:26px}}
 h2{{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--teal);margin:30px 0 10px;font-weight:600}}
+.mgroup{{font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:14px 0 7px}}
 .row{{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px;margin-bottom:9px}}
 .row-head{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}}
 .dot{{width:8px;height:8px;border-radius:50%;flex:0 0 auto}}
