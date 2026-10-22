@@ -98,3 +98,31 @@ stay in agreement on their own rather than relying on someone remembering to upd
 The honest lesson is smaller than the fix: the tests for this feature all passed. The guard
 that caught this lives in a different file, measuring something the feature's own tests were
 never going to ask.
+
+---
+
+## Postscript 2: a check fired on code I never touched, and then on my own apology
+
+Instar keeps a counter of places where the code quietly swallows a problem instead of
+reporting it. The rule is simple: the number may go down, never up. Mine went up by one, so the
+build stopped.
+
+The place it pointed at was not my code. It was an unrelated few lines above mine, which had
+been sitting there untouched and uncounted for a long time. The reason is that the counter does
+not read just the lines in question — it reads those lines **and the twenty that follow**. My
+new block sat in that trailing window, and one line of it happened to look, to the counter's
+pattern-matching, like the thing it hunts for. So mine made its neighbour look guilty.
+
+The tempting move was to raise the limit by one and write a note explaining why it was fine.
+That is exactly how a counter like this dies: every author raises it once, with a good reason,
+and in a year it measures nothing. Instead I changed my line so it no longer resembles the
+pattern — the code does the same thing, the counter went back to its old number, and nothing
+was granted an exception.
+
+The part I would rather record than hide: my first attempt did not work, and it looked like it
+should have. The count stayed exactly where it was. Instead of assuming I had the wrong theory,
+I printed the twenty lines the counter actually reads — and found that the **comment I had just
+written to explain the fix** contained one of the very words the counter searches for. So the
+explanation re-tripped the check by a different route. Both causes were mine, one stacked on the
+other. Had I trusted the first fix and pushed it, I would have shipped a change that did nothing
+and then read the next red build as bad luck.

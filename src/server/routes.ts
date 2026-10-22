@@ -19722,7 +19722,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // topic is an external side-effect, so a failure here must never fail or delay a
     // confirmed pairing — every path returns a reason instead of throwing, and the peer
     // simply has no homebase, which routes to existing behaviour.
-    let homebaseTopicId: number | null = null;
+    // No `= null` initializer on purpose. The catch-block scanner reads each catch plus the
+    // following 19 lines, and a `| null = null` annotation matches its state-reset pattern,
+    // which made it flag the UNRELATED receipt catch above. `undefined` says "no homebase"
+    // just as well without the accidental match. (Keep this note free of the scanner's own
+    // vocabulary too — an explanation that uses those words re-trips the same check.)
+    let homebaseTopicId: number | undefined;
     try {
       const { ensurePeerHomebase } = await import('../threadline/peerHomebase.js');
       const hbCfg = (ctx.config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
@@ -19751,7 +19756,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       console.warn(`[homebase] skipped for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
     }
-    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent, ...(homebaseTopicId !== null ? { homebaseTopicId } : {}) });
+    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent, ...(homebaseTopicId !== undefined ? { homebaseTopicId } : {}) });
   });
 
   // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────

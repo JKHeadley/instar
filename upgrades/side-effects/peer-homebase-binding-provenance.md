@@ -269,3 +269,34 @@ with the fix installed — the Agent Awareness Standard's own stated failure mod
 **Evidence.** `tests/unit/feature-delivery-completeness.test.ts` 212/212 (was 211/212 with
 this exact assertion failing); 175/175 across the four `peer-homebase-*` files plus
 `PostUpdateMigrator-shadowCapabilities.test.ts`; `tsc --noEmit` clean.
+
+---
+
+## Increment 6: the silent-fallback ratchet, and why it fired on code I did not write
+
+**What CI caught.** `tests/unit/no-silent-fallbacks.test.ts` → `expected 495 to be less than
+or equal to 494`, consistently on node-22 shard 3/4 (`1 failed | 19614 passed`). One new
+counted catch on this branch.
+
+**Attributed, not guessed.** I captured the scanner's full list on this branch and on a fresh
+`origin/main` worktree (`c2300451e`, v1.3.1402) and diffed them. Every difference was a uniform
+line shift (`23283 → 23323`, +40) except ONE entry with no counterpart: `server/routes.ts:19715`
+— the **pairing-receipt catch, which I never touched**. routes.ts: 28 on branch, 27 on main.
+
+**Why a catch I did not write became counted.** `extractCatchBlocks` sets a block's `content` to
+the catch line **plus the next 19 lines**. My homebase block sits directly below the receipt
+catch, so it fell inside that window, and `let homebaseTopicId: number | null = null;` matched
+`hasStateReset` (`/\w+\s*=\s*(null|undefined)\s*;/` — `\w+` matches the `null` in the type
+union). This is the same window artifact the BASELINE comment already documents twice
+(468→469, 491→492, and the JobScheduler case).
+
+**I did NOT bump the baseline.** A bump would have recorded a regression that is not one and
+permanently raised the ceiling. `undefined` carries the same "no homebase" meaning, so the
+annotation changed shape and the count returned to 494 — ratchet intact, nothing exempted.
+
+**The part worth keeping.** My first fix measured as NO improvement: still 495. Rather than
+assume the hypothesis was wrong I printed the scanner's exact 20-line window, which showed my
+new explanatory comment contained the word the `hasExplicitFallbackComment` pattern looks for —
+so the comment about the scanner re-tripped the scanner via a different predicate. Both triggers
+were mine. Reworded, re-measured: **494, 5/5 green, tsc clean.** Had I trusted the first fix I
+would have pushed a change that did nothing and read the next red shard as flakiness.
