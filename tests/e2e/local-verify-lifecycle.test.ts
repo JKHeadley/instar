@@ -15,7 +15,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService, buildStatusReconciler, loadSafeMergeFloor } from '../../src/localVerify/localVerifyWiring.js';
+import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor } from '../../src/localVerify/localVerifyWiring.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
@@ -57,6 +57,15 @@ function serve(c: RouteContext) {
 }
 
 describe('local-verify lifecycle (production wiring)', () => {
+  it('loads safe-merge from the installed package, not the working checkout', async () => {
+    expect(installedSafeMergePath()).toBe(path.join(ROOT, 'scripts', 'safe-merge.mjs'));
+    // A checkout holding an older safe-merge (no ACTIONS_FLOOR_CONTEXTS) is never consulted.
+    const { home } = sourceCheckout();
+    fs.writeFileSync(path.join(home, 'scripts', 'safe-merge.mjs'), 'export const REQUIRED_CONTEXTS_FLOOR = [];\n');
+    expect(await loadSafeMergeFloor(path.join(home, 'scripts', 'safe-merge.mjs'))).toBeNull();
+    expect(await loadSafeMergeFloor()).not.toBeNull();
+  });
+
   it('the built dist ships the child entry the server spawns', () => {
     expect(fs.existsSync(DIST_ENTRY)).toBe(true);
   });
@@ -89,7 +98,7 @@ describe('local-verify lifecycle (production wiring)', () => {
   });
 
   it('the status loop loads safe-merge\'s REAL evaluator + floor from the source checkout (one implementation)', async () => {
-    const f = await loadSafeMergeFloor(ROOT);
+    const f = await loadSafeMergeFloor();
     expect(f).not.toBeNull();
     expect(typeof f!.evaluate).toBe('function');
     expect(f!.actionsFloor.map((c) => c.context)).toEqual(expect.arrayContaining(['Type Check', 'Build', 'eli16']));
@@ -116,7 +125,7 @@ describe('local-verify lifecycle (production wiring)', () => {
       repo: 'JKHeadley/instar', repoPath: home, stateDir, machineId: 'm_e2e', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
       service: built.service, localVerifyEnabled: () => true, postStatuses: () => false, configFloor: () => 'local', watcherRepo: () => 'JKHeadley/instar',
       lease: { holdsLease: () => true, leaseEpoch: () => 0, leaseHolder: () => 'm_e2e' },
-      gh, floorExports: (await loadSafeMergeFloor(ROOT))!,
+      gh, floorExports: (await loadSafeMergeFloor())!,
     });
     expect(st.reason).toBeNull();
     const pass = await st.reconciler!.pass();
@@ -129,7 +138,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     built.service!.shutdown();
   });
 
-  it('status loop not built without a source checkout or a GitHub login; route 503', async () => {
+  it('status loop needs a source checkout and a GitHub login, and uses the installed safe-merge; route 503 when absent', async () => {
     const { home, stateDir } = sourceCheckout();
     const base = {
       repo: 'JKHeadley/instar', repoPath: home, stateDir, machineId: 'm', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: null, service: null,
@@ -138,7 +147,9 @@ describe('local-verify lifecycle (production wiring)', () => {
     };
     expect((await buildStatusReconciler({ ...base, repoPath: os.tmpdir() })).reason).toBe('no-source-checkout');
     expect((await buildStatusReconciler({ ...base, expectedGhLogin: '' })).reason).toBe('no-gh-login');
-    expect((await buildStatusReconciler(base)).reason).toBe('no-safe-merge-floor'); // the stand-in safe-merge exports nothing
+    // The checkout's stand-in safe-merge exports nothing, but the loop loads the
+    // installed safe-merge, so it is built.
+    expect((await buildStatusReconciler(base)).reason).toBeNull();
     expect((await request(serve(ctx(stateDir, null, null))).get('/local-verify/status')).status).toBe(503);
   });
 });
