@@ -1674,7 +1674,10 @@ async function respawnSessionForTopic(
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   if (!options?.silent) {
-    await telegram.sendToTopic(topicId, `Session respawned.`);
+    // The respawn already succeeded. A held or failed notice must not turn it
+    // into a reported failure (the caller would respawn again: a duplicate session).
+    try { await telegram.sendToTopic(topicId, `Session respawned.`); }
+    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the "Session respawned." notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
   }
   console.log(`[telegram→session] Respawned "${newSessionName}" for topic ${topicId}`);
 }
@@ -27282,11 +27285,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (telegramOriginBoot && hasUsableBotToken && meshSelfId) {
               const runtime = telegramOriginBoot.runtime;
               telegram.holderForwardPolicy = {
-                decide: () => {
-                  if (!forwardSwitchOn() || _sessionPoolStage() === 'dark') return 'local';
-                  const route = originForwardMod.classifyLeaseRoute(forwardLease);
-                  return route.kind === 'self' ? 'local' : route.kind === 'peer' ? 'forward' : 'settling';
-                },
+                decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease) }),
               };
               // §4.2 — recovery re-forwards the SAME operation; an outcome-unknown
               // attempt is resolved at the old holder's receipt, never re-sent blind.

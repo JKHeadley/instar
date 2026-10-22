@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import {
-  classifyLeaseRoute, settleLeaseRoute, forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, nextLadderState, FORWARD_SETTLE_TIMEOUT_MS, expiredForwardWording,
+  classifyLeaseRoute, decideHolderForward, settleLeaseRoute, forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, nextLadderState, FORWARD_SETTLE_TIMEOUT_MS, expiredForwardWording,
   HeldForwardItemCollapser, expiredForwardWording, heldForwardNoticeText, HOLD_REASON_LEASE_NOT_HELD, UNRESOLVED_LEASE_HOLDER,
 } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { ForwardDeps, ForwardLeaseView, HolderSubmitResult, HeldForwardDetail } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
@@ -54,6 +54,23 @@ function deps(c = clock(), overrides: Partial<ForwardDeps> = {}) {
   return { d, prepare, submit, hold, notify, audit, c };
 }
 const input = { topicId: 9210, chatId: '-100123', text: 'The answer.' };
+
+describe('decideHolderForward — the adapter route', () => {
+  const peer = { kind: 'peer' as const, holder: 'holder' };
+  const settling = { kind: 'settling' as const, reason: 'no-holder' as const };
+  it('a healthy peer holder is forwarded to even while the session pool is dark (the Mama PC mute)', () =>
+    expect(decideHolderForward({ switchOn: true, poolStage: 'dark', route: peer })).toBe('forward'));
+  it('a healthy peer holder is forwarded to at a live pool stage', () =>
+    expect(decideHolderForward({ switchOn: true, poolStage: 'active', route: peer })).toBe('forward'));
+  it('holding the lease here sends locally', () =>
+    expect(decideHolderForward({ switchOn: true, poolStage: 'active', route: { kind: 'self' } })).toBe('local'));
+  it('an unsettled lease on a dark pool sends directly (no settle wait); on a live pool it settles', () => {
+    expect(decideHolderForward({ switchOn: true, poolStage: 'dark', route: settling })).toBe('local');
+    expect(decideHolderForward({ switchOn: true, poolStage: 'active', route: settling })).toBe('settling');
+  });
+  it('the forward switch off always sends locally', () =>
+    expect(decideHolderForward({ switchOn: false, poolStage: 'active', route: peer })).toBe('local'));
+});
 
 describe('classifyLeaseRoute — the three settling states', () => {
   it('self when this machine holds the lease', () => expect(classifyLeaseRoute(lease({ holdsLease: () => true }))).toEqual({ kind: 'self' }));
@@ -519,6 +536,19 @@ describe('TelegramAdapter — the send decision with a lease policy', () => {
     await flipped.stop(); adapter = undefined;
     const fwd = make(() => 'forward'); fwd.outboundRelay = vi.fn().mockResolvedValue({ messageId: 5, topicId: 42 });
     expect((await fwd.sendToTopic(42, 'relayed', { gateSkippedForRelay: true })).messageId).toBe(5);
+  });
+  it('a machine that forwards never sends the topic-name probe (it would be held and replayed as a stray ".")', async () => {
+    const a = make(() => 'forward'); a.outboundRelay = vi.fn();
+    const mockFetch = vi.fn(); vi.stubGlobal('fetch', mockFetch);
+    expect(await a.resolveTopicName(42)).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+  it('a machine that sends locally still probes for the topic name', async () => {
+    const a = make(() => 'local'); a.outboundRelay = vi.fn();
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 3, reply_to_message: { forum_topic_created: { name: 'pp chat' } } } }) });
+    vi.stubGlobal('fetch', mockFetch);
+    expect(await a.resolveTopicName(42)).toBe('pp chat');
+    expect(mockFetch).toHaveBeenCalled();
   });
   it('with the policy answering local, a real token sends directly (today\'s behaviour)', async () => {
     const a = make(() => 'local');

@@ -2661,6 +2661,11 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveTopicName(topicId: number): Promise<string | null> {
     if (this.notAForum) return null;
+    // The probe is a real message. A machine that would not send locally (it
+    // forwards to the lease holder) cannot probe: a direct send is held and its
+    // "." replayed into the topic later. Fall back to the stored/default name.
+    if (typeof this.config.token === 'string' && this.config.token.length > 0 && this.outboundRelay
+      && (this.holderForwardPolicy?.decide() ?? 'local') !== 'local') return null;
     try {
       // Send a temp message replying to the topic creation service message
       const result = await this.apiCall('sendMessage', {
