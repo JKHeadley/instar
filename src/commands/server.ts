@@ -1,3 +1,8 @@
+/**
+ * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
+ * the boot-time TCC-protected path detection + /guards row (see the
+ * TccProtectedPathGuard block beside the worktree detector).
+ */
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * `instar server start|stop` — Manage the persistent agent server.
@@ -4521,6 +4526,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (migration.upgraded.length > 0) {
           console.log(pc.green(`  Knowledge upgrade (v${lastMigrated || '?'} → v${installedVersion}): ${migration.upgraded.join(', ')}`));
         }
+        // Migration WARNINGS (result.errors) used to be computed and then shown
+        // nowhere on this path — a condition a migration surfaces (e.g. the
+        // TCC-protected path finding) must reach the boot log, not only the
+        // JSON a remote `migrate` caller reads.
+        if (migration.errors.length > 0) {
+          console.log(pc.yellow(`  Migration warnings: ${migration.errors.join('; ')}`));
+        }
         // Record the migrated version
         const dir = path.dirname(versionFile);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -8615,6 +8627,64 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) {
       console.log(pc.yellow(
         `  Worktree detector: skipped (${err instanceof Error ? err.message : String(err)})`,
+      ));
+    }
+
+    // TCC-protected path guard (docs/STANDARDS-REGISTRY.md "Avoid TCC-Protected
+    // Directories — No Agent State Under ~/Documents on macOS"). The 2026-10-14
+    // ~/Documents TCC withdrawal killed two agents in the same second. Runs
+    // once per boot: classifies the project + state directories, prints ONE
+    // loud line, raises ONE deduped HIGH attention item (a JSONL record under
+    // <stateDir>/audit when Telegram is absent) pointing at the move runbook, and registers the
+    // /guards row. Signal-only: never moves, deletes, or blocks the boot.
+    // Non-macOS: the check is not applicable and says so (never misfires).
+    try {
+      const tcc = await import('../core/TccProtectedPathGuard.js');
+      const tccResult = await tcc.runTccProtectedPathDetection({
+        projectDir: config.projectDir,
+        stateDir: config.stateDir,
+        // UPSERT, not create: `createAttentionItem` dedupes on id for the
+        // lifetime of the store (a RESOLVED row stays resolved), so a finding
+        // the operator resolved without moving the agent would never be heard
+        // from again. The upsert reopens a resolved row and is silent while
+        // the row is OPEN and unchanged — no re-post per boot, no flood.
+        emitAttention: telegram
+          ? async (item) => {
+              await telegram!.upsertAttentionItem({
+                id: item.id,
+                title: item.title,
+                summary: item.summary,
+                description: item.description,
+                category: item.category,
+                priority: item.priority,
+                sourceContext: item.sourceContext,
+              });
+            }
+          : undefined,
+        // The finding cleared (agent moved): close the category's OPEN items.
+        resolveAttention: telegram
+          ? async (category) => {
+              let n = 0;
+              for (const open of telegram!.getAttentionItems('OPEN')) {
+                if (open.category !== category) continue;
+                if (await telegram!.updateAttentionStatus(open.id, 'DONE', { silent: true })) n++;
+              }
+              return n;
+            }
+          : undefined,
+      });
+      guardRegistry.register(tcc.TCC_GUARD_KEY, () => tcc.tccGuardStatus(tccResult));
+      const tccLine = tcc.summarizeTccDetection(tccResult);
+      if (tccResult.protectedPaths.length > 0 || tccResult.error) {
+        console.log(pc.red(`  ⚠ ${tccLine}`));
+      } else {
+        console.log(pc.dim(`  ${tccLine}`));
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: the skip is printed on the boot log, and
+      //   the unregistered row reads `missing` on /guards (reconciliation).
+      console.log(pc.yellow(
+        `  TCC-protected path guard: skipped (${err instanceof Error ? err.message : String(err)})`,
       ));
     }
 
