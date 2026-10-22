@@ -232,3 +232,47 @@ Captured first-hand, 2026-10-21:
 Screenshots live under `.instar/proto-serve/research/grokbot/` on the Studio and
 are deliberately not committed (same policy as the other two inventories);
 regenerate with `/tmp/claude-1000/grok7.mjs`.
+
+---
+
+## Screenshots
+
+Captured first-hand from the live product on a real account, 2026-10-21. 8 of the larger set taken during this exploration.
+
+### 01-bots-landing
+
+![grokbot 01-bots-landing.jpg](01-bots-landing.jpg)
+
+### 02-signin-options
+
+![grokbot 02-signin-options.jpg](02-signin-options.jpg)
+
+### 04-final
+
+![grokbot 04-final.jpg](04-final.jpg)
+
+### 05-after-signin-click
+
+![grokbot 05-after-signin-click.jpg](05-after-signin-click.jpg)
+
+### 06-challenge
+
+![grokbot 06-challenge.jpg](06-challenge.jpg)
+
+### 11-after-terms
+
+The onboarding gate immediately behind the terms screen, requiring an age.
+
+![grokbot 11-after-terms.jpg](11-after-terms.jpg)
+
+### 22-automations
+
+Automations — outcomes grouped by life-category, one line each, one button. The five-item sidebar is the whole product.
+
+![grokbot 22-automations.jpg](22-automations.jpg)
+
+### 30-subscription
+
+The Premium wall that gated Bot on the first account tried.
+
+![grokbot 30-subscription.jpg](30-subscription.jpg)

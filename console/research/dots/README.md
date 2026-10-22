@@ -121,3 +121,57 @@ Named rather than smoothed over, because the gaps are where the remaining value 
 3. **Disclose the judgments the agent made on the operator's behalf.** Nobody
    else does this, Instar agents make such calls constantly, and we currently
    surface none of them.
+
+---
+
+## Screenshots
+
+Captured first-hand from the live product on a real account, 2026-10-21. 8 of the larger set taken during this exploration.
+
+### g1-before
+
+The Dots surface before a task is given.
+
+![dots g1-before.jpg](g1-before.jpg)
+
+### g2-settings
+
+Settings — very few controls, plainly worded. Restraint worth copying.
+
+![dots g2-settings.jpg](g2-settings.jpg)
+
+### gm-10-clicked
+
+Mid-interaction state.
+
+![dots gm-10-clicked.jpg](gm-10-clicked.jpg)
+
+### p2-01-sent
+
+A task just handed to the agent.
+
+![dots p2-01-sent.jpg](p2-01-sent.jpg)
+
+### p2-04-progress
+
+Work in progress — relative time, and no invented numbers: every digit on screen is one the user put there.
+
+![dots p2-04-progress.jpg](p2-04-progress.jpg)
+
+### p2-99-final
+
+The finished state, including how outputs are surfaced.
+
+![dots p2-99-final.jpg](p2-99-final.jpg)
+
+### t1-10-progress
+
+A second task in progress, for comparison.
+
+![dots t1-10-progress.jpg](t1-10-progress.jpg)
+
+### t1-99-final
+
+That task complete.
+
+![dots t1-99-final.jpg](t1-99-final.jpg)

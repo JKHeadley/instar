@@ -176,3 +176,57 @@ Captured first-hand, 2026-10-21, with a headed browser:
 Screenshots live under `.instar/proto-serve/research/muse/` on the Studio and are
 deliberately not committed (same policy as the Dots inventory); regenerate with
 `/tmp/claude-1000/meta3.mjs`.
+
+---
+
+## Screenshots
+
+Captured first-hand from the live product on a real account, 2026-10-21. 8 of the larger set taken during this exploration.
+
+### 10-device-home
+
+The Android device built to reach the mobile app.
+
+![muse 10-device-home.jpg](10-device-home.jpg)
+
+### 19-after-next
+
+Google sign-in on the device.
+
+![muse 19-after-next.jpg](19-after-next.jpg)
+
+### 25-after-password
+
+The silent drop-out after submitting the password.
+
+![muse 25-after-password.jpg](25-after-password.jpg)
+
+### 26-pw-result
+
+The "Wrong password" error that the text readout of this same screen silently dropped.
+
+![muse 26-pw-result.jpg](26-pw-result.jpg)
+
+### design-00
+
+Meta's own design essay, opening.
+
+![muse design-00.jpg](design-00.jpg)
+
+### design-02
+
+Artifact cards shown in situ — typed, titled, timestamped.
+
+![muse design-02.jpg](design-02.jpg)
+
+### design-03
+
+Further design rationale.
+
+![muse design-03.jpg](design-03.jpg)
+
+### product-00
+
+The Muse product page — login is a code to phone or email, not Google.
+
+![muse product-00.jpg](product-00.jpg)
