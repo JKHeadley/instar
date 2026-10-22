@@ -452,7 +452,7 @@ sweep_stale() {
       # unless its Windows side confirmed the driver gone/stopped/not-the-driver, adopt it into the
       # survivor record (pid, start time or '-', the call's time) so the orphan guard waits for it.
       if [ ! -f "$CACHE_DIR/survivor" ] && [ -f "$d/pid.txt" ] && [ ! -f "$d/rc.txt" ]; then
-        sv_v="$(tr -d '\r\n ' < "$d/verdict.txt" 2>/dev/null)"
+        sv_v="$(tr -d '\r\n ' 2>/dev/null < "$d/verdict.txt")"
         case "$sv_v" in
           ''|driver-still-running|driver-unverified-live)
             sv_p="$(tr -d '\r\n ' < "$d/pid.txt")"; sv_s="$(tr -d '\r\n ' 2>/dev/null < "$d/pidstart.txt")"
@@ -488,7 +488,7 @@ sweep_stale() {
 # direction, bounded by the wait).
 survivor_alive() {
   local pid start at
-  read -r pid start at < "$CACHE_DIR/survivor" 2>/dev/null || { echo gone; return 0; }
+  read -r pid start at 2>/dev/null < "$CACHE_DIR/survivor" || { echo gone; return 0; }
   case "$pid" in ''|*[!0-9]*) echo gone; return 0;; esac
   case "$start" in *[!0-9]*) start="";; esac   # '-' = no start time recorded
   case "$at" in ''|*[!0-9]*) at=0;; esac
@@ -524,7 +524,7 @@ guard_orphans() {
     while [ "$sv" = alive ] && [ $(( $(date +%s) - w0 )) -lt "$LOCK_WAIT" ]; do sleep 2; sv="$(survivor_alive)"; [ -z "$sv" ] && sv="$(survivor_alive)"; done
     case "$sv" in
       gone) rm -f -- "$CACHE_DIR/survivor" 2>/dev/null ;;
-      alive) refuse 2 "ERR busy: the driver of an earlier call of this agent outlived its timeout and is still running (pid $(cut -d' ' -f1 < "$CACHE_DIR/survivor" 2>/dev/null)); one driver at a time per agent. Waited ${LOCK_WAIT}s (ND_LOCK_WAIT). Check the window (target, shot) before anything else; the record is $CACHE_DIR/survivor." ;;
+      alive) refuse 2 "ERR busy: the driver of an earlier call of this agent outlived its timeout and is still running (pid $(cut -d' ' -f1 2>/dev/null < "$CACHE_DIR/survivor")); one driver at a time per agent. Waited ${LOCK_WAIT}s (ND_LOCK_WAIT). Check the window (target, shot) before anything else; the record is $CACHE_DIR/survivor." ;;
       *) refuse 1 "ERR state-unavailable: could not check whether the driver of an earlier call is still running (the PowerShell probe answered nothing, twice); refusing rather than start a second one. The record is $CACHE_DIR/survivor." ;;
     esac
   fi
@@ -704,7 +704,7 @@ try {
   brc=$?
   if [ ! -f "$wdir_u/rc.txt" ]; then
     local elapsed=$(( $(date +%s) - ${run_id%%-*} ))
-    first="$(tr -d '\r' < "$wdir_u/bridge.err" 2>/dev/null | grep -v '^\s*$' | head -1)"
+    first="$(tr -d '\r' 2>/dev/null < "$wdir_u/bridge.err" | grep -v '^\s*$' | head -1)"
     if [ "$brc" -ne 0 ] && [ ! -f "$wdir_u/pid.txt" ]; then
       echo "ERR bridge-unavailable: the interactive-session task could not be registered or started (exit $brc after ${elapsed}s)${first:+: $first}" >&2
       return 1   # nothing was sent: no latch
