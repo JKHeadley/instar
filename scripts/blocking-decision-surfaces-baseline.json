@@ -112,13 +112,23 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
-      "sha256": "df56a86f3c385c87d1e0efba3b601e12618da2db790dd2c5d56fb4c5e6feca9f",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "4d68a8e43d394a790557b6a22340c312c4e10d89f756be0464fdfaea9fd13e0f",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background"
     },
     {
       "path": "src/templates/scripts/browser/chrome-mainworld.sh",
       "sha256": "d63cc4210d51313ed9d2dfaca910d3dde390b3fa1b21bb0f13d1289ef596aa01",
       "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/native-drive.ps1",
+      "sha256": "9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e",
+      "reason": "normal-chrome-cross-platform: PP's Windows normal-Chrome driver, shipped byte-identical to the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/ndrive.sh",
+      "sha256": "c7a8edbdf9c8f8a83e200b8b126d122fe700e71adef3582b699233ceb145acad",
+      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/emit-session-clock.sh",

@@ -3,8 +3,10 @@
 # Usage: chrome-launch.sh [--new] <profile-id|/absolute/user-data-dir> [url]
 # A profile folder that does not exist is refused (it would open a signed-out browser that
 # looks like a lost login); pass --new to create one on purpose.
-# Launches through LaunchServices (`open -na`), never a remote-debugging port, after
-# switching on "Allow JavaScript from Apple Events" in that profile's Preferences.
+# Launches through LaunchServices (`open -g -na`: in the background, never taking focus from the
+# operator), never a remote-debugging port, after switching on "Allow JavaScript from Apple Events"
+# in that profile's Preferences. The url argument must carry a scheme (https://, about:, ...): a
+# launch flag is never accepted there, in any form (this launcher adds no Chrome flags at all).
 # Does nothing if that profile is already open. macOS only (Apple Events).
 # Installed by instar into .instar/scripts/browser/ — overwritten on every update.
 # See the /normal-chrome-browser skill for the method and its safety rules.
@@ -14,6 +16,24 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 NEWOK=0; [ "$1" = "--new" ] && { NEWOK=1; shift; }
 [ -z "$1" ] && { echo "usage: chrome-launch.sh [--new] <profile-id|/absolute/user-data-dir> [url]" >&2; exit 64; }
+# The url slot is passed to Chrome after --args, so anything that is not a URL would become a Chrome
+# flag. Only a URL with a scheme is accepted; a flag (--remote-debugging-port=..., -flag, /flag) is
+# refused before anything is launched. The same rule the Windows driver enforces with its allowlist.
+URL="${2:-about:blank}"
+URL_L="$(printf '%s' "$URL" | tr 'A-Z' 'a-z')"
+case "$URL_L" in
+  https://?*|http://?*|about:?*|chrome://?*|file://?*) ;;
+  *) echo "ERR bad-url: the second argument must be a URL with a scheme (https://..., about:blank); a Chrome launch flag is never accepted here, in any form (the url is not echoed)" >&2; exit 64 ;;
+esac
+# A credential-shaped parameter (an OAuth code, a token, an API key, a one-time sign-in code) in the
+# query or the fragment, percent-encoding in the name decoded first, would sit on the argv of `open` and
+# of Chrome, readable by every process on the machine: refused, never echoed. The same bounded name list
+# the Windows wrapper uses; the url is never printed back.
+URL_DEC="$(printf '%b' "$(printf '%s' "$URL" | sed 's/\\/\\\\/g; s/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g')" 2>/dev/null | tr 'A-Z' 'a-z' || printf '%s' "$URL_L")"
+case "$URL_DEC" in
+  *[\?\&\#\;]code=*|*[\?\&\#\;]token=*|*[\?\&\#\;]access_token=*|*[\?\&\#\;]id_token=*|*[\?\&\#\;]refresh_token=*|*[\?\&\#\;]oobcode=*|*[\?\&\#\;]api_key=*|*[\?\&\#\;]apikey=*|*[\?\&\#\;]key=*|*[\?\&\#\;]secret=*|*[\?\&\#\;]password=*|*[\?\&\#\;]otp=*|*[\?\&\#\;]auth=*|*[\?\&\#\;]sig=*|*[\?\&\#\;]signature=*|*[\?\&\#\;]ticket=*|*[\?\&\#\;]assertion=*|*[\?\&\#\;]session=*)
+    echo "ERR secret-shaped-url: the url carries a credential-shaped parameter (code/token/key/secret/password/otp/auth/sig/ticket) and a url on argv is readable by every process on the machine; open the page from the browser (the operator clicks the link in their own session, or launch without the parameter and navigate with chrome-js.sh) and never put a one-time link or a token on a command line" >&2; exit 64 ;;
+esac
 # Resolve the profile to a canonical user-data-dir STRICTLY INSIDE this agent's home (the same
 # jail the Playwright profile registry applies). This guards against mistakes, not against a
 # hostile caller with a shell: it keeps an ordinary call from reaching the operator's own Chrome. realpath resolves `..` and symlinks before the check, and the canonical
@@ -63,6 +83,9 @@ with open(t, "w") as h:
     json.dump(d, h)
 os.replace(t, f)  # atomic: Chrome never sees a half-written Preferences file
 ' "$P/Default/Preferences" || { echo "ERR preferences-unreadable-or-unwritable (corrupt JSON or no permission): $P/Default/Preferences" >&2; exit 1; }
-open -na "Google Chrome" --args --user-data-dir="$P" "${2:-about:blank}" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
+# -g: do not bring Chrome to the foreground. The scripts never need the window in front, and a launch
+# from a job or a tmux session must not take focus from whoever is using the machine (the operator
+# brings the window forward themselves when a page needs their own click).
+open -g -na "Google Chrome" --args --user-data-dir="$P" "$URL" || { echo "ERR launch-failed (is Google Chrome installed?)" >&2; exit 1; }
 [ "$NEW" = 1 ] && echo "note: new profile; Chrome ignores the Apple Events setting on its first run. Quit this Chrome once and run chrome-launch.sh again before chrome-js.sh." >&2
 exit 0

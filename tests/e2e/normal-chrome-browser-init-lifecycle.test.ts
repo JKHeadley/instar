@@ -1,8 +1,9 @@
 /**
  * Fresh-install lifecycle (production scaffold path): `instar init --standalone` produces
- * the /normal-chrome-browser skill, the three .instar/scripts/browser/ helpers (executable,
- * resolving profiles relative to the agent home) and the CLAUDE.md awareness section.
- * Spec: docs/specs/normal-chrome-builtin-skill.md.
+ * the /normal-chrome-browser skill (both driver sections), the five .instar/scripts/browser/
+ * helpers (executable; the macOS ones resolving profiles relative to the agent home) and the
+ * macOS + Windows CLAUDE.md awareness section.
+ * Specs: docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -34,12 +35,18 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
 
     const skill = fs.readFileSync(path.join(agentDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md'), 'utf-8');
     expect(skill).toContain('# /normal-chrome-browser');
-    expect(fs.readFileSync(path.join(agentDir, 'CLAUDE.md'), 'utf-8')).toContain('### Normal-Chrome browser (account-bound web tasks, macOS)');
+    expect(skill).toContain('### macOS: Apple Events tools');
+    expect(skill).toContain('### Windows: `native-drive.ps1` through `ndrive.sh`');
+    const md = fs.readFileSync(path.join(agentDir, 'CLAUDE.md'), 'utf-8');
+    expect(md).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows)');
+    expect(md).not.toContain('### Normal-Chrome browser (account-bound web tasks, macOS)\n');
 
     const browserDir = path.join(agentDir, '.instar', 'scripts', 'browser');
+    expect(BROWSER_SCRIPT_NAMES).toHaveLength(5);
     for (const name of BROWSER_SCRIPT_NAMES) {
-      expect(fs.statSync(path.join(browserDir, name)).mode & 0o111).not.toBe(0);
+      expect(fs.statSync(path.join(browserDir, name)).mode & 0o111, name).not.toBe(0);
     }
+    expect(fs.readFileSync(path.join(browserDir, 'native-drive.ps1'), 'utf-8')).toContain('native-drive.ps1 — Native Browser Drive (Windows)');
 
     // The installed chrome-js.sh resolves a profile id to <agent home>/.instar/state/playwright-profiles/<id>
     // (where PlaywrightProfileRegistry allocates profiles). Stub the system tools so this runs anywhere.
