@@ -880,3 +880,58 @@ follow-up gate (9.8). <!-- tracked: CMT-013 -->
 ## Open questions
 
 *(none)*
+
+---
+
+## Addendum — 2026-10-22, after the first merge: what shipped, and one claim this spec got wrong
+
+The first merge (#2286) shipped arm (a) of §3.4 — admission-aware selection — and
+**not** arm (b), the health feedback. §3.4(b) says "Feed the health map from pool
+traffic. The fan-out calls …", written in the present tense as though it were part
+of the same change. It was not: the merged diff contained no `recordResult` call,
+and every pool fan-out still dialled with a bare `fetch`. The tests all passed
+because they test the *choosing* and never the *learning*.
+
+Arm (b) is now built separately: `src/server/poolPeerFetch.ts` is the one place a
+pool read dials a peer, and it reports each outcome into the SAME
+`PeerEndpointResolver` the lease transport and the recovery prober already feed.
+A Response — including a 500 — records a rope success, because the rope carried
+the traffic and only the application disagreed; a thrown error records a failure.
+A `last-known-url` records nothing, having no rope identity to attribute.
+
+### The correction that matters more than the gap
+
+While verifying arm (b) I measured the merged code against the live registry and
+concluded the symptom was NOT fixed: selection appeared to choose the Mac Studio's
+LAN rope, which answers `HTTP 000` from the WSL machine. **That measurement was
+wrong, and the error was mine, not the code's.** I constructed the resolver by hand
+with `config: {}`, which left two production settings unset:
+
+- `lanSubnetGate: true` — with no `ownCidrs`, a peer LAN address on a subnet we do
+  not share is dropped as a candidate entirely.
+- `unhealthyAfterFailures: 3` — undefined makes `consecutiveFailures >= undefined`
+  always false, so **no rope can ever be marked dead.**
+
+Re-run with the exact production config and real `ownCidrs`, the shipped code picks
+`cloudflare` for all three machines — the rope measured alive — and names
+`tailscale=cgnat-plaintext-unsupported` among its refusals. So §3.4(a) alone does
+fix the reported symptom from a different-subnet reader, and it fixes it *because*
+the subnet gate removes the dead LAN rope before selection ever sees it.
+
+This is the "a harness bug looks like a product bug" failure in its purest form: a
+rig missing the real configuration produced a confident, wrong verdict about
+shipped code, and that verdict was reported to the operator before being checked.
+
+### What arm (b) is actually for, stated honestly
+
+Not the reported symptom — that is already fixed. Arm (b) covers the case the
+subnet gate cannot: a rope that is admissible *and* subnet-eligible and then dies.
+Two machines on one desk share a subnet, so their LAN ropes are real candidates;
+without feedback a LAN rope that goes down is selected forever. The convergence
+test uses exactly that topology (reader placed on `192.168.87.30/24`) rather than
+the live one, because the live topology would have passed against the broken code.
+
+Tests: `tests/unit/pool-rope-health-feedback.test.ts` — the two topologies kept
+distinct, convergence, recovery (the demotion is not a one-way door), the
+Response-vs-throw recording contract, and wiring integrity including a structural
+guard that fails if a future fan-out site dials with a bare `fetch`.

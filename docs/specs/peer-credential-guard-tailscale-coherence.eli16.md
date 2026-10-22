@@ -89,3 +89,58 @@ Two different promises, kept apart on purpose:
   a row, and because that memory is shared with other traffic, a success elsewhere can reset the
   count. So that case usually recovers within a few cycles and in an unlucky pattern might not.
   Saying "it recovers" without that caveat would be claiming more than the mechanism delivers.
+
+---
+
+## Update, 22 October 2026 — the second half, and a mistake I made
+
+### What actually shipped first, and what didn't
+
+The first change shipped the *choosing* — walk the roads, skip the ones the security check
+refuses, take the best one that is allowed. It did **not** ship the *learning* — writing down
+which roads turned out to be dead so they stop being chosen. The spec described both as though
+they shipped together. They didn't, and the tests all passed because they test the choosing and
+never the learning.
+
+The learning half now exists. Every cross-machine read goes through one piece of code that
+notes what happened and tells the same shared memory the rest of the system already uses. So a
+road that dies gets demoted, and a road that comes back gets its place back.
+
+One detail worth stating because the obvious version would be wrong: a reply that comes back
+counts as the road *working*, even when the reply is an error. The road carried the message;
+the machine at the other end simply disagreed with the request. Had errors counted against the
+road, every machine answering "that feature is switched off" — which is most of them, most of
+the time — would have slandered its own perfectly good road.
+
+### The mistake, because it changes what the first half is credited with
+
+While checking the learning half, I tested the already-shipped code against the real machines
+and concluded the first half had **not** fixed the problem. I told the operator that. **I was
+wrong**, and the fault was in my test rig, not the code.
+
+I built the road-chooser by hand and left out two settings the real server always supplies:
+one that only considers another machine's local address when we are actually on that same
+local network, and one that says how many failures make a road count as dead. Without the
+first, I was offering the chooser a local address no real server would ever consider. Without
+the second, *no road could ever be marked dead at all* — the comparison was against a missing
+number, which is never true.
+
+Run with the real settings, the shipped code picks the tunnel for all three machines — the
+road I had measured as alive — and correctly names the refused one. So the first half does fix
+the reported problem, and it fixes it for a reason I had not credited: the same-network rule
+removes the dead local road before the chooser ever sees it.
+
+This is the oldest trap in the book — a broken measuring stick looks exactly like a broken
+thing being measured — and the expensive part was not the mistake but reporting it before
+checking it.
+
+### So what is the learning half actually for?
+
+Not the reported problem; that is already fixed. It is for the case the same-network rule
+cannot help with: two machines *on the same desk*, sharing a network, where a local address is
+a genuine candidate. If that road dies, nothing today tells the chooser to stop picking it. Now
+something does.
+
+That is also why its main test puts the reader on the same network as the peer. Testing it with
+the real machines' addresses would have passed against the broken code too — the same trap,
+wearing a test's clothes.
