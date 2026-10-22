@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runVerify, verifyPaths, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
 import { realSeams } from './orchestratorSeams.js';
+import { computeVerifierVersion, installedVerifierDir } from './verifierVersion.js';
 
 export function parseMainArgs(argv: readonly string[]): { input: string; result: string; attemptToken: string } | null {
   const get = (flag: string) => {
@@ -33,7 +34,15 @@ function writeResult(file: string, result: VerifyRunResult | { kind: 'crash'; de
   fs.renameSync(tmp, file);
 }
 
-export async function main(argv: readonly string[]): Promise<number> {
+/** The run child's own view of the verifier version: refuse when it differs from what the server passed. */
+export function checkVerifierVersion(input: Pick<VerifyRunInput, 'verifierVersion' | 'protectedList'>, ownDir: string = installedVerifierDir()): { ok: true } | { ok: false; detail: string } {
+  const mine = computeVerifierVersion(ownDir, undefined, { protectedList: input.protectedList });
+  return mine === input.verifierVersion
+    ? { ok: true }
+    : { ok: false, detail: `verifier-mismatch: server ${input.verifierVersion}, child ${mine}` };
+}
+
+export async function main(argv: readonly string[], ownDir?: string): Promise<number> {
   const args = parseMainArgs(argv);
   if (!args) {
     process.stderr.write('usage: runVerifyMain --input <file> --result <file> --attempt-token <hex>\n');
@@ -44,6 +53,14 @@ export async function main(argv: readonly string[]): Promise<number> {
   };
   try {
     const input = JSON.parse(fs.readFileSync(args.input, 'utf-8')) as VerifyRunInput;
+    // The code on disk must be the code the server labels records with: an npm-replaced
+    // dist under a still-running old server is refused, never recorded under the old version.
+    const v = checkVerifierVersion(input, ownDir);
+    if (!v.ok) {
+      log({ event: 'verifier-mismatch', detail: v.detail });
+      writeResult(args.result, { kind: 'crash', detail: v.detail });
+      return 1;
+    }
     const result = await runVerify(input, realSeams(log, verifyPaths(input.agentHome, input.headSha).verifyRoot));
     writeResult(args.result, result);
     return 0;

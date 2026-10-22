@@ -22237,6 +22237,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
+            // An automatic update restart waits for a running verify (a manual apply does not).
+            wiring.registerLocalVerifyRestartHold(autoUpdater, svc);
             localVerifyTimer = setInterval(() => { void svc.tick().catch(() => { /* a failed tick retries next interval */ }); }, 30_000);
             localVerifyTimer.unref();
             console.log(pc.green('  local-verify enabled (server-run test verification for merges)'));

@@ -13,10 +13,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { getInstarVersion } from '../core/Config.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
-import { LocalVerifyService, appendLocalVerifyAudit } from './LocalVerifyService.js';
+import { LocalVerifyService, appendLocalVerifyAudit, type UpdatePendingState } from './LocalVerifyService.js';
+import { computeVerifierVersion } from './verifierVersion.js';
+import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
 import { realGit } from './orchestratorSeams.js';
 import { verifyPaths } from './orchestrator.js';
@@ -92,7 +93,9 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       agentHome: opts.agentHome,
       expectedGhLogin: expected,
       operatorGhLogin: opts.config.operatorGhLogin?.trim() || null,
-      verifierVersion: getInstarVersion(),
+      // A content hash of the installed verifier code, not the package version: a release
+      // that leaves the verifier untouched keeps every green record.
+      verifierVersion: computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
       nodePath: process.execPath,
       mainEntry,
       remoteUrl: `https://github.com/${opts.repo}.git`,
@@ -111,6 +114,67 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
     },
   );
   return { service, reason: null };
+}
+
+/** The narrow AutoUpdater surface the verifier uses. */
+export interface LocalVerifyAutoUpdaterView {
+  setRestartHold(key: string, provider: () => RestartHold[]): void;
+  getStatus(): {
+    maxDeferralHours?: number;
+    config?: { autoApply?: boolean };
+    pendingUpdate?: string | null;
+    coalescingUntil?: string | null;
+    pendingUpdateDetectedAt?: string | null;
+  };
+  /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
+  getRestartBlockers?(): string[];
+}
+
+/**
+ * Spec §2 Restarts rule (b), read from the AutoUpdater: "update pending" means autoApply is
+ * on and `pendingUpdate` is set or `coalescingUntil` holds a time (not the `'notified'`
+ * placeholder), timed from `pendingUpdateDetectedAt`. `otherBlockers`: anything other than
+ * this verifier's own hold would delay the restart anyway. Pure.
+ */
+export function updatePendingFromAutoUpdater(
+  status: ReturnType<LocalVerifyAutoUpdaterView['getStatus']>,
+  blockers: readonly string[] | null,
+): UpdatePendingState {
+  const coalescingIsTime = typeof status.coalescingUntil === 'string' && status.coalescingUntil !== 'notified'
+    && Number.isFinite(Date.parse(status.coalescingUntil));
+  const pending = status.config?.autoApply === true && (status.pendingUpdate != null || coalescingIsTime);
+  const since = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : Number.NaN;
+  return {
+    pending,
+    pendingSinceMs: Number.isFinite(since) ? since : null,
+    // Unknown blockers count as "something else is delaying": never pause on a guess.
+    otherBlockers: blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+  };
+}
+
+/**
+ * Register the local-verify restart hold with the AutoUpdater, and give the service the
+ * rule (b) view of it. While a verify runs, an automatic update restart waits for it
+ * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply is
+ * not held. While an update is pending and only this hold delays it, no NEW verify starts,
+ * so a busy queue cannot hold updates indefinitely. `extraHolds` is the seam for the spec's
+ * later "hold heads whose projected status is success" rule (merges, not live yet).
+ */
+export function registerLocalVerifyRestartHold(
+  autoUpdater: LocalVerifyAutoUpdaterView,
+  service: LocalVerifyService,
+  extraHolds?: () => RestartHold[],
+): void {
+  autoUpdater.setRestartHold('local-verify', () => {
+    const hours = autoUpdater.getStatus().maxDeferralHours;
+    const maxDeferralMs = (typeof hours === 'number' && Number.isFinite(hours) ? hours : 4) * 3_600_000;
+    return [...service.restartHolds(maxDeferralMs), ...(extraHolds?.() ?? [])];
+  });
+  service.setUpdatePendingProvider(() => {
+    let blockers: string[] | null = null;
+    try { blockers = autoUpdater.getRestartBlockers ? autoUpdater.getRestartBlockers() : null; } catch { blockers = null; }
+    return updatePendingFromAutoUpdater(autoUpdater.getStatus(), blockers);
+  });
 }
 
 /**

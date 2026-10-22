@@ -43,7 +43,7 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string } = {}) {
+function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -94,7 +94,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   };
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
-    verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
+    verifierVersion: opts.verifierVersion ?? '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
     remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'm1', nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' },
   }, seams);
@@ -421,5 +421,402 @@ describe('in-flight protocol at boot', () => {
     await s.svc.tick();
     expect(s.svc.snapshot().blocked).toBe(false);
     expect(s.spawned).toHaveLength(1);
+  });
+});
+
+// ── Restart safety (2026-10-22: three releases, each auto-update restart lost work) ──
+
+import { AutoUpdater } from '../../../src/core/AutoUpdater.js';
+import type { UpdateChecker } from '../../../src/core/UpdateChecker.js';
+import type { StateManager } from '../../../src/core/StateManager.js';
+import { restartHoldUntil } from '../../../src/localVerify/LocalVerifyService.js';
+import { registerLocalVerifyRestartHold } from '../../../src/localVerify/localVerifyWiring.js';
+import { LOCAL_VERIFY_DEADLINES } from '../../../src/localVerify/policy.js';
+import { computeVerifierVersion } from '../../../src/localVerify/verifierVersion.js';
+import { vi } from 'vitest';
+
+describe('restart hold', () => {
+  const H = 3_600_000;
+  it('holds while a verify runs, until the run ceiling (active budget + two in-place waits), capped by max deferral', async () => {
+    const s = setup({ views: { 1: view() } });
+    expect(s.svc.restartHolds(4 * H)).toEqual([]);
+    await s.svc.request(1);
+    const ceiling = Date.parse('2026-10-21T12:00:00.000Z') + LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs;
+    expect(s.svc.restartHolds(4 * H)).toEqual([{ name: 'local-verify:pr-1', until: ceiling, reason: expect.stringContaining('PR #1') }]);
+    s.advance(60_000);
+    expect(s.svc.restartHolds(10 * 60_000)[0].until).toBe(Date.parse('2026-10-21T12:00:00.000Z') + 60_000 + 10 * 60_000);
+    await s.finish(0, ok(record()));
+    expect(s.svc.restartHolds(4 * H)).toEqual([]);
+    expect(restartHoldUntil(0, 0, 4 * H)).toBe(LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs);
+  });
+
+  describe('through the real AutoUpdater', () => {
+    let tmp: string;
+    const checker = () => ({ getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker);
+    const state = () => ({ get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager);
+    const gated = (u: AutoUpdater, bypass: boolean) => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', bypass);
+
+    it('an automatic update waits for a running verify; a manual apply is not held', async () => {
+      tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
+      dirs.push(tmp);
+      fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const s = setup({ views: { 1: view() } });
+        s.advance(Date.now() - Date.parse('2026-10-21T12:00:00.000Z')); // the AutoUpdater reads the real clock
+        await s.svc.request(1);
+        const u = new AutoUpdater(checker(), state(), tmp, { preRestartDelaySecs: 0 });
+        u.setSessionDeps({ listRunningSessions: () => [] });
+        registerLocalVerifyRestartHold(u, s.svc);
+        await gated(u, false);
+        expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-1'] });
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(false);
+        u.stop();
+        const m = new AutoUpdater(checker(), state(), tmp, { preRestartDelaySecs: 0 });
+        m.setSessionDeps({ listRunningSessions: () => [] });
+        registerLocalVerifyRestartHold(m, s.svc);
+        await gated(m, true);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
+        m.stop();
+      } finally {
+        log.mockRestore();
+      }
+    });
+  });
+});
+
+describe('shutdown', () => {
+  it('cancels the in-flight run, starts nothing new, arms no timer, and puts the entry back at the head of the durable queue', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.svc.shutdown();
+    expect(s.kills).toEqual([{ pgid: s.spawned[0].pid, signal: 'SIGTERM' }]);
+    expect(s.timers).toHaveLength(0);
+    await s.finish(0, null); // the child dies of the SIGTERM
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // PR 2 did NOT start during shutdown
+    expect(s.records).toHaveLength(0);
+    expect(s.svc.restartHolds(3_600_000)).toEqual([]);
+    expect(await s.svc.request(3)).toEqual({ ok: false, code: 'stopping' });
+    const q = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8'));
+    expect(q.entries.map((e: { pr: number; attempts: number }) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0]]);
+  });
+});
+
+describe('durable queue', () => {
+  it('persists every change and restores at boot, dropping closed PRs and moved heads', async () => {
+    const views = { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }), 4: view({ headRefOid: sha('f') }) };
+    const s = setup({ views });
+    for (const pr of [1, 2, 3, 4]) await s.svc.request(pr);
+    s.advance(1000);
+    const saved = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8'));
+    expect(saved.entries.map((e: { pr: number }) => e.pr)).toEqual([1, 2, 3, 4]); // in-flight first
+    // Crash: no shutdown; PR 1's child is gone by the next boot.
+    s.alive.clear();
+    const s2 = setup({ stateDir: s.stateDir, views: { ...views, 3: view({ headRefOid: sha('9') }) }, open: { 4: false } });
+    await s2.svc.boot();
+    const q = s2.svc.snapshot().queue.map((e) => [e.pr, e.headSha]);
+    expect(q).toEqual([[1, sha('a')], [2, sha('c')]]); // 3 head moved, 4 closed
+    expect(s2.svc.snapshot().queue[0].firstQueuedAt).toBe(saved.entries[0].firstQueuedAt);
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(1);
+    expect(s2.spawned[0].args.join(' ')).toContain('--input');
+  });
+
+  it('restored entries wait for the orphan reap before starting', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1); // in flight, intent written
+    const pgid = s.spawned[0].pid;
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    s2.alive.add(pgid); // the old group still runs; its identity is unconfirmed
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().blocked).toBe(true);
+    expect(s2.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]);
+    expect(s2.spawned).toHaveLength(0);
+    s2.alive.delete(pgid);
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(1);
+  });
+
+  it('a restored entry already recorded green is not re-queued', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    // PR 2 now in flight; a crash leaves it in the queue file.
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue.map((e) => e.pr)).toEqual([2]);
+  });
+});
+
+// ── Second pass (2026-10-22): indefinite hold, crash re-run loop, restore race, version hash, corrupt queue, write-on-change ──
+
+import { decideUpdatePause, UPDATE_PAUSE_MAX_MS, type UpdatePendingState } from '../../../src/localVerify/LocalVerifyService.js';
+import { updatePendingFromAutoUpdater } from '../../../src/localVerify/localVerifyWiring.js';
+import { localImportGraph } from '../../../src/localVerify/verifierVersion.js';
+import { checkVerifierVersion, main as runVerifyMainEntry } from '../../../src/localVerify/runVerifyMain.js';
+
+const T0 = Date.parse('2026-10-21T12:00:00.000Z');
+
+describe('rule (b): a pending update pauses NEW starts so the queue cannot hold updates forever', () => {
+  const pending = (over: Partial<UpdatePendingState> = {}): UpdatePendingState => ({ pending: true, pendingSinceMs: T0, otherBlockers: false, ...over });
+
+  it('decideUpdatePause: both sides of every condition', () => {
+    expect(decideUpdatePause(null, T0)).toBe(false);
+    expect(decideUpdatePause(pending({ pending: false }), T0)).toBe(false);
+    expect(decideUpdatePause(pending({ otherBlockers: true }), T0)).toBe(false);
+    expect(decideUpdatePause(pending(), T0 + UPDATE_PAUSE_MAX_MS)).toBe(true);
+    expect(decideUpdatePause(pending(), T0 + UPDATE_PAUSE_MAX_MS + 1)).toBe(false);
+    expect(decideUpdatePause(pending({ pendingSinceMs: null }), T0 + 10 * UPDATE_PAUSE_MAX_MS)).toBe(true);
+  });
+
+  it('updatePendingFromAutoUpdater reads autoApply, pendingUpdate, coalescingUntil and the other blockers', () => {
+    const base = { config: { autoApply: true }, pendingUpdate: null, coalescingUntil: null, pendingUpdateDetectedAt: '2026-10-21T12:00:00.000Z' };
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdate: '1.3.1395' }, [])).toEqual({ pending: true, pendingSinceMs: T0, otherBlockers: false });
+    expect(updatePendingFromAutoUpdater({ ...base, coalescingUntil: '2026-10-21T12:10:00.000Z' }, []).pending).toBe(true);
+    expect(updatePendingFromAutoUpdater({ ...base, coalescingUntil: 'notified' }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...base, config: { autoApply: false }, pendingUpdate: '1.3.1395' }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdate: 'x' }, ['hold:local-verify:pr-1']).otherBlockers).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdate: 'x' }, ['echo-topic-123', 'hold:local-verify:pr-1']).otherBlockers).toBe(true);
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdate: 'x' }, ['hold:pairing-invite:ab']).otherBlockers).toBe(true);
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdate: 'x' }, null).otherBlockers).toBe(true);
+  });
+
+  it('the running verify finishes, the next does not start while the update waits only on us; starts resume after 120 min', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let state: UpdatePendingState | null = null;
+    s.svc.setUpdatePendingProvider(() => state);
+    await s.svc.request(1);
+    await s.svc.request(2);
+    state = pending();
+    await s.finish(0, ok(record()));
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // PR 2 waits: the restart can go ahead
+    expect(s.svc.restartHolds(4 * 3_600_000)).toEqual([]);
+    s.advance(UPDATE_PAUSE_MAX_MS + 1);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('starts are not paused when something else delays the restart anyway', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setUpdatePendingProvider(() => pending({ otherBlockers: true }));
+    await s.svc.request(1);
+    expect(s.spawned).toHaveLength(1);
+  });
+
+  it('time paused for a pending update never counts toward starved', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setUpdatePendingProvider(() => pending({ pendingSinceMs: null }));
+    await s.svc.request(1);
+    expect(s.spawned).toHaveLength(0);
+    for (let i = 0; i < 8; i++) { s.advance(30 * 60_000); await s.svc.tick(); } // 4 h paused
+    expect(s.starved).toHaveLength(0);
+    s.svc.setUpdatePendingProvider(() => null);
+    s.setHolders([4242]); // now a plain capacity wait, which does count
+    for (let i = 0; i < 8; i++) { s.advance(30 * 60_000); await s.svc.tick(); }
+    expect(s.starved).toHaveLength(1);
+  });
+});
+
+describe('unclean exit: the restored in-flight entry counts one error retry, then stops', () => {
+  const writeQueue = (dir: string, entries: unknown[]) => {
+    fs.mkdirSync(path.join(dir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'state', 'local-verify', 'queue.json'), JSON.stringify({ v: 1, entries }));
+  };
+  const e = (over: Record<string, unknown> = {}) => ({ pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: T0, attempts: 1, errorRetries: 0, starvedRaised: false, ...over });
+
+  it('the running entry is written with an inFlight marker; a clean shutdown re-queues it unmarked', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')).entries[0]).toMatchObject({ pr: 1, inFlight: true });
+    s.svc.shutdown();
+    expect(JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')).entries[0].inFlight).toBeUndefined();
+  });
+
+  it('first unclean exit: restored as one error retry', async () => {
+    const s = setup({ views: { 1: view() } });
+    writeQueue(s.stateDir, [e({ inFlight: true })]);
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue[0]).toMatchObject({ pr: 1, errorRetries: 1 });
+  });
+
+  it('past the limit: no re-run; an error record with errorStep server-restarted', async () => {
+    const s = setup({ views: { 1: view() } });
+    writeQueue(s.stateDir, [e({ inFlight: true, errorRetries: 1 })]);
+    await s.svc.boot();
+    await s.svc.tick();
+    expect(s.svc.snapshot().queue).toHaveLength(0);
+    expect(s.spawned).toHaveLength(0);
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'error', errorStep: 'server-restarted' });
+  });
+
+  it('an unmarked entry restores with its counters unchanged', async () => {
+    const s = setup({ views: { 1: view() } });
+    writeQueue(s.stateDir, [e({ errorRetries: 1 })]);
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue[0]).toMatchObject({ pr: 1, errorRetries: 1 });
+  });
+});
+
+describe('restore race', () => {
+  it('a POST during the restore waits behind it; queue.json never loses unrestored entries', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 5: view({ headRefOid: sha('e') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.alive.clear();
+    // A fresh service whose GitHub reads are slow during restore.
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view(), 2: view({ headRefOid: sha('c') }), 5: view({ headRefOid: sha('e') }) } });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const svc2 = s2.svc as unknown as { seams: LocalVerifyServiceSeams };
+    const orig = svc2.seams.isPrOpen;
+    svc2.seams.isPrOpen = async (pr) => { await gate; return orig(pr); };
+    const booting = s2.svc.boot();
+    await s2.flush();
+    const posting = s2.svc.request(5);
+    s2.svc.noteMainHead(sha('7')); // a main verify enqueued mid-restore pumps: it must not rewrite queue.json
+    await s2.flush();
+    expect(s2.spawned).toHaveLength(0); // nothing started mid-restore
+    const onDisk = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8')).entries.map((x: { pr: number }) => x.pr);
+    expect(onDisk).toEqual([1, 2]); // not rewritten without the unrestored entries
+    release();
+    await booting;
+    await posting;
+    const snap = s2.svc.snapshot();
+    const prs = snap.queue.filter((x) => x.kind !== 'main').map((x) => x.pr)
+      .concat(snap.inFlight && snap.inFlight.kind !== 'main' ? [snap.inFlight.pr] : []).sort();
+    expect(prs).toEqual([1, 2, 5]);
+    // FIFO kept: the restored entries are ahead of the POST that arrived during the restore.
+    expect(snap.queue.filter((x) => x.kind !== 'main').map((x) => x.pr)).toEqual([1, 2, 5]);
+    const after = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8')).entries.map((x: { pr: number }) => x.pr).sort();
+    expect(after).toEqual([1, 2, 5]);
+  });
+});
+
+describe('corrupt queue.json and restore audit', () => {
+  it('an unreadable file is moved aside and audited; nothing is restored', async () => {
+    const s = setup({ views: { 1: view() } });
+    fs.mkdirSync(path.dirname(s.svc.queuePath), { recursive: true });
+    fs.writeFileSync(s.svc.queuePath, '{not json');
+    await s.svc.boot();
+    const names = fs.readdirSync(path.dirname(s.svc.queuePath));
+    expect(names.some((n) => n.startsWith('queue.json.corrupt-'))).toBe(true);
+    expect(fs.readFileSync(s.svc.auditPath, 'utf-8')).toContain('"event":"queue-restore-unreadable"');
+  });
+  it('the restore audit carries the per-reason drop counts', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('9') }) }, open: { 2: false } });
+    fs.mkdirSync(path.dirname(s.svc.queuePath), { recursive: true });
+    const q = (pr: number, h: string) => ({ pr, headSha: sha(h), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: T0, attempts: 0, errorRetries: 0, starvedRaised: false });
+    fs.writeFileSync(s.svc.queuePath, JSON.stringify({ v: 1, entries: [q(1, 'a'), q(2, 'c'), q(3, 'e')] }));
+    await s.svc.boot();
+    const line = fs.readFileSync(s.svc.auditPath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((l) => l.event === 'queue-restored');
+    expect(line).toMatchObject({ restored: 1, dropped: 2, drops: { closed: 1, 'head-or-base-moved': 1, 'already-recorded': 0 } });
+  });
+});
+
+describe('queue.json is written only when it changes', () => {
+  it('ticks with no queue change do not rewrite the file', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    const ino = fs.statSync(s.svc.queuePath).ino;
+    await s.svc.tick();
+    await s.svc.tick();
+    expect(fs.statSync(s.svc.queuePath).ino).toBe(ino);
+    await s.finish(0, ok(record()));
+    expect(fs.statSync(s.svc.queuePath).ino).not.toBe(ino); // the run ended: the content changed
+  });
+});
+
+describe('verifierVersion: the real import graph, toolchain, node, and a child-side check', () => {
+  function pkg(files: Record<string, string>) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-ver-')));
+    dirs.push(root);
+    for (const [rel, c] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), c);
+    }
+    return { root, dir: path.join(root, 'dist', 'localVerify') };
+  }
+  const files = () => ({
+    'dist/localVerify/runVerifyMain.js': "import { x } from '../core/SafeGitExecutor.js';\nimport type { T } from '../core/typesOnly.js';\n",
+    'dist/localVerify/record.js': "export const r = 1;\n",
+    'dist/localVerify/localVerifyWiring.js': "import '../core/Config.js';\n",
+    'dist/core/SafeGitExecutor.js': "import { y } from './SourceTreeGuard.js';\nexport const x = 1;\n",
+    'dist/core/SourceTreeGuard.js': "export const y = 1;\n",
+    'dist/core/typesOnly.js': "export {};\n",
+    'dist/core/Config.js': "export const c = 1;\n",
+  });
+  const v = (dir: string, over: Parameters<typeof computeVerifierVersion>[2] = {}) =>
+    computeVerifierVersion(dir, 'p', { typescriptVersion: '5.9.3', nodeVersion: 'v24.1.0', protectedList: ['.github/'], ...over });
+
+  it('follows relative imports through core, skipping type-only imports', () => {
+    const { root, dir } = pkg(files());
+    const g = localImportGraph([path.join(dir, 'runVerifyMain.js')]).map((f) => path.relative(root, f));
+    expect(g).toEqual(['dist/core/SafeGitExecutor.js', 'dist/core/SourceTreeGuard.js', 'dist/localVerify/runVerifyMain.js']);
+  });
+  it('a change anywhere in the graph changes the version; wiring-only and unreachable files do not', () => {
+    const a = pkg(files());
+    const base = v(a.dir);
+    expect(base).toMatch(/^vh2:[0-9a-f]{32}$/);
+    const deep = pkg({ ...files(), 'dist/core/SourceTreeGuard.js': 'export const y = 2;\n' });
+    expect(v(deep.dir)).not.toBe(base);
+    const wiringOnly = pkg({ ...files(), 'dist/core/Config.js': 'export const c = 2;\n', 'dist/localVerify/localVerifyWiring.js': '// changed\n' });
+    expect(v(wiringOnly.dir)).toBe(base);
+    const unrelated = pkg({ ...files(), 'dist/core/Other.js': 'x' });
+    expect(v(unrelated.dir)).toBe(base);
+  });
+  it('typescript, node, the protected list and the policy each change it', () => {
+    const { dir } = pkg(files());
+    const base = v(dir);
+    expect(v(dir, { typescriptVersion: '5.9.4' })).not.toBe(base);
+    expect(v(dir, { nodeVersion: 'v24.2.0' })).not.toBe(base);
+    expect(v(dir, { protectedList: ['.github/', 'x'] })).not.toBe(base);
+    expect(computeVerifierVersion(dir, 'p2', { typescriptVersion: '5.9.3', nodeVersion: 'v24.1.0', protectedList: ['.github/'] })).not.toBe(base);
+  });
+  it('the installed verifier hashes to vh2 and is not the package version', () => {
+    expect(computeVerifierVersion()).toMatch(/^vh2:/);
+  });
+
+  it('the child refuses to run when its own code differs from what the server passed', async () => {
+    const { dir } = pkg(files());
+    const server = computeVerifierVersion(dir, undefined, { protectedList: ['.github/'] });
+    expect(checkVerifierVersion({ verifierVersion: server, protectedList: ['.github/'] }, dir)).toEqual({ ok: true });
+    fs.writeFileSync(path.join(dir, '..', 'core', 'SafeGitExecutor.js'), "import { y } from './SourceTreeGuard.js';\nexport const x = 2;\n"); // npm replaced dist
+    const r = checkVerifierVersion({ verifierVersion: server, protectedList: ['.github/'] }, dir);
+    expect(r.ok).toBe(false);
+    // Through the entry: a crash result whose detail the service maps to errorStep verifier-mismatch.
+    const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-main-')));
+    dirs.push(work);
+    const input = path.join(work, 'in.json');
+    const result = path.join(work, 'out.json');
+    fs.writeFileSync(input, JSON.stringify({ verifierVersion: server, protectedList: ['.github/'], agentHome: work, headSha: sha('a') }));
+    const errs = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runVerifyMainEntry(['--input', input, '--result', result, '--attempt-token', 'ab'.repeat(16)], dir)).toBe(1);
+    } finally { errs.mockRestore(); }
+    expect(JSON.parse(fs.readFileSync(result, 'utf-8'))).toMatchObject({ kind: 'crash', detail: expect.stringMatching(/^verifier-mismatch/) });
+  });
+
+  it('the service records a verifier-mismatch crash as errorStep verifier-mismatch', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.finish(0, { kind: 'crash', detail: 'verifier-mismatch: server vh2:a, child vh2:b' } as unknown as VerifyRunResult);
+    expect(s.records[0]).toMatchObject({ outcome: 'error', errorStep: 'verifier-mismatch' });
+  });
+
+  it('records survive a boot whose verifier content is unchanged, and re-verify when it changed', async () => {
+    const { dir } = pkg(files());
+    const version = v(dir);
+    const s = setup({ views: { 1: view() } });
+    fs.mkdirSync(path.dirname(s.svc.journalPath), { recursive: true });
+    fs.appendFileSync(s.svc.journalPath, JSON.stringify({ v: 1, writtenAt: new Date().toISOString(), record: record({ verifierVersion: version }) }) + '\n');
+    expect((await setup({ stateDir: s.stateDir, verifierVersion: v(dir) }).svc.rebuildIndex()).loaded).toBe(1);
+    fs.writeFileSync(path.join(dir, 'runVerifyMain.js'), "import { x } from '../core/SafeGitExecutor.js';\n// changed\n");
+    expect(await setup({ stateDir: s.stateDir, verifierVersion: v(dir) }).svc.rebuildIndex()).toMatchObject({ loaded: 0, skippedVersion: 1 });
   });
 });

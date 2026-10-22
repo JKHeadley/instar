@@ -1684,6 +1684,23 @@
         "keepSegments": 10,
         "note": "Rotates at 5 MB; 10 files kept (spec local-verify-merge-authority §2 step 8)."
       }
+    },
+    {
+      "category": "local-verify-queue",
+      "description": "local-verify durable PR verify queue (pr, head, base, base branch, first-queued time, attempts, error retries; the in-flight PR entry first), rewritten atomically on every queue change and restored at boot so a server restart (an auto-update) resumes queued and interrupted verifies instead of losing them. Entries whose PR closed or whose head moved are dropped at restore. `main` verifies are not persisted (the reconcile loop re-derives them). Machine-local: it names this machine's pending runs.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/queue.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 11,
+        "note": "At most the queue cap (10) plus the one in-flight entry; replaced in place (and only when its content changes), never appended. An unreadable file is moved aside once to queue.json.corrupt-<ts> for inspection (operator-cleared; one per corruption event)."
+      }
     }
   ]
 }
