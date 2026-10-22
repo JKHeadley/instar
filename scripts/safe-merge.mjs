@@ -836,6 +836,22 @@ function fetchCheckRunsWithProducers(repo, headSha) {
   }));
 }
 
+/**
+ * True when no GitHub Actions check run exists on the head. "No checks ran"
+ * is NOT green: it looks like "all green" at a glance, and with no required
+ * checks GitHub's native auto-merge would merge it at once (PR #2302,
+ * 2026-10-22: pull_request never fired; only Vercel reported).
+ */
+export function noActionsChecksRan(checkRuns) {
+  return !(checkRuns ?? []).some(cr => cr?.appSlug === 'github-actions');
+}
+
+function refuseNoChecksRan(pr, head) {
+  result({ result: 'refused:no-checks-ran', pr: Number(pr), head });
+  console.error(`safe-merge: REFUSING — NO GitHub Actions checks ran on head ${String(head).slice(0, 12)}. This is NOT green. CI never started (a conflict with main can suppress pull_request); rebase or trigger the workflow, then retry.`);
+  process.exit(1);
+}
+
 /** Raw text of a gh call; null on failure. */
 function ghText(args) {
   const r = gh(args, { allowFail: true });
@@ -1051,6 +1067,17 @@ async function main() {
   // foreground/background poller does (the failure mode that wedged hot-branch
   // merges: the watcher is killed before slow CI finishes).
   if (args.auto) {
+    // Zero Actions checks is never green: refuse before arming (GitHub would
+    // otherwise merge at once when no check is required).
+    let headRuns;
+    try {
+      headRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
+    } catch (e) {
+      result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
+      console.error(`safe-merge: REFUSING — could not read the head's check runs: ${e.message}`);
+      process.exit(1);
+    }
+    if (noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     const autoArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--auto'];
     if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
     if (args.deleteBranch) autoArgs.push('--delete-branch');
@@ -1170,6 +1197,10 @@ async function main() {
     process.exit(1);
   }
   if (!checksState.sawE2e || !checksState.e2ePassed) {
+    // Say which: nothing ran at all, or the e2e check specifically is missing/red.
+    let headRuns = null;
+    try { headRuns = fetchCheckRunsWithProducers(repo, pinnedHead); } catch { /* @silent-fallback-ok: refusing either way; this only picks the message */ }
+    if (headRuns && noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     result({ result: 'refused:e2e-missing-or-red' });
     console.error('safe-merge: REFUSING — the e2e check is missing or did not pass. The e2e job is the one --admin bypasses; do not merge without it.');
     process.exit(1);

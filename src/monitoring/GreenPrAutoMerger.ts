@@ -652,6 +652,10 @@ export class GreenPrAutoMerger extends EventEmitter {
         if (verdict.skip === 'held' && deb.transition === 'released') {
           this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-released', pr: pr.number });
         }
+        if (verdict.skip === 'no-checks-ran') {
+          // Say so: zero GitHub Actions checks on this head is NOT green.
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
+        }
         continue;
       }
       // verdict.eligible but the hold debounce may still hold it back this tick.

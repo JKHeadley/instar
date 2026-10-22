@@ -27,7 +27,7 @@ export interface PrSummary {
   createdAt?: string;
   /** GraphQL mergeable enum: MERGEABLE | CONFLICTING | UNKNOWN. */
   mergeable: string;
-  /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | null. */
+  /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | NO_CHECKS | null. */
   statusRollup: string | null;
   /**
    * GitHub-side native-auto-merge state derived from the `autoMergeRequest`
@@ -145,8 +145,12 @@ export function holdReasonOf(pr: Pick<PrSummary, 'isDraft' | 'title' | 'labels'>
   return null;
 }
 
+/** statusRollup value for a head where no GitHub Actions workflow produced a check. Never green. */
+export const NO_CHECKS_ROLLUP = 'NO_CHECKS';
+
 export type CandidateSkip =
   | 'not-agent-namespace'
+  | 'no-checks-ran'
   | 'held'
   | 'not-mergeable'
   | 'not-settled-green'
@@ -188,6 +192,7 @@ export function classifyCandidate(
     if (opts.hasRecord !== true) return { eligible: false, skip: 'no-verify-record' };
     return { eligible: true };
   }
+  if (pr.statusRollup === NO_CHECKS_ROLLUP) return { eligible: false, skip: 'no-checks-ran' };
   if (pr.statusRollup !== 'SUCCESS') return { eligible: false, skip: 'not-settled-green' };
   return { eligible: true };
 }

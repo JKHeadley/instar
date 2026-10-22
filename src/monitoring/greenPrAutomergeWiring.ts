@@ -43,7 +43,7 @@ import {
   type ProtectedPathsVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
-import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, type PrSummary } from './greenPrLogic.js';
+import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, NO_CHECKS_ROLLUP, type PrSummary } from './greenPrLogic.js';
 
 /** Protected globs (round-4/6): a PR touching these never auto-merges. */
 export const PROTECTED_PATH_PREFIXES = [
@@ -349,7 +349,7 @@ export function mapPr(row: Record<string, unknown>): PrSummary {
 }
 
 /**
- * Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array.
+ * Derive a single SUCCESS|PENDING|FAILURE|NO_CHECKS from the statusCheckRollup array.
  *
  * red-pr-watchdog correctness fix: dedup to the LATEST run per check name BEFORE
  * collapsing. Previously a stale FAILED run superseded by a passing rerun still
@@ -359,11 +359,18 @@ export function mapPr(row: Record<string, unknown>): PrSummary {
 export function deriveRollup(rollup: unknown): string | null {
   if (!Array.isArray(rollup)) return typeof rollup === 'string' ? rollup : null;
   let sawPending = false;
+  // A head where no GitHub Actions workflow produced a check (nothing at all,
+  // or only commit statuses such as Vercel) has had NO checks run. It must not
+  // read SUCCESS: "no checks" and "all checks green" look alike at a glance
+  // (PR #2302, 2026-10-22: pull_request never fired, only Vercel reported).
+  const sawWorkflowCheck = (rollup as Array<Record<string, unknown>>).some(
+    (r) => !!r && typeof r === 'object' && typeof r.workflowName === 'string' && r.workflowName.trim() !== '');
   for (const c of latestRunPerCheck(rollup)) {
     // A check whose latest run has not COMPLETED (an in-progress rerun) is pending.
     if (c.status && c.status !== 'COMPLETED') { sawPending = true; continue; }
     if (FAILING_CONCLUSIONS.has(c.conclusion)) return 'FAILURE';
     if (c.conclusion === 'PENDING' || c.conclusion === 'EXPECTED' || c.conclusion === 'IN_PROGRESS' || c.conclusion === 'QUEUED') sawPending = true;
   }
-  return sawPending ? 'PENDING' : 'SUCCESS';
+  if (sawPending) return 'PENDING';
+  return sawWorkflowCheck ? 'SUCCESS' : NO_CHECKS_ROLLUP;
 }

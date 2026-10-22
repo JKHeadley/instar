@@ -27,6 +27,7 @@ import {
   LOCAL_VERIFY_CONTEXT,
   fetchProtectionContexts,
   extractBranchProtection,
+  noActionsChecksRan,
 } from '../../scripts/safe-merge.mjs';
 
 describe('parseArgs — strict argv', () => {
@@ -134,6 +135,22 @@ describe('isAutoMergeUnavailable — the repo-disabled discriminator (mergerunne
     expect(isAutoMergeUnavailable('HTTP 502 Bad Gateway')).toBe(false);
     expect(isAutoMergeUnavailable('')).toBe(false);
     expect(isAutoMergeUnavailable(undefined)).toBe(false);
+  });
+});
+
+describe('noActionsChecksRan — zero checks is not green (PR #2302)', () => {
+  it('no check runs at all → nothing ran', () => {
+    expect(noActionsChecksRan([])).toBe(true);
+    expect(noActionsChecksRan(undefined)).toBe(true);
+  });
+  it('only a Vercel check run → nothing ran', () => {
+    expect(noActionsChecksRan([{ name: 'Vercel Preview Comments', conclusion: 'success', appSlug: 'vercel', workflowPath: null }])).toBe(true);
+  });
+  it('one GitHub Actions check run → checks ran', () => {
+    expect(noActionsChecksRan([
+      { name: 'Vercel Preview Comments', conclusion: 'success', appSlug: 'vercel', workflowPath: null },
+      { name: 'Type Check', conclusion: 'success', appSlug: 'github-actions', workflowPath: '.github/workflows/ci.yml' },
+    ])).toBe(false);
   });
 });
 
