@@ -220,3 +220,52 @@ for this feature. Recorded here rather than left for someone to discover from th
    production code changed in this increment.
 3. **Multi-machine posture:** not applicable (test-only).
 4. **Rollback:** delete the file.
+
+---
+
+## Increment 5 (post-merge CI fix): register the card in the parity list and the shadow
+
+**What changed.** Two one-line registrations: `'per-peer homebase topic'` added to
+`featureSections` in `tests/unit/feature-delivery-completeness.test.ts`, and
+`'### Where a peer agent\'s notices go (per-peer homebase topic)'` added to the
+`migrateFrameworkShadowCapabilities` `markers[]` array in `src/core/PostUpdateMigrator.ts`.
+No behaviour, no route, no state, no config.
+
+**Why, and why it is not cosmetic.** CI failed consistently on shard 4/4 of BOTH node
+versions with "PostUpdateMigrator adds CLAUDE.md section 'per-peer homebase topic' but it's
+not tracked". The awareness card had reached `generateClaudeMd` and `migrateClaudeMd` but
+neither the parity list nor the shadow markers, so **a Codex or Gemini agent would never have
+received it.** For this card specifically that is the whole feature failing: its purpose is to
+stop an agent reporting "I passed it on" while posting where the operator has no reason to
+look, which is the founding incident. A non-Claude agent would have kept doing exactly that
+with the fix installed — the Agent Awareness Standard's own stated failure mode.
+
+**The two string forms are load-bearing and deliberately different.**
+- The parity list carries the BARE sniff string, because `all new migrator CLAUDE.md sections
+  are tracked` compares `featureSections.includes(section)` **exactly** against what
+  `migrateClaudeMd` content-sniffs.
+- The marker carries the FULL heading, because `markers[]` entries are **slice anchors**:
+  `claudeMd.indexOf(marker)` then skips past the marker's own line, so a mid-heading anchor
+  would mirror the body into AGENTS.md/GEMINI.md **without its heading**. The apostrophe in
+  "agent's" is escaped; a first attempt with an unescaped one would not have compiled.
+- The shadow-parity guard (`shadowMarkersBlock.includes(section)`) is satisfied because the
+  bare sniff is a substring of the full heading — so the two forms stay consistent by
+  construction rather than by someone keeping them in step.
+
+1. **Over/under-block:** blocks nothing. It makes two existing guards see a card they were
+   blind to. The risk it REMOVES is a silent awareness gap on non-Claude frameworks.
+2. **Abstraction fit / signal vs authority:** no authority added. A shadow marker copies
+   documentation into a sibling file; it grants nothing.
+3. **Interactions / external surfaces:** none. No network, no credential, no Telegram, no
+   filesystem outside the two source files.
+4. **Multi-machine posture:** none — this is install-time documentation parity, identical on
+   every machine.
+5. **Migration Parity:** this change IS the Migration-Parity repair. Existing Claude agents
+   already receive the card via the pre-existing `migrateClaudeMd` branch (unchanged);
+   existing Codex/Gemini agents now receive it too, on their next migration run.
+6. **Rollback:** revert the two lines. CI returns to red on shard 4/4, which is the honest
+   signal that the gap is back.
+
+**Evidence.** `tests/unit/feature-delivery-completeness.test.ts` 212/212 (was 211/212 with
+this exact assertion failing); 175/175 across the four `peer-homebase-*` files plus
+`PostUpdateMigrator-shadowCapabilities.test.ts`; `tsc --noEmit` clean.

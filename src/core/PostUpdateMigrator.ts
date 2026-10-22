@@ -12410,6 +12410,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.
       '### Durable Conversation Identity',
+      // peer-conversation-homebase-topic: a paired peer's notices land in a
+      // specific topic, and the binding-provenance rule (an operator's choice is
+      // never overridden, an unknown one is preserved) is framework-neutral. A
+      // Codex/Gemini agent without this keeps reporting "I passed it on" while
+      // posting where the operator has no reason to look — the founding incident.
+      '### Where a peer agent\'s notices go (per-peer homebase topic)',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming

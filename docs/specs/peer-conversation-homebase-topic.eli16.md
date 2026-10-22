@@ -70,3 +70,31 @@ a New One* exists because an agent creating its own notification topics once flo
 feature takes a deliberate, recorded exception to it, because you asked for these topics and one
 per paired agent is a set you want. That exception is written into the spec with your own words
 next to it, so nobody later mistakes it for an oversight.
+
+---
+
+## Postscript: the card almost only reached one kind of agent
+
+After the first four pieces merged, CI stopped the fifth with a complaint that sounds like
+paperwork and is not. Instar keeps two lists whose only job is to ask "did this capability
+actually reach everyone?" The new explanation of where a peer's notices go had been written
+into the file a fresh agent gets, and into the upgrade step an existing agent runs — but not
+into either list. One of those lists is what copies an explanation across to agents running on
+a different engine (Codex, Gemini) instead of Claude.
+
+So the fix would have shipped, worked, and still left a whole class of agents not knowing the
+topic existed. Those agents would have gone on saying "I passed your message on" while posting
+it where you had no reason to look — which is precisely the thing this feature was built to
+stop. The feature would have been installed and the incident would have kept happening, in the
+one place nobody would think to check.
+
+Two details are worth keeping because they are easy to get subtly wrong. The first list
+compares *exactly* against the phrase the upgrade step searches for, so it has to hold the bare
+phrase. The second list is not a label but a bookmark: the code finds that text in the file and
+copies from there onward, so it has to hold the whole heading, or the copy would arrive as a
+paragraph with its title missing. The bare phrase is contained inside the heading, so the two
+stay in agreement on their own rather than relying on someone remembering to update both.
+
+The honest lesson is smaller than the fix: the tests for this feature all passed. The guard
+that caught this lives in a different file, measuring something the feature's own tests were
+never going to ask.
