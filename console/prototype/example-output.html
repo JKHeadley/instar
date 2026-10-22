@@ -4,7 +4,12 @@
 <style>
 :root{--ground:#0A0E17;--panel:#111828;--line:#1E2838;--ink:#E8EDF5;--dim:#8A94A6;--teal:#6EC6C8;--ok:#4ADE80;--warn:#FBBF24;--bad:#F87171}
 *{box-sizing:border-box}
-body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:22px 16px 70px;max-width:760px;margin-inline:auto}
+body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+.shell{background:var(--ground);color:var(--ink);padding:22px 16px 70px;max-width:760px;margin-inline:auto;border-radius:12px}
+.shell *{color:inherit}
+.shell h2{color:var(--teal)} .shell h1{color:var(--ink)}
+.shell .meta,.shell .sub,.shell .note,.shell .empty,.shell .stat span,.shell .mgroup,.shell .unknown{color:var(--dim)}
+.shell .alarmtext,.shell .err{color:var(--bad)} .shell .stat.alarm b{color:var(--bad)} .shell .stat.warnst b{color:var(--warn)}
 h1{font-size:21px;margin:0 0 2px}
 .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
 h2{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--teal);margin:30px 0 10px;font-weight:600}
@@ -32,21 +37,22 @@ h2{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--teal
 .alarmtext{color:var(--bad)}
 footer{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:var(--dim);font-size:12.5px}
 </style></head><body>
+<div class="shell">
 <h1>Echo</h1>
-<div class="sub">Console prototype · built from live data, 22 October 2026, 05:24</div>
+<div class="sub">Console prototype · built from live data, 22 October 2026, 05:43</div>
 
 <h2>Can I reach you</h2>
-<div class="stats"><div class="stat alarm"><b>24</b><span>replies not delivered</span></div><div class="stat"><b>8</b><span>conversations</span></div><div class="stat warnst"><b>5.9 h</b><span>oldest</span></div></div><p class="note alarmtext">These are written and waiting. They are retried, and some do get through — but a reply that cannot be handed over in time is deleted, and its text goes with it.</p>
+<div class="stats"><div class="stat alarm"><b>25</b><span>replies not delivered</span></div><div class="stat"><b>8</b><span>conversations</span></div><div class="stat warnst"><b>5.6 h</b><span>oldest</span></div></div><p class="note alarmtext">These are written and waiting. They are retried, and some do get through — but a reply that cannot be handed over in time is deleted, and its text goes with it.</p>
 
 <h2>What needs you</h2>
-<div class="stats"><div class="stat alarm"><b>384</b><span>need you</span></div><div class="stat"><b>535</b><span>open in total</span></div></div><p class="note">Mac Studio: 187, Mac Mini: 157, Mama PC: 40</p><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held reply to topic ? expired</strong></div><div class="meta">12 min ago · Mac Mini</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held replies: what I verified about the mechanism (35 live, 26 already expired)</strong></div><div class="meta">23 min ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Reply to topic 127831 is held</strong></div><div class="meta">32 min ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held reply to topic 127831 expired</strong></div><div class="meta">1 hours ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Duplicate suppression matches attempts, not deliveries — a held message becomes unsendable</strong></div><div class="meta">3 hours ago · Mama PC</div></div><p class="note">…and 379 more marked high.</p><p class="note">These accumulated with nowhere to be seen. That is the argument for this screen: a queue nobody looks at reads exactly like an empty one.</p>
+<div class="stats"><div class="stat alarm"><b>384</b><span>need you</span></div><div class="stat"><b>535</b><span>open in total</span></div></div><p class="note">Mac Studio: 187, Mac Mini: 157, Mama PC: 40</p><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held reply to topic ? expired</strong></div><div class="meta">30 min ago · Mac Mini</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held replies: what I verified about the mechanism (35 live, 26 already expired)</strong></div><div class="meta">41 min ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Reply to topic 127831 is held</strong></div><div class="meta">51 min ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Held reply to topic 127831 expired</strong></div><div class="meta">2 hours ago · Mama PC</div></div><div class="row"><div class="row-head"><span class="dot bad"></span><strong>Duplicate suppression matches attempts, not deliveries — a held message becomes unsendable</strong></div><div class="meta">3 hours ago · Mama PC</div></div><p class="note">…and 379 more marked high.</p><p class="note">These accumulated with nowhere to be seen. That is the argument for this screen: a queue nobody looks at reads exactly like an empty one.</p>
 
 <h2>What I'm doing</h2>
 <p class="note">All 3 machines answered.</p>
 <div class="mgroup">Mac Mini <span class="meta">3</span></div>
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>mamapc-remote-hands</strong><span class="meta">claude-code · started 7 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
-<div class="row"><div class="row-head"><span class="dot live"></span><strong>held-probe</strong><span class="meta">claude-code · started 6 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
-<div class="row"><div class="row-head"><span class="dot live"></span><strong>held-probe2</strong><span class="meta">claude-code · started 6 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
+<div class="row"><div class="row-head"><span class="dot live"></span><strong>held-probe</strong><span class="meta">claude-code · started 7 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
+<div class="row"><div class="row-head"><span class="dot live"></span><strong>held-probe2</strong><span class="meta">claude-code · started 7 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
 <div class="mgroup">Mac Studio <span class="meta">7</span></div>
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>Instar 2.0 drift tracking</strong><span class="meta">claude-code · started 6 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>github bottlenecks</strong><span class="meta">claude-code · started 14 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
@@ -55,9 +61,10 @@ footer{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:v
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>Feature maturation</strong><span class="meta">claude-code · started 2 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>claude subscription account resets</strong><span class="meta">claude-code · started 3 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>Deepseek harness</strong><span class="meta">claude-code · started 14 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
-<div class="mgroup">Mama PC <span class="meta">2</span></div>
-<div class="row"><div class="row-head"><span class="dot live"></span><strong>topic-127831</strong><span class="meta">claude-code · started 3 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
-<div class="row"><div class="row-head"><span class="dot live"></span><strong>topic-127504</strong><span class="meta">claude-code · started 3 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
+<div class="mgroup">Mama PC <span class="meta">3</span></div>
+<div class="row"><div class="row-head"><span class="dot live"></span><strong>topic-127831</strong><span class="meta">claude-code · started 4 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
+<div class="row"><div class="row-head"><span class="dot live"></span><strong>topic-127504</strong><span class="meta">claude-code · started 4 hours ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
+<div class="row"><div class="row-head"><span class="dot live"></span><strong>train-128</strong><span class="meta">codex-cli · started 15 min ago</span></div><div class="doing"><span class="unknown">Not recorded.</span></div></div>
 
 <h2>What I've promised</h2>
 <div class="row">
@@ -70,7 +77,7 @@ footer{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:v
 </div>
 <div class="row">
   <div class="doing">Both research tracks launched concurrently; I will report back with the functionality inventory + 3-tier split and the agent-UI research synthesis, then propose a makeover plan</div>
-  <div class="meta">42 hours ago<span class="pill warn">waiting on user-input</span></div>
+  <div class="meta">43 hours ago<span class="pill warn">waiting on user-input</span></div>
 </div>
 <div class="row">
   <div class="doing">Fix the readiness self-heal latch and prove the fix-worker machinery end-to-end by getting one held pull request opened from a real feedback item</div>
@@ -97,9 +104,10 @@ footer{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:v
 <div class="row"><div class="row-head"><span class="dot live"></span><strong>Mama PC</strong><span class="meta">online</span><span class="pill">this machine</span></div></div><div class="row"><div class="row-head"><span class="dot live"></span><strong>Mac Mini</strong><span class="meta">online</span></div></div><div class="row"><div class="row-head"><span class="dot live"></span><strong>Dabombs Mac Studio</strong><span class="meta">online</span><span class="pill speak">holds the right to speak</span></div></div><p class="note alarmtext">The machine answering you is not this one. A reply written here has to be handed over, and if that fails it is held, retried, and expires after six hours. That is what cost 26 replies.</p>
 
 <h2>What I'm allowed to do</h2>
-<div class="stats"><div class="stat"><b>8</b><span>on, confirmed</span></div><div class="stat"><b>22</b><span>on, unverified</span></div><div class="stat"><b>54</b><span>off by design</span></div><div class="stat warnst"><b>4</b><span>watching only</span></div><div class="stat alarm"><b>1</b><span>says on, isn't</span></div><div class="stat warnst"><b>2</b><span>can't tell</span></div></div><p class="note alarmtext">Something a critical path depends on is not running here — 10: monitoring.correctionClassReview.enabled, monitoring.ropeHealth.enabled, monitoring.strandedTopicSentinel.enabled…</p><p class="note">Critical-path gaps on the other machines — Dabombs Mac Studio: 1, Mac Mini: 1.</p><p class="note alarmtext">At least one guard reports itself on while its runtime says otherwise. The contradiction is shown rather than resolved in its favour.</p><p class="note">54 are off because they ship off. Normal, not an alarm.</p><p class="note">Live runtime state could be read for 17/91; the rest report what they are configured to do, not what they are doing.</p>
+<div class="stats"><div class="stat"><b>8</b><span>on, confirmed</span></div><div class="stat"><b>22</b><span>on, unverified</span></div><div class="stat"><b>54</b><span>off by design</span></div><div class="stat warnst"><b>4</b><span>watching only</span></div><div class="stat alarm"><b>1</b><span>says on, isn't</span></div><div class="stat warnst"><b>2</b><span>can't tell</span></div></div><p class="note alarmtext">Something a critical path depends on is not running here — 10: monitoring.correctionClassReview.enabled, monitoring.ropeHealth.enabled, monitoring.strandedTopicSentinel.enabled…</p><p class="note">Critical-path gaps on the other machines — Dabombs Mac Studio: 1.</p><p class="note alarmtext">At least one guard reports itself on while its runtime says otherwise. The contradiction is shown rather than resolved in its favour.</p><p class="note">54 are off because they ship off. Normal, not an alarm.</p><p class="note">Live runtime state could be read for 17/91; the rest report what they are configured to do, not what they are doing.</p>
 
 <footer>Prototype — not the live dashboard, nothing here changes anything.
 Every number is read from this agent right now; a value that could not be read says so
 rather than showing zero.</footer>
+</div>
 </body></html>

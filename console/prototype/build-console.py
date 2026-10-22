@@ -353,7 +353,12 @@ page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
 :root{{--ground:#0A0E17;--panel:#111828;--line:#1E2838;--ink:#E8EDF5;--dim:#8A94A6;--teal:#6EC6C8;--ok:#4ADE80;--warn:#FBBF24;--bad:#F87171}}
 *{{box-sizing:border-box}}
-body{{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:22px 16px 70px;max-width:760px;margin-inline:auto}}
+body{{margin:0;background:var(--ground);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+.shell{{background:var(--ground);color:var(--ink);padding:22px 16px 70px;max-width:760px;margin-inline:auto;border-radius:12px}}
+.shell *{{color:inherit}}
+.shell h2{{color:var(--teal)}} .shell h1{{color:var(--ink)}}
+.shell .meta,.shell .sub,.shell .note,.shell .empty,.shell .stat span,.shell .mgroup,.shell .unknown{{color:var(--dim)}}
+.shell .alarmtext,.shell .err{{color:var(--bad)}} .shell .stat.alarm b{{color:var(--bad)}} .shell .stat.warnst b{{color:var(--warn)}}
 h1{{font-size:21px;margin:0 0 2px}}
 .sub{{color:var(--dim);font-size:13.5px;margin-bottom:26px}}
 h2{{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--teal);margin:30px 0 10px;font-weight:600}}
@@ -381,6 +386,7 @@ h2{{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--tea
 .alarmtext{{color:var(--bad)}}
 footer{{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:var(--dim);font-size:12.5px}}
 </style></head><body>
+<div class="shell">
 <h1>Echo</h1>
 <div class="sub">Console prototype · built from live data, {e(now)}</div>
 
@@ -405,6 +411,7 @@ footer{{margin-top:34px;border-top:1px solid var(--line);padding-top:15px;color:
 <footer>Prototype — not the live dashboard, nothing here changes anything.
 Every number is read from this agent right now; a value that could not be read says so
 rather than showing zero.</footer>
+</div>
 </body></html>"""
 open(OUT, "w").write(page)
 print("wrote", OUT, len(page), "bytes")
