@@ -10262,15 +10262,15 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
-- A green PR touching protected paths (\`.github/**\`, safe-merge, the watcher's own source) is NEVER auto-merged — it routes to the operator on the attention queue. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
-- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
+- **The operator approves constitution changes only.** A green PR touching a CODEOWNERS-owned file (the constitution) waits for the operator's code-owner review on GitHub — the only PR the watcher routes to the operator. A protected-path or harness-changing PR (safe-merge, the watcher's own source, the test harness) merges without the operator once the local verifier records an independent second-pass review of the exact head: an instar-dev trace committed in the PR whose second pass concurred and whose coveredFiles include every flagged file. Without one, safe-merge answers \`refused:needs-independent-review\` — run the second pass and commit its trace; never ask the operator to approve it. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
+- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? waiting on a code-owner review? needs-independent-review? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
 - **A human approval is required by the repo (approval-required):** when the base branch's ruleset demands a reviewer other than the pusher, safe-merge answers \`refused:approval-required\` and has ALREADY requested the operator's review. My only job is to hand the operator the direct link it prints (the PR's Files tab → "Review changes" → Approve) and merge the moment the approval lands — never loop, never ask them to "request a review". A reviewer-less PR is a process defect, not a step.
 `;
     if (!content.includes('/green-pr-automerge')) {
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10283,7 +10283,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }

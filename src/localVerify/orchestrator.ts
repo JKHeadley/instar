@@ -20,8 +20,9 @@ import { computeInventory, LANES, type LaneName } from './inventory.js';
 import { readUnhandledErrors } from './unhandledErrorsReporter.js';
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, type ChangedTestFile } from './skipRatchet.js';
-import { classifyHarness, protectedPath as isProtectedPath } from './harnessClassifier.js';
-import { FLAKY_RETRIED_MAX, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
+import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
+import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
+import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
 
 // ── Seams ──────────────────────────────────────────────────────────────
@@ -215,6 +216,9 @@ class RunError extends Error {
   }
 }
 
+/** The record flags plus the independent review a flagged record may carry. */
+type Flags = Pick<LocalVerifyRecord, 'harnessChanging' | 'protectedPath' | 'skipsAdded' | 'testsRemoved' | 'independentReview'>;
+
 class RunFailure extends Error {
   constructor(public readonly reason: string) {
     super(reason);
@@ -241,7 +245,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let mergeTree = '';
   let mergeCommit = '';
   let worktreeCreated = false;
-  let flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
 
   const remaining = () => d.totalActiveMs - (seams.now() - startedAtMs - waitedMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
@@ -583,8 +587,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     waitedMs += seams.now() - waitStart;
   }
 
-  async function classify(): Promise<typeof flags> {
-    const out = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  async function classify(): Promise<Flags> {
+    const out: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
     let rows: Array<{ status: string; path: string }> | null = null;
     try {
       const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
@@ -619,6 +623,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const ratchet = evaluateSkipRatchet(tests);
       out.skipsAdded = ratchet.skipsAdded;
       out.testsRemoved = ratchet.testsRemoved;
+      if (out.harnessChanging || out.protectedPath || out.skipsAdded || out.testsRemoved) {
+        // The paths that flagged the record; an independent second-pass review must cover them all.
+        const harnessPaths = out.harnessChanging ? harnessReasonPaths(verdict.reasons) : [];
+        const flaggedPaths = harnessPaths === null ? null : [...new Set([
+          ...harnessPaths,
+          ...protectedPathMatches(changedPaths, input.protectedList),
+          ...(out.skipsAdded || out.testsRemoved ? ratchet.perFile.map((f) => f.path) : []),
+        ])].sort();
+        const review = await findIndependentReview(rows, flaggedPaths, show, mb);
+        if (review) out.independentReview = review;
+      }
     } catch (e) {
       // Any read failure classifies the PR as harness-changing (routes it to the operator).
       seams.log({ event: 'classify-read-failure', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
@@ -627,6 +642,52 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       else out.protectedPath = true;
     }
     return out;
+  }
+
+  /**
+   * An instar-dev trace this PR added or changed, read from the head's tree (so
+   * nothing committed after the head counts), whose second pass concurred and
+   * whose coveredFiles include every flagged path. One judge, shared with the
+   * pre-commit gate (scripts/lib/instar-dev-trace.mjs).
+   *
+   * Bound to the head (replaces the head-binding the operator approval had, i.e.
+   * dismiss-stale-reviews-on-push): no flagged path may have changed after the
+   * trace's last commit — `git log <traceLast>..<head> -- <flagged>` must be empty,
+   * so the last commit touching any flagged path is the trace's commit or an
+   * ancestor of it. A later push that edits a flagged file needs a new review.
+   */
+  async function findIndependentReview(
+    rows: Array<{ status: string; path: string }>,
+    flaggedPaths: string[] | null,
+    show: (rev: string, file: string) => Promise<string | null>,
+    mergeBase: string,
+  ): Promise<{ trace: string; concurred: true } | null> {
+    const problems: string[] = [];
+    for (const r of rows) {
+      if (r.status === 'D' || !isTracePath(r.path)) continue;
+      let trace: unknown = null;
+      try { trace = JSON.parse((await show(input.headSha, r.path)) ?? ''); } catch { /* @silent-fallback-ok: an unreadable trace counts as no review; the absence is logged below */ trace = null; }
+      const artifactPath = trace && typeof trace === 'object' ? (trace as { artifactPath?: unknown }).artifactPath : undefined;
+      const artifactText = typeof artifactPath === 'string' && artifactPath
+        ? await show(input.headSha, artifactPath).catch(() => null)
+        : null;
+      const problem = independentReviewProblem({ trace, flaggedPaths, artifactText }) ?? await staleAfterTrace(r.path, flaggedPaths ?? [], mergeBase);
+      if (problem === null) return { trace: r.path, concurred: true };
+      problems.push(`${r.path}: ${problem}`);
+    }
+    seams.log({ event: 'independent-review-absent', flaggedPaths: flaggedPaths ?? 'unknown', problems: problems.slice(0, 10) });
+    return null;
+  }
+
+  /** null when no flagged path changed after the trace's last commit; otherwise the reason. */
+  async function staleAfterTrace(tracePath: string, flaggedPaths: string[], mergeBase: string): Promise<string | null> {
+    const t = await git(['log', '-1', '--format=%H', `${mergeBase}..${input.headSha}`, '--', tracePath], 'review-binding');
+    const traceLast = t.status === 0 ? t.stdout.trim() : '';
+    if (!isValidSha(traceLast)) return 'trace-commit-unreadable';
+    const later = await git(['log', '--format=%H', `${traceLast}..${input.headSha}`, '--', ...flaggedPaths], 'review-binding');
+    if (later.status !== 0) return 'review-binding-unreadable';
+    const after = later.stdout.split('\n').map((x) => x.trim()).filter(Boolean);
+    return after.length ? `flagged-changed-after-trace:${after[0].slice(0, 12)}` : null;
   }
 
   async function cleanup(failed: boolean): Promise<string | null> {

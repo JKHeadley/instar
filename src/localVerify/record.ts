@@ -7,6 +7,7 @@
  */
 
 import type { LaneTotals } from './laneReport.js';
+import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
 
@@ -32,6 +33,12 @@ export interface LocalVerifyRecord {
   testsRemoved: boolean;
   verifierVersion: string;
   policyHash: string;
+  /**
+   * A flagged record's independent second-pass review (spec "Harness-changing PRs"):
+   * an instar-dev trace the PR changed, read from the head's tree, whose second pass
+   * concurred and whose coveredFiles include every flagged path. Absent = none found.
+   */
+  independentReview?: { trace: string; concurred: true };
   /**
    * 'main' for a post-merge verify of `main` itself (piece 3a): pr is 0, headSha == baseSha,
    * and the record never enters the PR index or journal (it feeds main health only).
@@ -117,6 +124,10 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
         && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
     });
     if (!ok) errors.push('flakyRetried');
+  }
+  if (x.independentReview !== undefined) {
+    const ir = x.independentReview as Record<string, unknown> | null;
+    if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }

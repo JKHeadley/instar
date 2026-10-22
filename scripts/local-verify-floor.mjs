@@ -56,13 +56,15 @@ export function approvedAtHead(reviews, approver, headSha) {
 export function extractRulesetReviewPolicy(rules) {
   let reviewsRequired = false;
   let lastPushApprovalRequired = false;
+  let codeOwnerReviewRequired = false;
   for (const rule of Array.isArray(rules) ? rules : []) {
     if (rule?.type !== 'pull_request') continue;
     const p = rule?.parameters ?? {};
     if (Number(p.required_approving_review_count) > 0) reviewsRequired = true;
     if (p.require_last_push_approval === true) lastPushApprovalRequired = true;
+    if (p.require_code_owner_review === true) codeOwnerReviewRequired = true;
   }
-  return { reviewsRequired, lastPushApprovalRequired };
+  return { reviewsRequired, lastPushApprovalRequired, codeOwnerReviewRequired };
 }
 
 /**
@@ -71,11 +73,71 @@ export function extractRulesetReviewPolicy(rules) {
  * required reviews when readable, or the ruleset's approving-review count /
  * last-push approval) and the PR's reviewDecision is not APPROVED.
  */
-export function reviewPrecheckPasses({ policy, classicReviewsRequired, reviewDecision } = {}) {
-  return !reviewRequired({ policy, classicReviewsRequired }) || reviewDecision === 'APPROVED';
+export function reviewPrecheckPasses({ policy, classicReviewsRequired, reviewDecision, codeOwnedTouched } = {}) {
+  if (reviewDecision === 'APPROVED') return true;
+  // The ruleset's require_code_owner_review applies to PRs touching a CODEOWNERS-owned
+  // path only (the constitution): GitHub refuses those until the code owner approves.
+  if (policy?.codeOwnerReviewRequired === true && codeOwnedTouched === true) return false;
+  return !reviewRequired({ policy, classicReviewsRequired });
 }
 
 /** Whether any review is required at all (decides the "ready" time). */
 export function reviewRequired({ policy, classicReviewsRequired } = {}) {
   return classicReviewsRequired === true || policy?.reviewsRequired === true || policy?.lastPushApprovalRequired === true;
+}
+
+// ---------------------------------------------------------------------------
+// CODEOWNERS: the operator's approval surface (directive 2026-10-22: "I should
+// ONLY have to approve constitution changes"). GitHub enforces the code-owner
+// review itself; the watcher only needs to know which PRs wait for it.
+// ---------------------------------------------------------------------------
+
+function codeownersPatternRegex(pattern) {
+  let p = pattern;
+  const anchored = p.startsWith('/') || p.replace(/\/$/, '').includes('/');
+  p = p.replace(/^\//, '');
+  const dir = p.endsWith('/');
+  p = p.replace(/\/$/, '');
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*' && p[i + 1] === '*') {
+      i++;
+      if (p[i + 1] === '/') { re += '(?:.*/)?'; i++; } else re += '.*';
+    }
+    else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  // A pattern matches the path itself or anything under it (a directory pattern only what is under it).
+  return new RegExp(`^${anchored ? '' : '(?:.*/)?'}${re}${dir ? '/.*' : '(?:/.*)?'}$`);
+}
+
+/**
+ * Parse a CODEOWNERS file into ordered rules. null when the text is not a
+ * string (unreadable ⇒ the caller treats ownership as unverifiable).
+ * @returns {Array<{pattern: string, owners: string[], re: RegExp}>|null}
+ */
+export function parseCodeowners(text) {
+  if (typeof text !== 'string') return null;
+  const rules = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/(^|\s)#.*$/, '').trim();
+    if (!line) continue;
+    const [pattern, ...owners] = line.split(/\s+/);
+    rules.push({ pattern, owners: owners.filter((o) => o.startsWith('@') || o.includes('@')), re: codeownersPatternRegex(pattern) });
+  }
+  return rules;
+}
+
+/**
+ * The files a code owner must review: the LAST matching rule wins (GitHub's
+ * precedence) and the file is owned when that rule names an owner.
+ */
+export function codeOwnedFiles(files, rules) {
+  return (files ?? []).filter((f) => {
+    let owned = false;
+    for (const r of rules ?? []) if (r.re.test(f)) owned = r.owners.length > 0;
+    return owned;
+  });
 }

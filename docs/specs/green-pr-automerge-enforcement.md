@@ -136,7 +136,7 @@ Two enforcement gaps, two layers:
   every dev machine, exercised manually via the same script since June 9; what changes is
   WHERE it is exercised (inside the agent's audited, kill-switched, lease-serialized
   monitoring layer instead of an agent's ad-hoc shell). The compensating controls are the
-  producer-bound contexts floor, head pinning, protected-paths skip, identity contract,
+  producer-bound contexts floor, head pinning, the protected-path independent-review requirement (was: protected-paths skip; amended 2026-10-22), identity contract,
   per-attempt contract probe, and the pool-visible latches. A least-privilege **GitHub
   App** (scoped merge permission, no admin bypass) is a **named PRECONDITION for any
   fleet promotion beyond the dev agent** — a gate on the `ships-staged` rollout track,
@@ -298,7 +298,7 @@ Two enforcement gaps, two layers:
   and surfaces ONE line in the aggregated Attention item naming the drifted
   context/producer — the operator learns "the floor pins are stale," never just "PR #N
   failed three times" (a drifted floor turns the watcher into a permanent refuser whose
-  fix is itself a protected-paths PR — it must be named as drift, immediately). No
+  fix is itself a protected-path PR, which needs an independent review — it must be named as drift, immediately). No
   qualifying reference within a family's walk-back bound audits its own
   `floor-drift-unverifiable` class (distinct from `floor-drift` — "couldn't check" must
   never wear the "drifted" label).
@@ -455,21 +455,40 @@ Two enforcement gaps, two layers:
   the oldest-rotting PR this spec targets). Candidates: head branch under `<agentName>/`, not draft, not held
   (R3), `mergeable == MERGEABLE`, **checks already settled green** (the watcher never
   invokes safe-merge into a pending wait — that keeps the per-attempt window seconds-long
-  and makes timeout inversion structurally impossible), and **touching no protected
-  paths** — a PR whose diff modifies `.github/**` (workflows AND composite actions),
-  `scripts/safe-merge.mjs`, the watcher/floor source paths, or **the scripts the floor
-  contexts execute** (the gate `.mjs` scripts — the list is derived alongside the
-  code-pinned floor in the same source file; config extends, never shrinks) is NEVER
-  auto-merged (`waiting:protected-paths`, manual merge only; rounds 3-4: a same-repo PR
-  branch runs its own workflow copy AND its own gate-script bodies, so either door could
-  mint hollow floor contexts — they get human eyes instead). Changed files are
-  enumerated TO EXHAUSTION (paginated); an incomplete enumeration is
-  `waiting:protected-paths-unverifiable`, never a partial pass (fixture: a workflow edit
-  at file #150 of a 200-file PR). **A transition INTO `waiting:protected-paths` folds
-  one line into the aggregated Attention item immediately** ("PR #N is green but touches
-  protected paths — needs your manual merge"), transition-keyed per PR-head — a
-  deliberate human-eyes requirement nobody is promptly told about would be the gravity
-  well with a label on it (round-4). The list query is pinned **oldest-first server-side** (`sort:created-asc`) so
+  and makes timeout inversion structurally impossible), and **clear of the two path
+  gates below** (amended 2026-10-22 (operator directive, 2026-10-22 08:58 PDT: “Why am I having to approve these? I should ONLY have to approve constitution changes.”); the earlier rule — a PR touching
+  `.github/**`, safe-merge, the watcher/floor source or the floor's gate scripts is NEVER
+  auto-merged and is routed to the operator for a manual merge — is retired). Changed
+  files are enumerated TO EXHAUSTION (paginated); an incomplete enumeration waits
+  (`code-owners-unverifiable`), never a partial pass.
+  - **Code-owned files wait for the code owner.** `.github/CODEOWNERS` is read at
+    runtime from the PR's base branch on GitHub (the copy GitHub enforces, never the
+    checkout). A PR touching a file a CODEOWNERS rule owns (today only
+    `docs/STANDARDS-REGISTRY.md` and `.github/CODEOWNERS` itself — the constitution) waits
+    until GitHub reports its review decision `APPROVED`, then merges like any other; the
+    aggregated Attention item carries one line naming the files. This is the ONLY PR the
+    watcher routes to the operator; GitHub enforces the code-owner review itself, and
+    nothing here duplicates or weakens it.
+  - **Protected paths need an independent review, never the operator.** The protected
+    list (`.github/**`, safe-merge, the watcher/floor source, the gate scripts, the
+    audit-report paths) is kept, but only as the same machine-checkable requirement the
+    local-verify floor uses: the PR head carries an instar-dev trace
+    (`.instar/instar-dev-traces/*.json`) whose second pass concurred, whose `coveredFiles`
+    include every protected file it changes, and whose side-effects artifact is in the
+    same tree (`scripts/lib/instar-dev-trace.mjs`, one judge for the pre-commit gate, the
+    verifier and the watcher). On the `local` floor the verifier records it and safe-merge
+    refuses `refused:needs-independent-review` without it; the watcher then records the
+    refusal for that head without a ladder attempt or attention item and waits for a new
+    head. On the `actions` floor (no record) the watcher reads the trace and artifact at
+    the head ref itself and waits (`needs-independent-review`, audited) without one;
+    the review is bound to the head the same way (the files changed between the
+    trace's last commit and the head, via the compare API, must include no protected
+    path). The actions floor has no harness-changing, skips-added or tests-removed
+    flags (those come from a local-verify record; unchanged from before): there the
+    watcher gates protected paths only. The
+    concern behind the old rule — a protected-path PR's own workflow or gate-script copy
+    could mint hollow floor contexts — is answered by that second pass instead of by
+    the operator's eyes. The list query is pinned **oldest-first server-side** (`sort:created-asc`) so
   pagination can never hide the oldest-rotting PR; sustained overflow feeds the
   aggregated Attention item with the count. No quiet period beyond that:
   draft / `[hold` / labels are the wait signals (frontloaded decision 5).
@@ -546,24 +565,27 @@ watcher disarmed the gate emits either nothing or the disarmed variant ("the wat
 disabled by operator rollback — do NOT merge manually; confirm with the operator"),
 NEVER the merge coaching (round-4: a disarmed watcher's Layer 2 must not become a
 manual `--admin` merge-prompt machine around the operator's STOP; unit tests both
-sides). **Protected-paths entries ARE included in the snapshot, and their variant
-carries NO runnable merge command** (round-5 — flagged independently by three
+sides). **Code-owner-review entries ARE included in the snapshot, and their variant
+carries NO runnable merge command** (amended 2026-10-22: this variant was the
+protected-paths one; protected-path PRs are no longer operator-routed, so their
+entries are ordinary `mergeable` ones and the second pass, not the snapshot, keeps a
+hollow merge out) (round-5 — flagged independently by three
 reviewers, internal security, internal adversarial, AND the external GPT-tier pass):
 a protected-paths PR is excluded from auto-merge precisely because its own
 workflow/gate-script copies could mint hollow floor contexts that pass BOTH the name
 check AND the producer binding — and the ending session is typically that PR's AUTHOR,
 the exact (possibly prompt-injected or compromised) actor the human-eyes door exists to
 keep off the merge button. Coaching it through a pinned `--admin` invocation would
-re-create auto-merge with one extra hop and zero human review. The protected-paths
-variant therefore routes to the OPERATOR, mirroring the §3.2 Attention line: *"PR #N is
-green but touches protected paths — it needs the operator's review and merge; it is
-already on the Attention queue."* And round-6 (external GPT-tier) closed the remaining
+re-create auto-merge with one extra hop and zero human review. The code-owner-review
+variant (the only operator-routed one since 2026-10-22) reads: *"PR #N (your branch) is
+green but changes a constitution file — it waits for the operator's code-owner review on
+GitHub, then the watcher lands it. Do NOT merge it manually."* And round-6 (external GPT-tier) closed the remaining
 door: **NO Layer-2 variant carries a runnable merge command at all.** Layer 2 only
 blocks when the snapshot is FRESH and the watcher ARMED — i.e. exactly when the
 machinery is about to act anyway — so a pinned command in the healthy case is an
 invitation to reflexive manual merging, "No Manual Work" recreated as a scripted click
 (and every can't-act state already has a command-free variant: disarmed → the
-do-not-merge coaching; protected → operator-routed; stale/merged snapshot → silent).
+do-not-merge coaching; code-owned → waits for the code-owner review; stale/merged snapshot → silent).
 This also retires the round-3 hand-typed-reduced-command concern outright — no command
 shown means no command to mistype. Unit tests assert NO variant contains a runnable
 command. No hook events for the session → silent. A snapshot older than
@@ -645,7 +667,7 @@ would have missed PR #1084's own failure mode).
   merged-snapshot silent / stale-snapshot silent / no-hook-events silent / fail-open /
   suppressed under killSwitch+compaction); reporter payload carries cwd; `/hold` route
   contract both sides (applies the marker / rejects non-namespace + closed PRs /
-  sanitizes reason / idempotent / honest non-2xx); protected-paths skip both sides;
+  sanitizes reason / idempotent / honest non-2xx); code-owner wait both sides (owned PR waits / merges once APPROVED / non-owned protected PR not routed); independent review both sides on the actions floor;
   producer-binding fixtures (wrong app.slug / wrong workflow path); latch partition case
   (rollback on A + A dark + lease move → B does not merge; unreadable latch view →
   arrive-disabled); warm-up skip conditions + lease-flap starvation counter; manual-tick

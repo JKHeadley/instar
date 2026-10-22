@@ -13,6 +13,7 @@ import {
   UsageError,
   capabilities,
   classifyChecks,
+  codeOwnerReviewPending,
   evaluateRequiredContexts,
   classifyMergeFailure,
   isAutoMergeUnavailable,
@@ -314,18 +315,29 @@ describe('ruleset review policy — request the approval up front, never a revie
   ];
 
   it('detects require_last_push_approval even with zero required approvals', () => {
-    expect(extractRulesetReviewPolicy(RULES)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: true });
+    expect(extractRulesetReviewPolicy(RULES)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: true, codeOwnerReviewRequired: false });
   });
 
   it('detects a positive required_approving_review_count', () => {
     const rules = [{ type: 'pull_request', parameters: { required_approving_review_count: 1 } }];
-    expect(extractRulesetReviewPolicy(rules)).toEqual({ reviewsRequired: true, lastPushApprovalRequired: false });
+    expect(extractRulesetReviewPolicy(rules)).toEqual({ reviewsRequired: true, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+  });
+
+  it('honours require_code_owner_review: an owned (constitution) PR waits for APPROVED; a non-owned PR is unaffected', () => {
+    const rules = [{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_code_owner_review: true } }];
+    const policy = extractRulesetReviewPolicy(rules);
+    expect(policy).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: true });
+    expect(codeOwnerReviewPending({ policy, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'REVIEW_REQUIRED' })).toBe(true);
+    expect(codeOwnerReviewPending({ policy, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'APPROVED' })).toBe(false);
+    expect(codeOwnerReviewPending({ policy, ownedFiles: [], reviewDecision: 'REVIEW_REQUIRED' })).toBe(false);
+    // Without the ruleset flag, owned files alone do not hold a merge.
+    expect(codeOwnerReviewPending({ policy: { ...policy, codeOwnerReviewRequired: false }, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'REVIEW_REQUIRED' })).toBe(false);
   });
 
   it('reports no policy when there is no pull_request rule (the pre-change state) — no over-block', () => {
-    expect(extractRulesetReviewPolicy(RULES.filter(r => r.type !== 'pull_request'))).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
-    expect(extractRulesetReviewPolicy([])).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
-    expect(extractRulesetReviewPolicy(null)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
+    expect(extractRulesetReviewPolicy(RULES.filter(r => r.type !== 'pull_request'))).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+    expect(extractRulesetReviewPolicy([])).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+    expect(extractRulesetReviewPolicy(null)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
   });
 
   it("matches GitHub's verbatim non-pusher refusal on the merge path", () => {
@@ -476,6 +488,6 @@ describe('fetchProtectionContexts — reads /branches/<b>; a /protection 404 no 
   it('extractBranchProtection: review requirements come only from the ruleset when /protection is unreadable', () => {
     expect(extractBranchProtection(BRANCH, null).reviewsRequired).toBe(false);
     expect(extractRulesetReviewPolicy([{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_last_push_approval: true } }]))
-      .toEqual({ reviewsRequired: false, lastPushApprovalRequired: true });
+      .toEqual({ reviewsRequired: false, lastPushApprovalRequired: true, codeOwnerReviewRequired: false });
   });
 });

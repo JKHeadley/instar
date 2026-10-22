@@ -9,7 +9,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { PrReview } from '../feedback-factory/execute/reviewGate.js';
 import { MAIN_PROTECTION_RULESET_ID, type FloorGateSeams } from './floorGate.js';
 import { LOCAL_VERIFY_STATUS_CONTEXT, type CheckRunView, type ProjectedState } from './statusProjection.js';
 import { RECONCILER_LIMITS, type CombinedStatusRead, type OpenPr, type RollupEntry, type StatusReconcilerSeams } from './StatusReconciler.js';
@@ -59,7 +58,7 @@ export function toRollup(raw: GhRollupEntry[] | null | undefined): RollupEntry[]
 }
 
 export function buildReconcilerGitHubSeams(repo: string, gh: GhRunner): Pick<StatusReconcilerSeams,
-  'listOpenPrs' | 'readMainHead' | 'readCombinedStatus' | 'readCheckRuns' | 'readReviews' | 'postStatus'> {
+  'listOpenPrs' | 'readMainHead' | 'readCombinedStatus' | 'readCheckRuns' | 'postStatus'> {
   return {
     async listOpenPrs(): Promise<OpenPr[] | null> {
       const r = await gh(['pr', 'list', '--repo', repo, '--base', 'main', '--state', 'open', '--limit', '1000',
@@ -107,13 +106,6 @@ export function buildReconcilerGitHubSeams(repo: string, gh: GhRunner): Pick<Sta
         name: c?.name ?? '', status: c?.status ?? null, conclusion: c?.conclusion ?? null,
         appSlug: c?.app?.slug ?? null, workflowPath: (c?.check_suite?.id != null ? pathBySuite.get(c.check_suite.id) : undefined) ?? null,
       }));
-    },
-    async readReviews(pr: number): Promise<PrReview[] | null> {
-      const r = await gh(['api', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--paginate', '--slurp']);
-      if (!r.ok) return null;
-      const ps = pages<Array<{ user?: { login?: string } | null; state?: string; commit_id?: string; submitted_at?: string }>>(r.stdout);
-      if (!ps) return null;
-      return ps.flat().map((x) => ({ login: x?.user?.login ?? '', state: x?.state ?? '', commitId: x?.commit_id ?? '', submittedAt: x?.submitted_at ?? '' }));
     },
     async postStatus(sha: string, state: ProjectedState, description: string) {
       const r = await gh(['api', '-X', 'POST', `repos/${repo}/statuses/${sha}`,

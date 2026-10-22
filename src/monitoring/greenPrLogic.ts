@@ -156,8 +156,8 @@ export type CandidateSkip =
   | 'not-mergeable'
   | 'not-settled-green'
   | 'no-verify-record'
-  | 'protected-paths'
-  | 'protected-paths-unverifiable';
+  | 'code-owner-review'
+  | 'code-owners-unverifiable';
 
 export interface CandidateVerdict {
   eligible: boolean;
@@ -166,10 +166,10 @@ export interface CandidateVerdict {
 }
 
 /**
- * First-pass candidacy from the list projection alone (cheap fields). Protected
+ * First-pass candidacy from the list projection alone (cheap fields). Code-owned
  * paths require a separate diff enumeration (handled by the caller and folded in
- * via `protectedPaths`), so this returns `eligible:true` only when the cheap
- * gates ALL pass; the caller still runs the protected-paths check before acting.
+ * via `codeOwnedPaths`), so this returns `eligible:true` only when the cheap
+ * gates ALL pass; the caller still runs the code-owner check before acting.
  */
 export function classifyCandidate(
   pr: PrSummary,

@@ -197,19 +197,15 @@ export async function isAncestorInBareClone(agentHome: string, ancestor: string,
 
 // ── Status projection / reconcile loop (piece 3a) ───────────────────────
 
-export type ApproverAcceptanceFromExecutorStatus = (body: unknown, operatorGhLogin: string | null) => { matches: boolean; reason: string };
-
 export interface SafeMergeFloorExports {
   evaluate: EvaluateRequiredContexts;
   /** ACTIONS_FLOOR_CONTEXTS: REQUIRED_CONTEXTS_FLOOR + the pinned classic contexts, excluding instar/local-verify. */
   actionsFloor: ContextPin[];
-  /** Decision 16: the same acceptance judgement safe-merge applies. */
-  approverAcceptance: ApproverAcceptanceFromExecutorStatus;
 }
 
 /**
- * Load safe-merge's own evaluation function, Actions-floor constant and approver
- * acceptance judgement from the INSTALLED safe-merge (one implementation, never
+ * Load safe-merge's own evaluation function and Actions-floor constant from the
+ * INSTALLED safe-merge (one implementation, never
  * a copy; never the working checkout — spec §2). A safe-merge that lacks any of
  * them builds no reconciler.
  */
@@ -217,14 +213,11 @@ export async function loadSafeMergeFloor(safeMergePath: string = installedSafeMe
   try {
     const mod = await import(pathToFileURL(safeMergePath).href) as {
       evaluateRequiredContexts?: EvaluateRequiredContexts; ACTIONS_FLOOR_CONTEXTS?: ContextPin[];
-      approverAcceptanceFromExecutorStatus?: ApproverAcceptanceFromExecutorStatus;
     };
-    if (typeof mod.evaluateRequiredContexts !== 'function' || !Array.isArray(mod.ACTIONS_FLOOR_CONTEXTS)
-      || typeof mod.approverAcceptanceFromExecutorStatus !== 'function') return null;
+    if (typeof mod.evaluateRequiredContexts !== 'function' || !Array.isArray(mod.ACTIONS_FLOOR_CONTEXTS)) return null;
     return {
       evaluate: mod.evaluateRequiredContexts,
       actionsFloor: mod.ACTIONS_FLOOR_CONTEXTS.map((f) => ({ ...f })),
-      approverAcceptance: mod.approverAcceptanceFromExecutorStatus,
     };
   } catch {
     return null; // @silent-fallback-ok — no evaluator ⇒ the reconciler is not built (reason no-safe-merge-floor)
@@ -247,11 +240,6 @@ export interface StatusReconcilerWiringOpts {
   watcherRepo(): string;
   lease: { holdsLease(): boolean; leaseEpoch(): number | null; leaseHolder(): string | null };
   signal?(key: string, detail: Record<string, unknown>): void;
-  /**
-   * GET /feedback-factory/execute/status on this agent's own server (what safe-merge
-   * reads); null when it could not be read. Absent ⇒ the acceptance never matches.
-   */
-  readExecutorStatus?(): Promise<{ status: number; body: unknown } | null>;
   /** Test overrides. */
   gh?: GhRunner;
   floorExports?: SafeMergeFloorExports;
@@ -289,13 +277,6 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     holdsLease: () => opts.lease.holdsLease(),
     leaseEpoch: () => opts.lease.leaseEpoch(),
     leaseHolder: () => opts.lease.leaseHolder(),
-    // Decision 16: the executor's acceptance, judged exactly as safe-merge judges it.
-    readApproverAcceptance: async () => {
-      if (!opts.readExecutorStatus) return { matches: false, reason: 'executor-status-unwired' };
-      const ex = await opts.readExecutorStatus().catch(() => null);
-      if (!ex || ex.status !== 200) return { matches: false, reason: ex && ex.status === 503 ? 'executor-not-constructed' : 'executor-status-unreadable' };
-      return floor.approverAcceptance(ex.body, opts.operatorGhLogin);
-    },
     now: () => Date.now(),
     setTimer,
     signal: opts.signal,

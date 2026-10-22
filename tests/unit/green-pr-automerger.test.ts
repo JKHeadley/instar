@@ -2,7 +2,7 @@
  * Tier-1 tests for the GreenPrAutoMerger orchestrator (green-pr-automerge R1–R11).
  * Fake deps exercise every gate on both sides: lease, single-flight busy-skip,
  * dual-latch disabled, warm-up observe-only, identity contract (4 states),
- * protected-paths routing, dry-run inertness, merge success/failure, the
+ * code-owner (constitution) routing, dry-run inertness, merge success/failure, the
  * timeout invariant boot refusal, and B10 unconfirmed-merge.
  */
 
@@ -15,7 +15,8 @@ import {
   type GreenPrState,
   type MergeRunResult,
   type MergeAttempt,
-  type ProtectedPathsVerdict,
+  type CodeOwnedPathsVerdict,
+  type IndependentReviewVerdict,
 } from '../../src/monitoring/GreenPrAutoMerger.js';
 import type { PrSummary } from '../../src/monitoring/greenPrLogic.js';
 
@@ -41,7 +42,8 @@ function harness(over: Partial<{
   prs: PrSummary[];
   gateAllowed: boolean;
   ghLogin: string | null;
-  protectedFor: (n: number) => ProtectedPathsVerdict;
+  codeOwnedFor: (n: number) => CodeOwnedPathsVerdict;
+  reviewFor: (n: number, flagged: string[]) => IndependentReviewVerdict;
   runResult: MergeRunResult;
   refetchState: string;
   /** Full control of refetchPr per PR (overrides refetchState when set). */
@@ -61,7 +63,8 @@ function harness(over: Partial<{
     holdsLease: () => over.lease ?? true,
     leaseEpoch: () => over.epoch ?? 1,
     listOpenPrs: async () => over.prs ?? [pr()],
-    protectedPaths: async (p) => (over.protectedFor ? over.protectedFor(p.number) : { touches: false, unverifiable: false }),
+    codeOwnedPaths: async (p) => (over.codeOwnedFor ? over.codeOwnedFor(p.number) : { touches: false, files: [], unverifiable: false }),
+    ...(over.reviewFor ? { independentReviewAtHead: async (p: PrSummary, f: string[]) => over.reviewFor!(p.number, f) } : {}),
     refetchPr: async (n) => (over.refetch ? over.refetch(n) : { title: 'feat: x', labels: [], isDraft: false, headRefOid: 'sha100', state: over.refetchState ?? 'OPEN' }),
     disarmArmedEpisodes: async (n) => { disarmCalls.push(n); return over.disarmResult ? over.disarmResult(n) : true; },
     resolveGhLogin: async () => (over.ghLogin === undefined ? 'echo-bot' : over.ghLogin),
@@ -132,15 +135,64 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(h.audits.some(a => a.event === 'would-merge')).toBe(true);
   });
 
-  it('routes a protected-paths PR to the operator and never merges it', async () => {
-    const h = harness({ protectedFor: () => ({ touches: true, unverifiable: false }) });
+  it('a PR touching a CODEOWNERS-owned file waits for the code-owner review and never merges before it', async () => {
+    const h = harness({ codeOwnedFor: () => ({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false }) });
     prime(h);
     const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
     expect(r.acted).toBe(false);
     expect(h.runCalls.length).toBe(0);
-    expect(h.attentionLines.flat().some(l => /protected paths/.test(l))).toBe(true);
-    // Snapshot carries it as the operator-routed variant for Layer 2.
-    expect(h.state.snapshot.entries.some(e => e.kind === 'protected-paths')).toBe(true);
+    expect(h.attentionLines.flat().some(l => /docs\/STANDARDS-REGISTRY\.md — it waits for your code-owner review/.test(l))).toBe(true);
+    expect(h.state.snapshot.entries.some(e => e.kind === 'code-owner-review')).toBe(true);
+    expect(h.audits.some(a => a.event === 'waiting' && a.class === 'code-owner-review')).toBe(true);
+  });
+
+  it('a CODEOWNERS-owned PR merges once GitHub reports the code-owner review APPROVED', async () => {
+    const h = harness({
+      prs: [pr({ reviewDecision: 'APPROVED' })],
+      codeOwnedFor: () => ({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false }),
+    });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(h.runCalls.length).toBe(1);
+  });
+
+  it('a protected-path (non-constitution) PR is NOT routed to the operator: with a concurring review at its head it merges', async () => {
+    // e.g. scripts/safe-merge.mjs or the watcher's own source: CODEOWNERS does not own them.
+    const seen: string[][] = [];
+    const h = harness({
+      codeOwnedFor: () => ({ touches: false, files: [], protectedFiles: ['scripts/safe-merge.mjs'], unverifiable: false }),
+      reviewFor: (_n, f) => { seen.push(f); return { ok: true, unverifiable: false }; },
+    });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(seen).toEqual([['scripts/safe-merge.mjs']]);
+    expect(h.attentionLines.flat().some(l => /protected paths|manual review|approv/.test(l))).toBe(false);
+  });
+
+  it('on the actions floor a protected-path PR without the independent review waits — still not routed to the operator', async () => {
+    for (const reviewFor of [() => ({ ok: false, unverifiable: false, problem: 'no-trace-in-pr' }), undefined]) {
+      const h = harness({
+        codeOwnedFor: () => ({ touches: false, files: [], protectedFiles: ['src/monitoring/GreenPrAutoMerger.ts'], unverifiable: false }),
+        ...(reviewFor ? { reviewFor } : {}),
+      });
+      prime(h);
+      const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+      expect(r.acted).toBe(false);
+      expect(h.runCalls.length).toBe(0);
+      expect(h.audits.some(a => a.class === 'needs-independent-review')).toBe(true);
+      expect(h.attentionLines.flat().length).toBe(0);
+    }
+  });
+
+  it('unreadable code ownership waits (never merges on a guess) and routes nothing', async () => {
+    const h = harness({ codeOwnedFor: () => ({ touches: false, files: [], unverifiable: true }) });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.length).toBe(0);
+    expect(r.acted).toBe(false);
+    expect(h.audits.some(a => a.class === 'code-owners-unverifiable')).toBe(true);
   });
 
   it('a held PR is excluded', async () => {

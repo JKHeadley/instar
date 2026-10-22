@@ -19,6 +19,7 @@ import {
   type OrchestratorSeams, type VerifyRunInput, type GitResult, type ExecResult,
 } from '../../../src/localVerify/orchestrator.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
+import { artifactSha256 } from '../../../scripts/lib/instar-dev-trace.mjs';
 
 const HOME = '/agents/echo';
 const HEAD = 'a'.repeat(40);
@@ -78,6 +79,8 @@ interface FakeOpts {
   noReporter?: boolean;
   /** Relative import graph per test file (default: the file alone). */
   imports?: Record<string, string[]>;
+  /** `git log` responder (default: empty output). */
+  log?: (args: string[]) => GitResult;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -118,6 +121,7 @@ function fake(o: FakeOpts = {}) {
       }
       case 'merge-base': return ok(`${MB}\n`);
       case 'diff': return ok(o.diff ?? 'M\ttests/unit/a.test.ts\nM\tsrc/index.ts\n');
+      case 'log': return o.log ? o.log(args) : ok('');
       case 'show': {
         const k = args[1];
         return k in shows ? ok(shows[k]) : { status: 128, stdout: '', stderr: 'fatal: bad object', timedOut: false };
@@ -421,6 +425,115 @@ describe('runVerify — classification', () => {
     });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record).toMatchObject({ harnessChanging: true, protectedPath: true, skipsAdded: true, testsRemoved: true });
+  });
+});
+
+describe('runVerify — independent review of a flagged record (directive 2026-10-22)', () => {
+  const TRACE = '.instar/instar-dev-traces/2026-10-22-fix-abc.json';
+  const ART = 'upgrades/side-effects/fix.md';
+  const ARTIFACT = '# Side-effects review\n\n' + 'A real review of what this change touches and why it is safe. '.repeat(6)
+    + '\n\n## Second-pass review (if required)\n\n**Reviewer:** codey\n**Independent read of the artifact: concur**\n';
+  const TRACE_COMMIT = '7'.repeat(40);
+  const trace = (over: Record<string, unknown> = {}) => JSON.stringify({
+    phase: 'complete', artifactPath: ART, coveredFiles: ['scripts/safe-merge.mjs', 'src/index.ts'],
+    secondPass: 'true', reviewerConcurred: true, artifactSha256: artifactSha256(ARTIFACT), ...over,
+  });
+  /** git log: the trace's last commit in mb..head, and the flagged-path commits after it (`later`). */
+  const logFor = (later = '') => (args: string[]): GitResult => {
+    const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: '', timedOut: false });
+    if (args.includes('-1') && args.at(-1) === TRACE && args.includes(`${MB}..${HEAD}`)) return ok(`${TRACE_COMMIT}\n`);
+    if (args.includes(`${TRACE_COMMIT}..${HEAD}`)) return ok(later);
+    return ok('');
+  };
+  /** A protected-path PR (scripts/safe-merge.mjs is on the protected list AND a harness glob). */
+  const run = async (o: { diff?: string; shows?: Record<string, string>; later?: string } = {}) => {
+    const f = fake({
+      diff: o.diff ?? `M\tscripts/safe-merge.mjs\nM\tsrc/index.ts\nA\t${TRACE}\nA\t${ART}\n`,
+      shows: { [`${HEAD}:package.json`]: PKG, [`${HEAD}:${TRACE}`]: trace(), [`${HEAD}:${ART}`]: ARTIFACT, ...o.shows },
+      log: logFor(o.later),
+    });
+    const r = await runVerify(input(), f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    return { record: r.record, logs: f.logs };
+  };
+
+  it('records the PR\'s concurring trace that covers every flagged path, read from the head tree', async () => {
+    const { record } = await run();
+    expect(record).toMatchObject({ harnessChanging: true, protectedPath: true, independentReview: { trace: TRACE, concurred: true } });
+  });
+
+  it('bound to the head: a flagged file edited after the trace\'s last commit needs a new review', async () => {
+    const { record, logs } = await run({ later: `${'8'.repeat(40)}\n` });
+    expect(record.protectedPath).toBe(true);
+    expect(record.independentReview).toBeUndefined();
+    expect(JSON.stringify(logs.find((l) => l.event === 'independent-review-absent'))).toMatch(/flagged-changed-after-trace:888888888888/);
+    // The binding query runs over exactly the flagged paths after the trace commit.
+    const f = fake({
+      diff: `M\tscripts/safe-merge.mjs\nM\tsrc/index.ts\nA\t${TRACE}\nA\t${ART}\n`,
+      shows: { [`${HEAD}:package.json`]: PKG, [`${HEAD}:${TRACE}`]: trace(), [`${HEAD}:${ART}`]: ARTIFACT },
+      log: logFor(''),
+    });
+    await runVerify(input(), f.seams);
+    expect(f.gitCalls.some((c) => c.args.join(' ') === `log --format=%H ${TRACE_COMMIT}..${HEAD} -- scripts/safe-merge.mjs`)).toBe(true);
+  });
+
+  it('an unreadable trace commit is not a review', async () => {
+    const f = fake({
+      diff: `M\tscripts/safe-merge.mjs\nA\t${TRACE}\nA\t${ART}\n`,
+      shows: { [`${HEAD}:package.json`]: PKG, [`${HEAD}:${TRACE}`]: trace(), [`${HEAD}:${ART}`]: ARTIFACT },
+    }); // default git log answers nothing
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.independentReview).toBeUndefined();
+  });
+
+  it('no independent review when the trace does not cover a flagged path', async () => {
+    const { record, logs } = await run({ shows: { [`${HEAD}:${TRACE}`]: trace({ coveredFiles: ['src/index.ts'] }) } });
+    expect(record.protectedPath).toBe(true);
+    expect(record.independentReview).toBeUndefined();
+    expect(JSON.stringify(logs.find((l) => l.event === 'independent-review-absent'))).toMatch(/not-covered:scripts\/safe-merge\.mjs/);
+  });
+
+  it('no independent review without a concurring second pass', async () => {
+    for (const over of [{ reviewerConcurred: false }, { secondPass: 'not-required' }, { secondPass: 'true', reviewerConcurred: null }]) {
+      const { record } = await run({ shows: { [`${HEAD}:${TRACE}`]: trace(over) } });
+      expect(record.independentReview).toBeUndefined();
+    }
+    // The skill's documented boolean form counts too.
+    expect((await run({ shows: { [`${HEAD}:${TRACE}`]: trace({ secondPass: true }) } })).record.independentReview).toBeDefined();
+  });
+
+  it('a trace committed after the verified head does not count (it is not in the head tree)', async () => {
+    // The diff names the trace, but the head commit does not contain it: show at HEAD fails.
+    const f = fake({
+      diff: `M\tscripts/safe-merge.mjs\nM\tsrc/index.ts\nA\t${TRACE}\n`,
+      shows: { [`${HEAD}:package.json`]: PKG, [`${HEAD}:${ART}`]: ARTIFACT, [`${'9'.repeat(40)}:${TRACE}`]: trace() },
+      log: logFor(),
+    });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.independentReview).toBeUndefined();
+  });
+
+  it('a trace the PR did not change (already on main) does not count', async () => {
+    const { record } = await run({ diff: 'M\tscripts/safe-merge.mjs\nM\tsrc/index.ts\n' });
+    expect(record.independentReview).toBeUndefined();
+  });
+
+  it('an artifact missing from the head tree, or one whose sha the trace pins differently, does not count', async () => {
+    const f = fake({
+      diff: `M\tscripts/safe-merge.mjs\nA\t${TRACE}\n`,
+      shows: { [`${HEAD}:package.json`]: PKG, [`${HEAD}:${TRACE}`]: trace({ coveredFiles: ['scripts/safe-merge.mjs'] }) },
+      log: logFor(),
+    });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.independentReview).toBeUndefined();
+    const { record } = await run({ shows: { [`${HEAD}:${TRACE}`]: trace({ artifactSha256: 'f'.repeat(64) }) } });
+    expect(record.independentReview).toBeUndefined();
+  });
+
+  it('an unflagged record never carries one', async () => {
+    const { record } = await run({ diff: `M\tsrc/index.ts\nA\t${TRACE}\n` });
+    expect(record).toMatchObject({ harnessChanging: false, protectedPath: false });
+    expect(record.independentReview).toBeUndefined();
   });
 });
 

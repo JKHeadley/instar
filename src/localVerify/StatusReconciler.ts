@@ -19,8 +19,6 @@
  * false): the posts it would make are audited and nothing is posted.
  */
 
-import type { PrReview } from '../feedback-factory/execute/reviewGate.js';
-import { approvedAtHead } from '../feedback-factory/execute/reviewGate.js';
 import { checkEligibility, type LocalVerifyService } from './LocalVerifyService.js';
 import type { FloorGate } from './floorGate.js';
 import {
@@ -130,20 +128,11 @@ export interface StatusReconcilerSeams {
   readCombinedStatus(sha: string): Promise<CombinedStatusRead | null>;
   /** Check runs with producers on a head; null = unreadable. */
   readCheckRuns(sha: string): Promise<CheckRunView[] | null>;
-  /** PR reviews (paginated); null = unreadable. */
-  readReviews(pr: number): Promise<PrReview[] | null>;
   postStatus(sha: string, state: ProjectedState, description: string): Promise<{ ok: true } | { ok: false; status: number | null; detail: string }>;
   holdsLease(): boolean;
   leaseEpoch(): number | null;
   /** The current lease holder's machine id, as this machine sees it (null = unknown). */
   leaseHolder(): string | null;
-  /**
-   * Decision 16: the feedback executor's approver acceptance, judged by safe-merge's
-   * own `approverAcceptanceFromExecutorStatus` over GET /feedback-factory/execute/status.
-   * Read at most once per pass, only when an approval-path PR has the operator's approval.
-   * Anything unreadable is `matches: false` (refuses).
-   */
-  readApproverAcceptance(): Promise<{ matches: boolean; reason: string }>;
   now(): number;
   setTimer(fn: () => void, ms: number): void;
   signal?(key: string, detail: Record<string, unknown>): void;
@@ -200,9 +189,6 @@ export class StatusReconciler {
   private readonly observed = new Map<string, Observed>();
   private readonly contexts = new Map<string, HeadContext>();
   private readonly mirrorRuns = new Map<string, { fp: string; runs: CheckRunView[] | null }>();
-  private readonly approvals = new Map<string, boolean>();
-  private acceptance: { matches: boolean; reason: string } | null = null;
-  private acceptanceReadInPass = false;
   private readonly chains = new Map<string, Promise<void>>();
   private readonly retries = new Map<string, { attempts: number; nextAt: number; lastError: string }>();
   private readonly wouldPosted = new Map<string, string>();
@@ -297,7 +283,6 @@ export class StatusReconciler {
       localVerifyEnabled: this.cfg.localVerifyEnabled(),
       holdsLease: this.wasHolder,
       acquiredEpoch: this.acquiredEpoch,
-      approverAcceptance: this.acceptance,
       lastPass: this.lastPass,
       heads: this.contexts.size,
       stuckHeads: [...this.stuckSince.entries()].map(([head, since]) => ({ head, since: new Date(since).toISOString() })),
@@ -370,7 +355,6 @@ export class StatusReconciler {
     // The floor is read on every machine: a standby's safe-merge reads its own
     // /local-verify/status, which must report GitHub's real settings, not a default.
     await this.floorGate.refresh();
-    this.acceptanceReadInPass = false;
     if (!this.floorGate.settingsReadable()) {
       // Unreadable settings never stop the pass: the check counts as required (the
       // mirror stays on), the floor stays actions, and withdrawals still go out.
@@ -518,7 +502,7 @@ export class StatusReconciler {
     return { eligible, floor };
   }
 
-  /** Per-pass fresh reads a projection needs (check runs for mirror heads, reviews for flagged records). */
+  /** Per-pass fresh reads a projection needs (check runs for mirror heads). */
   private async refreshHeadInputs(head: string, group: OpenPr[], enabled: boolean): Promise<void> {
     const floors = group.map((pr) => ({ pr, ...this.floorOf(pr, enabled) }));
     if (floors.some((f) => f.floor === 'actions' || !f.eligible)) {
@@ -539,19 +523,6 @@ export class StatusReconciler {
         }
       }
     }
-    for (const f of floors) {
-      if (f.floor !== 'local' || !f.eligible || !this.service) continue;
-      const rec = this.service.getRecord(f.pr.number, head, f.pr.baseRefName);
-      if (!rec || !(rec.harnessChanging || rec.protectedPath || rec.skipsAdded || rec.testsRemoved)) continue;
-      if (!this.cfg.operatorGhLogin) { this.approvals.set(`${f.pr.number}:${head}`, false); continue; }
-      const reviews = await this.seams.readReviews(f.pr.number).catch(() => null);
-      const approved = reviews ? approvedAtHead(reviews, this.cfg.operatorGhLogin, head).approved : false;
-      this.approvals.set(`${f.pr.number}:${head}`, approved);
-      if (approved && !this.acceptanceReadInPass) {
-        this.acceptanceReadInPass = true;
-        this.acceptance = await this.seams.readApproverAcceptance().catch((e) => ({ matches: false, reason: `unreadable: ${e instanceof Error ? e.message : String(e)}`.slice(0, 120) }));
-      }
-    }
   }
 
   private inputsFor(head: string): ProjectionInput[] {
@@ -562,15 +533,12 @@ export class StatusReconciler {
     const { protectionContexts, rulesetContexts } = this.floorGate.contexts();
     return ctx.prs.map((pr) => {
       const { eligible, floor } = this.floorOf(pr, enabled);
-      const acceptance = this.acceptance?.matches === true; // never read ⇒ refuses (pending)
       return {
         pr: { number: pr.number, headSha: head, baseRefName: pr.baseRefName, eligible, floor },
         repo: this.cfg.repo,
         record: this.service?.getRecord(pr.number, head, pr.baseRefName) ?? null,
         verifying: this.service?.isVerifying(pr.number, head) ?? false,
         mainHealth: { state: mh?.state ?? 'main-suspect', mainHeadSha: mh?.currentMainHead ?? null },
-        operatorApprovedHead: this.approvals.get(`${pr.number}:${head}`) ?? false,
-        approverAcceptanceMatches: acceptance,
         mirror: {
           floor: this.cfg.actionsFloor, protectionContexts, rulesetContexts,
           checkRuns: this.mirrorRuns.get(head)?.runs ?? null, evaluate: this.cfg.evaluate,

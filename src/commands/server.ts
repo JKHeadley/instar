@@ -22303,15 +22303,6 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               : { holdsLease: () => true, leaseEpoch: () => 0, leaseHolder: () => lvMachineId },
             signal: lvHooks.signal,
-            // Decision 16: the same executor status safe-merge reads (this agent's own server).
-            readExecutorStatus: async () => {
-              try {
-                const r = await fetch(`http://127.0.0.1:${config.port}/feedback-factory/execute/status`, {
-                  headers: { Authorization: `Bearer ${config.authToken ?? ''}` }, signal: AbortSignal.timeout(10_000),
-                });
-                return { status: r.status, body: r.ok ? await r.json() : null };
-              } catch { return null; } // @silent-fallback-ok — unreadable ⇒ the acceptance does not match (refuses)
-            },
           });
           if (st.reconciler) {
             localVerifyStatus = st.reconciler;
