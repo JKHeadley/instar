@@ -37,6 +37,7 @@ export interface TelegramOriginRuntimeOptions {
   attachSessionLifecycle?: (lifecycle: OriginSessionLifecycle) => void;
   display: OriginServiceOptions['display'];
   authorize: OriginServiceOptions['authorize'];
+  wireParams?: OriginServiceOptions['wireParams'];
   authorizeOrigin?: OriginServiceOptions['authorizeOrigin'];
   resolveOriginKey?: (machineId: string, epoch?: number) => OriginVerificationKey | null;
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
@@ -131,7 +132,7 @@ export class TelegramOriginRuntime {
       agentId: options.identity.agentId, machineId: options.identity.originMachineId, isSessionLive: options.isSessionLive });
     this.service = new TelegramOriginService({ store, sessions: this.sessions, observer: this.observer,
       identity: options.identity, signingKey: options.signingKey, ownerBootId: this.ownerBootId,
-      display: options.display, authorize: options.authorize, holdsLease: options.holdsLease, spoolEvidence: record => this.spool.putEvidence(record),
+      display: options.display, authorize: options.authorize, wireParams: options.wireParams, holdsLease: options.holdsLease, spoolEvidence: record => this.spool.putEvidence(record),
       authorizeOrigin: options.authorizeOrigin,
       capacity: this.capacity,
       reviewLegacyRecovery: options.reviewLegacyRecovery,
@@ -514,7 +515,11 @@ export class TelegramOriginRuntime {
     let imported = 0;
     try {
       for (const snapshot of await this.store.legacyCandidates()) {
-        const operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId);
+        // One row that cannot be prepared (e.g. an issues-group topic on a machine
+        // without issuesChatId) must not block the rest of the queue.
+        let operation: ReturnType<TelegramOriginService['prepareImportedLegacy']>;
+        try { operation = this.service.prepareImportedLegacy(snapshot, this.options.bot.accountId, this.options.bot.chatId); }
+        catch (error) { console.warn(`[telegram-origin] legacy row not imported: ${error instanceof Error ? error.message : String(error)}`); continue; }
         if (await this.store.importLegacy({ snapshot, admission: operation.admission })) imported++;
       }
       return imported;

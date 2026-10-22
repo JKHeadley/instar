@@ -9,7 +9,7 @@
  * When augmenting an existing project, only missing files are created.
  */
 
-import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
+import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
@@ -1838,6 +1838,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
     content += telegramOriginAwareness(port);
     content += '\n' + telegramOriginForwardAwareness(port);
     content += '\n' + telegramSystemTopicsAwareness();
+    content += '\n' + telegramIssuesGroupAwareness(port);
     content += '\n' + poolReadSelectionAwareness();
     content += '\n' + peerHomebaseAwareness();
     content += '\n' + telegramDashboardEditAwareness();

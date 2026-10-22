@@ -26,7 +26,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -79,7 +79,7 @@ import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
-import { installAutoStart, installBootWrapper } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -97,6 +97,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { MachineIdentityManager } from './MachineIdentity.js';
@@ -138,6 +139,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Kept in lockstep with the ceiling written by `installAutoStart` in commands/setup.
  */
+/**
+ * Add `KillMode=process` to a systemd unit's [Service] section, leaving the rest
+ * of the file byte-identical. A unit that already declares ANY KillMode is
+ * returned untouched: an operator who chose one keeps it, and a re-run is a no-op.
+ * A unit with no [Service] section is returned untouched too (not one of ours).
+ */
+export function addSystemdKillModeProcess(unit: string): string {
+  if (/^\s*KillMode\s*=/m.test(unit)) return unit;
+  const m = /^\[Service\][ \t]*\r?\n/m.exec(unit);
+  if (!m) return unit;
+  const at = m.index + m[0].length;
+  return `${unit.slice(0, at)}${SYSTEMD_KILL_MODE_LINE}\n${unit.slice(at)}`;
+}
+
 export const LAUNCHD_PROCESS_CEILING_FLOOR = 2048;
 
 /** `<key>NumberOfProcesses</key>` followed by its `<integer>` value, whitespace-tolerant. */
@@ -1764,6 +1779,7 @@ export class PostUpdateMigrator {
     this.migrateAgentDataSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateLaunchdProcessCeiling(result);
+    this.migrateSystemdKillMode(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
@@ -3832,6 +3848,63 @@ export class PostUpdateMigrator {
       const msg = err instanceof Error ? err.message : String(err);
       result.errors.push(`launchd process ceiling: ${msg}`);
     }
+  }
+
+  /**
+   * Give existing Linux installs `KillMode=process` (Migration Parity Standard —
+   * the template fix in setup.ts only reaches NEW agents).
+   *
+   * Without it, systemd's default kills every process in the service's cgroup on
+   * stop/restart, including the tmux server, so a routine `systemctl --user
+   * restart` destroyed every session (live autonomous runs included). Surgical
+   * insert, never a regenerate; any operator-set KillMode is left alone.
+   *
+   * `daemon-reload` makes the new KillMode apply to the RUNNING unit's next stop.
+   * It does not restart anything. Skipped under a test runner (same rule as
+   * launchctlLoadAllowed) so tests never touch the real user manager.
+   */
+  private migrateSystemdKillMode(result: MigrationResult): void {
+    if (process.platform !== 'linux') {
+      result.skipped.push('systemd KillMode: non-linux, no unit');
+      return;
+    }
+    const unitPath = path.join(
+      process.env.HOME ?? os.homedir(),
+      '.config', 'systemd', 'user',
+      `instar-${this.config.projectName}.service`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(unitPath, 'utf-8');
+    } catch {
+      result.skipped.push('systemd KillMode: no systemd unit present');
+      return;
+    }
+    const next = addSystemdKillModeProcess(content);
+    if (next === content) {
+      result.skipped.push('systemd KillMode: already declared (or no [Service] section)');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${unitPath}.bak-${Date.now()}`, content, 'utf-8');
+      fs.writeFileSync(unitPath, next, 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`systemd KillMode: ${msg}`);
+      return;
+    }
+    let reloaded = false;
+    if (!process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD) {
+      try {
+        withSyncOp(() => execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 10_000 }));
+        reloaded = true;
+      } catch { /* @silent-fallback-ok: reported below; the file is still fixed for the next manager start */ }
+    }
+    result.upgraded.push(
+      reloaded
+        ? 'systemd KillMode: set KillMode=process (a service restart no longer kills tmux sessions)'
+        : 'systemd KillMode: set KillMode=process on disk; takes effect after `systemctl --user daemon-reload` or next login',
+    );
   }
 
   // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
@@ -6979,6 +7052,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + telegramSystemTopicsAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added agent-wide system topic record awareness');
+    }
+
+    if (content.includes('/telegram/system-topics') && !content.includes('Issue topics live in their own Telegram group')) {
+      content += '\n' + telegramIssuesGroupAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added issue-topic group ("<agent> Bugs") awareness');
     }
 
     if (!content.includes('Message origins on your phone:')) {

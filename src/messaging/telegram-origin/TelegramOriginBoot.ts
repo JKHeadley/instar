@@ -26,6 +26,7 @@ import { projectOriginNoticePolicy } from './OriginNoticePolicy.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
 import { OriginDetectorCanary } from './OriginDetectorCanary.js';
 import { originDetectorCanaryInterval } from './OriginConfig.js';
+import { toWireParams, ISSUES_TOPIC_OFFSET } from '../telegramTopicSpace.js';
 import { OriginNativeCanaryLane, type OriginNativeCanary } from './OriginNativeCanaryLane.js';
 import { resolveCodexNativeCanaryBinary, runCodexNativeModelCanary } from './OriginCodexModelCanary.js';
 
@@ -73,7 +74,7 @@ export async function bootTelegramOrigin(options: {
   const additionalBots = demo?.telegramBotToken && demo.telegramChatId != null
     ? [{ token: demo.telegramBotToken, accountId: demo.telegramBotToken.split(':')[0], producerId: 'telegram-demo' }] : [];
   const configReader = new OriginConfigReader(config.stateDir, options.configWorkerUrl);
-  let snapshot: { observedAt: number; configRevision: number; chatId: string; ownerIds: string[]; hub: string | null;
+  let snapshot: { observedAt: number; configRevision: number; chatId: string; issuesChatId: string | null; ownerIds: string[]; hub: string | null;
     display: Partial<OriginDisplaySettings>; enabled: boolean; demoChatId: string | null;
     conversationDisplays: Record<string, Partial<OriginDisplaySettings>> } | null = null;
   let closed = false, timer: ReturnType<typeof setTimeout> | undefined, configTimer: ReturnType<typeof setTimeout> | undefined;
@@ -102,6 +103,7 @@ export async function bootTelegramOrigin(options: {
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       snapshot = { observedAt: observation.observedAt, configRevision: observation.revision, chatId: telegram.config.chatId,
+        issuesChatId: telegram.config.issuesChatId == null || telegram.config.issuesChatId === '' ? null : String(telegram.config.issuesChatId),
         demoChatId: current.liveTest?.demo?.telegramChatId == null ? null : String(current.liveTest.demo.telegramChatId),
         ownerIds: [telegram.config.ownerUserId, telegram.config.promptGate?.ownerId, ...(telegram.config.authorizedUserIds ?? [])]
           .filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).map(String),
@@ -134,12 +136,20 @@ export async function bootTelegramOrigin(options: {
     additionalBots,
     isSessionLive: options.isSessionLive, attachSessionLifecycle: options.attachSessionLifecycle,
     display: destination => { if (!healthy()) throw new Error('origin-display-authority-unavailable');
-      return { agent: snapshot!.display, conversation: conversationChatId(destination.chatId) === snapshot!.chatId && destination.topicId
-        ? snapshot!.conversationDisplays[destination.topicId] : undefined }; },
+      const chat = conversationChatId(destination.chatId);
+      // Issues-group sends carry the real thread id; per-conversation settings are keyed
+      // by the internal id (docs/specs/telegram-issues-group.md).
+      const conversationKey = chat === snapshot!.chatId ? destination.topicId
+        : snapshot!.issuesChatId !== null && chat === snapshot!.issuesChatId
+          ? String(ISSUES_TOPIC_OFFSET + Number(destination.topicId ?? 1)) : null;
+      return { agent: snapshot!.display, conversation: conversationKey ? snapshot!.conversationDisplays[conversationKey] : undefined }; },
+    wireParams: params => toWireParams(params, { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId }),
     authorize: request => healthy() && snapshot!.enabled && options.holdsLease() &&
       (additionalBots.some(bot => bot.accountId === request.accountId)
         ? request.destination.chatId === snapshot!.demoChatId
-        : request.destination.chatId === snapshot!.chatId || snapshot!.ownerIds.includes(request.destination.chatId ?? '')),
+        : request.destination.chatId === snapshot!.chatId
+          || (snapshot!.issuesChatId !== null && request.destination.chatId === snapshot!.issuesChatId)
+          || snapshot!.ownerIds.includes(request.destination.chatId ?? '')),
     diagnoseUnknown: options.diagnoseUnknown,
     diagnosticMode: options.diagnosticMode,
     reviewLegacyRecovery: options.reviewLegacyRecovery,
