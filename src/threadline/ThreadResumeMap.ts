@@ -90,7 +90,7 @@ function conversationToEntry(c: Conversation): ThreadResumeEntry {
  * `turnCount`/`lastInboundHash`/`lastOutboundHash` are LEFT INTACT (convergence
  * finding — a legacy save must not wipe turn state).
  */
-function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation): Conversation {
+export function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation): Conversation {
   if (entry.uuid) draft.sessionUuid = entry.uuid;
   if (entry.sessionName) draft.boundSessionName = entry.sessionName;
   if (entry.remoteAgent) {
@@ -106,7 +106,18 @@ function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation)
   if (entry.machineOrigin !== undefined) draft.machineOrigin = entry.machineOrigin;
   if (entry.migratedTo !== undefined) draft.migratedTo = entry.migratedTo;
   if (entry.spawnMode !== undefined) draft.spawnMode = entry.spawnMode;
-  if (entry.originTopicId !== undefined) draft.boundTopicId = entry.originTopicId;
+  if (entry.originTopicId !== undefined) {
+    // The write stays — other resume paths read `boundTopicId` — but it is now TAGGED as
+    // inherited, which is what makes the 2026-10-21 misdelivery fixable. Routing can prefer
+    // a peer's homebase over an `origin-inherited` binding while leaving an `operator` one
+    // (and an untagged legacy one) alone. Deleting the write instead would have changed a
+    // shared merge path for every conversation kind to fix one of them.
+    // An existing deliberate tag is never downgraded by a later merge.
+    if (draft.boundTopicSource !== 'operator' && draft.boundTopicSource !== 'peer-homebase') {
+      draft.boundTopicSource = 'origin-inherited';
+    }
+    draft.boundTopicId = entry.originTopicId;
+  }
   if (entry.originSessionName !== undefined) draft.originSessionName = entry.originSessionName;
   if (entry.createdAt && draft.version === 0) draft.createdAt = entry.createdAt;
   draft.lastActivityAt = entry.lastAccessedAt || new Date().toISOString();
