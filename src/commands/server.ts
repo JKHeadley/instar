@@ -15346,12 +15346,41 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
         const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
-          { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }] = await Promise.all([
+          { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }, { createReloginLastResort, withLastResort },
+          { createOneShotCompletion: createHeadlessOneShotCompletion }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
           import('../core/ClaudePasteBackController.js'), import('../core/PlainChromeReloginBrowser.js'),
+          import('../core/ReloginLastResortProvider.js'),
+          import('../providers/adapters/anthropic-headless/transport/oneShotCompletion.js'),
         ]);
         const vault = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+        // Last-resort model (spec relogin-last-resort-model): the repair's own model calls go to
+        // the shared provider first; when that fails (on a single-subscription agent it runs on
+        // the dead login itself) and the operator placed a key under the repair-specific vault
+        // name, the lightweight tier over that key answers instead, within per-drive/day caps.
+        // The call rides the anthropic-headless adapter's one-shot (`claude -p`, key in the child
+        // env only, a dedicated empty config home so the dead ambient login is never picked up).
+        const reloginLastResort = createReloginLastResort({ config: reloginCfg.lastResort,
+          readSecret: (name) => vault.get(name),
+          claudePath: resolveFrameworkBinaryPath({ framework: 'claude-code',
+            frameworkBinaryPaths: config.sessions.frameworkBinaryPaths, claudePath: config.sessions.claudePath,
+            configuredFramework: config.sessions.framework }) ?? 'claude',
+          tmuxPath: detectTmuxPath() ?? 'tmux', stateDir: config.stateDir,
+          createCompletion: createHeadlessOneShotCompletion });
+        const reloginEvaluate = withLastResort(
+          (prompt, options) => sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
+            ...options, signal,
+            // Both callers set it; the fallback keeps the ledger row attributed if a new caller forgets.
+            attribution: options?.attribution ?? { component: 'subscription-relogin-supervisor' },
+          }), 1),
+          reloginLastResort,
+          (reason) => { console.warn(`[subscription-relogin] shared model failed (${reason}); answering on the last-resort model`); },
+          // A dead login that HANGS (rather than fails fast) must not cost a 30 s timeout per
+          // step: the primary gets a short budget, and once the last resort has answered a
+          // drive's call it stays preferred for that drive (sticky).
+          { primaryTimeoutMs: 15_000 },
+        ).evaluate;
         const profiles = new PlaywrightProfileRegistry({ stateDir: config.stateDir, projectDir: config.projectDir,
           listVaultNames: () => {
             try { return secretKeyPaths(vault.read()); }
@@ -15428,8 +15457,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               `closedSnapshot=${JSON.stringify(snapshot)}`,
               `allowedActions=${JSON.stringify(allowedActions)}`,
             ].join('\n');
-            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
-              model: 'fast', maxTokens: 20, temperature: 0, signal,
+            const raw = await reloginEvaluate(prompt, {
+              model: 'fast', maxTokens: 20, temperature: 0,
               attribution: { component: 'subscription-relogin-supervisor' },
               provenance: {
                 decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
@@ -15437,7 +15466,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 optionsPresented: [...allowedActions],
                 promptId: 'subscription-relogin-action-v1',
               },
-            }), 1);
+            });
             const action = raw.trim() as import('../core/AnthropicReloginBrowserDriver.js').ReloginBrowserAction;
             if (!allowedActions.includes(action)) throw new Error('relogin-supervisor-invalid-action');
             return action;
@@ -15463,8 +15492,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 recentSteps: input.recentSteps })}`,
               `offered=${JSON.stringify(input.offered)}`,
             ].join('\n');
-            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
-              model: 'balanced', maxTokens: 20, temperature: 0, signal,
+            const raw = await reloginEvaluate(prompt, {
+              model: 'balanced', maxTokens: 20, temperature: 0,
               attribution: { component: 'subscription-relogin-supervisor' }, // same decision point: chooses one permitted browser action
               provenance: {
                 decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
@@ -15472,9 +15501,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 optionsPresented: [...input.offered],
                 promptId: 'subscription-relogin-navigate-v1',
               },
-            }), 1);
+            });
             return raw.trim().split(/\s+/)[0] ?? '';
           },
+          ...(reloginLastResort ? { lastResort: reloginLastResort } : {}),
           onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
@@ -15485,7 +15515,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           slowRetry: reloginCfg.slowRetry,
         });
         subscriptionReloginRuntime.start();
-        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'})`));
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
         console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);

@@ -8375,6 +8375,13 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
       }
+      // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
+      const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
+      if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
+        content = content.replace(slowRetryEnd, slowRetryEnd + '\n' + "- **Last-resort sign-in model (one-subscription agents)** — the repair's own model calls (the step supervisor and the page navigator) run on the shared internal model first. On an agent with a single subscription that model runs on the very login that is dead, and on the Mac helper path there is no other healthy account to run the helper on, so until now the only account's expired sign-in always waited for you. Now, if the vault holds an Anthropic API key under the name `relogin_last_resort_anthropic_api_key`, a lightweight model over that key answers those calls when the shared model fails, and a repair with no other healthy account on this machine drives the server-side browser path with agent navigation instead of stopping at `no-healthy-seat` (its audit shows `last-resort-drive-started`). Placing the key under that name is the consent to spend; `ANTHROPIC_API_KEY` and the general `intelligenceProvider` setting are never read, every other internal call stays on the subscription, and the caps are 60 calls per drive and 300 per day (`subscriptionPool.assistedRelogin.lastResort`: `enabled`, `keyName`, `model`, `maxCallsPerDrive`, `maxCallsPerDay`; off with `enabled: false`). Success is still decided only by Instar (completed login, verified email, a real authenticated call). Two accounts need no key: the other account runs the helper, Claude or Codex, whichever provider it is. Registry First: `GET /subscription-relogin` → `lastResort` (available, model, calls today, caps; never the key). **When to use** (PROACTIVE): the user asks \"what happens when my only subscription signs out?\" / \"why did the repair wait for me instead of fixing it?\" → read `lastResort`; with no key, collect one through Secret Drop (never pasted into chat), then store it with `credential-store.mjs` under that exact vault name: a Secret Drop submission alone does not create the vault key.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added last-resort sign-in model awareness');
+      }
     }
 
     // Fleet one-click assisted re-login awareness for existing agents that

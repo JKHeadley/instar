@@ -4582,6 +4582,19 @@ export interface InstarConfig {
       slowRetry?: { enabled?: boolean; delaysMs?: number[]; maxRetries?: number;
         /** Local hours in which an approval re-offer is never sent (default 23 → 8); `null` disables. */
         quietHours?: { startHour: number; endHour: number } | null };
+      /**
+       * Last-resort model for the repair's own model calls (spec relogin-last-resort-model): a
+       * lightweight model over an Anthropic API key the operator placed in the vault under
+       * `keyName` (default `relogin_last_resort_anthropic_api_key`). Placing the key is the
+       * consent to spend; `ANTHROPIC_API_KEY` and `intelligenceProvider` are never read. Used only
+       * after the shared provider failed or is absent, and only for the repair. With it available,
+       * an agent-session repair with no other healthy account on the machine drives the server-side
+       * browser path instead of waiting on the operator. Absent ⇒ on when the key exists; off with
+       * `enabled: false`. `model` is a tier (`fast` = haiku, the default; `balanced`; `capable`);
+       * the call runs `claude -p` with the key in the child's environment only, in a dedicated
+       * empty config home under the state dir. Caps default to 60 calls per drive and 300 per day.
+       */
+      lastResort?: { enabled?: boolean; keyName?: string; model?: string; maxCallsPerDrive?: number; maxCallsPerDay?: number };
     };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */

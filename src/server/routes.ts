@@ -1108,6 +1108,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
+    lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -34349,7 +34351,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         accountId, limit,
       }) ?? [];
       if (req.query.scope !== 'pool') {
-        res.json({ enabled: true, episodes: localEpisodes });
+        res.json({ enabled: true, episodes: localEpisodes,
+          lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
       const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
