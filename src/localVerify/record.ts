@@ -32,7 +32,16 @@ export interface LocalVerifyRecord {
   testsRemoved: boolean;
   verifierVersion: string;
   policyHash: string;
+  /**
+   * 'main' for a post-merge verify of `main` itself (piece 3a): pr is 0, headSha == baseSha,
+   * and the record never enters the PR index or journal (it feeds main health only).
+   * Absent on every PR record.
+   */
+  kind?: 'main';
 }
+
+/** The `pr` value a `main` verify carries (records keyed by PR never use it). */
+export const MAIN_VERIFY_PR = 0;
 
 export const SHA40 = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -57,7 +66,11 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (!r || typeof r !== 'object') return { ok: false, errors: ['not-an-object'] };
   const x = r as Record<string, unknown>;
   if (typeof x.repo !== 'string' || !REPO.test(x.repo)) errors.push('repo');
-  if (!isValidPr(x.pr)) errors.push('pr');
+  if (x.kind !== undefined && x.kind !== 'main') errors.push('kind');
+  if (x.kind === 'main') {
+    if (x.pr !== MAIN_VERIFY_PR) errors.push('pr');
+    if (x.headSha !== x.baseSha) errors.push('main-head-ne-base');
+  } else if (!isValidPr(x.pr)) errors.push('pr');
   if (!isValidSha(x.headSha)) errors.push('headSha');
   if (!isValidSha(x.baseSha)) errors.push('baseSha');
   // An `error` run may stop before the merge tree exists (a fetch failure, a conflict).

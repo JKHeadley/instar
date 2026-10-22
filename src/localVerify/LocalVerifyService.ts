@@ -22,16 +22,25 @@
  *   only entries whose verifierVersion and policyHash match the running code and
  *   whose PR is still open.
  *
- * Seams left for later pieces: `onRecord` (status projection / posting),
- * `onStarved` (attention item), `requeueFailures` (red→green `main`), and
- * `priority` on queue entries (the `main` verify goes first).
+ * Main health (piece 3a): a `main` verify entry (priority, outside the cap of 10,
+ * at most one pending, a newer head replaces a pending one, a running one is
+ * never cancelled), debounced 10 minutes of an unchanged head and capped at 30
+ * minutes from the first unverified head (boot and lease acquisition skip the
+ * debounce). Its record feeds `MainHealth` only (never the PR index). A red→green
+ * transition re-runs failed PR verifies oldest first up to the queue cap. While
+ * `main` is unhealthy the watcher's (non-explicit) requests are refused.
+ *
+ * Seams: `onRecord` (status projection / posting), `onStarved` (attention item),
+ * `onMainHealthChange` (event-driven withdrawal), `signal` (main-red, main-unverified).
  */
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, type LocalVerifyRecord } from './record.js';
+import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
+import { MainHealth, type MainHealthSnapshot } from './mainHealth.js';
+import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import type { VerifyRunInput, VerifyRunResult } from './orchestrator.js';
 
@@ -50,10 +59,8 @@ export function checkEligibility(
   v: PrView,
   logins: { expectedGhLogin: string; operatorGhLogin?: string | null },
 ): { eligible: true } | { eligible: false; reason: 'untrusted-head' } {
-  const login = v.author?.login ?? '';
-  const trusted = login !== '' && (login === logins.expectedGhLogin || (!!logins.operatorGhLogin && login === logins.operatorGhLogin));
-  if (!trusted || v.isCrossRepository !== false) return { eligible: false, reason: 'untrusted-head' };
-  return { eligible: true };
+  // One implementation: safe-merge, the watcher and the verifier share isMergeEligible.
+  return isMergeEligible(v, logins) ? { eligible: true } : { eligible: false, reason: 'untrusted-head' };
 }
 
 // ── Seams / config ─────────────────────────────────────────────────────
@@ -79,6 +86,12 @@ export interface LocalVerifyServiceSeams {
   onStarved?(info: { pr: number; headSha: string; waitedMs: number }): void;
   /** Called by the completion path after a record is journaled (status projection plugs in here later). */
   onRecord?(record: LocalVerifyRecord): void;
+  /** `git merge-base --is-ancestor` through the verifier's git funnel; null = undecidable (main health stays unhealthy). */
+  isAncestor?(ancestor: string, descendant: string): Promise<boolean | null>;
+  /** Synchronous hook after every main-health state change (event-driven withdrawal). */
+  onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
+  /** Deduped attention signal (`local-verify:main-red`, `local-verify:main-unverified`). */
+  signal?(key: string, detail: Record<string, unknown>): void;
   now?(): number;
   setTimer?(fn: () => void, ms: number): void;
 }
@@ -117,9 +130,25 @@ export interface QueueEntry {
   attempts: number;
   errorRetries: number;
   starvedRaised: boolean;
-  /** Reserved for the `main` verify (later piece): higher runs first. */
+  /** Higher runs first; the `main` verify uses MAIN_VERIFY_LIMITS.priority. */
   priority: number;
+  /** 'main' for a post-merge verify of `main` (pr 0, head == base). */
+  kind?: 'main';
+  /** Not started before this time (backoff of a `main` error re-run). */
+  notBefore?: number;
 }
+
+const MIN = 60_000;
+export const MAIN_VERIFY_LIMITS = Object.freeze({
+  priority: 100,
+  /** Starts once `main`'s head has been unchanged this long… */
+  debounceMs: 10 * MIN,
+  /** …but no later than this after the first unverified head. */
+  debounceCapMs: 30 * MIN,
+  /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
+  errorRetries: 3,
+  errorBackoffMs: 5 * MIN,
+});
 
 export interface InFlightIntent {
   pr: number;
@@ -135,7 +164,7 @@ export interface InFlightIntent {
 export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' };
 
 interface InFlight {
   entry: QueueEntry;
@@ -167,12 +196,26 @@ export class LocalVerifyService {
   /** Bases a failed (pr, head, baseRef) record was already re-run against. */
   private readonly failureReruns = new Map<string, Set<string>>();
   private idleWaiters: Array<() => void> = [];
+  private readonly health: MainHealth;
+  /** Main-head debounce state. */
+  private readonly mainObs: { head: string | null; since: number; firstUnverifiedAt: number | null; handled: string | null; immediate: boolean; oldestUnverifiedAt: number | null } =
+    { head: null, since: 0, firstUnverifiedAt: null, handled: null, immediate: true, oldestUnverifiedAt: null };
+  private readonly mainErrorRetries = new Map<string, number>();
+  private readonly pendingMainWork: Array<Promise<unknown>> = [];
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
     this.seams = seams;
     this.now = seams.now ?? (() => Date.now());
     this.policyHash = cfg.policyHash ?? computePolicyHash();
+    this.health = new MainHealth(cfg.stateDir, cfg.machineId, {
+      now: this.now,
+      isAncestor: (a, d) => (seams.isAncestor ? seams.isAncestor(a, d) : Promise.resolve(null)),
+      signal: (k, d) => seams.signal?.(k, d),
+      onChange: (snap, prev) => seams.onMainHealthChange?.(snap, prev),
+      audit: (e) => this.audit(e),
+    });
+    this.health.load(); // the watermark decides from the start (boot() re-reads it)
   }
 
   // ---- paths ----
@@ -190,13 +233,38 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string } | null; blocked: boolean; records: number } {
+  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; records: number } {
     return {
       queue: this.queue.map((e) => ({ ...e })),
-      inFlight: this.inFlight ? { pr: this.inFlight.entry.pr, headSha: this.inFlight.entry.headSha } : null,
+      inFlight: this.inFlight
+        ? { pr: this.inFlight.entry.pr, headSha: this.inFlight.entry.headSha, ...(this.inFlight.entry.kind ? { kind: this.inFlight.entry.kind } : {}) }
+        : null,
       blocked: this.blockedBy !== null,
       records: this.index.size,
     };
+  }
+
+  /** Main health (the machine state, not whether an attention item is open). */
+  mainHealth(): MainHealthSnapshot & { currentMainHead: string | null; pendingMainHead: string | null; mainInFlight: string | null } {
+    const pending = this.queue.find((e) => e.kind === 'main');
+    return {
+      ...this.health.snapshot(),
+      currentMainHead: this.mainObs.head,
+      pendingMainHead: pending?.headSha ?? null,
+      mainInFlight: this.inFlight?.entry.kind === 'main' ? this.inFlight.entry.headSha : null,
+    };
+  }
+
+  /** True while a verify of exactly (pr, head) is queued or running. */
+  isVerifying(pr: number, headSha: string): boolean {
+    const f = this.inFlight;
+    if (f && !f.cancelled && f.entry.kind !== 'main' && f.entry.pr === pr && f.entry.headSha === headSha) return true;
+    return this.queue.some((e) => e.kind !== 'main' && e.pr === pr && e.headSha === headSha);
+  }
+
+  /** Resolves when pending main-health work (ancestry checks, re-runs) has settled (tests). */
+  async settle(): Promise<void> {
+    while (this.pendingMainWork.length) await Promise.allSettled(this.pendingMainWork.splice(0));
   }
 
   /** Resolves when nothing is running (tests and shutdown). */
@@ -208,8 +276,68 @@ export class LocalVerifyService {
   // ---- boot ----
 
   async boot(): Promise<void> {
+    this.health.load();
+    this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
     await this.reapOrphan();
     await this.rebuildIndex();
+  }
+
+  /**
+   * Lease acquisition. `foreignHolder`: a different machine held the lease since
+   * this machine last did (it enters main-suspect). The journal is machine-local,
+   * so the index it keeps holds only this machine's own records.
+   */
+  onLeaseAcquired(opts: { foreignHolder: boolean; epoch?: number | null }): void {
+    this.health.load({ foreignHolder: opts.foreignHolder, epoch: opts.epoch });
+    this.mainObs.immediate = true;
+    this.mainObs.handled = null;
+  }
+
+  /**
+   * The remote `main` head as observed by the reconcile loop. Enqueues a `main`
+   * verify whenever it differs from the last enqueued or verified head, debounced.
+   */
+  noteMainHead(sha: string | null): void {
+    if (sha === null || !isValidSha(sha)) {
+      // One failed read ⇒ the current head is unknown ⇒ no repair admission
+      // (the repair exception compares against the CURRENT main head).
+      this.mainObs.head = null;
+      this.mainObs.since = this.now();
+      return;
+    }
+    const now = this.now();
+    const o = this.mainObs;
+    if (sha !== o.head) { o.head = sha; o.since = now; }
+    if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
+    if (sha === o.handled) return;
+    if (o.firstUnverifiedAt === null) o.firstUnverifiedAt = now;
+    const ready = o.immediate
+      || now - o.since >= MAIN_VERIFY_LIMITS.debounceMs
+      || now - o.firstUnverifiedAt >= MAIN_VERIFY_LIMITS.debounceCapMs;
+    if (!ready) return;
+    o.immediate = false;
+    o.handled = sha;
+    o.firstUnverifiedAt = null;
+    this.enqueueMain(sha, 'head-changed');
+  }
+
+  private enqueueMain(sha: string, why: 'head-changed' | 'rerun'): void {
+    const f = this.inFlight;
+    if (why !== 'rerun' && f?.entry.kind === 'main' && f.entry.headSha === sha && !f.cancelled) return;
+    const i = this.queue.findIndex((e) => e.kind === 'main');
+    if (i >= 0) {
+      const old = this.queue[i];
+      if (old.headSha === sha) return;
+      if (why === 'rerun') return; // a newer pending head already covers it
+      this.queue.splice(i, 1); // a newer head replaces a pending one; a running one is never cancelled
+      this.audit({ event: 'main-replaced', oldHead: old.headSha, newHead: sha });
+    }
+    this.queue.push({
+      id: crypto.randomBytes(6).toString('hex'), pr: MAIN_VERIFY_PR, headSha: sha, baseSha: sha, baseRefName: 'main',
+      firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: MAIN_VERIFY_LIMITS.priority, kind: 'main',
+    });
+    this.audit({ event: 'main-queued', headSha: sha, why });
+    this.pump();
   }
 
   /** The two-phase in-flight protocol's boot half. */
@@ -292,9 +420,12 @@ export class LocalVerifyService {
 
   // ---- the POST path ----
 
-  async request(pr: number, opts: { explicit?: boolean } = {}): Promise<RequestResult> {
+  async request(pr: number, opts: { explicit?: boolean; force?: boolean } = {}): Promise<RequestResult> {
     const explicit = opts.explicit ?? true;
     if (!isValidPr(pr)) return { ok: false, code: 'invalid-pr' };
+    // While `main` is unhealthy the watcher requests no PR verifies (they fail by
+    // construction); POSTed ones still run, which is how a repair gets its record.
+    if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
     const view = await this.seams.prView(pr).catch(() => null);
     if (!view) return { ok: false, code: 'pr-unreadable' };
     if (!checkEligibility(view, this.cfg).eligible) {
@@ -329,7 +460,7 @@ export class LocalVerifyService {
       if (existing.outcome === 'failure') {
         const tried = this.failureReruns.get(key) ?? new Set<string>();
         const newBase = existing.baseSha !== baseSha && !tried.has(baseSha);
-        if (!explicit || !newBase) return { ok: true, status: 'recorded', record: existing };
+        if (!opts.force && (!explicit || !newBase)) return { ok: true, status: 'recorded', record: existing };
         tried.add(baseSha);
         this.failureReruns.set(key, tried);
       } else if (!explicit) {
@@ -339,12 +470,12 @@ export class LocalVerifyService {
 
     // Execution dedupe: identical merge inputs already verified under this policy.
     const exec = this.execIndex.get(executionKey(headSha, baseSha));
-    if (exec && !(existing && existing.outcome === 'failure' && exec === existing)) {
+    if (exec && !(opts.force && exec.outcome === 'failure') && !(existing && existing.outcome === 'failure' && exec === existing)) {
       const derived = this.complete({ ...exec, pr, baseRefName }, 'derived');
       if (derived) return { ok: true, status: 'recorded', record: derived };
     }
 
-    if (this.queue.length >= LOCAL_VERIFY_LIMITS.queueCap) {
+    if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
       this.audit({ event: 'queue-full', pr });
       return { ok: false, code: 'queue-full' };
     }
@@ -363,7 +494,12 @@ export class LocalVerifyService {
   async tick(): Promise<void> {
     if (this.blockedBy) await this.reapOrphan();
     this.checkStarved();
+    this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
     this.pump();
+  }
+
+  private prQueueLength(): number {
+    return this.queue.reduce((n, e) => n + (e.kind === 'main' ? 0 : 1), 0);
   }
 
   /** Server shutdown: stop the in-flight run (its group) — a restart re-queues lazily. */
@@ -374,8 +510,9 @@ export class LocalVerifyService {
   // ---- internals ----
 
   private checkStarved(): void {
-    if (this.queue.length === 0) return;
-    const oldest = this.queue.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
+    const prs = this.queue.filter((e) => e.kind !== 'main');
+    if (prs.length === 0) return;
+    const oldest = prs.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
     const waited = this.now() - oldest.firstQueuedAt;
     if (waited > LOCAL_VERIFY_LIMITS.starvedAfterMs && !oldest.starvedRaised) {
       oldest.starvedRaised = true;
@@ -393,7 +530,10 @@ export class LocalVerifyService {
       return;
     }
     this.queue.sort((a, b) => b.priority - a.priority); // stable: FIFO within a priority
-    const entry = this.queue.shift()!;
+    const now = this.now();
+    const i = this.queue.findIndex((e) => e.notBefore === undefined || e.notBefore <= now);
+    if (i < 0) return;
+    const [entry] = this.queue.splice(i, 1);
     this.start(entry);
   }
 
@@ -408,6 +548,7 @@ export class LocalVerifyService {
       agentHome: this.cfg.agentHome, remoteUrl: this.cfg.remoteUrl, nodeVersion: this.cfg.nodeVersion,
       machineId: this.cfg.machineId, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
       protectedList: this.cfg.protectedList, extraHarnessGlobs: this.cfg.extraHarnessGlobs, baseEnv: this.cfg.baseEnv,
+      ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
     };
     fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
 
@@ -471,6 +612,13 @@ export class LocalVerifyService {
     this.removeRunFiles(f);
     if (f.cancelled) {
       this.audit({ event: 'cancelled', pr: f.entry.pr, headSha: f.entry.headSha, exit });
+    } else if (f.entry.kind === 'main' && result?.kind !== 'requeue') {
+      if (!result || result.kind === 'crash' || result.kind === 'invalid') {
+        this.audit({ event: 'run-error', kind: 'main', headSha: f.entry.headSha, exit });
+        this.completeMain(this.syntheticError(f.entry, !result || result.kind === 'crash' ? 'crash' : 'invalid-record'), f.entry);
+      } else {
+        this.completeMain(result.record, f.entry);
+      }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
@@ -512,7 +660,53 @@ export class LocalVerifyService {
       startedAt: at, finishedAt: at, outcome: 'error', errorStep: step,
       harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
       verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
+      ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
     };
+  }
+
+  /** Completion of a `main` verify: feeds main health only, never the PR index or journal. */
+  private completeMain(record: LocalVerifyRecord, entry: QueueEntry): void {
+    const v = validateRecord(record);
+    if (!v.ok || record.kind !== 'main' || record.headSha !== entry.headSha) {
+      this.audit({ event: 'record-rejected', kind: 'main', errors: v.ok ? ['kind-or-head'] : v.errors });
+      return;
+    }
+    const head = record.headSha;
+    this.audit({ event: 'main-record', headSha: head, outcome: record.outcome, errorStep: record.errorStep });
+    if (record.outcome === 'error') {
+      // Only `failure` counts as red; an error re-queues with backoff, at most 3 times per head.
+      const n = (this.mainErrorRetries.get(head) ?? 0) + 1;
+      this.mainErrorRetries.set(head, n);
+      if (n <= MAIN_VERIFY_LIMITS.errorRetries && !this.queue.some((e) => e.kind === 'main')) {
+        this.queue.push({ ...entry, id: crypto.randomBytes(6).toString('hex'), notBefore: this.now() + MAIN_VERIFY_LIMITS.errorBackoffMs * n });
+        this.audit({ event: 'main-error-retry', headSha: head, attempt: n });
+      }
+      return;
+    }
+    if (record.outcome === 'success' && head === this.mainObs.head) this.mainObs.oldestUnverifiedAt = null;
+    const work = this.health.onVerify(head, record.outcome).then(async (action) => {
+      if (action === 'rerun') this.enqueueMain(head, 'rerun');
+      else if (action === 'cleared') await this.rerunFailures();
+    }).catch((e) => this.audit({ event: 'main-health-error', detail: e instanceof Error ? e.message : String(e) }));
+    this.pendingMainWork.push(work);
+  }
+
+  /** Red → green: re-run failed PR verifies, oldest first, up to the queue cap; overflow stays failed and is logged. */
+  private async rerunFailures(): Promise<void> {
+    const failed = [...this.index.values()]
+      .filter((r) => r.outcome === 'failure' && r.kind === undefined)
+      .sort((a, b) => (a.finishedAt < b.finishedAt ? -1 : a.finishedAt > b.finishedAt ? 1 : 0));
+    const seen = new Set<number>();
+    for (const r of failed) {
+      if (seen.has(r.pr)) continue;
+      seen.add(r.pr);
+      if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+        this.audit({ event: 'rerun-after-green-overflow', pr: r.pr, headSha: r.headSha });
+        continue;
+      }
+      const res = await this.request(r.pr, { explicit: true, force: true });
+      this.audit({ event: 'rerun-after-green', pr: r.pr, result: res.ok ? res.status : res.code });
+    }
   }
 
   /**
@@ -613,21 +807,25 @@ export class LocalVerifyService {
 
   /** Metadata-only audit log, rotating at 5 MB, 10 files kept. */
   private audit(event: Record<string, unknown>): void {
-    try {
-      const p = this.auditPath;
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      const line = JSON.stringify({ ts: new Date(this.now()).toISOString(), ...event }) + '\n';
-      let size = 0;
-      try { size = fs.statSync(p).size; } catch { size = 0; }
-      if (size + line.length > LOCAL_VERIFY_LIMITS.auditRotateBytes) {
-        const keep = LOCAL_VERIFY_LIMITS.auditKeepFiles - 1; // base file + .1 … .9
-        try { SafeFsExecutor.safeRmSync(`${p}.${keep}`, { force: true, operation: 'local-verify:audit-rotate' }); } catch { /* @silent-fallback-ok */ }
-        for (let i = keep - 1; i >= 1; i--) {
-          if (fs.existsSync(`${p}.${i}`)) fs.renameSync(`${p}.${i}`, `${p}.${i + 1}`);
-        }
-        if (fs.existsSync(p)) fs.renameSync(p, `${p}.1`);
-      }
-      fs.appendFileSync(p, line); /* state-registry: local-verify-audit */
-    } catch { /* @silent-fallback-ok: the audit log never breaks a verify */ }
+    appendLocalVerifyAudit(this.auditPath, event, this.now());
   }
+}
+
+/** Append one metadata-only line to the local-verify audit log (rotates at 5 MB, 10 files kept). Never throws. */
+export function appendLocalVerifyAudit(p: string, event: Record<string, unknown>, nowMs: number): void {
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const line = JSON.stringify({ ts: new Date(nowMs).toISOString(), ...event }) + '\n';
+    let size = 0;
+    try { size = fs.statSync(p).size; } catch { size = 0; }
+    if (size + line.length > LOCAL_VERIFY_LIMITS.auditRotateBytes) {
+      const keep = LOCAL_VERIFY_LIMITS.auditKeepFiles - 1; // base file + .1 … .9
+      try { SafeFsExecutor.safeRmSync(`${p}.${keep}`, { force: true, operation: 'local-verify:audit-rotate' }); } catch { /* @silent-fallback-ok */ }
+      for (let i = keep - 1; i >= 1; i--) {
+        if (fs.existsSync(`${p}.${i}`)) fs.renameSync(`${p}.${i}`, `${p}.${i + 1}`);
+      }
+      if (fs.existsSync(p)) fs.renameSync(p, `${p}.1`);
+    }
+    fs.appendFileSync(p, line); /* state-registry: local-verify-audit */
+  } catch { /* @silent-fallback-ok: the audit log never breaks a verify */ }
 }

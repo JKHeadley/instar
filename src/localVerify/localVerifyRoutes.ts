@@ -4,6 +4,10 @@
  *   POST /local-verify          body { "pr": <positive integer> } and nothing else
  *   GET  /local-verify          queue, in-flight run and record count
  *   GET  /local-verify/record   ?pr=&head=&base=  the record for one key, or 404
+ *   GET  /local-verify/status   the status reconcile loop: floor state (GitHub's real
+ *                               settings), main health, last pass, stuck heads, failed
+ *                               posts, dry-run/live. Read-only and NOT lease-gated (a
+ *                               standby reports its own view, `holdsLease: false`).
  *
  * Repo-gated: 503 when the service is not constructed (no instar source checkout,
  * or disabled). A standby answers 409 naming the lease holder; it does not proxy.
@@ -13,9 +17,12 @@
 import type { Router, Request, Response } from 'express';
 
 import type { LocalVerifyService, RequestResult } from './LocalVerifyService.js';
+import type { StatusReconciler } from './StatusReconciler.js';
 
 export interface LocalVerifyRouteDeps {
   service: () => LocalVerifyService | null;
+  /** The status reconcile loop; absent/null ⇒ GET /local-verify/status answers 503. */
+  status?: () => StatusReconciler | null;
   /** Lease view; absent on a single-machine agent (always the holder). */
   lease?: { holdsLease(): boolean; holderMachineId(): string | null };
 }
@@ -32,6 +39,7 @@ export function statusForResult(r: RequestResult): number {
     case 'untrusted-head': return 403;
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
+    case 'main-unhealthy': return 409;
     default: return 500;
   }
 }
@@ -79,6 +87,15 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
     const svc = gate(res);
     if (!svc) return;
     res.json(svc.snapshot());
+  });
+
+  router.get('/local-verify/status', (_req: Request, res: Response) => {
+    const rec = deps.status?.() ?? null;
+    if (!rec) {
+      res.status(503).json({ error: 'local-verify status loop not configured (no instar source checkout, no GitHub login, or no safe-merge floor)' });
+      return;
+    }
+    res.json(rec.status());
   });
 
   router.get('/local-verify/record', (req: Request, res: Response) => {

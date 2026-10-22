@@ -732,6 +732,7 @@ export class AgentServer {
     releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
+    localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
     quotaManager?: import('../monitoring/QuotaManager.js').QuotaManager;
@@ -4541,6 +4542,7 @@ export class AgentServer {
       releaseReadinessSentinel: options.releaseReadinessSentinel ?? null,
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
+      localVerifyStatus: options.localVerifyStatus ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       workingMemory: options.workingMemory ?? null,
       quotaManager: options.quotaManager ?? null,

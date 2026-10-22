@@ -11,17 +11,34 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { getInstarVersion } from '../core/Config.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
-import { LocalVerifyService } from './LocalVerifyService.js';
+import { LocalVerifyService, appendLocalVerifyAudit } from './LocalVerifyService.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
+import { realGit } from './orchestratorSeams.js';
+import { verifyPaths } from './orchestrator.js';
+import { FloorGate } from './floorGate.js';
+import { StatusReconciler, type StatusReconcilerSeams } from './StatusReconciler.js';
+import { buildFloorGateGitHubSeams, buildGhRunner, buildReconcilerGitHubSeams, type GhRunner } from './reconcilerSeams.js';
+import type { LocalVerifyRecord } from './record.js';
+import type { MainHealthSnapshot } from './mainHealth.js';
+import type { ContextPin, EvaluateRequiredContexts, FloorMode } from './statusProjection.js';
 
 export interface LocalVerifyConfigBlock {
   enabled?: boolean;
   operatorGhLogin?: string;
+  /** Post `instar/local-verify` statuses for real (default false: dry-run, the posts are only audited). */
+  postStatuses?: boolean;
+}
+
+/** Late-bound hooks: the service is built before the reconciler that consumes these. */
+export interface LocalVerifyHooks {
+  onRecord?(record: LocalVerifyRecord): void;
+  onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
+  signal?(key: string, detail: Record<string, unknown>): void;
 }
 
 export interface LocalVerifyWiringOpts {
@@ -39,6 +56,7 @@ export interface LocalVerifyWiringOpts {
   onStarved?: (info: { pr: number; headSha: string; waitedMs: number }) => void;
   /** Override the child entry (tests running from source point at the built dist). */
   mainEntry?: string;
+  hooks?: LocalVerifyHooks;
 }
 
 export type LocalVerifyWiringResult =
@@ -86,7 +104,138 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
     {
       ...seams,
       onStarved: opts.onStarved,
+      onRecord: (r) => opts.hooks?.onRecord?.(r),
+      onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
+      signal: (k, d) => opts.hooks?.signal?.(k, d),
+      isAncestor: (a, d) => isAncestorInBareClone(opts.agentHome, a, d),
     },
   );
   return { service, reason: null };
+}
+
+/**
+ * `git merge-base --is-ancestor` in the verifier's own bare clone, through its git
+ * funnel (SafeGitExecutor with the local-verify carve-out). 0 → true, 1 → false,
+ * anything else (missing object, no clone) → null: health stays unhealthy.
+ */
+export async function isAncestorInBareClone(agentHome: string, ancestor: string, descendant: string): Promise<boolean | null> {
+  const p = verifyPaths(agentHome, descendant);
+  if (!fs.existsSync(p.bare)) return null;
+  const r = await realGit(['merge-base', '--is-ancestor', ancestor, descendant], {
+    cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:is-ancestor', timeoutMs: 30_000,
+  }, p.verifyRoot);
+  return r.status === 0 ? true : r.status === 1 ? false : null;
+}
+
+// ── Status projection / reconcile loop (piece 3a) ───────────────────────
+
+export type ApproverAcceptanceFromExecutorStatus = (body: unknown, operatorGhLogin: string | null) => { matches: boolean; reason: string };
+
+export interface SafeMergeFloorExports {
+  evaluate: EvaluateRequiredContexts;
+  /** ACTIONS_FLOOR_CONTEXTS: REQUIRED_CONTEXTS_FLOOR + the pinned classic contexts, excluding instar/local-verify. */
+  actionsFloor: ContextPin[];
+  /** Decision 16: the same acceptance judgement safe-merge applies. */
+  approverAcceptance: ApproverAcceptanceFromExecutorStatus;
+}
+
+/**
+ * Load safe-merge's own evaluation function, Actions-floor constant and approver
+ * acceptance judgement from the source checkout (one implementation, never a copy).
+ * A safe-merge that lacks any of them builds no reconciler.
+ */
+export async function loadSafeMergeFloor(repoPath: string): Promise<SafeMergeFloorExports | null> {
+  try {
+    const mod = await import(pathToFileURL(path.join(repoPath, 'scripts', 'safe-merge.mjs')).href) as {
+      evaluateRequiredContexts?: EvaluateRequiredContexts; ACTIONS_FLOOR_CONTEXTS?: ContextPin[];
+      approverAcceptanceFromExecutorStatus?: ApproverAcceptanceFromExecutorStatus;
+    };
+    if (typeof mod.evaluateRequiredContexts !== 'function' || !Array.isArray(mod.ACTIONS_FLOOR_CONTEXTS)
+      || typeof mod.approverAcceptanceFromExecutorStatus !== 'function') return null;
+    return {
+      evaluate: mod.evaluateRequiredContexts,
+      actionsFloor: mod.ACTIONS_FLOOR_CONTEXTS.map((f) => ({ ...f })),
+      approverAcceptance: mod.approverAcceptanceFromExecutorStatus,
+    };
+  } catch {
+    return null; // @silent-fallback-ok — no evaluator ⇒ the reconciler is not built (reason no-safe-merge-floor)
+  }
+}
+
+export interface StatusReconcilerWiringOpts {
+  repo: string;
+  repoPath: string;
+  stateDir: string;
+  machineId: string;
+  /** The agent's own GitHub login (green-PR `expectedGhLogin`). */
+  expectedGhLogin: string | undefined;
+  operatorGhLogin: string | null;
+  service: LocalVerifyService | null;
+  /** Live config readers. */
+  localVerifyEnabled(): boolean;
+  postStatuses(): boolean;
+  configFloor(): FloorMode;
+  watcherRepo(): string;
+  lease: { holdsLease(): boolean; leaseEpoch(): number | null; leaseHolder(): string | null };
+  signal?(key: string, detail: Record<string, unknown>): void;
+  /**
+   * GET /feedback-factory/execute/status on this agent's own server (what safe-merge
+   * reads); null when it could not be read. Absent ⇒ the acceptance never matches.
+   */
+  readExecutorStatus?(): Promise<{ status: number; body: unknown } | null>;
+  /** Test overrides. */
+  gh?: GhRunner;
+  floorExports?: SafeMergeFloorExports;
+}
+
+export type StatusReconcilerWiringResult =
+  | { reconciler: StatusReconciler; floorGate: FloorGate; reason: null }
+  | { reconciler: null; floorGate: null; reason: 'no-source-checkout' | 'no-gh-login' | 'no-safe-merge-floor' };
+
+export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): Promise<StatusReconcilerWiringResult> {
+  if (!fs.existsSync(path.join(opts.repoPath, '.git')) || !fs.existsSync(path.join(opts.repoPath, 'scripts', 'safe-merge.mjs'))) {
+    return { reconciler: null, floorGate: null, reason: 'no-source-checkout' };
+  }
+  const login = (opts.expectedGhLogin ?? '').trim();
+  if (!login) return { reconciler: null, floorGate: null, reason: 'no-gh-login' };
+  const floor = opts.floorExports ?? await loadSafeMergeFloor(opts.repoPath);
+  if (!floor) return { reconciler: null, floorGate: null, reason: 'no-safe-merge-floor' };
+
+  let gh = opts.gh;
+  if (!gh) {
+    const runtime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
+    gh = buildGhRunner(() => {
+      try { return runtime().env; } catch { return null; } // @silent-fallback-ok — no explicit identity ⇒ every read is null and nothing posts
+    });
+  }
+  const auditPath = path.join(opts.stateDir, 'logs', 'local-verify.jsonl');
+  const audit = (event: Record<string, unknown>) => appendLocalVerifyAudit(auditPath, { src: 'status', ...event }, Date.now());
+  const setTimer = (fn: () => void, ms: number) => { const t = setTimeout(fn, ms); t.unref?.(); };
+  const floorGate = new FloorGate(
+    { repo: opts.repo, configFloor: opts.configFloor, watcherRepo: opts.watcherRepo },
+    { ...buildFloorGateGitHubSeams(opts.repo, gh), now: () => Date.now(), signal: opts.signal, audit },
+  );
+  const seams: StatusReconcilerSeams = {
+    ...buildReconcilerGitHubSeams(opts.repo, gh),
+    holdsLease: () => opts.lease.holdsLease(),
+    leaseEpoch: () => opts.lease.leaseEpoch(),
+    leaseHolder: () => opts.lease.leaseHolder(),
+    // Decision 16: the executor's acceptance, judged exactly as safe-merge judges it.
+    readApproverAcceptance: async () => {
+      if (!opts.readExecutorStatus) return { matches: false, reason: 'executor-status-unwired' };
+      const ex = await opts.readExecutorStatus().catch(() => null);
+      if (!ex || ex.status !== 200) return { matches: false, reason: ex && ex.status === 503 ? 'executor-not-constructed' : 'executor-status-unreadable' };
+      return floor.approverAcceptance(ex.body, opts.operatorGhLogin);
+    },
+    now: () => Date.now(),
+    setTimer,
+    signal: opts.signal,
+    audit,
+  };
+  const reconciler = new StatusReconciler({
+    repo: opts.repo, agentLogin: login, operatorGhLogin: opts.operatorGhLogin, machineId: opts.machineId,
+    postStatuses: opts.postStatuses, localVerifyEnabled: opts.localVerifyEnabled,
+    actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
+  }, seams, floorGate, opts.service);
+  return { reconciler, floorGate, reason: null };
 }

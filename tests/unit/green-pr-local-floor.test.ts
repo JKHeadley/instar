@@ -156,6 +156,23 @@ describe('local floor — actions→local disarm (Rollback)', () => {
     expect(h.disarmCalls).toEqual([7]);
   });
 
+  it('postStatuses false (local-verify dry-run): logs would-disarm once, disarms nothing, and disarms for real once posting is live', async () => {
+    const h = harness([]);
+    armed(h);
+    h.state.lastFloor = 'actions';
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    let posting = false;
+    w.attachLocalVerify({ ...hook().lv, postStatuses: () => posting });
+    await w.tick();
+    await w.tick();
+    expect(h.disarmCalls).toEqual([]);
+    expect(h.audits.filter((a) => a.event === 'would-disarm')).toHaveLength(1);
+    expect(h.state.lastFloor).toBe('actions');
+    posting = true;
+    await w.tick();
+    expect(h.disarmCalls).toEqual([7]);
+  });
+
   it('a never-observed floor counts as actions (first local tick disarms)', async () => {
     const h = harness([]);
     armed(h);

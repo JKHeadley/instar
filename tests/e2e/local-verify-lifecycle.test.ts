@@ -15,7 +15,8 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService } from '../../src/localVerify/localVerifyWiring.js';
+import { buildLocalVerifyService, buildStatusReconciler, loadSafeMergeFloor } from '../../src/localVerify/localVerifyWiring.js';
+import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -34,7 +35,7 @@ function sourceCheckout(): { home: string; stateDir: string } {
   return { home, stateDir };
 }
 
-function ctx(stateDir: string, localVerify: RouteContext['localVerify']): RouteContext {
+function ctx(stateDir: string, localVerify: RouteContext['localVerify'], localVerifyStatus: RouteContext['localVerifyStatus'] = null): RouteContext {
   return {
     config: { projectName: 'echo', projectDir: path.dirname(stateDir), stateDir, port: 0 } as never,
     sessionManager: { listRunningSessions: () => [] } as never,
@@ -43,7 +44,7 @@ function ctx(stateDir: string, localVerify: RouteContext['localVerify']): RouteC
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,
     publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
     triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null, discoveryEvaluator: null,
-    greenPrAutoMerger: null, guardLatchStore: null, localVerify,
+    greenPrAutoMerger: null, guardLatchStore: null, localVerify, localVerifyStatus,
     startTime: new Date(),
   } as never;
 }
@@ -85,5 +86,59 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(buildLocalVerifyService({ ...base, config: { enabled: true }, mainEntry: path.join(home, 'missing.js') }).reason).toBe('no-entry');
     const r = await request(serve(ctx(stateDir, null))).get('/local-verify');
     expect(r.status).toBe(503);
+  });
+
+  it('the status loop loads safe-merge\'s REAL evaluator + floor from the source checkout (one implementation)', async () => {
+    const f = await loadSafeMergeFloor(ROOT);
+    expect(f).not.toBeNull();
+    expect(typeof f!.evaluate).toBe('function');
+    expect(f!.actionsFloor.map((c) => c.context)).toEqual(expect.arrayContaining(['Type Check', 'Build', 'eli16']));
+    expect(f!.actionsFloor.some((c) => c.context === 'instar/local-verify')).toBe(false);
+    expect(f!.actionsFloor.length).toBeGreaterThan(6); // the pinned classic contexts are included
+    expect(typeof f!.approverAcceptance).toBe('function');
+  });
+
+  it('status loop built through the production wiring: alive over HTTP (200), boots a pass, posts nothing in dry-run', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    await built.service!.boot();
+    const posted: string[][] = [];
+    const gh: GhRunner = async (args) => {
+      if (args.includes('POST')) { posted.push(args); return { ok: true, stdout: '{}' }; }
+      if (args[0] === 'pr') return { ok: true, stdout: '[]' };
+      // The main head read fails here on purpose: a readable head would start a REAL verify child.
+      return { ok: false, status: 404, stderr: 'HTTP 404' }; // settings unreadable ⇒ check treated as required, floor actions
+    };
+    const st = await buildStatusReconciler({
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, machineId: 'm_e2e', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
+      service: built.service, localVerifyEnabled: () => true, postStatuses: () => false, configFloor: () => 'local', watcherRepo: () => 'JKHeadley/instar',
+      lease: { holdsLease: () => true, leaseEpoch: () => 0, leaseHolder: () => 'm_e2e' },
+      gh, floorExports: (await loadSafeMergeFloor(ROOT))!,
+    });
+    expect(st.reason).toBeNull();
+    const pass = await st.reconciler!.pass();
+    expect(pass.outcome).toBe('ok'); // unreadable settings never stop the pass (check treated as required)
+    const r = await request(serve(ctx(stateDir, built.service, st.reconciler))).get('/local-verify/status');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ mode: 'dry-run', floor: { configured: 'local', effective: 'actions', reason: 'settings-unreadable', checkRequired: true }, takeoverFloorCheck: 'not-built', lastPass: { outcome: 'ok' }, passBackoff: null, settingsReadable: false });
+    expect(built.service!.snapshot().inFlight).toBeNull();
+    expect(posted).toEqual([]);
+    built.service!.shutdown();
+  });
+
+  it('status loop not built without a source checkout or a GitHub login; route 503', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const base = {
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, machineId: 'm', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: null, service: null,
+      localVerifyEnabled: () => false, postStatuses: () => false, configFloor: () => 'actions' as const, watcherRepo: () => 'JKHeadley/instar',
+      lease: { holdsLease: () => true, leaseEpoch: () => 0, leaseHolder: () => 'm' },
+    };
+    expect((await buildStatusReconciler({ ...base, repoPath: os.tmpdir() })).reason).toBe('no-source-checkout');
+    expect((await buildStatusReconciler({ ...base, expectedGhLogin: '' })).reason).toBe('no-gh-login');
+    expect((await buildStatusReconciler(base)).reason).toBe('no-safe-merge-floor'); // the stand-in safe-merge exports nothing
+    expect((await request(serve(ctx(stateDir, null, null))).get('/local-verify/status')).status).toBe(503);
   });
 });

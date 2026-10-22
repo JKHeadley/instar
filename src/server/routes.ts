@@ -1180,6 +1180,8 @@ export interface RouteContext {
   greenPrAutoMerger: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger | null;
   /** local-verify (spec local-verify-merge-authority §2); null → routes 503. */
   localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService | null;
+  /** The `instar/local-verify` status reconcile loop (local-verify-merge-authority §3); null → GET /local-verify/status 503. */
+  localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler | null;
   /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
   guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   messageRouter: MessageRouter | null;
@@ -15935,6 +15937,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // 503 when not constructed; a standby answers 409 naming the lease holder.
   registerLocalVerifyRoutes(router, {
     service: () => ctx.localVerify ?? null,
+    status: () => ctx.localVerifyStatus ?? null,
     lease: ctx.coordinator
       ? {
           holdsLease: () => ctx.coordinator!.holdsLease(),

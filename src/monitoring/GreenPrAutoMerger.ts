@@ -55,6 +55,13 @@ export interface LocalVerifyHook {
   mainHealth(): 'healthy' | 'main-suspect' | 'main-red' | null;
   hasRecord(pr: number, headSha: string, baseRefName: string): boolean;
   requestVerify(pr: number): Promise<unknown>;
+  /**
+   * `monitoring.localVerify.postStatuses`, read live. When it reads false the
+   * local-verify side is in dry-run, so the actions→local disarm is only logged
+   * (`would-disarm`) and the floor transition is not recorded — the real disarm
+   * happens once posting is live. Absent ⇒ live (today's behaviour).
+   */
+  postStatuses?(): boolean;
 }
 
 /** The arguments a merge attempt is launched with. */
@@ -366,6 +373,8 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   /** Late-bind the local-verify view (the service is constructed after the watcher). */
+  private wouldDisarmLogged = false;
+
   attachLocalVerify(lv: LocalVerifyHook | null): void {
     this.localVerify = lv;
   }
@@ -510,7 +519,15 @@ export class GreenPrAutoMerger extends EventEmitter {
     // own state, so persist the new floor first and reload afterwards.
     const floor = this.currentFloor();
     const prevFloor = state.lastFloor ?? 'actions';
-    if (state.lastFloor !== floor) {
+    let lvDryRun = false;
+    try { lvDryRun = this.localVerify?.postStatuses ? this.localVerify.postStatuses() === false : false; } catch { /* @silent-fallback-ok: unreadable ⇒ dry-run (the write is suppressed, the safe side) */ lvDryRun = true; }
+    if (prevFloor === 'actions' && floor === 'local' && lvDryRun) {
+      if (!this.wouldDisarmLogged) {
+        this.wouldDisarmLogged = true;
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'would-disarm', reason: 'floor-local', from: prevFloor, note: 'monitoring.localVerify.postStatuses is false' });
+      }
+    } else if (state.lastFloor !== floor) {
+      this.wouldDisarmLogged = false;
       state.lastFloor = floor;
       this.deps.saveState(state);
       if (prevFloor === 'actions' && floor === 'local') {

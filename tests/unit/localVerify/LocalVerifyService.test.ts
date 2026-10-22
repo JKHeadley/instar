@@ -45,7 +45,14 @@ interface Spawned { pid: number; args: string[]; resultPath: string; token: stri
 
 function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
-  if (!opts.stateDir) dirs.push(stateDir);
+  if (!opts.stateDir) {
+    dirs.push(stateDir);
+    // A healthy main-health watermark for this machine (main health has its own tests).
+    fs.mkdirSync(path.join(stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+    }));
+  }
   const views: Record<number, PrView> = opts.views ?? {};
   const open: Record<number, boolean | null> = opts.open ?? {};
   const spawned: Spawned[] = [];

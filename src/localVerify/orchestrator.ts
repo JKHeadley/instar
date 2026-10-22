@@ -89,6 +89,8 @@ export interface VerifyRunInput {
   headSha: string;
   baseSha: string;
   baseRefName: string;
+  /** 'main' for a post-merge verify of `main` (pr 0, headSha == baseSha); absent for a PR. */
+  kind?: 'main';
   /** The agent home; the verifier owns `<agentHome>/.worktrees/.verify/` only. */
   agentHome: string;
   /** Fetch URL for the bare clone's `origin`. */
@@ -306,7 +308,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (mt.status !== 0) throw new RunError('merge-tree', mt.stderr.trim().slice(0, 300));
     mergeTree = mt.stdout.split('\n')[0].trim();
     mergeCommit = (await gitOk(
-      ['commit-tree', mergeTree, '-p', input.baseSha, '-p', input.headSha, '-m', VERIFY_COMMIT_MESSAGE],
+      // A `main` verify has head == base: one parent (a duplicate -p is an error line in git).
+      input.headSha === input.baseSha
+        ? ['commit-tree', mergeTree, '-p', input.baseSha, '-m', VERIFY_COMMIT_MESSAGE]
+        : ['commit-tree', mergeTree, '-p', input.baseSha, '-p', input.headSha, '-m', VERIFY_COMMIT_MESSAGE],
       'commit-tree',
     )).trim();
 
@@ -414,6 +419,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     outcome, ...flags, verifierVersion: input.verifierVersion, policyHash: input.policyHash,
   };
   if (errorStep) record.errorStep = errorStep;
+  if (input.kind === 'main') record.kind = 'main';
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };

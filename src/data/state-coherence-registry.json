@@ -1650,6 +1650,23 @@
       }
     },
     {
+      "category": "local-verify-main-health",
+      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority §2 Self-heal (c)).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-health.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file, overwritten atomically on every state change."
+      }
+    },
+    {
       "category": "local-verify-audit",
       "description": "local-verify metadata-only audit log (queue, start, cancel, overlap, record, orphan-reap events). No test output or PR content.",
       "scope": "machine-local",
