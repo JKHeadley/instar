@@ -15,6 +15,7 @@
  * code holds the credentials and never runs git or any tool in the session's workspace after
  * creating it: it reads the change set as bytes and publishes from its own clone.
  */
+import { groupTestFilesByConfig } from '../../localVerify/inventory.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -904,7 +905,11 @@ export class FeedbackExecutorService {
     if (!depsHash) return { ok: false, reason: 'deps-missing' };
     const depsDir = path.join(this.depsRoot(), depsHash);
     // --no-cache: vitest's results cache lives in node_modules, which is the read-only dependency cache here.
-    const testCmd = `npx vitest run --no-cache ${result.testFiles.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`;
+    // One vitest run per config: the unit config collects only unit files, so an
+    // integration or e2e test file needs its own lane config or it runs nothing.
+    const testCmd = groupTestFilesByConfig(result.testFiles)
+      .map((g) => `npx vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
+      .join(' && ');
     const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.

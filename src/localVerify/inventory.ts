@@ -62,6 +62,31 @@ export function classifyTestPath(path: string, lanes: readonly LaneDefinition[] 
   return { kind: 'unlaned' };
 }
 
+/**
+ * The vitest config that collects this test file: its lane's config, or the
+ * unit config for anything outside a lane. `npm test` (vitest.config.ts) is the
+ * unit lane only, so a caller that names an integration or e2e file without
+ * this config runs nothing ("No test files found").
+ */
+export function vitestConfigForTestPath(path: string, lanes: readonly LaneDefinition[] = LANES): string {
+  const p = normalizePath(path).replace(/^\.\//, '');
+  const hit = lanes.find((l) => matchesAny(p, l.include));
+  return hit ? hit.config : 'vitest.config.ts';
+}
+
+/** Files grouped by the config that collects them, in lane order (unit, integration, e2e). */
+export function groupTestFilesByConfig(files: readonly string[], lanes: readonly LaneDefinition[] = LANES): Array<{ config: string; files: string[] }> {
+  const order = [...lanes.map((l) => l.config), 'vitest.config.ts'];
+  const groups = new Map<string, string[]>();
+  for (const f of files) {
+    const c = vitestConfigForTestPath(f, lanes);
+    groups.set(c, [...(groups.get(c) ?? []), f]);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+    .map(([config, fs]) => ({ config, files: fs }));
+}
+
 /** True when the file is part of the inventory (a test file not excluded), laned or not. */
 export function isInventoried(path: string, lanes: readonly LaneDefinition[] = LANES): boolean {
   const c = classifyTestPath(path, lanes);

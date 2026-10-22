@@ -27,6 +27,10 @@ No block/allow surface — under-block not applicable. Coverage note: `npm test`
 
 ---
 
+**Callers that named integration or e2e files under the default config (found by PR 2289's CI, fixed here).** Narrowing `vitest.config.ts` to the unit lane broke every command that names an integration or e2e test file without its lane config: vitest finds no files and exits 1. Found: the UX gate workflow (`ux-impact-pr-gate.yml`, an e2e file), `test:flaky` and `test:feedback-drain-performance` in `package.json`, `scripts/recheck-parked-tests.mjs`, the feedback executor's fix-check command, and the multi-machine failover check in `server.ts` (an e2e file, which would have failed silently as "not run to completion"). All now pass the lane's config: TypeScript callers through `vitestConfigForTestPath` / `groupTestFilesByConfig` in `src/localVerify/inventory.ts`, pre-compile scripts through `scripts/lib/vitest-lane.mjs`. `tests/unit/vitest-lane-callers.test.ts` scans `package.json`, workflows, docs, scripts and skills for any `vitest run` line that names such a file without its config, and checks the script helper agrees with the lane table.
+
+---
+
 ## 3. Level-of-abstraction fit
 
 The worker count lives in the configs, as the spec says, through one small pure helper so both sides of the rule are unit-tested. It sits under the host test-runner bound (`withTestRunnerBound`), which still clamps a nested or targeted run once it enforces; this change does not re-implement or bypass it.
@@ -97,3 +101,8 @@ Not required.
 
 - `tests/unit/test-lanes-config.test.ts`
 - Full three-lane run on the Mac Studio on this branch (times and counts in the PR body).
+
+## Class-Closure Declaration (display-only mirror)
+
+- **Defect class:** `unbounded-self-action`
+- **Closure:** `n/a` — this change adds no self-triggered action. It only adds the lane's `--config` argument to two existing command lines in `src/` (the feedback executor's fix check and the multi-machine failover check); when and how often they run is unchanged.

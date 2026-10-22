@@ -9,6 +9,7 @@ import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } fr
  *   topic message → find/spawn session → inject message → session replies via [telegram:N]
  */
 
+import { vitestConfigForTestPath } from '../localVerify/inventory.js';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import fs from 'node:fs';
@@ -27766,7 +27767,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               resolve(r);
             };
             try {
-              const child = cp.spawn(vitestBin, ['run', args.testPath, '--reporter=dot'], {
+              // The failover check is an e2e file; the default config is the unit lane only.
+              const child = cp.spawn(vitestBin, ['run', '--config', vitestConfigForTestPath(args.testPath), args.testPath, '--reporter=dot'], {
                 cwd: sourceRoot,
                 stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
                 env: { ...process.env },

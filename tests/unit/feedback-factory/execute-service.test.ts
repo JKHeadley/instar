@@ -279,7 +279,7 @@ describe('verification and publication', () => {
     expect(pr.body).toMatch(/## UX Impact/);
     // Base check ran in the throwaway base clone with only the tests/ change copied in.
     const baseRun = h.runs.find((r) => /-base$/.test(r.cwd));
-    expect(baseRun?.command).toMatch(/vitest run --no-cache 'tests\/fix.test.ts' -t 'fixes it'/);
+    expect(baseRun?.command).toMatch(/vitest run --no-cache --config 'vitest\.config\.ts' 'tests\/fix.test.ts' -t 'fixes it'/);
     expect(baseRun?.env.INSTAR_AUTH_TOKEN).toBeUndefined();
     // Clones are removed after publication.
     expect(fs.existsSync(row.workspace!)).toBe(false);
