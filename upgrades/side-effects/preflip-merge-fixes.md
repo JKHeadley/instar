@@ -105,6 +105,10 @@ Pure code change — revert and ship a patch. No persistent state. During the ro
 
 ---
 
+## Correction after a live merge attempt (2026-10-22, PR 2296 itself)
+
+The first version ordered runs by start time. On this PR, a shard in a review-triggered CI run started at 16:06, stuck for two hours and was cancelled at 17:51, while the same check in the push-triggered run started 16:20 and passed at 16:38. Ordered by start time, the rule picked the passing run and safe-merge tried to merge; GitHub refused, because it treats the run that **completed** most recently as the latest. The rule now orders by completion time, and any run still open (queued or in progress) counts as the latest because it completes last. Tests encode both cases. The PR 2289 case that motivated ACT-149 is consistent with this (the passing rerun also completed last).
+
 ## Conclusion
 
 Both fixes are small and close the two pre-flip findings. The review added the checkout-marker requirement to `isAnalyzableGreenPrRepo` so moving the script path does not widen where the watcher runs, and moved the queued-rerun case into the shared rule so the watcher and safe-merge agree on it. Second-pass review found the name-only grouping (blocking), a retry that could outlive the merge deadline, and a too-loose installed-home rule; all three are fixed with tests that fail without them. Clear to ship after operator approval (protected paths). Follow-up: reconcile with PR #2294 (this branch wins on rebase).

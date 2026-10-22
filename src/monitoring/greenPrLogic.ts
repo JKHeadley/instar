@@ -99,7 +99,8 @@ export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
   return latestPerName<Run>(normalized, {
     name: (r) => r.check.name,
     workflow: (r) => r.workflow,
-    order: (r) => r.check.startedAt || r.check.completedAt,
+    // Most recently completed wins, as GitHub judges a required check; see latest-run-per-check.mjs.
+    order: (r) => (r.check.status === 'COMPLETED' || r.check.conclusion ? r.check.completedAt : 0) || r.check.startedAt,
     open: (r) => (r.check.status !== '' && r.check.status !== 'COMPLETED') || r.check.conclusion === 'PENDING' || r.check.conclusion === 'EXPECTED',
   }).map((r) => r.check);
 }

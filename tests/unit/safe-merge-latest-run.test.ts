@@ -87,6 +87,28 @@ describe('classifyChecks — latest run per check name (ACT-149)', () => {
     expect(s.failed).toEqual([]);
   });
 
+  it('the run that COMPLETED last wins, as GitHub judges it: started first, cancelled last → red (the PR 2296 shape)', () => {
+    const shard = 'Unit Tests (node 22, shard 1/4)';
+    const s = classifyChecks([
+      // review-triggered run: started 16:06, stuck, cancelled at 17:51
+      { ...row(shard, 'cancel', iso(T0), iso(T0 + 6_300_000)), workflow: 'CI' },
+      // push-triggered run: started 16:20, passed 16:38
+      { ...row(shard, 'pass', iso(T0 + 840_000), iso(T0 + 1_920_000)), workflow: 'CI' },
+      { ...row('E2E Tests', 'pass', iso(T0)), workflow: 'CI' },
+    ]);
+    expect(s.failed.length).toBe(1);
+  });
+
+  it('a run still in progress (started, not finished) is the latest even if an older run finished after it started', () => {
+    const shard = 'Unit Tests (node 22, shard 1/4)';
+    const s = classifyChecks([
+      { ...row(shard, 'pass', iso(T0), iso(T0 + 600_000)), workflow: 'CI' },
+      { name: shard, state: 'IN_PROGRESS', bucket: 'pending', startedAt: iso(T0 + 60_000), completedAt: NEVER, workflow: 'CI' },
+      { ...row('E2E Tests', 'pass', iso(T0)), workflow: 'CI' },
+    ]);
+    expect(s.settled).toBe(false);
+  });
+
   it('a single failed run with no rerun still refuses (red stays red)', () => {
     const s = classifyChecks([row('Type Check', 'fail', iso(T0)), row('E2E Tests', 'pass', iso(T0))]);
     expect(s.failed).toEqual(['Type Check: fail']);

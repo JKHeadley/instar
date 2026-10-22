@@ -10,12 +10,12 @@
  *
  * Rule: group by workflow + check name (GitHub supersedes a run only within the
  * same workflow — a passing `e2e` in workflow B never hides a failing `e2e` in
- * workflow A); the run with the later run time wins (startedAt, else
- * completedAt; ties go to the later row). A row with no workflow identity keys
+ * workflow A); the run that COMPLETED most recently wins, as GitHub judges a
+ * required check (PR 2296, 2026-10-22: a shard that started first but was
+ * cancelled last blocked the merge on GitHub; ties go to the later row). A row with no workflow identity keys
  * on the name alone, so it never supersedes a row that has one (both are kept:
- * fail toward keeping the red). A run that has not started yet
- * (no time, still open) is a queued rerun — it is never the superseded run, so it
- * wins over a timed run and keeps a settle loop waiting. Unnamed runs never
+ * fail toward keeping the red). A run still open (queued or in progress) is never
+ * the superseded run: it completes last, so it wins and keeps a settle loop waiting. Unnamed runs never
  * collapse together.
  *
  * Pure, dependency-free: safe-merge runs before compile, and its import closure
@@ -58,7 +58,10 @@ export function latestPerName(rows, acc) {
 function supersedes(candidate, prev, acc) {
   const co = acc.order(candidate);
   const po = acc.order(prev);
-  if (co === 0 && acc.open(candidate)) return true;   // queued rerun: newest by construction
-  if (po === 0 && acc.open(prev)) return false;
+  // A run still open (queued or in progress) will complete last, so it is the latest.
+  const cOpen = acc.open(candidate);
+  const pOpen = acc.open(prev);
+  if (cOpen && !pOpen) return true;
+  if (pOpen && !cOpen) return false;
   return co >= po;
 }

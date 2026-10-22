@@ -228,7 +228,9 @@ export function latestCheckRows(rows) {
   return latestPerName(rows, {
     name: (r) => String(r.name ?? ''),
     workflow: (r) => String(r.workflow ?? ''),
-    order: (r) => runTimeMs(r.startedAt) || runTimeMs(r.completedAt),
+    // GitHub treats the most recently COMPLETED run as the latest (a run that started
+    // first but finished last wins — PR 2296, 2026-10-22); open runs win via `open`.
+    order: (r) => runTimeMs(r.completedAt) || runTimeMs(r.startedAt),
     open: (r) => String(r.bucket ?? '').toLowerCase() === 'pending',
   });
 }
