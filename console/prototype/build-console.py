@@ -122,6 +122,15 @@ def needs_you():
     if high:
         parts.append('<div class="stat alarm"><b>' + str(len(high)) + '</b><span>need you</span></div>')
     parts.append('<div class="stat"><b>' + str(len(open_)) + '</b><span>open in total</span></div>')
+    # A recurring fault raises one item per occurrence. Counting items makes eight
+    # problems look like four hundred; counting KINDS is the number a person can act on.
+    import re as _re
+    def _kind(t):
+        t = _re.sub(r'[^a-z ]', ' ', _re.sub(r'\b\d+\b', 'N', (t or '').lower()))
+        return ' '.join(t.split())[:60]
+    kinds = {_kind(i.get('title')) for i in high}
+    if kinds and len(kinds) < len(high):
+        parts.append('<div class="stat"><b>' + str(len(kinds)) + '</b><span>distinct kinds</span></div>')
 
     by = {}
     for i in high:
@@ -144,8 +153,10 @@ def needs_you():
     tail = ''
     if len(high) > 5:
         tail = '<p class="note">…and ' + str(len(high) - 5) + ' more marked high.</p>'
-    note = ('<p class="note">These accumulated with nowhere to be seen. That is the argument for '
-            'this screen: a queue nobody looks at reads exactly like an empty one.</p>')
+    note = ('<p class="note">A recurring fault raises one item every time it happens, so the item '
+            'count is mostly repetition — the kinds count is the number of problems. These '
+            'accumulated with nowhere to be seen: a queue nobody looks at reads exactly like an '
+            'empty one.</p>')
     return header + '<div class="stats">' + "".join(parts) + '</div>' + split + "".join(rows) + tail + note
 
 # ---- sessions, across every machine ---------------------------------------
