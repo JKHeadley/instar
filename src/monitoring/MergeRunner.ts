@@ -180,6 +180,8 @@ export class DefaultMergeRunner implements MergeRunner {
   get resolvedStrategy(): 'auto' | 'admin' | 'sync' { return this.cfg.mergeStrategy ?? 'auto'; }
   /** The resolved `--auto` spawn deadline (M2 wiring-integrity surface). */
   get resolvedArmTimeoutMs(): number { return this.cfg.armTimeoutMs ?? 60_000; }
+  /** The safe-merge this runner probes, hashes and spawns (ACT-150 wiring-integrity surface). */
+  get resolvedSafeMergePath(): string { return this.cfg.safeMergePath; }
 
   // ---- contract probe -----------------------------------------------------
 

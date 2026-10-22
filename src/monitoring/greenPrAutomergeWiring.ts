@@ -35,6 +35,7 @@ import {
   createAuthenticatedGitHubCliRuntimeResolver,
   type AuthenticatedGitHubCliRuntime,
 } from '../core/githubRuntime.js';
+import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
@@ -53,6 +54,8 @@ export const PROTECTED_PATH_PREFIXES = [
   'src/monitoring/MergeRunner.ts',
   'src/monitoring/GuardLatchStore.ts',
   'src/monitoring/greenPrLogic.ts',
+  'scripts/latest-run-per-check.mjs',
+  'src/core/installedSafeMerge.ts',
   'src/monitoring/floorDriftCanary.ts',
   'src/monitoring/greenPrAutomergeWiring.ts',
   // audit-convergence-enforcement §3: an audit-report PR gets a human eye instead
@@ -72,9 +75,31 @@ export const PROTECTED_GATE_SCRIPTS = [
   'scripts/safe-merge.mjs',
 ];
 
+/**
+ * The two paths the watcher is built from (ACT-150):
+ *  - `repoPath` — the instar source checkout its git reads need (the server's
+ *    working directory);
+ *  - `safeMergePath` — the INSTALLED safe-merge that ships with the running
+ *    server, never the checkout's copy. The checkout can sit on any branch with
+ *    uncommitted edits (2026-10-22: an old branch, 279 uncommitted changes and a
+ *    pre-local-verify safe-merge, which the watcher then spawned). Spec:
+ *    local-verify-merge-authority.md §2.
+ */
+export function resolveGreenPrPaths(cwd: string, installed: () => string = installedSafeMergePath): { repoPath: string; safeMergePath: string } {
+  return { repoPath: cwd, safeMergePath: installed() };
+}
+
+/**
+ * The watcher runs only in an instar source checkout (its git reads need one;
+ * `scripts/safe-merge.mjs` in the checkout is what marks it as instar) AND only
+ * when the safe-merge it will run (the installed copy) exists. The checkout's
+ * own safe-merge is a marker here, never the script that runs.
+ */
 export function isAnalyzableGreenPrRepo(repoPath: string, safeMergePath: string): boolean {
   try {
-    return fs.existsSync(path.join(repoPath, '.git')) && fs.existsSync(safeMergePath);
+    return fs.existsSync(path.join(repoPath, '.git'))
+      && fs.existsSync(path.join(repoPath, 'scripts', 'safe-merge.mjs'))
+      && fs.existsSync(safeMergePath);
   } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
     return false;
   }

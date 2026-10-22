@@ -22130,10 +22130,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     let guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null = null;
     {
       const gpCfg = config.monitoring?.greenPrAutoMerge as Record<string, unknown> | undefined;
-      const repoPath = process.cwd();
-      const safeMergePath = path.join(repoPath, 'scripts', 'safe-merge.mjs');
       if (gpCfg?.enabled) {
         const wiring = await import('../monitoring/greenPrAutomergeWiring.js');
+        // repoPath: the instar source checkout the watcher's git reads need.
+        // safeMergePath: the INSTALLED safe-merge (the trusted side), never the
+        // working checkout's copy (local-verify-merge-authority §2; ACT-150).
+        const { repoPath, safeMergePath } = wiring.resolveGreenPrPaths(process.cwd());
         if (wiring.isAnalyzableGreenPrRepo(repoPath, safeMergePath)) {
           const gpMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
           const agentNamespace = wiring.resolveGreenPrAgentNamespace(

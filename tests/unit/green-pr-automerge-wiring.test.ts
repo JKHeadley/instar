@@ -14,9 +14,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-import { buildGreenPrDeps, buildGuardLatchStore, resolveGreenPrAgentNamespace, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { installedSafeMergePath } from '../../src/core/installedSafeMerge.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
 let dir: string;
@@ -188,5 +190,42 @@ describe('buildGreenPrDeps — disarm seam (Blocker 3)', () => {
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
     expect(await deps.disarmArmedEpisodes(99)).toBe(false);
+  });
+});
+
+describe('the watcher runs the INSTALLED safe-merge, never the checkout copy (ACT-150)', () => {
+  it('resolveGreenPrPaths: repoPath is the working checkout, safeMergePath is the installed package copy', () => {
+    const p = resolveGreenPrPaths(dir);
+    expect(p.repoPath).toBe(dir);
+    expect(p.safeMergePath).toBe(installedSafeMergePath());
+    expect(p.safeMergePath).not.toBe(path.join(dir, 'scripts', 'safe-merge.mjs'));
+    expect(fs.existsSync(p.safeMergePath)).toBe(true);
+  });
+
+  it('installedSafeMergePath is <package>/scripts/safe-merge.mjs beside dist/', () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    expect(installedSafeMergePath()).toBe(path.join(root, 'scripts', 'safe-merge.mjs'));
+  });
+
+  it('the CONSTRUCTED MergeRunner gets the installed path (wiring integrity)', () => {
+    const { ghExec } = fakeGh({});
+    const { repoPath, safeMergePath: installed } = resolveGreenPrPaths(dir);
+    const opts = baseOpts({ ghExec, repoPath, safeMergePath: installed });
+    const deps = buildGreenPrDeps(opts, buildGuardLatchStore(opts));
+    expect((deps.runner as DefaultMergeRunner).resolvedSafeMergePath).toBe(installedSafeMergePath());
+  });
+
+  it('isAnalyzableGreenPrRepo still requires the instar source checkout (git + its safe-merge marker) AND the installed copy', () => {
+    const installed = installedSafeMergePath();
+    // No .git → not analyzable.
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(false);
+    fs.mkdirSync(path.join(dir, '.git'));
+    // A git repo that is not an instar checkout → not analyzable.
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(false);
+    fs.mkdirSync(path.join(dir, 'scripts'));
+    fs.writeFileSync(path.join(dir, 'scripts', 'safe-merge.mjs'), '// stale checkout copy\n');
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(true);
+    // The installed copy missing → not analyzable, even with the checkout copy present.
+    expect(isAnalyzableGreenPrRepo(dir, path.join(dir, 'nope', 'safe-merge.mjs'))).toBe(false);
   });
 });

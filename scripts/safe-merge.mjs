@@ -54,6 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { checkPrDescriptionEli16 } from './eli16-pr-description-check.mjs';
 import { evaluateDecisionAuditPresence } from './decision-audit-presence-check.mjs';
 import { checkReleaseFragment } from './check-release-fragment.mjs';
+import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
 import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, approvedAtHead, extractRulesetReviewPolicy, reviewPrecheckPasses } from './local-verify-floor.mjs';
 
 export { extractRulesetReviewPolicy };
@@ -215,15 +216,32 @@ export function capabilities() {
   };
 }
 
-/** Classify `gh pr checks --json` rows. `pending` is matched ONLY on the
- * bucket field — a check NAMED "block-pending-migrations" never loops the
- * wait (the round-1 foundation bug). */
+/**
+ * `gh pr checks --json` rows collapsed to the LATEST run per workflow + check name — the
+ * rule GitHub applies to a required context, shared with the green-PR watcher
+ * (scripts/latest-run-per-check.mjs). gh still lists a failed run that a newer
+ * rerun on the same head superseded; judging the old row refused PR 2289
+ * (2026-10-22) while GitHub showed the context green. A queued rerun (no start
+ * time yet) is the latest run, so it keeps the settle loop waiting.
+ */
+export function latestCheckRows(rows) {
+  return latestPerName(rows, {
+    name: (r) => String(r.name ?? ''),
+    workflow: (r) => String(r.workflow ?? ''),
+    order: (r) => runTimeMs(r.startedAt) || runTimeMs(r.completedAt),
+    open: (r) => String(r.bucket ?? '').toLowerCase() === 'pending',
+  });
+}
+
+/** Classify `gh pr checks --json` rows (latest run per check name). `pending`
+ * is matched ONLY on the bucket field — a check NAMED "block-pending-migrations"
+ * never loops the wait (the round-1 foundation bug). */
 export function classifyChecks(rows) {
   const pending = [];
   const failed = [];
   let sawE2e = false;
   let e2ePassed = false;
-  for (const row of rows) {
+  for (const row of latestCheckRows(rows)) {
     const name = String(row.name ?? '');
     const bucket = String(row.bucket ?? '').toLowerCase();
     if (!name) continue;
@@ -663,14 +681,47 @@ function ghJson(args) {
 
 function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
-  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket'], { allowFail: true });
+  // The run times are what lets classifyChecks keep only the latest run per name.
+  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket,startedAt,completedAt,workflow'], { allowFail: true });
+  return parseChecksRows(r.stdout);
+}
+
+/** Parse `gh pr checks --json` output; throws on unparseable or empty (an open PR always has checks). */
+export function parseChecksRows(stdout) {
+  let rows;
   try {
-    const rows = JSON.parse(r.stdout);
-    if (!Array.isArray(rows)) throw new Error('not an array');
-    return rows;
+    rows = JSON.parse(stdout);
   } catch {
-    throw new Error(`gh pr checks returned unparseable JSON: ${(r.stdout || '').slice(0, 200)}`);
+    throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}`);
   }
+  if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}`);
+  if (rows.length === 0) throw new Error('gh pr checks returned no checks');
+  return rows;
+}
+
+/** Backoff (ms) between the extra reads of an empty/unparseable checks response. */
+export const CHECKS_READ_RETRY_BACKOFF_MS = [5_000, 10_000];
+
+/**
+ * Read the checks, retrying a transient empty/unparseable response (seen once
+ * from gh) a couple of times with a short backoff. Throws the last error when
+ * every read failed, or once the merge deadline has passed (no retry after it)
+ * — the caller refuses `contexts-unverifiable`.
+ */
+export function readChecksWithRetry(read, sleepFn, backoffMs = CHECKS_READ_RETRY_BACKOFF_MS, deadline = Infinity, now = Date.now) {
+  let lastErr;
+  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+    if (attempt > 0) {
+      if (now() > deadline) break; // past the merge deadline: refuse now, never wait longer
+      sleepFn(backoffMs[attempt - 1]);
+    }
+    try {
+      return read();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -843,11 +894,33 @@ function ghText(args) {
 }
 
 /**
- * The agent home that owns THIS copy of safe-merge: the parent of the git
- * common dir (a worktree under `<home>/.worktrees/` resolves to `<home>`).
- * Derived from the script's own location, never from the environment.
+ * The agent home that owns THIS copy of safe-merge, derived from the script's
+ * own location, never from the environment:
+ *  - an installed copy (`<home>/.instar/shadow-install/node_modules/instar/scripts/`,
+ *    the one the green-PR watcher runs) resolves to `<home>` from the path itself,
+ *    when `<home>/.instar/config.json` exists (else the git rule below).
+ *    Before this, it resolved only by accident — through the git repo the agent
+ *    home happens to be — and to `…/node_modules/instar` on an agent home that
+ *    is not a git checkout;
+ *  - a source checkout resolves to the parent of the git common dir (a worktree
+ *    under `<home>/.worktrees/` resolves to `<home>`).
  */
+export function installedAgentHome(scriptDir) {
+  const parts = path.resolve(scriptDir).split(path.sep);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    if (parts[i] === 'shadow-install' && parts[i - 1] === '.instar' && i >= 2) {
+      const home = parts.slice(0, i - 1).join(path.sep) || path.sep;
+      // Only an agent home carries .instar/config.json; a user-level
+      // ~/.instar/shadow-install must not resolve to ~ (falls through to git).
+      return fs.existsSync(path.join(home, '.instar', 'config.json')) ? home : null;
+    }
+  }
+  return null;
+}
+
 export function resolveAgentHome(scriptDir, run = spawnSync) {
+  const installed = installedAgentHome(scriptDir);
+  if (installed) return installed;
   // Every GIT_* variable is dropped: an inherited GIT_DIR or GIT_COMMON_DIR would
   // make git answer for another repository, and so point this at another agent's
   // config file, server and token (second-pass finding).
@@ -1148,7 +1221,7 @@ async function main() {
   for (;;) {
     let rows;
     try {
-      rows = fetchChecksRows(pr, repo);
+      rows = readChecksWithRetry(() => fetchChecksRows(pr, repo), sleep, CHECKS_READ_RETRY_BACKOFF_MS, deadline);
     } catch (e) {
       result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
       console.error(`safe-merge: REFUSING — ${e.message}`);

@@ -7,6 +7,8 @@
  * safe-merge / lease / latch / audit I/O.
  */
 
+import { latestPerName, runTimeMs } from '../../scripts/latest-run-per-check.mjs';
+
 /** One PR as returned by the `gh pr list` GraphQL projection. */
 export interface PrSummary {
   number: number;
@@ -65,26 +67,20 @@ export interface NormalizedCheck {
 /** Conclusions that read as a failing (red) check. Kept in lockstep with deriveRollup's FAILURE set. */
 export const FAILING_CONCLUSIONS: ReadonlySet<string> = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT']);
 
-/** Coerce a gh timestamp (ISO string or ms number) to ms; 0 when unparseable/absent. */
-function toMs(v: unknown): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string' && v) {
-    const t = Date.parse(v);
-    return Number.isFinite(t) ? t : 0;
-  }
-  return 0;
-}
+/** Coerce a gh timestamp (ISO string or ms number) to ms; 0 when unparseable/absent (the shared rule). */
+const toMs = runTimeMs;
 
 /**
- * Collapse a raw statusCheckRollup to the LATEST run per check name (group by
- * name, keep the entry with the max run-time). This is the dedup that fixes the
+ * Collapse a raw statusCheckRollup to the LATEST run per workflow + check name
+ * (group by `workflowName` + name, keep the entry with the max run-time; a
+ * same-named check in another workflow is never superseded). This is the dedup that fixes the
  * 2026-07-08 bug: a stale FAILED run superseded by a passing rerun must not read
  * as failure. Unnamed checks never collapse together (each kept as-is).
  */
 export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
   if (!Array.isArray(rollup)) return [];
-  const byName = new Map<string, NormalizedCheck>();
-  const anon: NormalizedCheck[] = [];
+  type Run = { check: NormalizedCheck; workflow: string };
+  const normalized: Run[] = [];
   for (const raw of rollup as Array<Record<string, unknown>>) {
     if (!raw || typeof raw !== 'object') continue;
     const name = String(raw.name ?? raw.context ?? '').trim();
@@ -92,16 +88,20 @@ export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
     const status = String(raw.status ?? '').toUpperCase();
     const startedAt = toMs(raw.startedAt);
     const completedAt = toMs(raw.completedAt) || toMs(raw.startedAt) || toMs((raw as { createdAt?: unknown }).createdAt);
-    const norm: NormalizedCheck = { name, conclusion, status, startedAt, completedAt };
-    if (!name) { anon.push(norm); continue; }
-    const prev = byName.get(name);
-    if (!prev) { byName.set(name, norm); continue; }
-    // Later run wins: order by best-available run time (startedAt, else completedAt).
-    const prevOrder = prev.startedAt || prev.completedAt;
-    const order = startedAt || completedAt;
-    if (order >= prevOrder) byName.set(name, norm);
+    // Workflow identity: GitHub supersedes a run only within the same workflow.
+    const suite = (raw as { checkSuite?: { workflowRun?: { workflow?: { name?: unknown } } } }).checkSuite;
+    const workflow = String(raw.workflowName ?? suite?.workflowRun?.workflow?.name ?? '').trim();
+    normalized.push({ check: { name, conclusion, status, startedAt, completedAt }, workflow });
   }
-  return [...byName.values(), ...anon];
+  // The shared rule (scripts/latest-run-per-check.mjs) — the same one safe-merge
+  // applies at act time: per workflow + name, later run time wins; a queued
+  // (untimed, open) rerun wins.
+  return latestPerName<Run>(normalized, {
+    name: (r) => r.check.name,
+    workflow: (r) => r.workflow,
+    order: (r) => r.check.startedAt || r.check.completedAt,
+    open: (r) => (r.check.status !== '' && r.check.status !== 'COMPLETED') || r.check.conclusion === 'PENDING' || r.check.conclusion === 'EXPECTED',
+  }).map((r) => r.check);
 }
 
 /**

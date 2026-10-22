@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { getInstarVersion } from '../core/Config.js';
+import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { LocalVerifyService, appendLocalVerifyAudit } from './LocalVerifyService.js';
@@ -26,6 +27,9 @@ import { buildFloorGateGitHubSeams, buildGhRunner, buildReconcilerGitHubSeams, t
 import type { LocalVerifyRecord } from './record.js';
 import type { MainHealthSnapshot } from './mainHealth.js';
 import type { ContextPin, EvaluateRequiredContexts, FloorMode } from './statusProjection.js';
+
+/** Where the server's own (installed) safe-merge lives — shared with the green-PR watcher. */
+export { installedSafeMergePath };
 
 export interface LocalVerifyConfigBlock {
   enabled?: boolean;
@@ -141,12 +145,13 @@ export interface SafeMergeFloorExports {
 
 /**
  * Load safe-merge's own evaluation function, Actions-floor constant and approver
- * acceptance judgement from the source checkout (one implementation, never a copy).
- * A safe-merge that lacks any of them builds no reconciler.
+ * acceptance judgement from the INSTALLED safe-merge (one implementation, never
+ * a copy; never the working checkout — spec §2). A safe-merge that lacks any of
+ * them builds no reconciler.
  */
-export async function loadSafeMergeFloor(repoPath: string): Promise<SafeMergeFloorExports | null> {
+export async function loadSafeMergeFloor(safeMergePath: string = installedSafeMergePath()): Promise<SafeMergeFloorExports | null> {
   try {
-    const mod = await import(pathToFileURL(path.join(repoPath, 'scripts', 'safe-merge.mjs')).href) as {
+    const mod = await import(pathToFileURL(safeMergePath).href) as {
       evaluateRequiredContexts?: EvaluateRequiredContexts; ACTIONS_FLOOR_CONTEXTS?: ContextPin[];
       approverAcceptanceFromExecutorStatus?: ApproverAcceptanceFromExecutorStatus;
     };
@@ -198,7 +203,7 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
   }
   const login = (opts.expectedGhLogin ?? '').trim();
   if (!login) return { reconciler: null, floorGate: null, reason: 'no-gh-login' };
-  const floor = opts.floorExports ?? await loadSafeMergeFloor(opts.repoPath);
+  const floor = opts.floorExports ?? await loadSafeMergeFloor();
   if (!floor) return { reconciler: null, floorGate: null, reason: 'no-safe-merge-floor' };
 
   let gh = opts.gh;
