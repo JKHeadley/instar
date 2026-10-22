@@ -104,6 +104,10 @@ The core of the checker, off by default and consumed by nothing yet. The first r
 
 Round 1 raised the repository-discovery escape and the unanchored path match (blocking); both fixed. Round 2 confirmed the repro now fails closed, every verifier git call pins `GIT_DIR`, the env override is limited to three keys the executor sets itself, and raised one hardening point (a symlinked or misshapen root); fixed in `isWellFormedLocalVerifyRoot` with a test. No remaining concern.
 
+## Push-gate fix
+
+The child entry's "am I the main module" check used `new URL(import.meta.url).pathname`, which breaks when the install path contains spaces (`%20`); it now uses `fileURLToPath`. Caught by the pre-push gate.
+
 ## Evidence pointers
 
 - `tests/unit/localVerify/*.test.ts` (inventory, lane report, skip ratchet, harness classifier, record, orchestrator, service, carve-out against real git, routes)

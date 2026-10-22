@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runVerify, verifyPaths, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
 import { realSeams } from './orchestratorSeams.js';
 
@@ -55,7 +56,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 const isEntry = (() => {
-  try { return process.argv[1] ? fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname) : false; } catch { return false; }
+  try { return process.argv[1] ? fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)) : false; } catch { return false; }
 })();
 if (isEntry) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; });
