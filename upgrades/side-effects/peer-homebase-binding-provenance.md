@@ -70,3 +70,37 @@ migration, no data repair.
 session lifecycle path, no compaction path, no coherence gate, idempotency check or trust level.
 An additive provenance field with no consumer is the furthest thing from the shape Phase 5
 polices. Recorded as `not-required` rather than omitted.
+
+---
+
+# Increment 2 — the homebase decisions (`src/threadline/peerHomebase.ts`)
+
+**Change:** two pure functions and a selector — `homebaseTopicName`, `decideHomebaseBind`,
+`selectConversationToBind`. No callsite yet; nothing invokes them in production.
+
+1. **Over-block:** nothing is rejected — these are pure functions with no I/O and no gate. The
+   relevant risk is the opposite (under-protection), covered below.
+2. **Under-block:** `decideHomebaseBind` deliberately refuses to bind an `unknown-provenance`
+   binding, so the feature will NOT fix `pp`'s conversation by itself. That is the correct
+   trade (the alternative destroys deliberate operator choices) and it means the live case needs
+   the operator's explicit re-home. `homebaseTopicName` reduces but does not eliminate name
+   collisions — accepted in spec §6 and asserted as accepted in the tests.
+3. **Abstraction fit:** the decisions are isolated from the wiring on purpose. Both are easy to
+   get dangerously wrong in the permissive direction, and a pure function can be exhaustively
+   tested in a way an inline branch at a callsite cannot.
+4. **Signal vs authority:** pure advisory computation. They return a verdict; they perform no
+   write, no send, no refusal. The caller holds whatever authority exists.
+5. **Interactions:** none yet — no production caller. `BoundTopicSource` is re-declared here as
+   a local type rather than imported from `ConversationStore`, so the helpers stay dependency-
+   free and testable; the two must be kept in step, which the compiler enforces at the callsite.
+6. **External surfaces:** none. No route, no config, no message, no egress.
+7. **Multi-machine posture:** **not applicable — pure functions, no state.** The state they will
+   operate on (the fingerprint→topic map) lands with the wiring increment and is specified
+   `unified` in spec §7.
+8. **Rollback:** delete the file and its test. Nothing imports it.
+
+**Second pass:** not required — no decision point with authority, no messaging/dispatch gate, no
+session lifecycle. Recorded as `not-required`.
+
+**Honest status:** this is the decision layer only. Creating the topic, persisting the map, and
+calling these from the trust-verify path are NOT in this commit.

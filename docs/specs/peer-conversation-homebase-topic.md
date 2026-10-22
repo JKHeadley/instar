@@ -14,6 +14,7 @@ approval-note: |
   were left, which is the bar he set rather than the one the skill defaults to.
 eli16-overview: peer-conversation-homebase-topic.eli16.md
 tracks: "topic 127831 · operator feature request 2026-10-21"
+parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
 review-convergence: "2026-10-22T16:05:25.792Z"
 review-iterations: 3
 review-completed-at: "2026-10-22T16:05:25.792Z"
@@ -36,15 +37,35 @@ contested-then-cleared: 0
 > resolved."* This version is the 80/20 feature. What the long version worried about is listed
 > in §6 as deliberately left behind, with the risk named.
 
+## 0. Constitutional traceability
+
+**Parent principle: _The User Experience Is the Product — Reachability, Responsiveness, and
+Coherence Are Sacred._**
+
+The fit is the incident itself. A peer agent asked this agent to contact the operator; the agent
+did post about it, and the operator still never saw it, because the notice landed in a
+conversation about Claude quota. Nothing failed loudly — delivery succeeded, to the wrong place.
+That is a coherence failure in the operator's own experience: the agent's knowledge and the
+operator's view of it came apart, and the operator's only recourse was to notice the absence
+himself and ask.
+
+Two other standards govern pieces of this design rather than the whole:
+
+- *Notices Route to the Alerts Topic, Never a New One* — this spec takes an explicit
+  **`operator-ratified-exception`** to it (§2.5), recorded with the operator's own words, because
+  he asked for exactly these topics.
+- *Close the Loop* — the deliberately-cut long tail in §6 is carried by CMT-014 rather than left
+  as a list nobody revisits.
+
 ## 0.1 Tracked deferral carrier (frozen excerpt) <!-- tracked: CMT-014 -->
 
 Every `<!-- tracked: CMT-014 -->` marker in this document resolves to a real, durable commitment
 with a follow-through beacon — not a comment and not a typed-in promise. Its immutable text is
-inlined here so a reviewer can check the carrier actually covers the deferral without needing
+inlined here so a reviewer can check the carrier actually covers the deferral without needing <!-- tracked: CMT-014 -->
 API access. **CMT-013 was deliberately NOT reused**: that carrier covers the pool-read
 destination-authentication work and would have been a mismatched carrier for these cuts.
 
-> **CMT-014** — Registered follow-up for peer-conversation-homebase-topic section 6: the
+> **CMT-014** — Registered follow-up for peer-conversation-homebase-topic section 6: the <!-- tracked: CMT-014 -->
 > deliberately-cut long tail. (a) no crash-ordering intent state machine, so a crash between
 > creating a topic and recording its id combined with a peer display-name change can duplicate
 > a topic; (b) topic identity rests on its NAME plus a 6-char fingerprint suffix, with no signed

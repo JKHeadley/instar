@@ -52,3 +52,21 @@ decision on record rather than something nobody thought about.
 
 A new topic appears per paired agent, named after it. Requests from those agents arrive there
 and buzz you. Anything you'd already filed somewhere stays where you put it.
+
+## Which rule this serves
+
+Instar's standards list has an article called *The User Experience Is the Product —
+Reachability, Responsiveness, and Coherence Are Sacred*. Its rule is that your ability to reach
+your agent, **be heard**, and get a coherent answer outranks the agent's own internal caution
+when the two conflict.
+
+This is the "be heard" half, and the incident is a clean example of failing it without anything
+looking broken. The message was sent. Delivery succeeded. No error was raised anywhere. It just
+arrived somewhere you had no reason to look, so the only way you found out was by noticing an
+absence and asking — which is you doing the agent's job.
+
+One standard points the other way and is worth naming: *Notices Route to the Alerts Topic, Never
+a New One* exists because an agent creating its own notification topics once flooded you. This
+feature takes a deliberate, recorded exception to it, because you asked for these topics and one
+per paired agent is a set you want. That exception is written into the spec with your own words
+next to it, so nobody later mistakes it for an oversight.
