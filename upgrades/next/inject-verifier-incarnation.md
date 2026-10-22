@@ -1,0 +1,24 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+- **The injection verifier no longer reports a message as lost after the session was restarted in order to deliver it.** `SessionManager.verifyInjection` polls at 500/1500/3500/6500/9000 ms for the injected text still sitting at the prompt, and its final pass files a `DegradationReporter` entry — `Message still unsubmitted — NOT recovered by the in-process verifier` — when the marker is still there. But the ladder keys on a TEXT marker at a tmux session NAME, and both survive a respawn: when a recovery rung (or the resume path) replaces the session in place, the re-injected prompt renders the same marker at the same prompt in a brand-new pane, so the remaining rungs judge a one-second-old injection against a nine-second deadline and declare the message undelivered. The ladder is now scoped to one incarnation — `verifyInjection` snapshots the session's native conversation id (`claudeSessionId`) through a new `injectionIncarnationId` helper and abandons the remaining rungs, with one log line, when that id rotates. The respawned attempt performs its own injection and so runs its own ladder; nothing is left unverified.
+- A null → id transition (the first binding of a native session id) is deliberately NOT treated as a respawn, and an unreadable state file fails toward "same attempt", so neither can manufacture an abandon verdict.
+
+## What to Tell Your User
+
+Nothing about your agent's behaviour changes, but one false alarm goes away. When a message to a session does not submit, the agent fixes it by restarting that session and sending the message again — and that works. The checker that triggered the restart was then looking at the restarted session a second later, seeing the same text waiting at the prompt again, and announcing that the message had never been delivered. On one machine that happened four times in an hour while every one of those jobs actually ran and finished. The warning now knows the difference between "still not delivered" and "already being delivered again", so a warning in that place means something real.
+
+## Summary of New Capabilities
+
+- Injection verification is scoped to the session incarnation it started in, so a respawn-based recovery can no longer produce a false "message not delivered" report.
+- One audit line (`Injection verification … abandoned at attempt N: the session was respawned`) records the hand-off instead of a silent stop.
+
+## Evidence
+
+- `tests/unit/session-injection-verify-incarnation.test.ts` (5 tests): a mid-ladder id rotation stops further rungs after the one that already fired and emits the abandon line; a stable id still runs the whole ladder; an unknown id on both sides keeps the pre-fix behaviour; a first binding (null → id) is not a respawn; an unreadable state file produces no abandon verdict.
+- `tests/unit/session-injection-verify.test.ts`: the contract tests for `verifyInjection` are now bounded by the method itself instead of by a fixed 5,000-character window — the added comment block pushed `fireStuckInputRecovery(` out of that window and failed a contract the code still honoured, which is the second time a fixed window has mis-measured this method.
+- Measured on the Mac Studio at 2026-10-22 02:25:17, 02:35:17, 02:50:18 and 03:25:14 UTC: the `health-check` job logged `Injection stuck … Auto-recovering (attempt 1/5)`, then `claudeSessionId rotated … (respawn/resume)`, then `The message is NOT delivered` plus a degradation entry — while `logs/reap-log.jsonl` recorded each of those same sessions reaped `sentinel-complete`, and the respawned session's own transcript (`afab54dd-…`, haiku, 4 assistant turns) contains the completed health report and one printed completion sentinel. The job ran; only the alarm was wrong.
+- Counter-evidence that the mechanism itself is sound: a bounded 20-second pane capture of the 03:30:01 run shows the model running, printing `[ATTENTION] …` and its assembled sentinel, and being reaped — so the ladder's real verdict is preserved for a genuinely stuck injection.

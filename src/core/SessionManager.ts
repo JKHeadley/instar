@@ -8160,6 +8160,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * The identity of the CURRENT incarnation behind a tmux session name, for
+   * scoping an injection-verification ladder to the attempt that started it.
+   * Returns the session's native (claude/codex) conversation id, or null when
+   * no session record or no id is bound yet. A respawn rotates this id
+   * (`setClaudeSessionId` logs exactly that), which is the signal that a pane
+   * carrying the same marker belongs to a different attempt.
+   */
+  private injectionIncarnationId(tmuxSession: string): string | null {
+    try {
+      return this.state.listSessions().find((s) => s.tmuxSession === tmuxSession)?.claudeSessionId ?? null;
+    } catch {
+      return null; // a state read failure must never turn into a false verdict
+    }
+  }
+
+  /**
    * Verify an injection actually submitted by polling for a marker snippet
    * still present at the ❯ prompt. On Claude Code v2.1.105+, the Enter after
    * bracketed-paste-end is occasionally eaten by a race with the paste-end
@@ -8192,9 +8208,40 @@ rm()  { "${shimRunner}" rm  "$@"; }
     let recoveryFiredOnce = false;
     let recoveryRefusedOnce = false;
 
+    // ── The ladder is scoped to ONE incarnation (2026-10-21) ──
+    // The marker is text and the target is a tmux NAME, and both survive a
+    // respawn — so when a recovery rung (or the resume/respawn path) replaces
+    // the session in place, the re-injected prompt renders the SAME marker at
+    // the SAME prompt in a brand-new pane. The remaining rungs then measure a
+    // one-second-old injection against a nine-second deadline and report the
+    // message as never delivered.
+    // Measured on the Studio, 2026-10-22 02:25/02:35/02:50/03:25 UTC: in each
+    // case the `health-check` job logged `Injection stuck … Auto-recovering
+    // (attempt 1/5)`, then `claudeSessionId rotated … (respawn/resume)`, then
+    // this ladder's verify-only pass reported `The message is NOT delivered`
+    // and filed a DegradationReporter entry — while the respawned session went
+    // on to run the job, print its completion sentinel and be reaped as a
+    // success. The work was never lost; the alarm was false, four times in one
+    // hour, in the one place that is supposed to report a lost message.
+    // Anchor on the incarnation, not on the state of the prompt: a rotated
+    // claudeSessionId means this pane belongs to a different attempt, which
+    // performed its own injection and therefore owns its own ladder.
+    const incarnationAtInjection = this.injectionIncarnationId(tmuxSession);
+
     const runCheck = (attempt: number): void => {
       try {
         if (!this.tmuxSessionExists(tmuxSession)) return;
+        // A null→value transition is the FIRST binding of a native session id,
+        // not a respawn, so only a change between two known ids abandons the
+        // ladder. Unknown-either-side keeps today's behaviour.
+        const incarnationNow = this.injectionIncarnationId(tmuxSession);
+        if (incarnationAtInjection && incarnationNow && incarnationNow !== incarnationAtInjection) {
+          console.log(
+            `[SessionManager] Injection verification for "${tmuxSession}" abandoned at attempt ${attempt + 1}: ` +
+            'the session was respawned (native id rotated), so this pane is a different attempt that verifies itself.',
+          );
+          return;
+        }
         const pane = this.captureOutput(tmuxSession, 30) || '';
         if (!this.isMarkerStuckAtPrompt(pane, marker)) {
           // Submitted (or marker no longer at the input prompt) — stop polling
