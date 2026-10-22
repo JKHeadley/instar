@@ -17,24 +17,11 @@ export default defineConfig(withTestRunnerBound('e2e', {
     // Includes the bounded Supertest connect-retry window used under aggregate
     // macOS loopback pressure. Individual long waits still declare their own cap.
     testTimeout: 120000,
-    // Asset-only: production registry resolution needs its gitignored generated
-    // data on a fresh checkout, but this config deliberately does NOT compile
-    // dist — a build here would cost every e2e run a full tsc.
-    //
-    // The dist-gated tests are NOT dormant. `vitest.config.ts` (what `npm test`
-    // and the CI unit shards run) includes `tests/e2e/**` AND wires
-    // build-dist.globalSetup, so all three run there — verified 2026-07-28 by
-    // executing cli-unknown-command under that config: 2 tests, 512ms + 387ms of
-    // real work, not instant returns. Skipping here is duplicate-coverage
-    // avoidance, not an excuse to leave them unrun.
-    //
-    // The previous note here justified the skip by saying dev-preflight-cli
-    // "spawns `pnpm` — absent on the CI e2e runner". That is no longer true:
-    // PR #1712 made the preflight resolve its package manager (pnpm, else
-    // `npm run lint`), and it exits 0 under a pnpm-free PATH. The obstacle the
-    // comment described is gone; the cost argument above is the reason that
-    // remains.
-    globalSetup: ['tests/setup/ensure-registry-asset.globalSetup.ts'],
+    // Builds dist first (idempotent: a no-op when dist is newer than src), then
+    // ensures the gitignored registry asset. The dist-gated e2e files used to
+    // run only under vitest.config.ts, which included tests/e2e/**; that config
+    // is now the unit lane alone, so this lane builds for itself.
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/ensure-registry-asset.globalSetup.ts'],
     // E2E tests spawn shipped scripts and real framework-shaped sessions. Keep
     // the same live-agent environment isolation as the default suite so an
     // ambient INSTAR_FRAMEWORK/AGENT_HOME cannot redirect a fixture into the
