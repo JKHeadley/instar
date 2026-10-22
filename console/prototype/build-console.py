@@ -50,7 +50,7 @@ e = html.escape
 
 sessions, s_err = get("/sessions?scope=pool")
 commits, c_err = get("/commitments")
-guards, g_err = get("/guards")
+guards, g_err = get("/guards?scope=pool")
 atten, a_err = get("/attention?scope=pool")
 pool, p_err = get("/pool")
 health, h_err = get("/health")
@@ -272,53 +272,72 @@ def promise_rows():
 </div>''')
     return "\n".join(out)
 
-# ---- authority ------------------------------------------------------------
+# ---- authority, across every machine --------------------------------------
 def authority_block():
-    """Read the endpoint's OWN summary rather than recomputing it.
+    """Guard posture for this machine, plus the per-machine gaps across the pool.
 
-    The first version did `if g.get("effective")`. `effective` is a STRING
-    ("off", "on-confirmed", "on-dry-run", ...), and "off" is truthy in Python — so it
-    rendered 91 guards as "on" when 54 were off. It was caught only because the number
-    looked implausible and the page was actually looked at. That is precisely the
-    failure this console exists to make impossible, committed by the console.
+    Reads each machine's OWN summary rather than recomputing it. The first version
+    of this function did `if guard.effective` — `effective` is a STRING, and "off"
+    is truthy in Python, so it rendered 91 guards as on when 54 were off. It was
+    caught only because the number looked implausible and the page was looked at.
+    That is exactly the failure this console exists to make impossible, committed
+    by the console.
     """
-    if g_err: return f'<p class="err">Can\'t tell: {e(g_err)}.</p>'
+    if g_err:
+        return '<p class="err">Can\'t tell: ' + e(g_err) + '.</p>'
     if not isinstance(guards, dict) or "summary" not in guards:
         return '<p class="err">Can\'t tell: this agent did not report a guard summary.</p>'
     sm = guards["summary"]
     parts = [
-        f'<div class="stat"><b>{sm.get("onConfirmed",0)}</b><span>on, confirmed</span></div>',
-        f'<div class="stat"><b>{sm.get("onUnverified",0)}</b><span>on, unverified</span></div>',
-        f'<div class="stat"><b>{sm.get("offDarkDefault",0)}</b><span>off by design</span></div>',
+        '<div class="stat"><b>' + str(sm.get("onConfirmed", 0)) + '</b><span>on, confirmed</span></div>',
+        '<div class="stat"><b>' + str(sm.get("onUnverified", 0)) + '</b><span>on, unverified</span></div>',
+        '<div class="stat"><b>' + str(sm.get("offDarkDefault", 0)) + '</b><span>off by design</span></div>',
     ]
     if sm.get("onDryRun"):
-        parts.append(f'<div class="stat warnst"><b>{sm["onDryRun"]}</b><span>watching only</span></div>')
+        parts.append('<div class="stat warnst"><b>' + str(sm["onDryRun"]) + '</b><span>watching only</span></div>')
     if sm.get("offDeviant"):
-        parts.append(f'<div class="stat alarm"><b>{sm["offDeviant"]}</b><span>off that should be on</span></div>')
+        parts.append('<div class="stat alarm"><b>' + str(sm["offDeviant"]) + '</b><span>off that should be on</span></div>')
     if sm.get("offRuntimeDivergent"):
-        parts.append(f'<div class="stat alarm"><b>{sm["offRuntimeDivergent"]}</b><span>says on, isn\'t</span></div>')
+        parts.append('<div class="stat alarm"><b>' + str(sm["offRuntimeDivergent"]) + '</b><span>says on, isn\'t</span></div>')
     if sm.get("missing"):
-        parts.append(f'<div class="stat warnst"><b>{sm["missing"]}</b><span>can\'t tell</span></div>')
+        parts.append('<div class="stat warnst"><b>' + str(sm["missing"]) + '</b><span>can\'t tell</span></div>')
 
     notes = []
     gaps = sm.get("loadBearingGapKeys") or []
     if gaps:
-        notes.append('<p class="note alarmtext">Something a critical path depends on is not running — '
-                     + str(len(gaps)) + ': ' + e(", ".join(sorted(gaps)[:4]))
-                     + ('…' if len(gaps) > 4 else '') + '</p>')
+        notes.append('<p class="note alarmtext">Something a critical path depends on is not running here — '
+                     + str(len(gaps)) + ': ' + e(", ".join(sorted(gaps)[:3]))
+                     + ('…' if len(gaps) > 3 else '') + '</p>')
+
+    # Per-machine gap counts, derived from each peer's own guard rows.
+    pool = guards.get("pool") if isinstance(guards, dict) else None
+    if isinstance(pool, dict) and isinstance(pool.get("machines"), list):
+        per = []
+        for m in pool["machines"]:
+            rows = m.get("guards")
+            if not isinstance(rows, list):
+                per.append((m.get("nickname") or "?", None))
+                continue
+            n = sum(1 for g in rows
+                    if g.get("loadBearing") and str(g.get("effective", "")).startswith("off"))
+            per.append((m.get("nickname") or "?", n))
+        if per:
+            txt = ", ".join((str(k) + ": " + ("can't tell" if v is None else str(v))) for k, v in per)
+            notes.append('<p class="note">Critical-path gaps on the other machines — ' + e(txt) + '.</p>')
+    elif isinstance(pool, dict):
+        notes.append('<p class="note">Other machines did not report their guard posture.</p>')
+
     if sm.get("offRuntimeDivergent"):
         notes.append('<p class="note alarmtext">At least one guard reports itself on while its runtime says '
                      'otherwise. The contradiction is shown rather than resolved in its favour.</p>')
-    if sm.get("onDryRun"):
-        notes.append('<p class="note">' + str(sm["onDryRun"]) +
-                     ' are observing but not acting — on, and deliberately toothless.</p>')
-    notes.append('<p class="note">' + str(sm.get("offDarkDefault",0)) +
+    notes.append('<p class="note">' + str(sm.get("offDarkDefault", 0)) +
                  ' are off because they ship off. Normal, not an alarm.</p>')
     enriched = sm.get("runtimeEnriched")
     if enriched:
         notes.append('<p class="note">Live runtime state could be read for ' + e(str(enriched)) +
                      '; the rest report what they are configured to do, not what they are doing.</p>')
     return '<div class="stats">' + "".join(parts) + '</div>' + "".join(notes)
+
 
 now = datetime.datetime.now().strftime("%-d %B %Y, %H:%M")
 page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">

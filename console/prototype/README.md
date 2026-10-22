@@ -27,7 +27,7 @@ displays none of it. The four sections are that conclusion, built:
 | **What I'm doing** | `/sessions?scope=pool` | Live sessions across **every** machine, grouped by machine. Names any peer that could not be reached — a fleet view that quietly drops an unreachable machine is indistinguishable from one where everything is fine. |
 | **What I've promised** | `/commitments` | Open commitments with what each is blocked on. A follow-through store with no face on it. |
 | **Where I'm running** | `/pool`, `/health` | Which machines exist and which holds the right to speak. |
-| **What I'm allowed to do** | `/guards` | Guard posture, read from the endpoint's own summary. |
+| **What I'm allowed to do** | `/guards?scope=pool` | Guard posture, read from the endpoint's own summary. |
 
 ## The design rule it is actually testing
 
@@ -70,7 +70,7 @@ agent, including while it worked on the problem they describe.
 - A snapshot generator, not an application: no interaction, no navigation.
 - `focus`/`lastAction` in the parallel-work index are empty on this agent, so
   "what each session is doing" has no real source yet and says so.
-- Sessions and attention are pool-scoped; promises and guards still read local state only.
+- Sessions, attention and guards are pool-scoped; promises still read local state only.
 - The highest-value finding in the research — Grok's *"Take over / I'm done"*
   hand-off — is **not** built here. It needs a session-level mechanism, not a
   screen.
