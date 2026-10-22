@@ -246,6 +246,7 @@ import {
 import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -1890,6 +1891,18 @@ export interface RouteContext {
         ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
       }>)
     | null;
+  /**
+   * The rope-health feedback arm of the pool-read selection fix
+   * (docs/specs/peer-credential-guard-tailscale-coherence.md §3.4(b)).
+   *
+   * Reports each pool dial's outcome to the SAME `PeerEndpointResolver` the
+   * lease transport and recovery prober feed, so a rope that is admissible but
+   * dead stops being selected. Without it, selection settles on the highest-
+   * priority admissible rope forever even when it never answers — measured on
+   * 2026-10-22 as a dead LAN rope chosen over a healthy tunnel. Absent/null on
+   * a single machine (no peers, nothing to learn).
+   */
+  recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder | null;
   /** WS4.4(f) global pool-cache unification (MULTI-MACHINE-SEAMLESSNESS-SPEC
    *  §WS4.4 clause (f)): the ONE shared per-peer poll cache that every
    *  pool-scope surface routes its per-peer fetch through, so a dashboard
@@ -10960,7 +10973,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const peerQuery = includeAll ? '?include=all' : explicitStatus ? `?status=${explicitStatus}` : '';
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/sessions${peerQuery}`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/sessions${peerQuery}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
@@ -11337,7 +11350,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const r = await fetch(`${peer.url}/topic-profile/options`, {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/topic-profile/options`, {
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName },
         signal: AbortSignal.timeout(5000),
       });
@@ -12228,7 +12241,7 @@ export function createRoutes(ctx: RouteContext): Router {
             }
             let verdict: { ok?: boolean; framework?: string; model?: string | null; code?: string; error?: string } = {};
             try {
-              const r = await fetch(`${peer.url}/topic-profile/validate-choice`, {
+              const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/topic-profile/validate-choice`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
                 body: JSON.stringify({ framework: want.framework, model: want.model }),
@@ -16686,7 +16699,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try {
           // The actual peer fetch — called WITHOUT scope=pool (no recursion).
           const fetchPeerJobs = async () => {
-            const r = await fetch(`${p.url}/jobs`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/jobs`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
             });
@@ -19134,7 +19147,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         try {
           const fetchPeer = async () => {
-            const r = await fetch(`${p.url}/threadline/pairing`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/threadline/pairing`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(PAIRING_PEER_TIMEOUT_MS),
             });
@@ -20313,7 +20326,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         try {
           const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-          const r = await fetch(`${p.url}/attention${qs}`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/attention${qs}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
           });
@@ -21577,7 +21590,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return;
           }
           try {
-            const r = await fetch(`${p.url}/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -21830,7 +21843,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return;
           }
           try {
-            const r = await fetch(`${p.url}/decision-quality${sinceHours ? `?sinceHours=${sinceHours}` : ''}`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/decision-quality${sinceHours ? `?sinceHours=${sinceHours}` : ''}`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -21973,7 +21986,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return;
           }
           const fetchPeerFindings = async (): Promise<{ findings?: unknown[] }> => {
-            const r = await fetch(`${p.url}/benchmark-divergence`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/benchmark-divergence`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -29774,7 +29787,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
       }
       try {
-        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/completion-claim/audit?limit=${limit}&projection=pool`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
         });
         if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
@@ -32589,7 +32602,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
         }
         try {
-          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/blocker-lifecycle/${kind}?${query}&scope=local`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
           });
           if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
@@ -33343,7 +33356,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (cap && cap.online === false) { failed.push({ machineId: p.machineId, error: 'offline' }); return; }
         try {
           const fetchPeer = async () => {
-            const r = await fetch(`${p.url}/standdown`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/standdown`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(4000),
             });
@@ -34111,7 +34124,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }> = [];
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/subscription-pool`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
@@ -34349,7 +34362,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const suffix = query.size > 0 ? `?${query.toString()}` : '';
       await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async (peer) => {
         try {
-          const response = await fetch(`${peer.url}/subscription-relogin${suffix}`, {
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5_000),
           });
@@ -34758,7 +34771,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remote: Record<string, unknown>[] = [];
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/subscription-pool/pending-logins`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool/pending-logins`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });

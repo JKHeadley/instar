@@ -897,6 +897,8 @@ export class AgentServer {
       kind: PeerEndpointKind;
       ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
     }>;
+    /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
+    recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -4846,6 +4848,7 @@ export class AgentServer {
       passkeyProofBrowser: options.passkeyProofBrowser ?? null,
       poolLink: options.poolLink ?? null,
       poolPollCache: options.poolPollCache ?? null,
+      recordRopeResult: options.recordRopeResult ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,
