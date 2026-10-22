@@ -104,3 +104,41 @@ session lifecycle. Recorded as `not-required`.
 
 **Honest status:** this is the decision layer only. Creating the topic, persisting the map, and
 calling these from the trust-verify path are NOT in this commit.
+
+---
+
+# Increment 3 — the homebase record on the trust profile
+
+**Change:** `AgentTrustProfile.homebaseTopicId?: number` plus `setHomebaseTopic` /
+`getHomebaseTopic` on `AgentTrustManager`. Still no caller.
+
+1. **Over-block:** `setHomebaseTopic` returns `false` rather than throwing for an unknown peer,
+   a non-integer id, or an attempt to replace a DIFFERENT existing id. The last refusal is the
+   point: a second write with a new topic would silently orphan the first, which is the
+   duplicate-topic shape spec §6 accepts as a rare crash outcome but must never invite. The
+   caller sees the refusal and can surface it.
+2. **Under-block:** it does not verify the topic still exists in Telegram. A topic the operator
+   deletes leaves a stale id, and routing would send to a dead topic. Accepted — that is the
+   same class as §6's name-based identity, and the recovery is the operator re-creating or the
+   next verification.
+3. **Abstraction fit:** on the profile rather than in a new per-agent map, because the profile
+   is already the durable per-peer record. A separate map would be a second place for one fact
+   to be torn against the first, and it would need its own state-registry entry, retention
+   declaration and replication story for no gain.
+4. **Signal vs authority:** a record plus two accessors. No gate, no decision, no send.
+5. **Interactions:** writes through the existing `save()` path used by every other profile
+   mutation, so no new persistence mechanism and no new race. It touches `updatedAt`, which is
+   correct (the profile did change) and is what every other mutator does.
+6. **External surfaces:** none. The field appears in the persisted trust profile, which is
+   machine-local.
+7. **Multi-machine posture:** **unified** — it rides the trust profile, which already replicates
+   under its existing class, so one homebase per peer agent-wide. That is the posture spec §7
+   declares for the map, reached by putting it where replication already happens rather than
+   adding a path.
+8. **Rollback:** additive optional field; delete the accessors and the field. Records carrying
+   an unread id are harmless. No migration.
+
+**Second pass:** not required — no authority, no messaging/dispatch gate, no session lifecycle.
+
+**Honest status:** the record exists and nothing writes to it in production yet. Creating the
+topic and calling this from the verify path is the remaining increment.
