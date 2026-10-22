@@ -88,6 +88,8 @@ Pure code + docs. Revert and ship a patch. Records written with `independentRevi
 
 The directive is implemented structurally: no merge path asks the operator for anything except GitHub's code-owner review of the constitution. The main residual is that the second pass is self-attested; it is now head-bound, path-covering and auditable instead of an operator click. Clear to ship once the second pass concurs.
 
+- **Traces now ship with the commit.** `.instar/instar-dev-traces/` is gitignored, so before this change a trace only reached a PR when the author remembered `git add -f`; under the new rule a flagged PR whose trace was not committed would be refused forever. `write-trace.mjs` now stages its own trace (`git add -f`, additive; a failure prints the exact command to run). Tested both sides in `tests/unit/write-trace-tier.test.ts`.
+
 ## Second-pass review (if required)
 
 **Reviewer:** independent reviewer subagent (two rounds)
