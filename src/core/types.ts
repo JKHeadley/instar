@@ -96,6 +96,16 @@ export interface Session {
   /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
    *  chokepoint — see src/core/WorkEvidence.ts). */
   endedWorkEvidence?: string[];
+  /** When this session was first observed idle at a prompt (ISO-8601), persisted
+   *  so the idle clock survives a server restart. `SessionManager.idlePromptSince`
+   *  is in-memory, so without this an agent that restarts more often than the
+   *  topic-bound idle threshold (240m) can never close an idle conversation and
+   *  fills its session slots (sagemind, 2026-10-22: 20/20, 17 sessions idle
+   *  17-64h). Cleared the moment the session is observed active. Absent on
+   *  legacy records and on sessions that have never been seen idle; seeding from
+   *  it is corroborated against the framework transcript — see
+   *  src/core/idleSincePersistence.ts. */
+  idleSince?: string;
   /** Working directory the session was spawned with (reap-notify R2.8/L13 —
    *  recorded so a resume-queue entry can revive the session in ITS tree).
    *  Absent on legacy records ⇒ the module project dir. */
