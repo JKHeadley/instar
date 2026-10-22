@@ -251,13 +251,20 @@ def machines_block():
         note = '<p class="note">Could not determine which machine holds the right to speak.</p>'
     return "".join(rows) + note
 
+# `/commitments` has no fleet view: it accepts ?scope=pool and ignores it, returning
+# this machine's rows only. Saying so is the same rule the rest of this screen runs
+# on — a partial picture presented as a whole is the failure, not the partiality.
+PROMISE_SCOPE_NOTE = ('<p class="note">This machine only. Unlike the sections above, '
+                      'the promises store has no fleet-wide view, so commitments made on '
+                      'the other machines are not counted here.</p>')
+
 # ---- promises -------------------------------------------------------------
 def promise_rows():
     if c_err: return f'<p class="err">Can\'t tell: {e(c_err)}.</p>'
     items = commits.get("commitments", commits) if isinstance(commits, dict) else (commits or [])
     open_ = [i for i in items if i.get("status") not in ("delivered", "withdrawn", "cancelled")]
     if not open_:
-        return '<p class="empty">No open promises.</p>'
+        return '<p class="empty">No open promises on this machine.</p>' + PROMISE_SCOPE_NOTE
     out = []
     for i in sorted(open_, key=lambda x: str(x.get("createdAt") or ""), reverse=True)[:8]:
         text = (i.get("agentResponse") or "").strip().replace("\n", " ")
@@ -270,7 +277,7 @@ def promise_rows():
   <div class="doing">{e(text[:190] + ("…" if len(text) > 190 else "")) or "(no text recorded)"}</div>
   <div class="meta">{e(when) if when else "time not recorded"}{tag}</div>
 </div>''')
-    return "\n".join(out)
+    return "\n".join(out) + PROMISE_SCOPE_NOTE
 
 # ---- authority, across every machine --------------------------------------
 def authority_block():

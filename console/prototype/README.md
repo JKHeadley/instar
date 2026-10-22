@@ -70,7 +70,7 @@ agent, including while it worked on the problem they describe.
 - A snapshot generator, not an application: no interaction, no navigation.
 - `focus`/`lastAction` in the parallel-work index are empty on this agent, so
   "what each session is doing" has no real source yet and says so.
-- Sessions, attention and guards are pool-scoped; promises still read local state only.
+- Sessions, attention and guards are pool-scoped. Promises are this machine only — `/commitments` accepts `?scope=pool` and ignores it — and the screen says so rather than presenting a partial count as a whole one.
 - The highest-value finding in the research — Grok's *"Take over / I'm done"*
   hand-off — is **not** built here. It needs a session-level mechanism, not a
   screen.
