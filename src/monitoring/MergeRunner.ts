@@ -86,7 +86,7 @@ export interface MergeRunnerConfig {
    * native auto-merge via `safe-merge … --auto` and returns in seconds; `admin`
    * is the legacy synchronous poll+merge via `--admin`. Absent → 'auto'.
    */
-  mergeStrategy?: 'auto' | 'admin';
+  mergeStrategy?: 'auto' | 'admin' | 'sync';
   /**
    * The `--auto` spawn deadline (default ~60s). Arming is a single API call, so
    * the 25-min `mergeTimeoutMs` is vestigial on the auto path — a hung arm
@@ -143,7 +143,7 @@ export class DefaultMergeRunner implements MergeRunner {
    * config survived `config → GreenPrAutoMergerConfig → buildGreenPrDeps →
    * MergeRunnerConfig` and the runner is no longer hardcoded to `--admin`.
    */
-  get resolvedStrategy(): 'auto' | 'admin' { return this.cfg.mergeStrategy ?? 'auto'; }
+  get resolvedStrategy(): 'auto' | 'admin' | 'sync' { return this.cfg.mergeStrategy ?? 'auto'; }
   /** The resolved `--auto` spawn deadline (M2 wiring-integrity surface). */
   get resolvedArmTimeoutMs(): number { return this.cfg.armTimeoutMs ?? 60_000; }
 
@@ -171,10 +171,16 @@ export class DefaultMergeRunner implements MergeRunner {
     }
   }
 
+  /**
+   * Hash safe-merge.mjs AND every module it imports from the repo (relative
+   * specifiers, followed transitively), in a fixed order (sorted by path
+   * relative to the script's directory). A change to ANY of them between the
+   * probe and the exec refuses — the spawn runs the verified bytes, including
+   * the floor/body-check modules it loads. Any unreadable file ⇒ null ⇒ refuse.
+   */
   private hashScript(): string | null {
     try {
-      const buf = fs.readFileSync(this.cfg.safeMergePath);
-      return crypto.createHash('sha256').update(buf).digest('hex');
+      return hashLocalImportClosure(this.cfg.safeMergePath);
     } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       return null;
     }
@@ -208,11 +214,15 @@ export class DefaultMergeRunner implements MergeRunner {
     // `safe-merge … --auto` (GitHub native auto-merge; returns in seconds) with a
     // SHORT armTimeoutMs deadline; the legacy admin path keeps `--admin` + the
     // 25-min mergeTimeoutMs deadline.
-    const strategy = this.cfg.mergeStrategy ?? 'auto';
-    const strategyFlag = strategy === 'admin' ? '--admin' : '--auto';
-    const pathTimeoutMs = strategy === 'admin'
-      ? this.cfg.mergeTimeoutMs
-      : (this.cfg.armTimeoutMs ?? 60_000);
+    // `sync` (local-verify-merge-authority §2 "Merge deadline and flags"): the
+    // synchronous path with NEITHER --auto nor --admin, under mergeTimeoutMs —
+    // GitHub's refusal never depends on the login lacking admin rights. A
+    // per-attempt `strategy: 'sync'` (the local floor) overrides the config.
+    const strategy = attempt.strategy ?? this.cfg.mergeStrategy ?? 'auto';
+    const strategyFlags = strategy === 'admin' ? ['--admin'] : strategy === 'sync' ? [] : ['--auto'];
+    const pathTimeoutMs = strategy === 'auto'
+      ? (this.cfg.armTimeoutMs ?? 60_000)
+      : this.cfg.mergeTimeoutMs;
 
     let out: SpawnOutcome;
     try {
@@ -220,11 +230,13 @@ export class DefaultMergeRunner implements MergeRunner {
         command: this.cfg.nodePath ?? process.execPath,
         args: [
           this.cfg.safeMergePath, String(attempt.pr),
-          '--repo', this.cfg.repo, '--squash', '--delete-branch', strategyFlag,
+          '--repo', this.cfg.repo, '--squash', '--delete-branch', ...strategyFlags,
           '--match-head-commit', attempt.headRefOid,
           '--deadline-ms', String(pathTimeoutMs),
         ],
-        env: { ...githubEnv, GREEN_PR_ATTEMPT_TOKEN: attemptToken },
+        // INSTAR_MERGE_FLOOR is a manual override for a human running safe-merge;
+        // the server's own environment must never carry it into the watcher's merges.
+        env: { ...withoutMergeFloorOverride(githubEnv), GREEN_PR_ATTEMPT_TOKEN: attemptToken },
         deadlineMs: pathTimeoutMs + this.cfg.mergeKillGraceMs,
         onPid: (pid) => {
           // Phase 2: patch pid/pgid (the child's pid IS its pgid when detached).
@@ -356,6 +368,13 @@ export class DefaultMergeRunner implements MergeRunner {
 }
 
 /** Parse safe-merge's classified `safe-merge-result: {...}` line from stdout. */
+/** The child env without the manual INSTAR_MERGE_FLOOR override. Exported for tests. */
+export function withoutMergeFloorOverride(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  delete out.INSTAR_MERGE_FLOOR;
+  return out;
+}
+
 export function parseResultLine(stdout: string): string | null {
   const lines = stdout.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -391,4 +410,48 @@ function defaultSpawn(a: SpawnArgs): Promise<SpawnOutcome> {
       resolve({ stdout, stderr, status: null, signal: null, deadlineKilled, pid: child.pid ?? null });
     });
   });
+}
+
+// ---- the import-closure hash (probe-time pin + pre-exec re-verify) ------------
+
+const RELATIVE_SPECIFIER = /(?:\bimport\s*(?:[^'"()]*?\bfrom\s*)?|\bexport\s+[^'"]*?\bfrom\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
+
+/** Relative module specifiers a JS module source imports (comments stripped first). */
+export function relativeImports(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+  const out: string[] = [];
+  for (const m of code.matchAll(RELATIVE_SPECIFIER)) out.push(m[1]);
+  return out;
+}
+
+/** Every file in the entry's relative-import closure, sorted by path relative to the entry's directory. */
+export function localImportClosure(entry: string): string[] {
+  const root = path.dirname(path.resolve(entry));
+  const seen = new Set<string>();
+  const queue = [path.resolve(entry)];
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const src = fs.readFileSync(file, 'utf-8'); // throws on a missing import ⇒ the caller refuses
+    for (const spec of relativeImports(src)) queue.push(path.resolve(path.dirname(file), spec));
+  }
+  return [...seen].sort((a, b) => {
+    const ra = path.relative(root, a);
+    const rb = path.relative(root, b);
+    return ra < rb ? -1 : ra > rb ? 1 : 0;
+  });
+}
+
+/** sha256 over (relative path, NUL, bytes, NUL) for each file of the closure, in the fixed order. */
+export function hashLocalImportClosure(entry: string): string {
+  const root = path.dirname(path.resolve(entry));
+  const h = crypto.createHash('sha256');
+  for (const file of localImportClosure(entry)) {
+    h.update(path.relative(root, file));
+    h.update('\0');
+    h.update(fs.readFileSync(file));
+    h.update('\0');
+  }
+  return h.digest('hex');
 }

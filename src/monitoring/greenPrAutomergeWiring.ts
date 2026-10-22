@@ -26,6 +26,7 @@
  *                here can only cause a refusal, never an unintended merge.
  */
 
+import { extractRulesetReviewPolicy } from '../../scripts/local-verify-floor.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -216,13 +217,19 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
   return {
     holdsLease: opts.holdsLease,
     leaseEpoch: opts.leaseEpoch,
+    rulesetReviewPolicy: async () => {
+      // The same ruleset read safe-merge's review precheck uses (a non-admin can read it).
+      const r = await exec(['api', `repos/${opts.repo}/rules/branches/main`]);
+      if (r.code !== 0) throw new Error(`ruleset read failed: ${r.stderr.slice(0, 200)}`);
+      return extractRulesetReviewPolicy(JSON.parse(r.stdout));
+    },
     listOpenPrs: async () => {
       const r = await exec([
         'pr', 'list', '--author', '@me', '--state', 'open', '--base', 'main',
         // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
         // extra field on the single oldest-first list call already made each tick
         // lets gather() skip an already-armed PR FREE, regardless of local state.
-        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup,autoMergeRequest',
+        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,autoMergeRequest,reviewDecision,createdAt',
         '--search', 'sort:created-asc',
       ]);
       if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
@@ -315,7 +322,7 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
   };
 }
 
-function mapPr(row: Record<string, unknown>): PrSummary {
+export function mapPr(row: Record<string, unknown>): PrSummary {
   const labels = Array.isArray(row.labels) ? (row.labels as Array<{ name?: string }>).map((l) => l.name ?? '') : [];
   const rollup = row.statusCheckRollup;
   return {
@@ -325,6 +332,11 @@ function mapPr(row: Record<string, unknown>): PrSummary {
     isDraft: !!row.isDraft,
     headRefName: String(row.headRefName ?? ''),
     headRefOid: String(row.headRefOid ?? ''),
+    // local-verify: the base branch the record key needs (absent → no record matches).
+    ...(typeof row.baseRefName === 'string' && row.baseRefName ? { baseRefName: row.baseRefName } : {}),
+    // local-verify: the review precheck + the "ready" time for verify ordering.
+    ...(typeof row.reviewDecision === 'string' ? { reviewDecision: row.reviewDecision } : {}),
+    ...(typeof row.createdAt === 'string' && row.createdAt ? { createdAt: row.createdAt } : {}),
     mergeable: String(row.mergeable ?? 'UNKNOWN'),
     statusRollup: deriveRollup(rollup),
     // mergerunner-auto-arm-handoff Blocker 4: GitHub-side armed state, derived

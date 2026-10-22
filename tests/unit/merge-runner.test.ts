@@ -17,6 +17,8 @@ import {
   type SpawnArgs,
   type SpawnOutcome,
   type InFlightRecord,
+  localImportClosure,
+  relativeImports,
 } from '../../src/monitoring/MergeRunner.js';
 
 let dir: string;
@@ -102,6 +104,59 @@ describe('DefaultMergeRunner — contract probe + hash pin', () => {
     fs.writeFileSync(scriptPath, '// TAMPERED\n'); // swap after probe
     const result = await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' });
     expect(result.outcome).toBe('skipped:safe-merge-contract');
+  });
+});
+
+describe('DefaultMergeRunner — the hash pin covers safe-merge\'s local imports', () => {
+  const setup = () => {
+    fs.writeFileSync(scriptPath, "import { a } from './floor.mjs';\nimport fs from 'node:fs';\n// import { x } from './commented-out.mjs';\n");
+    fs.writeFileSync(path.join(dir, 'floor.mjs'), "export { b } from './nested/b.mjs';\nexport const a = 1;\n");
+    fs.mkdirSync(path.join(dir, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'nested', 'b.mjs'), 'export const b = 2;\n');
+  };
+
+  it('the closure is the script plus every relative import, transitively, in a fixed order', () => {
+    setup();
+    expect(localImportClosure(scriptPath).map((f) => path.relative(dir, f))).toEqual(['floor.mjs', path.join('nested', 'b.mjs'), 'safe-merge.mjs']);
+    expect(relativeImports("import x from './a.mjs'; export * from '../b.mjs'; await import('./c.mjs'); import 'node:fs';")).toEqual(['./a.mjs', '../b.mjs', './c.mjs']);
+  });
+
+  it('a change to a directly imported module between probe and exec refuses', async () => {
+    setup();
+    const r = new DefaultMergeRunner(baseCfg(), { spawn: fakeSpawn({}), confirmMerged: async () => true, prState: async () => 'OPEN' });
+    expect((await r.probeContract()).ok).toBe(true);
+    fs.writeFileSync(path.join(dir, 'floor.mjs'), "export { b } from './nested/b.mjs';\nexport const a = 999;\n");
+    expect((await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' })).outcome).toBe('skipped:safe-merge-contract');
+  });
+
+  it('a change to a transitively imported module refuses', async () => {
+    setup();
+    const r = new DefaultMergeRunner(baseCfg(), { spawn: fakeSpawn({}), confirmMerged: async () => true, prState: async () => 'OPEN' });
+    await r.probeContract();
+    fs.writeFileSync(path.join(dir, 'nested', 'b.mjs'), 'export const b = 3;\n');
+    expect((await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' })).outcome).toBe('skipped:safe-merge-contract');
+  });
+
+  it('a removed imported module fails the probe (unhashable ⇒ refuse)', async () => {
+    setup();
+    SafeFsExecutor.safeUnlinkSync(path.join(dir, 'nested', 'b.mjs'), { operation: 'test-remove-import' });
+    const r = new DefaultMergeRunner(baseCfg(), { spawn: fakeSpawn({}), confirmMerged: async () => true, prState: async () => 'OPEN' });
+    expect((await r.probeContract()).ok).toBe(false);
+  });
+
+  it('unchanged files run normally', async () => {
+    setup();
+    const r = new DefaultMergeRunner(baseCfg(), { spawn: fakeSpawn({}), confirmMerged: async () => true, prState: async () => 'OPEN' });
+    await r.probeContract();
+    expect((await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' })).outcome).toBe('merged');
+  });
+
+  it('the real safe-merge closure includes the floor module and the body checkers', () => {
+    const real = path.join(process.cwd(), 'scripts', 'safe-merge.mjs');
+    const names = localImportClosure(real).map((f) => path.basename(f));
+    for (const n of ['safe-merge.mjs', 'local-verify-floor.mjs', 'eli16-pr-description-check.mjs', 'decision-audit-presence-check.mjs', 'check-release-fragment.mjs', 'release-relevant-paths.mjs']) {
+      expect(names).toContain(n);
+    }
   });
 });
 
@@ -301,5 +356,68 @@ describe('DefaultMergeRunner — orphan reap', () => {
     });
     const res = await r.reapOrphan();
     expect(res.outcome).toBe('closed-by-other');
+  });
+});
+
+describe('DefaultMergeRunner — sync strategy (local-verify-merge-authority §2 "Merge deadline and flags")', () => {
+  function capturingSpawn(mergeOut: SpawnOutcome) {
+    const captured: { args: string[]; deadlineMs: number }[] = [];
+    const spawn = async (a: SpawnArgs): Promise<SpawnOutcome> => {
+      if (a.args.includes('--capabilities')) return { stdout: JSON.stringify({ contract: 2 }), stderr: '', status: 0, signal: null, deadlineKilled: false, pid: 1 };
+      captured.push({ args: a.args, deadlineMs: a.deadlineMs });
+      a.onPid?.(222);
+      return mergeOut;
+    };
+    return { spawn, captured };
+  }
+  const merged: SpawnOutcome = { stdout: 'safe-merge-result: {"result":"merged"}', stderr: '', status: 0, signal: null, deadlineKilled: false, pid: 222 };
+
+  it('mergeStrategy:sync passes NEITHER --auto NOR --admin and uses the mergeTimeoutMs deadline', async () => {
+    const { spawn, captured } = capturingSpawn(merged);
+    const r = new DefaultMergeRunner({ ...baseCfg(), mergeStrategy: 'sync', armTimeoutMs: 60_000 }, { spawn, confirmMerged: async () => true, prState: async () => 'OPEN' });
+    expect(r.resolvedStrategy).toBe('sync');
+    await r.probeContract();
+    const res = await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' });
+    expect(captured[0].args).not.toContain('--auto');
+    expect(captured[0].args).not.toContain('--admin');
+    expect(captured[0].args).toContain('--match-head-commit');
+    expect(captured[0].deadlineMs).toBe(1000 + 100);
+    expect(captured[0].args[captured[0].args.indexOf('--deadline-ms') + 1]).toBe('1000');
+    expect(res).toMatchObject({ outcome: 'merged', confirmedMerged: true });
+  });
+
+  it('a per-attempt strategy:sync overrides mergeStrategy:auto (the local floor)', async () => {
+    const { spawn, captured } = capturingSpawn(merged);
+    const r = new DefaultMergeRunner({ ...baseCfg(), mergeStrategy: 'auto', armTimeoutMs: 60_000 }, { spawn, confirmMerged: async () => true, prState: async () => 'OPEN' });
+    await r.probeContract();
+    await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar', strategy: 'sync' });
+    expect(captured[0].args).not.toContain('--auto');
+    expect(captured[0].args).not.toContain('--admin');
+    expect(captured[0].deadlineMs).toBe(1000 + 100);
+  });
+
+  it('a per-attempt strategy:sync overrides mergeStrategy:admin', async () => {
+    const { spawn, captured } = capturingSpawn(merged);
+    const r = new DefaultMergeRunner({ ...baseCfg(), mergeStrategy: 'admin' }, { spawn, confirmMerged: async () => true, prState: async () => 'OPEN' });
+    await r.probeContract();
+    await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar', strategy: 'sync' });
+    expect(captured[0].args).not.toContain('--admin');
+    expect(captured[0].args).not.toContain('--auto');
+  });
+
+  it('a sync merged outcome is still independently confirmed (B10)', async () => {
+    const { spawn } = capturingSpawn(merged);
+    const r = new DefaultMergeRunner({ ...baseCfg(), mergeStrategy: 'sync' }, { spawn, confirmMerged: async () => false, prState: async () => 'OPEN' });
+    await r.probeContract();
+    const res = await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' });
+    expect(res.confirmedMerged).toBe(false);
+  });
+});
+
+describe('withoutMergeFloorOverride', () => {
+  it('drops INSTAR_MERGE_FLOOR so the server env never forces a floor on the watcher', async () => {
+    const { withoutMergeFloorOverride } = await import('../../src/monitoring/MergeRunner.js');
+    const out = withoutMergeFloorOverride({ PATH: '/bin', INSTAR_MERGE_FLOOR: 'actions', GH_TOKEN: 'x' });
+    expect(out).toEqual({ PATH: '/bin', GH_TOKEN: 'x' });
   });
 });

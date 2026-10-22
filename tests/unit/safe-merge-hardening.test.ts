@@ -22,6 +22,11 @@ import {
   CONTRACT_VERSION,
   DEFAULT_REPO,
   REQUIRED_CONTEXTS_FLOOR,
+  CLASSIC_PROTECTION_CONTEXTS_PINNED,
+  ACTIONS_FLOOR_CONTEXTS,
+  LOCAL_VERIFY_CONTEXT,
+  fetchProtectionContexts,
+  extractBranchProtection,
 } from '../../scripts/safe-merge.mjs';
 
 describe('parseArgs — strict argv', () => {
@@ -313,5 +318,131 @@ describe('ruleset review policy — request the approval up front, never a revie
     const caps = capabilities();
     expect(caps.features).toContain('approval-required-refusal');
     expect(caps.features).toContain('request-review-from');
+  });
+});
+
+describe('ACTIONS_FLOOR_CONTEXTS — one shared floor incl. the 12 classic-protection contexts (local-verify-merge-authority §3)', () => {
+  const CLASSIC_12 = [
+    'Type Check', 'Integration Tests', 'E2E Tests', 'Build',
+    'Unit Tests (node 20, shard 1/4)', 'Unit Tests (node 20, shard 2/4)', 'Unit Tests (node 20, shard 3/4)', 'Unit Tests (node 20, shard 4/4)',
+    'Unit Tests (node 22, shard 1/4)', 'Unit Tests (node 22, shard 2/4)', 'Unit Tests (node 22, shard 3/4)', 'Unit Tests (node 22, shard 4/4)',
+  ];
+
+  it('pins exactly the 12 classic contexts, each bound to ci.yml + github-actions', () => {
+    expect(CLASSIC_PROTECTION_CONTEXTS_PINNED.map(p => p.context)).toEqual(CLASSIC_12);
+    for (const pin of CLASSIC_PROTECTION_CONTEXTS_PINNED) {
+      expect(pin.workflowPath).toBe('.github/workflows/ci.yml');
+      expect(pin.appSlug).toBe('github-actions');
+    }
+  });
+
+  it('is REQUIRED_CONTEXTS_FLOOR plus the 12, deduplicated, without instar/local-verify', () => {
+    const names = ACTIONS_FLOOR_CONTEXTS.map(p => p.context);
+    for (const n of [...REQUIRED_CONTEXTS_FLOOR.map(f => f.context), ...CLASSIC_12]) expect(names).toContain(n);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).not.toContain(LOCAL_VERIFY_CONTEXT);
+    expect(names.length).toBe(14); // 6 floor + 8 unit shards (4 classic already in the floor)
+  });
+
+  it('refuses a merge whose unit shards never ran, even when protection lists nothing', () => {
+    const runs = REQUIRED_CONTEXTS_FLOOR.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug, workflowPath: f.workflowPath }));
+    const r = evaluateRequiredContexts({ protectionContexts: [], rulesetContexts: [], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: runs });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/Unit Tests \(node 22, shard 4\/4\)/);
+  });
+
+  it('refuses a unit shard from the wrong producer', () => {
+    const runs = ACTIONS_FLOOR_CONTEXTS.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug,
+      workflowPath: f.context.startsWith('Unit Tests (node 20, shard 1') ? '.github/workflows/evil.yml' : f.workflowPath }));
+    const r = evaluateRequiredContexts({ protectionContexts: [], rulesetContexts: [], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: runs });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/WRONG producer/);
+  });
+});
+
+describe('instar/local-verify is read from combined statuses, never check runs', () => {
+  const allGreenRuns = ACTIONS_FLOOR_CONTEXTS.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug, workflowPath: f.workflowPath }));
+  const base = { protectionContexts: [], rulesetContexts: [LOCAL_VERIFY_CONTEXT], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: allGreenRuns };
+
+  it('an Actions-floor merge succeeds when the required status is success (the mirror green)', () => {
+    const r = evaluateRequiredContexts({ ...base, commitStatuses: [{ context: LOCAL_VERIFY_CONTEXT, state: 'success' }] });
+    expect(r).toEqual({ ok: true, problems: [] });
+  });
+
+  it('refuses when the status is pending, failure, or absent', () => {
+    for (const commitStatuses of [[{ context: LOCAL_VERIFY_CONTEXT, state: 'pending' }], [{ context: LOCAL_VERIFY_CONTEXT, state: 'failure' }], []]) {
+      const r = evaluateRequiredContexts({ ...base, commitStatuses });
+      expect(r.ok).toBe(false);
+      expect(r.problems.join(' ')).toMatch(/instar\/local-verify/);
+    }
+  });
+
+  it('a check RUN named instar/local-verify does not satisfy it', () => {
+    const r = evaluateRequiredContexts({ ...base, checkRuns: [...allGreenRuns, { name: LOCAL_VERIFY_CONTEXT, conclusion: 'success', appSlug: 'github-actions', workflowPath: '.github/workflows/ci.yml' }] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('a success status for a different context does not satisfy it', () => {
+    const r = evaluateRequiredContexts({ ...base, commitStatuses: [{ context: 'ci/other', state: 'success' }] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('when local-verify is not required, statuses are irrelevant (behaviour unchanged)', () => {
+    const r = evaluateRequiredContexts({ ...base, rulesetContexts: [] });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('fetchProtectionContexts — reads /branches/<b>; a /protection 404 no longer means "none"', () => {
+  const BRANCH = {
+    name: 'main', protected: true,
+    protection: { required_status_checks: {
+      enforcement_level: 'non_admins',
+      contexts: ['Type Check', 'Build'],
+      checks: [{ context: 'Type Check', app_id: 15368 }, { context: 'Unit Tests (node 20, shard 1/4)', app_id: 15368 }],
+    } },
+  };
+  const fakeGh = (responses) => (args) => {
+    const path = args[1];
+    const hit = Object.entries(responses).find(([k]) => path.endsWith(k));
+    if (!hit) throw new Error(`unexpected gh call ${path}`);
+    return hit[1];
+  };
+  const ok = (data) => ({ status: 0, stdout: JSON.stringify(data), stderr: '' });
+  const notFound = { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+
+  it('non-admin: /protection 404 → contexts from /branches (contexts ∪ checks[].context), reviewsRequired false', () => {
+    const r = fetchProtectionContexts('JKHeadley/instar', 'main', fakeGh({ '/branches/main': ok(BRANCH), '/protection': notFound }));
+    expect(r.contexts.sort()).toEqual(['Build', 'Type Check', 'Unit Tests (node 20, shard 1/4)']);
+    expect(r.reviewsRequired).toBe(false);
+  });
+
+  it('admin: a readable /protection supplies the classic reviews flag and its contexts are unioned', () => {
+    const r = fetchProtectionContexts('JKHeadley/instar', 'main', fakeGh({
+      '/branches/main': ok(BRANCH),
+      '/protection': ok({ required_status_checks: { contexts: ['E2E Tests'] }, required_pull_request_reviews: { required_approving_review_count: 1 } }),
+    }));
+    expect(r.contexts).toContain('E2E Tests');
+    expect(r.contexts).toContain('Build');
+    expect(r.reviewsRequired).toBe(true);
+  });
+
+  it('an unprotected branch contributes nothing', () => {
+    const r = fetchProtectionContexts('o/r', 'dev', fakeGh({ '/branches/dev': ok({ name: 'dev', protected: false }), '/protection': notFound }));
+    expect(r).toEqual({ contexts: [], reviewsRequired: false });
+  });
+
+  it('a /branches failure is unverifiable (throws → refused:contexts-unverifiable), never "none"', () => {
+    expect(() => fetchProtectionContexts('o/r', 'main', fakeGh({ '/branches/main': notFound, '/protection': notFound }))).toThrow(/unverifiable/);
+  });
+
+  it('a non-404 /protection failure is unverifiable', () => {
+    expect(() => fetchProtectionContexts('o/r', 'main', fakeGh({ '/branches/main': ok(BRANCH), '/protection': { status: 1, stdout: '', stderr: 'HTTP 502' } }))).toThrow(/unverifiable/);
+  });
+
+  it('extractBranchProtection: review requirements come only from the ruleset when /protection is unreadable', () => {
+    expect(extractBranchProtection(BRANCH, null).reviewsRequired).toBe(false);
+    expect(extractRulesetReviewPolicy([{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_last_push_approval: true } }]))
+      .toEqual({ reviewsRequired: false, lastPushApprovalRequired: true });
   });
 });

@@ -15,6 +15,16 @@ export interface PrSummary {
   isDraft: boolean;
   headRefName: string;
   headRefOid: string;
+  /**
+   * The PR's base branch (local-verify-merge-authority §3: a local-floor
+   * candidate needs a record for (pr, head, baseRefName)). Optional — absent on
+   * a legacy projection, in which case no record can match.
+   */
+  baseRefName?: string;
+  /** GraphQL reviewDecision (APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ''); local-verify review precheck. */
+  reviewDecision?: string;
+  /** PR open time (ISO); local-verify "ready" time when no review is required. */
+  createdAt?: string;
   /** GraphQL mergeable enum: MERGEABLE | CONFLICTING | UNKNOWN. */
   mergeable: string;
   /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | null. */
@@ -140,6 +150,7 @@ export type CandidateSkip =
   | 'held'
   | 'not-mergeable'
   | 'not-settled-green'
+  | 'no-verify-record'
   | 'protected-paths'
   | 'protected-paths-unverifiable';
 
@@ -158,6 +169,7 @@ export interface CandidateVerdict {
 export function classifyCandidate(
   pr: PrSummary,
   agentNamespace: string,
+  opts: { floor?: 'local' | 'actions'; hasRecord?: boolean } = {},
 ): CandidateVerdict {
   if (!headInNamespace(pr.headRefName, agentNamespace)) {
     return { eligible: false, skip: 'not-agent-namespace' };
@@ -167,6 +179,15 @@ export function classifyCandidate(
   if (pr.mergeable !== 'MERGEABLE') return { eligible: false, skip: 'not-mergeable' };
   // "Settled green" — the watcher NEVER invokes safe-merge into a pending wait
   // (keeps each attempt window seconds-long; timeout inversion impossible).
+  //
+  // Under the `local` floor (local-verify-merge-authority §3) the test is a
+  // record in the server index for the current (pr, head, baseRefName); the
+  // Actions rollup is NOT read — an unavailable Actions would hold it PENDING
+  // forever. The namespace filter, holds and mergeability are unchanged.
+  if (opts.floor === 'local') {
+    if (opts.hasRecord !== true) return { eligible: false, skip: 'no-verify-record' };
+    return { eligible: true };
+  }
   if (pr.statusRollup !== 'SUCCESS') return { eligible: false, skip: 'not-settled-green' };
   return { eligible: true };
 }

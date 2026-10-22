@@ -22223,6 +22223,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             localVerifyTimer = setInterval(() => { void svc.tick().catch(() => { /* a failed tick retries next interval */ }); }, 30_000);
             localVerifyTimer.unref();
             console.log(pc.green('  local-verify enabled (server-run test verification for merges)'));
+            // The watcher reads local-verify late-bound (it is built first): the
+            // candidate pre-filter, the actions→local disarm and verify requests
+            // (local-verify-merge-authority §2/§3). The floor is a live config read
+            // here; the status projection supplies main health — until it lands
+            // mainHealth reads null (not healthy), so no verifies are requested.
+            greenPrAutoMerger?.attachLocalVerify({
+              effectiveFloor: () => (liveConfig.get<string>('monitoring.greenPrAutoMerge.floor', 'actions') === 'local' ? 'local' : 'actions'),
+              mainHealth: () => null,
+              hasRecord: (pr, head, base) => !!svc.getRecord(pr, head, base),
+              requestVerify: (pr) => svc.request(pr, { explicit: false }),
+            });
           } catch (e) {
             console.log(pc.red(`  local-verify NOT started — boot failed: ${(e as Error)?.message ?? e}`));
             localVerifyService = null;
