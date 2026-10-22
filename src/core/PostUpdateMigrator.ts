@@ -67,6 +67,8 @@ import {
   REAPER_BACKGROUND_WORK_MARKER,
   REROUTED_LOGIN_EXPIRED_BULLET,
   REROUTED_LOGIN_EXPIRED_MARKER,
+  REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE,
+  REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
@@ -10449,6 +10451,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added rerouted-job expired-login bullet');
     } else {
       result.skipped.push('CLAUDE.md: rerouted-job expired-login bullet already present');
+    }
+    // 2026-10-22: the sighting now feeds the quota poller (it can open the sign-in repair), so
+    // the old "never changes the account's pool status" sentence is rewritten in place.
+    if (content.includes(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE)) {
+      content = content.replace(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet now names the sign-in repair');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

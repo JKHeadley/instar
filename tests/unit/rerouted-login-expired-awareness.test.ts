@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import {
   REROUTED_LOGIN_EXPIRED_MARKER, REROUTED_LOGIN_EXPIRED_BULLET, STANDING_SESSIONS_BULLET, generateClaudeMd,
+  REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
 } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -46,9 +47,23 @@ describe('rerouted-job expired-login CLAUDE.md bullet', () => {
     expect(r2.skipped).toContain('CLAUDE.md: rerouted-job expired-login bullet already present');
   });
 
-  it('names the reason, the degradation and that pool status is untouched', () => {
+  it('names the reason, the degradation and the sign-in repair hand-off', () => {
     expect(REROUTED_LOGIN_EXPIRED_BULLET).toContain('rerouted-login-expired');
     expect(REROUTED_LOGIN_EXPIRED_BULLET).toContain('SessionManager.monitorTick.reroutedLoginExpired');
-    expect(REROUTED_LOGIN_EXPIRED_BULLET).toContain('never changes the account');
+    expect(REROUTED_LOGIN_EXPIRED_BULLET).toContain('cli-login-expired-observed');
+    expect(REROUTED_LOGIN_EXPIRED_BULLET).not.toContain(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE);
+  });
+
+  it('an existing agent carrying the old "never changes the pool status" sentence is rewritten once', () => {
+    const legacy = REROUTED_LOGIN_EXPIRED_BULLET.replace(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE, REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE);
+    fs.writeFileSync(claudeMd, '# CLAUDE.md\n' + STANDING_SESSIONS_BULLET + '\n' + legacy + '\n');
+    const r1 = run(projectDir);
+    const once = fs.readFileSync(claudeMd, 'utf8');
+    expect(r1.upgraded).toContain('CLAUDE.md: rerouted-job expired-login bullet now names the sign-in repair');
+    expect(once).toContain(REROUTED_LOGIN_EXPIRED_BULLET);
+    expect(once).not.toContain(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE);
+    expect(count(once)).toBe(1);
+    run(projectDir);
+    expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
   });
 });

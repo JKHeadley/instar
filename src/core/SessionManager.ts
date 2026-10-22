@@ -1887,6 +1887,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.standingTopicResolver = fn;
   }
 
+  /** Signal sink for "this session showed Claude Code's Login expired frame under this config
+   *  home". Wired by server.ts to the QuotaPoller, which alone decides pool status. */
+  private loginExpiredSink: ((input: { configHome: string; session: string }) => void) | null = null;
+
+  setLoginExpiredSink(fn: ((input: { configHome: string; session: string }) => void) | null): void {
+    this.loginExpiredSink = fn;
+  }
+
   /** The configured standing-session entries (tmux names and `topic:<id>`). */
   getStandingSessions(): string[] {
     return this.config.standingSessions ?? [];
@@ -1985,7 +1993,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return false;
     }
     if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return false;
-    const configHome = this.configHomeForSession(session.tmuxSession) ?? 'the default login';
+    // `defaultWhenUnset`: a session on the default login carries NO CLAUDE_CONFIG_DIR (the spawn
+    // falls back to the process env), so an explicitly-unset var resolves to the default home here;
+    // a tmux read FAILURE still yields undefined (never a guessed slot).
+    const liveConfigHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
+    const configHome = liveConfigHome ?? 'the default login';
+    if (liveConfigHome && this.loginExpiredSink) {
+      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession }); }
+      catch { /* @silent-fallback-ok — a signal sink failure must never block ending the session */ }
+    }
     console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
     // workEvidence: [] — the killer proved the session idle (a REPL at the login screen can do
     // nothing), so a live MCP child must not stamp it mid-work and queue a revival back onto
@@ -5680,7 +5696,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return configHome ? { configHome } : {};
   }
 
-  configHomeForSession(tmuxSession: string): string | undefined {
+  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean }): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
@@ -5688,6 +5704,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
       )).trim();
       const prefix = 'CLAUDE_CONFIG_DIR=';
+      if (out.startsWith('-CLAUDE_CONFIG_DIR') && opts?.defaultWhenUnset) {
+        // Explicitly unset in the session → the spawn used the process-level default.
+        return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      }
       if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
       const value = out.slice(prefix.length).trim();
       return value.length > 0 ? value : undefined;

@@ -175,6 +175,16 @@ export interface QuotaPollerConfig {
  */
 export type PoolLoginCheck = 'ok' | 'signed-out' | 'unavailable';
 
+/**
+ * Claude Code's own "Login expired" screen, seen in this many DISTINCT sessions launched under
+ * the same config home within {@link CLI_LOGIN_EXPIRED_WINDOW_MS}, corroborates an unreadable
+ * stored credential into needs-reauth (2026-10-22: a dead login sat "active" for 8h while the
+ * session monitor ended 40+ sessions at that screen and the repair never started).
+ */
+export const CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED = 2;
+export const CLI_LOGIN_EXPIRED_WINDOW_MS = 60 * 60_000;
+const CLI_LOGIN_EXPIRED_MAX_SIGHTINGS = 20;
+
 /** Two consecutive CLI-signed-out + auth-refused polls move a Codex account to needs-reauth. */
 const CLI_SIGNED_OUT_POLLS_REQUIRED = 2;
 /** The two agreeing polls must be at least this far apart (on-demand polls seconds apart don't count twice). */
@@ -414,6 +424,8 @@ export class QuotaPoller {
   private readonly codexLoginStatus: QuotaPollerConfig['codexLoginStatus'];
   private readonly loginChecks = new Map<string, PoolLoginCheck>();
   private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
+  /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
+  private readonly cliLoginExpiredSightings = new Map<string, Array<{ session: string; at: number }>>();
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
@@ -469,7 +481,12 @@ export class QuotaPoller {
 
   /** Credential mutations must invalidate observations made before the write. */
   invalidateIdentityCache(slots: string[]): void {
-    for (const slot of slots) this.identityCache.delete(slot);
+    for (const slot of slots) {
+      this.identityCache.delete(slot);
+      // A credential swap re-points the slot: sightings of the OLD login's dead screen must not
+      // corroborate against whatever credential now sits there.
+      this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slot)));
+    }
   }
 
   /** Identity truth wins over a stale registry/ledger label. */
@@ -714,6 +731,25 @@ export class QuotaPoller {
         return null;
       }
       if (tokenResolution && 'observationOnly' in tokenResolution && tokenResolution.observationOnly) {
+        // A malformed credential alone is only an observation. The CLI itself refusing to run
+        // under this home ("Login expired", in more than one session) is the corroboration.
+        // `credential-absent-or-unreadable` is deliberately EXCLUDED: a locked keychain (post-reboot,
+        // launchd context) makes both the read AND the CLI fail on a login that is actually fine,
+        // and a repair would write into the same locked keychain. Only a credential that READ but
+        // is malformed (token shape / missing oauth block) corroborates.
+        if (tokenResolution.reason !== 'credential-absent-or-unreadable'
+          && this.cliLoginExpiredCorroborated(slotAccount.configHome)) {
+          this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slotAccount.configHome)));
+          if (slotAccount.status !== 'needs-reauth') {
+            this.markNeedsReauth(slotAccount, 'cli-login-expired-observed');
+            this.observe(slotAccount.id, {
+              kind: 'transition-to-needs-reauth',
+              causeClass: 'cli-login-expired-observed',
+              corroboration: 'exchange-corroborated',
+            });
+          }
+          return null;
+        }
         this.loginChecks.set(slotAccount.id, 'unavailable');
         this.observe(slotAccount.id, { kind: 'observation-absence', causeClass: tokenResolution.reason });
         return null;
@@ -924,6 +960,30 @@ export class QuotaPoller {
       causeClass: 'cli-signed-out-auth-refused',
       corroboration: 'exchange-corroborated',
     });
+  }
+
+  /**
+   * Record that a Claude Code session launched under `configHome` showed the CLI's own
+   * "Login expired" frame (SessionManager's live-tail classifier). A SIGNAL only: it changes no
+   * pool state by itself. The next poll of the account using that home consults it, and only
+   * when the stored credential is also unreadable does it corroborate needs-reauth.
+   */
+  noteCliLoginExpired(input: { configHome: string; session: string; at?: number }): void {
+    if (!input.configHome || !input.session) return;
+    const key = path.resolve(expandHome(input.configHome));
+    const at = input.at ?? this.now();
+    const kept = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => at - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS && s.session !== input.session);
+    kept.push({ session: input.session, at });
+    this.cliLoginExpiredSightings.set(key, kept.slice(-CLI_LOGIN_EXPIRED_MAX_SIGHTINGS));
+  }
+
+  private cliLoginExpiredCorroborated(configHome: string): boolean {
+    const key = path.resolve(expandHome(configHome));
+    const nowMs = this.now();
+    const recent = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => nowMs - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS);
+    return new Set(recent.map((s) => s.session)).size >= CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED;
   }
 
   /** Expose the last in-memory snapshot for an account (test/diagnostic). */

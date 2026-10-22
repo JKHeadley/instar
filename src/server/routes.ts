@@ -34276,6 +34276,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         credentialReadObservationWindows: {
           total: credentialReadObservationWindows.length,
           resolved: credentialReadObservationWindows.filter((row) => row.outcome === 'resolved-read-window').length,
+          escalated: credentialReadObservationWindows.filter((row) => row.outcome === 'escalated-to-needs-reauth').length,
           open: credentialReadObservationWindows.filter((row) => row.closedAt === null).length,
           evidenceMaturity: 'provisional-credential-read',
           floorPasses: 3,

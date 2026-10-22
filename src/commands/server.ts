@@ -14948,6 +14948,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     });
     quotaPollerRef = quotaPoller;
+    // A session ended at Claude Code's "Login expired" screen is a signal to the poller, which
+    // alone decides whether that corroborates needs-reauth (and so opens the sign-in repair).
+    sessionManager.setLoginExpiredSink((input) => quotaPoller.noteCliLoginExpired(input));
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
