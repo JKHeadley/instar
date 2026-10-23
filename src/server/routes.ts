@@ -19731,11 +19731,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // vocabulary too — an explanation that uses those words re-trips the same check.)
     let homebaseTopicId: number | undefined;
     try {
-      const { ensurePeerHomebase, displayNameCollides } = await import('../threadline/peerHomebase.js');
-      const hbCfg = (ctx.config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
+      const { ensurePeerHomebase, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
       const confirmed = trustManager.getProfileByFingerprint(peerFp);
       const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
-        enabled: resolveDevAgentGate(hbCfg?.enabled, ctx.config),
+        enabled: peerHomebaseEnabled(ctx.config),
         // A standby that created one would mint a fresh topic per boot — the failure that
         // produced 41 duplicate "Updates" topics before the system-topic pattern existed.
         holdsLease: !ctx.state.readOnly,

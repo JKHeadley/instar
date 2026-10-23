@@ -110,3 +110,61 @@ describe('ensurePeerHomebase against a real trust store', () => {
     expect(tm.getHomebaseTopic(stranger)).toBeUndefined();
   });
 });
+
+// ── Backfill: a peer paired BEFORE homebases existed (the `pp` case) ──────────────────
+import { ConversationStore } from '../../src/threadline/ConversationStore.js';
+import { ThreadLog } from '../../src/threadline/ThreadLog.js';
+import { ThreadMessageRecorder } from '../../src/threadline/recordThreadMessage.js';
+import { PeerHomebaseBackfill, attachPeerContactHook } from '../../src/threadline/peerHomebaseBackfill.js';
+
+describe('homebase backfill through the real message funnel', () => {
+  it('a real inbound message from an already-paired peer creates and persists its homebase', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), PREFIX));
+    fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    const tm = new AgentTrustManager({ stateDir: dir });
+    tm.getOrCreateProfileByFingerprint(PEER, 'pp');
+    // Paired before the feature existed: mutual-verified, no homebase recorded.
+    const profile = tm.getProfileByFingerprint(PEER)!;
+    profile.pairingState = 'mutual-verified';
+    expect(tm.getHomebaseTopic(PEER)).toBeUndefined();
+
+    const names: string[] = [];
+    const backfill = new PeerHomebaseBackfill({
+      enabled: () => true,
+      holdsLease: () => true,
+      resolveMutualVerified: (k) => {
+        const p = tm.getProfileByFingerprint(k) ?? tm.getProfile(k);
+        return p?.fingerprint && p.pairingState === 'mutual-verified' ? { fingerprint: p.fingerprint, name: p.agent } : null;
+      },
+      listMutualVerified: () => [],
+      findOrCreateTopic: async (name) => { names.push(name); return { topicId: 4242, reused: false }; },
+      getRecorded: (fp) => tm.getHomebaseTopic(fp),
+      record: (fp, id) => tm.setHomebaseTopic(fp, id),
+    });
+    const recorder = attachPeerContactHook(new ThreadMessageRecorder({
+      threadLog: new ThreadLog(dir),
+      conversationStore: new ConversationStore(dir),
+      logDir: path.join(dir, 'logs'),
+    }), (peer) => backfill.onContact(peer));
+
+    const res = recorder.record({
+      threadId: 'thread-pp-1', messageId: 'm1', direction: 'inbound',
+      body: 'hello from pp', createdAt: new Date().toISOString(), peerFingerprint: PEER,
+    });
+    expect(res.status).toBe('appended');
+    await new Promise((r) => setTimeout(r, 20));
+    await recorder.flushPending();
+
+    expect(names).toEqual([`pp · Threadline · ${PEER.slice(0, 6)}`]);
+    expect(new AgentTrustManager({ stateDir: dir }).getHomebaseTopic(PEER)).toBe(4242);
+
+    // A second message is a no-op: create-once.
+    recorder.record({
+      threadId: 'thread-pp-1', messageId: 'm2', direction: 'outbound',
+      body: 'reply', createdAt: new Date().toISOString(), peerFingerprint: PEER,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    await recorder.flushPending();
+    expect(names).toHaveLength(1);
+  });
+});

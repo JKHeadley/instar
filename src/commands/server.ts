@@ -17681,6 +17681,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       seenSetMaxThreads: _canonHist.seenSetMaxThreads,
     });
     threadLogForResume = threadLog;
+    // Late-bound: the trust manager the homebase backfill needs is built further down
+    // (Threadline bootstrap). Until then a contact is simply a no-op.
+    let _peerHomebaseBackfill: import('../threadline/peerHomebaseBackfill.js').PeerHomebaseBackfill | null = null;
     const threadMessageRecorder = new ThreadMessageRecorder({
       threadLog,
       conversationStore,
@@ -17690,6 +17693,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       appendFailureAlertThreshold: _canonHist.appendFailureAlertThreshold,
       inlineMaxBytes: _canonHist.inlineMaxBytes,
     });
+    {
+      const { attachPeerContactHook } = await import('../threadline/peerHomebaseBackfill.js');
+      attachPeerContactHook(threadMessageRecorder, (peer) => _peerHomebaseBackfill?.onContact(peer));
+    }
     // SA5/E1: close-only canonical-log retention — a non-pinned conversation
     // transitioning INTO resolved/failed deletes its log (via SafeFsExecutor inside
     // ThreadLog.deleteThread); a COLD archive/LRU eviction never fires this seam.
@@ -18798,11 +18805,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         const hbTimer = setTimeout(() => {
           void (async () => {
             try {
-              const { backfillPeerHomebases, displayNameCollides } = await import('../threadline/peerHomebase.js');
-              const hbCfg = (config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
+              const { backfillPeerHomebases, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
               const peers = hbTrust.listProfiles();
               const r = await backfillPeerHomebases(peers, {
-                enabled: resolveDevAgentGate(hbCfg?.enabled, config),
+                enabled: peerHomebaseEnabled(config),
                 holdsLease: !state.readOnly,
                 findOrCreateTopic: async (name) => {
                   const t = await hbTelegram.findOrCreateForumTopic(name, undefined, { origin: 'user', label: 'peer-homebase' });
@@ -18825,6 +18831,35 @@ export async function startServer(options: StartOptions): Promise<void> {
           })();
         }, 90_000);
         hbTimer.unref?.();
+      }
+
+      // ── Per-peer homebase on CONTACT ── the boot pass above runs once; a peer still missing a
+      // homebase (its creation failed, or the lease arrived later) gets one on its next message
+      // in either direction. Same create-once / lease-holder-only discipline; every failure is
+      // logged, retried after 10 minutes, and never blocks a message.
+      if (threadline.trustManager && telegram) {
+        const tm = threadline.trustManager;
+        const tg = telegram;
+        const { PeerHomebaseBackfill } = await import('../threadline/peerHomebaseBackfill.js');
+        const { peerHomebaseEnabled, displayNameCollides } = await import('../threadline/peerHomebase.js');
+        const asPeer = (p: { agent: string; fingerprint?: string; pairingState?: string } | null) =>
+          p && p.fingerprint && p.pairingState === 'mutual-verified' ? { fingerprint: p.fingerprint, name: p.agent } : null;
+        _peerHomebaseBackfill = new PeerHomebaseBackfill({
+          enabled: () => peerHomebaseEnabled(config),
+          holdsLease: () => !state.readOnly,
+          resolveMutualVerified: (key) => asPeer(tm.getProfileByFingerprint(key) ?? tm.getProfile(key)),
+          listMutualVerified: () => tm.listProfiles().map(asPeer).filter((p): p is { fingerprint: string; name: string } => p !== null),
+          findOrCreateTopic: async (name) => {
+            const r = await tg.findOrCreateForumTopic(name, undefined, { origin: 'user', label: 'peer-homebase' });
+            return { topicId: r.topicId, reused: r.reused };
+          },
+          findTopicByName: (name) => tg.findTopicIdByName(name),
+          renameTopic: (topicId, name) => tg.editForumTopic(topicId, name),
+          nameCollides: (fp, name) => displayNameCollides(fp, name, tm.listProfiles()),
+          getRecorded: (fp) => tm.getHomebaseTopic(fp),
+          record: (fp, topicId) => tm.setHomebaseTopic(fp, topicId),
+          log: (m) => console.log(m),
+        });
       }
 
       // Secure A2A Verified Pairing §3.8 (FD11) — SEND-SIDE: attach the journal-backed

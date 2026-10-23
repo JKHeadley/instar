@@ -1,6 +1,6 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
-import { peerHomebaseAwareness } from './peerHomebaseAwareness.js';
+import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -7057,6 +7057,17 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + peerHomebaseAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
+    } else if (content.includes(PEER_HOMEBASE_AWARENESS_V1_LIMITS) || content.includes(PEER_HOMEBASE_AWARENESS_V2_LIMITS)) {
+      // The first card said there was no backfill, the second that a failed creation waited for
+      // the next server start; both are now wrong. Replace the whole card in
+      // place (it is the last thing up to the next heading) so the agent stops repeating it.
+      const start = content.indexOf("### Where a peer agent's notices go (per-peer homebase topic)");
+      const after = start >= 0 ? content.indexOf('\n#', start + 10) : -1;
+      if (start >= 0) {
+        content = content.slice(0, start) + peerHomebaseAwareness() + (after >= 0 ? content.slice(after) : '\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: refreshed per-peer homebase topic awareness (backfill)');
+      }
     }
     // The topic was renamed to "🤝 <peer>" — an agent holding the original card would keep
     // looking for the old "<peer> · Threadline · <fp6>" name, so swap the card in place.

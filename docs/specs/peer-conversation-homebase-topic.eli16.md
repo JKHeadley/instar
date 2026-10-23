@@ -126,3 +126,13 @@ written to explain the fix** contained one of the very words the counter searche
 explanation re-tripped the check by a different route. Both causes were mine, one stacked on the
 other. Had I trusted the first fix and pushed it, I would have shipped a change that did nothing
 and then read the next red build as bad luck.
+
+## Addendum, 2026-10-23: agents paired earlier, and switched on by default
+
+The first version only made a peer's topic at the moment a pairing was confirmed. An agent you
+had already paired with — `pp`, paired the day before this shipped — would never be confirmed
+again, so it never got one. Now the topic is also made the next time a message passes between
+you and that agent (either direction), and once a minute after each server start, under exactly
+the same rules: only the serving machine creates, an existing topic is reused, and a stranger
+cannot cause one. And it is now on by default everywhere instead of only on development
+agents, because the operator asked for this by name; setting it to `false` turns it off.

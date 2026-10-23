@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-23T17:19:52.096Z",
+  "slug": "peer-homebase-backfill",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 231,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/peerHomebaseAwareness.ts",
+      "src/server/routes.ts",
+      "src/threadline/peerHomebase.ts",
+      "src/threadline/peerHomebaseBackfill.ts"
+    ],
+    "addedLines": 219,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
