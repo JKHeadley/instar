@@ -3,7 +3,7 @@
 **Version / slug:** `watchdog-cpu-test-under-load`
 **Date:** `2026-10-22`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required (test-only, tier 1)`
+**Second-pass reviewer:** `independent subagent, concurred (see Second-pass review)`
 
 ## Summary of the change
 
@@ -32,3 +32,9 @@ None. Measured: under 24 spinning processes on 16 cores, the old file failed 1/1
 
 ## 6. Rollback
 Revert the commit.
+
+## Second-pass review
+
+**Reviewer:** independent general-purpose subagent (Claude Opus 5.5), one round, 2026-10-23 — concur
+
+Concur, no blocking issues. The poll waits for a delta strictly above the production `MIN_PROGRESS_CPU_DELTA_MS` (the tracker counts ≥, so the test bar is unchanged or slightly stricter); the wait is bounded (5 s to appear + 10 s polling) inside the 20 s burner life and test timeout; cleanup unchanged. Integration file 19/19. Nit left: under very heavy load slow `ps` calls could approach the 20 s timeout, which fails loudly, never passes falsely.
