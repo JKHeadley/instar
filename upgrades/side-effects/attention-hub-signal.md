@@ -94,3 +94,7 @@ No agent-authored-artifact defect.
 - **`defectClass`** — `unbounded-self-action`
 - **`closure`** — `n/a` (negative declaration)
 - **`reason`** — Adds no self-triggered action: the change only withholds posts the existing notify/attention paths already make (it can reduce, never increase, notify volume); the one new timing rule is a repost throttle that only suppresses.
+
+## Integration / e2e follow-up
+
+The full integration and e2e runs found three routing tests that assumed every alert posts to the hub. These tests check the single-hub topology, not filtering. The two items meant as "real escalations" are now marked agent-raised (`sourceContext: 'agent'`) or `needsUser: true`. The no-config fleet e2e now asserts the new default: only URGENT items post, all posts share the one hub, and held items stay in the store with no topic. Files changed: tests/integration/agent-health-lane.test.ts, tests/integration/notification-flood-burst-invariant.test.ts, tests/e2e/attention-topic-flood-guard-lifecycle.test.ts.

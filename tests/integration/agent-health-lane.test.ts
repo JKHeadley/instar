@@ -127,7 +127,7 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     const rec = installApiStub(adapter);
     const normal = await adapter.createAttentionItem({
       id: 'user-facing-1', title: 'A real user escalation', summary: 'please look',
-      category: 'general', priority: 'HIGH', sourceContext: 'user',
+      category: 'general', priority: 'HIGH', sourceContext: 'agent', // agent-raised: passes the hub filter
     });
     expect(rec.forumTopicsCreated).toBe(1);
     expect(rec.topicTitles[0]).not.toContain('Agent Health');
