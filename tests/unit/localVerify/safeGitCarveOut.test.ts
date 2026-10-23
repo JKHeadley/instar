@@ -152,6 +152,18 @@ describe('localVerifyCloneOk', () => {
     expect(rawGit(home, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe('main');
   });
 
+  // 2026-10-23 (PR #2326): the independent-review head binding reads `git log` in the
+  // bare clone; `log` was not in the carve-out's verb set, so every flagged PR was
+  // refused `trace-commit-unreadable`.
+  it('admits `log` with a range and a pathspec in the bare clone; `rev-list` stays outside the set', () => {
+    const { home, base, head, verify, bare } = agentHome();
+    initBare(verify, bare, home);
+    const o = bareOpts(verify, bare);
+    SafeGitExecutor.run(['fetch', '--no-tags', 'origin', head, base], o);
+    expect(SafeGitExecutor.run(['log', '-1', '--format=%H', `${base}..${head}`, '--', 'src/b.ts'], o).trim()).toBe(head);
+    expect(SafeGitExecutor.run(['log', '--format=%H', `${head}..${head}`, '--', 'src/b.ts'], o).trim()).toBe('');
+    expect(() => SafeGitExecutor.run(['rev-list', `${base}..${head}`], o)).toThrow(SourceTreeGuardError);
+  });
   it('refuses a verb outside the enumerated set, and worktree remove --force', () => {
     const { home, base, head, verify, bare } = agentHome();
     initBare(verify, bare, home);

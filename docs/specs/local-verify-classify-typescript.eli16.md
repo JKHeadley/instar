@@ -17,6 +17,8 @@ That parser is a development-only package. The server that runs Local Verify is 
 1. The parser is now loaded from the PR's own installed copy first, then from the server's install as a fallback. Code that calls the orchestrator can also hand it a parser directly, which is how the tests exercise both outcomes.
 2. If the parser still cannot load, that is no longer called "harness-changing". Instead the record says what could not be ruled out: "skips added" and "tests removed", but only when a counted test file actually changed. If the PR touched no counted test file, nothing is flagged. A real failure to read the PR's diff still marks it harness-changing, exactly as before.
 
+3. A second bug, found when this very change was verified: the independent-review check added yesterday asks git "which commit last touched this review file?" through a safety funnel that only lets the verifier run a fixed list of git commands inside its own clone. `log` was not on that list, so the funnel refused the question and every reviewed PR was told "review not found". `log` (a read-only command) is now on the list. Nothing that can write is added.
+
 ## Safeguards, in plain terms
 
 - Failing still fails closed. A parser problem produces a flag that needs a review; it never lets a PR through unexamined.
@@ -25,4 +27,4 @@ That parser is a development-only package. The server that runs Local Verify is 
 
 ## What you need to decide
 
-Nothing. This is a bug fix with tests on both sides (parser missing, parser injected, no counted test changed). It can be reverted by reverting one commit.
+Nothing. These are two bug fixes with tests on both sides (parser missing, parser injected, no counted test changed). It can be reverted by reverting one commit.
