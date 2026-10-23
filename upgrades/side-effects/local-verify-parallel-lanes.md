@@ -53,7 +53,9 @@ No new judgment gate. The verify's pass/fail authority is unchanged: the same in
 
 Revert the commit. Records made under the new policy hash then stop matching and those PRs are re-verified under the old policy (the policy hash covers `e2eShards` and the deadlines), which is the existing behaviour for any policy change.
 
-## Second pass
+## Second-pass review
+
+**Reviewer:** independent general-purpose subagent (Claude Opus 5.5), two rounds, concurred in round 2
 
 Round 1 (independent subagent, 2026-10-22): **did not concur**. Blocking: (1) `Promise.all` over shards let a shard deadline settle the lane while the sibling shard was still running, so cleanup and slot release could orphan it; (2) the shard exit merge picked a signal exit (null) over a sibling's numeric non-zero exit, hiding an unhandled-error exit. Should-fix: duplicate files across shards overwrote silently; the 7-worker claim held only while the bound enforces; a fail-open `null` slot made four lanes compete for one cap-1 slot; two spec paragraphs contradicted the code; missing tests for the shard rules. Nits: no overlap entry on a busy slot; stale registry reason text; `deadline:e2e-N` naming and "alone within its lane" not stated.
 

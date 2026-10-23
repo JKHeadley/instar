@@ -4,7 +4,7 @@
   "sessionId": "36f94642-3e87-48a2-999c-c5ac3d8e9a2d",
   "timestamp": "2026-10-23T01:53:44.331Z",
   "artifactPath": "upgrades/side-effects/local-verify-parallel-lanes.md",
-  "artifactSha256": "a54aa1af95890bcbb374e1e8d555739006a9ff80e2b1f890d590f9c73ded67b6",
+  "artifactSha256": "36fc2c1c3eaa647a7ddd9ad101ba5f6010e52dfe50f83a0119ea83893b7d1902",
   "specPath": "docs/specs/local-verify-merge-authority.md",
   "coveredFiles": [
     "docs/specs/local-verify-merge-authority.eli16.md",
