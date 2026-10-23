@@ -16,10 +16,10 @@
  */
 
 import path from 'node:path';
-import { computeInventory, LANES, type LaneName } from './inventory.js';
+import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readUnhandledErrors } from './unhandledErrorsReporter.js';
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
-import { evaluateSkipRatchet, type ChangedTestFile } from './skipRatchet.js';
+import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
@@ -85,6 +85,11 @@ export interface OrchestratorSeams {
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
   unhandledErrorsReporter?(): string | null;
+  /**
+   * The TypeScript module for the skip ratchet's parser. Absent ⇒ resolved from the
+   * run worktree (installed by `npm ci`), then the verifier's own install.
+   */
+  typescript?(): TsModule;
 }
 
 // ── Input / output ─────────────────────────────────────────────────────
@@ -620,16 +625,31 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const t = await pair(r.path, r.status);
         tests.push({ path: r.path, base: t.base, head: t.head });
       }
-      const ratchet = evaluateSkipRatchet(tests);
-      out.skipsAdded = ratchet.skipsAdded;
-      out.testsRemoved = ratchet.testsRemoved;
+      // The ratchet cannot be measured without the parser. That is not a harness
+      // change: the record says what it could not rule out (skips added, tests
+      // removed), and the changed test files are the paths a review must cover.
+      let ratchetPaths: string[];
+      try {
+        const ratchet = evaluateSkipRatchet(tests, seams.typescript ? seams.typescript() : loadTypescript([p.runDir]));
+        out.skipsAdded = ratchet.skipsAdded;
+        out.testsRemoved = ratchet.testsRemoved;
+        ratchetPaths = ratchet.perFile.map((f) => f.path);
+      } catch (e) {
+        ratchetPaths = tests.map((t) => t.path).filter((f) => isInventoried(f));
+        // Always logged (the 2026-10-23 misclassification went unseen for lack of a signal); flagged only when it matters.
+        seams.log({ event: 'skip-ratchet-failure', inventoriedChanged: ratchetPaths.length, detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+        if (ratchetPaths.length > 0) {
+          out.skipsAdded = true;
+          out.testsRemoved = true;
+        }
+      }
       if (out.harnessChanging || out.protectedPath || out.skipsAdded || out.testsRemoved) {
         // The paths that flagged the record; an independent second-pass review must cover them all.
         const harnessPaths = out.harnessChanging ? harnessReasonPaths(verdict.reasons) : [];
         const flaggedPaths = harnessPaths === null ? null : [...new Set([
           ...harnessPaths,
           ...protectedPathMatches(changedPaths, input.protectedList),
-          ...(out.skipsAdded || out.testsRemoved ? ratchet.perFile.map((f) => f.path) : []),
+          ...(out.skipsAdded || out.testsRemoved ? ratchetPaths : []),
         ])].sort();
         const review = await findIndependentReview(rows, flaggedPaths, show, mb);
         if (review) out.independentReview = review;

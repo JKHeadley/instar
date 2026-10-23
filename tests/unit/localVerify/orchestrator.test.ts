@@ -426,6 +426,36 @@ describe('runVerify — classification', () => {
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record).toMatchObject({ harnessChanging: true, protectedPath: true, skipsAdded: true, testsRemoved: true });
   });
+  // 2026-10-23: the verify child runs from the installed copy, which has no typescript;
+  // every PR touching a .test.ts was recorded harness-changing (classify-read-failure).
+  const noParser = () => { throw new Error('typescript not found (tried: verifier install)'); };
+  it('a missing parser flags the ratchet (skips-added, tests-removed), never harness-changing', async () => {
+    const f = fake({
+      diff: 'M\tsrc/foo.ts\nM\ttests/unit/a.test.ts\n',
+      shows: { [`${HEAD}:package.json`]: PKG, [`${MB}:tests/unit/a.test.ts`]: UNIT_SRC, [`${HEAD}:tests/unit/a.test.ts`]: UNIT_SRC },
+    });
+    const r = await runVerify(input(), { ...f.seams, typescript: noParser });
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', harnessChanging: false, protectedPath: false, skipsAdded: true, testsRemoved: true });
+    expect(f.logs.some((l) => l.event === 'skip-ratchet-failure')).toBe(true);
+    expect(f.logs.some((l) => l.event === 'classify-read-failure')).toBe(false);
+  });
+  it('a missing parser flags nothing when no inventoried test file changed', async () => {
+    const f = fake({ diff: 'M\tsrc/foo.ts\nM\ttests/fixtures/x.test.ts\n', shows: { [`${HEAD}:package.json`]: PKG, [`${MB}:tests/fixtures/x.test.ts`]: UNIT_SRC, [`${HEAD}:tests/fixtures/x.test.ts`]: UNIT_SRC } });
+    const r = await runVerify(input(), { ...f.seams, typescript: noParser });
+    expect(r.kind === 'record' && r.record).toMatchObject({ harnessChanging: false, skipsAdded: false, testsRemoved: false });
+    expect(f.logs.find((l) => l.event === 'skip-ratchet-failure')).toMatchObject({ inventoriedChanged: 0 });
+  });
+  it('an injected parser is the one the ratchet uses', async () => {
+    const real = await import('typescript');
+    let calls = 0;
+    const f = fake({
+      diff: 'M\ttests/unit/a.test.ts\n',
+      shows: { [`${HEAD}:package.json`]: PKG, [`${MB}:tests/unit/a.test.ts`]: UNIT_SRC, [`${HEAD}:tests/unit/a.test.ts`]: UNIT_SRC },
+    });
+    const r = await runVerify(input(), { ...f.seams, typescript: () => { calls++; return (real.default ?? real) as never; } });
+    expect(calls).toBe(1);
+    expect(r.kind === 'record' && r.record).toMatchObject({ harnessChanging: false, skipsAdded: false, testsRemoved: false });
+  });
 });
 
 describe('runVerify — independent review of a flagged record (directive 2026-10-22)', () => {
