@@ -128,6 +128,33 @@ engine has gone quiet. That is the next piece.
 **Yours, and deliberately untouched:** the part that turns two existing principles into
 enforced rules edits the constitution, so it stays an operator decision.
 
+## Who decides a feature has earned its promotion (not this)
+
+Worth being precise, because an earlier draft of this work got it wrong.
+
+There are two different questions, and they belong to two different parts:
+
+1. **"What switches exist, and is anyone looking after them?"** That is this part. It finds every
+   switch in the running code, writes down who owns it and by when, and notes whether there is any
+   sign it has ever run.
+2. **"Has this switch actually met the bar it set for itself?"** That is a *separate* part you
+   approved later, in July, which already exists. It reads each feature's own declared targets and
+   checks them against fresh measurements.
+
+The first draft of this work answered question 2 as well, by its own looser rule — "its time is up
+and it ran at least once, so call it ready." That would have meant two parts of the same system
+giving different answers to "is this ready?", which is one of the four reasons this machinery
+stalled in the first place. It would have shipped the disease inside the cure.
+
+So this part now stops at question 1. When a switch's window closes and it has shown signs of
+life, it says exactly that — *this one wants a decision* — and leaves the verdict to the part that
+owns it. Three tests make sure nobody quietly puts the stronger claim back.
+
+That also points at where the next piece of work is: the part that judges readiness already has
+the measurement machinery this one lacks. The next increment should feed it, not rebuild it — and
+that is the step that turns this from a list you read into something that moves features forward
+on its own.
+
 ## What this does NOT do yet, said plainly
 
 It makes the forgotten pile **visible and durable**. It does **not** decide anything for

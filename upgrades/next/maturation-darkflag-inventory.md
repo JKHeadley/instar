@@ -80,12 +80,18 @@ rather than merged, so one machine's "already proved" can never leak into anothe
 
 ## Evidence
 
-- 102 new tests across all three tiers, all passing:
+- One boundary worth knowing about: deciding whether a feature has actually *met its bar* belongs
+  to a separate scorer that already exists, and this change deliberately does not answer that
+  question. It reports that a trial window has closed and the feature has shown signs of life —
+  a decision is wanted — and leaves the verdict where it already lives. An earlier draft had both
+  parts answering "is this ready?" by different rules, which is the same two-places-disagree fault
+  this work exists to remove, so it was renamed and three tests now hold the line.
+- 105 new tests across all three tiers, all passing:
   - `tests/unit/DarkFlagMaturationRegistry.test.ts` (50) — the dark-set predicate on both sides of
     every state, proof honesty, monotonic deadlines under a 6-cycle on/off toggle,
     migration-is-not-a-clean-slate, tombstoning, graduation only on genuinely-on states, history
     appending only on real change, foreign/corrupt record handling, and stored-deadline consistency when a window widens or narrows.
-  - `tests/unit/growth-analyst-darkflag-r7.test.ts` (36) — gating on both sides, the trial-mode
+  - `tests/unit/growth-analyst-darkflag-r7.test.ts` (39) — gating on both sides, the trial-mode
     canary (record written, no findings), aggregation verified at 120 switches, the
     never-report-ready-on-unknown rule, the demotion, every degrade-to-skipped path, wiring
     integrity against the real construction site, and a parity guard locking the two report

@@ -224,6 +224,29 @@ reverts to today's InitiativeTracker-only behavior exactly.
 
 ## Standard B — every dark flag gets owner + deadline + proof-of-life
 
+**[RECONCILED WITH D7 — 2026-10-23, at increment-1 implementation]** A later spec,
+`feature-maturation-recurring-evaluation.md` (**D7**), was operator-approved **2026-07-21** — 18
+days after this one — under the directive *"per-feature measurable metrics and recurring
+re-score; extend, never duplicate"*, and it explicitly forbids "a second maturation registry,
+scheduler, feature-metrics database, or promotion authority," naming a new `MaturationLedger` as
+its rejected alternative. It is built (`BlockerLifecycleService.evaluateMaturation`, six-hour
+driver, SQLite). Reading its implementation settles the relationship, and increment 1 was adjusted
+to respect it:
+
+- **D7 is a SCORER; A/B are an INVENTORY.** D7 scores `InitiativeTracker` records that declare a
+  `maturationEvaluation` contract. A guard with no initiative record is invisible to it — it
+  cannot even reach `missing-contract`. That blind spot is what Standard A fills, so this registry
+  is complementary, not a second scorer.
+- **Readiness is D7's, exclusively.** This registry's state originally read `promotion-ready`,
+  colliding with D7's `ready` on entirely different inputs — the "criterion in two places that
+  disagree" defect this very spec names. It is renamed `window-elapsed`, asserts no readiness, and
+  three tests hold that boundary.
+- **The convergence target (CMT-977):** the guard-derived inventory should FEED D7 (register a
+  subject + a default contract) so there is ONE readiness vocabulary, ONE scorer and ONE cadence,
+  and D7's `ready` becomes the promote signal — which also closes the proof-of-life gap increment 1
+  leaves unwired. Minting a synthetic initiative and a hand-written contract per guard is not
+  increment-1 work, so increment 1 records ownership only.
+
 **A durable per-flag maturation registry** (`state/dark-flag-maturation.json`), keyed on the
 guard key from A, carrying for each dark subject:
 - **owner** — who is accountable for graduating or killing it (agent or operator).

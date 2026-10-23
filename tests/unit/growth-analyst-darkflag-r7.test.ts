@@ -237,7 +237,7 @@ describe('R7 aggregation — a 100-flag backlog is never 100 notifications', () 
         darkFlagEvidenceCounter: (r) => (r.key === 'monitoring.proved.enabled' ? 9 : undefined),
       });
       const out = b.computeDarkFlagFindings(new Date('2026-06-01T00:00:00.000Z'));
-      const ready = out.findings.find((f) => f.subjectId === 'dark-flags:promotion-ready');
+      const ready = out.findings.find((f) => f.subjectId === 'dark-flags:window-elapsed');
       const expired = out.findings.find((f) => f.subjectId === 'dark-flags:expired-unproven');
       expect(ready?.affected).toEqual(['monitoring.proved.enabled']);
       expect(ready?.suggestedAction).toBe('promote');
@@ -269,11 +269,11 @@ describe('R7 aggregation — a 100-flag backlog is never 100 notifications', () 
     expect(f?.detail).toMatch(/already tracked as a guard gap/);
   });
 
-  it("never promotes a flag whose proof is 'unknown', however long it has been dark", () => {
+  it("never marks a flag window-elapsed on 'unknown' proof, however long it has been dark", () => {
     const out = analystWith([row('monitoring.x.enabled')]).computeDarkFlagFindings(
       new Date('2030-01-01T00:00:00.000Z'),
     );
-    expect(out.findings.some((f) => f.subjectId === 'dark-flags:promotion-ready')).toBe(false);
+    expect(out.findings.some((f) => f.subjectId === 'dark-flags:window-elapsed')).toBe(false);
   });
 });
 
@@ -599,5 +599,65 @@ describe('the two aggregation points can never diverge again', () => {
     });
     expect(a.computeFindings(now).some((f) => f.rule === 'R7')).toBe(false);
     expect(a.buildDigest(now).findings.some((f) => f.rule === 'R7')).toBe(false);
+  });
+});
+
+describe('readiness stays D7\'s — this registry never claims it', () => {
+  // feature-maturation-recurring-evaluation.md (D7) is operator-approved under
+  // the directive "extend, never duplicate" and owns the `ready` verdict: it
+  // scores a feature's DECLARED measurement contract against fresh
+  // observations. This inventory knows only that a window closed and a flag
+  // fired. Two components answering "is this ready?" by different rules is the
+  // defect this spec names as a reason the engine stalled, so the boundary is
+  // asserted structurally rather than left to a comment.
+  it('the state vocabulary contains no readiness verdict', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/monitoring/DarkFlagMaturationRegistry.ts'),
+      'utf-8',
+    );
+    const union = src.slice(src.indexOf('export type DarkFlagState'), src.indexOf('export interface DarkFlagHistoryEntry'));
+    const states = [...union.matchAll(/\|\s*'([a-z-]+)'/g)].map((m) => m[1]);
+    expect(states).toContain('window-elapsed');
+    // The collision that was removed, and D7's own term.
+    expect(states).not.toContain('promotion-ready');
+    expect(states).not.toContain('ready');
+  });
+
+  it('names D7 as the readiness owner so the next reader does not re-litigate it', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/monitoring/DarkFlagMaturationRegistry.ts'),
+      'utf-8',
+    );
+    expect(src).toMatch(/evaluateMaturation/);
+    expect(src).toMatch(/extend, never duplicate/);
+  });
+
+  it('the R7 finding for an elapsed window asks for a decision without asserting readiness', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r7-bound-'));
+    try {
+      const reg = new DarkFlagMaturationRegistry({ stateDir: dir, machineId: 'm' });
+      const seed = { windowFor: () => ({ tier: 'standard' as const, windowDays: 7 }), proofCountFor: () => 9, minProof: 1, ownerFor: () => null };
+      // Establish the record first (nothing dark), then let the flag appear, so
+      // it is anchored in the PAST and non-legacy — the window can then elapse.
+      reg.reconcile({ rows: [], now: new Date('2026-01-01T00:00:00.000Z'), ...seed });
+      reg.reconcile({ rows: [row('monitoring.x.enabled')], now: new Date('2026-01-02T00:00:00.000Z'), ...seed });
+      const a = new GrowthMilestoneAnalyst({
+        stateDir: dir,
+        settings: resolveGrowthSettings({ enabled: true, darkFlagInventory: { enabled: true, dryRun: false } } as any),
+        tracker: fakeTracker,
+        darkFlagInventory: () => [row('monitoring.x.enabled')],
+        darkFlagRegistry: reg,
+        darkFlagEvidenceCounter: () => 9,
+      });
+      const f = a.computeDarkFlagFindings(new Date('2026-06-01T00:00:00.000Z')).findings
+        .find((x) => x.subjectId === 'dark-flags:window-elapsed');
+      expect(f).toBeDefined();
+      // It may still SUGGEST promote (that is the operator's prompt), but the
+      // prose must not assert the feature has met its bar.
+      expect(f!.detail).toMatch(/scored separately/);
+      expect(f!.detail).not.toMatch(/ready to turn on/);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/growth-analyst-darkflag-r7.test.ts' });
+    }
   });
 });

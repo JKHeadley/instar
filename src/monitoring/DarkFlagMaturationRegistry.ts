@@ -51,8 +51,21 @@ export type DarkFlagOwner = 'agent' | 'operator' | null;
 export type DarkFlagState =
   /** Inside its incubation window. */
   | 'incubating'
-  /** Window expired AND proof-of-life present → promote? */
-  | 'promotion-ready'
+  /**
+   * Window elapsed AND the flag has shown signs of life.
+   *
+   * Deliberately NOT a readiness verdict. Readiness is owned by the D7
+   * recurring scorer (`BlockerLifecycleService.evaluateMaturation`, spec
+   * feature-maturation-recurring-evaluation.md, operator-approved 2026-07-21
+   * under the directive "extend, never duplicate"). D7 decides its `ready`
+   * status by checking a feature's DECLARED measurement contract against fresh
+   * observations. This registry knows only that a window closed and the flag
+   * fired at least once — a far weaker fact. Two components answering "is this
+   * ready?" by different rules is the "criterion lives in two places that
+   * disagree" defect THIS spec names as a reason the engine stalled, so this
+   * state stops short of the claim and hands the question on.
+   */
+  | 'window-elapsed'
   /** Window expired, NOT proved → extend / fix / kill? */
   | 'expired-unproven'
   /** Already dark at first registration, window unanchorable → overdue now. */
@@ -141,7 +154,8 @@ function addDays(iso: string, days: number): string {
 
 /** Classify a live dark entry from its own monotonic deadline. Mirrors
  *  `classifyRollout`'s contract: an unproved expiry is `expired-unproven`, and
- *  `'unknown'` proof can NEVER produce `promotion-ready`. */
+ *  `'unknown'` proof can NEVER produce `window-elapsed`. Readiness itself is
+ *  D7's call, never this function's. */
 export function classifyDarkFlag(
   firstObservedDarkAt: string,
   windowDays: number,
@@ -150,14 +164,15 @@ export function classifyDarkFlag(
   legacy: boolean,
 ): DarkFlagState {
   if (legacy) {
-    // A legacy entry is overdue by construction. It can still graduate out of
-    // the dark set, and it becomes promotion-ready once genuinely proved —
-    // but it is never "incubating", which is the masking this rule prevents.
-    return proofOfLife === true ? 'promotion-ready' : 'legacy-unproven';
+    // A legacy entry is overdue by construction. Its window can be marked
+    // elapsed-with-evidence once the flag genuinely fires, and it can graduate
+    // out of the dark set — but it is never "incubating", which is the masking
+    // this rule exists to prevent.
+    return proofOfLife === true ? 'window-elapsed' : 'legacy-unproven';
   }
   const expired = daysBetween(firstObservedDarkAt, now) >= windowDays;
   if (!expired) return 'incubating';
-  return proofOfLife === true ? 'promotion-ready' : 'expired-unproven';
+  return proofOfLife === true ? 'window-elapsed' : 'expired-unproven';
 }
 
 export interface ReconcileInput {

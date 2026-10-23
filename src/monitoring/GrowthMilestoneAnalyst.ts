@@ -114,8 +114,10 @@ export interface GrowthDigestCounts {
   devGateDark: number;
   /** R7: dark/dry-run guards inside their incubation window. */
   darkIncubating: number;
-  /** R7: dark guards past their window WITH proof-of-life → promote? */
-  darkPromotionReady: number;
+  /** R7: dark guards past their window WITH signs of life. NOT a readiness
+   *  verdict — readiness is D7's (`evaluateMaturation`); this only says the
+   *  window closed and the flag has fired. */
+  darkWindowElapsed: number;
   /** R7: dark guards past their window WITHOUT proof → extend / fix / kill? */
   darkExpiredUnproven: number;
   /** R7: dark flags that were already dark at first registration — the
@@ -258,7 +260,7 @@ export type StageJournal = Record<string, StageObservation>;
 
 export type RolloutClassification =
   | 'incubating'        // still inside its window
-  | 'promotion-ready'   // window expired + proved itself  → R1
+  | 'window-elapsed'   // window expired + proved itself  → R1
   | 'expired-unproven'  // window expired + NOT proved      → R2
   | 'terminal';         // default-on — nothing to decide
 
@@ -318,7 +320,7 @@ export function classifyRollout(
     return { classification: 'incubating', stage, daysInStage, windowDays, proved };
   }
   if (proved === true) {
-    return { classification: 'promotion-ready', stage, daysInStage, windowDays, proved };
+    return { classification: 'window-elapsed', stage, daysInStage, windowDays, proved };
   }
   return { classification: 'expired-unproven', stage, daysInStage, windowDays, proved };
 }
@@ -479,7 +481,7 @@ export class GrowthMilestoneAnalyst {
       }
       const v = classifyRollout(init.rollout!.stage, daysInStage, windowDays, proofCount, s.proofOfLifeMinActivations);
       const rounded = Math.round(daysInStage * 10) / 10;
-      if (v.classification === 'promotion-ready' && s.rules.promotionReady) {
+      if (v.classification === 'window-elapsed' && s.rules.promotionReady) {
         findings.push({
           rule: 'R1',
           priority: 'normal',
@@ -751,12 +753,12 @@ export class GrowthMilestoneAnalyst {
       lead: string;
     }[] = [
       {
-        state: 'promotion-ready',
+        state: 'window-elapsed',
         rule: 'R7',
         priority: 'normal',
         action: 'promote',
-        title: (n) => `${n} staged switch${n === 1 ? '' : 'es'} past its window and proved`,
-        lead: 'Each ran at least once and its window has closed, so it is ready to turn on for real.',
+        title: (n) => `${n} staged switch${n === 1 ? ' has' : 'es have'} run and passed its trial window`,
+        lead: 'Each has fired at least once and its window has closed, so each is worth a decision. Whether it meets its own bar is scored separately.',
       },
       {
         state: 'legacy-unproven',
@@ -841,7 +843,7 @@ export class GrowthMilestoneAnalyst {
       correctionPatterns: corr.length,
       devGateDark: devGate.length,
       darkIncubating: darkBy('incubating'),
-      darkPromotionReady: darkBy('promotion-ready'),
+      darkWindowElapsed: darkBy('window-elapsed'),
       darkExpiredUnproven: darkBy('expired-unproven'),
       darkLegacyUnproven: darkBy('legacy-unproven'),
       // Un-owned counts only LIVE dark flags: a tombstoned or graduated entry
@@ -953,7 +955,7 @@ export class GrowthMilestoneAnalyst {
   private activeSummary(counts: GrowthDigestCounts): string {
     const parts: string[] = [];
     if (counts.promotionReady) parts.push(`${counts.promotionReady} ready to promote`);
-    if (counts.darkPromotionReady) parts.push(`${counts.darkPromotionReady} staged switch(es) ready`);
+    if (counts.darkWindowElapsed) parts.push(`${counts.darkWindowElapsed} staged switch(es) ready`);
     if (counts.darkLegacyUnproven) parts.push(`${counts.darkLegacyUnproven} dark before anyone was watching`);
     if (counts.expiredUnproven) parts.push(`${counts.expiredUnproven} expired-unproven`);
     if (counts.darkExpiredUnproven) parts.push(`${counts.darkExpiredUnproven} staged switch(es) past window`);

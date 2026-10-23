@@ -95,15 +95,15 @@ describe('classifyDarkFlag — proof honesty', () => {
     expect(classifyDarkFlag(anchor, 7, 'unknown', new Date('2026-01-04T00:00:00.000Z'), false)).toBe('incubating');
   });
 
-  it('is promotion-ready when the window expired AND it is proved', () => {
-    expect(classifyDarkFlag(anchor, 7, true, new Date('2026-01-09T00:00:00.000Z'), false)).toBe('promotion-ready');
+  it('marks the window elapsed when it expired AND the flag is proved', () => {
+    expect(classifyDarkFlag(anchor, 7, true, new Date('2026-01-09T00:00:00.000Z'), false)).toBe('window-elapsed');
   });
 
   it('is expired-unproven when the window expired and it is NOT proved', () => {
     expect(classifyDarkFlag(anchor, 7, false, new Date('2026-01-09T00:00:00.000Z'), false)).toBe('expired-unproven');
   });
 
-  it("NEVER promotes on 'unknown' proof — unknown is not proved", () => {
+  it("NEVER reaches window-elapsed on 'unknown' proof — unknown is not proved", () => {
     expect(classifyDarkFlag(anchor, 7, 'unknown', new Date('2026-06-01T00:00:00.000Z'), false)).toBe('expired-unproven');
   });
 
@@ -116,8 +116,8 @@ describe('classifyDarkFlag — proof honesty', () => {
     expect(classifyDarkFlag(anchor, 7, 'unknown', new Date(anchor), true)).toBe('legacy-unproven');
   });
 
-  it('a legacy entry can still become promotion-ready once genuinely proved', () => {
-    expect(classifyDarkFlag(anchor, 7, true, new Date(anchor), true)).toBe('promotion-ready');
+  it('a legacy entry can still reach window-elapsed once genuinely proved', () => {
+    expect(classifyDarkFlag(anchor, 7, true, new Date(anchor), true)).toBe('window-elapsed');
   });
 });
 

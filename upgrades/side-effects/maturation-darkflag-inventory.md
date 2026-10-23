@@ -26,7 +26,7 @@ points the engine at the **code-derived** inventory instead and gives every dark
   `src/monitoring/guardManifest.ts` — the new flag ships dark + dry-run-first and registers
   itself as a guard (dogfooding its own guarantee).
 
-**Proportion signal.** Tier 2. ~9 files, ~1,500 LOC including tests. 102 new tests (86 unit,
+**Proportion signal.** Tier 2. ~9 files, ~1,500 LOC including tests. 105 new tests (89 unit,
 10 integration, 6 e2e). One commit attempt so far; one design correction mid-build (the
 `/growth/findings` divergence, found by its own integration test). That is in line for a
 Tier-2 change against a pre-converged spec.
@@ -104,6 +104,43 @@ Right layer, and deliberately the *thin* one.
 - A lower layer would be wrong: `guardPostureView` is intentionally pure and fs-free, so the
   durable registry cannot live there. A higher layer would be wrong too: the digest publisher
   renders, it does not classify.
+
+**The check this review initially MISSED, and what it changed.** The first pass of this section
+compared only against G3. It did not compare against **D7**
+(`docs/specs/feature-maturation-recurring-evaluation.md`), which is operator-approved
+**2026-07-21 — eighteen days AFTER the spec being implemented here** — under the explicit
+directive *"D7 current increment; per-feature measurable metrics and recurring re-score; extend,
+never duplicate."* Its rejected-alternatives section names "a new `MaturationLedger`" specifically,
+and it is **built**: `BlockerLifecycleService.evaluateMaturation()` with a six-hour recurring
+driver, SQLite-backed, cadence-slot-deduped.
+
+Reading D7's implementation rather than only its prose settles the relationship:
+
+- **D7 is a SCORER, not an inventory.** It filters `initiativeTracker.list()` to initiatives
+  carrying a rollout record, then needs each to declare a `maturationEvaluation` **contract**
+  (metrics, thresholds, `cadenceHours`, `evidenceMaxAgeHours`). A guard with no initiative record
+  is invisible to it — it cannot even reach `missing-contract` for one. That blind spot is exactly
+  what Standard A exists to fill, so the code-derived inventory is genuinely complementary and is
+  NOT a second scorer.
+- **But one thing here WAS a real collision.** This registry originally carried a state named
+  `promotion-ready`, while D7 owns `ready` — computed from completely different inputs (a declared
+  contract scored against fresh observations, versus "a window closed and the flag fired once").
+  Two components answering "is this ready?" by different rules is precisely the *"criterion lives
+  in two places that disagree"* defect THIS spec names as a reason the engine stalled. Shipping it
+  would have re-created that defect while claiming to fix it.
+- **Resolved before merge:** the state is renamed `window-elapsed` and carries a comment naming
+  D7 as the readiness owner; the finding's prose says a decision is wanted and that *"whether it
+  meets its own bar is scored separately"* rather than asserting readiness. Three structural tests
+  hold the boundary: the state vocabulary contains neither `promotion-ready` nor `ready`, the
+  source names `evaluateMaturation` and the "extend, never duplicate" directive so the next reader
+  does not re-litigate it, and the elapsed-window finding's text must not assert readiness.
+- **The convergence that follows from this** (CMT-977): the right end state is the guard-derived
+  inventory FEEDING D7 — registering a subject plus a default contract — so there is ONE readiness
+  vocabulary, ONE scorer and ONE cadence, and D7's `ready` becomes the promote signal. That also
+  closes the proof-of-life gap noted under §2, because D7 already has the evidence machinery this
+  increment leaves unwired. Minting 184 synthetic initiatives and hand-writing a contract per
+  guard is not increment-1 work, which is why this increment records ownership only and asserts no
+  readiness at all.
 
 ---
 
@@ -331,10 +368,10 @@ the violation Phase 5 exists to catch — brittle logic holding blocking authori
   honesty on both sides, monotonic/flap-robust deadlines (including a 6-cycle toggle),
   migration-is-not-a-clean-slate, tombstoning, graduation only on genuinely-on states, history
   append-only-on-change, foreign/corrupt registry handling, and stored-deadline consistency under a widened or narrowed window.
-- `tests/unit/growth-analyst-darkflag-r7.test.ts` — 36 tests: gating on both sides, the dry-run
+- `tests/unit/growth-analyst-darkflag-r7.test.ts` — 39 tests: gating on both sides, the dry-run
   canary (registry written, no findings), aggregation at 120 flags, the never-promote-on-unknown
   rule, R3's demotion, degrade-to-skipped paths, wiring integrity against `AgentServer.ts`
-  source, the two-aggregation-point parity guard, and the no-dotted-config-key-in-operator-text guard.
+  source, the two-aggregation-point parity guard, the no-dotted-config-key-in-operator-text guard, and the three readiness-boundary guards against D7.
 - `tests/integration/growth-analyst-darkflag-routes.test.ts` — 10 tests over the real HTTP
   pipeline, including restart durability and tombstoning through the routes.
 - `tests/e2e/growth-darkflag-maturation-lifecycle.test.ts` — 6 tests on a real port: the Phase-1
