@@ -35,6 +35,8 @@ const COPY_FILES = [
   'scripts/eli16-overview-check.mjs',
   'scripts/lib/classify-tier.mjs',
   'scripts/lib/convergence-recognition.mjs',
+  // The precommit's trace checks (shared with the local verifier).
+  'scripts/lib/instar-dev-trace.mjs',
   'scripts/lib/markdown-code-identifier.mjs',
   'scripts/lib/operator-surface.mjs',
   'scripts/lib/self-action-detect.mjs',
