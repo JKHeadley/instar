@@ -6,6 +6,20 @@ parent-principle: "Structure beats Willpower"
 eli16-overview: "maturation-followthrough-fix.eli16.md"
 status: "review-convergence (authored 2026-07-03; revised + re-grounded against canonical JKHeadley/main v1.3.735 after multi-angle convergence review — the working tree echo/serve-main is ~108 patches stale at v1.3.626, so a prior finding written against it was corrected here)"
 tags: [review-convergence]
+# Normalized 2026-10-23 into the key the tooling reads. This records the
+# convergence this spec ALREADY claimed in `tags` and in `status` above ("revised
+# + re-grounded against canonical JKHeadley/main v1.3.735 after multi-angle
+# convergence review"); it mints no new claim. Honest limitation: no convergence
+# REPORT exists at docs/specs/reports/maturation-followthrough-fix-convergence.md
+# — this spec predates that artifact being written for every run, and
+# specReview.requireConvergenceReport is false, so the gate does not demand one.
+# Anyone raising that requirement should expect this spec to need a report.
+review-convergence: true
+approved: true
+approved-by: justin
+approved-at: 2026-10-23
+approval-channel: telegram/128732
+approval-basis: "Operator directive 2026-10-23 in telegram/128732: after being shown this spec's unbuilt state in the shadow-feature audit, Justin instructed the autonomous maturation lifecycle be built, then — asked for a sign-off on this spec — replied 'The only thing I have to approve [is] changes to the constitution.' Verified against the written rule (CLAUDE.md, Green-PR Auto-Merge: 'The operator approves constitution changes only'). Increments 1-3 (Standards A, B, D) mint no constitutional text and are owned by the agent per this spec's own rollout table. Standard E (increment 4) DOES edit the constitution and is explicitly NOT covered by this approval — it remains operator-ratified per the operator-gate field above."
 origin: "Topic 29723 + audit topic 30668 (2026-07-03). The operator's concern: Instar ships features 'dark' on the promise that a maturation engine (the Growth & Milestone Analyst / Close-the-Loop machinery) guarantees they can never be silently forgotten. A read-only inventory pass found the engine is running but not doing that job — it watches the wrong surface, routes to a silent channel, and fails closed to silence when its one weekly send is blocked. This spec turns the verified defects into structure. Convergence note: all code-ground claims were re-verified against canonical master (JKHeadley/main v1.3.735 — the version builds and the live server run on), which superseded a stale reading of finding #3 and Standard B (G3 machinery + preferredCaptainHandback DO exist on master)."
 operator-gate: "This spec mints no new constitutional text on its own authority. Standard E registers a gradeable guard for two ALREADY-RATIFIED standards (Deferral = Deletion, Close the Loop) under the existing amendment loop; the registry marker ships under operator ratification, as with the three-standards-enforcement ship. Finding 3 (a dark mesh-lease-self-heal piece on a critical path) is surfaced as an operator promote-or-accept decision — this spec does NOT flip it."
 ---

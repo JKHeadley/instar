@@ -260,6 +260,15 @@ import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
+import { buildGuardInventory } from '../monitoring/guardPostureView.js';
+import {
+  readGuardPostureBootSnapshot,
+  resolveGuardConfigSnapshot,
+} from '../monitoring/guardPosture.js';
+import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
+import { GuardRegistry } from '../monitoring/GuardRegistry.js';
+import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -3607,6 +3616,18 @@ export class AgentServer {
           settings: resolveGrowthSettings({
             ...(options.config.monitoring?.growthAnalyst ?? {}),
             enabled: growthAnalystEnabled,
+            // Standards A/B ride the dev-agent gate exactly like the analyst
+            // itself: `enabled` is omitted from the shipped defaults, so the
+            // gate decides (LIVE on a dev agent, DARK on the fleet) and the
+            // resolved value is fed in so GET /growth/status reports honestly
+            // rather than reading a `false` the config never set.
+            darkFlagInventory: {
+              ...(options.config.monitoring?.growthAnalyst?.darkFlagInventory ?? {}),
+              enabled: resolveDevAgentGate(
+                options.config.monitoring?.growthAnalyst?.darkFlagInventory?.enabled,
+                options.config,
+              ),
+            },
           }),
           tracker: options.initiativeTracker,
           approvalLedger: this.approvalLedger,
@@ -3616,6 +3637,50 @@ export class AgentServer {
           // R6 dev-gate conformance: feed the live config so the analyst can flag
           // a registered dev-gated feature observed DARK on this dev agent.
           liveConfig: options.config,
+          // ── Standards A + B (maturation-followthrough-fix) ──
+          // The code-derived dark-flag source. Built through the SAME pure
+          // funnel `/guards` uses (buildGuardInventory), so the engine and the
+          // operator's read surface can never disagree about what is dark.
+          // Reads config/boot/accept state per call — this runs on the analyst's
+          // cadence, not per request, and a read failure degrades to null
+          // (R7 skipped) rather than a wrong classification.
+          darkFlagInventory: () => {
+            const projectDir = path.dirname(options.config.stateDir!);
+            const snapshot = resolveGuardConfigSnapshot(projectDir);
+            // A config-read failure must NOT become a truthful-looking empty
+            // inventory: an empty list would read as "nothing is dark" and
+            // could graduate the whole registry to tombstones. Skip instead.
+            if (snapshot.readError) {
+              console.warn(`[GrowthMilestoneAnalyst] guard snapshot read failed: ${snapshot.readError}`);
+              return null;
+            }
+            const selfMachineId = options.meshSelfId ?? null;
+            return buildGuardInventory({
+              snapshot,
+              bootSnapshot: readGuardPostureBootSnapshot(options.config.stateDir!),
+              registry: options.guardRegistry ?? new GuardRegistry(),
+              now: Date.now(),
+              acceptedFallbacks: scopeAcceptedFallbacks(
+                readAcceptedFallbacks(options.config.stateDir!),
+                selfMachineId,
+              ),
+            }).guards;
+          },
+          darkFlagRegistry: new DarkFlagMaturationRegistry({
+            stateDir: options.config.stateDir,
+            // Machine-local BY DESIGN: a guard's effective state is a fact about
+            // the machine it runs on, so this registry grades THIS machine only.
+            machineId: options.meshSelfId ?? 'single-machine',
+            onError: (where, err) =>
+              console.warn(`[DarkFlagMaturationRegistry] ${where}:`, err),
+          }),
+          // Owner derivation from a REAL code source only. A dev-gated feature
+          // runs live on this agent under the dev gate, so the agent owns
+          // graduating or killing it. Everything else stays un-owned, which is
+          // itself a surfaced finding — we never invent an owner to make the
+          // registry look complete.
+          darkFlagOwnerFor: (row) =>
+            DEV_GATED_FEATURES.some((f) => f.configPath === row.key) ? 'agent' : null,
           onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
         });
       }

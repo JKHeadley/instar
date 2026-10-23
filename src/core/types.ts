@@ -7653,6 +7653,23 @@ export interface MonitoringConfig {
      *  opt in for a steady heartbeat). Decoupled from `digestEvenWhenCalm`, which
      *  only governs whether the digest OBJECT/API renders a calm summary. */
     digestSendOnCalmWeeks?: boolean;
+    /**
+     * Standard A/B of maturation-followthrough-fix: read the real dark-flag
+     * inventory from the `/guards` posture surface instead of only the specs
+     * that registered a rollout stage, and give every dark flag a durable
+     * owner + deadline + proof-of-life record.
+     *
+     * Ships DARK (`enabled: false`) and dry-run-first. With `enabled: false`
+     * the analyst reverts to exactly the InitiativeTracker-only behavior and
+     * R3 keeps its old place in the headline, so rollback is a single flag.
+     * With `dryRun: true` the durable registry IS written (the soak accrues
+     * real evidence from day one, which an in-memory counter can never do)
+     * but no R7 finding reaches the digest.
+     */
+    darkFlagInventory?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+    };
     /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
     incubationWindows?: {
       lowRisk?: number;

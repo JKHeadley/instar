@@ -72,10 +72,14 @@ checked them against the real code, and I fixed them rather than repeat them:
    accept leaving it off), not something this spec flips.
 
 2. The earlier pass said to "reuse the existing" machinery for classifying load-bearing
-   guards and recording an "accepted risk." **That machinery isn't built yet** — it's a
-   still-planned item. So the spec builds its owner/deadline/proof-of-life piece on the
-   parts that *do* exist today, and lines it up to connect with the planned machinery when
-   that lands, instead of leaning on something that isn't there.
+   guards and recording an "accepted risk," and then a correction said that machinery
+   **isn't built yet**. The correction was wrong, and the spec body now says so: it was
+   written against a working copy about 108 versions out of date. On the real main branch
+   that machinery **is** built and running. So this spec adds only the one thing it genuinely
+   lacks — an owner, a deadline and proof-of-life per switch — and leans on the existing
+   parts for everything else, instead of building a second, competing version of them.
+   (Keeping this paragraph rather than deleting it: a wrong correction that got believed is
+   worth leaving visible.)
 
 ## What's yours to decide
 
@@ -87,3 +91,49 @@ an invisible gap.
 
 *One term worth knowing: **dark / ship-dark** — a feature that's built but shipped turned
 off, so it can be proven safe before it affects anyone.*
+
+---
+
+## What is actually built, as of 23 October 2026
+
+This spec has four parts. Here is the honest state of each.
+
+**Built and shipping now (parts 1 and 2 — "watching the wrong list"):**
+The engine now reads the real list of switches straight from the running code, rather than
+only the ones someone remembered to register. That takes it from seeing 3 features to
+seeing all of them. Every switch it finds gets a written-down owner, a deadline, and a
+record of whether there is any evidence it has ever actually run — and that record survives
+restarts, which matters because a trial measured only in memory can never prove "it has
+been fine for a week."
+
+Four traps are handled, because without them this kind of record is useless in practice:
+
+- A switch that flickers on and off cannot keep resetting its own clock to dodge review.
+- Switches that were *already* off before anyone was watching do **not** get a fresh clean
+  deadline. That would hide exactly the forgotten pile this exists to surface, so they show
+  up overdue immediately.
+- A switch that gets renamed or deleted leaves its history behind instead of vanishing.
+- "No evidence it ran" is reported as **unknown** and can never be read as proof. A switch
+  nobody can show working is never reported ready.
+
+It also stops shouting about the wrong thing: the general to-do noise moves to the bottom,
+and the feature-readiness signal leads.
+
+**Already shipped earlier (part 3 — "gives up when blocked"):** the delivery fix landed in
+July. Note it is still switched off, so it is not yet doing its job.
+
+**Not built (part 4 — the watcher on the engine itself):** nothing yet watches whether the
+engine has gone quiet. That is the next piece.
+
+**Yours, and deliberately untouched:** the part that turns two existing principles into
+enforced rules edits the constitution, so it stays an operator decision.
+
+## What this does NOT do yet, said plainly
+
+It makes the forgotten pile **visible and durable**. It does **not** decide anything for
+you. Turning a feature on is still a human call, and there is not yet a one-tap
+"promote / give it longer / retire it" button — that is the next increment. Until then, a
+surfaced item is acted on through the paths that already exist.
+
+Expect the first live report to name a sizeable pile of switches with **no owner at all**.
+That is the point, not a fault: an un-owned switch left off is exactly the gap being closed.
