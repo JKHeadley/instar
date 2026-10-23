@@ -22740,8 +22740,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the owner's session, land the target's claim (the queue-barrier release).
     //   · drain ok → proceed to pin+journal exactly as today (the place/claim
     //     repair below sees active@target and correctly no-ops).
-    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
-    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · aborted-emergency-stop / refused-close-failed → 409 failed-needs-retry,
+    //     NO pin — an abort leaves nothing split (the topic stays whole on its
+    //     current machine).
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
@@ -22778,6 +22779,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
             failedNeedsRetry: true,
             drain: drainLeg,
+          });
+          return;
+        }
+        // The owner could not close its session, so it aborted the transfer and
+        // kept ownership. Setting the pin now would re-place the topic on the
+        // target at the next message while the old session is still running —
+        // two live sessions on one conversation (2026-10-23). Stop here instead.
+        if (r.status === 'refused-close-failed') {
+          res.status(409).json({
+            error: `transfer aborted: the current machine could not close its session for this topic (${r.reason ?? 'close refused'}) — the topic stays whole on its current machine${drainRunSuspended ? '; its autonomous run was suspended for the move and stays suspended there' : ''}`,
+            failedNeedsRetry: true,
+            drain: drainLeg,
+            // Honest: the run was suspended BEFORE the close was attempted and is
+            // not un-suspended on abort (same as the emergency-stop abort).
+            autonomousRunSuspended: drainRunSuspended,
           });
           return;
         }

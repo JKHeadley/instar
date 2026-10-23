@@ -25158,13 +25158,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { timeoutMs: 50_000 },
               );
               if (res.ok) {
-                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
+                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; detail?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
                 const status = typeof r.status === 'string' ? r.status : undefined;
                 const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted');
+                // The mesh handler spreads the runner's outcome, whose reason
+                // field is `detail` (e.g. `close-refused:active-subagent`) —
+                // read it so a remote refusal reaches the route's 409 by name.
+                const reason = typeof r.reason === 'string' ? r.reason : typeof r.detail === 'string' ? r.detail : undefined;
                 return {
                   ok: r.ok === true,
                   status,
-                  reason: typeof r.reason === 'string' ? r.reason : undefined,
+                  reason,
                   runSuspended: r.autonomousRunSuspended === true,
                   claimLanded: completed && r.claimLanded === true,
                 };
