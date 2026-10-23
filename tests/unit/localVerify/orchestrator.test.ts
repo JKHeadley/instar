@@ -19,6 +19,7 @@ import {
   type OrchestratorSeams, type VerifyRunInput, type GitResult, type ExecResult,
 } from '../../../src/localVerify/orchestrator.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
+import { loadTsFrom } from '../../../src/localVerify/skipRatchet.js';
 import { artifactSha256 } from '../../../scripts/lib/instar-dev-trace.mjs';
 
 const HOME = '/agents/echo';
@@ -410,6 +411,48 @@ describe('runVerify — classification', () => {
   it('a harness read failure classifies the PR harness-changing, outcome unchanged', async () => {
     const f = fake({ shows: {} });
     const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', harnessChanging: true });
+    expect(f.logs.some((l) => l.event === 'classify-read-failure')).toBe(true);
+  });
+  it("resolves the skip ratchet's parser from the run directory, not this module's own install", async () => {
+    // The verifier process runs from the agent's shadow install, which carries
+    // no devDependencies, so a parser resolved from the module's own location is
+    // not found. The ratchet resolves it before inspecting any file, so the
+    // catch-all flagged EVERY verify — PRs with no test-file change and `main`
+    // verifies with an empty diff alike (the 2026-10-23 regression; PR #2318 was
+    // the one it held overnight).
+    const asked: string[] = [];
+    const f = fake({
+      diff: 'M\ttests/unit/a.test.ts\n',
+      shows: {
+        [`${HEAD}:package.json`]: PKG,
+        [`${MB}:tests/unit/a.test.ts`]: UNIT_SRC,
+        [`${HEAD}:tests/unit/a.test.ts`]: UNIT_SRC,
+      },
+    });
+    const seams = { ...f.seams, loadTs: (from: string) => { asked.push(from); return loadTsFrom(); } };
+    const r = await runVerify(input(), seams);
+    expect(asked).toEqual([P.runDir]);
+    expect(r.kind === 'record' && r.record).toMatchObject({ harnessChanging: false, skipsAdded: false, testsRemoved: false });
+    expect(f.logs.some((l) => l.event === 'classify-read-failure')).toBe(false);
+  });
+  it('an unresolvable parser still classifies harness-changing, through the seam', async () => {
+    // The safety direction the fix must NOT weaken: when the parser cannot be
+    // found in the run directory OR beside this module, classification fails
+    // closed to an operator approval rather than reporting "no skips added".
+    const f = fake({
+      diff: 'M\ttests/unit/a.test.ts\n',
+      shows: {
+        [`${HEAD}:package.json`]: PKG,
+        [`${MB}:tests/unit/a.test.ts`]: UNIT_SRC,
+        [`${HEAD}:tests/unit/a.test.ts`]: UNIT_SRC,
+      },
+    });
+    const seams = {
+      ...f.seams,
+      loadTs: () => { throw new Error("Cannot find module 'typescript'"); },
+    } as unknown as OrchestratorSeams;
+    const r = await runVerify(input(), seams);
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', harnessChanging: true });
     expect(f.logs.some((l) => l.event === 'classify-read-failure')).toBe(true);
   });
