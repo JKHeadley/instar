@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-23T01:55:00.363Z",
+  "slug": "local-verify-parallel-lanes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 207,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/policy.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 158,
+    "deletedLines": 49
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "none",
+    "closure": "n/a",
+    "reason": "Throughput change (verifier lanes run at once), not a self-triggered loop or defect fix; the slot re-queue path is bounded by the existing queue cap and starved signal."
+  },
+  "verdict": "pass"
+}
