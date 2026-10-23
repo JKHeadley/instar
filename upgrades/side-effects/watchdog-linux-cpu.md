@@ -3,7 +3,7 @@
 **Version / slug:** `watchdog-linux-cpu`
 **Date:** `2026-10-22`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required (test-only: no change to what the watchdog decides)`
+**Second-pass reviewer:** `independent subagent, concurred (see Second-pass review)`
 
 ## Summary of the change
 
@@ -86,9 +86,11 @@ The Linux failure was a test-timing race, not a product misjudgment. Evidence: i
 
 ---
 
-## Second-pass review (if required)
+## Second-pass review
 
-Not required: the change is test-only (the e2e wait condition, a corrected comment, three unit cases); no product code path changes.
+**Reviewer:** independent general-purpose subagent (Claude Opus 5.5), one round, 2026-10-23 — concur
+
+Concur, no blocking issues. The e2e wait is stricter than before (it now also needs an npm row the production classifier accepts, so the old theory would fail loudly); the three unit cases match `classifyTestRunnerCommand`; the ELI16 credits #2298 correctly; fixture processes are cleaned up as before. Unit file 43/43. Nits left: Linux evidence comes from the verifier's run, not this review; the claim that macOS `ps` never shows the title was not checked and does not affect the fix.
 
 ## Evidence pointers
 
