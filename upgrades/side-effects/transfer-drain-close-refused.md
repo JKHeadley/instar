@@ -83,6 +83,7 @@ Ship. The change closes the incident's mechanism with the existing abort CAS and
 - Unit: `tests/unit/SessionDrainRunner.test.ts` (refused × 5, thrown, nothing-to-close × 4).
 - Unit: `tests/unit/session-manager-terminate.test.ts` (drain close on non-holder + recent message terminates; public path lease-refused; active subagent still vetoes).
 - Integration: `tests/integration/pool-placement-transfer-routes.test.ts` (409, no pin, ownership/epoch untouched).
+- Unit (source-shape): `tests/unit/ws12-drain-wiring.test.ts` — its fixed 2200-char window over the sender leg was widened to 3000 after the `detail` fallback pushed the `noHandler` literal past it (the only local-verify failure on the first run); it now also asserts the `detail` fallback is present.
 
 ## Class-Closure Declaration (display-only mirror)
 
