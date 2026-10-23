@@ -24,6 +24,15 @@ export const BASELINE_PROCESS_PATTERNS: readonly RegExp[] = [
   /\bmcp.*server\b/i,
   /\bcaffeinate\b/,
   /\bnpm exec\b.*mcp/,
+  // Any MCP server a session launched from its .mcp.json, whatever the binary
+  // is called: `workspace-mcp --tool-tier complete`, `@plaud-ai/mcp@latest`,
+  // `mcp-server-foo`. Every MCP binary carries the `mcp` token by convention,
+  // and the entries above only ever named the ones we happened to ship. The
+  // 2026-10-22 sagemind pile-up: the Google Workspace MCP matched none of them,
+  // so every conversation counted as working forever and nothing idle was ever
+  // closed. A tool shell is judged BEFORE this list (CLAUDE_TOOL_SHELL_PATTERN
+  // wins), so a command that merely mentions mcp inside a Bash call stays work.
+  /\bmcp\b/i,
 ];
 
 /**
@@ -46,3 +55,20 @@ export const MCP_STACK_ROOT_PATTERNS: readonly RegExp[] =
  * background shells is not mistaken for an abandoned one.
  */
 export const CLAUDE_TOOL_SHELL_PATTERN = /\/shell-snapshots\/snapshot-/;
+
+/**
+ * Framework-neutral tool shell: the `<shell> -c …` / `zsh -lc …` child a
+ * framework spawns to run ONE tool command (Claude's snapshot shell matches
+ * this too; Codex runs `/bin/zsh -lc '<cmd>'` with no snapshot token). A tool
+ * shell is the agent's own in-flight command and is judged BEFORE any baseline
+ * entry, so a command whose text merely mentions an MCP (`grep -rn mcp src/`,
+ * `vitest run tests/unit/mcp-stdio.test.ts`) is never mistaken for a resident
+ * helper. Added with the generic `mcp` baseline entry, whose review found that
+ * only Claude's shell had this precedence.
+ */
+export const TOOL_SHELL_PATTERN = /(?:^|[\s/])(?:ba|z|da|k)?sh\s+-(?:l?c|cl?)\b/;
+
+/** Either framework's tool shell. */
+export function isToolShellCommand(command: string): boolean {
+  return CLAUDE_TOOL_SHELL_PATTERN.test(command) || TOOL_SHELL_PATTERN.test(command);
+}

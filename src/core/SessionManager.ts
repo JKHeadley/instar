@@ -28,7 +28,7 @@ import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNa
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
-import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN } from './baselineProcessPatterns.js';
+import { BASELINE_PROCESS_PATTERNS, CLAUDE_TOOL_SHELL_PATTERN, isToolShellCommand } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { RerouteRefusedError } from './rerouteRefusedError.js';
@@ -4863,11 +4863,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
 
-    // Filter out baseline processes. A Claude Code tool shell wins over the
-    // baseline match: its command text is the agent's own command line, which
-    // may merely mention a baseline name (`caffeinate`, `mcp-stdio-entry`, …).
+    // Filter out baseline processes. A tool shell (Claude's snapshot shell OR
+    // Codex's `zsh -lc`) wins over the baseline match: its command text is the
+    // agent's own command line, which may merely mention a baseline name
+    // (`caffeinate`, `mcp-stdio-entry`, a bare `mcp`, …).
     const activeProcesses = descendants.filter(p => {
-      if (CLAUDE_TOOL_SHELL_PATTERN.test(p.command)) return true;
+      if (isToolShellCommand(p.command)) return true;
       return !BASELINE_PROCESS_PATTERNS.some(pattern => pattern.test(p.command));
     });
 
@@ -4882,7 +4883,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // A Claude Code tool shell sources a snapshot under the config home
         // (`~/.claude…/shell-snapshots/…`), so its command line contains the word
         // "claude" — it is the agent's running command, never the main process.
-        if (CLAUDE_TOOL_SHELL_PATTERN.test(p.command)) return true;
+        if (isToolShellCommand(p.command)) return true;
         return !/\bclaude\b/.test(p.command) && !/\bnode\b.*\bclaude\b/.test(p.command);
       }
       return true;
