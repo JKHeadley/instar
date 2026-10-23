@@ -18757,6 +18757,46 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
       }
 
+      // ── Per-peer homebase backfill (peer-conversation-homebase-topic) ──
+      // Homebases are created when a pairing becomes mutual-verified, so peers paired before
+      // the feature shipped never got one, and early ones carry the legacy
+      // "<peer> · Threadline · <fp>" name. One bounded, best-effort pass, delayed so the
+      // serving lease has settled; a standby does nothing (same rule as creation).
+      if (threadline.trustManager && telegram) {
+        const hbTrust = threadline.trustManager;
+        const hbTelegram = telegram;
+        const hbTimer = setTimeout(() => {
+          void (async () => {
+            try {
+              const { backfillPeerHomebases, displayNameCollides } = await import('../threadline/peerHomebase.js');
+              const hbCfg = (config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
+              const peers = hbTrust.listProfiles();
+              const r = await backfillPeerHomebases(peers, {
+                enabled: resolveDevAgentGate(hbCfg?.enabled, config),
+                holdsLease: !state.readOnly,
+                findOrCreateTopic: async (name) => {
+                  const t = await hbTelegram.findOrCreateForumTopic(name, undefined, { origin: 'user', label: 'peer-homebase' });
+                  return { topicId: t.topicId, reused: t.reused };
+                },
+                findTopicByName: (name) => hbTelegram.findTopicIdByName(name),
+                renameTopic: (topicId, name) => hbTelegram.editForumTopic(topicId, name),
+                nameCollides: (fp, name) => displayNameCollides(fp, name, peers),
+                topicNameOf: (topicId) => hbTelegram.getTopicName(topicId),
+                getRecorded: (fp) => hbTrust.getHomebaseTopic(fp),
+                record: (fp, topicId) => hbTrust.setHomebaseTopic(fp, topicId),
+                log: (m) => console.log(m),
+              });
+              if (r.created || r.renamed || r.failed) {
+                console.log(`[homebase] backfill: created ${r.created}, renamed ${r.renamed}, failed ${r.failed}`);
+              }
+            } catch (err) {
+              console.warn(`[homebase] backfill skipped: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          })();
+        }, 90_000);
+        hbTimer.unref?.();
+      }
+
       // Secure A2A Verified Pairing §3.8 (FD11) — SEND-SIDE: attach the journal-backed
       // emitter to the trust manager's pairing-replication hooks so a local markMutualVerified
       // ALSO replicates the verified-IDENTITY RESULT to the agent's OWN machines, and a

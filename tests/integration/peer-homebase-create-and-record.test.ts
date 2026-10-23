@@ -64,7 +64,7 @@ describe('ensurePeerHomebase against a real trust store', () => {
   it('creates the topic, records it, and the record SURVIVES a reload', async () => {
     const r = await ensurePeerHomebase(PEER, 'pp', deps());
     expect(r).toEqual({ created: true, topicId: 31337, reused: false });
-    expect(created).toEqual([`pp · Threadline · ${PEER.slice(0, 6)}`]);
+    expect(created).toEqual(['🤝 pp']);
 
     // The point of the integration tier: a real store, re-read from disk.
     const reloaded = new AgentTrustManager({ stateDir });

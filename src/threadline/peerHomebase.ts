@@ -27,19 +27,57 @@ export interface HomebaseBindCandidate {
 /** How much of the fingerprint goes in the name. Short enough to read, long enough to separate. */
 export const HOMEBASE_FP_SUFFIX_LEN = 6;
 
+/** The prefix the operator chose for a peer's topic ("🤝 PP"). */
+export const HOMEBASE_PREFIX = '🤝';
+
+function shortFp(peerFingerprint: string): string {
+  return peerFingerprint.replace(/[^0-9a-zA-Z]/g, '').slice(0, HOMEBASE_FP_SUFFIX_LEN);
+}
+
+function displayName(peerName: string): string {
+  return peerName.trim() || 'unknown peer';
+}
+
 /**
- * `"<peer> · Threadline · <fp6>"`.
+ * `"🤝 <peer>"` — the name the operator agreed to. The peer's own name is used exactly as
+ * given (no casing invented).
  *
- * The suffix exists because the map keys by fingerprint while find-or-create keys by NAME: two
- * peers with the same display name would otherwise collide onto one topic. It REDUCES
- * accidental collisions rather than eliminating them — two peers sharing both a display name
- * and the first six fingerprint characters still collide, which §6 accepts rather than
- * engineers against.
+ * find-or-create keys on the NAME while the map keys by fingerprint, so two different peers
+ * sharing a display name would silently share one topic. Only in that collision case does the
+ * short fingerprint get appended (`"🤝 <peer> · <fp6>"`). Two peers sharing both the name and
+ * the first six fingerprint characters still collide, which spec §6 accepts.
  */
-export function homebaseTopicName(peerName: string, peerFingerprint: string): string {
-  const name = peerName.trim() || 'unknown peer';
-  const fp = peerFingerprint.replace(/[^0-9a-zA-Z]/g, '').slice(0, HOMEBASE_FP_SUFFIX_LEN);
+export function homebaseTopicName(
+  peerName: string,
+  peerFingerprint: string,
+  opts: { collides?: boolean } = {},
+): string {
+  const name = displayName(peerName);
+  const fp = shortFp(peerFingerprint);
+  return opts.collides && fp ? `${HOMEBASE_PREFIX} ${name} · ${fp}` : `${HOMEBASE_PREFIX} ${name}`;
+}
+
+/** The pre-rename form, `"<peer> · Threadline · <fp6>"`, kept so existing topics are found, not duplicated. */
+export function legacyHomebaseTopicName(peerName: string, peerFingerprint: string): string {
+  const name = displayName(peerName);
+  const fp = shortFp(peerFingerprint);
   return fp ? `${name} · Threadline · ${fp}` : `${name} · Threadline`;
+}
+
+/** True when a topic name has the legacy `"… · Threadline[ · fp]"` shape. */
+export function isLegacyHomebaseName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  return /\s·\sThreadline(\s·\s[0-9a-zA-Z]{1,12})?$/.test(name.trim());
+}
+
+/** Does another peer (different fingerprint) already use this display name? Case-insensitive. */
+export function displayNameCollides(
+  peerFp: string,
+  peerName: string,
+  peers: ReadonlyArray<{ fingerprint?: string; agent?: string }>,
+): boolean {
+  const want = displayName(peerName).toLowerCase();
+  return peers.some((p) => !!p.fingerprint && p.fingerprint !== peerFp && displayName(p.agent ?? '').toLowerCase() === want);
 }
 
 export type BindVerdict =
@@ -97,6 +135,15 @@ export interface EnsureHomebaseDeps {
   holdsLease: boolean;
   /** Idempotent on the name: an existing topic with it is reused, never duplicated. */
   findOrCreateTopic: (name: string) => Promise<{ topicId: number; reused: boolean }>;
+  /**
+   * Look up an existing topic by exact name WITHOUT creating one. Used to adopt a topic that
+   * still carries the legacy name so a rename never mints a duplicate. Optional.
+   */
+  findTopicByName?: (name: string) => number | undefined;
+  /** Best-effort rename (Telegram editForumTopic). Optional; failures are logged, never thrown. */
+  renameTopic?: (topicId: number, name: string) => Promise<boolean>;
+  /** True when another peer shares this display name — the fingerprint suffix is then appended. */
+  nameCollides?: (peerFp: string, peerName: string) => boolean;
   /** The peer's already-recorded homebase, if any. */
   getRecorded: (peerFp: string) => number | undefined;
   /** Records it. Returns false if it refuses (e.g. a different id already stands). */
@@ -134,13 +181,23 @@ export async function ensurePeerHomebase(
   const existing = d.getRecorded(peerFp);
   if (typeof existing === 'number') return { created: false, reason: 'already-recorded', topicId: existing };
 
-  const name = homebaseTopicName(peerName, peerFp);
+  const collides = d.nameCollides?.(peerFp, peerName) ?? false;
+  const name = homebaseTopicName(peerName, peerFp, { collides });
   let topicId: number;
   let reused: boolean;
   try {
-    const r = await d.findOrCreateTopic(name);
-    topicId = r.topicId;
-    reused = r.reused;
+    // A topic left under the legacy name (created before the rename, then not recorded) is
+    // adopted and renamed rather than duplicated.
+    const legacyId = d.findTopicByName?.(legacyHomebaseTopicName(peerName, peerFp));
+    if (typeof legacyId === 'number') {
+      topicId = legacyId;
+      reused = true;
+      await renameBestEffort(d, legacyId, name);
+    } else {
+      const r = await d.findOrCreateTopic(name);
+      topicId = r.topicId;
+      reused = r.reused;
+    }
   } catch (err) {
     d.log?.(`[homebase] create failed for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
     return { created: false, reason: 'create-failed' };
@@ -153,4 +210,85 @@ export async function ensurePeerHomebase(
     return { created: false, reason: 'record-refused' };
   }
   return { created: true, topicId, reused };
+}
+
+async function renameBestEffort(d: Pick<EnsureHomebaseDeps, 'renameTopic' | 'log'>, topicId: number, name: string): Promise<boolean> {
+  if (!d.renameTopic) return false;
+  try {
+    const ok = await d.renameTopic(topicId, name);
+    if (!ok) d.log?.(`[homebase] rename of topic ${topicId} to "${name}" did not apply`);
+    return ok;
+  } catch (err) {
+    d.log?.(`[homebase] rename of topic ${topicId} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+// ── Boot-time backfill ──────────────────────────────────────────────────────
+
+/** The fields of a trust profile the backfill reads. */
+export interface BackfillPeer {
+  fingerprint?: string;
+  agent?: string;
+  pairingState?: string;
+  homebaseTopicId?: number;
+}
+
+/** Hard cap on topics touched per boot, so a large trust store can never flood Telegram. */
+export const HOMEBASE_BACKFILL_MAX = 10;
+
+/**
+ * Which peers the boot backfill acts on.
+ *
+ * `create`: mutual-verified, has a fingerprint, no recorded homebase — the peers paired before
+ * homebases shipped (or whose creation failed). `rename`: a recorded homebase whose current
+ * topic name is still the legacy `"… · Threadline · fp"` form. Both lists are bounded.
+ */
+export function selectHomebaseBackfill<T extends BackfillPeer>(
+  peers: readonly T[],
+  topicNameOf: (topicId: number) => string | null | undefined,
+  max: number = HOMEBASE_BACKFILL_MAX,
+): { create: T[]; rename: T[] } {
+  const verified = peers.filter((p) => p.pairingState === 'mutual-verified' && !!p.fingerprint);
+  const create = verified.filter((p) => typeof p.homebaseTopicId !== 'number').slice(0, max);
+  const rename = verified
+    .filter((p) => typeof p.homebaseTopicId === 'number' && isLegacyHomebaseName(topicNameOf(p.homebaseTopicId)))
+    .slice(0, max);
+  return { create, rename };
+}
+
+export interface BackfillResult {
+  created: number;
+  renamed: number;
+  failed: number;
+}
+
+/**
+ * Give every already-paired peer a homebase, and move legacy-named ones to the new name.
+ * Same gate and lease rule as `ensurePeerHomebase` (it calls it). Never throws.
+ */
+export async function backfillPeerHomebases(
+  peers: readonly BackfillPeer[],
+  d: EnsureHomebaseDeps & { topicNameOf: (topicId: number) => string | null | undefined; max?: number },
+): Promise<BackfillResult> {
+  const out: BackfillResult = { created: 0, renamed: 0, failed: 0 };
+  if (!d.enabled || !d.holdsLease) return out;
+  const { create, rename } = selectHomebaseBackfill(peers, d.topicNameOf, d.max);
+  for (const p of create) {
+    try {
+      const r = await ensurePeerHomebase(p.fingerprint!, p.agent ?? p.fingerprint!, d);
+      if (r.created) out.created++;
+      else if (r.reason !== 'already-recorded') out.failed++;
+    } catch (err) {
+      out.failed++;
+      d.log?.(`[homebase] backfill failed for ${p.fingerprint!.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  for (const p of rename) {
+    const collides = d.nameCollides?.(p.fingerprint!, p.agent ?? '') ?? false;
+    const ok = await renameBestEffort(d, p.homebaseTopicId!, homebaseTopicName(p.agent ?? '', p.fingerprint!, { collides }));
+    if (ok) out.renamed++;
+    else out.failed++;
+  }
+  return out;
 }

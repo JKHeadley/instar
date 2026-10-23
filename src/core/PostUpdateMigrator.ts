@@ -7058,6 +7058,16 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
     }
+    // The topic was renamed to "🤝 <peer>" — an agent holding the original card would keep
+    // looking for the old "<peer> · Threadline · <fp6>" name, so swap the card in place.
+    else if (content.includes('named `"<peer> · Threadline · <fp6>"`')) {
+      const replaced = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+      if (replaced !== content) {
+        content = replaced;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (🤝 <peer> naming)');
+      }
+    }
 
     if (!content.includes('/telegram/system-topics')) {
       content += '\n' + telegramSystemTopicsAwareness();
@@ -20337,4 +20347,20 @@ setTimeout(() => {
 }, 2000);
 `;
   }
+}
+
+/**
+ * Replace the per-peer homebase card (from its heading to the next markdown heading or EOF)
+ * with `card`. Returns `content` unchanged when the heading is absent.
+ */
+export function replacePeerHomebaseCard(content: string, card: string): string {
+  const heading = "### Where a peer agent's notices go (per-peer homebase topic)";
+  const start = content.indexOf(heading);
+  if (start < 0) return content;
+  const rest = content.slice(start + heading.length);
+  const m = /\n#{1,3} /.exec(rest);
+  const end = m ? start + heading.length + m.index : content.length;
+  const tail = content.slice(end);
+  // Keep one blank line before the next heading; a card at EOF ends with a newline.
+  return content.slice(0, start) + card.trimEnd() + (tail ? '\n' + tail : '\n');
 }

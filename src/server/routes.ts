@@ -19729,7 +19729,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // vocabulary too — an explanation that uses those words re-trips the same check.)
     let homebaseTopicId: number | undefined;
     try {
-      const { ensurePeerHomebase } = await import('../threadline/peerHomebase.js');
+      const { ensurePeerHomebase, displayNameCollides } = await import('../threadline/peerHomebase.js');
       const hbCfg = (ctx.config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
       const confirmed = trustManager.getProfileByFingerprint(peerFp);
       const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
@@ -19747,6 +19747,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           });
           return { topicId: r.topicId, reused: r.reused };
         },
+        findTopicByName: (name) => ctx.telegram?.findTopicIdByName(name),
+        renameTopic: async (topicId, name) => (ctx.telegram ? ctx.telegram.editForumTopic(topicId, name) : false),
+        nameCollides: (fp, name) => displayNameCollides(fp, name, trustManager.listProfiles()),
         getRecorded: (fp) => trustManager.getHomebaseTopic(fp),
         record: (fp, topicId) => trustManager.setHomebaseTopic(fp, topicId),
         log: (m) => console.log(m),

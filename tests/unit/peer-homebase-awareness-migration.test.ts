@@ -67,3 +67,23 @@ describe('the migration wiring itself', () => {
     expect(t).toContain('peerHomebaseAwareness()');
   });
 });
+
+describe('existing agents holding the pre-rename card', () => {
+  it('swaps the old card in place for the 🤝 one and leaves neighbouring sections alone', async () => {
+    const { replacePeerHomebaseCard } = await import('../../src/core/PostUpdateMigrator.js');
+    const oldCard = "### Where a peer agent's notices go (per-peer homebase topic)\n\nA mutually-verified peer agent **may have** a dedicated topic named `\"<peer> · Threadline · <fp6>\"`\n- old bullet";
+    const content = `# Top\n\n${oldCard}\n\n### Next section\nkeep me\n`;
+    const out = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+    expect(out).toContain('🤝 <peer>');
+    expect(out).not.toContain('- old bullet');
+    expect(out).toContain('\n\n### Next section\nkeep me\n');
+    expect(out.startsWith('# Top\n\n')).toBe(true);
+  });
+
+  it('the migrator guards the swap on the OLD naming phrase, which the new card does not contain', async () => {
+    const fs = await import('node:fs');
+    const s = fs.readFileSync(new URL('../../src/core/PostUpdateMigrator.ts', import.meta.url), 'utf-8');
+    expect(s).toContain('named `"<peer> · Threadline · <fp6>"`');
+    expect(peerHomebaseAwareness()).not.toContain('named `"<peer> · Threadline · <fp6>"`');
+  });
+});
