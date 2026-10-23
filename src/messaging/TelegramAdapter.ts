@@ -48,6 +48,7 @@ import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
 const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
@@ -174,6 +175,15 @@ export interface TelegramConfig {
   attentionRouting?: {
     mode?: 'single-topic' | 'per-item';
   };
+  /**
+   * Which attention items reach the user's "🔔 Attention" topic
+   * (src/messaging/attentionHubPolicy.ts). 'signal' — the DEFAULT — posts only
+   * items that need the user (urgent, agent-raised, or from a source that asks
+   * for a decision or tap); routine automated status stays in the attention
+   * store and `logs/attention-hub-held.jsonl`. 'all' restores the old
+   * post-everything behavior.
+   */
+  attentionHubFilter?: 'signal' | 'all';
   /**
    * Hot-reloadable accessor for the durable Attention hub topic id created at
    * boot (StateManager key 'agent-attention-topic'). server.ts injects
@@ -371,6 +381,12 @@ export interface AttentionItem {
    * otherwise identical. Absent ⇒ today's notifying behavior.
    */
   silent?: boolean;
+  /** The item asks the user to decide or act, so it always reaches the
+   *  Attention topic (attentionHubPolicy). Absent ⇒ the source rules decide. */
+  needsUser?: boolean;
+  /** True when the hub filter withheld this item's Telegram post; follow-up
+   *  lines about it (append/resolve notes) are withheld too. */
+  hubHeld?: boolean;
   /** WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): the machine this item
    *  belongs to. Stamped at read time in GET /attention (the store stays
    *  machine-agnostic); absent on a single-machine install. */
@@ -585,6 +601,9 @@ export class TelegramAdapter implements MessagingAdapter {
   // ── Single-alerts-topic routing (2026-07-09 directive) ─────────────────────
   /** Resolved routing mode ('single-topic' unless config opts into legacy). */
   private attentionRoutingMode!: 'single-topic' | 'per-item';
+  private attentionHubFilterMode!: AttentionHubFilterMode;
+  /** Last hub post time per item id — an upserted item is reposted at most every 6 h. */
+  private attentionHubLastPost: Map<string, { at: number; priority: AttentionItem['priority'] }> = new Map();
   /** Self-healed hub topic id (used when no injected boot-hub id resolves). */
   private attentionHubTopicId: number | null = null;
   /** In-flight single hub creation guard (no double-create race). */
@@ -986,6 +1005,7 @@ export class TelegramAdapter implements MessagingAdapter {
       dedupWindowMs: Number.isFinite(alc.dedupWindowMs) && (alc.dedupWindowMs as number) > 0 ? (alc.dedupWindowMs as number) : 30 * 60 * 1000,
     };
     this.attentionRoutingMode = config.attentionRouting?.mode === 'per-item' ? 'per-item' : 'single-topic';
+    this.attentionHubFilterMode = resolveHubFilterMode(config.attentionHubFilter);
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -4346,6 +4366,8 @@ export class TelegramAdapter implements MessagingAdapter {
     const existing = this.attentionItems.get(item.id);
     if (!existing) return this.createAttentionItem(item, { hubOnly: true });
     const unchanged = existing.status === 'OPEN' && existing.title === item.title && existing.description === item.description;
+    // A reopened item is a new episode: the repost throttle must not hide it.
+    if (existing.status !== 'OPEN') this.attentionHubLastPost.delete(item.id);
     Object.assign(existing, item, { status: 'OPEN' as const, updatedAt: new Date().toISOString() });
     this.saveAttentionItems();
     if (!unchanged) {
@@ -4664,13 +4686,35 @@ export class TelegramAdapter implements MessagingAdapter {
    * unavailable (the item is still recorded in the store).
    */
   private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
+    const decision = admitItemToHub(item, this.attentionHubFilterMode);
+    if (!decision.admit) {
+      item.hubHeld = true;
+      this.saveAttentionItems();
+      recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+        kind: 'item', reason: decision.reason, id: item.id, category: item.category, priority: item.priority, title: item.title,
+      });
+      return null;
+    }
+    if (item.hubHeld) { item.hubHeld = false; this.saveAttentionItems(); }
+    // An upserted item whose body keeps changing (timestamps, counts) would
+    // otherwise repost on every refresh: at most once per 6 h unless it got
+    // more urgent.
+    const last = this.attentionHubLastPost.get(item.id);
+    const nowMs = Date.now();
+    if (last && nowMs - last.at < 6 * 60 * 60 * 1000 && attentionPriorityRank(item.priority) <= attentionPriorityRank(last.priority)) {
+      recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+        kind: 'item', reason: 'repost-throttled', id: item.id, category: item.category, priority: item.priority, title: item.title,
+      });
+      return item.topicId ?? null;
+    }
+    const markPosted = () => this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+    // Easy to read on a phone: what it is, then what to do. Category, priority
+    // labels and internal source names live in the store / dashboard.
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
     const detail = [
       `${emoji} <b>${this.escapeHtml(item.title)}</b>`,
-      `${this.escapeHtml(item.category)} | Priority: ${item.priority}`,
       ``,
       ...attentionBodyBlocks(item.summary, item.description, 500).map((b) => this.escapeHtml(b)),
-      item.sourceContext ? `\n<i>Source: ${this.escapeHtml(item.sourceContext)}</i>` : '',
     ].filter(Boolean).join('\n');
 
     let injected: number | null | undefined;
@@ -4684,6 +4728,7 @@ export class TelegramAdapter implements MessagingAdapter {
     if (typeof injected === 'number' && injected > 0) {
       try {
         await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true });
+        markPosted();
         return injected;
       } catch (err) {
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
@@ -4710,8 +4755,21 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true })
+      .then(markPosted)
+      .catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
+  }
+
+  /**
+   * Whether the Attention hub filter lets this item's posts reach the user.
+   * Recomputed from the item (not a stored flag) so items created before the
+   * filter existed stop posting follow-up lines too. Unknown id ⇒ true.
+   */
+  attentionHubAdmits(itemId: string): boolean {
+    const item = this.attentionItems.get(itemId);
+    if (!item) return true;
+    return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }
 
   /** Lazily find-or-create (once) and return the reused Attention hub topic id. */

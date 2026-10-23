@@ -256,6 +256,7 @@ import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
+import { admitNoticeToHub, recordHeldHubPost, resolveHubFilterMode } from '../messaging/attentionHubPolicy.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier, BatcherQuietHours } from '../messaging/NotificationBatcher.js';
 import { resolveTelegramStartupTopology, wireTelegramSendSide } from '../messaging/telegramSendSideComposition.js';
@@ -4195,6 +4196,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // before. NOTE the key is TOP-LEVEL: `messaging` is an array of adapters, so a
   // key nested there is unreachable (same trap as `outboundAdvisory`).
   const nbCfg = (config as unknown as { notificationBatcher?: Record<string, unknown> }).notificationBatcher ?? {};
+  const attentionHubFilterMode = resolveHubFilterMode(
+    (config.messaging?.find((m) => m.type === 'telegram')?.config as { attentionHubFilter?: unknown } | undefined)?.attentionHubFilter,
+  );
   const notificationBatcher = new NotificationBatcher({
     enabled: (nbCfg.enabled as boolean | undefined) ?? true,
     summaryIntervalMinutes: (nbCfg.summaryIntervalMinutes as number | undefined) ?? 30,
@@ -4222,8 +4226,22 @@ export async function startServer(options: StartOptions): Promise<void> {
    * Interactive messages (session replies, user-facing responses) still use sendToTopic/sendToChannel directly.
    */
   function notify(tier: NotificationTier, category: string, message: string, topicId?: number, origin?: import('../messaging/NotificationBatcher.js').BatcherOrigin): void {
+    // Attention hub admission (src/messaging/attentionHubPolicy.ts): a notice
+    // bound for the user's Attention topic must carry user impact (lost
+    // messages, a reverted setting, a security event, exhausted quota). Routine
+    // automation status is logged instead — never posted to the hub or Slack.
+    const hubTopicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
+    if (!topicId || topicId === hubTopicId) {
+      const hubDecision = admitNoticeToHub(category, tier, attentionHubFilterMode);
+      if (!hubDecision.admit) {
+        recordHeldHubPost(path.join(config.stateDir, 'logs'), {
+          kind: 'notice', reason: hubDecision.reason, category, tier, title: message.split('\n')[0] ?? '',
+        });
+        return;
+      }
+    }
     // Telegram: via notification batcher
-    const resolvedTopicId = topicId ?? _notifyState?.get<number>('agent-attention-topic') ?? 0;
+    const resolvedTopicId = topicId ?? hubTopicId;
     if (resolvedTopicId) {
       notificationBatcher.enqueue({
         tier,
@@ -11755,6 +11773,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         const topicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
         if (!topicId || observerNoticeInFlight.has(episode.episodeId)) return;
         observerNoticeInFlight.add(episode.episodeId);
+        // Self-healing infra status: held from the Attention hub (attentionHubPolicy).
+        if (!admitNoticeToHub('codex-lifecycle', 'IMMEDIATE', attentionHubFilterMode).admit) {
+          recordHeldHubPost(path.join(config.stateDir, 'logs'), {
+            kind: 'notice', reason: 'automated-status', category: 'codex-lifecycle', tier: 'IMMEDIATE',
+            title: `Codex delivery verification sustained-failure episode ${episode.episodeId}`,
+          });
+          return;
+        }
         void notificationBatcher.enqueue({
           tier: 'IMMEDIATE', category: 'codex-lifecycle', timestamp: new Date(), topicId,
           message: `Codex delivery verification has entered sustained-failure episode ${episode.episodeId}. `

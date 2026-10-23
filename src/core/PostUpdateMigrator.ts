@@ -11079,6 +11079,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Attention Queue durable cross-machine remote-ack bullet (WS4.1 follow-up, CMT-1416)');
     }
 
+    // Attention hub filter (operator report 2026-10-23: the Attention topic was
+    // "basically useless due to all the noise"). Tell deployed agents what now
+    // reaches the user's topic, and stop the old proactive line that told them
+    // to queue every failed job / CI failure. Sniff: 'attention-hub-held.jsonl'.
+    if (content.includes('**Attention Queue**') && !content.includes('attention-hub-held.jsonl')) {
+      const hubBullet = `- **What reaches the user's Attention topic (hub filter, default on)**: only urgent items, items YOU raise (\`source: "agent"\` is required — an item with no source is treated as automated), and items that need the user to decide or tap (sign-in repair, a duplicate conversation needing their call, the feedback action list, security events), plus notices that their messages may be lost. Routine automated status (health digests, worktree scans, machine-sync "healed/back" lines, self-healing repairs) stays in the attention store and the dashboard and is logged to \`logs/attention-hub-held.jsonl\` instead of posting. Posts are short: title and what to do. Rollback: \`messaging[].config.attentionHubFilter: "all"\`. If the user asks "why didn't X show up in Attention?" → read \`logs/attention-hub-held.jsonl\`.\n`;
+      content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${hubBullet}`);
+      for (const old of [
+        "- **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.",
+        "- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.",
+      ]) {
+        if (content.includes(old)) content = content.replace(old, '- **Proactive use**: queue an item only when the user must decide, tap or act, or something they care about is genuinely broken and you cannot fix it yourself — your items always reach their topic, so each one costs their attention. Routine status, things you are already fixing, and FYIs belong in logs or a normal reply, not here.');
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
+    }
+
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.
