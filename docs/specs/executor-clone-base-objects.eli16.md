@@ -16,3 +16,7 @@ To fix a reported problem, the feedback executor makes a private copy of the cod
 ## What you need to decide
 
 Nothing.
+
+## Later addition: waiting for a restart that will never come
+
+The pipeline holds off starting a fix while a newer version of the agent is about to be installed, because installing restarts the agent and would cut the fix off halfway. It used to treat "a newer version exists" as "a restart is coming". When automatic installs are switched off, nothing restarts on its own, so the pipeline waited forever. It now waits only when automatic installs are on and an update is pending, which is the same rule the local test runner already uses.

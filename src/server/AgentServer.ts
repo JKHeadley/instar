@@ -70,7 +70,7 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
-import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
+import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
 import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
@@ -2856,7 +2856,7 @@ export class AgentServer {
                   try { return options.quotaTracker ? !options.quotaTracker.shouldSpawnSession('low').allowed : false; } catch { return true; } // @silent-fallback-ok: an unreadable quota brake refuses admission (safe side)
                 },
                 updatePending: () => {
-                  try { return Boolean(options.autoUpdater?.getStatus().pendingUpdate); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
+                  try { return executorUpdatePending(options.autoUpdater?.getStatus()); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
                 },
                 raiseAttention: async (item) => {
                   const enqueue = this.telegramAdapter?.createAttentionItem;

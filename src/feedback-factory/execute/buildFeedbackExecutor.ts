@@ -103,6 +103,16 @@ export function readIdentityFacts(stateDir: string, readVault: () => string[] | 
   return { profileAccounts, ownedIdentities, vaultNames: readVault(), unreadableSources };
 }
 
+/**
+ * The executor's "update pending" admission brake (§4 step 1): true only when an update restart is
+ * actually coming, i.e. autoApply is on and an update is pending. With autoApply off a pending
+ * version never restarts the server on its own, so treating it as pending refused every tick for as
+ * long as auto-apply stayed paused (2026-10-23: no attempt for hours while an operator pause held).
+ */
+export function executorUpdatePending(status: { config?: { autoApply?: boolean }; pendingUpdate?: string | null } | null | undefined): boolean {
+  return status?.config?.autoApply === true && status.pendingUpdate != null;
+}
+
 export function buildFeedbackExecutor(input: {
   config: InstarConfig;
   drainStore: FeedbackDrainStore;

@@ -52,6 +52,10 @@ No judgment added.
 
 Per machine, as before: the executor runs on the lease holder against its own checkout.
 
+## Addendum: update-pending brake
+
+`executorUpdatePending` (pure) replaces `Boolean(getStatus().pendingUpdate)` in the executor's admission wiring: the brake now holds only when `config.autoApply === true` and an update is pending, the same rule local-verify uses (`updatePendingFromAutoUpdater`). Side effect: with auto-apply off, attempts can start while a newer version is known; a later manual apply still restarts the server, and an interrupted attempt is reconciled at boot as before. An unreadable updater still refuses admission. Test: `execute-wiring.test.ts`.
+
 ## 8. Rollback cost
 
 Revert the commit. The leftover local branch is harmless (`git branch -D feedback-execute/base`).
