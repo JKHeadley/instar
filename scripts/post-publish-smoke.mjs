@@ -56,7 +56,10 @@ async function main() {
   // printed `+ instar@1.3.1251`, this step failed at 3m, and the version appeared on
   // the registry ~4m after publish. Waiting longer costs a few idle minutes on a slow
   // release; failing early costs a false alarm on every good one.
-  const propagationDeadlineMs = 900_000;
+  // 15m was then outgrown too: 1.3.1378 printed `+ instar@1.3.1378` at 11:37:57Z on
+  // 2026-10-21, this step gave up at 11:52:59Z, and the registry listed it at 11:55:18Z
+  // (~17m). The failed run never committed its bump, so a good release read as red.
+  const propagationDeadlineMs = 1_800_000;
   console.log(`[smoke] waiting for instar@${version} to propagate on npm…`);
   if (!await waitForPropagation(version, propagationDeadlineMs)) {
     console.error(
