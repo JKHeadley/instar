@@ -276,3 +276,48 @@ Automations — outcomes grouped by life-category, one line each, one button. Th
 The Premium wall that gated Bot on the first account tried.
 
 ![grokbot 30-subscription.jpg](30-subscription.jpg)
+
+---
+
+## Watching it actually work (2026-10-22)
+
+Every verdict above describes surfaces. This is the one observation of the agent
+*doing a task*: a deliberately self-contained research request — compare two
+tunnelling products and write it up — chosen because it needs no connector and
+therefore no data grant.
+
+**What it did, in under three minutes:**
+
+It acknowledged immediately, and the acknowledgement named where the output would
+live before any work happened:
+
+> "On it. I'll dig into both and put the comparison on a Page you can come back to."
+
+It then produced a chat summary plus an **artifact card** titled *Tailscale Funnel
+vs Cloudflare Tunnel*, typed as a "Page", previewing its own first section.
+
+Four things in that output are worth copying, and none of them are the chat
+interface:
+
+1. **The artifact leads with a verdict.** Its first heading is *Verdict*, with a
+   "Short version" beneath. The recommendation comes before the comparison that
+   justifies it — the opposite of how a research document usually arrives.
+2. **It dated its sources**: *"compared from the official docs as checked on
+   22 Oct 2026."* A reader a month later knows exactly how stale it is.
+3. **It named what it could not determine**: *"Tailscale doesn't publish Funnel's
+   bandwidth limits, and Funnel is still in beta."* A gap stated as a gap, in the
+   same breath as the recommendation rather than buried.
+4. **It offered the next step** rather than stopping: *"Do you have a particular
+   service in mind? I can help you set up whichever one fits."*
+
+Points 2 and 3 are the ones that matter for Instar. They are the same discipline
+this research keeps arguing for — say how fresh a thing is, and say what you
+could not establish — arriving unprompted in a consumer product's default output.
+
+**Still not observed:** the always-working background behaviour, approval cards
+for a consequential action, and anything downstream of the Gmail grant, which
+remains deliberately unclicked.
+
+![acknowledgement naming where the output will live](behaviour-ack.jpg)
+
+![the artifact card, verdict-first and dated](behaviour-artifact.jpg)
