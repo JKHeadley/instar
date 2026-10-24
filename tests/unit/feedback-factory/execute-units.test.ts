@@ -18,7 +18,7 @@ import {
 import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
-import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS, outputTail } from '../../../src/feedback-factory/execute/confinementCanary.js';
+import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -334,84 +334,6 @@ describe('canary judgement', () => {
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
     } finally { await fx.close(); }
-  });
-
-  it('a failing must-succeed probe records the tail of its output, not just the exit code (2026-10-23: "exit 1" was undiagnosable)', async () => {
-    const p = paths(tmp());
-    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
-    const failingSmoke: ConfinedRunner = {
-      available: () => ({ ok: true, version: '0.0.77' }),
-      run: async (cmd) => (/^npx vitest/.test(cmd.command)
-        ? { exitCode: 1, signal: null, stdout: '\u001b[31m FAIL \u001b[39m tests/a.test.ts\n', stderr: "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-abc' (errno=Operation not permitted)\nError: Cannot find module 'x'\n", timedOut: false, outputCapped: false }
-        : { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
-    };
-    try {
-      const r = await runRunnerCanary({ paths: p, fixture: fx, runner: failingSmoke, fullGate: { lintCommand: 'npm run lint', smokeTests: ['tests/a.test.ts'] } });
-      const smoke = r.find((x) => x.probe === 'base-unit-smoke')!;
-      expect(smoke.ok).toBe(false);
-      expect(smoke.detail).toBe("exit 1: FAIL tests/a.test.ts | Error: Cannot find module 'x'");
-    } finally { await fx.close(); }
-  });
-
-  it('outputTail: empty output adds nothing; long output keeps the end', () => {
-    expect(outputTail('', '')).toBe('');
-    expect(outputTail('a\n\n', '')).toBe(': a');
-    expect(outputTail('x'.repeat(500), 'END', 20)).toBe(`: ${'x'.repeat(14)} | END`);
-  });
-
-  it('outputTail scrubs whole lines BEFORE shortening, so a long secret cannot lose its label and survive', () => {
-    const secret = 'A1b2C3d4'.repeat(30); // 240 chars: a cut-first tail would keep the value and drop "password="
-    const tail = outputTail(`config dump password=${secret}`, '', 240);
-    expect(tail).not.toContain(secret.slice(-40));
-    // Withheld outright (the label names a credential); the scrubber is the second layer.
-    expect(tail).toBe(': [line withheld]');
-  });
-
-  it('outputTail scrubs each stream with newlines intact, so a label on its own line still protects the value', () => {
-    const secret = 'A1b2C3d4'.repeat(30);
-    const tail = outputTail(`password=\n${secret}\nnext line`, '', 240);
-    expect(tail).not.toContain(secret.slice(-40));
-    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIEpAIBAAKCAQEA'.repeat(4)}\n${'x9Y8z7W6v5U4t3S2'.repeat(4)}\n-----END RSA PRIVATE KEY-----`;
-    const pemTail = outputTail('', pem, 240);
-    expect(pemTail).not.toContain('x9Y8z7W6v5U4t3S2');
-    expect(pemTail).not.toContain('MIIEpAIBAAKCAQEA');
-  });
-
-  it('outputTail strips terminal escapes and control characters BEFORE scrubbing, so they cannot split a secret', () => {
-    const value = 'A1b2C3d4E5f6G7h8'.repeat(2);
-    for (const raw of [
-      `password=\u001b[31m${value}\u001b[0m`,
-      `password=\u001b]0;title\u0007${value}`,
-      `pass\u0008word=${value}`,
-      `password=\r${value}`,
-    ]) {
-      expect(outputTail(raw, '', 240)).not.toContain(value);
-    }
-    const nonce = 'f00dfeedcafe1234';
-    expect(outputTail(`f00dfeed\u001b[0mcafe1234`, `f00d\u0000feedcafe1234`, 240, [nonce])).not.toContain(nonce);
-  });
-
-  it('outputTail withholds any line naming a credential, and the line after it, whatever the value looks like', () => {
-    expect(outputTail('password=!A1b2C3d4E5f6G7h8', '', 240)).toBe(': [line withheld]');
-    const split = outputTail('Error: bad login\nPassword:\n!A1b2C3d4E5f6G7h8\nat test.ts:3', '', 240);
-    expect(split).not.toContain('A1b2C3d4');
-    expect(split).toContain('Error: bad login');
-    expect(split).toContain('at test.ts:3');
-    expect(outputTail('Authorization: Bearer !weird~value', '', 240)).not.toContain('weird');
-    // A blank line between a label and its value does not shield the value.
-    expect(outputTail('Password:\n\n   \n!A1b2C3d4E5f6G7h8', '', 240)).not.toContain('A1b2C3d4');
-    // A label at the end of stdout covers a value at the start of stderr.
-    expect(outputTail('ok\ntoken:', '!A1b2C3d4E5f6G7h8\nfail', 240)).not.toContain('A1b2C3d4');
-    // Two credential lines in a row: the second one's value must still be withheld.
-    expect(outputTail('auth error\npassword:\n!A1b2C3d4E5f6G7h8\ndone', '', 240)).toBe(': [line withheld] | [line withheld] | [line withheld] | done');
-  });
-
-  it('outputTail hides the canary nonce, including inside the canary secret string', () => {
-    const nonce = 'f00dfeedcafe1234';
-    const tail = outputTail(`read canary-secret-${nonce} ok`, `/tmp/feedback-canary-${nonce}`, 240, [nonce]);
-    expect(tail).not.toContain(nonce);
-    // On a line naming no credential the nonce is replaced in place.
-    expect(outputTail(`wrote /tmp/feedback-canary-${nonce}`, '', 240, [nonce])).toBe(': wrote /tmp/feedback-canary-[redacted]');
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {

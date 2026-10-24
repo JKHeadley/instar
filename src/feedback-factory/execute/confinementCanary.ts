@@ -21,7 +21,6 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedEnv, type ConfinementPaths } from './executePolicy.js';
-import { scrubForStore } from '../../core/durableSecretScrub.js';
 import { shq } from './executorSession.js';
 import type { ConfinedRunner } from './ConfinedRunner.js';
 
@@ -230,10 +229,7 @@ export async function runRunnerCanary(input: {
   };
   const mustSucceed = async (probe: string, command: string, timeoutMs?: number) => {
     const r = await run(command, timeoutMs);
-    // A failing must-succeed probe carries the tail of its output: "exit 1" alone left the 2026-10-23
-    // base-unit-smoke failure undiagnosable. The caller scrubs and bounds every detail before storing it.
-    const failed = r.exitCode !== 0 || r.timedOut;
-    results.push({ probe, expect: 'succeed', ok: !failed, detail: !failed ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}${outputTail(r.stdout, r.stderr, 240, [fx.nonce])}` });
+    results.push({ probe, expect: 'succeed', ok: r.exitCode === 0 && !r.timedOut, detail: r.exitCode === 0 ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}` });
   };
   await mustFail('bash-read-agent-config', `cat ${shq(fx.configPath)}`);
   await mustFail('bash-read-secret', `cat ${shq(fx.noncePath)}`);
@@ -265,64 +261,6 @@ export async function runRunnerCanary(input: {
   if (fs.existsSync(path.join(paths.publishClone, `.canary-${fx.nonce}`))) results.push({ probe: 'publish-clone-untouched', expect: 'fail', ok: false, detail: 'a canary file appeared in the publish clone' });
   results.push(...linkEffectChecks(paths, fx));
   return [...results, ...effectChecks(paths, fx, observed)];
-}
-
-/**
- * Terminal output normalised to plain text: ANSI/OSC escape sequences and other control characters
- * removed, line endings unified, runs of spaces and tabs collapsed. Runs BEFORE any redaction, so no
- * later step can re-join characters a control sequence had kept apart.
- */
-function plainText(t: string): string {
-  return (t || '')
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\u001b[@-_]/g, '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, (c) => (c === '\t' ? ' ' : ''))
-    .replace(/ {2,}/g, ' ');
-}
-
-/** Words that mark a line as possibly carrying a credential, whatever the value looks like. */
-const CREDENTIAL_WORD = /pass(?:word|wd|phrase)?|secret|token|api[\s_-]?key|private[\s_-]?key|auth|bearer|credential|cookie|session[\s_-]?id/i;
-
-/**
- * The scrubber recognises credential SHAPES, and a value outside them (a password starting with `!`)
- * passes through. A canary diagnostic does not need any such line, so a line naming a credential is
- * withheld outright, together with the line after it (where a value printed under its label sits).
- */
-function withholdCredentialLines(lines: string[]): string[] {
-  const named = lines.map((l) => CREDENTIAL_WORD.test(l));
-  // A line goes when it, or the line before it, names a credential: judged per line, so two labels in a
-  // row each still cover the line that follows them.
-  return lines.map((l, i) => (named[i] || (i > 0 && named[i - 1]) ? '[line withheld]' : l));
-}
-
-/**
- * The last meaningful output of a failed probe (stdout then stderr), one line. Order matters, and every
- * step that could change which characters sit next to each other comes BEFORE the secret checks: each
- * complete stream is first normalised to plain text ({@link plainText}), then the `redact` strings (the
- * canary nonce) are replaced, then it is scrubbed with its newlines intact. Only after that are lines
- * trimmed, filtered, joined and the result shortened, none of which can rebuild a removed value. An
- * oversize stream is replaced wholesale by the scrubber; a scrub failure withholds the tail.
- */
-export function outputTail(stdout: string, stderr: string, max = 240, redact: string[] = []): string {
-  const scrub = (t: string): string | null => {
-    let text = plainText(t);
-    for (const r of redact) if (r) text = text.split(r).join('[redacted]');
-    const scrubbed = scrubForStore(text);
-    return scrubbed.error ? null : scrubbed.text;
-  };
-  const out = scrub(stdout);
-  const err = scrub(stderr);
-  if (out === null || err === null) return ': [output withheld: scrub failed]';
-  // Blank and noise lines go BEFORE the credential check, so a blank line cannot separate a label from
-  // its value. (macOS xcrun cache-file noise from git under the sandbox carries no signal.)
-  const lines = (t: string) => t.split('\n').map((l) => l.trim())
-    .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
-  // One list across both streams, so a label ending stdout still covers a value starting stderr.
-  const all = withholdCredentialLines([...lines(out), ...lines(err)]);
-  if (all.length === 0) return '';
-  return `: ${all.join(' | ').slice(-max)}`;
 }
 
 /** Session path: the fixed canary prompt. The session reports each attempt; trusted code judges by effect. */

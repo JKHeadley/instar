@@ -71,6 +71,8 @@ Fourth round (re-review of `fc3ef7d8`): the shared scrubber only recognises cred
 
 Fifth round (re-review of `5d365a69`): two credential lines in a row skipped the second label's check. Withholding is now judged per line (a line goes when it or its predecessor names a credential), over one list spanning stdout and stderr, after blank and noise lines are dropped, so neither a blank line nor the stream boundary can separate a label from its value. Tests: consecutive labels, a blank line between label and value, a label ending stdout with the value starting stderr.
 
+Sixth round (re-review of `6bf10269`): a noise-filtered line could carry a credential label. After six review rounds on this one diagnostic string, the canary output tail is **removed from this PR**: `confinementCanary.ts` and its tests are back to main, and a failing probe records only its exit code (and `(timed out)`), as before. Persisting any probe output is deferred to a separate change designed around an allow-list of safe lines rather than a deny-list. Everything above about `outputTail` describes code no longer in this PR.
+
 Over-block / under-block: the brake can now admit a start during a genuinely long restart deferral past 6 h; the restart gate already caps deferral, and a start interrupted by a restart is reconciled on the next tick, so the cost is one wasted start.
 
 ## 8. Rollback cost
