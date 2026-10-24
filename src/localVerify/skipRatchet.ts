@@ -17,25 +17,48 @@
  * Stated limit (from the spec): tests registered through custom wrapper
  * functions are not seen.
  *
- * `typescript` is a devDependency of instar; it is present wherever a source
- * checkout exists (local-verify is repo-gated), but it is loaded lazily so that
- * importing this module never breaks a server that lacks it. Callers may also
- * inject the module.
+ * `typescript` is a devDependency of instar, so WHERE it is resolved from
+ * decides whether the ratchet can run at all. The verifier process loads this
+ * module from the agent's shadow install — a production install with no
+ * devDependencies — so this module's own `require` cannot see `typescript`.
+ * The repo under verification can: its run directory has node_modules
+ * installed for the suite. `loadTsFrom(dir)` therefore searches that directory
+ * first and falls back to this module's own resolution, and only throws when
+ * neither has the parser (the safe direction: the caller then classifies the
+ * PR as harness-changing). Callers may also inject the module outright.
  */
 
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import type * as TS from 'typescript';
 import { isInventoried } from './inventory.js';
 
 type TsModule = typeof TS;
 
-let cachedTs: TsModule | null = null;
-function loadTs(): TsModule {
-  if (!cachedTs) {
-    const req = createRequire(import.meta.url);
-    cachedTs = req('typescript') as TsModule;
+const tsCache = new Map<string, TsModule>();
+
+/**
+ * Load the `typescript` parser, preferring `resolveFrom`'s node_modules over
+ * this module's own. Cached per `resolveFrom`.
+ */
+export function loadTsFrom(resolveFrom?: string): TsModule {
+  const key = resolveFrom ?? '';
+  const hit = tsCache.get(key);
+  if (hit) return hit;
+  const bases: string[] = [];
+  if (resolveFrom) bases.push(path.join(resolveFrom, 'package.json'));
+  bases.push(import.meta.url);
+  let lastErr: unknown;
+  for (const base of bases) {
+    try {
+      const mod = createRequire(base)('typescript') as TsModule;
+      tsCache.set(key, mod);
+      return mod;
+    } catch (e) {
+      lastErr = e;
+    }
   }
-  return cachedTs;
+  throw lastErr instanceof Error ? lastErr : new Error('typescript is not resolvable');
 }
 
 const TEST_ROOTS = new Set(['it', 'test', 'xit', 'xtest', 'fit']);
@@ -138,7 +161,7 @@ function isFunctionLike(ts: TsModule, n: TS.Node): n is TS.ArrowFunction | TS.Fu
 
 /** Count registrations and skips in one file's source text. */
 export function countSkips(source: string, fileName = 'file.test.ts', tsModule?: TsModule): FileSkipCounts {
-  const ts = tsModule ?? loadTs();
+  const ts = tsModule ?? loadTsFrom();
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const out: FileSkipCounts = { tests: 0, suites: 0, skips: 0 };
   const visit = (node: TS.Node): void => {
@@ -188,7 +211,7 @@ export interface SkipRatchetResult {
  * paths are counted, so a move out of the inventory is a loss.
  */
 export function evaluateSkipRatchet(changed: readonly ChangedTestFile[], tsModule?: TsModule): SkipRatchetResult {
-  const ts = tsModule ?? loadTs();
+  const ts = tsModule ?? loadTsFrom();
   let baseSkips = 0, headSkips = 0, baseTests = 0, headTests = 0, baseFiles = 0, headFiles = 0;
   const deletedFiles: string[] = [];
   const perFile: SkipRatchetResult['perFile'] = [];

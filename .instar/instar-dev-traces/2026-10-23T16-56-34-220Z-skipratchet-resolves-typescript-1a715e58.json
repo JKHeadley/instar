@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "skipratchet-resolves-typescript",
+  "sessionId": "a0bc5196-4cdf-46f2-9190-1bcaa98f7309",
+  "timestamp": "2026-10-23T16:56:34.220Z",
+  "artifactPath": "upgrades/side-effects/skipratchet-resolves-typescript.md",
+  "artifactSha256": "e5defc676c03477235da47e518e65b782bb4629d1eddff899f2f3e3002c56a94",
+  "coveredFiles": [
+    "docs/specs/skipratchet-resolves-typescript.eli16.md",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/skipRatchet.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/skipRatchetTsResolution.test.ts",
+    "upgrades/next/skipratchet-resolves-typescript.md",
+    "upgrades/side-effects/skipratchet-resolves-typescript.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Roughly 50 lines across two source files: one new exported loader with a two-step resolution order, and one injectable seam passing a path the orchestrator already holds. No new capability, no route, no config key, no migration, no irreversibility; the classifier's rules are byte-identical and the fail-closed catch-all is unchanged and now asserted. It does touch src/localVerify/**, the merge authority's own server side, so if the gate's risk floor signals higher the override is deliberate: the compensating rigour is a full ELI16, a full eight-question side-effects artifact, a measured fail-first proof, and three rounds of independent second-pass review that caught two real overstatements and two defects in my own test file.",
+  "eli16Path": "docs/specs/skipratchet-resolves-typescript.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/skipratchet-resolves-typescript.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2318
+    ],
+    "notes": "Latent since skipRatchet.ts shipped. Its own doc comment stated the assumption that made it wrong: 'typescript is a devDependency of instar; it is present wherever a source checkout exists (local-verify is repo-gated)'. That is true of the CHECKOUT and false of the PROCESS: the verifier is loaded from the agent's shadow install, a production npm install carrying no devDependencies. The assumption was never tested because the unit tests run inside a source checkout, where the module's own require succeeds \u2014 a blind instrument, not a missing test. Surfaced only when PR 2318 was held overnight on an unexplained harness flag and the run log (not the service audit log, where I first looked) named the cause. Class lesson: any module the SERVER loads from the shadow install may require runtime dependencies only; a devDependency require there fails in production and is invisible in development."
+  }
+}

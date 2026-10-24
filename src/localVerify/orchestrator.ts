@@ -19,7 +19,7 @@ import path from 'node:path';
 import { computeInventory, LANES, type LaneName } from './inventory.js';
 import { readUnhandledErrors } from './unhandledErrorsReporter.js';
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
-import { evaluateSkipRatchet, type ChangedTestFile } from './skipRatchet.js';
+import { evaluateSkipRatchet, loadTsFrom, type ChangedTestFile } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
@@ -92,6 +92,15 @@ export interface OrchestratorSeams {
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
   unhandledErrorsReporter?(): string | null;
+  /**
+   * Load the skip-ratchet's TypeScript parser, resolved from `resolveFrom`'s
+   * node_modules first. Absent ⇒ `loadTsFrom`. The run directory is passed, not
+   * this module's own location: the verifier runs from the agent's shadow
+   * install, which carries no devDependencies. The run directory is guaranteed
+   * to have the parser on every path that reaches classification — `tsc` IS the
+   * build step, and the build runs before the lanes.
+   */
+  loadTs?(resolveFrom: string): ReturnType<typeof loadTsFrom>;
 }
 
 // ── Input / output ─────────────────────────────────────────────────────
@@ -675,7 +684,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const t = await pair(r.path, r.status);
         tests.push({ path: r.path, base: t.base, head: t.head });
       }
-      const ratchet = evaluateSkipRatchet(tests);
+      const ratchet = evaluateSkipRatchet(tests, (seams.loadTs ?? loadTsFrom)(p.runDir));
       out.skipsAdded = ratchet.skipsAdded;
       out.testsRemoved = ratchet.testsRemoved;
       if (out.harnessChanging || out.protectedPath || out.skipsAdded || out.testsRemoved) {
