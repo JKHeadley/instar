@@ -106,19 +106,24 @@ CONTROL_WEEK = {
 class ChangeDetectionTestCase(unittest.TestCase):
     """Base class that writes a one-row telemetry ledger for the previous run."""
 
-    def detect(self, current_npm, prev_npm=None, write_history=True):
-        """Run detect_significant_changes against a temp state dir."""
+    def detect(self, current_npm, prev_npm=None, write_history=True, trends=None):
+        """Run detect_significant_changes against a temp state dir.
+
+        `trends` mirrors what main() puts on the snapshot via compute_trends();
+        its npm_week_prev is the week-ago drop baseline.
+        """
         with tempfile.TemporaryDirectory() as state_dir:
             if write_history:
                 ledger = pathlib.Path(state_dir) / "telemetry.jsonl"
                 prev_snapshot = {"timestamp": "2026-01-01T00:00:00+00:00", "npm": prev_npm or {}}
                 ledger.write_text(json.dumps(prev_snapshot) + "\n")
-            return collect_metrics.detect_significant_changes(
-                {"npm": current_npm}, state_dir
-            )
+            snapshot = {"npm": current_npm}
+            if trends is not None:
+                snapshot["trends"] = trends
+            return collect_metrics.detect_significant_changes(snapshot, state_dir)
 
-    def kinds(self, current_npm, prev_npm=None, write_history=True):
-        changes = self.detect(current_npm, prev_npm, write_history)
+    def kinds(self, current_npm, prev_npm=None, write_history=True, trends=None):
+        changes = self.detect(current_npm, prev_npm, write_history, trends)
         return {n["kind"] for n in collect_metrics.build_change_notes(changes)}
 
 
@@ -145,6 +150,72 @@ class TestTheIncident(ChangeDetectionTestCase):
 
     def test_change_notes_carry_the_drop_and_gap_kinds(self):
         self.assertEqual(self.kinds(REAL_10_18, REAL_10_17), {"drop", "gap"})
+
+
+# Real `trends` blocks from the same ledger rows. npm_week_prev is the
+# last_week of the oldest of the last 7 rows -- a true week-over-week baseline.
+TRENDS_10_17 = {"npm_day_prev": 813, "npm_day_prev_end_date": "2026-10-12", "npm_week_prev": 13497}
+TRENDS_10_18 = {"npm_day_prev": 813, "npm_day_prev_end_date": "2026-10-12", "npm_week_prev": 9580}
+TRENDS_10_19 = {"npm_day_prev": 441, "npm_day_prev_end_date": "2026-10-17", "npm_week_prev": 7750}
+
+
+class TestWeekAgoBaseline(ChangeDetectionTestCase):
+    """The npm_week_prev baseline, which sees what run-to-run cannot."""
+
+    def test_catches_a_sustained_slide_a_day_before_the_cliff(self):
+        """The real 2026-10-17 run.
+
+        Run-to-run was flat (6,624 both runs) so a previous-run comparison is
+        blind to it, but the week had already halved against the week-ago row
+        (13,497 -> 6,624). This fires a day BEFORE the 10-18 cliff.
+        """
+        no_baseline = self.detect(REAL_10_17, REAL_10_16)
+        self.assertNotIn("npm_drop", no_baseline,
+                         "run-to-run is flat here, so it cannot see the slide")
+
+        changes = self.detect(REAL_10_17, REAL_10_16, trends=TRENDS_10_17)
+        self.assertIn("npm_drop", changes)
+        drop = changes["npm_drop"]
+        self.assertEqual(drop["baseline"], "week_prev")
+        self.assertEqual(drop["previous"], 13497)
+        self.assertAlmostEqual(drop["pct_change"], -50.9, places=1)
+
+    def test_the_incident_reports_the_steeper_week_ago_decline(self):
+        """2026-10-18 trips both baselines; the steeper one is reported.
+
+        -70.2% against the week-ago row (9,580), -56.9% against the previous
+        run (6,624). The originating review quoted both figures.
+        """
+        drop = self.detect(REAL_10_18, REAL_10_17, trends=TRENDS_10_18)["npm_drop"]
+        self.assertEqual(drop["baseline"], "week_prev")
+        self.assertEqual(drop["previous"], 9580)
+        self.assertAlmostEqual(drop["pct_change"], -70.2, places=1)
+        self.assertEqual(drop["comparisons"]["prev_run"]["previous"], 6624)
+        self.assertEqual(drop["comparisons"]["prev_run"]["ratio"], 0.43)
+        self.assertEqual(drop["comparisons"]["week_prev"]["ratio"], 0.3)
+
+    def test_both_baselines_are_recorded_even_when_one_is_quiet(self):
+        drop = self.detect(REAL_10_17, REAL_10_16, trends=TRENDS_10_17)["npm_drop"]
+        self.assertEqual(sorted(drop["comparisons"]), ["prev_run", "week_prev"])
+        self.assertEqual(drop["comparisons"]["prev_run"]["ratio"], 1.0)
+
+    def test_the_note_names_which_baseline_tripped(self):
+        changes = self.detect(REAL_10_18, REAL_10_17, trends=TRENDS_10_18)
+        note = next(n for n in collect_metrics.build_change_notes(changes) if n["kind"] == "drop")
+        self.assertIn("week-ago run", note["message"])
+        self.assertIn("9,580", note["message"])
+
+    def test_a_healthy_week_ago_baseline_stays_quiet(self):
+        changes = self.detect(REAL_10_19, REAL_10_18,
+                              trends={"npm_week_prev": 2500})
+        self.assertNotIn("npm_drop", changes, "1969 vs 2500 is -21%, above the floor")
+
+    def test_missing_or_zero_week_prev_is_ignored(self):
+        for value in (None, 0, "x"):
+            with self.subTest(value=value):
+                changes = self.detect(REAL_10_17, REAL_10_16,
+                                      trends={"npm_week_prev": value})
+                self.assertNotIn("npm_drop", changes)
 
 
 class TestDropDetection(ChangeDetectionTestCase):
@@ -333,8 +404,8 @@ class TestChangeNoteRendering(unittest.TestCase):
 
     def test_notes_carry_a_kind_and_a_message(self):
         changes = {
-            "npm_drop": {"previous": 6624, "current": 2852, "ratio": 0.43,
-                         "pct_change": -56.9, "end_date": "2026-10-17"},
+            "npm_drop": {"baseline": "prev_run", "previous": 6624, "current": 2852,
+                         "ratio": 0.43, "pct_change": -56.9, "end_date": "2026-10-17"},
             "npm_gap": {"runs": [{"start": "2026-10-13", "end": "2026-10-15", "days": 3}],
                         "longest_days": 3, "start": "2026-10-13", "end": "2026-10-15",
                         "end_date": "2026-10-17"},
@@ -353,8 +424,8 @@ class TestChangeNoteRendering(unittest.TestCase):
             "npm": REAL_10_18,
             "github": {},
             "change_notes": collect_metrics.build_change_notes(
-                {"npm_drop": {"previous": 6624, "current": 2852, "ratio": 0.43,
-                              "pct_change": -56.9, "end_date": "2026-10-17"}}
+                {"npm_drop": {"baseline": "prev_run", "previous": 6624, "current": 2852,
+                              "ratio": 0.43, "pct_change": -56.9, "end_date": "2026-10-17"}}
             ),
         }
         summary = collect_metrics.format_summary(snapshot)
@@ -363,6 +434,15 @@ class TestChangeNoteRendering(unittest.TestCase):
         self.assertIn("6,624", summary)
         self.assertIn("2,852", summary)
         self.assertIn("57%", summary)
+
+    def test_a_drop_without_a_baseline_still_renders(self):
+        """A renderer must not crash on a partial dict."""
+        notes = collect_metrics.build_change_notes(
+            {"npm_drop": {"previous": 100, "current": 10, "ratio": 0.1, "pct_change": -90.0}}
+        )
+        self.assertEqual(notes[0]["kind"], "drop")
+        self.assertIn("90%", notes[0]["message"])
+        self.assertNotIn("against", notes[0]["message"])
 
     def test_format_summary_renders_the_npm_counts_themselves(self):
         """Asserted on the npm lines, not on the note text: the drop note

@@ -31,6 +31,11 @@ SPIKE_THRESHOLD = 2.0  # Alert if current is > 2x previous
 DROP_THRESHOLD = 0.6  # Alert if the current week is below 60% of the previous week
 GAP_MIN_CONSECUTIVE = 2  # Alert on this many consecutive interior zero-download days
 
+BASELINE_LABELS = {
+    "week_prev": "the week-ago run",
+    "prev_run": "the previous run",
+}
+
 
 PORTAL_DIR_CANDIDATES = (
     os.environ.get("DAWN_PORTAL_DIR"),
@@ -200,18 +205,47 @@ def detect_significant_changes(current_snapshot: dict, state_dir: str) -> dict:
     prev_npm_block = prev_snapshot.get("npm") or {}
     prev_end_date = prev_npm_block.get("end_date")
 
-    # Week-over-week drop. Safe to run on stale data: when npm has published
-    # nothing new both runs carry the same last_week, so the ratio is 1.0.
+    # Week-over-week drop, measured against two baselines because they catch
+    # different failures:
+    #   week_prev - compute_trends' npm_week_prev, the last_week of the oldest
+    #               of the last 7 ledger rows. A true week-over-week figure,
+    #               and the only one that sees a SUSTAINED slide: consecutive
+    #               runs share six of their seven days, so a steady erosion
+    #               never trips a run-to-run ratio.
+    #   prev_run  - the previous run's last_week. Catches a one-run cliff.
+    # Safe to run on stale data: when npm has published nothing new the runs
+    # carry the same last_week, so the prev_run ratio is 1.0.
     current_week = current_npm_block.get("last_week")
     prev_week = prev_npm_block.get("last_week")
-    if _is_number(current_week) and _is_number(prev_week) and prev_week > 0:
-        week_ratio = current_week / prev_week
-        if week_ratio < DROP_THRESHOLD:
+    trends = current_snapshot.get("trends") or {}
+
+    baselines = []
+    for name, value in (("week_prev", trends.get("npm_week_prev")),
+                        ("prev_run", prev_week)):
+        if _is_number(value) and value > 0:
+            baselines.append((name, value))
+
+    if _is_number(current_week) and baselines:
+        comparisons = {
+            name: {"previous": value, "ratio": round(current_week / value, 2)}
+            for name, value in baselines
+        }
+        tripped = [
+            (name, value, current_week / value)
+            for name, value in baselines
+            if current_week / value < DROP_THRESHOLD
+        ]
+        if tripped:
+            # Report the steepest decline, and name which baseline it is
+            # against so the figure can be checked.
+            name, value, week_ratio = min(tripped, key=lambda t: t[2])
             changes["npm_drop"] = {
-                "previous": prev_week,
+                "baseline": name,
+                "previous": value,
                 "current": current_week,
                 "ratio": round(week_ratio, 2),
                 "pct_change": round((week_ratio - 1) * 100, 1),
+                "comparisons": comparisons,
                 "end_date": current_end_date,
             }
 
@@ -250,12 +284,16 @@ def build_change_notes(changes: dict) -> list:
 
     drop = changes.get("npm_drop")
     if drop:
+        baseline = drop.get("baseline")
         notes.append({
             "kind": "drop",
             "message": (
                 f"npm weekly downloads fell {abs(drop['pct_change']):.0f}% "
-                f"({drop['previous']:,} -> {drop['current']:,}) since the previous run"
+                f"({drop['previous']:,} -> {drop['current']:,})"
+                + (f" against {BASELINE_LABELS.get(baseline, baseline)}" if baseline else "")
             ),
+            "baseline": baseline,
+            "comparisons": drop.get("comparisons"),
             "previous": drop["previous"],
             "current": drop["current"],
             "ratio": drop["ratio"],
