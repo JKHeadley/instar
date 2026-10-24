@@ -291,16 +291,10 @@ const CREDENTIAL_WORD = /pass(?:word|wd|phrase)?|secret|token|api[\s_-]?key|priv
  * withheld outright, together with the line after it (where a value printed under its label sits).
  */
 function withholdCredentialLines(lines: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (CREDENTIAL_WORD.test(lines[i])) {
-      out.push('[line withheld]');
-      if (i + 1 < lines.length) { out.push('[line withheld]'); i++; }
-    } else {
-      out.push(lines[i]);
-    }
-  }
-  return out;
+  const named = lines.map((l) => CREDENTIAL_WORD.test(l));
+  // A line goes when it, or the line before it, names a credential: judged per line, so two labels in a
+  // row each still cover the line that follows them.
+  return lines.map((l, i) => (named[i] || (i > 0 && named[i - 1]) ? '[line withheld]' : l));
 }
 
 /**
@@ -321,10 +315,12 @@ export function outputTail(stdout: string, stderr: string, max = 240, redact: st
   const out = scrub(stdout);
   const err = scrub(stderr);
   if (out === null || err === null) return ': [output withheld: scrub failed]';
-  const lines = (t: string) => withholdCredentialLines(t.split('\n').map((l) => l.trim()))
-    // macOS xcrun cache-file noise from git under the sandbox carries no signal.
+  // Blank and noise lines go BEFORE the credential check, so a blank line cannot separate a label from
+  // its value. (macOS xcrun cache-file noise from git under the sandbox carries no signal.)
+  const lines = (t: string) => t.split('\n').map((l) => l.trim())
     .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
-  const all = [...lines(out), ...lines(err)];
+  // One list across both streams, so a label ending stdout still covers a value starting stderr.
+  const all = withholdCredentialLines([...lines(out), ...lines(err)]);
   if (all.length === 0) return '';
   return `: ${all.join(' | ').slice(-max)}`;
 }

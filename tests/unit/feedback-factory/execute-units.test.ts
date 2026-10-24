@@ -398,13 +398,20 @@ describe('canary judgement', () => {
     expect(split).toContain('Error: bad login');
     expect(split).toContain('at test.ts:3');
     expect(outputTail('Authorization: Bearer !weird~value', '', 240)).not.toContain('weird');
+    // A blank line between a label and its value does not shield the value.
+    expect(outputTail('Password:\n\n   \n!A1b2C3d4E5f6G7h8', '', 240)).not.toContain('A1b2C3d4');
+    // A label at the end of stdout covers a value at the start of stderr.
+    expect(outputTail('ok\ntoken:', '!A1b2C3d4E5f6G7h8\nfail', 240)).not.toContain('A1b2C3d4');
+    // Two credential lines in a row: the second one's value must still be withheld.
+    expect(outputTail('auth error\npassword:\n!A1b2C3d4E5f6G7h8\ndone', '', 240)).toBe(': [line withheld] | [line withheld] | [line withheld] | done');
   });
 
   it('outputTail hides the canary nonce, including inside the canary secret string', () => {
     const nonce = 'f00dfeedcafe1234';
     const tail = outputTail(`read canary-secret-${nonce} ok`, `/tmp/feedback-canary-${nonce}`, 240, [nonce]);
     expect(tail).not.toContain(nonce);
-    expect(tail).toContain('[redacted]');
+    // On a line naming no credential the nonce is replaced in place.
+    expect(outputTail(`wrote /tmp/feedback-canary-${nonce}`, '', 240, [nonce])).toBe(': wrote /tmp/feedback-canary-[redacted]');
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {

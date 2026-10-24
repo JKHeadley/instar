@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-24T16:46:27.066Z",
+  "slug": "executor-clone-base-objects",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/confinementCanary.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

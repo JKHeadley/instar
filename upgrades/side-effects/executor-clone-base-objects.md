@@ -69,6 +69,8 @@ Third round (re-review of `648c7768`): ANSI stripping ran after the scrub and th
 
 Fourth round (re-review of `fc3ef7d8`): the shared scrubber only recognises credential shapes, so `password=!A1b2…` passed. Rather than widen shared patterns, `outputTail` now withholds any line naming a credential (password, secret, token, api key, private key, auth, bearer, credential, cookie, session id) together with the line after it; the scrubber remains the second layer. Residual risk: an unlabelled secret on a line naming none of these words, which no shape- or label-based check can see; the canary runs inside the confinement profile, which denies credential reads by design. Over-block: an ordinary error line containing one of these words is withheld from the diagnostic.
 
+Fifth round (re-review of `5d365a69`): two credential lines in a row skipped the second label's check. Withholding is now judged per line (a line goes when it or its predecessor names a credential), over one list spanning stdout and stderr, after blank and noise lines are dropped, so neither a blank line nor the stream boundary can separate a label from its value. Tests: consecutive labels, a blank line between label and value, a label ending stdout with the value starting stderr.
+
 Over-block / under-block: the brake can now admit a start during a genuinely long restart deferral past 6 h; the restart gate already caps deferral, and a start interrupted by a restart is reconciled on the next tick, so the cost is one wasted start.
 
 ## 8. Rollback cost
