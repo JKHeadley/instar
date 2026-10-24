@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T16:31:27.589Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "0719a36c0b77062a241b67ab17eb1faa3e4855f3e8cca9315dc23a42dd23a94b",
+  "coveredFiles": [
+    "docs/specs/executor-clone-base-objects.eli16.md",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Third-round review fix: normalise terminal output to plain text before nonce redaction and scrubbing in a diagnostic string; unit tests cover escape and control-character splits.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

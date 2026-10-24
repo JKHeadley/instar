@@ -376,6 +376,20 @@ describe('canary judgement', () => {
     expect(pemTail).not.toContain('MIIEpAIBAAKCAQEA');
   });
 
+  it('outputTail strips terminal escapes and control characters BEFORE scrubbing, so they cannot split a secret', () => {
+    const value = 'A1b2C3d4E5f6G7h8'.repeat(2);
+    for (const raw of [
+      `password=\u001b[31m${value}\u001b[0m`,
+      `password=\u001b]0;title\u0007${value}`,
+      `pass\u0008word=${value}`,
+      `password=\r${value}`,
+    ]) {
+      expect(outputTail(raw, '', 240)).not.toContain(value);
+    }
+    const nonce = 'f00dfeedcafe1234';
+    expect(outputTail(`f00dfeed\u001b[0mcafe1234`, `f00d\u0000feedcafe1234`, 240, [nonce])).not.toContain(nonce);
+  });
+
   it('outputTail hides the canary nonce, including inside the canary secret string', () => {
     const nonce = 'f00dfeedcafe1234';
     const tail = outputTail(`read canary-secret-${nonce} ok`, `/tmp/feedback-canary-${nonce}`, 240, [nonce]);

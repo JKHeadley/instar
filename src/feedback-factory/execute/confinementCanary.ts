@@ -268,16 +268,31 @@ export async function runRunnerCanary(input: {
 }
 
 /**
- * The last meaningful output of a failed probe (stdout then stderr), ANSI and blank lines stripped,
- * one line. Each COMPLETE stream is scrubbed with its newlines intact BEFORE anything is selected,
- * joined or shortened: cutting or re-joining first could separate a credential's label from its value
- * (`password=` on one line, the value on the next; a PEM block), which the scrubber would then miss.
- * `redact` strings (the canary nonce) are replaced first; an oversize stream is replaced wholesale by
- * the scrubber, and a scrub failure withholds the tail.
+ * Terminal output normalised to plain text: ANSI/OSC escape sequences and other control characters
+ * removed, line endings unified, runs of spaces and tabs collapsed. Runs BEFORE any redaction, so no
+ * later step can re-join characters a control sequence had kept apart.
+ */
+function plainText(t: string): string {
+  return (t || '')
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[@-_]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, (c) => (c === '\t' ? ' ' : ''))
+    .replace(/ {2,}/g, ' ');
+}
+
+/**
+ * The last meaningful output of a failed probe (stdout then stderr), one line. Order matters, and every
+ * step that could change which characters sit next to each other comes BEFORE the secret checks: each
+ * complete stream is first normalised to plain text ({@link plainText}), then the `redact` strings (the
+ * canary nonce) are replaced, then it is scrubbed with its newlines intact. Only after that are lines
+ * trimmed, filtered, joined and the result shortened, none of which can rebuild a removed value. An
+ * oversize stream is replaced wholesale by the scrubber; a scrub failure withholds the tail.
  */
 export function outputTail(stdout: string, stderr: string, max = 240, redact: string[] = []): string {
   const scrub = (t: string): string | null => {
-    let text = t || '';
+    let text = plainText(t);
     for (const r of redact) if (r) text = text.split(r).join('[redacted]');
     const scrubbed = scrubForStore(text);
     return scrubbed.error ? null : scrubbed.text;
@@ -285,12 +300,12 @@ export function outputTail(stdout: string, stderr: string, max = 240, redact: st
   const out = scrub(stdout);
   const err = scrub(stderr);
   if (out === null || err === null) return ': [output withheld: scrub failed]';
-  const clean = (t: string) => t.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim())
+  const lines = (t: string) => t.split('\n').map((l) => l.trim())
     // macOS xcrun cache-file noise from git under the sandbox carries no signal.
     .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
-  const lines = [...clean(out), ...clean(err)];
-  if (lines.length === 0) return '';
-  return `: ${lines.join(' | ').replace(/\s+/g, ' ').slice(-max)}`;
+  const all = [...lines(out), ...lines(err)];
+  if (all.length === 0) return '';
+  return `: ${all.join(' | ').slice(-max)}`;
 }
 
 /** Session path: the fixed canary prompt. The session reports each attempt; trusted code judges by effect. */

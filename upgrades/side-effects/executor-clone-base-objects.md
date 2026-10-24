@@ -65,6 +65,8 @@ The independent review of head `8d94c794` blocked on two findings, both fixed he
 
 Second round (re-review of `74d43ac3`): joining lines before scrubbing still separated a label from a value on the next line (and broke PEM matching). `outputTail` now scrubs each complete stream with newlines intact before any selection, joining or shortening; an oversize stream is replaced wholesale by the scrubber. Test: label on its own line, and a multiline PEM block, never survive. The 6 h brake bound relies on `pendingUpdateDetectedAt` being set once on first detection, persisted, and cleared only on a successful install (`AutoUpdater.ts` first-detection guard and success path), which holds.
 
+Third round (re-review of `648c7768`): ANSI stripping ran after the scrub and the nonce replacement, so `password=<ESC>[31m<value>` or a nonce split by an escape was re-joined after the checks. `outputTail` now normalises each stream to plain text first (ANSI/OSC sequences and control characters removed, line endings unified, space runs collapsed), then redacts the nonce, then scrubs; afterwards only trimming, filtering, joining and shortening remain. Tests: colour code, OSC title, backspace and carriage return inside a labelled secret; nonce split by an escape or a NUL.
+
 Over-block / under-block: the brake can now admit a start during a genuinely long restart deferral past 6 h; the restart gate already caps deferral, and a start interrupted by a restart is reconciled on the next tick, so the cost is one wasted start.
 
 ## 8. Rollback cost
