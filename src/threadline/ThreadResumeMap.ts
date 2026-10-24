@@ -133,17 +133,48 @@ const DEFAULT_INACTIVE_RETIRE_MS = 24 * 60 * 60 * 1000;
 
 // ── Implementation ──────────────────────────────────────────────
 
+/**
+ * Resolves the framework of the session bound to a thread (by tmux session
+ * name) so the transcript check runs in that framework's layout only.
+ * Returns undefined when unknown — the check then tries every layout.
+ */
+export type ThreadFrameworkResolver = (sessionName: string) => string | undefined;
+
 export class ThreadResumeMap {
   private store: ConversationStore;
   private legacyPath: string;
   private projectDir: string;
   private tmuxPath: string;
+  private frameworkResolver: ThreadFrameworkResolver | null;
 
-  constructor(stateDir: string, projectDir: string, tmuxPath?: string, store?: ConversationStore) {
+  constructor(
+    stateDir: string,
+    projectDir: string,
+    tmuxPath?: string,
+    store?: ConversationStore,
+    options?: { frameworkResolver?: ThreadFrameworkResolver },
+  ) {
     this.store = store ?? new ConversationStore(stateDir);
     this.legacyPath = path.join(stateDir, 'threadline', 'thread-resume-map.json');
     this.projectDir = projectDir;
     this.tmuxPath = tmuxPath || 'tmux';
+    this.frameworkResolver = options?.frameworkResolver ?? null;
+  }
+
+  /** Install (or replace) the framework resolver after construction. */
+  setFrameworkResolver(resolver: ThreadFrameworkResolver | null): void {
+    this.frameworkResolver = resolver;
+  }
+
+  private frameworkFor(sessionName: string): string | undefined {
+    if (!this.frameworkResolver || !sessionName) return undefined;
+    try {
+      return this.frameworkResolver(sessionName) ?? undefined;
+    } catch {
+      // @silent-fallback-ok: an unresolvable framework means "unknown"; the
+      // transcript check then tries every layout, which is today's behavior.
+      return undefined;
+    }
   }
 
   /**
@@ -170,7 +201,7 @@ export class ThreadResumeMap {
     // spawnNewThread (A1) and breaking threadline_history lookups (C). Dead
     // topic-linkage entries still expire via ConversationStore's TTL, and the
     // topic's real liveness is re-checked at route time (TopicLinkageHandler.topicActive).
-    if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid)) {
+    if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid, this.frameworkFor(entry.sessionName))) {
       // The session JSONL doesn't exist — usually because the uuid is still the
       // spawn-time placeholder that onSessionComplete / the resume heartbeat never
       // upgraded to a real transcript id (the production A2A continuity break: every
@@ -390,28 +421,40 @@ export class ThreadResumeMap {
     }
   }
 
-  /** Check if a JSONL file exists for the given session UUID. (protected so
-   *  tests can bypass the filesystem check via a subclass.) */
-  protected jsonlExists(uuid: string): boolean {
+  /** Check if a transcript exists for the given session UUID, in the layout
+   *  of `framework` when known ('claude-code' → Claude only, 'codex-cli' →
+   *  Codex only, 'gemini-cli' → Gemini only) and in every layout when not.
+   *  (protected so tests can bypass the filesystem check via a subclass.) */
+  protected jsonlExists(uuid: string, framework?: string): boolean {
     if (!uuid) return false;
-    // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
-    const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-    if (fs.existsSync(claudeProjectsDir)) {
-      try {
-        for (const dir of fs.readdirSync(claudeProjectsDir)) {
-          if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+    const known = framework === 'claude-code' || framework === 'codex-cli' || framework === 'gemini-cli';
+    if (!known || framework === 'claude-code') {
+      // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
+      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+      if (fs.existsSync(claudeProjectsDir)) {
+        try {
+          for (const dir of fs.readdirSync(claudeProjectsDir)) {
+            if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+          }
+        } catch {
+          // Can't check the Claude layout — fall through to the codex layout.
         }
-      } catch {
-        // Can't check the Claude layout — fall through to the codex layout.
       }
+      // A thread known to run on Claude never enters the Codex or Gemini
+      // discovery (2026-10-13 server-loop freeze: a missing Claude id walked
+      // the whole Codex archive).
+      if (framework === 'claude-code') return false;
     }
-    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
-    // A codex thread has no Claude jsonl, so without this every codex session
-    // looks expired/missing and resume breaks fleet-wide (codex-compat root).
-    try {
-      if (findRolloutFileSync(uuid) !== null) return true;
-    } catch {
-      // Can't check the codex layout — treat as not found.
+    if (!known || framework === 'codex-cli') {
+      // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+      // A codex thread has no Claude jsonl, so without this every codex session
+      // looks expired/missing and resume breaks fleet-wide (codex-compat root).
+      try {
+        if (findRolloutFileSync(uuid) !== null) return true;
+      } catch {
+        // Can't check the codex layout — treat as not found.
+      }
+      if (framework === 'codex-cli') return false;
     }
     // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
     // A gemini session has neither a Claude jsonl nor a codex rollout, so

@@ -103,6 +103,7 @@ import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
 import { resolveFrameworkBinaryPath, computeGrokInteractiveOptIn } from '../core/frameworkSessionLaunch.js';
 import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
+import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
 import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
@@ -11619,49 +11620,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Proactive resume heartbeat: every 60s, update the topic→UUID mapping
     // for all active topic-linked sessions. Ensures crash recovery via --resume.
     if (_topicResumeMap && (telegram || _slackAdapter)) {
+      // The tick itself lives in core/ResumeHeartbeat.ts so tests run the
+      // production tick. Each session's FRAMEWORK rides along with its id, so
+      // a claude-code session's transcript check never enters the Codex or
+      // Gemini archive discovery (2026-10-13 server-loop freeze).
+      const slackForHeartbeat = _slackAdapter;
       const resumeHeartbeatInterval = setInterval(() => {
         try {
-          const enriched = new Map<number, { sessionName: string; claudeSessionId?: string }>();
-
-          // Telegram topic-session mappings
-          if (telegram) {
-            const topicSessions = telegram.getAllTopicSessions();
-            for (const [topicId, sessionName] of topicSessions) {
-              const sessions = sessionManager.listRunningSessions();
-              const session = sessions.find(s => s.tmuxSession === sessionName);
-              enriched.set(topicId, {
-                sessionName,
-                claudeSessionId: session?.claudeSessionId ?? undefined,
-              });
-            }
-          }
-
-          // Slack channel-session mappings (use synthetic IDs for compatibility)
-          if (_slackAdapter) {
-            const registry = _slackAdapter.getChannelRegistry();
-            const runningSessions = sessionManager.listRunningSessions();
-            for (const [channelId, entry] of Object.entries(registry)) {
-              const syntheticId = slackChannelToSyntheticId(channelId);
-              const session = runningSessions.find(s => s.tmuxSession === entry.sessionName);
-              enriched.set(syntheticId, {
-                sessionName: entry.sessionName,
-                claudeSessionId: session?.claudeSessionId ?? undefined,
-              });
-
-              // Also save to the Slack-specific resume map so that
-              // getChannelResume() finds the UUID on next message.
-              // refreshResumeMappings only writes to topic-resume-map.json
-              // (keyed by synthetic numeric ID), but Slack message handling
-              // reads from slack-channel-resume-map.json (keyed by channel ID).
-              // ONLY use authoritative claudeSessionId — never mtime fallback,
-              // which can cross-contaminate when multiple sessions are active.
-              if (session?.claudeSessionId && _topicResumeMap!.jsonlExistsPublic(session.claudeSessionId)) {
-                _slackAdapter.saveChannelResume(channelId, session.claudeSessionId, entry.sessionName);
-              }
-            }
-          }
-
-          _topicResumeMap?.refreshResumeMappings(enriched);
+          runResumeHeartbeatTick({
+            topicResumeMap: _topicResumeMap!,
+            listRunningSessions: () => sessionManager.listRunningSessions(),
+            telegramTopicSessions: telegram ? () => telegram.getAllTopicSessions() : undefined,
+            slack: slackForHeartbeat
+              ? {
+                  getChannelRegistry: () => slackForHeartbeat.getChannelRegistry(),
+                  saveChannelResume: (channelId, uuid, sessionName) => slackForHeartbeat.saveChannelResume(channelId, uuid, sessionName),
+                  channelToSyntheticId: slackChannelToSyntheticId,
+                }
+              : undefined,
+          });
         } catch (err) {
           console.error('[server] Resume heartbeat error:', err);
         }
@@ -11682,7 +11659,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (telegram && !contextExhaustionKills.has(session.tmuxSession)) {
             const topicId = telegram!.getTopicForSession(session.tmuxSession);
             if (topicId) {
-              const uuid = _topicResumeMap!.findUuidForSession(session.tmuxSession, session.claudeSessionId ?? undefined);
+              const uuid = _topicResumeMap!.findUuidForSession(session.tmuxSession, session.claudeSessionId ?? undefined, session.framework);
               if (uuid) {
                 _topicResumeMap!.save(topicId, uuid, session.tmuxSession);
                 console.log(`[beforeSessionKill] Saved resume UUID ${uuid} for topic ${topicId} (session: ${session.name}, source: ${session.claudeSessionId ? 'hook' : 'mtime'})`);
@@ -11696,7 +11673,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (_slackAdapter && !contextExhaustionKills.has(session.tmuxSession)) {
             const channelId = _slackAdapter.getChannelForSession(session.tmuxSession);
             if (channelId) {
-              const uuid = _topicResumeMap!.findUuidForSession(session.tmuxSession, session.claudeSessionId ?? undefined);
+              const uuid = _topicResumeMap!.findUuidForSession(session.tmuxSession, session.claudeSessionId ?? undefined, session.framework);
               if (uuid) {
                 _slackAdapter.saveChannelResume(channelId, uuid, session.tmuxSession);
                 console.log(`[beforeSessionKill] Saved Slack resume UUID ${uuid} for channel ${channelId} (session: ${session.name})`);
@@ -17599,7 +17576,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const sessions = sessionManager.listRunningSessions();
             const session = sessions.find(s => s.tmuxSession === sessionName);
-            const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined);
+            const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined, session?.framework);
             if (uuid) {
               const topicSessions = telegram.getAllTopicSessions();
               for (const [topicId, sessName] of topicSessions) {
@@ -17634,7 +17611,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const sessions = sessionManager.listRunningSessions();
             const session = sessions.find(s => s.tmuxSession === sessionName);
-            const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined);
+            const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined, session?.framework);
             if (uuid) {
               const topicSessions = telegram.getAllTopicSessions();
               for (const [topicId, sessName] of topicSessions) {
@@ -17655,7 +17632,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     const messageStore = new MessageStore(path.join(config.stateDir, 'messages'));
     messageStoreForResume = messageStore;
     await messageStore.initialize();
-    const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir);
+    const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir, undefined, undefined, {
+      // A thread bound to a claude-code session checks Claude transcripts only;
+      // an unknown session name tries every layout (the bounded lookups).
+      frameworkResolver: (sessionName) => state.listSessions().find((s) => s.tmuxSession === sessionName)?.framework,
+    });
     // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
     // the warrants-a-reply gate. The gate runs once at the relay inbound funnel
     // (below), upstream of all three routing branches, with turn/novelty state
@@ -30277,7 +30258,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (topicSessions) {
               for (const [topicId, sessionName] of topicSessions) {
                 const session = runningSessions.find(s => s.tmuxSession === sessionName);
-                const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined);
+                const uuid = _topicResumeMap.findUuidForSession(sessionName, session?.claudeSessionId ?? undefined, session?.framework);
                 if (uuid) {
                   _topicResumeMap.save(topicId, uuid, sessionName);
                   saved++;
@@ -30291,7 +30272,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const registry = _slackAdapter.getChannelRegistry();
             for (const [channelId, entry] of Object.entries(registry)) {
               const session = runningSessions.find(s => s.tmuxSession === entry.sessionName);
-              const uuid = _topicResumeMap.findUuidForSession(entry.sessionName, session?.claudeSessionId ?? undefined);
+              const uuid = _topicResumeMap.findUuidForSession(entry.sessionName, session?.claudeSessionId ?? undefined, session?.framework);
               if (uuid) {
                 _slackAdapter.saveChannelResume(channelId, uuid, entry.sessionName);
                 saved++;
