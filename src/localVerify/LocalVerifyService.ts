@@ -30,6 +30,15 @@
  * transition re-runs failed PR verifies oldest first up to the queue cap. While
  * `main` is unhealthy the watcher's (non-explicit) requests are refused.
  *
+ * Merge line (amendment 2026-10-23, CMT-980): a queued PR keeps its place and its
+ * `firstQueuedAt` when its head or base moves (the base is refreshed in place, a
+ * new head takes the old entry's slot — CMT-973); every PR verify starts against
+ * the base branch's CURRENT head (re-read right before the start when `main` has
+ * moved since the entry's base was resolved, or the entry has waited a while); and
+ * a green PR record is handed to the merge watcher at once (`setMergeHandoff`),
+ * with the queue HELD until that attempt settles (bounded), so the next PR is
+ * verified on top of the merge instead of racing it.
+ *
  * Seams: `onRecord` (status projection / posting), `onStarved` (attention item),
  * `onMainHealthChange` (event-driven withdrawal), `signal` (main-red, main-unverified).
  */
@@ -186,9 +195,66 @@ export interface QueueEntry {
   notBefore?: number;
   /** Time spent paused for a pending update; subtracted from the starved clock. */
   pausedMs?: number;
+  /** When `baseSha` was last read from the base branch (request, in-place update or pre-start refresh). */
+  baseResolvedAt?: number;
 }
 
 export { MAIN_VERIFY_LIMITS };
+
+// ---- the merge line (CMT-980) ----
+
+/** Bounds of the merge line: the hand-off hold and the pre-start base refresh. */
+export const MERGE_LINE = Object.freeze({
+  /** The queue is held for a merge hand-off at most this long (the watcher's 25-min sync merge + margin). */
+  handoffMaxMs: 30 * 60_000,
+  /** An entry whose base was resolved this long ago re-reads the base head before it starts. */
+  baseRefreshAfterMs: 5 * 60_000,
+});
+
+/** What the service hands the watcher for a green PR record. */
+export interface MergeHandoffContext {
+  /** Whether the record's base is the `main` head the reconcile loop last observed; null when unknown or not a `main` PR. */
+  baseIsCurrentMain: boolean | null;
+  currentMainHead: string | null;
+}
+
+export type MergeHandoffResult = { acted: boolean; reason: string };
+
+/** The late-bound merge watcher: one attempt for exactly this (pr, head), through every existing gate. */
+export type MergeHandoff = (record: LocalVerifyRecord, ctx: MergeHandoffContext) => Promise<MergeHandoffResult>;
+
+/**
+ * Should a PR entry re-read its base head before it starts? Yes when `main` moved
+ * after the entry's base was resolved (a merge landed, or the reconcile loop saw a
+ * new head), or when the entry has waited `baseRefreshAfterMs` since then. Pure.
+ */
+export function decideBaseRefresh(
+  entry: { baseRefName: string; firstQueuedAt: number; baseResolvedAt?: number },
+  i: { now: number; mainMovedAt: number | null },
+  limits: { baseRefreshAfterMs: number } = MERGE_LINE,
+): boolean {
+  const resolvedAt = entry.baseResolvedAt ?? entry.firstQueuedAt;
+  if (i.mainMovedAt !== null && entry.baseRefName === 'main' && i.mainMovedAt > resolvedAt) return true;
+  return i.now - resolvedAt >= limits.baseRefreshAfterMs;
+}
+
+/**
+ * Should a finished record be handed to the merge watcher now? Only a green PR
+ * record, only with a watcher attached, only while the service runs, and only one
+ * hand-off at a time (a second green record while a hold is open is left to the
+ * watcher's next tick, never queued behind the hold). Pure.
+ */
+export function decideMergeHandoff(
+  i: { outcome: LocalVerifyRecord['outcome']; kind?: 'main'; wired: boolean; enabled?: boolean; stopped: boolean; holdOpen: boolean },
+): { handoff: boolean; skip?: 'not-success' | 'main-record' | 'no-watcher' | 'disabled' | 'stopping' | 'hold-active' } {
+  if (!i.wired) return { handoff: false, skip: 'no-watcher' };
+  if (i.enabled === false) return { handoff: false, skip: 'disabled' };
+  if (i.stopped) return { handoff: false, skip: 'stopping' };
+  if (i.kind === 'main') return { handoff: false, skip: 'main-record' };
+  if (i.outcome !== 'success') return { handoff: false, skip: 'not-success' };
+  if (i.holdOpen) return { handoff: false, skip: 'hold-active' };
+  return { handoff: true };
+}
 
 // ---- the queue's self-action decisions (pure; the service calls these, and the
 //      self-action registry drives the SAME functions under sustained pressure —
@@ -311,6 +377,8 @@ export interface PersistedQueueEntry {
   starvedRaised: boolean;
   /** Time spent paused for a pending update (never counts toward starved). */
   pausedMs?: number;
+  /** When the base was last resolved; absent on a file written before the merge line (the base is then refreshed at start). */
+  baseResolvedAt?: number;
   /** Present on the entry that was RUNNING when the file was written: found at boot ⇒ an unclean exit. */
   inFlight?: true;
 }
@@ -406,6 +474,15 @@ export class LocalVerifyService {
   /** Rule (b) pause bookkeeping. */
   private pausedSince: number | null = null;
   private updateProvider: (() => UpdatePendingState | null) | null = null;
+  /** Merge line (CMT-980): the late-bound watcher, the open hold, and when `main` last moved. */
+  private mergeHandoff: MergeHandoff | null = null;
+  /** The live kill switch (`monitoring.localVerify.mergeLine`); absent ⇒ on. */
+  private mergeLineEnabled: (() => boolean) | null = null;
+  private mergeHold: { pr: number; headSha: string; since: number } | null = null;
+  /** A PR entry re-reading its base head right before it starts (pump starts nothing meanwhile). */
+  private starting: QueueEntry | null = null;
+  private mainMovedAt: number | null = null;
+  private readonly mergeLineStats = { handoffs: 0, merged: 0, lastOutcome: null as string | null, lastPr: null as number | null };
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
@@ -432,13 +509,35 @@ export class LocalVerifyService {
   private get runsDir(): string { return path.join(this.lvStateDir, 'runs'); }
   get auditPath(): string { return path.join(this.cfg.stateDir, 'logs', 'local-verify.jsonl'); }
 
+  /** Late-bind the merge watcher (built before this service). null detaches it: records are left to the watcher's ticks. */
+  /** `opts.enabled` is the live switch; ABSENT means on (the line is on by default, off only by `monitoring.localVerify.mergeLine: false`). */
+  setMergeHandoff(fn: MergeHandoff | null, opts: { enabled?: () => boolean } = {}): void {
+    this.mergeHandoff = fn;
+    this.mergeLineEnabled = fn ? (opts.enabled ?? null) : null;
+  }
+
+  private mergeLineOn(): boolean {
+    try { return this.mergeLineEnabled ? this.mergeLineEnabled() !== false : true; } catch { return true; } // @silent-fallback-ok: an unreadable switch reads as on (today's default)
+  }
+
+  /** The merge line's state: wired or not, the live switch, the open hold, and the hand-off counters (`merged` counts acted hand-offs). */
+  mergeLine(): { wired: boolean; enabled: boolean; hold: { pr: number; headSha: string; since: string } | null; handoffs: number; merged: number; lastOutcome: string | null; lastPr: number | null } {
+    const h = this.mergeHold;
+    return {
+      wired: this.mergeHandoff !== null,
+      enabled: this.mergeHandoff !== null && this.mergeLineOn(),
+      hold: h ? { pr: h.pr, headSha: h.headSha, since: new Date(h.since).toISOString() } : null,
+      ...this.mergeLineStats,
+    };
+  }
+
   // ---- read surface ----
 
   getRecord(pr: number, headSha: string, baseRefName: string): LocalVerifyRecord | null {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }> } {
+  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']> } {
     return {
       queue: this.queue.map((e) => ({ ...e })),
       inFlight: this.inFlight
@@ -447,6 +546,7 @@ export class LocalVerifyService {
       blocked: this.blockedBy !== null,
       records: this.index.size,
       flakyFiles: this.flakyFiles(),
+      mergeLine: this.mergeLine(),
     };
   }
 
@@ -547,6 +647,7 @@ export class LocalVerifyService {
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised, priority: 0,
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
+        ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
       };
       if (e.inFlight) {
         // It was running when the server died without a clean shutdown: that is one error
@@ -594,6 +695,8 @@ export class LocalVerifyService {
     }
     const now = this.now();
     const o = this.mainObs;
+    // A head different from the last one observed: queued PR entries resolved before now re-read their base at start.
+    if (o.head !== null && o.head !== sha) this.mainMovedAt = now;
     if (sha !== this.health.snapshot().lastGreenHead && o.oldestUnverifiedAt === null) o.oldestUnverifiedAt = now;
     const d = decideMainHeadEnqueue(o, sha, now);
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
@@ -758,21 +861,35 @@ export class LocalVerifyService {
     const baseRefName = view.baseRefName;
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
 
+    // CMT-973: a PR keeps its place and its firstQueuedAt. A base that moved is refreshed in
+    // place; a moved head (or a retarget) takes the old entry's slot — the FRONT when the old
+    // head was the run in flight (a push during a PR's own run never sends it to the back).
+    let keptPlace: { index: number; firstQueuedAt: number; pausedMs?: number; starvedRaised: boolean } | null = null;
     // A moved head (or retarget) cancels the in-flight run for the old one.
     const f = this.inFlight;
     if (f && f.entry.pr === pr) {
-      if (f.entry.headSha !== headSha || f.entry.baseRefName !== baseRefName) this.cancelInFlight('head-moved');
-      else if (!f.cancelled) return { ok: true, status: 'in-flight' };
+      if (f.entry.headSha !== headSha || f.entry.baseRefName !== baseRefName) {
+        this.cancelInFlight('head-moved');
+        keptPlace = { index: 0, firstQueuedAt: f.entry.firstQueuedAt, pausedMs: f.entry.pausedMs, starvedRaised: f.entry.starvedRaised };
+      } else if (!f.cancelled) return { ok: true, status: 'in-flight' };
     }
     const pendingIdx = this.queue.findIndex((e) => e.pr === pr);
     if (pendingIdx >= 0) {
       const e = this.queue[pendingIdx];
-      if (e.headSha === headSha && e.baseRefName === baseRefName && e.baseSha === baseSha) {
+      if (e.headSha === headSha && e.baseRefName === baseRefName) {
+        if (e.baseSha !== baseSha) {
+          const oldBase = e.baseSha;
+          e.baseSha = baseSha;
+          this.audit({ event: 'base-updated', pr, headSha, oldBase, newBase: baseSha, position: pendingIdx, firstQueuedAt: e.firstQueuedAt });
+        }
+        e.baseResolvedAt = this.now(); // the base was just read: no pre-start re-read needed for a while
+        this.persistQueue();
         return { ok: true, status: 'already-queued', position: pendingIdx };
       }
       this.queue.splice(pendingIdx, 1);
+      keptPlace = { index: pendingIdx, firstQueuedAt: e.firstQueuedAt, pausedMs: e.pausedMs, starvedRaised: e.starvedRaised };
       this.persistQueue();
-      this.audit({ event: 'dequeued', pr, reason: 'head-or-base-moved', headSha: e.headSha });
+      this.audit({ event: 'dequeued', pr, reason: 'head-moved', headSha: e.headSha });
     }
 
     const existing = this.index.get(key);
@@ -802,11 +919,14 @@ export class LocalVerifyService {
     }
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
-      firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: 0,
+      firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
+      starvedRaised: keptPlace?.starvedRaised ?? false, priority: 0, baseResolvedAt: this.now(),
+      ...(keptPlace?.pausedMs ? { pausedMs: keptPlace.pausedMs } : {}),
     };
-    this.queue.push(entry);
-    this.audit({ event: 'queued', pr, headSha, baseSha, explicit });
-    const position = this.queue.length - 1;
+    if (keptPlace && keptPlace.index < this.queue.length) this.queue.splice(keptPlace.index, 0, entry);
+    else this.queue.push(entry);
+    this.audit({ event: 'queued', pr, headSha, baseSha, explicit, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}) });
+    const position = this.queue.indexOf(entry);
     this.pump();
     return { ok: true, status: 'queued', position };
   }
@@ -877,7 +997,8 @@ export class LocalVerifyService {
 
   private pump(): void {
     this.persistQueue();
-    if (this.stopped || this.restoring || this.inFlight || this.blockedBy || this.queue.length === 0) return;
+    // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
+    if (this.stopped || this.restoring || this.inFlight || this.starting || this.blockedBy || this.mergeHold || this.queue.length === 0) return;
     if (this.notePause()) return; // an update is waiting only on us: let the running verify end, start nothing
     const holders = this.seams.foreignSuiteHolders();
     if (holders.length > 0) {
@@ -891,9 +1012,100 @@ export class LocalVerifyService {
       fairShare: { mainHealthy: this.health.isHealthy(), oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
     });
     if (d.kind !== 'start') return;
+    const next = this.queue[d.index];
+    if (next.kind !== 'main' && this.seams.baseHead && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
+      // The verify tests the merge with TODAY's base: re-read it right before the start.
+      this.starting = next;
+      void this.refreshBaseThenPump(next);
+      return;
+    }
     const [entry] = this.queue.splice(d.index, 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
+  }
+
+  /**
+   * Re-read the base branch's head for an entry about to start (the entry stays in the
+   * queue meanwhile, so a request for the same PR still finds it). A read failure starts
+   * the run on the last known base (audited). Identical merge inputs already verified
+   * green under this policy derive a record instead of re-running. Then pump again.
+   */
+  private async refreshBaseThenPump(entry: QueueEntry): Promise<void> {
+    let fresh: string | null = null;
+    try { fresh = await this.seams.baseHead!(entry.baseRefName); } catch { fresh = null; }
+    this.starting = null;
+    if (this.stopped) return;
+    if (this.queue.includes(entry)) {
+      if (fresh && isValidSha(fresh)) {
+        if (fresh !== entry.baseSha) {
+          this.audit({ event: 'base-refreshed', pr: entry.pr, headSha: entry.headSha, oldBase: entry.baseSha, newBase: fresh });
+          entry.baseSha = fresh;
+        }
+      } else {
+        this.audit({ event: 'base-refresh-failed', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
+      }
+      entry.baseResolvedAt = this.now();
+      const exec = this.execIndex.get(executionKey(entry.headSha, entry.baseSha));
+      if (exec && exec.outcome === 'success') {
+        this.queue.splice(this.queue.indexOf(entry), 1);
+        this.audit({ event: 'derived-at-start', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
+        this.complete({ ...exec, pr: entry.pr, baseRefName: entry.baseRefName }, 'derived');
+      }
+    }
+    this.pump();
+  }
+
+  /* @self-action-controller: local-verify-merge-handoff */
+  /**
+   * Hand a green PR record to the merge watcher at once and hold the queue until that
+   * attempt settles (or `MERGE_LINE.handoffMaxMs`), so the next verify starts on top of
+   * the merge. One hand-off per record; one hold at a time; every merge gate (lease,
+   * latches, breaker, holds, code owners, independent review, safe-merge) stays the
+   * watcher's. A hand-off never retries: a refused merge waits for the watcher's tick.
+   */
+  private offerMerge(record: LocalVerifyRecord): void {
+    const d = decideMergeHandoff({ outcome: record.outcome, kind: record.kind, wired: this.mergeHandoff !== null, enabled: this.mergeLineOn(), stopped: this.stopped, holdOpen: this.mergeHold !== null });
+    if (!d.handoff) {
+      if (d.skip === 'hold-active') this.audit({ event: 'merge-handoff-skipped', pr: record.pr, headSha: record.headSha, reason: d.skip, holdPr: this.mergeHold?.pr });
+      return;
+    }
+    const fn = this.mergeHandoff!;
+    const currentMainHead = this.mainObs.head;
+    const baseIsCurrentMain = record.baseRefName !== 'main' || currentMainHead === null ? null : currentMainHead === record.baseSha;
+    const hold = { pr: record.pr, headSha: record.headSha, since: this.now() };
+    this.mergeHold = hold;
+    this.mergeLineStats.handoffs++;
+    this.mergeLineStats.lastPr = record.pr;
+    this.audit({ event: 'merge-handoff', pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, baseIsCurrentMain, currentMainHead });
+    let settled = false;
+    const finish = (outcome: string, acted: boolean) => {
+      if (settled) {
+        // The watcher answered after the hold timed out (a long in-flight wait plus its own merge).
+        // The hold is gone, but a landed merge still moves main: the next start re-reads its base.
+        if (outcome !== 'timeout') {
+          if (acted) this.mainMovedAt = this.now();
+          this.audit({ event: 'merge-handoff-late-answer', pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since, inFlight: this.inFlight?.entry.pr ?? null });
+        }
+        return;
+      }
+      settled = true;
+      if (this.mergeHold === hold) this.mergeHold = null;
+      this.mergeLineStats.lastOutcome = outcome;
+      if (acted) {
+        this.mergeLineStats.merged++;
+        this.mainMovedAt = this.now(); // the next PR verify re-reads its base: it is tested on top of this merge
+      }
+      this.audit({ event: 'merge-handoff-result', pr: record.pr, headSha: record.headSha, outcome, acted, heldMs: this.now() - hold.since });
+      this.pump();
+    };
+    const setTimer = this.seams.setTimer ?? ((f: () => void, ms: number) => { const t = setTimeout(f, ms); t.unref?.(); });
+    setTimer(() => finish('timeout', false), MERGE_LINE.handoffMaxMs);
+    Promise.resolve()
+      .then(() => fn(record, { baseIsCurrentMain, currentMainHead }))
+      .then(
+        (r) => finish(r && typeof r.reason === 'string' ? r.reason : 'unknown', r?.acted === true),
+        (e) => finish(`error:${(e instanceof Error ? e.message : String(e)).slice(0, 80)}`, false),
+      );
   }
 
   private start(entry: QueueEntry): void {
@@ -1107,6 +1319,7 @@ export class LocalVerifyService {
     this.index.set(key, record);
     this.audit({ event: 'record', source, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, outcome: record.outcome, errorStep: record.errorStep });
     this.seams.onRecord?.(record);
+    this.offerMerge(record);
     if (record.outcome !== 'error') {
       const ek = executionKey(record.headSha, record.baseSha);
       if (source === 'run') this.execIndex.set(ek, record);
@@ -1146,6 +1359,7 @@ export class LocalVerifyService {
         pr: e.pr, headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName,
         firstQueuedAt: e.firstQueuedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
+        ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
@@ -1186,6 +1400,7 @@ export class LocalVerifyService {
     }).map((x) => ({
       ...x, starvedRaised: x.starvedRaised === true,
       pausedMs: Number.isFinite(x.pausedMs) && (x.pausedMs as number) > 0 ? x.pausedMs : undefined,
+      baseResolvedAt: Number.isFinite(x.baseResolvedAt) && (x.baseResolvedAt as number) > 0 ? x.baseResolvedAt : undefined,
       inFlight: x.inFlight === true ? true as const : undefined,
     }));
     if (valid.length !== o.entries.length) this.audit({ event: 'queue-restore-invalid-entries', skipped: o.entries.length - valid.length });

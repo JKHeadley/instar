@@ -455,3 +455,179 @@ describe('local floor — protected paths are judged by the record, not the watc
     expect(reads).toBe(0);
   });
 });
+
+describe('merge line hand-off (CMT-980): tick({ handoff })', () => {
+  const two = () => [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200', headRefName: 'echo/two' })];
+  const both = new Set(['100:sha100:main', '200:sha200:main']);
+
+  it('merges exactly the handed-off PR with strategy sync — not the oldest candidate — and requests no verifies', async () => {
+    const h = harness(two());
+    const hk = hook({ records: both });
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hk.lv);
+    const r = await w.tick({ handoff: { pr: 200, head: 'sha200' } });
+    expect(r).toEqual({ acted: true, reason: 'merged' });
+    expect(h.runCalls).toEqual([expect.objectContaining({ pr: 200, headRefOid: 'sha200', strategy: 'sync' })]);
+    expect(hk.requested).toEqual([]);
+    expect(h.audits.some((a) => a.event === 'handoff' && a.pr === 200)).toBe(true);
+  });
+
+  it('a hand-off for a PR with no record, a moved head, a held PR or an unlisted PR runs nothing and names why', async () => {
+    const prs = [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 300, headRefOid: 'sha300', headRefName: 'echo/three', labels: ['hold'] })];
+    const h = harness(prs);
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['300:sha300:main']) }).lv);
+    expect(await w.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'handoff-not-eligible:no-verify-record' });
+    expect(await w.tick({ handoff: { pr: 100, head: 'old' } })).toEqual({ acted: false, reason: 'handoff-not-eligible:head-moved' });
+    expect(await w.tick({ handoff: { pr: 300, head: 'sha300' } })).toEqual({ acted: false, reason: 'handoff-not-eligible:held' });
+    expect(await w.tick({ handoff: { pr: 999, head: 'sha999' } })).toEqual({ acted: false, reason: 'handoff-not-eligible:not-listed' });
+    expect(h.runCalls).toHaveLength(0);
+    expect(h.audits.filter((a) => a.event === 'handoff-not-eligible').map((a) => a.reason)).toEqual(['no-verify-record', 'head-moved', 'held', 'not-listed']);
+  });
+
+  it('on the actions floor a hand-off is skipped before the PR list is even read', async () => {
+    const h = harness(two());
+    h.deps.listOpenPrs = async () => { throw new Error('must not list'); };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ floor: 'actions', records: both }).lv);
+    expect(await w.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'floor-actions' });
+    expect(h.runCalls).toHaveLength(0);
+  });
+
+  it('dryRun, the disarm latch and a non-holder refuse a hand-off exactly like a tick', async () => {
+    const h = harness(two());
+    const dry = new GreenPrAutoMerger(h.deps, { ...cfg, dryRun: true });
+    dry.attachLocalVerify(hook({ records: both }).lv);
+    expect(await dry.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'dry-run' });
+    expect(h.audits.some((a) => a.event === 'would-merge' && a.handoff === true)).toBe(true);
+    h.deps.latches = { isMergeAllowed: () => ({ allowed: false, reason: 'rollback', activeLatchIds: {} }) };
+    const latched = new GreenPrAutoMerger(h.deps, cfg);
+    latched.attachLocalVerify(hook({ records: both }).lv);
+    expect(await latched.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'disabled:rollback' });
+    h.deps.holdsLease = () => false;
+    expect(await latched.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'not-lease-holder' });
+    expect(h.runCalls).toHaveLength(0);
+  });
+
+  it('a hand-off during an attempt in flight waits for it instead of feeding the busy-skip breaker, then merges', async () => {
+    const h = harness(two());
+    let releaseFirst!: () => void;
+    const firstDone = new Promise<void>((r) => { releaseFirst = r; });
+    let calls = 0;
+    h.deps.runner.run = async (a) => {
+      h.runCalls.push(a);
+      calls += 1;
+      if (calls === 1) await firstDone;
+      return { outcome: 'merged', confirmedMerged: true };
+    };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    const regular = w.tick(); // picks the oldest (100) and hangs in the runner
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100]);
+    const handoff = w.tick({ handoff: { pr: 200, head: 'sha200' } });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.runCalls).toHaveLength(1); // still waiting
+    expect(h.audits.some((a) => a.event === 'handoff-waited-in-flight' && a.pr === 200)).toBe(true);
+    expect(h.audits.some((a) => a.event === 'tick-skipped-busy')).toBe(false);
+    releaseFirst();
+    expect(await regular).toMatchObject({ acted: true });
+    expect(await handoff).toEqual({ acted: true, reason: 'merged' });
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100, 200]);
+  });
+
+  it('a hand-off that waited on an in-flight attempt does not overwrite that tick\'s saved episode/ladder state (load/save go through a store copy)', async () => {
+    const h = harness(two());
+    // A store that behaves like the real JSON file: every load is a copy of the last save.
+    let stored = JSON.parse(JSON.stringify(h.state)) as GreenPrState;
+    h.deps.loadState = () => JSON.parse(JSON.stringify(stored)) as GreenPrState;
+    h.deps.saveState = (st) => { stored = JSON.parse(JSON.stringify(st)) as GreenPrState; };
+    let releaseFirst!: () => void;
+    const firstDone = new Promise<void>((r) => { releaseFirst = r; });
+    let calls = 0;
+    h.deps.runner.run = async (a) => {
+      h.runCalls.push(a);
+      calls += 1;
+      if (calls === 1) { await firstDone; return { outcome: 'refused:needs-independent-review', confirmedMerged: false }; }
+      return { outcome: 'merged', confirmedMerged: true };
+    };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    const regular = w.tick(); // PR 100: refused for want of a review → the head is pinned in episodes[100]
+    await new Promise((r) => setTimeout(r, 5));
+    const handoff = w.tick({ handoff: { pr: 200, head: 'sha200' } });
+    await new Promise((r) => setTimeout(r, 5));
+    releaseFirst();
+    await regular;
+    await handoff;
+    // The regular tick's pin survived the hand-off's own save.
+    expect(stored.episodes[100]).toMatchObject({ lastOutcome: 'refused:needs-independent-review', headRefOid: 'sha100' });
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100, 200]);
+    // And the pin holds: a later tick does not spawn safe-merge for PR 100's head again
+    // (the static fake list still shows PR 200 open, so it is attempted again; only 100 matters here).
+    h.clock.t += 60 * 60_000;
+    await w.tick();
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100, 200, 200]);
+  });
+
+  it('two ticks past the busy check: the one that finds an attempt running spawns nothing (busy-in-act) and cannot release or drop the other\'s waiter', async () => {
+    const h = harness(two());
+    let stored = JSON.parse(JSON.stringify(h.state)) as GreenPrState;
+    h.deps.loadState = () => JSON.parse(JSON.stringify(stored)) as GreenPrState;
+    h.deps.saveState = (st) => { stored = JSON.parse(JSON.stringify(st)) as GreenPrState; };
+    const gates: Array<() => void> = [];
+    const prs = two();
+    h.deps.listOpenPrs = () => new Promise((r) => { gates.push(() => r(prs)); });
+    let releaseRun!: () => void;
+    const runDone = new Promise<void>((r) => { releaseRun = r; });
+    h.deps.runner.run = async (a) => { h.runCalls.push(a); if (h.runCalls.length === 1) await runDone; return { outcome: 'refused:needs-independent-review', confirmedMerged: false }; };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    const ticks = [w.tick(), w.tick()]; // both passed the top-of-tick busy check; both wait on their list
+    await new Promise((r) => setTimeout(r, 5));
+    expect(gates).toHaveLength(2);
+    gates[0]();
+    await new Promise((r) => setTimeout(r, 5)); // one tick is now in runner.run (in flight)
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100]);
+    let waiterDone = false;
+    const waiter = w.tick({ handoff: { pr: 200, head: 'sha200' } }).then((r) => { waiterDone = true; return r; });
+    await new Promise((r) => setTimeout(r, 5));
+    gates[1](); // the other tick reaches act() while the attempt is still running
+    expect(await Promise.race(ticks)).toEqual({ acted: false, reason: 'skipped' });
+    expect(h.audits.some((a) => a.event === 'skipped:busy-in-act' && a.pr === 100)).toBe(true);
+    expect(h.runCalls).toHaveLength(1); // it spawned nothing
+    await new Promise((r) => setTimeout(r, 10));
+    expect(waiterDone).toBe(false); // its finish neither released the waiter early nor dropped the owner's release
+    expect(h.audits.filter((a) => a.event === 'merge-attempted')).toHaveLength(1);
+    expect(h.audits.some((a) => a.event === 'handoff-wait-timeout')).toBe(false);
+    expect(gates).toHaveLength(2); // the waiter has not listed yet: it is still waiting, not merely slow
+    releaseRun();
+    expect(await Promise.all(ticks)).toEqual([{ acted: false, reason: 'skipped' }, { acted: false, reason: 'skipped' }]);
+    for (let i = 0; i < 50 && gates.length < 3; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(gates).toHaveLength(3);
+    expect(stored.episodes[100]).toMatchObject({ lastOutcome: 'refused:needs-independent-review' }); // pinned BEFORE the waiter lists
+    gates[2](); // the waiter woke after the owner's save and now lists on its own
+    expect(await waiter).toEqual({ acted: false, reason: 'refused:needs-independent-review' });
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100, 200]);
+    expect(stored.episodes[100]).toMatchObject({ lastOutcome: 'refused:needs-independent-review' }); // and survived the waiter's save
+  }, 8000);
+
+  it('a refused merge answers its outcome and the hand-off does not retry', async () => {
+    const h = harness(two());
+    h.deps.runner.run = async (a) => { h.runCalls.push(a); return { outcome: 'refused:approval-required', confirmedMerged: false }; };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    expect(await w.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'refused:approval-required' });
+    expect(h.runCalls).toHaveLength(1);
+  });
+
+  it('a hand-off for a PR that touches a code-owned file waits for the code-owner review, like a tick', async () => {
+    const h = harness(two());
+    h.deps.codeOwnedPaths = async (p) => (p.number === 100 ? { touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false } : { touches: false, files: [], unverifiable: false });
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    expect(await w.tick({ handoff: { pr: 100, head: 'sha100' } })).toEqual({ acted: false, reason: 'handoff-not-eligible:waiting' });
+    expect(h.runCalls).toHaveLength(0);
+    expect(h.audits.some((a) => a.event === 'waiting' && a.class === 'code-owner-review' && a.pr === 100)).toBe(true);
+  });
+});

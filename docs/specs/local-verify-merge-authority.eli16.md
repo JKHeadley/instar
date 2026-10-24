@@ -26,6 +26,10 @@ On the Mac Studio, unit tests run 8 at a time finished in under 4 minutes, every
 
 For pull requests that do not come from our own agents (forks, outside contributors), the server simply copies GitHub's own test result onto the same mark, so nothing changes for them.
 
+### The merge line (added 2026-10-23)
+
+Before this change the queue of waiting PRs got reshuffled every time `main` moved: a PR that had been waiting for hours was quietly moved to the back of the line (that is what happened to PR 2320, which waited eighteen hours), and a PR whose tests had passed still sat there until the merge watcher's next ten-minute look. Now the queue behaves like a proper line. A waiting PR keeps its place when `main` moves or when it gets a new commit. Each PR is tested against `main` as it is at that moment, not as it was when the PR joined the line. And the moment a PR's tests pass, it is handed straight to the merge watcher, and the line pauses (for at most half an hour) until that merge has landed or been refused, so the next PR is tested on top of it. Nothing about what is allowed to merge changes: the same checks apply — only Justin approves constitution changes, a change to the test harness still needs its independent second review, and GitHub still refuses a merge without the green status. If the hand-off ever misbehaves, one setting (`monitoring.localVerify.mergeLine: false`) puts merges back on the watcher's ten-minute rhythm without a restart.
+
 ## Why this is safe enough
 
 The pass mark is tied to one exact version of the code, so an old result, or a result for different code, does not count. If the server cannot check something, the answer is "don't merge yet", never "merge anyway".

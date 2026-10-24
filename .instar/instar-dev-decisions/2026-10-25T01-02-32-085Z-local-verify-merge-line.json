@@ -1,0 +1,41 @@
+{
+  "ts": "2026-10-25T01:02:32.085Z",
+  "slug": "local-verify-merge-line",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 539,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/StatusReconciler.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/scaffold/templates.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 505,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the merge hand-off is one offer per green record (decideMergeHandoff; registry controller local-verify-merge-handoff, K=3 per 40 ticks, per-target 1); the hold is time-bounded (MERGE_LINE.handoffMaxMs) and the watcher's merge attempts stay under its episode ladder and breaker"
+    },
+    "component": "LocalVerifyService"
+  },
+  "verdict": "pass"
+}
