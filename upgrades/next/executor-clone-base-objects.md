@@ -23,3 +23,5 @@ Feedback fixes can start again: a setup step was failing for every item. If setu
 ## Evidence
 
 `execute-attempt-git.test.ts` (base reachable only from origin/main still checks out; fails without the fix), `execute-reroute-capacity.test.ts` (one failed preparation per tick, readable reason), `execute-wiring.test.ts` (update-pending only with autoApply on). Executor unit 145/145, integration 9/9, e2e 2/2, lint clean.
+
+The canary failure detail is scrubbed for secrets before it is shortened, and the canary's own test value is hidden. The "update pending" pause on the feedback executor now lapses after 6 hours, so an update that keeps failing to install can no longer stop the executor forever.

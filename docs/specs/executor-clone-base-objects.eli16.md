@@ -20,3 +20,7 @@ Nothing.
 ## Later addition: waiting for a restart that will never come
 
 The pipeline holds off starting a fix while a newer version of the agent is about to be installed, because installing restarts the agent and would cut the fix off halfway. It used to treat "a newer version exists" as "a restart is coming". When automatic installs are switched off, nothing restarts on its own, so the pipeline waited forever. It now waits only when automatic installs are on and an update is pending, which is the same rule the local test runner already uses.
+
+## Two follow-up fixes from the independent review
+
+An outside reviewer found two problems in this change. First, when the safety check failed, we saved a short piece of its error output, but we cut it short *before* removing anything that looked like a password. Cutting first can remove the word "password=" while keeping the password itself, and then the cleaner no longer recognises it. Now we keep whole lines, hide the check's own secret test value, clean the text, and only then shorten it. Second, the executor pauses while a software update is about to restart the server. But if an update keeps failing to install, it stays "pending" forever, and the executor would pause forever too. Now that pause only counts for six hours; after that, the executor carries on.

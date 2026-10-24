@@ -359,6 +359,20 @@ describe('canary judgement', () => {
     expect(outputTail('x'.repeat(500), 'END', 20)).toBe(`: ${'x'.repeat(14)} | END`);
   });
 
+  it('outputTail scrubs whole lines BEFORE shortening, so a long secret cannot lose its label and survive', () => {
+    const secret = 'A1b2C3d4'.repeat(30); // 240 chars: a cut-first tail would keep the value and drop "password="
+    const tail = outputTail(`config dump password=${secret}`, '', 240);
+    expect(tail).not.toContain(secret.slice(-40));
+    expect(tail).toContain('[REDACTED');
+  });
+
+  it('outputTail hides the canary nonce, including inside the canary secret string', () => {
+    const nonce = 'f00dfeedcafe1234';
+    const tail = outputTail(`read canary-secret-${nonce} ok`, `/tmp/feedback-canary-${nonce}`, 240, [nonce]);
+    expect(tail).not.toContain(nonce);
+    expect(tail).toContain('[redacted]');
+  });
+
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {
     const p = paths(tmp());
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });

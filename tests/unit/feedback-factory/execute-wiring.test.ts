@@ -15,7 +15,7 @@ import { FeedbackDrainStore, DrainConflictError } from '../../../src/feedback-fa
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
-import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
+import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, UPDATE_PENDING_BRAKE_MAX_MS, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
 import { SafeAttemptGit, GhGateway } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SandboxRuntimeRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -151,5 +151,18 @@ describe('the update-pending admission brake', () => {
     expect(executorUpdatePending({ config: {}, pendingUpdate: '1.3.2' })).toBe(false);
     expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null })).toBe(false);
     expect(executorUpdatePending(undefined)).toBe(false);
+  });
+
+  it('stops holding once a pending update is too old to be an imminent restart (a failing install keeps it pending)', () => {
+    const now = Date.parse('2026-10-24T16:00:00Z');
+    const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+    const pending = (detectedAt: string | null) => ({ config: { autoApply: true }, pendingUpdate: '1.3.2', pendingUpdateDetectedAt: detectedAt });
+    expect(executorUpdatePending(pending(at(60_000)), now)).toBe(true);
+    expect(executorUpdatePending(pending(at(UPDATE_PENDING_BRAKE_MAX_MS - 1)), now)).toBe(true);
+    expect(executorUpdatePending(pending(at(UPDATE_PENDING_BRAKE_MAX_MS)), now)).toBe(false);
+    expect(executorUpdatePending(pending(at(3 * 24 * 3_600_000)), now)).toBe(false);
+    // No (or an unparseable) detection time keeps the brake: the safe direction.
+    expect(executorUpdatePending(pending(null), now)).toBe(true);
+    expect(executorUpdatePending(pending('not a date'), now)).toBe(true);
   });
 });

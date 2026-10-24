@@ -56,6 +56,15 @@ Per machine, as before: the executor runs on the lease holder against its own ch
 
 `executorUpdatePending` (pure) replaces `Boolean(getStatus().pendingUpdate)` in the executor's admission wiring: the brake now holds only when `config.autoApply === true` and an update is pending, the same rule local-verify uses (`updatePendingFromAutoUpdater`). Side effect: with auto-apply off, attempts can start while a newer version is known; a later manual apply still restarts the server, and an interrupted attempt is reconciled at boot as before. An unreadable updater still refuses admission. Test: `execute-wiring.test.ts`.
 
+## Addendum: second-pass review fixes (Codex, 2026-10-24)
+
+The independent review of head `8d94c794` blocked on two findings, both fixed here:
+
+1. **Canary output could persist a secret.** `outputTail` shortened raw output before `profileUnenforceable()` scrubbed it, so a long `password=<value>` could lose its label and keep its value, and the canary nonce was never redacted. `outputTail` now keeps whole lines (last 40), replaces the canary nonce, scrubs with `scrubForStore`, and only then shortens; a scrub failure withholds the tail. Tests: `execute-units.test.ts` (240-char `password=` value never survives; nonce never survives).
+2. **The update-pending brake could starve the executor.** A failed install keeps `pendingUpdate` set, so the brake refused every tick indefinitely. It now holds only while the pending update is younger than `UPDATE_PENDING_BRAKE_MAX_MS` (6 h); a missing or unparseable detection time keeps the brake. Tests: `execute-wiring.test.ts` (fresh, boundary, stale, missing timestamp).
+
+Over-block / under-block: the brake can now admit a start during a genuinely long restart deferral past 6 h; the restart gate already caps deferral, and a start interrupted by a restart is reconciled on the next tick, so the cost is one wasted start.
+
 ## 8. Rollback cost
 
 Revert the commit. The leftover local branch is harmless (`git branch -D feedback-execute/base`).

@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedEnv, type ConfinementPaths } from './executePolicy.js';
+import { scrubForStore } from '../../core/durableSecretScrub.js';
 import { shq } from './executorSession.js';
 import type { ConfinedRunner } from './ConfinedRunner.js';
 
@@ -232,7 +233,7 @@ export async function runRunnerCanary(input: {
     // A failing must-succeed probe carries the tail of its output: "exit 1" alone left the 2026-10-23
     // base-unit-smoke failure undiagnosable. The caller scrubs and bounds every detail before storing it.
     const failed = r.exitCode !== 0 || r.timedOut;
-    results.push({ probe, expect: 'succeed', ok: !failed, detail: !failed ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}${outputTail(r.stdout, r.stderr)}` });
+    results.push({ probe, expect: 'succeed', ok: !failed, detail: !failed ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}${outputTail(r.stdout, r.stderr, 240, [fx.nonce])}` });
   };
   await mustFail('bash-read-agent-config', `cat ${shq(fx.configPath)}`);
   await mustFail('bash-read-secret', `cat ${shq(fx.noncePath)}`);
@@ -266,14 +267,23 @@ export async function runRunnerCanary(input: {
   return [...results, ...effectChecks(paths, fx, observed)];
 }
 
-/** The last meaningful output of a failed probe (stderr first), ANSI and blank lines stripped, one line. */
-export function outputTail(stdout: string, stderr: string, max = 240): string {
+/**
+ * The last meaningful output of a failed probe (stdout then stderr), ANSI and blank lines stripped,
+ * one line. Whole lines are kept and scrubbed BEFORE the result is shortened: cutting first could drop
+ * a credential's label (`password=`) while keeping its value, which the scrubber would then miss.
+ * `redact` strings (the canary nonce) are replaced before scrubbing; a scrub failure withholds the tail.
+ */
+export function outputTail(stdout: string, stderr: string, max = 240, redact: string[] = []): string {
   const clean = (t: string) => (t || '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim())
     // macOS xcrun cache-file noise from git under the sandbox carries no signal.
     .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
-  const lines = [...clean(stdout), ...clean(stderr)];
+  const lines = [...clean(stdout), ...clean(stderr)].slice(-40);
   if (lines.length === 0) return '';
-  return `: ${lines.join(' | ').replace(/\s+/g, ' ').slice(-max)}`;
+  let text = lines.join(' | ').replace(/\s+/g, ' ');
+  for (const r of redact) if (r) text = text.split(r).join('[redacted]');
+  const scrubbed = scrubForStore(text, { maxBytes: 64 * 1024 });
+  if (scrubbed.error) return ': [output withheld: scrub failed]';
+  return `: ${scrubbed.text.slice(-max)}`;
 }
 
 /** Session path: the fixed canary prompt. The session reports each attempt; trusted code judges by effect. */
