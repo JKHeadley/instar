@@ -5,7 +5,7 @@
 
 ## What to Tell Your User
 
-Nothing to do. PRs that wait on the local merge check are merged in the order they arrived, promptly once they pass. `GET /local-verify` shows the line (`mergeLine`: wired, the PR being merged, counts). If it misbehaves, `monitoring.localVerify.mergeLine: false` returns merges to the watcher's ten-minute ticks without a restart.
+Nothing to do. PRs that wait on the local merge check are now merged in the order they arrived, promptly once they pass, and a PR no longer loses its place in line when main moves. If you ask, I can show you the line (which PR is being merged right now and how many have gone through) and I can switch the immediate merging off again without a restart, which puts merges back on the watcher's ten-minute rhythm.
 
 ## Summary of New Capabilities
 
