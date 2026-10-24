@@ -41,7 +41,7 @@ describe('PeerHomebaseBackfill', () => {
     const h = harness();
     const r = await h.b.ensureFor(PP.fingerprint);
     expect(r).toEqual({ created: true, topicId: 777, reused: false });
-    expect(h.calls).toEqual(['pp · Threadline · abcdef']);
+    expect(h.calls).toEqual(['🤝 pp']);
     expect(h.recorded.get(PP.fingerprint)).toBe(777);
   });
 

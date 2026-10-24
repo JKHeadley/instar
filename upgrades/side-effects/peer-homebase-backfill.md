@@ -114,3 +114,14 @@ control edge = message contact → create-once; steady-state bound = at most one
 creation per mutual-verified peer ever (recorded id short-circuits all later attempts), and at
 most one attempt per peer per 10 minutes while failing; settling brake = recorded id +
 retry quiet period + single-flight.
+
+## Rebase onto main (2026-10-23)
+
+While this PR waited, PR #2321 landed its own bounded boot pass (`backfillPeerHomebases`,
+90s after start, also renames legacy-named topics). On rebase the two were merged rather than
+both kept: the server runs main's boot pass only (gate switched to `peerHomebaseEnabled`, so it
+is default-on too), and `PeerHomebaseBackfill` is wired for the on-contact path only; this PR's
+own 60s boot sweep is no longer started (its `sweep()` method remains for tests). The contact
+path now forwards `findTopicByName` / `renameTopic` / `nameCollides`, so a topic it creates is
+named and legacy-adopted exactly as the boot pass would. The awareness card's migrator also
+refreshes the #2321 card (whose limits said a failed creation waited for the next start).

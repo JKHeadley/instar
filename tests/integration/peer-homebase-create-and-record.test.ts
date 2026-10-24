@@ -155,7 +155,7 @@ describe('homebase backfill through the real message funnel', () => {
     await new Promise((r) => setTimeout(r, 20));
     await recorder.flushPending();
 
-    expect(names).toEqual([`pp · Threadline · ${PEER.slice(0, 6)}`]);
+    expect(names).toEqual([`🤝 pp`]);
     expect(new AgentTrustManager({ stateDir: dir }).getHomebaseTopic(PEER)).toBe(4242);
 
     // A second message is a no-op: create-once.

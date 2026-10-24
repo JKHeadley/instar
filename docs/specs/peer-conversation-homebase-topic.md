@@ -246,8 +246,8 @@ This spec adds **no new blocking authority** — it creates and binds; it gates 
 - `Conversation.boundTopicSource` additive + optional; absent must load unchanged.
 - CLAUDE.md: `generateClaudeMd()` **and** a content-sniffed `migrateClaudeMd()` section — an
   agent that does not know the topic exists will not use it.
-- Existing verified peers get a homebase on their next message in either direction, or on the
-  sweep ~60s after server start (§6.1 — the backfill, built 2026-10-23).
+- Existing verified peers get a homebase from the bounded pass ~90s after server start
+  (`backfillPeerHomebases`), or on their next message in either direction (§6.1, built 2026-10-23).
 - Config key `threadline.peerHomebase.enabled`, default ON (§6.1); `false` turns it off.
 
 ## 6. Deliberately left behind (the long tail, with its risk named)
@@ -275,8 +275,9 @@ dev-agent gate kept creation off on every fleet build, including the operator's 
 
 - **Backfill.** `PeerHomebaseBackfill` hangs off the canonical thread-log funnel
   (`attachPeerContactHook` around `ThreadMessageRecorder.record`): a NEW leg, inbound or outbound, for a mutual-verified
-  peer with no recorded homebase calls the same `ensurePeerHomebase`. A one-time sweep ~60s after
-  server start covers peers that never write. Same discipline: recorded id first, then
+  peer with no recorded homebase calls the same `ensurePeerHomebase`. Peers that never write are
+  covered by the bounded boot pass `backfillPeerHomebases` (~90s after start, which also renames
+  legacy-named topics); the contact path forwards the same naming/adoption helpers. Same discipline: recorded id first, then
   find-or-create by name; lease holder only (read live, so a lease move is handled); a stranger
   (not mutual-verified) can never cause a topic; concurrent contacts share one creation; a failed
   creation waits 10 minutes before that peer is tried again.
