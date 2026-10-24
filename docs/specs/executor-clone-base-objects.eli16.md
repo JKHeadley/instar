@@ -10,6 +10,7 @@ To fix a reported problem, the feedback executor makes a private copy of the cod
 
 - When the executor fetches the newest main, it also points a local branch (`feedback-execute/base`) at it, so the copy carries that commit.
 - After the first failed setup in a run, the executor stops for that run instead of trying the next item. One machine problem now costs one item, not all of them.
+- When a step of the sandbox safety check fails, it now saves the last lines of that step's output, not just "exit 1".
 - The failure reason is saved where the status page shows it (`lastPrepareFailure`), and the log records which step failed.
 
 ## What you need to decide

@@ -13,6 +13,8 @@ Live incident, 2026-10-23 18:33 PDT (topic 18330): one executor tick claimed 8 w
 - `startNew` stops claiming after the first preparation that returns false (any reason), so a machine-level fault spends one start and one item attempt, not every queued item's.
 - `prepare-failed` detail: the triage audit keeps only id-shaped values, so the scrubbed message added in PR 2322 was recorded as `[text:300]`. The scrubbed message is now kept in executor meta `exec:prepare_failed_last` and exposed as `summary().lastPrepareFailure`; the audit row carries `step` (`prepareFailureStep`: fetch-base / checkout-base / clone / link-deps / evidence / other / unknown).
 
+- Canary: a failing must-succeed probe (lint gate, base unit smoke, sqlite, git) records the tail of its output (`outputTail`, ANSI and macOS xcrun cache noise stripped, last 240 chars) instead of `exit N` alone. The 19:27 run's `base-unit-smoke` failure recorded only `exit 1` and could not be reproduced by hand (lint then smoke on a fresh copy, server PATH, real sandbox: both pass). The detail is scrubbed and capped at 300 chars by the existing `profileUnenforceable` path before storage.
+
 ## Decision-point inventory
 
 None added. `prepareFailureStep` is a deterministic label for observability; it decides nothing.

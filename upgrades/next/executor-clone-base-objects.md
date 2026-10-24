@@ -5,6 +5,8 @@
 - `src/feedback-factory/execute/executorPorts.ts`: `fetchBase` also refreshes a local branch `feedback-execute/base` and reads the base from it. An attempt clone copies only objects reachable from the checkout's branches, so a base that only `origin/main` reached failed every attempt with "unable to read tree".
 - `src/feedback-factory/execute/FeedbackExecutorService.ts`: the claim loop stops after the first failed preparation; the scrubbed failure message is kept in executor state and shown as `status.lastPrepareFailure`, and the audit row carries a `step` label (the id-only audit had blanked the message to `[text:300]`).
 
+- `src/feedback-factory/execute/confinementCanary.ts`: a failing must-succeed canary probe records the tail of its output, not only its exit code.
+
 Why: live 2026-10-23 18:33 PDT, one tick failed 8 work items in two minutes for the same machine-level reason.
 
 ## What to Tell Your User
