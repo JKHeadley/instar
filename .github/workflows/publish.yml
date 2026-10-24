@@ -198,6 +198,7 @@ jobs:
         continue-on-error: false
 
       - name: Publish to npm
+        id: publish
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: npm publish --provenance --access public
         env:
@@ -207,8 +208,13 @@ jobs:
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
 
+      # Runs whenever the publish itself succeeded, even if the smoke test
+      # failed: once a version is on npm, main must carry its release commit
+      # and tag. Registry lag past the smoke window left 1.3.1395, 1.3.1411,
+      # 1.3.1415 and 1.3.1420 on npm with no tag. The smoke failure still
+      # fails the run, so it stays visible.
       - name: Commit version bump & tag
-        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        if: always() && steps.publish.outcome == 'success'
         env:
           HUSKY: '0'
         run: |
