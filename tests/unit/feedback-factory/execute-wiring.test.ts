@@ -15,7 +15,7 @@ import { FeedbackDrainStore, DrainConflictError } from '../../../src/feedback-fa
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
-import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
+import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
 import { SafeAttemptGit, GhGateway } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SandboxRuntimeRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -139,5 +139,17 @@ describe('buildFeedbackExecutor wiring', () => {
     // No execution table at all (executor never ran): nothing to do.
     const empty = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: 'k'.repeat(32) });
     expect(await disarmExecutorPrsWithoutExecutor({ drainStore: empty, sourceRepoPath: dir, stateDir: dir, raiseAttention: async () => {} })).toEqual({ checked: 0, disarmed: 0, failed: 0 });
+  });
+});
+
+describe('the update-pending admission brake', () => {
+  it('holds only while an update restart is actually coming (autoApply on and an update pending)', () => {
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: '1.3.2' })).toBe(true);
+    // The live failure (2026-10-23): auto-apply paused by an operator, a newer version detected,
+    // and every executor tick refused as update-pending although no restart would ever come.
+    expect(executorUpdatePending({ config: { autoApply: false }, pendingUpdate: '1.3.2' })).toBe(false);
+    expect(executorUpdatePending({ config: {}, pendingUpdate: '1.3.2' })).toBe(false);
+    expect(executorUpdatePending({ config: { autoApply: true }, pendingUpdate: null })).toBe(false);
+    expect(executorUpdatePending(undefined)).toBe(false);
   });
 });

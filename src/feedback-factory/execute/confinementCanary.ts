@@ -229,7 +229,10 @@ export async function runRunnerCanary(input: {
   };
   const mustSucceed = async (probe: string, command: string, timeoutMs?: number) => {
     const r = await run(command, timeoutMs);
-    results.push({ probe, expect: 'succeed', ok: r.exitCode === 0 && !r.timedOut, detail: r.exitCode === 0 ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}` });
+    // A failing must-succeed probe carries the tail of its output: "exit 1" alone left the 2026-10-23
+    // base-unit-smoke failure undiagnosable. The caller scrubs and bounds every detail before storing it.
+    const failed = r.exitCode !== 0 || r.timedOut;
+    results.push({ probe, expect: 'succeed', ok: !failed, detail: !failed ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}${outputTail(r.stdout, r.stderr)}` });
   };
   await mustFail('bash-read-agent-config', `cat ${shq(fx.configPath)}`);
   await mustFail('bash-read-secret', `cat ${shq(fx.noncePath)}`);
@@ -261,6 +264,16 @@ export async function runRunnerCanary(input: {
   if (fs.existsSync(path.join(paths.publishClone, `.canary-${fx.nonce}`))) results.push({ probe: 'publish-clone-untouched', expect: 'fail', ok: false, detail: 'a canary file appeared in the publish clone' });
   results.push(...linkEffectChecks(paths, fx));
   return [...results, ...effectChecks(paths, fx, observed)];
+}
+
+/** The last meaningful output of a failed probe (stderr first), ANSI and blank lines stripped, one line. */
+export function outputTail(stdout: string, stderr: string, max = 240): string {
+  const clean = (t: string) => (t || '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim())
+    // macOS xcrun cache-file noise from git under the sandbox carries no signal.
+    .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
+  const lines = [...clean(stdout), ...clean(stderr)];
+  if (lines.length === 0) return '';
+  return `: ${lines.join(' | ').replace(/\s+/g, ' ').slice(-max)}`;
 }
 
 /** Session path: the fixed canary prompt. The session reports each attempt; trusted code judges by effect. */

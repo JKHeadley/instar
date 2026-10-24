@@ -18,7 +18,7 @@ import {
 import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
-import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
+import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS, outputTail } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -334,6 +334,29 @@ describe('canary judgement', () => {
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
     } finally { await fx.close(); }
+  });
+
+  it('a failing must-succeed probe records the tail of its output, not just the exit code (2026-10-23: "exit 1" was undiagnosable)', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const failingSmoke: ConfinedRunner = {
+      available: () => ({ ok: true, version: '0.0.77' }),
+      run: async (cmd) => (/^npx vitest/.test(cmd.command)
+        ? { exitCode: 1, signal: null, stdout: '\u001b[31m FAIL \u001b[39m tests/a.test.ts\n', stderr: "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-abc' (errno=Operation not permitted)\nError: Cannot find module 'x'\n", timedOut: false, outputCapped: false }
+        : { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
+    };
+    try {
+      const r = await runRunnerCanary({ paths: p, fixture: fx, runner: failingSmoke, fullGate: { lintCommand: 'npm run lint', smokeTests: ['tests/a.test.ts'] } });
+      const smoke = r.find((x) => x.probe === 'base-unit-smoke')!;
+      expect(smoke.ok).toBe(false);
+      expect(smoke.detail).toBe("exit 1: FAIL tests/a.test.ts | Error: Cannot find module 'x'");
+    } finally { await fx.close(); }
+  });
+
+  it('outputTail: empty output adds nothing; long output keeps the end', () => {
+    expect(outputTail('', '')).toBe('');
+    expect(outputTail('a\n\n', '')).toBe(': a');
+    expect(outputTail('x'.repeat(500), 'END', 20)).toBe(`: ${'x'.repeat(14)} | END`);
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {

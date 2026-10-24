@@ -81,6 +81,35 @@ describe('SafeAttemptGit', () => {
     await expect(git.createClone(src, `${dest}-x`, 'not-a-sha')).rejects.toThrow(/invalid base sha/);
   });
 
+  it('fetchBase + createClone: a base that only origin/main reaches (no local branch) still checks out in the attempt clone', async () => {
+    // The live failure (2026-10-23): a clone of the source copies only objects reachable from its
+    // branches and tags, so an origin/main ahead of every local branch left the attempt clone with
+    // "unable to read tree" and every attempt failed in preparation.
+    const upstream = sourceRepo();
+    const src = path.join(upstream.root, 'agent-home');
+    rawGit(upstream.root, ['clone', '-q', upstream.src, src]);
+    rawGit(src, ['checkout', '-q', '-b', 'other']);
+    rawGit(src, ['branch', '-q', '-D', 'main']);
+    fs.writeFileSync(path.join(upstream.src, 'src', 'a.ts'), 'export const a = 2;\n');
+    rawGit(upstream.src, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'ahead']);
+    const ahead = rawGit(upstream.src, ['rev-parse', 'HEAD']).trim();
+    // The fixture's origin is a local path, which the hardened config refuses (production origin is
+    // https); let only the fetch through with the file transport allowed, argv otherwise unchanged.
+    const real = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const spy = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation(((args: string[], opts: never) =>
+      real(args.includes('fetch') ? args.map((a) => (a === 'protocol.file.allow=never' ? 'protocol.file.allow=always' : a)) : args, opts)) as never);
+    const git = new SafeAttemptGit();
+    const base = await git.fetchBase(src);
+    expect(spy.mock.calls[0][0]).toEqual(expect.arrayContaining(['+refs/heads/main:refs/heads/feedback-execute/base']));
+    expect(base).toBe(ahead);
+    expect(rawGit(src, ['branch', '--list', 'feedback-execute/base'])).toContain('feedback-execute/base');
+    const dest = path.join(upstream.root, '.worktrees', 'feedback-x-1234abcd-a1');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    await git.createClone(src, dest, base);
+    expect(rawGit(dest, ['rev-parse', 'HEAD']).trim()).toBe(ahead);
+    expect(fs.readFileSync(path.join(dest, 'src', 'a.ts'), 'utf8')).toContain('a = 2');
+  });
+
   it('commit in the publish clone runs no planted hook or repository-config helper; the push argv is pinned', async () => {
     const { root, src, sha } = sourceRepo();
     const pub = path.join(root, '.worktrees', 'feedback-x-1234abcd-a1-publish');

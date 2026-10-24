@@ -21,6 +21,9 @@ import type { PrReview, RepoInfo } from './reviewGate.js';
 const execFileAsync = promisify(execFile);
 
 /** `-c` overrides every trusted git command in an attempt clone carries. */
+/** Local branch in the source checkout that carries the attempt base, so attempt clones receive its objects. */
+export const BASE_BRANCH = 'feedback-execute/base';
+
 export const HARDENED_GIT_CONFIG = [
   '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'core.pager=cat',
   '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', '-c', 'core.attributesFile=/dev/null', '-c', 'protocol.file.allow=never',
@@ -68,9 +71,12 @@ function gitEnv(): NodeJS.ProcessEnv {
 
 export class SafeAttemptGit implements AttemptGit {
   async fetchBase(sourceRepoPath: string): Promise<string> {
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, 'fetch', 'origin', 'main', '--no-tags', '--no-recurse-submodules', '--quiet'],
+    // The base also lands on a LOCAL branch: a clone of the source copies only objects reachable from
+    // its branches and tags, never from remote-tracking refs, so an origin/main that no local branch
+    // contains left every attempt clone unable to check out the base ("unable to read tree").
+    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, 'fetch', 'origin', `+refs/heads/main:refs/remotes/origin/main`, `+refs/heads/main:refs/heads/${BASE_BRANCH}`, '--no-tags', '--no-recurse-submodules', '--quiet'],
       { cwd: sourceRepoPath, operation: 'feedback-execute fetch base', sourceTreeReadOk: true, timeout: 120_000, env: gitEnv() });
-    const sha = SafeGitExecutor.readSync(['rev-parse', 'origin/main'], { cwd: sourceRepoPath, operation: 'feedback-execute base sha', sourceTreeReadOk: true }).trim();
+    const sha = SafeGitExecutor.readSync(['rev-parse', `refs/heads/${BASE_BRANCH}`], { cwd: sourceRepoPath, operation: 'feedback-execute base sha', sourceTreeReadOk: true }).trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('base-sha-unreadable');
     return sha;
   }
