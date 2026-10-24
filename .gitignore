@@ -141,3 +141,7 @@ state/judgment-provenance/
 # Jev harness sample sets contain real message text — regenerable, never committed.
 docs/research/jev/harness/**/sample-*.json
 docs/research/jev/harness/**/corpus-*.json
+
+# Python bytecode (scripts/ and scripts/tests/)
+__pycache__/
+*.py[cod]
