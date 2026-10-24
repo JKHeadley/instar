@@ -26,7 +26,7 @@
  * resident MCP subtree — the server AND everything under it — and nothing else.
  */
 
-import { MCP_STACK_ROOT_PATTERNS } from './baselineProcessPatterns.js';
+import { MCP_STACK_ROOT_PATTERNS, isToolShellCommand } from './baselineProcessPatterns.js';
 
 /** One row of `ps -eo pid,ppid,command`. */
 interface ProcRow { ppid: string; command: string }
@@ -62,7 +62,10 @@ export function drainProcessShape(panePid: string, psOutput: string): { working:
     for (const [pid, info] of processes) {
       if (info.ppid !== parent.pid || seen.has(pid)) continue;
       seen.add(pid);
-      const isMcpRoot = MCP_STACK_ROOT_PATTERNS.some((p) => p.test(info.command));
+      // A tool shell is the agent's own command, never an MCP root — even when
+      // its text mentions an MCP (`grep -rn mcp src/`). Judged first.
+      const isMcpRoot = !isToolShellCommand(info.command)
+        && MCP_STACK_ROOT_PATTERNS.some((p) => p.test(info.command));
       const inMcpStack = parent.inMcpStack || isMcpRoot;
       descendants.push({ pid, command: info.command, ppid: info.ppid, inMcpStack });
       queue.push({ pid, inMcpStack });
@@ -70,6 +73,7 @@ export function drainProcessShape(panePid: string, psOutput: string): { working:
   }
 
   const working = descendants.some((d) => {
+    if (isToolShellCommand(d.command)) return true;                    // the agent's own command — work
     if (d.inMcpStack) return false;                                    // resident stack — not work
     if (DRAIN_BASELINE_PATTERNS.some((p) => p.test(d.command))) return false;
     // The framework's own main process is the direct child of the pane shell.
