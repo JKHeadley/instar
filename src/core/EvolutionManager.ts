@@ -27,6 +27,8 @@ import type {
   CapabilityGap,
   GapCategory,
   ActionItem,
+  FastTrackItem,
+  EvolutionSessionBrief,
   EvolutionManagerConfig,
 } from './types.js';
 import type { TrustElevationTracker } from './TrustElevationTracker.js';
@@ -1429,6 +1431,146 @@ export class EvolutionManager {
       (a.status === 'pending' || a.status === 'in_progress') &&
       a.dueBy && new Date(a.dueBy) < now
     );
+  }
+
+  /**
+   * Tag that opts an action into pre-deadline surfacing.
+   *
+   * Set at creation (`POST /evolution/actions` accepts `tags`). An action does
+   * NOT need it to be surfaced once overdue — see getFastTrackItems.
+   */
+  static readonly FAST_TRACK_TAG = 'fast-track';
+
+  /** How many lane rows the rendered brief prints before summarising the rest. */
+  private static readonly BRIEF_LINE_CAP = 5;
+
+  /**
+   * The evolution fast-track lane, overdue rows first.
+   *
+   * `getOverdueActions()` is not unread — the 4-hourly `evolution-overdue-check`
+   * job consumes it and may complete, cancel or escalate a slipped item. What it
+   * cannot do is put that item in front of the session that could resolve it: it
+   * is a separate haiku session reporting out of band, and an item it cancels on
+   * its own judgment leaves the queue without the working agent ever seeing it.
+   * This lane is the in-session half. It also covers the two things the job's
+   * `len(overdue) > 0` gate structurally cannot reach: a commitment BEFORE it
+   * slips, and whether past deadlines were ever met.
+   *
+   * Ordering is deliberate: most-overdue first (the thing that has been ignored
+   * longest leads), then soonest in-window deadline.
+   */
+  getFastTrackItems(): FastTrackItem[] {
+    const actions = this.loadActions().actions;
+    const nowMs = Date.parse(this.now());
+    const rows: FastTrackItem[] = [];
+
+    for (const action of actions) {
+      if (action.status !== 'pending' && action.status !== 'in_progress') continue;
+      if (!action.dueBy) continue;
+      const dueMs = Date.parse(action.dueBy);
+      if (Number.isNaN(dueMs)) continue;
+
+      const marked = (action.tags ?? []).includes(EvolutionManager.FAST_TRACK_TAG);
+      const overdue = dueMs < nowMs;
+      // In-window rows are surfaced only when explicitly marked; every overdue
+      // row is surfaced whether or not anyone remembered to mark it.
+      if (!overdue && !marked) continue;
+
+      const base = {
+        id: action.id,
+        title: action.title,
+        priority: action.priority,
+        status: action.status,
+        dueBy: action.dueBy,
+        marked,
+        ...(action.source?.context ? { blocking: action.source.context } : {}),
+      };
+      // Both directions round toward urgency: overdue floors ("at LEAST this
+      // long ignored"), remaining ceils ("at MOST this long left"). Flooring
+      // the remainder would render a deadline 5h out as "due in 4h".
+      rows.push(overdue
+        ? { ...base, state: 'overdue', hoursOverdue: Math.floor((nowMs - dueMs) / 3_600_000) }
+        : { ...base, state: 'in-window', hoursRemaining: Math.ceil((dueMs - nowMs) / 3_600_000) });
+    }
+
+    return rows.sort((a, b) => {
+      if (a.state !== b.state) return a.state === 'overdue' ? -1 : 1;
+      if (a.state === 'overdue') return (b.hoursOverdue ?? 0) - (a.hoursOverdue ?? 0);
+      return Date.parse(a.dueBy) - Date.parse(b.dueBy);
+    });
+  }
+
+  /**
+   * Deadline follow-through over completed, dated actions.
+   *
+   * Returns null rather than a rate when nothing dated has completed yet: a 0%
+   * or 100% computed from an empty denominator reads as a verdict when it is
+   * really an absence of evidence.
+   */
+  private getDeadlineFollowThrough(): { met: number; total: number; rate: number } | null {
+    let met = 0;
+    let total = 0;
+    for (const action of this.loadActions().actions) {
+      if (action.status !== 'completed') continue;
+      if (!action.dueBy || !action.completedAt) continue;
+      const due = Date.parse(action.dueBy);
+      const done = Date.parse(action.completedAt);
+      if (Number.isNaN(due) || Number.isNaN(done)) continue;
+      total += 1;
+      if (done <= due) met += 1;
+    }
+    if (total === 0) return null;
+    return { met, total, rate: Math.round((met / total) * 100) / 100 };
+  }
+
+  /**
+   * What the session-start hook reads.
+   *
+   * `lines` is rendered here, not in bash, so every hook copy surfaces the same
+   * text. It is empty when the lane is empty — a forcing function that prints
+   * "all clear" every session teaches the reader to skip the block.
+   */
+  getSessionBrief(): EvolutionSessionBrief {
+    const items = this.getFastTrackItems();
+    const overdue = items.filter(i => i.state === 'overdue');
+    const inWindow = items.filter(i => i.state === 'in-window');
+    const datedPendingCount = this.loadActions().actions.filter(a =>
+      (a.status === 'pending' || a.status === 'in_progress') && !!a.dueBy).length;
+    const onTimeRate = this.getDeadlineFollowThrough();
+
+    const lines: string[] = [];
+    if (items.length > 0) {
+      const head = [
+        overdue.length > 0 ? `${overdue.length} OVERDUE` : null,
+        inWindow.length > 0 ? `${inWindow.length} in-window` : null,
+      ].filter(Boolean).join(', ');
+      lines.push(`${overdue.length > 0 ? '🔴' : '🟡'} EVOLUTION FAST-TRACK: ${head}`);
+
+      for (const item of items.slice(0, EvolutionManager.BRIEF_LINE_CAP)) {
+        const when = item.state === 'overdue'
+          ? `OVERDUE ${item.hoursOverdue}h`
+          : `due in ${item.hoursRemaining}h`;
+        const why = item.blocking ? ` — blocking: ${item.blocking}` : '';
+        lines.push(`  [${when}] ${item.id} ${item.title}${why}`);
+      }
+      const hidden = items.length - EvolutionManager.BRIEF_LINE_CAP;
+      if (hidden > 0) lines.push(`  ... +${hidden} more — GET /evolution/session-brief for the full lane`);
+
+      lines.push('  → resolve: PATCH /evolution/actions/<id> {"status":"completed","resolution":"..."}');
+      lines.push('    or cancel it with a reason. Leaving it open re-surfaces this block next session.');
+      if (onTimeRate) {
+        lines.push(`  deadline follow-through so far: ${onTimeRate.met}/${onTimeRate.total} (${Math.round(onTimeRate.rate * 100)}%)`);
+      }
+    }
+
+    return {
+      overdueCount: overdue.length,
+      inWindowCount: inWindow.length,
+      datedPendingCount,
+      items,
+      onTimeRate,
+      lines,
+    };
   }
 
   getActionStats(): ActionState['stats'] {
