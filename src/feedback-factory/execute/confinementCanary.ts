@@ -269,21 +269,28 @@ export async function runRunnerCanary(input: {
 
 /**
  * The last meaningful output of a failed probe (stdout then stderr), ANSI and blank lines stripped,
- * one line. Whole lines are kept and scrubbed BEFORE the result is shortened: cutting first could drop
- * a credential's label (`password=`) while keeping its value, which the scrubber would then miss.
- * `redact` strings (the canary nonce) are replaced before scrubbing; a scrub failure withholds the tail.
+ * one line. Each COMPLETE stream is scrubbed with its newlines intact BEFORE anything is selected,
+ * joined or shortened: cutting or re-joining first could separate a credential's label from its value
+ * (`password=` on one line, the value on the next; a PEM block), which the scrubber would then miss.
+ * `redact` strings (the canary nonce) are replaced first; an oversize stream is replaced wholesale by
+ * the scrubber, and a scrub failure withholds the tail.
  */
 export function outputTail(stdout: string, stderr: string, max = 240, redact: string[] = []): string {
-  const clean = (t: string) => (t || '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim())
+  const scrub = (t: string): string | null => {
+    let text = t || '';
+    for (const r of redact) if (r) text = text.split(r).join('[redacted]');
+    const scrubbed = scrubForStore(text);
+    return scrubbed.error ? null : scrubbed.text;
+  };
+  const out = scrub(stdout);
+  const err = scrub(stderr);
+  if (out === null || err === null) return ': [output withheld: scrub failed]';
+  const clean = (t: string) => t.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim())
     // macOS xcrun cache-file noise from git under the sandbox carries no signal.
     .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
-  const lines = [...clean(stdout), ...clean(stderr)].slice(-40);
+  const lines = [...clean(out), ...clean(err)];
   if (lines.length === 0) return '';
-  let text = lines.join(' | ').replace(/\s+/g, ' ');
-  for (const r of redact) if (r) text = text.split(r).join('[redacted]');
-  const scrubbed = scrubForStore(text, { maxBytes: 64 * 1024 });
-  if (scrubbed.error) return ': [output withheld: scrub failed]';
-  return `: ${scrubbed.text.slice(-max)}`;
+  return `: ${lines.join(' | ').replace(/\s+/g, ' ').slice(-max)}`;
 }
 
 /** Session path: the fixed canary prompt. The session reports each attempt; trusted code judges by effect. */

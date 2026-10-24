@@ -366,6 +366,16 @@ describe('canary judgement', () => {
     expect(tail).toContain('[REDACTED');
   });
 
+  it('outputTail scrubs each stream with newlines intact, so a label on its own line still protects the value', () => {
+    const secret = 'A1b2C3d4'.repeat(30);
+    const tail = outputTail(`password=\n${secret}\nnext line`, '', 240);
+    expect(tail).not.toContain(secret.slice(-40));
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIEpAIBAAKCAQEA'.repeat(4)}\n${'x9Y8z7W6v5U4t3S2'.repeat(4)}\n-----END RSA PRIVATE KEY-----`;
+    const pemTail = outputTail('', pem, 240);
+    expect(pemTail).not.toContain('x9Y8z7W6v5U4t3S2');
+    expect(pemTail).not.toContain('MIIEpAIBAAKCAQEA');
+  });
+
   it('outputTail hides the canary nonce, including inside the canary secret string', () => {
     const nonce = 'f00dfeedcafe1234';
     const tail = outputTail(`read canary-secret-${nonce} ok`, `/tmp/feedback-canary-${nonce}`, 240, [nonce]);
