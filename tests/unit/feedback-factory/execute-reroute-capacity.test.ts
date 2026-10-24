@@ -4,9 +4,12 @@
  * refusal (`RerouteRefusedError`) stops the attempt as `reroute-capacity`, refunds its start exactly
  * once (capped per day), and never counts against the item. The class decides, never the text.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createExecHarness, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { RerouteRefusedError } from '../../../src/core/rerouteRefusedError.js';
+import { prepareFailureStep } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
 
 let h: ExecHarness;
 afterEach(() => h?.cleanup());
@@ -81,5 +84,35 @@ describe('reroute capacity', () => {
     expect(h.execStore.stopForRerouteCapacity(1, row.attemptId, 6)).toBe(true);
     expect(h.execStore.startsToday(Date.parse('2026-10-19T23:59:55Z'))).toBe(0);
     expect(h.execStore.startsToday(Date.parse('2026-10-20T00:00:30Z'))).toBe(0);
+  });
+});
+
+describe('a failed preparation stops the tick (2026-10-23 live: one machine fault failed 8 items in one tick)', () => {
+  it('claims no further candidate after the first prepare-failed, and keeps the readable reason in status', async () => {
+    h = await createExecHarness({ config: { maxConcurrent: 6 } });
+    await h.workItem('c1');
+    await h.workItem('c2');
+    await h.workItem('c3');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    h.spawnError.value = new Error('Command failed: git checkout --detach --quiet abc\nfatal: unable to read tree (abc)');
+    await h.exec.tick();
+    expect(h.execStore.all()).toHaveLength(1);
+    expect(h.execStore.all()[0]).toMatchObject({ state: 'failed', reason: 'prepare-failed' });
+    const last = h.exec.summary().lastPrepareFailure as { step: string; detail: string; attemptId: string };
+    expect(last.step).toBe('checkout-base');
+    expect(last.detail).toContain('unable to read tree');
+    expect(last.attemptId).toBe(h.execStore.all()[0].attemptId);
+    // The audit keeps only id-shaped values; the step survives there, the sentence does not.
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(audit.find((r) => r.event === 'execute:prepare-failed')).toMatchObject({ step: 'checkout-base' });
+  });
+
+  it('prepareFailureStep names the step from the message', () => {
+    expect(prepareFailureStep(null)).toBe('unknown');
+    expect(prepareFailureStep('base-sha-unreadable')).toBe('fetch-base');
+    expect(prepareFailureStep('fatal: unable to read tree (x)')).toBe('checkout-base');
+    expect(prepareFailureStep('clone destination exists: feedback-x-a1')).toBe('clone');
+    expect(prepareFailureStep("EEXIST: file already exists, symlink 'a' -> 'b'")).toBe('link-deps');
+    expect(prepareFailureStep('something else')).toBe('other');
   });
 });

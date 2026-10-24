@@ -173,6 +173,17 @@ interface ItemMeta { episodes: number; failedSince: number; notReproSince: numbe
 
 const PR_BODY_FOOTER = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
 
+/** Which preparation step a (scrubbed) failure message points at; an id-shaped value the audit keeps. */
+export function prepareFailureStep(detail: string | null): string {
+  if (!detail) return 'unknown';
+  if (/base-sha|feedback-execute fetch base|\bfetch\b/.test(detail)) return 'fetch-base';
+  if (/unable to read tree|checkout/.test(detail)) return 'checkout-base';
+  if (/clone/.test(detail)) return 'clone';
+  if (/EEXIST|symlink/.test(detail)) return 'link-deps';
+  if (/evidence/.test(detail)) return 'evidence';
+  return 'other';
+}
+
 export class FeedbackExecutorService {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -495,6 +506,9 @@ export class FeedbackExecutorService {
       this.opts.audit.append('execute:claimed', { attemptId: row.attemptId, attempt: row.attempt });
       const ok = await this.prepareAndSpawn(row, candidate.triage, epoch);
       if (ok) started++;
+      // A failed preparation is almost always the machine's (clone, deps, sandbox), not the item's:
+      // the next candidate would fail the same way and spend another start and another item's attempt.
+      if (!ok) break;
       if (!this.availability?.available) break;
     }
     return started;
@@ -616,10 +630,14 @@ export class FeedbackExecutorService {
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       // The message says which step failed (clone, deps, symlink, …); without it every failure read "Error".
       const message = error instanceof Error ? scrubForStore(error.message, { maxBytes: 2048 }) : null;
-      this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown',
-        detail: message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null });
+      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null;
+      // The audit keeps only id-shaped values (a sentence becomes "[text:N]"), so it carries the step;
+      // the scrubbed message itself is kept in executor state and shown as status.lastPrepareFailure.
+      const step = prepareFailureStep(detail);
+      this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown', step });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
+      try { this.setMeta(epoch, 'exec:prepare_failed_last', { at: this.now(), attemptId: row.attemptId, reason, step, detail }); } catch { /* @silent-fallback-ok: the audit row above already records the failure and its step */ }
       try {
         if (reason === 'profile-unenforceable') await this.profileUnenforceable(epoch, [{ probe: 'confined-spawn', expect: 'succeed', ok: false, detail: error instanceof Error ? error.message.slice(0, 120) : 'refused' }]);
         // No capacity on the reroute lane is not the item's fault: stop, refund the start, no retry count.
@@ -1635,6 +1653,7 @@ export class FeedbackExecutorService {
       wouldStart: this.metaJson('exec:would_start'),
       lastTick: this.metaJson('exec:last_tick'),
       canary: this.metaJson('exec:canary_last'),
+      lastPrepareFailure: this.metaJson('exec:prepare_failed_last'),
       profileUnenforceable: this.metaJson('exec:profile_unenforceable'),
       deps: this.metaJson('exec:deps'),
       depsCacheBytes: this.opts.deps.sizeBytes(),
