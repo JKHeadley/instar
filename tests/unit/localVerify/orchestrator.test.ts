@@ -52,6 +52,8 @@ function vitestReportMany(byFile: Record<string, string[]>, msg = 'boom'): strin
 }
 
 interface FakeOpts {
+  /** Extra test files in the merge tree (reported by a test's own exec override). */
+  extraTree?: string[];
   /** Per-step durations (ms) for exec steps, by step key: npm-ci, build, lint, unit, integration, e2e. */
   durations?: Partial<Record<string, number>>;
   gitTimeout?: string; // a git verb that times out
@@ -117,7 +119,7 @@ function fake(o: FakeOpts = {}) {
       case 'status': return ok(o.porcelain ?? '');
       case 'ls-tree': {
         const extra = Object.values(o.laneFiles ?? {}).flatMap((m) => Object.keys(m ?? {}));
-        return ok(['package.json', 'src/index.ts', ...TEST_FILES, ...extra, 'tests/fixtures/x.test.ts'].join('\n') + '\n');
+        return ok(['package.json', 'src/index.ts', ...TEST_FILES, ...extra, ...(o.extraTree ?? []), 'tests/fixtures/x.test.ts'].join('\n') + '\n');
       }
       case 'merge-base': return ok(`${MB}\n`);
       case 'diff': return ok(o.diff ?? 'M\ttests/unit/a.test.ts\nM\tsrc/index.ts\n');
@@ -173,6 +175,11 @@ function fake(o: FakeOpts = {}) {
         t += rd - dur; // (dur was already added)
         files.set(out, vitestReport(file, outcome, 'boom again'));
         return r(outcome.includes('failed') ? 1 : 0);
+      }
+      const shard = args.find((a) => a.startsWith('--shard='));
+      if (shard && !shard.startsWith('--shard=1/')) {
+        files.set(out, JSON.stringify({ testResults: [] }));
+        return r(0);
       }
       const many = o.laneFiles?.[lane];
       if (many) {
@@ -275,7 +282,7 @@ describe('runVerify — happy path', () => {
       expect(typeof s.ms).toBe('number');
       expect(s.deadlineKilled).toBe(false);
     }
-    expect(steps.map((s) => s.step)).toEqual(expect.arrayContaining(['npm-ci', 'build-lint', 'unit', 'integration', 'e2e']));
+    expect(steps.map((s) => s.step)).toEqual(expect.arrayContaining(['npm-ci', 'build-lint', 'unit', 'integration', 'e2e-1', 'e2e-2']));
   });
 
   it('gives every step a UTF-8 locale when the base environment has none (CI parity)', async () => {
@@ -291,7 +298,7 @@ describe('runVerify — happy path', () => {
     const ci = f.execCalls.find((c) => c.args[0] === 'ci');
     expect(ci?.env.HUSKY).toBe('0');
     const lanes = f.execCalls.filter((c) => c.args.includes('--config'));
-    expect(lanes.length).toBe(3);
+    expect(lanes.length).toBe(4); // unit, integration, e2e shard 1 and 2
     for (const l of lanes) expect(l.env.HUSKY).toBeUndefined();
   });
 
@@ -334,7 +341,11 @@ describe('runVerify — happy path', () => {
     const sh = rest.filter((c) => c.command === 'sh').map((c) => c.args[1]);
     expect(sh).toEqual(['tsc', 'node scripts/gen.mjs', 'tsc --noEmit', 'node scripts/lint-a.js']);
     const lanes = rest.filter((c) => c.command.endsWith('vitest'));
-    expect(lanes).toHaveLength(3);
+    expect(lanes).toHaveLength(4);
+    // The e2e lane runs as two shards; every lane process has its own TMPDIR and tmux server.
+    expect(lanes.filter((l) => l.args.some((a) => a.startsWith('--shard='))).map((l) => l.args.find((a) => a.startsWith('--shard=')))).toEqual(['--shard=1/2', '--shard=2/2']);
+    expect(new Set(lanes.map((l) => l.env.TMPDIR)).size).toBe(4);
+    expect(new Set(lanes.map((l) => l.env.TMUX_TMPDIR)).size).toBe(4);
     for (const l of lanes) {
       expect(l.command).toBe(path.join(P.runDir, 'node_modules', '.bin', 'vitest'));
       expect(l.args).toContain('--allowOnly=false');
@@ -348,8 +359,8 @@ describe('runVerify — happy path', () => {
     }
     expect(lanes[0].env).toMatchObject({ AUDIT_CHANGE_KIND: 'pull_request', AUDIT_CHANGE_BASE_SHA: BASE, AUDIT_CHANGE_HEAD_SHA: HEAD });
     expect(lanes[1].env.AUDIT_CHANGE_KIND).toBeUndefined();
-    // Temp dirs removed.
-    expect(f.removed.filter((p) => p.startsWith('/tmp/lv-'))).toHaveLength(2);
+    // Temp dirs removed: the run's pair plus one pair per lane process.
+    expect(f.removed.filter((p) => p.startsWith('/tmp/lv-'))).toHaveLength(10);
   });
 });
 
@@ -368,7 +379,7 @@ describe('runVerify — errors', () => {
     ['build+lint', { durations: { build: 8 * MIN, lint: 8 * MIN } }, 'deadline:build-lint'],
     ['unit lane', { durations: { unit: LOCAL_VERIFY_DEADLINES.lanes.unit + 1 } }, 'deadline:unit'],
     ['integration lane', { durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } }, 'deadline:integration'],
-    ['e2e lane', { durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } }, 'deadline:e2e'],
+    ['e2e lane', { durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } }, 'deadline:e2e-1'],
   ] as const)('%s past its deadline → error naming the step', async (_n, o, step) => {
     const f = fake(o as FakeOpts);
     const r = await runVerify(input(), f.seams);
@@ -546,21 +557,125 @@ describe('runVerify — single flight', () => {
     // The worktree is removed (a re-queue starts fresh).
     expect(f.gitCalls.some((c) => c.args.join(' ') === `worktree remove ${P.runDir}`)).toBe(true);
   });
-  it('a foreign suite before lane 2 waits in place; the wait does not count toward the active deadline', async () => {
-    // Lane 1 free; before lane 2 the holder is seen for 5 polls (~2.5 min), then gone.
-    const holders = [[], [777], [777], [777], [777], [777], [], []];
-    const f = fake({ holders, durations: { 'npm-ci': 1000, unit: 1000, integration: 1000, e2e: 1000 } });
-    const r = await runVerify(input({ deadlines: { ...LOCAL_VERIFY_DEADLINES, totalActiveMs: 60_000 } }), f.seams);
-    expect(r.kind === 'record' && r.record.outcome).toBe('success');
-    expect(r.kind === 'record' && r.overlaps.length).toBe(5);
-    expect(r.kind === 'record' && r.overlaps[0]).toMatchObject({ beforeLane: 'integration', holders: [777] });
-    expect(f.logs.filter((l) => l.event === 'overlap')).toHaveLength(5);
-  });
-  it('a foreign suite still there after 30 minutes re-queues', async () => {
-    const polls = Math.ceil(LOCAL_VERIFY_LIMITS.waitInPlaceMs / LOCAL_VERIFY_LIMITS.holderPollMs) + 5;
-    const f = fake({ holders: [[], ...Array.from({ length: polls }, () => [777])] });
+  it('the lanes run inside one held suite slot, released after the lanes', async () => {
+    const f = fake();
+    const order: string[] = [];
+    f.seams.holdSuiteSlot = async () => { order.push('hold'); return () => { order.push('release'); }; };
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => { if (c.endsWith('vitest')) order.push('lane'); return exec(c, a, o); };
     const r = await runVerify(input(), f.seams);
-    expect(r).toMatchObject({ kind: 'requeue', reason: 'foreign-suite-wait-exceeded' });
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(order).toEqual(['hold', 'lane', 'lane', 'lane', 'lane', 'release']);
+  });
+  it('a busy suite slot re-queues without running a lane', async () => {
+    const f = fake();
+    f.seams.holdSuiteSlot = async () => 'busy';
+    const r = await runVerify(input(), f.seams);
+    expect(r).toMatchObject({ kind: 'requeue', reason: 'foreign-suite-at-start' });
+    expect(f.execCalls.some((c) => c.command.endsWith('vitest'))).toBe(false);
+  });
+  it('the slot is released when a lane errors', async () => {
+    const f = fake({ durations: { integration: LOCAL_VERIFY_DEADLINES.lanes.integration + 1 } });
+    let released = 0;
+    f.seams.holdSuiteSlot = async () => () => { released++; };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:integration' });
+    expect(released).toBe(1);
+  });
+  it('a fail-open bound (no slot) still runs the lanes', async () => {
+    const f = fake();
+    f.seams.holdSuiteSlot = async () => null;
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+  });
+  it('a shard killed by a signal (no report) fails the run even though the other shard passed', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      if (!a.includes('--shard=1/2')) return res;
+      f.files.delete(a.find((x) => x.startsWith('--outputFile='))!.slice('--outputFile='.length));
+      return { ...res, status: null, signal: 'SIGKILL' };
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+  });
+});
+
+describe('runVerify — e2e shards', () => {
+  const outFile = (a: string[]) => a.find((x) => x.startsWith('--outputFile='))!.slice('--outputFile='.length);
+  const E2E = 'tests/e2e/c.test.ts';
+  it('a failing test in shard 2 fails the run', async () => {
+    const f = fake({ extraTree: ['tests/e2e/d.test.ts'], rerun: { 'tests/e2e/d.test.ts': ['failed'] } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      if (!a.includes('--shard=2/2')) return res;
+      f.files.set(outFile(a), vitestReport('tests/e2e/d.test.ts', ['failed']));
+      return { ...res, status: 1 };
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    // Shard 2's own file failed (and failed again alone); not a duplicate or missing report.
+    expect(r.kind === 'record' && r.reasons).toContain('file-failed:tests/e2e/d.test.ts:1');
+    expect(f.logs.some((l) => l.event === 'file-in-multiple-shards')).toBe(false);
+  });
+  it('shard 1 killed after its report + shard 2 exiting 1 with passing tests: the non-zero exit is not hidden', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      if (a.includes('--shard=1/2')) return { ...res, status: null, signal: 'SIGKILL' };
+      if (a.includes('--shard=2/2')) return { ...res, status: 1 };
+      return res;
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-exit-nonzero:e2e:1'))).toBe(true);
+  });
+  it('a file reported by both shards makes the lane report missing (failure), never a silent overwrite', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      const res = await exec(c, a, o);
+      if (a.includes('--shard=2/2')) f.files.set(outFile(a), vitestReport(E2E, ['passed']));
+      return res;
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some((l) => l.event === 'file-in-multiple-shards' && l.file === E2E)).toBe(true);
+  });
+  it('a shard deadline waits for its sibling shard to exit before the slot is released', async () => {
+    const f = fake({ durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } });
+    const order: string[] = [];
+    f.seams.holdSuiteSlot = async () => () => { order.push('release'); };
+    const exec = f.seams.exec;
+    f.seams.exec = async (c, a, o) => {
+      if (a.includes('--shard=2/2')) {
+        await new Promise((r) => setTimeout(r, 20)); // still running when shard 1 has already failed
+        const res = await exec(c, a, o);
+        order.push('shard2-exited');
+        return res;
+      }
+      return exec(c, a, o);
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error' });
+    expect(order).toEqual(['shard2-exited', 'release']);
+  });
+  it('the unit lane is pinned to the parallel worker count; other lanes are not', async () => {
+    const f = fake();
+    await runVerify(input(), f.seams);
+    const lanes = f.execCalls.filter((c) => c.command.endsWith('vitest'));
+    expect(lanes[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
+    for (const l of lanes.slice(1)) expect(l.env.INSTAR_TEST_WORKERS).toBeUndefined();
+  });
+  it('a busy slot leaves an overlap entry (the evidence a re-queue happened)', async () => {
+    const f = fake();
+    f.seams.holdSuiteSlot = async () => 'busy';
+    const r = await runVerify(input(), f.seams);
+    expect(r).toMatchObject({ kind: 'requeue', reason: 'foreign-suite-at-start' });
+    expect(r.overlaps).toHaveLength(1);
   });
 });
 
@@ -615,8 +730,9 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(r.kind === 'record' && r.record.flakyRetried).toEqual([{ file: 'tests/integration/b.test.ts', lane: 'integration', firstMessage: expect.stringContaining('boom') }]);
     const calls = vitestCalls(f);
-    expect(calls).toHaveLength(4);
-    const re = calls[2];
+    expect(calls).toHaveLength(5);
+    // The four lane processes start together; the re-run comes after its lane.
+    const re = calls[4];
     expect(re.args).toContain('tests/integration/b.test.ts');
     expect(re.args).toContain('--allowOnly=false');
     expect(re.args[re.args.indexOf('--config') + 1]).toBe('vitest.integration.config.ts');
@@ -638,14 +754,14 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], ...four } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'too-many-failures')).toBe(true);
   });
   it('no re-run when the lane has another failure (a file that collected nothing)', async () => {
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/x.test.ts': ['failed'], 'tests/unit/z.test.ts': [] } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
   });
   it('the re-run respects the lane deadline: a re-run that hits it is a failure, never a pass or an error', async () => {
     const unitBudget = LOCAL_VERIFY_DEADLINES.lanes.unit;
@@ -654,7 +770,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     if (r.kind !== 'record') throw new Error(r.kind);
     expect(r.record.outcome).toBe('failure');
     expect(r.failures?.[0].rerunMessage).toMatch(/deadline/);
-    const re = vitestCalls(f)[1];
+    const re = vitestCalls(f)[4];
     expect(re.deadlineMs).toBeLessThanOrEqual(30_000);
   });
   it('the cap covers the whole verify: 2 + 2 failed files re-run only the first lane\'s 2', async () => {
@@ -665,7 +781,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
       },
     });
     const r = await runVerify(input(), f.seams);
-    expect(vitestCalls(f)).toHaveLength(5); // 3 lanes + 2 re-runs
+    expect(vitestCalls(f)).toHaveLength(6); // 4 lane processes + 2 re-runs
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'rerun-budget-spent')).toBe(true);
   });
@@ -678,20 +794,20 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'related-to-change')).toBe(true);
   });
   it('a failed file that imports a file the PR changed is a real failure: no re-run', async () => {
     const f = fake({ ...oneFlake, diff: 'M\tsrc/core/thing.ts\n', imports: { 'tests/integration/b.test.ts': ['tests/helpers/h.ts', 'src/core/thing.ts'] } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
   });
   it('a PR verify with no green main record on this machine never re-runs', async () => {
     const f = fake(oneFlake);
     const r = await runVerify(input({ isolation: { allowed: false, notCleanOnGreenMain: [] } }), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
   });
   it('a file that was not clean on the last green main is not re-run', async () => {
     const f = fake(oneFlake);
@@ -708,14 +824,14 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     const f = fake({ ...oneFlake, unhandled: { integration: 1 } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'unhandled-errors')).toBe(true);
   });
   it('an unknown unhandled-error count (no trusted reporter) means no re-run', async () => {
     const f = fake({ ...oneFlake, noReporter: true });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
-    expect(vitestCalls(f)).toHaveLength(3);
+    expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
   });
   it('a re-run that passes its tests but raises an unhandled error does not pass', async () => {
     const f = fake({ ...oneFlake, rerunUnhandled: 2 });

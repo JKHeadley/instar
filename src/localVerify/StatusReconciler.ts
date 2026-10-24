@@ -199,6 +199,8 @@ export class StatusReconciler {
   private acquiredEpoch: number | null = null;
   private lastSeenOtherHolder: string | null = null;
   private passing = false;
+  /** The pass in flight (so a caller that needs a fresh listing can wait for it instead of a `busy` answer). */
+  private passPromise: Promise<PassResult> | null = null;
   private lastPass: PassResult | null = null;
   /** Completed-post sequence: a rollup listed before a post completed must not overwrite it. */
   private postSeq = 0;
@@ -303,6 +305,15 @@ export class StatusReconciler {
     if (this.contexts.has(headSha)) void this.submit(headSha, 'record');
   }
 
+  /** Whether the last pass listed this head on an open PR to main (a head the loop can post for). */
+  knowsHead(headSha: string): boolean { return this.contexts.has(headSha); }
+
+  /** The `instar/local-verify` state GitHub is known to hold for a head (read back, or just posted); null when unknown. */
+  headState(headSha: string): string | null { return this.observed.get(headSha)?.state ?? null; }
+
+  /** Whether posts are live (`monitoring.localVerify.postStatuses`); in dry-run GitHub never gets the status. */
+  postingLive(): boolean { return this.cfg.postStatuses(); }
+
   /**
    * Entering main-suspect / main-red: post `pending` on every success head the
    * repair rule no longer admits, without waiting for the loop.
@@ -334,16 +345,26 @@ export class StatusReconciler {
     this.service?.onLeaseAcquired({ foreignHolder: foreign, epoch });
   }
 
+  /** A pass, or the one already running: never `busy` (the merge line's "list this head first"). */
+  awaitPass(): Promise<PassResult> {
+    return this.passPromise ?? this.pass();
+  }
+
   async pass(): Promise<PassResult> {
     const at = new Date(this.seams.now()).toISOString();
     if (this.passing) return { at, outcome: 'busy', heads: 0, submitted: 0, floorState: this.floorGate.state() };
     this.passing = true;
+    let settle!: (r: PassResult) => void;
+    this.passPromise = new Promise<PassResult>((r) => { settle = r; });
     try {
-      const result = await this.passInner(at);
+      let result: PassResult;
+      try { result = await this.passInner(at); } catch (e) { settle({ at, outcome: 'list-failed', heads: 0, submitted: 0, floorState: this.floorGate.state() }); throw e; }
+      settle(result);
       this.lastPass = result;
       return result;
     } finally {
       this.passing = false;
+      this.passPromise = null;
     }
   }
 

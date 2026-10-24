@@ -26,7 +26,7 @@ import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/E
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
-import { MAIN_FAIR_SHARE_MS, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
+import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
@@ -2229,7 +2229,7 @@ const localVerifyCapacityRequeue: SelfActionController = {
   perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 48,
   tickMs: 5 * 60_000,
-  eternalSentinel: { reason: 'a capacity-blocked verify re-queues after each full 30-minute wait in place; never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
+  eternalSentinel: { reason: 'a capacity-blocked verify re-queues (holders checked before every start; a busy suite slot at lane start re-queues); never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
   makeUnderPressure(f, sink) {
     const t0 = f.clock.nowMs();
     const queue = [201, 202].map((pr) => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, notBefore: undefined as number | undefined }));
@@ -2554,8 +2554,49 @@ const localVerifyMainFairShare: SelfActionController = {
   },
 };
 
+/**
+ * local-verify-merge-handoff — the merge line (CMT-980): a green PR record is handed
+ * to the merge watcher at once (one hand-off per record, one open hold at a time,
+ * never a retry: a refusal is left to the watcher's regular ticks). Pinned worst
+ * case (targetAlwaysRejects): the watcher refuses EVERY hand-off. Three PRs go green
+ * ⇒ exactly three hand-offs, one per PR, then nothing, horizon-independent — a
+ * refused record is terminal for its (pr, head) and is never re-offered.
+ */
+const localVerifyMergeHandoff: SelfActionController = {
+  id: 'local-verify-merge-handoff',
+  actionVerb: 'nudge-watcher-merge',
+  models: 'src/localVerify/LocalVerifyService.ts (offerMerge → decideMergeHandoff; the hold is released by the watcher answer or MERGE_LINE.handoffMaxMs)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The hold and the hand-off counters are in memory; a record is journaled before it is offered, and the boot rebuild never re-offers journaled records, so a restart adds no hand-off.' },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    // One green record per PR arrives over the first ticks; a refused hand-off closes the hold.
+    const pending = [101, 102, 103];
+    const offered = new Set<number>();
+    let holdOpen = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (holdOpen) { holdOpen = false; return; } // the watcher answered (refused): the hold is released
+        const pr = pending.find((n) => !offered.has(n));
+        if (pr === undefined) return; // every record was offered once; nothing re-offers a recorded head
+        const d = decideMergeHandoff({ outcome: 'success', wired: true, stopped: false, holdOpen });
+        if (!d.handoff) return;
+        offered.add(pr);
+        holdOpen = true;
+        sink.emit({ verb: 'nudge-watcher-merge', target: `${pr}:${LV_HEAD}` });
+        if (!f.targetAlwaysRejects()) holdOpen = false; // a merge lands: the hold closes the same way
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyFlakeRerun,
+  localVerifyMergeHandoff,
   localVerifyMainFairShare,
   localVerifyErrorRerun,
   localVerifyCapacityRequeue,

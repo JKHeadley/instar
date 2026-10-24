@@ -14,6 +14,8 @@ Over the last 80 merged changes, half took under 2.7 hours from opening to mergi
 
 On the Mac Studio, unit tests run 8 at a time finished in under 4 minutes, every one passing. Integration and end-to-end tests have two known clashes (shared network ports, shared terminal sessions) that make them unsafe to run in parallel yet, so they stay one at a time for now: 15 and 24 minutes. A full check is therefore about 45 minutes, against over an hour today, and with no GitHub queue or billing limit in the way.
 
+**Update, 2026-10-22.** With the new system live, PRs queued for hours again, because each check took about 45 minutes and only one could run at a time. The check now runs its three groups of tests at the same time, and splits the slowest group in two. Each part gets its own private terminal sessions, so they can't interfere with each other. The machine still runs only one full check at a time. Measured on the Studio: about 20 minutes instead of 42, with every test passing except one timing test that assumed a busy machine; that test is fixed separately.
+
 ## What changes
 
 1. **Unit tests run in parallel**, and nothing runs twice any more.
@@ -23,6 +25,10 @@ On the Mac Studio, unit tests run 8 at a time finished in under 4 minutes, every
 5. **After every merge, `main` itself is re-tested.** If it breaks, merges pause except for the fix, and Justin hears about it once.
 
 For pull requests that do not come from our own agents (forks, outside contributors), the server simply copies GitHub's own test result onto the same mark, so nothing changes for them.
+
+### The merge line (added 2026-10-23)
+
+Before this change the queue of waiting PRs got reshuffled every time `main` moved: a PR that had been waiting for hours was quietly moved to the back of the line (that is what happened to PR 2320, which waited eighteen hours), and a PR whose tests had passed still sat there until the merge watcher's next ten-minute look. Now the queue behaves like a proper line. A waiting PR keeps its place when `main` moves or when it gets a new commit. Each PR is tested against `main` as it is at that moment, not as it was when the PR joined the line. And the moment a PR's tests pass, it is handed straight to the merge watcher, and the line pauses (for at most half an hour) until that merge has landed or been refused, so the next PR is tested on top of it. Nothing about what is allowed to merge changes: the same checks apply — only Justin approves constitution changes, a change to the test harness still needs its independent second review, and GitHub still refuses a merge without the green status. If the hand-off ever misbehaves, one setting (`monitoring.localVerify.mergeLine: false`) puts merges back on the watcher's ten-minute rhythm without a restart.
 
 ## Why this is safe enough
 

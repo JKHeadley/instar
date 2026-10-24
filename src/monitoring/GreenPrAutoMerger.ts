@@ -114,6 +114,14 @@ export interface MergeRunResult {
 }
 
 /**
+ * What one act() answered: a real terminal action or not, the classified outcome / skip
+ * reason, and — only when THIS call spawned an attempt — the owned `settle` that releases a
+ * waiting hand-off. Owned, never a shared field: an overlapping tick that did not spawn
+ * has nothing to release, so it can neither free a waiter early nor drop the real release.
+ */
+interface ActResult { acted: boolean; outcome: string | null; settle?: () => void }
+
+/**
  * The act-path engine (Step 4): probes the safe-merge contract, records a
  * durable in-flight attempt, spawns safe-merge in its own process group, hard-
  * kills at the deadline, and independently confirms the merge. Injected so the
@@ -363,6 +371,15 @@ export class GreenPrAutoMerger extends EventEmitter {
   private readonly cfg: ResolvedConfig;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
+  /**
+   * Resolves once the tick that owns the attempt in flight has SAVED its state (a merge
+   * hand-off waits on it instead of feeding the busy-skip breaker). Released from tick(),
+   * after saveState, never from act(): a waiter that reloaded state before the owner's save
+   * would overwrite the owner's episode, ladder and breaker records on its own save.
+   */
+  private inFlightDone: Promise<void> | null = null;
+  /** The longest a hand-off waits on an attempt in flight (its deadline + kill grace + margin). */
+  private handoffWaitMaxMs(): number { return this.cfg.mergeTimeoutMs + this.cfg.mergeKillGraceMs + 60_000; }
   private tickCount = 0;
   private localVerify: LocalVerifyHook | null = null;
   /** Resolved at boot: does the timeout invariant hold? */
@@ -512,7 +529,16 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   /** The cron / manual-trigger entry point. Lease-gated; single-flight; warm-up. */
-  async tick(opts: { manual?: boolean } = {}): Promise<{ acted: boolean; reason: string }> {
+  /**
+   * One watcher pass. `handoff` (local-verify merge line, CMT-980): the verifier just
+   * recorded a green run for exactly this (pr, head); merge THAT PR now through every
+   * gate a normal tick applies (lease, latches, breaker, warm-up, floor, holds, code
+   * owners, independent review, safe-merge), instead of the oldest candidate at the
+   * next interval. A hand-off waits for an attempt in flight rather than feeding the
+   * busy-skip breaker, requests no verifies, and never retries: a refusal is left to
+   * the regular ticks.
+   */
+  async tick(opts: { manual?: boolean; handoff?: { pr: number; head: string } } = {}): Promise<{ acted: boolean; reason: string }> {
     this.tickCount += 1;
     let state = this.deps.loadState();
     state.lastTickAt = this.deps.now();
@@ -523,12 +549,31 @@ export class GreenPrAutoMerger extends EventEmitter {
       return { acted: false, reason: 'not-lease-holder' };
     }
 
-    // Single-flight (R5): never overlap an in-flight attempt.
-    if (this.inFlight) {
-      state.breaker = feedBreaker(state.breaker, 'busy-skip', this.deps.now(), this.breakerCfg());
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-busy' });
-      this.deps.saveState(state);
-      return { acted: false, reason: 'busy' };
+    // Single-flight (R5): never overlap an in-flight attempt. An attempt is not over until
+    // its owning tick has SAVED its state (`inFlightDone` is nulled by that tick's settle).
+    if (this.inFlight || this.inFlightDone) {
+      if (opts.handoff) {
+        // A hand-off is not a missed interval: wait for the attempt in flight (bounded by its
+        // own deadline + kill grace), then proceed on fresh state.
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-waited-in-flight', pr: opts.handoff.pr });
+        const waitStart = this.deps.now();
+        while (this.inFlight || this.inFlightDone) {
+          if (this.deps.now() - waitStart > this.handoffWaitMaxMs()) {
+            // Nothing of this tick's was changed (only lastTickAt in memory): no save, left to the next tick.
+            this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-wait-timeout', pr: opts.handoff.pr });
+            return { acted: false, reason: 'handoff-wait-timeout' };
+          }
+          if (this.inFlightDone) await this.inFlightDone;
+          else await new Promise<void>((r) => setTimeout(r, 250));
+        }
+        state = this.deps.loadState();
+        state.lastTickAt = this.deps.now();
+      } else {
+        state.breaker = feedBreaker(state.breaker, 'busy-skip', this.deps.now(), this.breakerCfg());
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-skipped-busy' });
+        this.deps.saveState(state);
+        return { acted: false, reason: 'busy' };
+      }
     }
 
     // Dual-latch gate (R9): rollback / emergency-pause / unreadable → no merge.
@@ -576,6 +621,14 @@ export class GreenPrAutoMerger extends EventEmitter {
       } else {
         this.deps.audit({ kind: 'green-pr-automerge', event: `floor-${floor}`, from: prevFloor });
       }
+    }
+
+    // A hand-off means something only on the local floor (the record IS the authorization
+    // there); on the actions floor GitHub's checks decide, at the regular cadence.
+    if (opts.handoff && floor !== 'local') {
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-skipped', pr: opts.handoff.pr, reason: 'floor-actions' });
+      this.deps.saveState(state);
+      return { acted: false, reason: 'floor-actions' };
     }
 
     await this.reconcileArmed(state);
@@ -626,6 +679,35 @@ export class GreenPrAutoMerger extends EventEmitter {
     state.lastActingEpoch = epoch;
     state.consecutiveWarmupOnlyTenures = 0;
 
+    // Merge hand-off: the target is exactly the verified (pr, head), or nothing.
+    if (opts.handoff) {
+      const h = opts.handoff;
+      const target = eligible.find((p) => p.number === h.pr && p.headRefOid === h.head) ?? null;
+      if (!target) {
+        const row = candidates.find((p) => p.number === h.pr);
+        const why = !row ? 'not-listed'
+          : row.headRefOid !== h.head ? 'head-moved'
+            : (classifyCandidate(row, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(row) }).skip ?? 'waiting');
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: why });
+        this.deps.saveState(state);
+        return { acted: false, reason: `handoff-not-eligible:${why}` };
+      }
+      if (this.cfg.dryRun) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid, handoff: true });
+        this.deps.saveState(state);
+        return { acted: false, reason: 'dry-run' };
+      }
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff', pr: target.number, head: target.headRefOid });
+      let r: ActResult = { acted: false, outcome: null };
+      try {
+        r = await this.act(target, state, floor);
+        this.deps.saveState(state);
+      } finally {
+        r.settle?.(); // only an attempt THIS call spawned has a settle: released after the save
+      }
+      return { acted: r.acted, reason: r.outcome ?? (r.acted ? 'merged' : 'skipped') };
+    }
+
     // Verify requests (local-verify §2 "Who starts a verify"): under either floor,
     // so records accumulate before the flip. They authorize nothing, so they run
     // in dryRun too.
@@ -644,9 +726,14 @@ export class GreenPrAutoMerger extends EventEmitter {
       return { acted: false, reason: 'dry-run' };
     }
 
-    const acted = await this.act(target, state, floor);
-    this.deps.saveState(state);
-    return { acted, reason: acted ? 'acted' : 'skipped' };
+    let r: ActResult = { acted: false, outcome: null };
+    try {
+      r = await this.act(target, state, floor);
+      this.deps.saveState(state);
+    } finally {
+      r.settle?.(); // only an attempt THIS call spawned has a settle: released after the save
+    }
+    return { acted: r.acted, reason: r.acted ? 'acted' : 'skipped' };
   }
 
   // ---- candidate gathering -----------------------------------------------
@@ -854,12 +941,17 @@ export class GreenPrAutoMerger extends EventEmitter {
     }
   }
 
-  private async act(target: PrSummary, state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<boolean> {
+  /**
+   * One merge attempt for `target`. `acted` = a real, intended terminal action (merged or
+   * armed), `outcome` = the classified result or the skip reason (the hand-off's answer).
+   */
+  private async act(target: PrSummary, state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<ActResult> {
+    const skip = (outcome: string): ActResult => ({ acted: false, outcome });
     // Identity contract (R4): verify gh login matches expectedGhLogin (TTL cached).
     const idOk = await this.identityOk(state);
     if (idOk !== 'ok') {
       this.deps.audit({ kind: 'green-pr-automerge', event: `skipped:${idOk}` });
-      return false;
+      return skip(`skipped:${idOk}`);
     }
 
     // Episode ladder eligibility.
@@ -868,27 +960,27 @@ export class GreenPrAutoMerger extends EventEmitter {
       const re = maybeRearm(ep, target.headRefOid, this.ladderCfg());
       if (re === null) {
         this.deps.audit({ kind: 'green-pr-automerge', event: 'gave-up-rearm-exhausted', pr: target.number });
-        return false;
+        return skip('gave-up-rearm-exhausted');
       }
       ep = re;
       state.episodes[target.number] = ep;
     }
-    if (!episodeEligible(ep, this.deps.now())) return false;
+    if (!episodeEligible(ep, this.deps.now())) return skip('episode-not-eligible');
 
     // Contract probe BEFORE every attempt (round-3: mid-run checkout swap).
     const probe = await this.deps.runner.probeContract();
     if (!probe.ok) {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:safe-merge-contract' });
-      return false;
+      return skip('skipped:safe-merge-contract');
     }
 
     // Re-fetch hold/state immediately before acting (R3 residual window bound).
     const live = await this.deps.refetchPr(target.number);
-    if (!live) { this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:vanished', pr: target.number }); return false; }
-    if (live.state !== 'OPEN') { this.recordOutcome(state, target, live.state === 'MERGED' ? 'merged-by-other' : 'closed-by-other'); return false; }
+    if (!live) { this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:vanished', pr: target.number }); return skip('skipped:vanished'); }
+    if (live.state !== 'OPEN') { const o = live.state === 'MERGED' ? 'merged-by-other' : 'closed-by-other'; this.recordOutcome(state, target, o); return skip(o); }
     if (live.isDraft || holdReasonOf({ isDraft: live.isDraft, title: live.title, labels: live.labels })) {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:held-on-refetch', pr: target.number });
-      return false;
+      return skip('skipped:held-on-refetch');
     }
     // Authoritative pre-arm gate (mergerunner-auto-arm-handoff Blocker 4 — defense
     // in depth): if the cheap-pass autoMergeArmed was stale-false but the live
@@ -901,15 +993,30 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.armedHead = ep.armedHead ?? (live.autoMergeRequest.expectedHeadOid ?? live.headRefOid);
       ep.lastOutcome = 'armed';
       state.episodes[target.number] = ep;
-      return false;
+      return skip('skipped:already-armed-on-refetch');
     }
     if (live.headRefOid !== target.headRefOid) {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:head-moved', pr: target.number });
-      return false;
+      return skip('skipped:head-moved');
     }
 
-    // Single-flight + spawn (the MergeRunner owns the durable in-flight record).
+    // In-process single flight, re-checked HERE (the top-of-tick check happened several awaits
+    // ago; two ticks can both pass it): an attempt already running means this call spawns
+    // nothing and owns nothing to release.
+    if (this.inFlight || this.inFlightDone) {
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:busy-in-act', pr: target.number });
+      return skip('skipped:busy-in-act');
+    }
+    // Spawn (the MergeRunner owns the durable in-flight record). The release is a local,
+    // handed back on the result: the owning tick settles it after its saveState, never here.
     this.inFlight = true;
+    let release: () => void = () => {};
+    const done = new Promise<void>((r) => { release = r; });
+    this.inFlightDone = done;
+    const settle = () => {
+      if (this.inFlightDone === done) this.inFlightDone = null;
+      release();
+    };
     let result: MergeRunResult;
     try {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'merge-attempted', pr: target.number, head: target.headRefOid });
@@ -924,7 +1031,16 @@ export class GreenPrAutoMerger extends EventEmitter {
     } finally {
       this.inFlight = false;
     }
+    try {
+      return { ...this.afterRun(target, state, result), settle };
+    } catch (e) { /* @silent-fallback-ok: the bookkeeping failed, the attempt itself is over; the waiter must still be released */
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'post-run-error', pr: target.number, detail: String((e as Error)?.message).slice(0, 200) });
+      return { acted: false, outcome: 'error:post-run', settle };
+    }
+  }
 
+  /** The bookkeeping after an attempt (breaker, B10 classification, the episode ladder). */
+  private afterRun(target: PrSummary, state: GreenPrState, result: MergeRunResult): ActResult {
     if (result.priorRecord && result.priorRecord !== 'orphan-reap-incomplete') {
       this.deps.audit({ kind: 'green-pr-automerge', event: result.priorRecord === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: result.priorRecord, viaRun: true });
     }
@@ -948,7 +1064,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // — NOT "did the PR merge." Both `merged` (immediate) and `armed`
     // (terminal-success-pending; GitHub now owns the merge, the slot is freed,
     // the episode is stamped armedAt) are real terminal actions → acted:true.
-    return outcome === 'merged' || outcome === 'armed';
+    return { acted: outcome === 'merged' || outcome === 'armed', outcome };
   }
 
   private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {

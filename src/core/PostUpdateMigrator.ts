@@ -9207,6 +9207,13 @@ The server runs the full test suite on the exact code a pull request would merge
 
     // local-verify status loop (piece 3a): agents that already have the Local
     // Verify section learn the status route. Content-sniff on the route.
+    // local-verify merge line (CMT-980): agents that already have the Local Verify
+    // section learn the in-order merge hand-off and its kill switch. Content-sniff on the key.
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.mergeLine')) {
+      content += '\n- Local Verify merge line: a queued PR keeps its place when `main` moves or its head is pushed again; each verify starts against `main`\'s current head; a passing PR is merged at once through the green-PR watcher with the queue held until that attempt settles (≤30 min), so the next PR is tested on top of it. `GET /local-verify` → `mergeLine`; off switch `monitoring.localVerify.mergeLine: false` (read live).\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge line awareness (CMT-980)');
+    }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';
       patched = true;

@@ -153,6 +153,36 @@ describe('local-verify routes (integration)', () => {
     expect(s.children).toHaveLength(1);
   });
 
+  it('merge line over HTTP: a green record opens a merge hold (GET shows it, the next PR waits); the watcher answer releases it', async () => {
+    const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
+    let answer!: (r: { acted: boolean; reason: string }) => void;
+    const handed: number[] = [];
+    s.svc.setMergeHandoff((rec) => { handed.push(rec.pr); return new Promise((r) => { answer = r; }); });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 8 })).status).toBe(202);
+    expect(s.children).toHaveLength(1);
+    expect((await request(a).get('/local-verify')).body.mergeLine).toMatchObject({ wired: true, hold: null, handoffs: 0 });
+
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: record(), reasons: [], overlaps: [], keptWorktree: null }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    await new Promise((r) => setImmediate(r));
+    const held = (await request(a).get('/local-verify')).body;
+    expect(handed).toEqual([7]);
+    expect(held.inFlight).toBeNull(); // PR 8 waits behind the merge hold
+    expect(held.queue.map((e: { pr: number }) => e.pr)).toEqual([8]);
+    expect(held.mergeLine).toMatchObject({ wired: true, hold: { pr: 7, headSha: sha('a') }, handoffs: 1, merged: 0 });
+    expect(s.children).toHaveLength(1);
+
+    answer({ acted: true, reason: 'merged' });
+    await new Promise((r) => setImmediate(r));
+    const after = (await request(a).get('/local-verify')).body;
+    expect(after.mergeLine).toMatchObject({ hold: null, handoffs: 1, merged: 1, lastOutcome: 'merged' });
+    expect(after.inFlight).toEqual({ pr: 8, headSha: sha('c') });
+    expect(s.children).toHaveLength(2);
+  });
+
   it('validates the record query', async () => {
     const s = setup({});
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
