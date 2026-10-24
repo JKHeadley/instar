@@ -360,6 +360,16 @@ export interface InitiativeUpdateInput {
 }
 
 /**
+ * Every field `update()` reads, as the route's allowlist (PATCH /initiatives/:id refuses any
+ * other field instead of answering 200 for a change it did not make). The Record type makes
+ * the compiler fail when a field is added to InitiativeUpdateInput but not here, or the reverse.
+ */
+const INITIATIVE_UPDATE_FIELD_SET: Record<keyof InitiativeUpdateInput, true> = {
+  title: true, description: true, status: true, nextCheckAt: true, needsUser: true, needsUserReason: true, blockers: true, links: true, ifMatch: true, kind: true, parentProjectId: true, pipelineStage: true, specPath: true, prNumber: true, mergeCommitOid: true, ciCheckedAt: true, skippedAt: true, skippedBy: true, skippedReason: true, unskippedAt: true, driftCheck: true, rollout: true, rolloutAccounting: true, rounds: true, sourceDocs: true, autoAdvance: true, telegramTopicId: true, ownerMachineId: true, targetRepoPath: true, unacknowledgedAdvanceCount: true, firstLaunchAckAt: true, lastAckedRoundIndex: true, awaitingReconciliation: true, driftPromptTemplateVersion: true,
+};
+export const INITIATIVE_UPDATE_FIELDS: readonly string[] = Object.freeze(Object.keys(INITIATIVE_UPDATE_FIELD_SET));
+
+/**
  * Thrown by `update()` when the caller supplied `ifMatch` and it didn't
  * equal the current `version`. The HTTP layer (Phase 1.3) translates this
  * to a 409 response with body `{ currentVersion }`.

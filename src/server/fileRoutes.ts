@@ -16,6 +16,7 @@ import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } f
 import { KEY_MATERIAL_DYNAMIC_DIRS, KEY_MATERIAL_FILES, KEY_MATERIAL_NEVER_SERVED_PREFIXES, KEY_MATERIAL_ROOT_NAME_PREFIXES } from '../core/keyMaterialPaths.js';
 import type { InstarConfig, FileViewerConfig } from '../core/types.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
@@ -512,6 +513,13 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
   // If file viewer is disabled, return empty router
   if (!config.enabled) return router;
 
+  // Disabled while running (PATCH /api/files/config {enabled:false}): every file route but the
+  // config route itself answers 404 from that moment, not only after the next restart.
+  router.use('/api/files', (req: Request, res: Response, next) => {
+    if (config.enabled || req.path === '/config') { next(); return; }
+    res.status(404).json({ error: 'file viewer is disabled' });
+  });
+
   // ── GET /api/files/list ────────────────────────────────────────
 
   router.get('/api/files/list', async (req: Request, res: Response) => {
@@ -939,7 +947,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    const { allowedPaths, editablePaths } = req.body || {};
+    if (refuseUnsupportedFields(res, req.body, ['allowedPaths', 'editablePaths', 'enabled'])) return;
+    const { allowedPaths, editablePaths, enabled } = req.body || {};
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled must be a boolean' });
+      return;
+    }
 
     // Validate allowedPaths
     if (allowedPaths !== undefined) {
@@ -987,7 +1000,13 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       liveConfig.set('dashboard.fileViewer.editablePaths', editablePaths);
     }
 
+    if (enabled !== undefined) {
+      config.enabled = enabled;
+      liveConfig.set('dashboard.fileViewer.enabled', enabled);
+    }
+
     res.json({
+      enabled: config.enabled,
       allowedPaths: config.allowedPaths,
       editablePaths: config.editablePaths,
       updated: true,

@@ -347,6 +347,8 @@ export interface AttentionItem {
    * not per-topic /ack — so resolving one never closes the shared notice topic.
    */
   coalesced?: boolean;
+  /** How the item was closed, as given on the status change (PATCH /attention/:id `resolution`). */
+  resolution?: string;
   /**
    * Routing lane. When `'agent-health'`, this is a routine SELF-HEALTH /
    * housekeeping notice about the agent's OWN internal state (a stale-looking
@@ -4749,11 +4751,12 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Update attention item status. Called by /ack, /done, /wontdo, /reopen commands.
    */
-  async updateAttentionStatus(itemId: string, status: AttentionItem['status'], opts?: { silent?: boolean }): Promise<boolean> {
+  async updateAttentionStatus(itemId: string, status: AttentionItem['status'], opts?: { silent?: boolean; resolution?: string }): Promise<boolean> {
     const item = this.attentionItems.get(itemId);
     if (!item) return false;
 
     item.status = status;
+    if (opts?.resolution !== undefined) item.resolution = opts.resolution;
     item.updatedAt = new Date().toISOString();
     this.saveAttentionItems();
 
