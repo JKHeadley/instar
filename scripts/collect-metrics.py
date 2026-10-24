@@ -208,7 +208,14 @@ def detect_significant_changes(current_snapshot: dict, state_dir: str) -> dict:
     # Week-over-week drop, measured against two baselines because they catch
     # different failures:
     #   week_prev - compute_trends' npm_week_prev, the last_week of the oldest
-    #               of the last 7 ledger rows. A true week-over-week figure,
+    #               of the last 7 ledger ROWS -- which is seven DAYS ago only
+    #               if the collector ran exactly once a day. It does not: 13
+    #               days in the ledger carry two rows and 2026-10-15 has none,
+    #               so on the 2026-10-18 run this baseline was the 10-10 row,
+    #               eight days back. The percentage is therefore against an
+    #               approximate window. Selecting the baseline by DATE and
+    #               recording its timestamp in trends would make it exact.
+    #               A true week-over-week figure,
     #               and the only one that sees a SUSTAINED slide: consecutive
     #               runs share six of their seven days, so a steady erosion
     #               never trips a run-to-run ratio.
@@ -466,9 +473,13 @@ def compute_trends(state_dir):
         return None
 
     # recent[-1] is the most recent snapshot (previous day)
-    # recent[0] is the oldest of the 7 (approximately 1 week ago)
+    # recent[0] is the oldest of the 7 (APPROXIMATELY 1 week ago -- it is 7
+    # rows, not 7 days, and the collector does not run exactly daily; measured
+    # 2026-10-24, the 10-18 run's npm_week_prev came from the 10-10 row)
     prev = recent[-1] if len(recent) >= 2 else None
-    week_ago = recent[0] if len(recent) >= 7 else recent[0]
+    # Both branches are the same row; kept explicit that a short history
+    # simply yields the oldest row available, which is less than a week old.
+    week_ago = recent[0]
 
     trends = {}
     if prev:
