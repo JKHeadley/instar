@@ -110,6 +110,7 @@ describe('a failed preparation stops the tick (2026-10-23 live: one machine faul
   it('prepareFailureStep names the step from the message', () => {
     expect(prepareFailureStep(null)).toBe('unknown');
     expect(prepareFailureStep('base-sha-unreadable')).toBe('fetch-base');
+    expect(prepareFailureStep('Command failed: git fetch origin +refs/heads/main:refs/heads/x\nfatal: unable to access')).toBe('fetch-base');
     expect(prepareFailureStep('fatal: unable to read tree (x)')).toBe('checkout-base');
     expect(prepareFailureStep('clone destination exists: feedback-x-a1')).toBe('clone');
     expect(prepareFailureStep("EEXIST: file already exists, symlink 'a' -> 'b'")).toBe('link-deps');
