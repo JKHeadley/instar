@@ -27330,7 +27330,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // One gate for BOTH held paths (forward + direct): only a held session
             // reply may post the delayed notice, once per topic per hold episode.
             const heldNoticeGate = new originForwardMod.HeldNoticeGate({ now: Date.now });
-            const raiseHeldItem = async (input: { topicId: number; holder: string | null; operationId: string; lastAttempt: string; reason: string }) => {
+            const raiseHeldItem = async (input: { topicId: number; holder: string | null; operationId: string; lastAttempt: string; reason: string;
+              /** §4.2 — TRUE for a DIRECT-path hold, whose sealed record is owned by THIS machine and
+               * therefore cannot be forwarded. Such a hold is never retried: it waits for the serving
+               * lease to return and otherwise expires. Telling the operator it is 'retried on the
+               * recovery schedule' is false for this kind, and measurably so — of 152 direct-path holds
+               * observed on one agent, 0 were ever retried and 133 expired undelivered. */
+              awaitsLeaseReturn?: boolean }) => {
               const verdict = heldCollapser.record(input.topicId);
               const holderName = input.holder ? holderNickname(input.holder) : 'no machine currently holds the serving lease';
               try {
@@ -27338,7 +27344,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   title: verdict.aggregate ? `Replies held on ${holderNickname(meshSelfId ?? '')}: ${heldCollapser.topics().length} topics` : `Reply to topic ${input.topicId} is held`,
                   summary: verdict.aggregate
                     ? `Replies for topics ${heldCollapser.topics().join(', ')} could not be forwarded to the lease holder (${holderName}). They are held durably and retried; see GET /telegram/origins/status → held.`
-                    : `My reply to topic ${input.topicId} could not be forwarded to the lease holder (${holderName}): ${input.reason}. It is held durably (hold_reason: lease-not-held) and retried on the recovery schedule.`,
+                    : input.awaitsLeaseReturn
+                      ? `My reply to topic ${input.topicId} could not be sent: this machine does not hold the serving lease (${holderName}). Its record is sealed to this machine, so it CANNOT be forwarded and is NOT retried — it can only be sent if the lease returns here, and otherwise expires undelivered.`
+                      : `My reply to topic ${input.topicId} could not be forwarded to the lease holder (${holderName}): ${input.reason}. It is held durably (hold_reason: lease-not-held) and retried on the recovery schedule.`,
                   sourceContext: 'telegram-origin-forward-to-holder' }, { hubOnly: true });
               } catch (error) { heldAudit({ phase: 'item-failed', topicId: input.topicId, error: error instanceof Error ? error.message : String(error) }); }
             };
@@ -27446,7 +27454,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 heldAudit({ ts: Date.now(), phase: noticeDelivered ? 'notice-sent' : suppressed ? 'notice-suppressed' : 'notice-not-sent', topicId, operationId: row.operationId,
                   holder: route.kind === 'peer' ? route.holder : null, ...(suppressed ? { suppressed } : {}) });
                 // The topic was already told about this hold episode: no second item either.
-                if (!noticeDelivered && suppressed !== 'already-noticed') await raiseHeldItem({ topicId, holder: route.kind === 'peer' ? route.holder : null, operationId: row.operationId, lastAttempt: 'refused', reason: 'lease-not-held (direct path)' });
+                if (!noticeDelivered && suppressed !== 'already-noticed') await raiseHeldItem({ awaitsLeaseReturn: true, topicId, holder: route.kind === 'peer' ? route.holder : null, operationId: row.operationId, lastAttempt: 'refused', reason: 'lease-not-held (direct path)' });
               };
               runtime.options.onHeldForwardExpired = async row => {
                 const topicId = Number(row.destination.topicId);

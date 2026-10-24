@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-22T18:06:12.844Z",
+  "slug": "held-notice-honesty",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Not introduced by a change. The notice text was written once for a single kind of hold and then reused when a second kind was added, so it promised a retry that only one of them receives. Invisible because the wrong half of the promise is the quiet one: the operator waits, nothing arrives, and the reply is deleted after six hours. Found by grouping the held-origin audit by lifecycle, which showed 152 direct-path operations with zero recovery attempts against 30 forwarded ones with recovery on every single one."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
