@@ -260,7 +260,7 @@ export type StageJournal = Record<string, StageObservation>;
 
 export type RolloutClassification =
   | 'incubating'        // still inside its window
-  | 'window-elapsed'   // window expired + proved itself  → R1
+  | 'promotion-ready'   // window expired + proved itself  → R1
   | 'expired-unproven'  // window expired + NOT proved      → R2
   | 'terminal';         // default-on — nothing to decide
 
@@ -320,7 +320,7 @@ export function classifyRollout(
     return { classification: 'incubating', stage, daysInStage, windowDays, proved };
   }
   if (proved === true) {
-    return { classification: 'window-elapsed', stage, daysInStage, windowDays, proved };
+    return { classification: 'promotion-ready', stage, daysInStage, windowDays, proved };
   }
   return { classification: 'expired-unproven', stage, daysInStage, windowDays, proved };
 }
@@ -481,7 +481,7 @@ export class GrowthMilestoneAnalyst {
       }
       const v = classifyRollout(init.rollout!.stage, daysInStage, windowDays, proofCount, s.proofOfLifeMinActivations);
       const rounded = Math.round(daysInStage * 10) / 10;
-      if (v.classification === 'window-elapsed' && s.rules.promotionReady) {
+      if (v.classification === 'promotion-ready' && s.rules.promotionReady) {
         findings.push({
           rule: 'R1',
           priority: 'normal',

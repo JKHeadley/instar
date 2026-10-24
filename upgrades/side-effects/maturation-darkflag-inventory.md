@@ -360,6 +360,36 @@ the violation Phase 5 exists to catch — brittle logic holding blocking authori
 
 **Verdict: concur with the review**, with the residual concern above carried in CMT-977.
 
+### Added after CI — a defect this review did NOT catch
+
+Recording this because the review's credibility depends on naming its own misses, not only its
+hits.
+
+After all three tiers were green locally and this artifact was written, **CI caught a regression
+I introduced while fixing the D7 collision.** The rename `promotion-ready` → `window-elapsed` was
+applied with a file-wide string replace. `GrowthMilestoneAnalyst.ts` also contains the
+long-pre-existing `RolloutClassification` union and `classifyRollout()`, whose `'promotion-ready'`
+is the **R1 rollout verdict** and is unrelated to the new dark-flag state. The replace renamed
+those too and broke R1.
+
+Two things let it past me:
+
+1. **It typechecked.** The rename was internally consistent *within the file*, so `tsc` was
+   satisfied. A clean typecheck says nothing about whether a rename hit the intended symbol.
+2. **I re-ran the wrong tests.** After the rename I re-ran the tests for the *feature* I meant to
+   change, not the tests belonging to the *files the diff actually touched*. Those are different
+   sets, and the gap is exactly where this hid. `tests/unit/GrowthMilestoneAnalyst.test.ts` caught
+   it in CI — 3 deterministic failures, on both Node 20 and Node 22.
+
+Restored at the three affected sites; `window-elapsed` now appears only on the new dark-flag
+state. The pre-existing R1 name is deliberately left alone — renaming it would change a
+long-standing contract and is not this change's business. 201 tests green across the full growth
+set afterwards.
+
+**The reusable lesson:** a string rename is scoped by FILE, not by intent. The set to re-run after
+one is "the tests for every file in `git diff --name-only`", not the tests for the thing I thought
+I was changing.
+
 ---
 
 ## Evidence pointers
