@@ -120,6 +120,66 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
   return { service, reason: null };
 }
 
+// ── The merge line (CMT-980) ─────────────────────────────────────────────
+
+/** The watcher surface the merge line drives (GreenPrAutoMerger.tick with a hand-off). */
+export interface MergeLineWatcher {
+  tick(opts: { handoff: { pr: number; head: string } }): Promise<{ acted: boolean; reason: string }>;
+}
+
+/** The status-loop surface the merge line reads before a hand-off. */
+export interface MergeLineStatusView {
+  knowsHead(headSha: string): boolean;
+  /** A listing pass, or the one already running (never a `busy` short-circuit). */
+  awaitPass(): Promise<unknown>;
+  submit(headSha: string, trigger: string): Promise<void>;
+  headState(headSha: string): string | null;
+  postingLive(): boolean;
+}
+
+export interface MergeLineWiringOpts {
+  service: LocalVerifyService;
+  /** The green-PR watcher; null ⇒ the merge line is inert (records are merged at the watcher's ticks, as before). */
+  watcher: MergeLineWatcher | null;
+  /** The status reconcile loop; null ⇒ no status gate before the hand-off. */
+  status: MergeLineStatusView | null;
+  /** Live kill switch (`monitoring.localVerify.mergeLine`, absent ⇒ on). */
+  enabled: () => boolean;
+}
+
+/**
+ * Connect the verifier's green records to the watcher: a hand-off merges exactly the
+ * verified PR at once, after the required `instar/local-verify` status for its head is
+ * on GitHub (posted now and read back, instead of racing the 60 s loop), while the
+ * verifier holds its queue so the next PR is tested on top of the merge. Every merge
+ * gate stays the watcher's and safe-merge's. Returns whether the line is wired.
+ */
+export function wireMergeLine(opts: MergeLineWiringOpts): { wired: boolean; reason: 'no-watcher' | null } {
+  if (!opts.watcher) {
+    opts.service.setMergeHandoff(null);
+    return { wired: false, reason: 'no-watcher' };
+  }
+  const watcher = opts.watcher;
+  // The switch is read by the service BEFORE a hold opens (so `mergeLine()` reports it and a
+  // disabled line books no hold, counter or audit); the check here is the belt.
+  opts.service.setMergeHandoff(async (record) => {
+    if (!opts.enabled()) return { acted: false, reason: 'disabled' };
+    const st = opts.status;
+    if (st) {
+      try {
+        // A head the loop has not listed yet cannot be posted for: list first (the running pass, or one now), then post.
+        if (!st.knowsHead(record.headSha)) await st.awaitPass();
+        await st.submit(record.headSha, 'merge-line');
+      } catch { /* @silent-fallback-ok: the read-back below decides; an unposted status means no hand-off, never a blind merge attempt */ }
+      const state = st.headState(record.headSha);
+      // Live posting: GitHub must hold `success` for the head, or the merge would be refused and burn a ladder attempt.
+      if (st.postingLive() && state !== 'success') return { acted: false, reason: `status-${state ?? 'absent'}` };
+    }
+    return watcher.tick({ handoff: { pr: record.pr, head: record.headSha } });
+  }, { enabled: opts.enabled });
+  return { wired: true, reason: null };
+}
+
 /** The narrow AutoUpdater surface the verifier uses. */
 export interface LocalVerifyAutoUpdaterView {
   setRestartHold(key: string, provider: () => RestartHold[]): void;

@@ -22374,6 +22374,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Dry-run posting also suppresses the watcher's actions→local disarm write.
           postStatuses: () => liveConfig.get<boolean>('monitoring.localVerify.postStatuses', false) === true,
         });
+        // The merge line (CMT-980): a green record is merged at once through the watcher,
+        // with the verify queue held until that attempt settles, so the next PR is tested
+        // on top of the merge. Kill switch: monitoring.localVerify.mergeLine (read live).
+        const mergeLine = wiring.wireMergeLine({
+          service: svc,
+          watcher: greenPrAutoMerger,
+          status: rec,
+          enabled: () => liveConfig.get<boolean>('monitoring.localVerify.mergeLine', true) !== false,
+        });
+        console.log(pc.dim(`  local-verify merge line ${mergeLine.wired ? 'wired to the green-PR watcher' : `inert (${mergeLine.reason})`}`));
       }
     }
 

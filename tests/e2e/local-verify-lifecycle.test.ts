@@ -15,7 +15,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor } from '../../src/localVerify/localVerifyWiring.js';
+import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
@@ -82,6 +82,34 @@ describe('local-verify lifecycle (production wiring)', () => {
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, records: 0 });
+    built.service!.shutdown();
+  });
+
+  it('the merge line is wired through the production function and reports alive over HTTP; without a watcher it is inert and says so', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.service).not.toBeNull();
+    await built.service!.boot();
+    const a = serve(ctx(stateDir, built.service));
+    expect((await request(a).get('/local-verify')).body.mergeLine).toMatchObject({ wired: false, hold: null, handoffs: 0, merged: 0 });
+
+    const handoffs: Array<{ pr: number; head: string }> = [];
+    const wired = wireMergeLine({
+      service: built.service!,
+      watcher: { tick: async ({ handoff }) => { handoffs.push(handoff); return { acted: true, reason: 'merged' }; } },
+      status: { knowsHead: () => true, awaitPass: async () => ({}), submit: async () => {}, headState: () => 'success', postingLive: () => true },
+      enabled: () => true,
+    });
+    expect(wired).toEqual({ wired: true, reason: null });
+    const r = await request(a).get('/local-verify');
+    expect(r.status).toBe(200);
+    expect(r.body.mergeLine).toMatchObject({ wired: true, hold: null, handoffs: 0 });
+
+    expect(wireMergeLine({ service: built.service!, watcher: null, status: null, enabled: () => true })).toEqual({ wired: false, reason: 'no-watcher' });
+    expect((await request(a).get('/local-verify')).body.mergeLine.wired).toBe(false);
     built.service!.shutdown();
   });
 

@@ -12,8 +12,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
-  LocalVerifyService, checkEligibility,
-  type LocalVerifyServiceSeams, type PrView, type InFlightIntent,
+  LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, MERGE_LINE,
+  type LocalVerifyServiceSeams, type PrView, type InFlightIntent, type MergeHandoffResult,
 } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -835,5 +835,334 @@ describe('verifierVersion: the real import graph, toolchain, node, and a child-s
     expect((await setup({ stateDir: s.stateDir, verifierVersion: v(dir) }).svc.rebuildIndex()).loaded).toBe(1);
     fs.writeFileSync(path.join(dir, 'runVerifyMain.js'), "import { x } from '../core/SafeGitExecutor.js';\n// changed\n");
     expect(await setup({ stateDir: s.stateDir, verifierVersion: v(dir) }).svc.rebuildIndex()).toMatchObject({ loaded: 0, skippedVersion: 1 });
+  });
+});
+
+describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-off', () => {
+  type S = ReturnType<typeof setup>;
+  const withBaseHead = (s: S, fn: (b: string) => Promise<string | null>) => {
+    (s.svc as unknown as { seams: { baseHead?: (b: string) => Promise<string | null> } }).seams.baseHead = fn;
+  };
+  const inputOf = (s: S, i: number) => JSON.parse(fs.readFileSync(s.spawned[i].args[s.spawned[i].args.indexOf('--input') + 1], 'utf-8')) as { baseSha: string; headSha: string; pr: number };
+  const auditLines = (s: S) => fs.readFileSync(path.join(s.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  it('decideBaseRefresh and decideMergeHandoff: both sides of every rule', () => {
+    const e = { baseRefName: 'main', firstQueuedAt: 1_000, baseResolvedAt: 5_000 };
+    expect(decideBaseRefresh(e, { now: 6_000, mainMovedAt: null })).toBe(false);
+    expect(decideBaseRefresh(e, { now: 6_000, mainMovedAt: 4_000 })).toBe(false); // moved BEFORE the base was resolved
+    expect(decideBaseRefresh(e, { now: 6_000, mainMovedAt: 5_500 })).toBe(true);  // moved after
+    expect(decideBaseRefresh({ ...e, baseRefName: 'dev' }, { now: 6_000, mainMovedAt: 5_500 })).toBe(false); // main is not its base
+    expect(decideBaseRefresh(e, { now: 5_000 + MERGE_LINE.baseRefreshAfterMs, mainMovedAt: null })).toBe(true); // waited long enough
+    expect(decideBaseRefresh({ baseRefName: 'main', firstQueuedAt: 1_000 }, { now: 1_000 + MERGE_LINE.baseRefreshAfterMs - 1, mainMovedAt: null })).toBe(false); // falls back to firstQueuedAt
+    const base = { outcome: 'success' as const, wired: true, stopped: false, holdOpen: false };
+    expect(decideMergeHandoff(base)).toEqual({ handoff: true });
+    expect(decideMergeHandoff({ ...base, wired: false })).toEqual({ handoff: false, skip: 'no-watcher' });
+    expect(decideMergeHandoff({ ...base, stopped: true })).toEqual({ handoff: false, skip: 'stopping' });
+    expect(decideMergeHandoff({ ...base, kind: 'main' })).toEqual({ handoff: false, skip: 'main-record' });
+    expect(decideMergeHandoff({ ...base, outcome: 'failure' })).toEqual({ handoff: false, skip: 'not-success' });
+    expect(decideMergeHandoff({ ...base, outcome: 'error' })).toEqual({ handoff: false, skip: 'not-success' });
+    expect(decideMergeHandoff({ ...base, holdOpen: true })).toEqual({ handoff: false, skip: 'hold-active' });
+    expect(decideMergeHandoff({ ...base, enabled: false })).toEqual({ handoff: false, skip: 'disabled' });
+    expect(decideMergeHandoff({ ...base, enabled: true })).toEqual({ handoff: true });
+  });
+
+  it('a head pushed during its own run keeps the FRONT of the line (the cancelled run\'s firstQueuedAt), not the back', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    s.advance(60_000);
+    await s.svc.request(2);
+    const t1 = s.spawned.length; // PR 1 running
+    expect(t1).toBe(1);
+    s.views[1] = view({ headRefOid: sha('f') });
+    s.advance(60_000);
+    expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'queued', position: 0 });
+    expect(s.svc.snapshot().queue.map((e) => [e.pr, e.headSha])).toEqual([[1, sha('f')], [2, sha('c')]]);
+    expect(s.svc.snapshot().queue[0].firstQueuedAt).toBe(Date.parse('2026-10-21T12:00:00.000Z'));
+    // The cancelled run exits: PR 1's new head starts next, ahead of PR 2.
+    s.alive.delete(s.spawned[0].pid);
+    s.spawned[0].resolve({ status: null, signal: 'SIGTERM' });
+    await s.flush();
+    expect(inputOf(s, 1)).toMatchObject({ pr: 1 });
+    expect(s.spawned[1].args.join(' ')).toContain('--input');
+  });
+
+  it('a moved-head request during the pre-start base read never yields two runs for one PR', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let release!: (b: string) => void;
+    let reads = 0;
+    // Reads 1–2 serve the two requests; read 3 is PR 2's pre-start read (held); later reads (the moved-head request) answer at once.
+    withBaseHead(s, () => { reads += 1; if (reads <= 2) return Promise.resolve(sha('b')); if (reads === 3) return new Promise((r) => { release = r; }); return Promise.resolve(sha('e')); });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.advance(MERGE_LINE.baseRefreshAfterMs);
+    await s.finish(0, ok(record())); // PR 2's pre-start read is now pending (release not called)
+    expect(s.spawned).toHaveLength(1);
+    s.views[2] = view({ headRefOid: sha('f') }); // the head moves while the read is pending
+    await s.svc.request(2);
+    expect(s.svc.snapshot().queue.map((e) => [e.pr, e.headSha])).toEqual([[2, sha('f')]]);
+    release(sha('e')); // the stale read completes: the old entry is gone, nothing starts from it
+    await s.flush();
+    await s.flush();
+    // Exactly one run for PR 2, for its NEW head, on the base its request just read; the queue is empty.
+    expect(s.spawned).toHaveLength(2);
+    expect(inputOf(s, 1)).toMatchObject({ pr: 2, headSha: sha('f'), baseSha: sha('e') });
+    expect(s.svc.snapshot().queue).toHaveLength(0);
+    expect(s.svc.snapshot().inFlight).toEqual({ pr: 2, headSha: sha('f') });
+  });
+
+  it('the live switch: off ⇒ no hold, no counter, no watcher call, and mergeLine says so; on again ⇒ hands off', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    const calls: number[] = [];
+    let on = false;
+    s.svc.setMergeHandoff(async (rec) => { calls.push(rec.pr); return { acted: false, reason: 'handoff-not-eligible:held' }; }, { enabled: () => on });
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ wired: true, enabled: false });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    await s.finish(0, ok(record()));
+    expect(calls).toEqual([]);
+    expect(s.spawned).toHaveLength(2); // PR 2 started at once: nothing was held
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ enabled: false, hold: null, handoffs: 0 });
+    expect(auditLines(s).some((l) => l.event === 'merge-handoff')).toBe(false);
+    on = true;
+    await s.finish(1, ok(record({ pr: 2, headSha: sha('c') })));
+    expect(calls).toEqual([2]);
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ enabled: true, handoffs: 1 });
+  });
+
+  it('a watcher answer after the hold timed out does not reopen the hold; a late merge still makes the next start re-read its base', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    let base = sha('b');
+    withBaseHead(s, async () => base);
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff(() => new Promise((r) => { answer = r; }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    await s.finish(0, ok(record()));
+    s.advance(MERGE_LINE.handoffMaxMs);
+    s.timers[0]();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2); // PR 2 started on the timeout
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, lastOutcome: 'timeout', merged: 0 });
+    base = sha('e');
+    s.advance(1_000);
+    answer({ acted: true, reason: 'merged' }); // late
+    await s.flush();
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, lastOutcome: 'timeout', merged: 0 });
+    expect(auditLines(s).some((l) => l.event === 'merge-handoff-late-answer' && l.acted === true)).toBe(true);
+    await s.finish(1, ok(record({ pr: 2, headSha: sha('c'), outcome: 'failure' })));
+    await s.flush();
+    expect(inputOf(s, 2)).toMatchObject({ pr: 3, baseSha: sha('e') }); // the late merge moved main: PR 3 re-read its base
+  });
+
+  it('CMT-973: a base that moved under a queued PR is refreshed in place — same slot, same firstQueuedAt, never dequeued', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    await s.svc.request(1); // runs
+    await s.svc.request(2);
+    s.advance(60_000);
+    await s.svc.request(3);
+    const t2 = s.svc.snapshot().queue[0].firstQueuedAt;
+    s.views[2] = view({ headRefOid: sha('c'), baseRefOid: sha('e') }); // main moved
+    s.advance(60_000);
+    expect(await s.svc.request(2, { explicit: false })).toEqual({ ok: true, status: 'already-queued', position: 0 });
+    const q = s.svc.snapshot().queue;
+    expect(q.map((e) => e.pr)).toEqual([2, 3]);
+    expect(q[0]).toMatchObject({ baseSha: sha('e'), firstQueuedAt: t2 });
+    const events = auditLines(s).map((l) => l.event);
+    expect(events).toContain('base-updated');
+    expect(events).not.toContain('dequeued');
+    // The durable queue carries the refreshed base and when it was resolved.
+    const saved = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number; baseSha: string; baseResolvedAt?: number }> };
+    expect(saved.entries.find((e) => e.pr === 2)).toMatchObject({ baseSha: sha('e'), baseResolvedAt: expect.any(Number) });
+  });
+
+  it('a moved head takes the old entry\'s slot and keeps its firstQueuedAt (attempts start over)', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.advance(60_000);
+    await s.svc.request(3);
+    const t2 = s.svc.snapshot().queue[0].firstQueuedAt;
+    s.views[2] = view({ headRefOid: sha('f') });
+    s.advance(60_000);
+    expect(await s.svc.request(2)).toEqual({ ok: true, status: 'queued', position: 0 });
+    const q = s.svc.snapshot().queue;
+    expect(q.map((e) => [e.pr, e.headSha])).toEqual([[2, sha('f')], [3, sha('d')]]);
+    expect(q[0]).toMatchObject({ firstQueuedAt: t2, attempts: 0, errorRetries: 0 });
+    expect(auditLines(s).some((l) => l.event === 'queued' && l.pr === 2 && l.keptPlace === true && l.firstQueuedAt === t2)).toBe(true);
+  });
+
+  it('an entry that waited re-reads the base head right before it starts (the merge is tested with today\'s base)', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let base = sha('b');
+    withBaseHead(s, async () => base);
+    await s.svc.request(1);
+    await s.svc.request(2);
+    expect(inputOf(s, 0).baseSha).toBe(sha('b'));
+    base = sha('e');
+    s.advance(MERGE_LINE.baseRefreshAfterMs);
+    await s.finish(0, ok(record()));
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+    expect(inputOf(s, 1)).toMatchObject({ pr: 2, baseSha: sha('e') });
+    expect(auditLines(s).some((l) => l.event === 'base-refreshed' && l.pr === 2 && l.newBase === sha('e'))).toBe(true);
+    expect(s.svc.snapshot().inFlight).toEqual({ pr: 2, headSha: sha('c') });
+  });
+
+  it('the reconcile loop seeing a new main head makes the next PR start re-read its base; a failed read starts on the last known base (audited)', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let base: string | null = sha('b');
+    withBaseHead(s, async () => base);
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.svc.noteMainHead(sha('b'));
+    s.advance(1_000);
+    s.svc.noteMainHead(sha('e')); // main moved after PR 2's base was resolved
+    await s.svc.settle();
+    base = null; // and now the base cannot be read
+    await s.finish(0, ok(record()));
+    await s.flush();
+    expect(s.spawned).toHaveLength(2); // PR 2 (the `main` entry the observation queued waits its fair-share turn)
+    expect(inputOf(s, 1)).toMatchObject({ pr: 2, baseSha: sha('b') });
+    expect(auditLines(s).some((l) => l.event === 'base-refresh-failed' && l.pr === 2)).toBe(true);
+  });
+
+  it('identical merge inputs already verified green derive a record at start instead of a second run', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('a') }) } }); // same head, a different PR
+    let base = sha('9');
+    withBaseHead(s, async () => base);
+    base = sha('b');
+    await s.svc.request(1); // runs with base b
+    base = sha('9');
+    await s.svc.request(2); // queued with base z (no dedupe: different inputs)
+    base = sha('b');
+    s.advance(MERGE_LINE.baseRefreshAfterMs);
+    await s.finish(0, ok(record()));
+    await s.flush();
+    expect(s.spawned).toHaveLength(1);
+    expect(s.svc.getRecord(2, sha('a'), 'main')).toMatchObject({ pr: 2, outcome: 'success' });
+    expect(auditLines(s).some((l) => l.event === 'derived-at-start' && l.pr === 2)).toBe(true);
+    expect(s.svc.snapshot().queue).toHaveLength(0);
+  });
+
+  it('a green record is handed to the watcher at once and the queue is held until it answers; a merge makes the next verify re-read its base', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let base = sha('b');
+    withBaseHead(s, async () => base);
+    const calls: Array<{ pr: number; ctx: unknown }> = [];
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff((rec, ctx) => { calls.push({ pr: rec.pr, ctx }); return new Promise((r) => { answer = r; }); });
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ wired: true, hold: null, handoffs: 0, merged: 0 });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    expect(calls).toEqual([{ pr: 1, ctx: { baseIsCurrentMain: null, currentMainHead: null } }]);
+    expect(s.spawned).toHaveLength(1); // PR 2 waits behind the hold
+    expect(s.svc.snapshot().inFlight).toBeNull();
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: { pr: 1, headSha: sha('a') }, handoffs: 1, merged: 0, lastPr: 1 });
+    await s.svc.tick(); // a tick during the hold starts nothing
+    expect(s.spawned).toHaveLength(1);
+    base = sha('e'); // the merge moved main
+    s.advance(1_000);
+    answer({ acted: true, reason: 'merged' });
+    await s.flush();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+    expect(inputOf(s, 1)).toMatchObject({ pr: 2, baseSha: sha('e') }); // tested on top of the merge (well inside the 5-min refresh window)
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, handoffs: 1, merged: 1, lastOutcome: 'merged' });
+    const ev = auditLines(s);
+    expect(ev.some((l) => l.event === 'merge-handoff' && l.pr === 1)).toBe(true);
+    expect(ev.some((l) => l.event === 'merge-handoff-result' && l.pr === 1 && l.acted === true && l.outcome === 'merged')).toBe(true);
+    expect(ev.some((l) => l.event === 'base-refreshed' && l.pr === 2)).toBe(true);
+  });
+
+  it('the hand-off context says whether the record\'s base is the current main head', async () => {
+    const s = setup({ views: { 1: view() } });
+    const ctxs: unknown[] = [];
+    s.svc.setMergeHandoff(async (_r, ctx) => { ctxs.push(ctx); return { acted: false, reason: 'handoff-not-eligible:held' }; });
+    await s.svc.request(1); // in flight first, so the `main` verify the observation enqueues waits behind it
+    s.svc.noteMainHead(sha('b'));
+    await s.svc.settle();
+    await s.finish(0, ok(record()));
+    expect(ctxs).toEqual([{ baseIsCurrentMain: true, currentMainHead: sha('b') }]);
+  });
+
+  it('a refused hand-off releases the hold with no retry; failure, error and main records are never offered; a second green record during a hold is left to the watcher', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('a') }), 4: view({ headRefOid: sha('d') }) } });
+    const calls: number[] = [];
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff((rec) => { calls.push(rec.pr); return new Promise((r) => { answer = r; }); });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    expect(calls).toEqual([1]);
+    // PR 3 shares PR 1's merge inputs: its derived green record arrives during the hold and is NOT offered.
+    expect(await s.svc.request(3)).toMatchObject({ ok: true, status: 'recorded' });
+    expect(calls).toEqual([1]);
+    expect(auditLines(s).some((l) => l.event === 'merge-handoff-skipped' && l.pr === 3 && l.reason === 'hold-active')).toBe(true);
+    answer({ acted: false, reason: 'handoff-not-eligible:held' });
+    await s.flush();
+    expect(calls).toEqual([1]); // no retry inside the line
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, handoffs: 1, merged: 0, lastOutcome: 'handoff-not-eligible:held' });
+    expect(s.spawned).toHaveLength(2); // PR 2 started once the hold was released
+    await s.finish(1, ok(record({ pr: 2, headSha: sha('c'), outcome: 'failure' })));
+    expect(calls).toEqual([1]); // a failure is never offered
+    await s.svc.request(4);
+    await s.finish(2, null); // crash → error record
+    expect(calls).toEqual([1]);
+    expect(s.svc.snapshot().mergeLine.hold).toBeNull();
+  });
+
+  it('the hold is bounded: the timer releases it and the next verify starts; a hand-off that throws releases it too', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    s.svc.setMergeHandoff(() => new Promise(() => { /* never answers */ }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    expect(s.spawned).toHaveLength(1);
+    expect(s.timers).toHaveLength(1);
+    s.advance(MERGE_LINE.handoffMaxMs);
+    s.timers[0]();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ hold: null, lastOutcome: 'timeout' });
+    expect(auditLines(s).some((l) => l.event === 'merge-handoff-result' && l.outcome === 'timeout' && l.heldMs === MERGE_LINE.handoffMaxMs)).toBe(true);
+
+    const s2 = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    s2.svc.setMergeHandoff(async () => { throw new Error('watcher down'); });
+    await s2.svc.request(1);
+    await s2.svc.request(2);
+    await s2.finish(0, ok(record()));
+    await s2.flush();
+    expect(s2.spawned).toHaveLength(2);
+    expect(s2.svc.snapshot().mergeLine.lastOutcome).toBe('error:watcher down');
+  });
+
+  it('with no watcher attached (or detached again) records are left to the watcher\'s ticks and nothing is held', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    s.svc.setMergeHandoff(async () => ({ acted: true, reason: 'merged' }));
+    s.svc.setMergeHandoff(null);
+    expect(s.svc.snapshot().mergeLine.wired).toBe(false);
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    expect(s.spawned).toHaveLength(2);
+    expect(s.svc.snapshot().mergeLine).toMatchObject({ wired: false, hold: null, handoffs: 0 });
+  });
+
+  it('shutdown during a hold: nothing starts afterwards and the waiting entry is in the durable queue', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff(() => new Promise((r) => { answer = r; }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    s.svc.shutdown();
+    answer({ acted: true, reason: 'merged' });
+    await s.flush();
+    expect(s.spawned).toHaveLength(1);
+    const saved = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number }> };
+    expect(saved.entries.map((e) => e.pr)).toEqual([2]);
   });
 });
