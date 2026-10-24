@@ -95,6 +95,19 @@ export interface AgentTrustProfile {
    */
   relayFirstContact?: boolean;
 
+  /**
+   * The peer's homebase topic — where notices about THIS agent go
+   * (docs/specs/peer-conversation-homebase-topic.md §2.2).
+   *
+   * Stored on the trust profile rather than in a new per-agent map on purpose: it is
+   * per-peer data keyed by fingerprint, the profile is already the durable per-peer record,
+   * and a separate map would be a second place for the same fact to be torn.
+   *
+   * Absent means no homebase — routing falls through to existing behaviour, which is the
+   * correct degraded state rather than an error.
+   */
+  homebaseTopicId?: number;
+
   // ── Verified-Pairing state (Secure A2A Verified Pairing, §3.7) ──
   // Stored ON the trust profile so there is no cross-file torn state. The
   // sensitive SAS words live in a separate machine-local 0600 store
@@ -622,6 +635,37 @@ export class AgentTrustManager implements InviteTrust {
    * Returns false for a self-pair (peerFp === ownFp, FD12). Does NOT touch the
    * trust source or level — that only happens at `markMutualVerified`.
    */
+  /**
+   * Record the peer's homebase topic id.
+   *
+   * Deliberately NOT part of `markMutualVerified`: creating a Telegram topic is an external
+   * side-effect, and a failure there must never fail or delay a pairing. The homebase is
+   * recorded downstream, so a pairing succeeds whether or not its topic did.
+   *
+   * Idempotent, and refuses to overwrite a DIFFERENT existing id — a second write with a new
+   * topic would silently orphan the first and is the shape of the duplicate-topic bug the
+   * spec accepts but does not invite. Returns false when it refuses.
+   */
+  setHomebaseTopic(peerFp: string, topicId: number): boolean {
+    if (!peerFp || !Number.isInteger(topicId)) return false;
+    const profile = this.getProfileByFingerprint(peerFp);
+    if (!profile) return false;
+    if (typeof profile.homebaseTopicId === 'number' && profile.homebaseTopicId !== topicId) {
+      return false;
+    }
+    if (profile.homebaseTopicId === topicId) return true;
+    profile.homebaseTopicId = topicId;
+    profile.updatedAt = new Date().toISOString();
+    this.save();
+    return true;
+  }
+
+  /** The peer's homebase topic, or undefined when it has none. */
+  getHomebaseTopic(peerFp: string): number | undefined {
+    if (!peerFp) return undefined;
+    return this.getProfileByFingerprint(peerFp)?.homebaseTopicId;
+  }
+
   recordPendingVerification(
     peerFp: string,
     args: {

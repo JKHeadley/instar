@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classifyLongLivedServiceProcess, SessionWatchdog } from '../../src/monitoring/SessionWatchdog.js';
-import { TestRunnerProgressTracker } from '../../src/monitoring/testRunnerProgress.js';
+import { MIN_PROGRESS_CPU_DELTA_MS, TestRunnerProgressTracker } from '../../src/monitoring/testRunnerProgress.js';
 import { formatWatchdogUserMessage } from '../../src/monitoring/watchdog-notifications.js';
 
 describe('SessionWatchdog safe-wait pipeline', () => {
@@ -460,10 +460,17 @@ describe('SessionWatchdog safe-wait pipeline', () => {
     expect(first, 'the fixture must appear in the real process table within 5s').toBeDefined();
     expect(first!.cpuMs, 'the real ps snapshot must carry a readable CPU column').toBeTypeOf('number');
 
-    // Long enough for the production bound: a process at full tilt accrues
-    // more than MIN_PROGRESS_CPU_DELTA_MS (1s of CPU) over this window.
-    await delay(1_500);
-    const second = await readRow();
+    // Wait until the burner has accrued more than MIN_PROGRESS_CPU_DELTA_MS
+    // (1s of CPU). A fixed 1.5s wait failed on a busy host: under CPU
+    // contention a process at full tilt gets less than one core, so the
+    // delta fell short. Polling keeps the real bound and only waits longer.
+    let second = await readRow();
+    const cpuDeadline = performance.now() + 10_000;
+    while (performance.now() < cpuDeadline
+      && !((second?.cpuMs ?? 0) - first!.cpuMs! > MIN_PROGRESS_CPU_DELTA_MS)) {
+      await delay(250);
+      second = await readRow();
+    }
     expect(second?.cpuMs, 'a process at full tilt must show more CPU time on the next snapshot')
       .toBeGreaterThan(first!.cpuMs!);
 

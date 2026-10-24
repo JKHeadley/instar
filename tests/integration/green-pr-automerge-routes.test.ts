@@ -47,7 +47,7 @@ function fakeWatcher(stateDir: string, latches: GuardLatchStore, prs: PrSummary[
     holdsLease: () => true,
     leaseEpoch: () => 1,
     listOpenPrs: async () => prs,
-    protectedPaths: async () => ({ touches: false, unverifiable: false }),
+    codeOwnedPaths: async () => ({ touches: false, files: [], unverifiable: false }),
     refetchPr: async () => ({ title: 'feat', labels: [], isDraft: false, headRefOid: 'sha', state: 'OPEN', autoMergeRequest: null }),
     disarmArmedEpisodes: async (n) => { disarmTracker.calls.push(n); return true; },
     resolveGhLogin: async () => 'echo-bot',

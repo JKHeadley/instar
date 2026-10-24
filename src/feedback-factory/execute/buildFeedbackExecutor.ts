@@ -21,7 +21,9 @@ import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import type { FeedbackTriageRouteContext } from '../triage/buildFeedbackTriage.js';
 import type { AttentionInput } from '../triage/FeedbackTriageService.js';
 import { FeedbackExecuteStore } from './FeedbackExecuteStore.js';
-import { FeedbackExecutorService, type ConfinedSessionPort, type ExecutorAdmission, type FeedbackExecutorServiceOptions } from './FeedbackExecutorService.js';
+import { FeedbackExecutorService, type ConfinedSessionPort, type ExecutorAdmission, type FeedbackExecutorServiceOptions, type IndependentReviewPort } from './FeedbackExecutorService.js';
+import { runCrossModelReview, resolveReviewerTimeoutMs, type ReviewerConfig } from '../../core/crossModelReviewer.js';
+import { CLAUDE_REVIEWER, CROSS_FAMILY_REVIEWERS, toReviewerOutcome } from './independentReview.js';
 import { resolveExecuteConfig } from './executePolicy.js';
 import { SandboxRuntimeRunner } from './ConfinedRunner.js';
 import { DepsCache } from './depsCache.js';
@@ -153,6 +155,7 @@ export function buildFeedbackExecutor(input: {
       return { sessionName: session.tmuxSession, sessionId: session.id };
     },
     isAlive: (name) => (sm ? sm.isSessionAlive(name) : false),
+    async captureTail(name) { return sm ? sm.captureOutput(name, 30) : null; },
     async stop(name) {
       if (!sm) return false;
       const session = sm.listRunningSessions().find((s) => s.tmuxSession === name);
@@ -188,10 +191,30 @@ export function buildFeedbackExecutor(input: {
 
   const identity = input.overrides?.commitIdentity ?? (() => resolveCommitIdentity(resolveConfig().sourceRepoPath ?? agentHome, config.stateDir));
 
+  // The independent review gate's reviewers: every cross-family reviewer this agent has, plus the
+  // Claude clean-door reviewer, each run through the existing cross-model chokepoint (its context
+  // guard, provider allowlist and circuit breaker). An unavailable family answers `unavailable`,
+  // never a silent swap to another model.
+  const reviewerConfig = config as unknown as ReviewerConfig & { enabledFrameworks?: string[] };
+  const review: IndependentReviewPort = {
+    async run({ prompt }) {
+      const assembled = { promptText: prompt, truncated: false, bytes: Buffer.byteLength(prompt, 'utf8'), omittedLoadBearing: [], undeliverableLoadBearing: [] };
+      const out = [];
+      for (const family of [...CROSS_FAMILY_REVIEWERS, CLAUDE_REVIEWER]) {
+        const timeoutMs = resolveReviewerTimeoutMs(reviewerConfig, family as 'codex-cli');
+        const result = await runCrossModelReview({ assembled, family, config: reviewerConfig, timeoutMs }).catch((error: unknown) => ({
+          status: 'degraded' as const, reason: error instanceof Error ? error.name : 'reviewer-threw', flag: '', crossFamily: CROSS_FAMILY_REVIEWERS.includes(family) }));
+        out.push(toReviewerOutcome(family, result));
+      }
+      return out;
+    },
+  };
+
   const service = new FeedbackExecutorService({
     triageStore: input.triage.store,
     store,
     audit: input.triage.audit,
+    review,
     processing: input.processing,
     initiatives: input.initiativeTracker,
     git: input.overrides?.git ?? new SafeAttemptGit(),

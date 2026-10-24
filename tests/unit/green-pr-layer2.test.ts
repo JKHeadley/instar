@@ -1,7 +1,7 @@
 /**
  * Tier-1 tests for the Layer-2 stop-gate helpers (green-pr-automerge §3.3).
  * computeGreenPrBlock: match/no-match, staleness, killSwitch/compaction suppression,
- * the three variants (mergeable / protected-paths / disarmed), and the round-6
+ * the three variants (mergeable / code-owner-review / disarmed), and the round-6
  * invariant that NO variant contains a runnable merge command.
  * resolveBranchFromCwd: normal repo + linked-worktree gitdir file + fail-open.
  */
@@ -42,9 +42,10 @@ describe('computeGreenPrBlock', () => {
     expect(b?.message).toMatch(/do NOT merge/i);
   });
 
-  it('routes a protected-paths candidate to the operator', () => {
-    const b = computeGreenPrBlock({ ...base, snapshot: snap({ entries: [{ pr: 7, headRefName: 'echo/wf', kind: 'protected-paths' }] }), sessionBranch: 'echo/wf' });
-    expect(b?.variant).toBe('protected-paths');
+  it('a CODEOWNERS-owned candidate waits for the code-owner review on GitHub', () => {
+    const b = computeGreenPrBlock({ ...base, snapshot: snap({ entries: [{ pr: 7, headRefName: 'echo/wf', kind: 'code-owner-review' }] }), sessionBranch: 'echo/wf' });
+    expect(b?.variant).toBe('code-owner-review');
+    expect(b?.message).toMatch(/constitution file — it waits for the operator's code-owner review/);
     expect(b?.message).toMatch(/operator/i);
   });
 
@@ -52,7 +53,7 @@ describe('computeGreenPrBlock', () => {
     const variants = [
       computeGreenPrBlock({ ...base, snapshot: snap(), sessionBranch: 'echo/feature' }),
       computeGreenPrBlock({ ...base, armed: false, snapshot: snap(), sessionBranch: 'echo/feature' }),
-      computeGreenPrBlock({ ...base, snapshot: snap({ entries: [{ pr: 7, headRefName: 'echo/wf', kind: 'protected-paths' }] }), sessionBranch: 'echo/wf' }),
+      computeGreenPrBlock({ ...base, snapshot: snap({ entries: [{ pr: 7, headRefName: 'echo/wf', kind: 'code-owner-review' }] }), sessionBranch: 'echo/wf' }),
     ];
     for (const v of variants) {
       expect(v).not.toBeNull();

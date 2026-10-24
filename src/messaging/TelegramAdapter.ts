@@ -1825,6 +1825,19 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Find a main-group topic id by exact (case-insensitive) name, WITHOUT creating one.
+   * Returns undefined when none is known.
+   */
+  findTopicIdByName(name: string): number | undefined {
+    const normalizedName = name.toLowerCase().trim();
+    for (const [topicId, existingName] of this.topicToName) {
+      if (isIssuesTopicId(topicId)) continue;
+      if (existingName.toLowerCase().trim() === normalizedName) return topicId;
+    }
+    return undefined;
+  }
+
+  /**
    * Get the Lifeline topic ID (if configured).
    */
   getLifelineTopicId(): number | undefined {

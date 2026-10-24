@@ -54,6 +54,12 @@ export interface GitHubGateway {
   removeLabel(slug: string, pr: number, label: string): Promise<boolean>;
   disableAuto(slug: string, pr: number): Promise<boolean>;
   safeMerge(slug: string, pr: number, sha: string): Promise<{ exitCode: number | null; stdout: string }>;
+  /** The PR's unified diff at its current head (text); null on a gh error. */
+  prDiff(slug: string, pr: number): Promise<string | null>;
+  /** The paths the PR changes, as GitHub lists them (not derived from diff text); null on a gh error. */
+  prFiles(slug: string, pr: number): Promise<string[] | null>;
+  /** Leave a comment on the PR; false on a gh error. */
+  comment(slug: string, pr: number, body: string): Promise<boolean>;
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
@@ -222,6 +228,30 @@ export class GhGateway implements GitHubGateway {
       await this.gh(['pr', 'merge', String(pr), '--repo', slug, '--disable-auto']);
       return true;
     } catch { return false; } // @silent-fallback-ok: caller keeps the row armed (disarmFailed) and raises the disarm-failure Attention line
+  }
+
+  async prDiff(slug: string, pr: number): Promise<string | null> {
+    try { return await this.gh(['pr', 'diff', String(pr), '--repo', slug], 60_000); } catch { return null; } // @silent-fallback-ok: gh error → state unchanged, reported unknown
+  }
+
+  async prFiles(slug: string, pr: number): Promise<string[] | null> {
+    try {
+      // RULE 3: EXEMPT — gh's documented --json output (a stable, versioned data contract).
+      const raw = JSON.parse(await this.gh(['pr', 'view', String(pr), '--repo', slug, '--json', 'files'])) as { files?: Array<{ path?: string }> };
+      return Array.isArray(raw.files) ? raw.files.map((f) => String(f.path ?? '')).filter(Boolean) : null;
+    } catch { return null; } // @silent-fallback-ok: gh error → state unchanged, reported unknown
+  }
+
+  async comment(slug: string, pr: number, body: string): Promise<boolean> {
+    const bodyFile = path.join(os.tmpdir(), `feedback-pr-comment-${process.pid}-${Date.now()}.md`);
+    try {
+      fs.writeFileSync(bodyFile, body, { mode: 0o600, flag: 'wx' });
+      await this.gh(['pr', 'comment', String(pr), '--repo', slug, '--body-file', bodyFile], 60_000);
+      return true;
+    } catch { return false; } // @silent-fallback-ok: the caller audits a failed comment; the refusal itself is recorded in the row
+    finally {
+      try { SafeFsExecutor.safeUnlinkSync(bodyFile, { operation: 'feedback-execute PR comment temp cleanup' }); } catch { /* @silent-fallback-ok: a leftover temp body holds only the posted comment text */ }
+    }
   }
 
   async safeMerge(slug: string, pr: number, sha: string): Promise<{ exitCode: number | null; stdout: string }> {

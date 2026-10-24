@@ -13,20 +13,21 @@
  * transition. State is per-machine (machine-local BY DESIGN).
  *
  * RULE 3.1 RATIONALE
- *   Criticality: high — these adapters surface the PR/identity/protected-paths
+ *   Criticality: high — these adapters surface the PR/identity/code-owner
  *                state the merge watcher acts on.
  *   Frequency:   per-tick (≤ once per ~10-minute interval).
  *   Stability:   stable — every read uses `gh ... --json`/`gh api --jq`
  *                STRUCTURED output, never regex over human gh text.
  *   Fallback:    a failing/unparseable list call THROWS (→ the watcher's
- *                tick-failed canary feeds the breaker); protectedPaths failure →
+ *                tick-failed canary feeds the breaker); codeOwnedPaths failure →
  *                `unverifiable:true` (→ skip, never merge); identity unresolved →
  *                skip. Every path fails toward NOT merging.
  *   Verdict:     deterministic; safe-merge re-verifies at act time, so a misread
  *                here can only cause a refusal, never an unintended merge.
  */
 
-import { extractRulesetReviewPolicy } from '../../scripts/local-verify-floor.mjs';
+import { extractRulesetReviewPolicy, parseCodeowners, codeOwnedFiles } from '../../scripts/local-verify-floor.mjs';
+import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -41,12 +42,19 @@ import { DefaultMergeRunner } from './MergeRunner.js';
 import {
   type GreenPrAutoMergerDeps,
   type GreenPrState,
-  type ProtectedPathsVerdict,
+  type CodeOwnedPathsVerdict,
+  type IndependentReviewVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
 import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, NO_CHECKS_ROLLUP, type PrSummary } from './greenPrLogic.js';
 
-/** Protected globs (round-4/6): a PR touching these never auto-merges. */
+/**
+ * The verifier's protected list (local-verify `protectedList`): a PR touching these
+ * is recorded `protectedPath`, which the local floor admits only with an independent
+ * second-pass review (spec local-verify-merge-authority.md). The watcher itself no
+ * longer routes these to the operator (directive 2026-10-22); only CODEOWNERS-owned
+ * files wait for the operator, through GitHub's code-owner review.
+ */
 export const PROTECTED_PATH_PREFIXES = [
   '.github/',
   'scripts/safe-merge.mjs',
@@ -105,7 +113,7 @@ export function isAnalyzableGreenPrRepo(repoPath: string, safeMergePath: string)
   }
 }
 
-/** Does any changed file touch a protected path? */
+/** Does any changed file touch a protected path (the verifier's protectedPath flag)? */
 export function diffTouchesProtected(files: string[]): boolean {
   return files.some((f) => PROTECTED_PATH_PREFIXES.some((p) => f === p || f.startsWith(p)));
 }
@@ -261,12 +269,57 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       const rows = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
       return rows.map(mapPr);
     },
-    protectedPaths: async (pr: PrSummary): Promise<ProtectedPathsVerdict> => {
+    codeOwnedPaths: async (pr: PrSummary): Promise<CodeOwnedPathsVerdict> => {
+      // CODEOWNERS is read at runtime from the PR's base branch on GitHub (the copy GitHub
+      // enforces), never the local checkout, which can sit on any branch.
+      const unverifiable: CodeOwnedPathsVerdict = { touches: false, files: [], unverifiable: true };
+      const base = pr.baseRefName || 'main';
+      const co = await exec(['api', `repos/${opts.repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw']);
+      let rules: ReturnType<typeof parseCodeowners> = null;
+      if (co.code === 0) rules = parseCodeowners(co.stdout);
+      else if (/HTTP 404/.test(co.stderr)) rules = []; // no CODEOWNERS on the base: nothing is code-owned
+      if (!rules) return unverifiable;
       // Enumerate changed files to exhaustion via the API (paginated).
       const r = await exec(['api', `repos/${opts.repo}/pulls/${pr.number}/files`, '--paginate', '--jq', '.[].filename']);
-      if (r.code !== 0) return { touches: false, unverifiable: true };
-      const files = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-      return { touches: diffTouchesProtected(files), unverifiable: false };
+      if (r.code !== 0) return unverifiable;
+      const changed = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      const files = codeOwnedFiles(changed, rules);
+      return { touches: files.length > 0, files, protectedFiles: changed.filter((f) => diffTouchesProtected([f])), unverifiable: false };
+    },
+    independentReviewAtHead: async (pr: PrSummary, flaggedPaths: string[]): Promise<IndependentReviewVerdict> => {
+      // The changed files that are trace files (added or modified), read AT THE HEAD, so a
+      // trace pushed after this head never counts for it. Same judge as the verifier.
+      const r = await exec(['api', `repos/${opts.repo}/pulls/${pr.number}/files`, '--paginate', '--jq', '.[] | select(.status != "removed") | .filename']);
+      if (r.code !== 0) return { ok: false, unverifiable: true, problem: 'files-unreadable' };
+      const raw = async (p: string): Promise<string | null> => {
+        const x = await exec(['api', `repos/${opts.repo}/contents/${p}?ref=${pr.headRefOid}`, '-H', 'Accept: application/vnd.github.raw']);
+        return x.code === 0 ? x.stdout : null;
+      };
+      const problems: string[] = [];
+      for (const f of r.stdout.split('\n').map((s) => s.trim()).filter(isTracePath)) {
+        let trace: unknown = null;
+        try { trace = JSON.parse((await raw(f)) ?? ''); } catch { /* @silent-fallback-ok: an unparseable trace counts as no review (the judge names it trace-unparseable) */ trace = null; }
+        const art = trace && typeof trace === 'object' ? (trace as { artifactPath?: unknown }).artifactPath : undefined;
+        const artifactText = typeof art === 'string' && art ? await raw(art) : null;
+        let problem = independentReviewProblem({ trace, flaggedPaths, artifactText });
+        if (problem === null) {
+          // Bound to the head, as the verifier does: no flagged path may change after
+          // the trace's last commit (compare <traceLast>...<head> lists what changed since).
+          const last = await exec(['api', `repos/${opts.repo}/commits?sha=${pr.headRefOid}&path=${encodeURIComponent(f)}&per_page=1`, '--jq', '.[0].sha']);
+          const traceLast = last.code === 0 ? last.stdout.trim() : '';
+          if (!/^[0-9a-f]{40}$/.test(traceLast)) return { ok: false, unverifiable: true, problem: 'trace-commit-unreadable' };
+          const cmp = await exec(['api', `repos/${opts.repo}/compare/${traceLast}...${pr.headRefOid}`, '--paginate', '--jq', '.files[]?.filename']);
+          if (cmp.code !== 0) return { ok: false, unverifiable: true, problem: 'review-binding-unreadable' };
+          const since = new Set(cmp.stdout.split('\n').map((x) => x.trim()).filter(Boolean));
+          // GitHub's compare lists at most 300 files; a list that long may hide a flagged path.
+          if (since.size >= 300) return { ok: false, unverifiable: true, problem: 'review-binding-truncated' };
+          const stale = flaggedPaths.filter((x) => since.has(x));
+          problem = stale.length ? `flagged-changed-after-trace:${stale.slice(0, 3).join(',')}` : null;
+        }
+        if (problem === null) return { ok: true, unverifiable: false };
+        problems.push(`${f}: ${problem}`);
+      }
+      return { ok: false, unverifiable: false, problem: problems[0] ?? 'no-trace-in-pr' };
     },
     refetchPr: async (pr: number) => {
       // Widened (mergerunner-auto-arm-handoff Blocker 4): also returns

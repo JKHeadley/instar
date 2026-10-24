@@ -55,7 +55,8 @@ import { checkPrDescriptionEli16 } from './eli16-pr-description-check.mjs';
 import { evaluateDecisionAuditPresence } from './decision-audit-presence-check.mjs';
 import { checkReleaseFragment } from './check-release-fragment.mjs';
 import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
-import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, approvedAtHead, extractRulesetReviewPolicy, reviewPrecheckPasses } from './local-verify-floor.mjs';
+import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles } from './local-verify-floor.mjs';
+import { isTracePath } from './lib/instar-dev-trace.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -255,7 +256,11 @@ export function classifyChecks(rows) {
     }
     if (!ok) failed.push(`${name}: ${bucket}`);
   }
-  return { pending, failed, sawE2e, e2ePassed, settled: pending.length === 0 };
+  // Zero rows ("no checks reported" right after a push, before GitHub registers any
+  // run) is NOT settled: an empty set must never read as green. The caller keeps
+  // waiting within its deadline and then refuses checks-timeout.
+  const noChecks = latestCheckRows(rows).filter(r => String(r?.name ?? '')).length === 0;
+  return { pending, failed, sawE2e, e2ePassed, noChecks, settled: !noChecks && pending.length === 0 };
 }
 
 /**
@@ -415,8 +420,6 @@ export const UNMEASURABLE = 'refused:verify-record-unmeasurable';
  * @param {object|null} a.record               the server index record (null = absent)
  * @param {{state: string, mainHead: string|null}|null} a.mainHealth
  * @param {Array<{name: string, ok: boolean, detail?: string}>} a.bodyChecks
- * @param {boolean} a.operatorApprovedHead
- * @param {{matches: boolean, reason?: string}|null} a.approverAcceptance  (needed only on the approval path)
  * @returns {{ok: true} | {ok: false, result: string, problems: string[]}}
  */
 export function evaluateLocalPredicate(a) {
@@ -451,13 +454,13 @@ export function evaluateLocalPredicate(a) {
   const notBool = FLAG_KEYS.filter(k => typeof r[k] !== 'boolean');
   if (notBool.length) return refuse(UNMEASURABLE, `record flag(s) not boolean: ${notBool.join(', ')}`);
   const flags = FLAG_KEYS.filter(k => r[k] === true);
-  if (flags.length) {
-    if (a.operatorApprovedHead !== true) {
-      return refuse('refused:needs-operator-approval', `the record is ${flags.join('+')}; the operator must approve exactly head ${r.headSha} on GitHub`);
-    }
-    if (a.approverAcceptance?.matches !== true) {
-      return refuse('refused:approver-dependent', `approver dependence is not covered by a matching acceptance (${a.approverAcceptance?.reason ?? 'unknown'})`);
-    }
+  // A flagged record needs an independent second-pass review of exactly this head,
+  // which the verifier found in the head's tree and recorded. Operator approval is
+  // NOT a substitute: the operator approves constitution changes only, and GitHub
+  // enforces those through CODEOWNERS (directive 2026-10-22; spec "Harness-changing PRs").
+  if (flags.length && !hasIndependentReview(r)) {
+    return refuse('refused:needs-independent-review',
+      `the record is ${flags.join('+')}; head ${r.headSha} needs an instar-dev trace in the PR whose second pass concurred and whose coveredFiles include every flagged path (the verifier found none)`);
   }
   return { ok: true };
 }
@@ -476,24 +479,10 @@ export function verifyRequestOutcome(post) {
   return null;
 }
 
-/**
- * Decision 16: reuse the feedback executor's approver-independence check and
- * its PIN acceptance, read from `GET /feedback-factory/execute/status`. The
- * acceptance counts only when the executor's approver IS the operator login
- * and the agent is either independent of it or the operator accepted exactly
- * the current sticky reason set. `null` body ⇒ the executor is not constructed.
- */
-export function approverAcceptanceFromExecutorStatus(body, operatorGhLogin) {
-  if (!body || typeof body !== 'object') return { matches: false, reason: 'executor-not-constructed' };
-  const av = body.availability;
-  if (!av || typeof av !== 'object') return { matches: false, reason: 'executor-availability-unread' };
-  const op = String(operatorGhLogin ?? '').toLowerCase();
-  if (!op || String(av.approver ?? '').toLowerCase() !== op) return { matches: false, reason: `approver-not-operator (${av.approver ?? 'none'})` };
-  const ind = av.independence;
-  if (!ind || typeof ind !== 'object') return { matches: false, reason: 'independence-unread' };
-  if (ind.independent === true) return { matches: true, reason: 'independent' };
-  if (ind.accepted === true) return { matches: true, reason: 'accepted' };
-  return { matches: false, reason: `not-accepted (${(ind.reasons ?? []).join(',') || 'unknown'})` };
+/** The verifier recorded a concurring independent review (an instar-dev trace path). */
+export function hasIndependentReview(record) {
+  const ir = record?.independentReview;
+  return !!ir && typeof ir === 'object' && ir.concurred === true && isTracePath(ir.trace);
 }
 
 const FILE_STATUS_TO_NAME_STATUS = { added: 'A', removed: 'D', modified: 'M', renamed: 'R', copied: 'C', changed: 'M', unchanged: 'M' };
@@ -632,30 +621,9 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
   });
   const authorType = live.author?.is_bot === true ? 'Bot' : 'User';
   const bodyChecks = runLocalBodyChecks({ title: live.title, body: live.body, authorLogin: live.author?.login ?? '', authorType, files, decisionRecords });
-  const flagged = ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'].some(k => record[k] === true);
-  let operatorApproved = false;
-  let acceptance = null;
-  if (flagged) {
-    try {
-      const pages = readJson(['api', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--paginate', '--slurp']);
-      const reviews = (Array.isArray(pages) ? pages : [pages]).flat().map(r => ({
-        login: String(r?.user?.login ?? ''), state: String(r?.state ?? ''), commitId: String(r?.commit_id ?? ''), submittedAt: String(r?.submitted_at ?? ''),
-      }));
-      operatorApproved = approvedAtHead(reviews, agent.operatorGhLogin, live.headRefOid).approved;
-    } catch (e) {
-      return refuse(UNMEASURABLE, `review read failed: ${String(e?.message ?? e).slice(0, 200)}`);
-    }
-    if (operatorApproved) {
-      let ex;
-      try { ex = await serverGet('/feedback-factory/execute/status'); } catch { ex = null; }
-      acceptance = ex && ex.status === 200
-        ? approverAcceptanceFromExecutorStatus(ex.body, agent.operatorGhLogin)
-        : { matches: false, reason: ex && ex.status === 503 ? 'executor-not-constructed' : 'executor-status-unreadable' };
-    }
-  }
   return evaluateLocalPredicate({
     repo, pr: Number(pr), livePr: { headRefOid: live.headRefOid, baseRefName: live.baseRefName }, record,
-    mainHealth: status?.mainHealth ?? null, bodyChecks, operatorApprovedHead: operatorApproved, approverAcceptance: acceptance,
+    mainHealth: status?.mainHealth ?? null, bodyChecks,
   });
 }
 
@@ -685,19 +653,31 @@ function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
   // The run times are what lets classifyChecks keep only the latest run per name.
   const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket,startedAt,completedAt,workflow'], { allowFail: true });
-  return parseChecksRows(r.stdout);
+  return parseChecksRows(r.stdout, r.stderr);
 }
 
-/** Parse `gh pr checks --json` output; throws on unparseable or empty (an open PR always has checks). */
-export function parseChecksRows(stdout) {
+/** gh's answer for a head GitHub has not registered any check run on yet (e.g. right after a push). */
+const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+
+/**
+ * Parse `gh pr checks --json` output. An empty stdout whose stderr says "no checks
+ * reported" (seen right after a push, PRs 2296/2314) is ZERO rows — not settled,
+ * so the caller keeps waiting (classifyChecks never reads zero rows as green). Any
+ * other unparseable, non-array or empty answer throws (retried, then
+ * contexts-unverifiable), with gh's stderr in the message so it is diagnosable.
+ */
+export function parseChecksRows(stdout, stderr = '') {
+  const err = String(stderr || '').trim().slice(0, 200);
+  const errNote = err ? ` (stderr: ${err})` : '';
+  if (!String(stdout || '').trim() && NO_CHECKS_REPORTED_RE.test(String(stderr || ''))) return [];
   let rows;
   try {
     rows = JSON.parse(stdout);
   } catch {
-    throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}`);
+    throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}${errNote}`);
   }
-  if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}`);
-  if (rows.length === 0) throw new Error('gh pr checks returned no checks');
+  if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}${errNote}`);
+  if (rows.length === 0) throw new Error(`gh pr checks returned no checks${errNote}`);
   return rows;
 }
 
@@ -1038,7 +1018,32 @@ function reviewPrecheck({ repo, pr, view, args }) {
   if (!reviewPrecheckPasses({ policy: reviewPolicy, reviewDecision: view.reviewDecision })) {
     refuseApprovalRequired({ repo, pr, view, args, policy: reviewPolicy, via: 'ruleset-precheck' });
   }
+  // require_code_owner_review: a PR touching a CODEOWNERS-owned path (the constitution)
+  // waits for the code owner — never try a merge GitHub will refuse.
+  if (reviewPolicy.codeOwnerReviewRequired === true && view.reviewDecision !== 'APPROVED') {
+    const owned = fetchCodeOwnedFiles(repo, pr, view.baseRefName || 'main');
+    if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })) {
+      refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10) }, via: 'code-owner-review' });
+    }
+  }
   return protection;
+}
+
+/** Pure: the code-owner review GitHub requires is still outstanding for these owned files. */
+export function codeOwnerReviewPending({ policy, ownedFiles, reviewDecision }) {
+  return !reviewPrecheckPasses({ policy, reviewDecision, codeOwnedTouched: (ownedFiles ?? []).length > 0 });
+}
+
+/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns. Throws when unreadable. */
+function fetchCodeOwnedFiles(repo, pr, base) {
+  const co = gh(['api', `repos/${repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw'], { allowFail: true });
+  let rules;
+  if (co.status === 0) rules = parseCodeowners(co.stdout);
+  else if (/HTTP 404/.test(co.stderr || '')) rules = [];
+  if (!rules) throw new Error(`CODEOWNERS unverifiable: ${(co.stderr || '').slice(0, 200)}`);
+  const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
+  const files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => String(f?.filename ?? '')).filter(Boolean);
+  return codeOwnedFiles(files, rules);
 }
 
 /** The head-pinned merge plus the independent confirmation (B10). Always exits. */
@@ -1259,7 +1264,7 @@ async function main() {
     checksState = classifyChecks(rows);
     if (checksState.settled) break;
     if (Date.now() > deadline) {
-      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10) });
+      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });
       console.error('safe-merge: timed out waiting for checks. NOT merging.');
       process.exit(1);
     }

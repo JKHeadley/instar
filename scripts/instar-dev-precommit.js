@@ -25,7 +25,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
@@ -37,6 +36,7 @@ import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
+import { traceIsComplete, traceMissingCoverage, artifactSha256, MIN_ARTIFACT_CHARS as SHARED_MIN_ARTIFACT_CHARS } from './lib/instar-dev-trace.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -77,7 +77,8 @@ process.on('exit', (code) => {
   } catch { /* best-effort — 'pending' is still more truthful than no verdict */ }
 });
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
-const MIN_ARTIFACT_CHARS = 200;
+// One definition, shared with the local verifier's independent-review check.
+const MIN_ARTIFACT_CHARS = SHARED_MIN_ARTIFACT_CHARS;
 
 // ─── Step 0: skip gate for merge commits ─────────────────────────────────
 // Merge commits integrate already-reviewed code from another branch/machine.
@@ -387,8 +388,7 @@ let freshestTraceEntry = null;
 for (const entry of traceEntries) {
   try {
     const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
-    const covered = new Set(candidate?.coveredFiles || []);
-    if (candidate?.phase === 'complete' && inScopeFiles.every((f) => covered.has(f))) {
+    if (traceIsComplete(candidate) && traceMissingCoverage(candidate, inScopeFiles).length === 0) {
       freshestTrace = candidate;
       freshestTraceEntry = entry;
       break;
@@ -567,13 +567,12 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  if (trace.phase !== 'complete') {
+  if (!traceIsComplete(trace)) {
     attempts.push(`${path.basename(entry.file)}: trace phase is "${trace.phase}", expected "complete"`);
     continue;
   }
 
-  const covered = new Set(trace.coveredFiles || []);
-  const missing = inScopeFiles.filter((f) => !covered.has(f));
+  const missing = traceMissingCoverage(trace, inScopeFiles);
   if (missing.length > 0) {
     attempts.push(
       `${path.basename(entry.file)}: trace's coveredFiles does not include: ${missing.join(', ')}`,
@@ -595,7 +594,7 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  const sha = crypto.createHash('sha256').update(artifactContent).digest('hex');
+  const sha = artifactSha256(artifactContent);
   if (trace.artifactSha256 && trace.artifactSha256 !== sha) {
     // Self-service fix: tell the author the EXACT sha to write, plus the
     // freeze-recipe. Without this, an agent (especially codex, which often
@@ -1553,7 +1552,7 @@ function enforceTier1(trace, traceFile) {
   }
   // sha-match exactly as the existing artifact logic, when a sha is recorded.
   if (trace.artifactSha256) {
-    const sha = crypto.createHash('sha256').update(sideEffectsContent).digest('hex');
+    const sha = artifactSha256(sideEffectsContent);
     if (trace.artifactSha256 !== sha) {
       blockCommit(
         inScopeFiles,

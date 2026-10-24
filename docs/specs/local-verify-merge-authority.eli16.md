@@ -20,7 +20,7 @@ On the Mac Studio, unit tests run 8 at a time finished in under 4 minutes, every
 
 1. **Unit tests run in parallel**, and nothing runs twice any more.
 2. **Our own server runs the check.** For each pull request that is ready to merge, the Instar server runs the whole test suite on exactly the code that would land, and keeps the result. A session cannot hand in a result of its own.
-3. **The server posts a pass/fail mark on the pull request**, using GitHub's free status feature (no Actions minutes, no queue). The mark only says "pass" when the tests passed on that exact code, and any change that needs Justin's eye (to the test setup itself, or a PR that skips or deletes tests) has his approval.
+3. **The server posts a pass/fail mark on the pull request**, using GitHub's free status feature (no Actions minutes, no queue). The mark only says "pass" when the tests passed on that exact code. A riskier change (to the test setup or the merge tool itself, or one that skips or deletes tests) also needs a second, independent review of that exact code, written down in the change itself. Justin does not approve these: on 2026-10-22 he said he should only have to approve changes to the constitution, and GitHub already holds those for his review.
 4. **GitHub requires that mark before any merge.** This is one branch-rule setting that Justin turns on. After that, any merge without a pass is refused by GitHub itself, whichever session, tool or machine tries it.
 5. **After every merge, `main` itself is re-tested.** If it breaks, merges pause except for the fix, and Justin hears about it once.
 

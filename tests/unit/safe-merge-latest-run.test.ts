@@ -216,6 +216,33 @@ describe('checks read retry (ACT-149: a transient empty/unparseable response)', 
     expect(parseChecksRows('[{"name":"Build","bucket":"pass"}]')).toHaveLength(1);
   });
 
+  it('"no checks reported" (empty stdout, right after a push) is zero rows, and zero rows are NOT settled', () => {
+    const rows = parseChecksRows('', "no checks reported on the 'echo/x' branch");
+    expect(rows).toEqual([]);
+    const s = classifyChecks(rows);
+    expect(s.settled).toBe(false);
+    expect(s.noChecks).toBe(true);
+    expect(s.failed).toEqual([]);
+    // Real rows still settle as before.
+    expect(classifyChecks([{ name: 'Build', bucket: 'pass' }])).toMatchObject({ settled: true, noChecks: false });
+    // A no-checks read inside the retry wrapper returns at once (no retry, no refusal).
+    const slept: number[] = [];
+    expect(readChecksWithRetry(() => parseChecksRows('', 'no checks reported on the branch'), (ms: number) => slept.push(ms))).toEqual([]);
+    expect(slept).toEqual([]);
+  });
+
+  it('any other empty or unparseable answer still throws, carrying gh stderr (first 200 chars) for diagnosis', () => {
+    expect(() => parseChecksRows('', 'HTTP 502: Bad Gateway')).toThrow(/unparseable JSON: .*\(stderr: HTTP 502: Bad Gateway\)/);
+    expect(() => parseChecksRows('[]', 'x')).toThrow(/no checks \(stderr: x\)/);
+    // "no checks reported" with non-empty stdout is not the empty-head case: parsed normally.
+    expect(() => parseChecksRows('garbage', 'no checks reported')).toThrow(/unparseable/);
+    const long = 'e'.repeat(500);
+    let msg = '';
+    try { parseChecksRows('', long); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toContain('e'.repeat(200));
+    expect(msg).not.toContain('e'.repeat(201));
+  });
+
   it('a transient empty read is retried with the short backoff and then succeeds', () => {
     const outputs = ['[]', 'garbage', '[{"name":"Build","bucket":"pass"}]'];
     const slept: number[] = [];

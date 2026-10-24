@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
+  CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -38,14 +38,15 @@ import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, type SessionResult } from './executorSession.js';
-import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
+import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
+import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import { canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
 import type { AttemptGit, GitHubGateway } from './executorPorts.js';
-import { removeAttemptTree, sweepTrash } from './attemptFs.js';
+import { SHORT_ATTEMPT_TMP_RE, ensurePrivateAttemptTmpDir, removeAttemptTree, shortAttemptTmpDir, shortTmpRealRoot, sweepTrash } from './attemptFs.js';
 
 export const FEEDBACK_EXECUTE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -55,6 +56,12 @@ export const FEEDBACK_EXECUTE_STAGE = {
 /* @self-action-controller: feedback-execute */
 const feedbackExecuteGovernor = governor.for('feedback-execute');
 function deriveTargetKey(initiativeId: string): DerivedTarget { return { key: `feedback-execute:${initiativeId}`, classId: 'feedback-execute', keyIsVolatile: false }; }
+
+/** The end of a pane capture as one short line (ANSI removed, blank lines dropped); scrubbed again before it is stored. */
+export function summarizeTail(tail: string): string {
+  const text = tail.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n').map((l) => l.trim()).filter(Boolean).join(' | ').replace(/\s+/g, ' ');
+  return `screen: ${text.slice(-260)}`;
+}
 
 export interface ConfinedSessionPort {
   /** Spawn the CONFINED build or canary session (claude-code adapter, omitAuthEnv, cwd under .worktrees). */
@@ -73,6 +80,13 @@ export interface ConfinedSessionPort {
   remoteStop(machineId: string, sessionName: string, sessionUuid: string | null): Promise<boolean>;
   /** The confined framework's version (the canary stamps it); null when unreadable. */
   frameworkVersion(): Promise<string | null>;
+  /** The last lines of a live session's pane, or null. The canary keeps the latest one so a session that dies before writing its report still says what it showed. */
+  captureTail?(sessionName: string): Promise<string | null>;
+}
+
+/** Runs the independent reviewers over one prompt (one outcome per family that was asked). */
+export interface IndependentReviewPort {
+  run(input: { prompt: string }): Promise<ReviewerOutcome[]>;
 }
 
 /** Consecutive saturated admission checks before one degradation report (12 × 30 min ≈ 6 h). */
@@ -107,6 +121,8 @@ export interface FeedbackExecutorServiceOptions {
   runner: ConfinedRunner;
   deps: DepsCachePort;
   sessions: ConfinedSessionPort;
+  /** The independent review gate's reviewers; absent → no PR is admitted without the owner's approval. */
+  review?: IndependentReviewPort;
   admission: ExecutorAdmission;
   identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin' | 'agentGithubAccounts'>;
   /** Ranked `work` items (the triage queue order). */
@@ -248,8 +264,12 @@ export class FeedbackExecutorService {
     if (!independence.independent && !accepted) return out('approver-not-independent', extra);
     const runner = this.opts.runner.available();
     if (!runner.ok) return out('profile-unenforceable', extra);
-    const latch = this.metaJson<{ until: number }>('exec:profile_unenforceable');
-    if (latch && latch.until > at) return out('profile-unenforceable', extra);
+    const latch = this.metaJson<{ until: number; failures?: number }>('exec:profile_unenforceable');
+    // A latch written under the old flat-day rule carries no failure count; read it as one failure
+    // on the ladder (the day it asked for was set at until - DAY_MS) so a deploy does not keep an
+    // already-stale stop for the rest of its day.
+    const latchUntil = latch ? (latch.failures === undefined ? Math.min(latch.until, latch.until - DAY_MS + CANARY_RETRY_LADDER_MS[0]) : latch.until) : 0;
+    if (latch && latchUntil > at) return out('profile-unenforceable', extra);
     const deps = this.metaJson<{ nextRetryAt: number; failures: number }>('exec:deps');
     if (deps && deps.failures > 0 && deps.nextRetryAt > at) return out('deps-unavailable', extra);
     // Publication goes through a fork only (CI on a same-repository branch would run with the
@@ -514,7 +534,9 @@ export class FeedbackExecutorService {
 
   attemptPaths(row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): { workspace: string; publishClone: string; baseClone: string; headClone: string; gateClone: string; tmpDir: string; reviewDir: string } {
     const base = path.join(this.opts.paths.agentHome, '.worktrees', `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`);
-    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: `${base}-tmp`, reviewDir: `${base}-review` };
+    // tmpDir is short and real on purpose (see shortAttemptTmpDir): under the agent home it is
+    // too long for Claude Code's sandbox temp override, and every confined Bash call exits 1.
+    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: shortAttemptTmpDir(row.initiativeId, row.attempt), reviewDir: `${base}-review` };
   }
 
   private executeStateDir(): string { return path.join(this.opts.paths.stateDir, 'state', 'feedback-factory', 'execute'); }
@@ -552,7 +574,7 @@ export class FeedbackExecutorService {
       this.setMeta(epoch, `exec:attempt-deps:${row.attemptId}`, { hash: deps.hash });
       await this.opts.git.createClone(cfg.sourceRepoPath!, p.workspace, baseSha);
       await this.opts.git.createClone(cfg.sourceRepoPath!, p.publishClone, baseSha);
-      fs.mkdirSync(p.tmpDir, { recursive: true, mode: 0o700 });
+      ensurePrivateAttemptTmpDir(p.tmpDir, this.trashRoot());
       // No project hooks or settings may load in the confined session: .claude/ is removed (and write-denied).
       removeAttemptTree(path.join(p.workspace, '.claude'), this.trashRoot(), 'feedback-execute strip workspace .claude');
       fs.symlinkSync(path.join(deps.dir, 'node_modules'), path.join(p.workspace, 'node_modules'), 'dir');
@@ -592,7 +614,10 @@ export class FeedbackExecutorService {
       const reason = error instanceof DrainConflictError ? 'stale-epoch'
         : error instanceof RerouteRefusedError ? 'reroute-capacity'
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
-      this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown' });
+      // The message says which step failed (clone, deps, symlink, …); without it every failure read "Error".
+      const message = error instanceof Error ? scrubForStore(error.message, { maxBytes: 2048 }) : null;
+      this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown',
+        detail: message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
       try {
@@ -657,9 +682,19 @@ export class FeedbackExecutorService {
         const spawned = await this.opts.sessions.spawnConfined({ name: `feedback-canary-${pathSlug(row.initiativeId)}-a${row.attempt}`, prompt: sessionCanaryPrompt(paths, fixture, reportPath),
           cwd: paths.workspace, settingsPath, tmpDir: paths.tmpDir, maxDurationMinutes: 10 });
         canarySession = spawned.sessionName;
-        await this.waitForSession(spawned.sessionName, this.opts.sessionWaitMs ?? 10 * 60_000);
+        let lastTail: string | null = null;
+        await this.waitForSession(spawned.sessionName, this.opts.sessionWaitMs ?? 10 * 60_000, async () => {
+          const tail = await this.opts.sessions.captureTail?.(spawned.sessionName).catch(() => null); // @silent-fallback-ok: the tail is diagnostic only
+          if (tail && tail.trim()) lastTail = tail;
+        });
         canarySession = null;
-        probes.push(...evaluateSessionCanary(paths, fixture, reportPath, findSessionTranscript(spawned.transcript ?? null)));
+        const sessionProbes = evaluateSessionCanary(paths, fixture, reportPath, findSessionTranscript(spawned.transcript ?? null));
+        probes.push(...sessionProbes);
+        // A session that never wrote its report (it exited at startup, sat at a prompt, …) left no
+        // other evidence: record what its screen last showed. It is already a failure; this says why.
+        if (sessionProbes.some((p) => p.probe === 'session-ran-every-probe' && !p.ok)) {
+          probes.push({ probe: 'session-last-screen', expect: 'succeed', ok: false, detail: lastTail ? summarizeTail(lastTail) : 'no screen captured (the session ended before the first check)' });
+        }
         // The must-succeed probes leave two marker files in the workspace; they are not part of any change set.
         for (const marker of [`.feedback-canary-ok-${fixture.nonce}`, `.feedback-canary-bash-${fixture.nonce}`]) {
           try { removeAttemptTree(path.join(paths.workspace, marker), this.trashRoot(), 'feedback-execute canary marker cleanup'); } catch (error) {
@@ -676,13 +711,18 @@ export class FeedbackExecutorService {
     const epoch = this.opts.ownerEpoch();
     this.setMeta(epoch, 'exec:canary_last', { at: this.now(), ok: verdict.ok, stamp, frameworkVersion, sandboxRuntimeVersion: SANDBOX_RUNTIME_VERSION, failed: probes.filter((p) => !p.ok).map((p) => p.probe) });
     if (verdict.ok && !fullGateDone) this.setMeta(epoch, 'exec:canary_full_gate', { stamp, at: this.now() });
+    if (verdict.ok) {
+      const latch = this.metaJson<{ episode: number; failures?: number }>('exec:profile_unenforceable');
+      if (latch && (latch.failures ?? 1) > 0) this.setMeta(epoch, 'exec:profile_unenforceable', { until: 0, episode: latch.episode, failures: 0, clearedAt: this.now() });
+    }
     this.opts.audit.append('execute:canary', { attemptId: row.attemptId, ok: verdict.ok, failed: probes.filter((p) => !p.ok).map((p) => p.probe) });
     return verdict;
   }
 
-  private async waitForSession(sessionName: string, maxMs: number): Promise<boolean> {
+  private async waitForSession(sessionName: string, maxMs: number, onPoll?: () => Promise<void>): Promise<boolean> {
     const deadline = this.now() + maxMs;
     while (this.opts.sessions.isAlive(sessionName)) {
+      if (onPoll) await onPoll();
       if (this.now() >= deadline) { await this.opts.sessions.stop(sessionName); return false; }
       await this.sleep(5_000);
     }
@@ -690,8 +730,12 @@ export class FeedbackExecutorService {
   }
 
   private async profileUnenforceable(epoch: number, probes: CanaryProbeResult[]): Promise<void> {
-    const existing = this.metaJson<{ until: number; episode: number }>('exec:profile_unenforceable');
-    const episode = existing && existing.until > this.now() - DAY_MS ? existing.episode : (existing?.episode ?? 0) + 1;
+    const existing = this.metaJson<{ until: number; episode: number; failures?: number }>('exec:profile_unenforceable');
+    // An episode runs from the first failure to the next pass; a pass sets failures back to 0.
+    const continuing = existing !== null && (existing.failures ?? 1) > 0;
+    const episode = continuing ? existing!.episode : (existing?.episode ?? 0) + 1;
+    const failures = continuing ? (existing!.failures ?? 1) + 1 : 1;
+    const retryInMs = CANARY_RETRY_LADDER_MS[Math.min(failures - 1, CANARY_RETRY_LADDER_MS.length - 1)];
     // Record WHY, not just which. A probe failure here is a 24h stop no route can clear, and the
     // canary report that explains it is deleted with the attempt tree — so without this the cause is
     // unrecoverable after the fact (it cost a full manual repro on 2026-10-21). Bounded and scrubbed:
@@ -700,13 +744,13 @@ export class FeedbackExecutorService {
       const scrubbed = scrubForStore(p.detail, { maxBytes: 2048 });
       return { probe: p.probe, detail: scrubbed.error ? '[detail withheld: scrub failed]' : scrubbed.text.slice(0, 300) };
     });
-    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + DAY_MS, episode, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
+    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + retryInMs, episode, failures, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
     this.availability = null;
     await this.attention({
       id: `feedback-execute:profile-unenforceable:${episode}`,
       title: 'Feedback executor stopped: sandbox check failed',
       summary: 'The sandbox check before a feedback fix attempt did not hold, so no attempts will start.',
-      description: `Failed checks: ${probes.filter((p) => !p.ok).map((p) => p.probe).join(', ') || 'unknown'}. The executor retries the check in 24 hours. Triage is unaffected.`,
+      description: `Failed checks: ${probes.filter((p) => !p.ok).map((p) => p.probe).join(', ') || 'unknown'}. The executor runs the check again in ${Math.round(retryInMs / HOUR_MS)} hour(s), then waits longer after each further failure (up to a day); a pass resumes fix attempts. Triage is unaffected.`,
       category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:profile-unenforceable',
     });
   }
@@ -1035,6 +1079,18 @@ export class FeedbackExecutorService {
         try { if (fs.statSync(full).mtimeMs < cutoff) removeAttemptTree(full, this.trashRoot(), 'feedback-execute scratch retention'); } catch { /* @silent-fallback-ok: retried next tick */ }
       }
     }
+    // Attempt temp directories live under the system temp root (shortAttemptTmpDir), outside the
+    // .worktrees sweep above: a crash between spawn and cleanup leaves one behind. Only our own
+    // shape is touched, and only when no recorded attempt still maps to it.
+    const live = new Set(this.opts.store.inStates('claimed', 'running', 'verifying').map((r) => shortAttemptTmpDir(r.initiativeId, r.attempt)));
+    const root = shortTmpRealRoot();
+    let scratch: string[] = [];
+    try { scratch = fs.readdirSync(root).filter((name) => SHORT_ATTEMPT_TMP_RE.test(name)); } catch { scratch = []; } // @silent-fallback-ok: no temp root to sweep
+    for (const name of scratch.slice(0, 200)) {
+      const full = path.join(root, name);
+      if (live.has(full)) continue;
+      try { if (fs.statSync(full).mtimeMs < cutoff) removeAttemptTree(full, this.trashRoot(), 'feedback-execute stale attempt temp'); } catch { /* @silent-fallback-ok: retried next tick */ }
+    }
   }
 
   /** Park a secret-shaped change set (machine-local, owner-only, never served) for a PIN-approved publication. */
@@ -1215,8 +1271,12 @@ export class FeedbackExecutorService {
     const reviews = await this.opts.github.reviews(slug, prNumber);
     if (!reviews) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'reviews' }); return; }
     const verdict = approvedAtHead(reviews, approver, pr.headRefOid);
-    if (!verdict.approved) return;
-    if (!row.gradedApproval) {
+    // The owner's approval of this head admits on its own. Otherwise, under the independent gate,
+    // a cross-family reviewer and the Claude reviewer both passing this head admits it.
+    let admittedBy: 'operator' | 'independent' | null = verdict.approved ? 'operator' : null;
+    if (!admittedBy && this.opts.config().reviewGate === 'independent') admittedBy = await this.independentAdmission(row, epoch, slug, prNumber, pr.headRefOid);
+    if (!admittedBy) return;
+    if (admittedBy === 'operator' && !row.gradedApproval) {
       this.gradeLatestDecision(epoch, row.initiativeId, 'executor-operator-approved', 'right', 'medium');
       this.opts.store.patch(epoch, row.attemptId, { gradedApproval: true });
     }
@@ -1244,6 +1304,85 @@ export class FeedbackExecutorService {
       return;
     }
     await this.mergeRefused(this.opts.store.get(row.attemptId)!, epoch, merge.reason);
+  }
+
+  /**
+   * The independent review gate (§4 step 9, amended 2026-10-23). Judges each head once: a pass is
+   * remembered for that head; a refusal about the CHANGE (serious findings, an unparseable reply,
+   * a diff too large to read) is written on the PR and holds the item (listed once); a refusal
+   * because a reviewer was away is retried after the merge-retry delay. The owner's approval at
+   * the head still admits either way (the operator branch runs first). A path CODEOWNERS assigns
+   * to someone else is never admitted here: that owner's GitHub review is required.
+   */
+  private async independentAdmission(row: ExecutionRow, epoch: number, slug: string, prNumber: number, headSha: string): Promise<'independent' | null> {
+    if (row.codeownersOutside.length > 0) return null;
+    if (row.reviewSha === headSha) return row.reviewVerdict === 'pass' ? 'independent' : null;
+    // A reviewer was away last time: a structurally absent family (unavailable) is asked again daily,
+    // a failing one (degraded) after the merge-retry delay — never every tick.
+    if (row.reviewVerdict === 'retry' && row.reviewedAt !== null) {
+      const wait = (row.reviewReason ?? '').endsWith('-unavailable') ? DAY_MS : MERGE_RETRY_DELAY_MS;
+      if (this.now() - row.reviewedAt < wait) return null;
+    }
+    // A code-owned PR waits for its owner; its file list is re-read on the retry cadence, not every tick.
+    if (row.reviewReason === 'codeowners-owned' && row.reviewedAt !== null && this.now() - row.reviewedAt < MERGE_RETRY_DELAY_MS) return null;
+    if (!this.opts.review) return null;
+    const files = await this.opts.github.prFiles(slug, prNumber);
+    if (files === null) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'files' }); return null; }
+    // A path CODEOWNERS assigns to anyone (on the canonical repository: the constitution) is never
+    // admitted by the reviewers; that owner's GitHub review is required (GitHub enforces the same).
+    const owned = codeownersOwned(this.readSourceCodeowners(), files);
+    if (owned.length > 0) {
+      if (row.reviewReason !== 'codeowners-owned') this.opts.store.patch(epoch, row.attemptId, { reviewSha: null, reviewVerdict: null, reviewReason: 'codeowners-owned', reviewedAt: this.now() });
+      return null;
+    }
+    const diff = await this.opts.github.prDiff(slug, prNumber);
+    if (diff === null) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'diff' }); return null; }
+    let outcome: IndependentReviewVerdict;
+    if (Buffer.byteLength(diff, 'utf8') > REVIEW_DIFF_MAX_BYTES) outcome = { pass: false, reason: 'diff-too-large', reviewers: [] };
+    else {
+      const triage = this.opts.triageStore.get(row.initiativeId);
+      const prompt = buildExecutorReviewPrompt({
+        prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
+      });
+      let reviewers: ReviewerOutcome[];
+      try { reviewers = await this.opts.review.run({ prompt }); } catch (error) {
+        // A throwing reviewer port is a degraded reviewer (every family, the cross-family one
+        // included), never an aborted tick for every later row.
+        reviewers = [{ family: 'review-port', model: null, status: 'degraded', verdict: null, crossFamily: true, reason: error instanceof Error ? error.name : 'threw', body: null }];
+      }
+      outcome = { ...judgeIndependentReview(reviewers), reviewers };
+    }
+    this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
+      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict })) });
+    if (outcome.pass) {
+      this.opts.store.patch(epoch, row.attemptId, { reviewSha: headSha, reviewVerdict: 'pass', reviewReason: outcome.reason, reviewedAt: this.now() });
+      this.gradeLatestDecision(epoch, row.initiativeId, 'executor-independent-review-passed', 'right', 'weak');
+      return 'independent';
+    }
+    if (!reviewRefusalIsAboutTheChange(outcome.reason)) {
+      // A reviewer was away: not the change's fault, and not a verdict on this head. The owner's
+      // approval is unaffected (no merge-retry delay is set); the reviewers are asked again later.
+      this.opts.store.patch(epoch, row.attemptId, { reviewSha: null, reviewVerdict: 'retry', reviewReason: outcome.reason, reviewedAt: this.now() });
+      if (outcome.reason.endsWith('-unavailable')) {
+        this.opts.reportDegradation({ feature: 'feedback-execute:reviewer-unavailable', primary: 'Independent review of a feedback fix PR', fallback: 'The PR waits for the owner\'s approval; the reviewers are asked again in 24 h',
+          reason: outcome.reason, impact: `Fix PR #${prNumber} is not merged until a reviewer family is available or the owner approves it.` });
+      }
+      return null;
+    }
+    // A refusal about the change: say why on the PR and keep the row OPEN under the gate, so the
+    // owner's approval, a new push (reviewed afresh) and a hand-merge all still land. Judged once
+    // per head: the reviewSha short-circuit above never re-asks for this head.
+    const commented = await this.opts.github.comment(slug, prNumber, renderReviewComment(outcome, headSha));
+    if (!commented) this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'comment' });
+    this.opts.store.patch(epoch, row.attemptId, { reviewSha: headSha, reviewVerdict: 'fail', reviewReason: outcome.reason, reviewedAt: this.now(), reason: `review-failed:${outcome.reason}` });
+    return null;
+  }
+
+  /** `.github/CODEOWNERS` of the canonical checkout (the base the PR targets); null when absent or unreadable. */
+  private readSourceCodeowners(): string | null {
+    const repo = this.opts.config().sourceRepoPath;
+    if (!repo) return null;
+    try { return fs.readFileSync(path.join(repo, '.github', 'CODEOWNERS'), 'utf8'); } catch { return null; } // @silent-fallback-ok: no CODEOWNERS file → no owned paths
   }
 
   /** merge-refused: disarm; retried once after 1 h; then hold merge-unavailable (listed once in the action list). */
@@ -1521,8 +1660,16 @@ export class FeedbackExecutorService {
     for (const row of this.opts.store.all()) {
       const prLink = row.prNumber && slug ? `https://github.com/${slug}/pull/${row.prNumber}/files` : link;
       if ((row.state === 'pr-open' || row.state === 'spec-pr-open') && row.headSha) {
+        const kind = row.state === 'spec-pr-open' ? 'Spec draft' : 'Fix';
         const owners = row.codeownersOutside.length > 0 ? ` (CODEOWNERS also needs another owner for ${row.codeownersOutside.slice(0, 3).join(', ')})` : '';
-        items.push({ line: `${row.state === 'spec-pr-open' ? 'Spec draft' : 'Fix'} PR #${row.prNumber} awaits your approval${owners}: ${prLink}`, metaKey: `action_list:exec:pr:${row.attemptId}:${row.headSha}` });
+        const key = `action_list:exec:pr:${row.attemptId}:${row.headSha}`;
+        if (row.reviewVerdict === 'fail' && row.reviewSha === row.headSha) {
+          items.push({ line: `${kind} PR #${row.prNumber} did not pass the independent review (${row.reviewReason ?? 'refused'}); the reasons are on the PR. Approve it on GitHub to merge it anyway, push a fix, or close it: ${prLink}`, metaKey: `${key}:review-failed` });
+        } else if (row.reviewVerdict === 'retry') {
+          items.push({ line: `${kind} PR #${row.prNumber} is waiting for a reviewer (${row.reviewReason ?? 'unavailable'}); your approval on GitHub merges it now: ${prLink}`, metaKey: `${key}:review-waiting` });
+        } else if (row.reviewVerdict !== 'pass') {
+          items.push({ line: `${kind} PR #${row.prNumber} awaits your approval${owners}: ${prLink}`, metaKey: key });
+        }
       }
       if (row.state === 'held' && row.reason === 'needs-review-secret-shape') {
         items.push({ line: `A feedback fix is held because some files look like they contain a secret: ${row.secretFiles.slice(0, 5).join(', ')}. Review and publish with your PIN, or leave it: ${link}`, metaKey: `action_list:exec:secret:${row.attemptId}` });
