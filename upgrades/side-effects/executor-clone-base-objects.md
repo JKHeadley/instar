@@ -67,6 +67,8 @@ Second round (re-review of `74d43ac3`): joining lines before scrubbing still sep
 
 Third round (re-review of `648c7768`): ANSI stripping ran after the scrub and the nonce replacement, so `password=<ESC>[31m<value>` or a nonce split by an escape was re-joined after the checks. `outputTail` now normalises each stream to plain text first (ANSI/OSC sequences and control characters removed, line endings unified, space runs collapsed), then redacts the nonce, then scrubs; afterwards only trimming, filtering, joining and shortening remain. Tests: colour code, OSC title, backspace and carriage return inside a labelled secret; nonce split by an escape or a NUL.
 
+Fourth round (re-review of `fc3ef7d8`): the shared scrubber only recognises credential shapes, so `password=!A1b2…` passed. Rather than widen shared patterns, `outputTail` now withholds any line naming a credential (password, secret, token, api key, private key, auth, bearer, credential, cookie, session id) together with the line after it; the scrubber remains the second layer. Residual risk: an unlabelled secret on a line naming none of these words, which no shape- or label-based check can see; the canary runs inside the confinement profile, which denies credential reads by design. Over-block: an ordinary error line containing one of these words is withheld from the diagnostic.
+
 Over-block / under-block: the brake can now admit a start during a genuinely long restart deferral past 6 h; the restart gate already caps deferral, and a start interrupted by a restart is reconciled on the next tick, so the cost is one wasted start.
 
 ## 8. Rollback cost

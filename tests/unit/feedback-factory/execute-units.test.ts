@@ -363,7 +363,8 @@ describe('canary judgement', () => {
     const secret = 'A1b2C3d4'.repeat(30); // 240 chars: a cut-first tail would keep the value and drop "password="
     const tail = outputTail(`config dump password=${secret}`, '', 240);
     expect(tail).not.toContain(secret.slice(-40));
-    expect(tail).toContain('[REDACTED');
+    // Withheld outright (the label names a credential); the scrubber is the second layer.
+    expect(tail).toBe(': [line withheld]');
   });
 
   it('outputTail scrubs each stream with newlines intact, so a label on its own line still protects the value', () => {
@@ -388,6 +389,15 @@ describe('canary judgement', () => {
     }
     const nonce = 'f00dfeedcafe1234';
     expect(outputTail(`f00dfeed\u001b[0mcafe1234`, `f00d\u0000feedcafe1234`, 240, [nonce])).not.toContain(nonce);
+  });
+
+  it('outputTail withholds any line naming a credential, and the line after it, whatever the value looks like', () => {
+    expect(outputTail('password=!A1b2C3d4E5f6G7h8', '', 240)).toBe(': [line withheld]');
+    const split = outputTail('Error: bad login\nPassword:\n!A1b2C3d4E5f6G7h8\nat test.ts:3', '', 240);
+    expect(split).not.toContain('A1b2C3d4');
+    expect(split).toContain('Error: bad login');
+    expect(split).toContain('at test.ts:3');
+    expect(outputTail('Authorization: Bearer !weird~value', '', 240)).not.toContain('weird');
   });
 
   it('outputTail hides the canary nonce, including inside the canary secret string', () => {

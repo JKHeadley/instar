@@ -282,6 +282,27 @@ function plainText(t: string): string {
     .replace(/ {2,}/g, ' ');
 }
 
+/** Words that mark a line as possibly carrying a credential, whatever the value looks like. */
+const CREDENTIAL_WORD = /pass(?:word|wd|phrase)?|secret|token|api[\s_-]?key|private[\s_-]?key|auth|bearer|credential|cookie|session[\s_-]?id/i;
+
+/**
+ * The scrubber recognises credential SHAPES, and a value outside them (a password starting with `!`)
+ * passes through. A canary diagnostic does not need any such line, so a line naming a credential is
+ * withheld outright, together with the line after it (where a value printed under its label sits).
+ */
+function withholdCredentialLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (CREDENTIAL_WORD.test(lines[i])) {
+      out.push('[line withheld]');
+      if (i + 1 < lines.length) { out.push('[line withheld]'); i++; }
+    } else {
+      out.push(lines[i]);
+    }
+  }
+  return out;
+}
+
 /**
  * The last meaningful output of a failed probe (stdout then stderr), one line. Order matters, and every
  * step that could change which characters sit next to each other comes BEFORE the secret checks: each
@@ -300,7 +321,7 @@ export function outputTail(stdout: string, stderr: string, max = 240, redact: st
   const out = scrub(stdout);
   const err = scrub(stderr);
   if (out === null || err === null) return ': [output withheld: scrub failed]';
-  const lines = (t: string) => t.split('\n').map((l) => l.trim())
+  const lines = (t: string) => withholdCredentialLines(t.split('\n').map((l) => l.trim()))
     // macOS xcrun cache-file noise from git under the sandbox carries no signal.
     .filter((l) => l && !/couldn't create cache file .*xcrun_db/.test(l));
   const all = [...lines(out), ...lines(err)];
