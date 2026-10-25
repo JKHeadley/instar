@@ -68,13 +68,23 @@ witness sign --subject did:web:api.moltbridge.ai:agents:dawn \
   --claim collaborated --context "Paired over Threadline" \
   --evidence threadline:thread-e45ab4ad --confidence 90
 witness verify record.json --binding binding.json
-witness seal-evidence seal.json --url https://...   # a SEAL by hash plus where to fetch it
-witness export                                 # the binding and every record, to share
+witness seal-evidence seal.json --party dawn --url https://...   # SealKeeper's reference (provisional)
+witness seal-evidence seal.json --url https://...   # the v0 form: a SEAL by hash plus a URL
+witness export                                 # the binding, every record, and their SEAL bytes
 ```
 
 `--agent` is the name your records carry as issuer. A `did:key` issuer names the agent's **Threadline identity key**, never its Witness key: the binding is what reaches the Witness key, so the name stays the same when the Witness key rotates. `bind` refuses a `did:key` that is not this agent's own Threadline key (`didKeyFromPublicKey` makes the right one).
 
-What `verify` checks: one record against one binding. The record's signature is checked against the binding's Witness key, and the binding's own two signatures are checked. For a `did:key` issuer it also checks, offline, that the issuer *is* the binding's Threadline key, so a binding someone else made under your name is refused. For a `did:web` issuer it cannot check that offline (the key is in the did document), and its output says so. It does **not** walk a chain: a superseded or revoked binding still verifies here. The store (`WitnessStore`) applies the chain rules; use it, or check the issuer's current chain, before relying on an old record. A SEAL is carried as `seal:sha256:<hex>` plus its URL, never inline, because it can be larger than one evidence item. `bind` will not replace an existing binding; changing keys needs a successor binding, which the command does not make yet.
+What `verify` checks: one record against one binding. The record's signature is checked against the binding's Witness key, and the binding's own two signatures are checked. For a `did:key` issuer it also checks, offline, that the issuer *is* the binding's Threadline key, so a binding someone else made under your name is refused. For a `did:web` issuer it cannot check that offline (the key is in the did document), and its output says so. It does **not** walk a chain: a superseded or revoked binding still verifies here. The store (`WitnessStore`) applies the chain rules; use it, or check the issuer's current chain, before relying on an old record. `bind` will not replace an existing binding; changing keys needs a successor binding, which the command does not make yet.
+
+## SEAL references (provisional)
+
+A SEAL (a SealKeeper attestation) is never carried inline in a record, because it can be larger than one evidence item. It is referenced by hash, and the bytes travel beside the record.
+
+- **SealKeeper's form, provisional.** `witness seal-evidence seal.json --party <id> --url <read-url>` emits SealKeeper's one reference string, `sealkeeper:seal:1:<party>:<sha256>:<url>`, at most 200 characters. It is parsed by splitting on the first five colons only, so the URL keeps its own colons; a party id containing a colon cannot be carried and is refused. This is our reading of SealKeeper's standard and SealKeeper has not confirmed it yet, so every output that uses it carries `provisional`. If SealKeeper's party ids turn out to contain colons, the parser has to change.
+- **Only the sha256 is trusted.** The party and the URL are labels the issuer wrote. Nothing checks them, nothing is fetched, and `verify` lists them under `unverified` and says so.
+- **The bytes travel with the record.** SealKeeper does not serve past SEALs by hash: the read URL returns the current SEAL, not the one the record names. So `seal-evidence` keeps a copy of the SEAL under its hash in the Witness home, `export` carries those bytes (base64) beside the records as `seals`, and both `export` and `verify` check the bytes against the sha256. Bytes that match no reference are refused, not kept; a referenced SEAL whose bytes are not held is listed under `sealsMissing`. Hand `verify` the bytes with `--seal <file>`; it reports `bytesChecked` per reference.
+- **The old form stays accepted.** `seal:sha256:<hex>` plus a URL, as v0.1.0 emitted it, still verifies and its bytes are checked the same way.
 
 ## Not yet
 

@@ -210,3 +210,112 @@ test('bind refuses a did:key that names a different key than this agent\'s Threa
   assert.equal(r.code, 1);
   assert.match(r.err, /does not name this agent's Threadline identity key/);
 });
+
+// ── SealKeeper's reference form (PROVISIONAL until SealKeeper confirms the reading) ──
+
+test('seal-evidence --party emits SealKeeper\'s single reference, keeps the SEAL by hash, and says it is provisional', () => {
+  const { dir, run, home } = setup();
+  const seal = path.join(dir, 'seal.json');
+  fs.writeFileSync(seal, '{"seal":"x"}');
+  const hash = crypto.createHash('sha256').update('{"seal":"x"}').digest('hex');
+  const url = 'https://sealkeeper.run/v1/seal/read?party=dawn&at=2026-10-25T12:00:00Z';
+  const r = run('seal-evidence', seal, '--party', 'dawn', '--url', url);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(r.out.evidence, [`sealkeeper:seal:1:dawn:${hash}:${url}`]);
+  assert.ok(r.out.evidence[0].length <= 200);
+  assert.match(r.out.provisional, /provisional/);
+  assert.match(r.out.labels, /unverified/);
+  assert.equal(fs.readFileSync(path.join(home, 'seals', `${hash}.seal`), 'utf8'), '{"seal":"x"}');
+  assert.match(run('seal-evidence', seal, '--party', 'dawn').err, /needs --url/);
+  assert.match(run('seal-evidence', seal, '--party', 'did:web:a', '--url', url).err, /colon/);
+});
+
+test('verify reports a SealKeeper reference: hash checked against the SEAL bytes, party and url called unverified', () => {
+  const { dir, run, home } = setup();
+  run('init');
+  run('bind', '--agent', AGENT);
+  const seal = path.join(dir, 'seal.json');
+  fs.writeFileSync(seal, '{"seal":"x"}');
+  const { out: ev } = run('seal-evidence', seal, '--party', 'dawn', '--url', 'https://sealkeeper.run/seal/dawn');
+  const signed = run('sign', '--subject', PEER, '--claim', 'completed', '--context', 'Sealed work', '--evidence', ev.evidence[0]);
+  assert.equal(signed.code, 0, signed.err);
+  const recFile = path.join(dir, 'rec.json');
+  fs.writeFileSync(recFile, JSON.stringify(signed.out.record));
+  const binding = path.join(home, 'binding.json');
+  // Without the bytes: genuine record, hash not checked, labels named as unverified.
+  const noBytes = run('verify', recFile, '--binding', binding);
+  assert.equal(noBytes.out.ok, true);
+  assert.equal(noBytes.out.seals.length, 1);
+  assert.equal(noBytes.out.seals[0].bytesChecked, false);
+  assert.equal(noBytes.out.seals[0].party, 'dawn');
+  assert.deepEqual(noBytes.out.seals[0].unverified, ['party', 'url']);
+  assert.match(noBytes.out.seals[0].labels, /unverified labels/);
+  assert.match(noBytes.out.provisional, /provisional/);
+  // With the right bytes: checked.
+  const withBytes = run('verify', recFile, '--binding', binding, '--seal', seal);
+  assert.equal(withBytes.out.ok, true);
+  assert.equal(withBytes.out.seals[0].bytesChecked, true);
+  // With the wrong bytes: refused.
+  const wrong = path.join(dir, 'wrong.json');
+  fs.writeFileSync(wrong, '{"seal":"y"}');
+  const mismatch = run('verify', recFile, '--binding', binding, '--seal', wrong);
+  assert.equal(mismatch.out.ok, false);
+  assert.match(mismatch.out.reason, /do not match any SEAL reference/);
+});
+
+test('the old seal:sha256 form still verifies, and its bytes are checked the same way', () => {
+  const { dir, run, home } = setup();
+  run('init');
+  run('bind', '--agent', AGENT);
+  const seal = path.join(dir, 'seal.txt');
+  fs.writeFileSync(seal, 'old-form-seal');
+  const { out: ev } = run('seal-evidence', seal, '--url', 'https://sealkeeper.run/seal/old');
+  const signed = run('sign', '--subject', PEER, '--claim', 'completed', '--context', 'x', '--evidence', ev.evidence[0], '--evidence', ev.evidence[1]);
+  const recFile = path.join(dir, 'rec.json');
+  fs.writeFileSync(recFile, JSON.stringify(signed.out.record));
+  const v = run('verify', recFile, '--binding', path.join(home, 'binding.json'), '--seal', seal);
+  assert.equal(v.out.ok, true);
+  assert.equal(v.out.seals[0].format, 'legacy');
+  assert.equal(v.out.seals[0].bytesChecked, true);
+  assert.equal(v.out.provisional, undefined);
+});
+
+test('export carries the SEAL bytes beside the record, matched by hash, and refuses a mismatch', () => {
+  const { dir, run } = setup();
+  run('init');
+  run('bind', '--agent', AGENT);
+  const seal = path.join(dir, 'seal.json');
+  fs.writeFileSync(seal, '{"seal":"x"}');
+  const hash = crypto.createHash('sha256').update('{"seal":"x"}').digest('hex');
+  const { out: ev } = run('seal-evidence', seal, '--party', 'dawn', '--url', 'https://sealkeeper.run/seal/dawn');
+  run('sign', '--subject', PEER, '--claim', 'completed', '--context', 'x', '--evidence', ev.evidence[0]);
+  const exported = run('export');
+  assert.equal(exported.code, 0, exported.err);
+  assert.equal(exported.out.records.length, 1);
+  assert.equal(Buffer.from(exported.out.seals[hash].bytes, 'base64').toString(), '{"seal":"x"}');
+  assert.equal(exported.out.seals[hash].source, 'stored');
+  assert.match(exported.out.provisional, /provisional/);
+  // A --seal file that matches a referenced hash is carried; one that matches nothing is refused.
+  const viaFile = run('export', '--seal', seal);
+  assert.equal(viaFile.out.seals[hash].source, 'seal-file');
+  const wrong = path.join(dir, 'wrong.json');
+  fs.writeFileSync(wrong, '{"seal":"y"}');
+  assert.match(run('export', '--seal', wrong).err, /do not match any SEAL/);
+});
+
+test('export names a referenced SEAL whose bytes it does not hold, and refuses a stored SEAL that no longer hashes to its name', () => {
+  const { dir, run, home } = setup();
+  run('init');
+  run('bind', '--agent', AGENT);
+  const hash = crypto.createHash('sha256').update('never-stored').digest('hex');
+  run('sign', '--subject', PEER, '--claim', 'completed', '--context', 'x', '--evidence', `sealkeeper:seal:1:dawn:${hash}:https://sealkeeper.run/seal/dawn`);
+  const missing = run('export');
+  assert.deepEqual(missing.out.sealsMissing, [hash]);
+  assert.deepEqual(missing.out.seals, {});
+  fs.mkdirSync(path.join(home, 'seals'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'seals', `${hash}.seal`), 'tampered');
+  const r = run('export');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /does not hash to its name/);
+  assert.equal(run('seal-evidence', path.join(dir, 'nope.json'), '--party', 'dawn', '--url', 'https://x').code, 1);
+});
