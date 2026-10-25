@@ -20,7 +20,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedCacheEnv, confinedEnv, type ConfinementPaths } from './executePolicy.js';
+import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, commandFailureTail, confinedCacheEnv, confinedEnv, type ConfinementPaths } from './executePolicy.js';
 import { shq } from './executorSession.js';
 import type { ConfinedRunner } from './ConfinedRunner.js';
 
@@ -215,15 +215,12 @@ export const PROBE_TAIL_CHARS = 700;
  * defensively — a probe tail must never become the channel that carries it into durable state.
  */
 export function failureTail(r: { stdout: string; stderr: string }, fx: Pick<CanaryFixture, 'nonce'>): string {
-  // Redact BEFORE slicing, or a nonce straddling the window boundary leaves a readable fragment.
-  const redact = (text: string) => String(text ?? '').split(`canary-secret-${fx.nonce}`).join('[canary-nonce]').split(fx.nonce).join('[canary-nonce]');
-  const tail = (text: string) => redact(text).trimEnd().slice(-PROBE_TAIL_CHARS).trim();
-  const parts = [
-    ['stderr', tail(r.stderr)],
-    ['stdout', tail(r.stdout)],
-  ].filter(([, text]) => text.length > 0) as [string, string][];
-  if (parts.length === 0) return ' — no output';
-  return ` — ${parts.map(([name, text]) => `${name}: ${text}`).join(' | ')}`;
+  // Redaction runs BEFORE slicing (inside the shared helper), or a nonce straddling the window
+  // boundary leaves a readable fragment.
+  return commandFailureTail(r, {
+    perStream: PROBE_TAIL_CHARS,
+    redact: (text) => text.split(`canary-secret-${fx.nonce}`).join('[canary-nonce]').split(fx.nonce).join('[canary-nonce]'),
+  });
 }
 
 /** Runner path: probes executed through the sandbox runtime with the attempt's policy. */

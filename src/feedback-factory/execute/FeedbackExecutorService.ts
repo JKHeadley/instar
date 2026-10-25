@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
+  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -42,7 +42,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
-import { canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
+import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
 import type { AttemptGit, GitHubGateway } from './executorPorts.js';
@@ -991,12 +991,38 @@ export class FeedbackExecutorService {
       return;
     }
     const verification = await this.verifyFix(row, changeSet, result);
-    if (!verification.ok) { this.endAttempt(row, epoch, 'failed', verification.reason); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
+    if (!verification.ok) {
+      // The reason is a matchable label (prefix-matched elsewhere), so the output goes in its OWN
+      // durable row — mirroring exec:prepare_failed_last — and is surfaced as status.lastCheckFailure.
+      this.recordCheckFailure(epoch, row, verification.reason, verification.detail);
+      this.endAttempt(row, epoch, 'failed', verification.reason);
+      await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+      return;
+    }
     await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver);
   }
 
+  /**
+   * Keep WHY a check run failed, scrubbed and clamped to the same durable budget as a canary probe.
+   *
+   * The audit row keeps id-shaped values only (a sentence becomes "[text:N]"), so the output cannot
+   * live there; and the check clones are removed with the attempt, so it is unrecoverable after the
+   * fact. Best-effort by design: a failure to record must never mask the check failure itself.
+   */
+  private recordCheckFailure(epoch: number, row: ExecutionRow, reason: string, detail?: string): void {
+    this.opts.audit.append('execute:check-failed', { attemptId: row.attemptId, reason });
+    if (!detail) return;
+    try {
+      const scrubbed = scrubForStore(detail, { maxBytes: CANARY_PROBE_DETAIL_BUDGET.maxBytes });
+      this.setMeta(epoch, 'exec:check_failed_last', {
+        at: this.now(), attemptId: row.attemptId, reason,
+        detail: scrubbed.error ? '[detail withheld: scrub failed]' : clampProbeDetail(scrubbed.text),
+      });
+    } catch { /* @silent-fallback-ok: the audit row above already records the reason; recording must never mask the failure */ }
+  }
+
   /** (a) fails at base with an assertion (or a missing new source), (b) passes at the workspace, (c) lint + related tests pass. All confined. */
-  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true } | { ok: false; reason: string }> {
+  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true } | { ok: false; reason: string; detail?: string }> {
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     const depsHash = this.metaJson<{ hash: string }>(`exec:attempt-deps:${row.attemptId}`)?.hash;
@@ -1020,6 +1046,15 @@ export class FeedbackExecutorService {
       });
     };
     const limit = (r: { timedOut: boolean; outputCapped: boolean }) => (r.timedOut ? 'limit:command-wall-clock' : r.outputCapped ? 'limit:output' : null);
+    // A failed check run records its OWN output, bounded and scrubbed through the same helper the
+    // canary uses. Without it `gate:lint` / `head-check:test-fails-at-head` were labels with the
+    // cause thrown away, and the three check clones are deleted with the attempt — the exact
+    // blindness that made `base-unit-smoke` cost three days one step earlier.
+    const failed = (reason: string, r?: { stdout: string; stderr: string }) => ({
+      ok: false as const,
+      reason,
+      ...(r ? { detail: `${reason}${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}` } : {}),
+    });
     /** A fresh trusted clone at the base SHA with `entries` applied and node_modules linked by trusted code. */
     const freshClone = async (dir: string, entries: ChangeEntry[]) => {
       removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale check clone');
@@ -1035,13 +1070,13 @@ export class FeedbackExecutorService {
       if (limit(base)) return { ok: false, reason: limit(base)! };
       const imports = relativeImports(testEntries(changeSet).map((e) => ({ path: e.path, text: e.bytes?.toString('utf8') ?? '' })));
       const verdict = classifyBaseFailure(`${base.stdout}\n${base.stderr}`, base.exitCode, sourcePaths(changeSet), imports);
-      if (!verdict.ok) return { ok: false, reason: `base-check:${verdict.reason}` };
+      if (!verdict.ok) return failed(`base-check:${verdict.reason}`, base);
       // (b) a second fresh clone with exactly the bytes that will be published (never the session's
       // own workspace, whose node_modules link and files the session controlled).
       await freshClone(p.headClone, changeSet.entries);
       const head = await run(p.headClone, 'head', testCmd);
       if (limit(head)) return { ok: false, reason: limit(head)! };
-      if (head.exitCode !== 0) return { ok: false, reason: 'head-check:test-fails-at-head' };
+      if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
@@ -1049,13 +1084,13 @@ export class FeedbackExecutorService {
       await freshClone(p.gateClone, changeSet.entries);
       const lint = await run(p.gateClone, 'lint', cfg.lintCommand);
       if (limit(lint)) return { ok: false, reason: limit(lint)! };
-      if (lint.exitCode !== 0) return { ok: false, reason: 'gate:lint' };
+      if (lint.exitCode !== 0) return failed('gate:lint', lint);
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `npx vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`);
         if (limit(related)) return { ok: false, reason: limit(related)! };
-        if (related.exitCode !== 0) return { ok: false, reason: 'gate:related-tests' };
+        if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }
     } finally {
       for (const dir of [p.baseClone, p.headClone, p.gateClone]) {
@@ -1690,6 +1725,7 @@ export class FeedbackExecutorService {
       lastTick: this.metaJson('exec:last_tick'),
       canary: this.metaJson('exec:canary_last'),
       lastPrepareFailure: this.metaJson('exec:prepare_failed_last'),
+      lastCheckFailure: this.metaJson('exec:check_failed_last'),
       profileUnenforceable: this.metaJson('exec:profile_unenforceable'),
       deps: this.metaJson('exec:deps'),
       depsCacheBytes: this.opts.deps.sizeBytes(),

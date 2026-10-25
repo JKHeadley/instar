@@ -444,6 +444,35 @@ describe('verification and publication', () => {
     expect(h.execStore.latestFor(id2)!.state).toBe('pr-open');
   });
 
+  it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    // Padding first, the error LAST — a linter and a shell both put the error at the end, which is
+    // why the tail is kept rather than the head.
+    const err = `${'E'.repeat(900)}\nsrc/thing.ts:3:1  error  'x' is assigned a value but never used`;
+    const out = `${'O'.repeat(900)}\n1 problem (1 error, 0 warnings)`;
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd)
+      ? { exitCode: 2, stdout: out, stderr: err }
+      : null);
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:lint' });
+    // Before this, the entire record was the label `gate:lint` — the same blindness that made
+    // `base-unit-smoke` cost three days one step earlier, and the clones are deleted with the attempt.
+    const last = h.exec.summary().lastCheckFailure as { reason: string; attemptId: string; detail: string };
+    expect(last.reason).toBe('gate:lint');
+    expect(last.detail).toContain('gate:lint');
+    expect(last.detail).toContain("'x' is assigned a value but never used");
+    expect(last.detail).toContain('1 problem (1 error, 0 warnings)');
+    // Bounded, not merely long: the oldest padding is dropped.
+    expect(last.detail).toContain('E'.repeat(500));
+    expect(last.detail).not.toContain('E'.repeat(PROBE_TAIL_CHARS + 1));
+    expect(last.detail.length).toBeLessThanOrEqual(CANARY_PROBE_DETAIL_BUDGET.maxChars);
+    // The REASON stays a clean matchable label — it is prefix-matched elsewhere, so the output
+    // must not be appended to it.
+    expect(h.execStore.attemptsFor(initiativeId)[0].reason).toBe('gate:lint');
+  });
+
   it('lint failing at the workspace fails the attempt; one retry, then hold execution-failed with the item paused', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();

@@ -64,6 +64,31 @@ export const CANARY_CLEAR_COOLDOWN_MS = 10 * 60_000;
 export const CANARY_PROBE_DETAIL_BUDGET = { maxBytes: 8192, maxChars: 2000 } as const;
 
 /**
+ * The tail of a failed confined command's own output, so the failure explains itself.
+ *
+ * ONE helper for both places a confined command can fail: the canary's must-succeed probes and
+ * `verifyFix`'s base/head/lint/related runs. They are the same defect twice — the canary recorded a
+ * bare `exit 1` and cost three days (2026-10-22 … 2026-10-25); the check runs recorded a bare
+ * `gate:lint` / `head-check:test-fails-at-head` and would have cost the same on the first real fix
+ * attempt. Shared so the bound cannot drift between them, which is the mistake the npm-cache
+ * redirect made when it was added to the rehearsal and not the real run.
+ *
+ * `redact` lets a caller strip a secret it planted (the canary's nonce) BEFORE slicing, so a value
+ * straddling the window cannot leave a readable fragment.
+ */
+export function commandFailureTail(
+  r: { stdout: string; stderr: string },
+  opts: { perStream: number; redact?: (text: string) => string },
+): string {
+  const clean = (text: string) => (opts.redact ? opts.redact(String(text ?? '')) : String(text ?? ''));
+  const tail = (text: string) => clean(text).trimEnd().slice(-opts.perStream).trim();
+  const parts = ([['stderr', tail(r.stderr)], ['stdout', tail(r.stdout)]] as [string, string][])
+    .filter(([, text]) => text.length > 0);
+  if (parts.length === 0) return ' — no output';
+  return ` — ${parts.map(([name, text]) => `${name}: ${text}`).join(' | ')}`;
+}
+
+/**
  * Read a canary latch's effective `until`. One reader, so the availability check and the clear lever
  * can never disagree about whether a wait is in force.
  *
