@@ -142,6 +142,23 @@ export interface EvaluateInput {
   untrustedContent: UntrustedContent;
 }
 
+/**
+ * Per-call options. `timeoutMs` widens the client budget for a caller that is
+ * NOT holding a Stop hook open (shadow mode records telemetry after the hook
+ * has already been answered). Clamped to [clientTimeoutMs, MAX_CALL_TIMEOUT_MS]
+ * so it can only ever lengthen the default, never shorten it.
+ */
+export interface EvaluateOptions {
+  timeoutMs?: number;
+  /**
+   * Called exactly once, when the provider work this evaluation started has
+   * actually finished (or at once if no provider call was made). A timeout
+   * does NOT cancel the provider call, so a caller bounding concurrent provider
+   * work must release its slot here, not when `evaluate` resolves.
+   */
+  onProviderSettled?: () => void;
+}
+
 export interface EvidencePointer {
   plan_file?: string;
   plan_commit_sha?: string;
@@ -333,6 +350,8 @@ const DEFAULT_LLM_TIMEOUT_MS = 1_400;
 const DEFAULT_BREAKER_THRESHOLD = 3;
 const DEFAULT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 const BREAKER_PROBE_LEASE_MARGIN_MS = 500;
+/** Upper bound on a per-call widened budget (shadow recording). */
+export const MAX_CALL_TIMEOUT_MS = 60_000;
 
 /**
  * This runs on the agent Stop critical path, so the bounded rate-limit wait must
@@ -448,7 +467,7 @@ export class UnjustifiedStopGate {
           raw,
           this.config.now(),
           this.config.breakerCooldownMs,
-          this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS,
+          Math.max(this.config.clientTimeoutMs, MAX_CALL_TIMEOUT_MS) + BREAKER_PROBE_LEASE_MARGIN_MS,
         ));
       }
     } catch (err) {
@@ -518,8 +537,28 @@ export class UnjustifiedStopGate {
     return this.config.now() < this.breakerOpenUntil;
   }
 
-  async evaluate(input: EvaluateInput): Promise<AuthorityOutcome> {
+  async evaluate(input: EvaluateInput, options: EvaluateOptions = {}): Promise<AuthorityOutcome> {
+    let notified = false;
+    const notifySettled = (): void => {
+      if (notified) return;
+      notified = true;
+      try { options.onProviderSettled?.(); } catch { /* @silent-fallback-ok — caller bookkeeping must not change the verdict */ }
+    };
+    const tracker = { callStarted: false, notifySettled };
+    try {
+      return await this.evaluateInner(input, options, tracker);
+    } finally {
+      if (!tracker.callStarted) notifySettled();
+    }
+  }
+
+  private async evaluateInner(
+    input: EvaluateInput,
+    options: EvaluateOptions,
+    tracker: { callStarted: boolean; notifySettled: () => void },
+  ): Promise<AuthorityOutcome> {
     const start = this.config.now();
+    const timeoutMs = this.effectiveTimeoutMs(options.timeoutMs);
 
     // Circuit breaker: if open (after repeated provider failures), fail open
     // IMMEDIATELY without spawning an LLM subprocess. The caller fail-opens on
@@ -547,7 +586,7 @@ export class UnjustifiedStopGate {
             breakerKey: this.config.breakerKey,
             now: start,
             cooldownMs: this.config.breakerCooldownMs,
-            leaseMs: this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS,
+            leaseMs: timeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS,
           });
           this.applyBreakerState(acquired.state);
           if (!acquired.acquired) {
@@ -567,7 +606,7 @@ export class UnjustifiedStopGate {
             this.scheduleSuppressionFlush();
             return { ok: false, failure: { kind: 'breakerOpen', detail: 'local half-open probe already leased', latencyMs: 0 } };
           }
-          this.breakerProbeLeaseUntil = start + this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
+          this.breakerProbeLeaseUntil = start + timeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
         }
       } catch (err) { // @silent-fallback-ok — callback reports persistence degradation; local lease preserves fail-open.
         this.config.onBreakerPersistenceError?.(err);
@@ -576,7 +615,7 @@ export class UnjustifiedStopGate {
           this.scheduleSuppressionFlush();
           return { ok: false, failure: { kind: 'breakerOpen', detail: 'local half-open probe already leased', latencyMs: 0 } };
         }
-        this.breakerProbeLeaseUntil = start + this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
+        this.breakerProbeLeaseUntil = start + timeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
       }
     }
 
@@ -612,7 +651,8 @@ export class UnjustifiedStopGate {
 
     let responseText: string;
     try {
-      responseText = await this.callWithTimeout(prompt, input);
+      tracker.callStarted = true;
+      responseText = await this.callWithTimeout(prompt, input, timeoutMs, tracker.notifySettled);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const latencyMs = this.config.now() - start;
@@ -638,7 +678,7 @@ export class UnjustifiedStopGate {
         };
       }
       if (msg === 'timeout') {
-        return { ok: false, failure: { kind: 'timeout', detail: `>${this.config.clientTimeoutMs}ms`, latencyMs } };
+        return { ok: false, failure: { kind: 'timeout', detail: `>${timeoutMs}ms`, latencyMs } };
       }
       return {
         ok: false,
@@ -723,9 +763,22 @@ export class UnjustifiedStopGate {
     };
   }
 
-  private async callWithTimeout(prompt: string, input?: EvaluateInput): Promise<string> {
+  /** A widened budget only ever lengthens the configured default. */
+  private effectiveTimeoutMs(requested: number | undefined): number {
+    const base = this.config.clientTimeoutMs;
+    if (typeof requested !== 'number' || !Number.isFinite(requested)) return base;
+    return Math.min(Math.max(Math.floor(requested), base), Math.max(base, MAX_CALL_TIMEOUT_MS));
+  }
+
+  private async callWithTimeout(
+    prompt: string,
+    input?: EvaluateInput,
+    timeoutMs = this.config.clientTimeoutMs,
+    onSettled?: () => void,
+  ): Promise<string> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.clientTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let settleAttached = false;
     try {
       const abortRace = new Promise<never>((_, reject) => {
         controller.signal.addEventListener('abort', () => reject(new Error('timeout')));
@@ -752,9 +805,16 @@ export class UnjustifiedStopGate {
             }
           : {}),
       });
+      // The race does not cancel `call`; report when it really finishes.
+      if (onSettled) {
+        settleAttached = true;
+        Promise.resolve(call).then(onSettled, onSettled);
+      }
       return await Promise.race([call, abortRace]);
     } finally {
       clearTimeout(timer);
+      // A synchronous throw before the call existed: nothing is outstanding.
+      if (onSettled && !settleAttached) onSettled();
     }
   }
 

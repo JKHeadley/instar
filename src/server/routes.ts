@@ -5795,7 +5795,15 @@ export function createRoutes(ctx: RouteContext): Router {
   // always includes `decision: 'allow'` fallback if the authority
   // couldn't run.
 
-  router.post('/internal/stop-gate/evaluate', async (req, res) => {
+  // Shadow-mode stop-gate evaluations run after the hook is answered (CMT-1006).
+  // Bounded: at most STOP_GATE_SHADOW_MAX_IN_FLIGHT concurrent authority calls;
+  // a stop arriving past the cap is answered allow and not judged (counted).
+  const STOP_GATE_SHADOW_TIMEOUT_MS = 30_000;
+  const STOP_GATE_SHADOW_MAX_IN_FLIGHT = 4;
+  let stopGateShadowInFlight = 0;
+  let stopGateShadowSkipped = 0;
+
+  const stopGateEvaluate = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
     const body = (req.body ?? {}) as Partial<{
       sessionId: string;
       evidenceMetadata: EvaluateInput['evidenceMetadata'];
@@ -5895,7 +5903,19 @@ export function createRoutes(ctx: RouteContext): Router {
     // decisions, force_allow. The authority may be consistently wrong
     // on this session; keep letting it stop and let the operator see
     // the stuck-state flag. No authority call on the force-allow path.
-    const priorCount = db?.getContinueCount(sessionId)?.count ?? 0;
+    // Shadow mode records telemetry only: the hook never acts on a shadow
+    // verdict. So answer the hook NOW (allow) and let the authority run on the
+    // wider shadow budget, recording its row when it returns. Holding the shadow
+    // call to the hook's ~2s blocking budget made every off-Claude call (p50
+    // ~4.7s) time out, opened the breaker on 2026-08-20, and recorded nothing
+    // for two months (CMT-1006). Scoped to the dev-gated self-deferral soak, so
+    // fleet agents keep today's behaviour and spend. Enforce keeps the budget.
+    const deferShadow = mode === 'shadow' && !!authority && selfDeferralGuardOn;
+
+    // The continue-ceiling protects a session from repeated enforced
+    // `continue` reminders. A deferred shadow verdict is never enforced, so it
+    // neither counts toward nor is muted by the ceiling.
+    const priorCount = deferShadow ? 0 : db?.getContinueCount(sessionId)?.count ?? 0;
     if (priorCount >= CONTINUE_CEILING) {
       if (db) {
         db.setStuck(sessionId, ts);
@@ -5931,13 +5951,34 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    if (deferShadow) {
+      if (stopGateShadowInFlight >= STOP_GATE_SHADOW_MAX_IN_FLIGHT) {
+        stopGateShadowSkipped += 1;
+        res.json({ eventId, decision: 'allow', rule: null, reminder: '', shortCircuit: 'shadow-capacity' });
+        return;
+      }
+      res.json({ eventId, decision: 'allow', rule: null, reminder: '', shadow: 'deferred' });
+    }
+    // After a deferred shadow answer, every later response write is a no-op.
+    const respond = (payload: Record<string, unknown>): void => {
+      if (!res.headersSent) res.json(payload);
+    };
+
     let outcome: AuthorityOutcome | null = null;
     if (authority) {
+      if (deferShadow) stopGateShadowInFlight += 1;
       try {
         outcome = await authority.evaluate({
           evidenceMetadata: body.evidenceMetadata,
           untrustedContent: body.untrustedContent,
-        });
+        }, deferShadow
+          ? {
+              timeoutMs: STOP_GATE_SHADOW_TIMEOUT_MS,
+              // Release the slot when the provider work really ends: a timed-out
+              // call keeps running, and the cap bounds running provider work.
+              onProviderSettled: () => { stopGateShadowInFlight -= 1; },
+            }
+          : {});
       } catch (err) {
         outcome = {
           ok: false,
@@ -5999,7 +6040,7 @@ export function createRoutes(ctx: RouteContext): Router {
             reason: verifyFailure,
             impact: 'Stop event allowed (authority continue rejected as unverifiable)',
           });
-          res.json({
+          respond({
             eventId,
             decision: 'allow',
             rule: null,
@@ -6015,7 +6056,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // Record + count. On `continue`, increment the session counter
       // (the NEXT call hitting CONTINUE_CEILING will short-circuit to
       // force_allow above). Atomic via SQLite UPSERT.
-      if (db && r.decision === 'continue') {
+      if (db && r.decision === 'continue' && !deferShadow) {
         db.incrementContinueCount(sessionId, ts);
       }
 
@@ -6061,7 +6102,7 @@ export function createRoutes(ctx: RouteContext): Router {
           selfDeferralDelta: selfDeferralGuardOn && r.selfDeferral === true ? 1 : 0,
         });
       }
-      res.json({
+      respond({
         eventId,
         decision: r.decision,
         rule: r.rule,
@@ -6124,7 +6165,7 @@ export function createRoutes(ctx: RouteContext): Router {
           impact: 'Stop event allowed without authority ruling (drift correction not applied)',
         });
       }
-      res.json({
+      respond({
         eventId,
         decision: 'allow',
         rule: null,
@@ -6133,6 +6174,23 @@ export function createRoutes(ctx: RouteContext): Router {
         latencyMs: outcome.failure.latencyMs,
       });
     }
+  };
+  // Express 4 does not catch a rejected async handler. A deferred shadow call
+  // keeps working up to 30s after the hook was answered, so contain any late
+  // throw here instead of letting it reach the process-level fatal handler.
+  router.post('/internal/stop-gate/evaluate', (req, res) => {
+    stopGateEvaluate(req, res).catch((err: unknown) => {
+      try {
+        DegradationReporter.getInstance().report({
+        feature: 'unjustifiedStopGate.route',
+        primary: 'Stop-gate evaluate route',
+        fallback: 'fail-open → allow',
+        reason: err instanceof Error ? err.message : String(err),
+          impact: 'One Stop event was allowed and may not have been recorded.',
+        });
+      } catch { /* @silent-fallback-ok — reporting must not re-raise into the fatal handler */ }
+      if (!res.headersSent) res.json({ decision: 'allow', rule: null, reminder: '', failOpen: 'route-error' });
+    });
   });
 
   router.get('/internal/stop-gate/log', (req, res) => {
@@ -6143,7 +6201,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const events = db.recentEvents(limit);
-    res.json({ events });
+    res.json({ events, shadow: { inFlight: stopGateShadowInFlight, skippedAtCapacity: stopGateShadowSkipped } });
   });
 
   router.post('/internal/stop-gate/annotations', (req, res) => {
