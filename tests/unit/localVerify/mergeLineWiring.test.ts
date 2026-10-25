@@ -16,7 +16,7 @@ const rec = (over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord => ({
   lanes: [{ name: 'unit', gating: true, files: 1, tests: 3, passed: 3, failed: 0, skipped: 0, todo: 0, seconds: 1 }],
   nodeVersion: 'v24', machineId: 'm1', startedAt: '2026-10-23T10:00:00.000Z', finishedAt: '2026-10-23T10:20:00.000Z',
   outcome: 'success', harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
-  verifierVersion: 'vh2:x', policyHash: 'p', ...over,
+  verifierVersion: 'vh3:x', policyHash: 'p', ...over,
 });
 
 function fakeService(): { service: LocalVerifyService; handoff: () => MergeHandoff | null } {

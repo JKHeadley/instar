@@ -13,11 +13,21 @@
  *    `scripts/` (SafeGitExecutor, SafeFsExecutor, hostTestRunnerSemaphore, reviewGate, the
  *    floor script, …), by package-relative path and content;
  *  - the protected-path list's VALUE as passed to the child;
- *  - the installed `typescript` version (the skip ratchet's parser);
  *  - `process.version` (the run child is spawned with the same node);
  *  - computePolicyHash() (lane configs, inventory rules, harness globs, deadlines).
  * Works on an install (`dist/**.js`) and from source (`src/**.ts`, where a `.js`
  * specifier resolves to its `.ts` file).
+ *
+ * NOT an input: the `typescript` version. The skip ratchet resolves its parser from the
+ * run worktree `npm ci` just installed (skipRatchet.ts, PR #2326), so the parser is a
+ * property of the PR's tree, not of the verifier. Until 2026-10-24 (`vh2:`) the version
+ * hashed `typescript/package.json` as resolved by Node's lookup from the installed
+ * package — a walk UP the parent chain that, on an install under an agent home, lands in
+ * the agent home's own mutable `node_modules`. `npm ci` there (an unrelated folder)
+ * emptied and refilled it, so the verifier version flipped between two values across
+ * server restarts and every flip voided every pending record (`verifier-mismatch`).
+ * Nothing ambient is hashed any more: only files inside the package, the values the
+ * server passes, and the node the child is spawned with.
  *
  * The run child recomputes this at start and refuses to run (`verifier-mismatch`) when it
  * differs from the value the server passed, so a dist replaced on disk under a still-running
@@ -26,7 +36,6 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computePolicyHash } from './policy.js';
@@ -90,28 +99,18 @@ export function localImportGraph(roots: readonly string[]): string[] {
   return [...seen].sort();
 }
 
-/** The installed typescript version as seen from `dir` (null when not installed). */
-function typescriptVersion(dir: string): string | null {
-  try {
-    const req = createRequire(path.join(dir, 'noop.js'));
-    return (JSON.parse(fs.readFileSync(req.resolve('typescript/package.json'), 'utf-8')) as { version?: string }).version ?? null;
-  } catch {
-    return null; // @silent-fallback-ok: hashed as "absent", which still distinguishes installs
-  }
-}
-
 export interface VerifierVersionInputs {
   /** The protected-path list the server passes the child (its VALUE is hashed, not its source file). */
   protectedList?: readonly string[];
-  /** Override for tests; defaults to typescript as installed next to `dir`. */
-  typescriptVersion?: string | null;
   /** Override for tests; defaults to process.version. */
   nodeVersion?: string;
 }
 
 /**
- * `vh2:<hex>` over the verifier's local import graph, the typescript version, the node
- * version and the policy hash. Deterministic: package-relative paths in sorted order.
+ * `vh3:<hex>` over the verifier's local import graph, the protected list, the node version
+ * and the policy hash. Deterministic: package-relative paths in sorted order. The `vh3`
+ * salt and prefix distinguish records written under `vh2` (which hashed the ambient
+ * typescript resolution) once; those re-verify as a version change, as any input change does.
  */
 export function computeVerifierVersion(
   dir: string = installedVerifierDir(),
@@ -122,17 +121,15 @@ export function computeVerifierVersion(
   const files = localImportGraph(roots);
   const root = path.resolve(dir, '..', '..');
   const h = crypto.createHash('sha256');
-  h.update('local-verify-verifier-v2\0');
+  h.update('local-verify-verifier-v3\0');
   for (const f of files) {
     const rel = path.relative(root, f).split(path.sep).join('/');
     h.update(`file:${rel}\0`);
     h.update(fs.readFileSync(f));
     h.update('\0');
   }
-  const ts = inputs.typescriptVersion !== undefined ? inputs.typescriptVersion : typescriptVersion(dir);
-  h.update(`typescript:${ts ?? 'absent'}\0`);
   h.update(`node:${inputs.nodeVersion ?? process.version}\0`);
   h.update(`protected:${JSON.stringify(inputs.protectedList ?? [])}\0`);
   h.update(`policy:${policyHash}`);
-  return `vh2:${h.digest('hex').slice(0, 32)}`;
+  return `vh3:${h.digest('hex').slice(0, 32)}`;
 }

@@ -749,10 +749,12 @@ describe('queue.json is written only when it changes', () => {
   });
 });
 
-describe('verifierVersion: the real import graph, toolchain, node, and a child-side check', () => {
-  function pkg(files: Record<string, string>) {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-ver-')));
-    dirs.push(root);
+describe('verifierVersion: the real import graph, node, and a child-side check', () => {
+  function pkg(files: Record<string, string>, under?: string) {
+    const root = under
+      ? (fs.mkdirSync(under, { recursive: true }), fs.realpathSync(under))
+      : fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-ver-')));
+    if (!under) dirs.push(root);
     for (const [rel, c] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
       fs.writeFileSync(path.join(root, rel), c);
@@ -769,7 +771,7 @@ describe('verifierVersion: the real import graph, toolchain, node, and a child-s
     'dist/core/Config.js': "export const c = 1;\n",
   });
   const v = (dir: string, over: Parameters<typeof computeVerifierVersion>[2] = {}) =>
-    computeVerifierVersion(dir, 'p', { typescriptVersion: '5.9.3', nodeVersion: 'v24.1.0', protectedList: ['.github/'], ...over });
+    computeVerifierVersion(dir, 'p', { nodeVersion: 'v24.1.0', protectedList: ['.github/'], ...over });
 
   it('follows relative imports through core, skipping type-only imports', () => {
     const { root, dir } = pkg(files());
@@ -779,7 +781,7 @@ describe('verifierVersion: the real import graph, toolchain, node, and a child-s
   it('a change anywhere in the graph changes the version; wiring-only and unreachable files do not', () => {
     const a = pkg(files());
     const base = v(a.dir);
-    expect(base).toMatch(/^vh2:[0-9a-f]{32}$/);
+    expect(base).toMatch(/^vh3:[0-9a-f]{32}$/);
     const deep = pkg({ ...files(), 'dist/core/SourceTreeGuard.js': 'export const y = 2;\n' });
     expect(v(deep.dir)).not.toBe(base);
     const wiringOnly = pkg({ ...files(), 'dist/core/Config.js': 'export const c = 2;\n', 'dist/localVerify/localVerifyWiring.js': '// changed\n' });
@@ -787,16 +789,34 @@ describe('verifierVersion: the real import graph, toolchain, node, and a child-s
     const unrelated = pkg({ ...files(), 'dist/core/Other.js': 'x' });
     expect(v(unrelated.dir)).toBe(base);
   });
-  it('typescript, node, the protected list and the policy each change it', () => {
+  it('node, the protected list and the policy each change it', () => {
     const { dir } = pkg(files());
     const base = v(dir);
-    expect(v(dir, { typescriptVersion: '5.9.4' })).not.toBe(base);
     expect(v(dir, { nodeVersion: 'v24.2.0' })).not.toBe(base);
     expect(v(dir, { protectedList: ['.github/', 'x'] })).not.toBe(base);
-    expect(computeVerifierVersion(dir, 'p2', { typescriptVersion: '5.9.3', nodeVersion: 'v24.1.0', protectedList: ['.github/'] })).not.toBe(base);
+    expect(computeVerifierVersion(dir, 'p2', { nodeVersion: 'v24.1.0', protectedList: ['.github/'] })).not.toBe(base);
   });
-  it('the installed verifier hashes to vh2 and is not the package version', () => {
-    expect(computeVerifierVersion()).toMatch(/^vh2:/);
+  it('an ambient typescript install above the package does not change it (the 2026-10-24 flip)', () => {
+    // An install lives at <agent home>/.instar/shadow-install/node_modules/instar; Node's lookup from
+    // it walks UP into <agent home>/node_modules, which `npm ci` there empties and refills. The old
+    // `typescript:` input read that folder, so the version flipped with the state of an unrelated dir.
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-ver-home-')));
+    dirs.push(base);
+    const { root, dir } = pkg(files(), path.join(base, 'shadow-install', 'node_modules', 'instar'));
+    const before = v(dir);
+    // Two levels above the package root (base/node_modules), and inside the package root too.
+    for (const planted of [path.join(base, 'node_modules'), path.join(root, 'node_modules')]) {
+      fs.mkdirSync(path.join(planted, 'typescript'), { recursive: true });
+      fs.writeFileSync(path.join(planted, 'typescript', 'package.json'), JSON.stringify({ name: 'typescript', version: '5.9.3' }));
+      expect(v(dir)).toBe(before);
+      fs.writeFileSync(path.join(planted, 'typescript', 'package.json'), JSON.stringify({ name: 'typescript', version: '5.9.4' }));
+      expect(v(dir)).toBe(before);
+      SafeFsExecutor.safeRmSync(planted, { recursive: true, force: true, operation: 'LocalVerifyService.test.ts' });
+      expect(v(dir)).toBe(before);
+    }
+  });
+  it('the installed verifier hashes to vh3 and is not the package version', () => {
+    expect(computeVerifierVersion()).toMatch(/^vh3:/);
   });
 
   it('the child refuses to run when its own code differs from what the server passed', async () => {
@@ -822,7 +842,7 @@ describe('verifierVersion: the real import graph, toolchain, node, and a child-s
   it('the service records a verifier-mismatch crash as errorStep verifier-mismatch', async () => {
     const s = setup({ views: { 1: view() } });
     await s.svc.request(1);
-    await s.finish(0, { kind: 'crash', detail: 'verifier-mismatch: server vh2:a, child vh2:b' } as unknown as VerifyRunResult);
+    await s.finish(0, { kind: 'crash', detail: 'verifier-mismatch: server vh3:a, child vh3:b' } as unknown as VerifyRunResult);
     expect(s.records[0]).toMatchObject({ outcome: 'error', errorStep: 'verifier-mismatch' });
   });
 
