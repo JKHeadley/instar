@@ -249,6 +249,7 @@ import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrl
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
@@ -11065,6 +11066,10 @@ export function createRoutes(ctx: RouteContext): Router {
               failedReason: isSelf ? null : (peerFetchReason.get(machineId) ?? (capacity?.online ? null : 'offline')),
               routerReceivedAt: capacity?.routerReceivedAt,
               selfReportedLastSeen: capacity?.selfReportedLastSeen,
+              // trustworthy-machine-load A5: the evidence-derived state decides the
+              // wording; "offline" is never said without positive evidence.
+              liveness: capacity?.liveness,
+              nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id,
             },
             nowMs,
           );
@@ -21521,10 +21526,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the rope-health monitor knows a peer's transports are down within one
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
+    const nickOf = (id: string): string => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id;
     const machines = decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    );
+    ).map((m) => ({
+      ...m,
+      // trustworthy-machine-load A5: the one wording template, rendered server-side
+      // so every consumer (dashboard, digests, peers) says the same honest thing.
+      ...(m.liveness ? { livenessLine: formatLivenessLine(m.liveness, nickOf) } : {}),
+    }));
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,

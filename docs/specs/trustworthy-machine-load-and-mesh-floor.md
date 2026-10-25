@@ -1,6 +1,15 @@
 ---
 title: Trustworthy machine load, a reserved mesh floor, and overload-triggered work movement
-status: reviewed (3 rounds, Astra + Argon; 80/20 converged)
+status: approved
+review-convergence: "2026-10-25T21:16:00Z"
+review-iterations: 3
+review-reviewers: GPT-6 Astra (codex), Gemini 4 Argon (cross-model), echo (internal)
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 10000000832 (2026-10-25 14:19 PDT): 'great! Yes please proceed.' in reply to the posted plan and spec link."
+eli16-overview: trustworthy-machine-load-and-mesh-floor.eli16.md
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
+parent-principle-fit: "One agent across machines must hold an honest view of each machine under degraded conditions: an overloaded peer must not be reported as dead, a restart must not erase what was known, and relayed or saved evidence must carry its real age. P1 makes that view evidence-derived and bounded; P2–P4 keep the agent reachable and move work under the same coherence rules."
 author: echo
 date: 2026-10-25
 issue: docs/issues/stale-machine-claims-and-overload.md

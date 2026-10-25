@@ -4848,7 +4848,9 @@
     function machineStatusInfo(m) {
       const es = m && m.emptyState;
       if (es && es.kind && es.text) {
-        // 'online' is calm; 'offline'/'unreachable' both read as offline styling.
+        // 'online' is calm; 'offline'/'unreachable' read as offline styling;
+        // 'stale'/'unknown' (honest-evidence kinds) read as the muted offline
+        // styling too, but their TEXT never says offline (trustworthy-machine-load A5).
         return { cls: es.kind === 'online' ? 'online' : 'offline', text: es.text };
       }
       // No server-computed empty-state present (shouldn't happen for a 0-session
@@ -5263,7 +5265,12 @@
         // Only the status placement itself removes; a once-seen divergence is still placeable.
         const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
         if (m.machineId === newSessionSelfMachineId) label += ' (this machine)';
-        if (offline) label += ' (offline)';
+        // trustworthy-machine-load A5: the online flag alone never justifies
+        // "offline"; name the evidence-derived state when the server sends one.
+        if (offline) {
+          const ls = m.liveness && m.liveness.state;
+          label += ls === 'unreachable' ? ' (not answering)' : ls === 'stale' ? ' (not checked recently)' : ' (no recent contact)';
+        }
         else if (clockOff) label += ' (clock out of step)';
         else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
         opt.text = label;

@@ -1378,6 +1378,25 @@
       "grandfathered": false
     },
     {
+      "category": "machine-direct-evidence",
+      "description": "Durable last DIRECT contact per peer machine with RECEIVER-side receipt time and the load average it carried (trustworthy-machine-load-and-mesh-floor A3) - survives local restarts so a peer renders `stale, last direct contact <age> ago` instead of `offline`. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Display-only machine-local observability: never makes a machine online, never feeds placement.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/machine-direct-evidence.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "bounded",
+        "maxBytes": 262144,
+        "maxAgeMs": 7776000000,
+        "note": "One record per paired machine (bounded by pool size); records older than 90 days are dropped at load; rewritten whole (tmp+rename) at most once per minute per machine (MachineEvidenceStore)."
+      }
+    },
+    {
       "category": "guard-posture-episodes",
       "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC \u00a72.4). Machine-local notice hygiene, never authority.",
       "scope": "machine-local",
