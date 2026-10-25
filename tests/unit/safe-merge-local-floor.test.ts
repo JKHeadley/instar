@@ -1,14 +1,14 @@
 /**
  * safe-merge's `local` floor (docs/specs/local-verify-merge-authority.md §3):
- * floor selection, the §3 predicate on both sides of every rule, the approver
- * acceptance reuse (Decision 16), the merge-time body checks, and the config
+ * floor selection, the §3 predicate on both sides of every rule, the independent
+ * review a flagged record needs (directive 2026-10-22), the merge-time body checks, and the config
  * read (port + token from the agent's config file only).
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   evaluateLocalPredicate,
-  approverAcceptanceFromExecutorStatus,
+  hasIndependentReview,
   selectSafeMergeFloor,
   parseAgentServerConfig,
   runLocalBodyChecks,
@@ -39,8 +39,8 @@ const okChecks = LOCAL_FLOOR_BODY_CHECKS.map((name: string) => ({ name, ok: true
 const base = () => ({
   repo: REPO, pr: 42, livePr: { headRefOid: HEAD, baseRefName: 'main' }, record: record(),
   mainHealth: { state: 'healthy', mainHead: MAIN }, bodyChecks: okChecks,
-  operatorApprovedHead: false, approverAcceptance: null,
 });
+const TRACE = '.instar/instar-dev-traces/2026-10-22-x.json';
 
 describe('evaluateLocalPredicate — the §3 predicate, both sides of every rule', () => {
   it('admits a green record for the current head and base', () => {
@@ -107,44 +107,28 @@ describe('evaluateLocalPredicate — the §3 predicate, both sides of every rule
   });
 
   it.each(['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'])(
-    'a %s record needs the operator approval of this head AND a matching acceptance',
+    'a %s record needs the recorded independent review of this head — never the operator',
     (flag) => {
       const flagged = { ...base(), record: record({ [flag]: true }) };
-      expect(evaluateLocalPredicate(flagged).result).toBe('refused:needs-operator-approval');
-      expect(evaluateLocalPredicate({ ...flagged, operatorApprovedHead: true, approverAcceptance: { matches: false, reason: 'not-accepted' } }).result)
-        .toBe('refused:approver-dependent');
-      expect(evaluateLocalPredicate({ ...flagged, operatorApprovedHead: true, approverAcceptance: null }).result).toBe('refused:approver-dependent');
-      expect(evaluateLocalPredicate({ ...flagged, operatorApprovedHead: true, approverAcceptance: { matches: true } }).ok).toBe(true);
+      const r = evaluateLocalPredicate(flagged);
+      expect(r.result).toBe('refused:needs-independent-review');
+      expect(r.problems.join(' ')).toMatch(/second pass concurred/);
+      expect(evaluateLocalPredicate({ ...base(), record: record({ [flag]: true, independentReview: { trace: TRACE, concurred: true } }) }).ok).toBe(true);
+      // An operator approval is no longer an input: passing one admits nothing.
+      expect(evaluateLocalPredicate({ ...flagged, operatorApprovedHead: true, approverAcceptance: { matches: true } } as never).result).toBe('refused:needs-independent-review');
     },
   );
 
-  it('an ordinary record never needs the acceptance', () => {
-    expect(evaluateLocalPredicate({ ...base(), approverAcceptance: { matches: false } }).ok).toBe(true);
-  });
-});
-
-describe('approverAcceptanceFromExecutorStatus — Decision 16 reuse of the executor acceptance', () => {
-  const body = (independence: Record<string, unknown> | null, approver = 'JKHeadley') => ({ availability: { approver, independence } });
-
-  it('matches when independent, or dependent with the current reason set accepted', () => {
-    expect(approverAcceptanceFromExecutorStatus(body({ independent: true, reasons: [] }), 'JKHeadley').matches).toBe(true);
-    expect(approverAcceptanceFromExecutorStatus(body({ independent: false, reasons: ['browser-profile-account'], accepted: true }), 'jkheadley').matches).toBe(true);
+  it('a malformed independent review is not one', () => {
+    for (const bad of [{ trace: TRACE, concurred: false }, { trace: 'docs/x.json', concurred: true }, { concurred: true }, 'yes', null]) {
+      expect(evaluateLocalPredicate({ ...base(), record: record({ protectedPath: true, independentReview: bad }) }).result).toBe('refused:needs-independent-review');
+      expect(hasIndependentReview({ independentReview: bad })).toBe(false);
+    }
+    expect(hasIndependentReview({ independentReview: { trace: TRACE, concurred: true } })).toBe(true);
   });
 
-  it('refuses a changed reason set / revoked acceptance (accepted false)', () => {
-    const r = approverAcceptanceFromExecutorStatus(body({ independent: false, reasons: ['tagged-vault-entry'], accepted: false }), 'JKHeadley');
-    expect(r).toMatchObject({ matches: false });
-    expect(r.reason).toMatch(/not-accepted/);
-  });
-
-  it('refuses when the executor approver is not the operator login', () => {
-    expect(approverAcceptanceFromExecutorStatus(body({ independent: true }, 'someone-else'), 'JKHeadley').matches).toBe(false);
-  });
-
-  it('refuses when the executor is not constructed or its facts are unread', () => {
-    expect(approverAcceptanceFromExecutorStatus(null, 'JKHeadley').reason).toBe('executor-not-constructed');
-    expect(approverAcceptanceFromExecutorStatus({ availability: null }, 'JKHeadley').matches).toBe(false);
-    expect(approverAcceptanceFromExecutorStatus(body(null), 'JKHeadley').matches).toBe(false);
+  it('an ordinary record never needs an independent review', () => {
+    expect(evaluateLocalPredicate(base()).ok).toBe(true);
   });
 });
 
@@ -334,5 +318,13 @@ describe('reviewPrecheckPasses — the shared review precheck', () => {
     expect(reviewPrecheckPasses({ policy: { ...none, lastPushApprovalRequired: true }, reviewDecision: 'REVIEW_REQUIRED' })).toBe(false);
     expect(reviewPrecheckPasses({ policy: { ...none, reviewsRequired: true }, reviewDecision: 'APPROVED' })).toBe(true);
     expect(reviewPrecheckPasses({ classicReviewsRequired: true, reviewDecision: '' })).toBe(false);
+  });
+
+  it('require_code_owner_review holds only a PR that touches a code-owned path, until APPROVED', () => {
+    const co = { reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: true };
+    expect(reviewPrecheckPasses({ policy: co, reviewDecision: 'REVIEW_REQUIRED', codeOwnedTouched: true })).toBe(false);
+    expect(reviewPrecheckPasses({ policy: co, reviewDecision: 'APPROVED', codeOwnedTouched: true })).toBe(true);
+    expect(reviewPrecheckPasses({ policy: co, reviewDecision: 'REVIEW_REQUIRED', codeOwnedTouched: false })).toBe(true);
+    expect(reviewPrecheckPasses({ policy: co, reviewDecision: '' })).toBe(true); // ownership not known here: GitHub's rule is consulted by safe-merge
   });
 });

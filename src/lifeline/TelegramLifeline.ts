@@ -94,6 +94,7 @@ import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
+import { normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
@@ -118,6 +119,8 @@ function releaseLockFile(lockPath: string): void {
 interface LifelineConfig {
   token: string;
   chatId: string;
+  /** Optional issues forum chat (docs/specs/telegram-issues-group.md). */
+  issuesChatId?: string;
   pollIntervalMs?: number;
   lifelineTopicId?: number;
 }
@@ -1096,6 +1099,9 @@ export class TelegramLifeline {
 
     const msg = update.message;
     if (!msg) return;
+    // Issues-group messages get their internal topic id before anything reads it,
+    // so every forwarded topicId is internal (docs/specs/telegram-issues-group.md).
+    normalizeInboundThread(msg, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
 
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
@@ -3057,6 +3063,8 @@ export class TelegramLifeline {
 
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
+    // Issues-group topics → the issues chat with the real thread id (idempotent).
+    params = toWireParams(params, { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId });
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());
     // The content check runs at the egress door below, on the serialised request — after this
     // transform, because a formatter can remove the evidence an earlier check relied on (pass 33

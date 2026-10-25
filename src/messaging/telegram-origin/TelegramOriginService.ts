@@ -65,6 +65,9 @@ export interface OriginServiceOptions {
     agent?: Partial<OriginDisplaySettings>; conversation?: Partial<OriginDisplaySettings>;
   };
   authorize: (request: Readonly<SealedBotRequest>) => boolean | Promise<boolean>;
+  /** Translates outbound params before sealing — routes issues-group topic ids to the
+   * issues chat (docs/specs/telegram-issues-group.md). Must be idempotent. */
+  wireParams?: (params: BotParameters) => BotParameters;
   /** a2a-single-agent-identity §4.2 — names WHY `authorize` refused. When this
    * machine does not hold the serving lease, a refused request is held as
    * `lease-not-held` (durable, forwardable, notifiable) instead of
@@ -320,6 +323,8 @@ export class TelegramOriginService {
   }
   prepareBot(input: { method: string; accountId: string; params: BotParameters; operationId?: string; executionOwnerMachineId?: string;
     attachments?: import('./OriginMultipart.js').PreparedOriginAttachments; policyInput?: OriginSendPolicyInput }): OriginPreparedBotOperation {
+    // Translate BEFORE sealing: the lease holder and recovery replay the sealed bytes.
+    if (this.options.wireParams) input = { ...input, params: this.options.wireParams(input.params) };
     const producer = this.currentProducer();
     const destination = { accountId: input.accountId, chatId: input.params.chat_id === undefined ? null : String(input.params.chat_id),
       topicId: input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id) };

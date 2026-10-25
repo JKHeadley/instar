@@ -12,8 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { MainHealth, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
-import { LocalVerifyService, MAIN_VERIFY_LIMITS, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
+import { MainHealth, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
+import { LocalVerifyService, MAIN_FAIR_SHARE_MS, MAIN_VERIFY_LIMITS, decideFlakyEscalation, decideStart, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { validateRecord, type LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
@@ -197,11 +197,12 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 const mainRecord = (head: string, outcome: 'success' | 'failure' | 'error'): LocalVerifyRecord =>
   record({ kind: 'main', pr: 0, headSha: head, baseSha: head, outcome, ...(outcome === 'error' ? { errorStep: 'fetch', mergeTree: '' } : {}) });
 
-function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null } = {}) {
+function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; ancestor?: (a: string, d: string) => boolean | null; commitInfo?: (sha: string) => Promise<CommitInfo | null> } = {}) {
   const stateDir = tmp();
   if (opts.healthy !== false) watermark(stateDir, {});
   const spawned: Array<{ inputPath: string; resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const signals: string[] = [];
+  const signalDetails: Array<{ key: string; detail: Record<string, unknown> }> = [];
   const healthChanges: string[] = [];
   let t = Date.parse('2026-10-21T12:00:00.000Z');
   const seams: LocalVerifyServiceSeams = {
@@ -218,7 +219,8 @@ function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; anc
     readProcessArgs: async () => null,
     foreignSuiteHolders: () => [],
     isAncestor: async (a, d) => (opts.ancestor ? opts.ancestor(a, d) : false),
-    signal: (k) => { signals.push(k); },
+    signal: (k, d) => { signals.push(k); signalDetails.push({ key: k, detail: d }); },
+    ...(opts.commitInfo ? { commitInfo: opts.commitInfo } : {}),
     onMainHealthChange: (s) => { healthChanges.push(s.state); },
     now: () => t,
     setTimer: () => {},
@@ -236,7 +238,8 @@ function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; anc
     await svc.settle();
   };
   const inputOf = (i: number) => JSON.parse(fs.readFileSync(spawned[i].inputPath, 'utf-8')) as { pr: number; headSha: string; baseSha: string; kind?: string };
-  return { svc, spawned, signals, healthChanges, finish, inputOf, advance: (ms: number) => { t += ms; } };
+  const auditLines = () => fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+  return { svc, spawned, signals, signalDetails, healthChanges, finish, inputOf, auditLines, advance: (ms: number) => { t += ms; } };
 }
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
 const view = (pr: number, head: string): PrView => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: head, baseRefName: 'main', baseRefOid: sha('b') });
@@ -293,8 +296,12 @@ describe('LocalVerifyService — the main verify', () => {
     expect(q.filter((e) => e.kind === 'main').map((e) => e.headSha)).toEqual([sha('3')]);
     expect(s.svc.snapshot().inFlight).toMatchObject({ kind: 'main', headSha: sha('1') });
     await s.finish(0, ok(mainRecord(sha('1'), 'success')));
-    // The pending main verify goes first, ahead of 10 older PR entries.
-    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('3') });
+    // Fair share: a main verify finished just now and PRs wait, so the oldest PR goes first…
+    expect(s.inputOf(1)).toMatchObject({ pr: 1 });
+    // …and once no main verify has finished in the last 2 hours, the pending main goes ahead of the other 9.
+    s.advance(2 * 60 * MIN);
+    await s.finish(1, ok(record({ pr: 1, headSha: views[1].headRefOid })));
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: sha('3') });
   });
 
   it('red: re-run once in main-suspect, then main-red with ONE signal; the watcher requests no PR verifies while unhealthy, POSTs still run', async () => {
@@ -378,5 +385,170 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.spawned).toHaveLength(2);
     await s.finish(1, ok(mainRecord(sha('1'), 'success')));
     expect(s.svc.mainHealth().state).toBe('healthy');
+  });
+});
+
+// ── flake isolation (2026-10-22), fair share, release collapse ──
+
+describe('flaky files, main run-detail (ACT-151)', () => {
+  const flaky = (file: string) => [{ file, lane: 'e2e', firstMessage: 't0: boom' }];
+  it('a main verify emits the same bounded run-detail as a PR verify, and main-red carries it', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    const fail = (): VerifyRunResult => ({ kind: 'record', record: mainRecord(sha('1'), 'failure'), reasons: ['file-failed:tests/e2e/x.test.ts:1'], overlaps: [], keptWorktree: null, failures: [{ file: 'tests/e2e/x.test.ts', lane: 'e2e', failed: 1, message: 't0: boom', rerunMessage: 't0: boom again' }] });
+    await s.finish(0, fail());
+    const d = s.auditLines().find((l) => l.event === 'run-detail' && l.kind === 'main');
+    expect(d).toMatchObject({ headSha: sha('1'), outcome: 'failure', reasons: ['file-failed:tests/e2e/x.test.ts:1'], failures: [expect.objectContaining({ file: 'tests/e2e/x.test.ts', rerunMessage: 't0: boom again' })] });
+    await s.finish(1, fail());
+    const red = s.signalDetails.find((x) => x.key === 'local-verify:main-red')!;
+    expect(red.detail.runDetail).toMatchObject({ outcome: 'failure', failures: [expect.objectContaining({ file: 'tests/e2e/x.test.ts' })] });
+  });
+
+  it('a record with flakyRetried raises ONE signal per file (deduped) and counts it in flakyFiles; PR and main alike', async () => {
+    const s = svcSetup({ views: { 4: view(4, sha('c')) } });
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok({ ...mainRecord(sha('1'), 'success'), flakyRetried: flaky('tests/e2e/stop-gate.test.ts') }));
+    s.advance(3 * 60 * MIN);
+    await s.svc.request(4);
+    await s.finish(1, ok(record({ pr: 4, headSha: sha('c'), finishedAt: '2026-10-21T15:00:00.000Z', flakyRetried: flaky('tests/e2e/stop-gate.test.ts') })));
+    expect(s.signals.filter((k) => k === 'local-verify:flaky:tests/e2e/stop-gate.test.ts')).toHaveLength(1);
+    expect(s.svc.flakyFiles()).toEqual({ 'tests/e2e/stop-gate.test.ts': { count: 2, lastSeen: '2026-10-21T15:00:00.000Z', lane: 'e2e' } });
+    expect(s.svc.snapshot().flakyFiles).toHaveProperty(['tests/e2e/stop-gate.test.ts']);
+    // A main verify whose only failures were flakes is green: main health never moved.
+    expect(s.healthChanges).toEqual([]);
+    expect(s.svc.mainHealth().state).toBe('healthy');
+  });
+
+  it('a record without flakyRetried raises no flaky signal', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    expect(s.signals.some((k) => k.startsWith('local-verify:flaky:'))).toBe(false);
+    expect(s.auditLines().some((l) => l.event === 'run-detail')).toBe(false);
+  });
+});
+
+describe('fair share between main and PR verifies', () => {
+  const q = (...kinds: Array<'main' | 'pr'>) => kinds.map((k) => (k === 'main' ? { kind: 'main' as const } : {}));
+  const NOW = Date.parse('2026-10-21T12:00:00.000Z');
+  const fsh = (oldestUnverifiedMainAt: number | null, over: Partial<{ mainHealthy: boolean; lastStartWasMain: boolean }> = {}) =>
+    ({ mainHealthy: true, oldestUnverifiedMainAt, lastStartWasMain: false, ...over });
+  it('healthy: main goes first once its oldest unverified merge is ≥ 90 min old; before that PRs go first', () => {
+    expect(MAIN_FAIR_SHARE_MS).toBe(90 * MIN);
+    expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW, fairShare: fsh(NOW - 89 * MIN) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW, fairShare: fsh(NOW - 90 * MIN) })).toEqual({ kind: 'start', index: 0 });
+    expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW, fairShare: fsh(null) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: q('main'), now: NOW, fairShare: fsh(NOW) })).toEqual({ kind: 'start', index: 0 }); // no PR waiting
+  });
+  it('suspect or red: main keeps priority, but at most every other start while PRs wait', () => {
+    expect(decideStart({ foreignHolders: 0, queue: q('pr', 'main'), now: NOW, fairShare: fsh(NOW, { mainHealthy: false }) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW, fairShare: fsh(NOW, { mainHealthy: false, lastStartWasMain: true }) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: q('main'), now: NOW, fairShare: fsh(NOW, { mainHealthy: false, lastStartWasMain: true }) })).toEqual({ kind: 'start', index: 0 });
+  });
+  it('without fair-share inputs the order is unchanged (first ready entry)', () => {
+    expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW })).toEqual({ kind: 'start', index: 0 });
+  });
+  it('in the service: a young unverified main waits behind PRs, an old one goes first', async () => {
+    const views: Record<number, PrView> = { 1: view(1, sha('c')), 2: view(2, sha('e')) };
+    const s = svcSetup({ views });
+    s.svc.noteMainHead(sha('1'));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2')); // queued while main sha1 runs
+    await s.finish(0, ok(mainRecord(sha('1'), 'success')));
+    // sha2 has been unverified 10 minutes: PR 1 goes first.
+    expect(s.inputOf(1)).toMatchObject({ pr: 1 });
+    s.advance(85 * MIN); // now 95 minutes
+    await s.finish(1, ok(record({ pr: 1, headSha: sha('c') })));
+    expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: sha('2') });
+  });
+});
+
+describe('release commits collapse into the verify of their parent', () => {
+  const VERSION_PATCH = '@@ -1,6 +1,6 @@\n {\n   "name": "instar",\n-  "version": "1.3.1398",\n+  "version": "1.3.1399",\n   "type": "module",';
+  const REL = (parent: string, files: string[] = ['package.json', 'package-lock.json', 'CHANGELOG.md', 'upgrades/1.3.1399.md']): CommitInfo =>
+    ({ subject: 'chore: release v1.3.1399 [skip ci]', parents: [parent], files: files.map((f) => ({ filename: f, patch: f.endsWith('package.json') ? VERSION_PATCH : '+x' })) });
+  it('releaseCollapsesInto: both sides', () => {
+    const covered = new Set([sha('1')]);
+    expect(releaseCollapsesInto(REL(sha('1')), covered)).toBe(sha('1'));
+    expect(releaseCollapsesInto(REL(sha('2')), covered)).toBeNull(); // parent not queued or verified
+    expect(releaseCollapsesInto({ subject: 'fix: something', parents: [sha('1')] }, covered)).toBeNull();
+    expect(releaseCollapsesInto({ subject: 'chore: release v1 [skip ci]', parents: [sha('1'), sha('2')] }, covered)).toBeNull(); // a merge commit
+    expect(releaseCollapsesInto(null, covered)).toBeNull();
+    expect(releaseCollapsesInto(REL(sha('1'), ['package.json', 'src/core/x.ts']), covered)).toBeNull(); // touches code
+    expect(releaseCollapsesInto(REL(sha('1'), []), covered)).toBeNull(); // unknown diff
+    expect(releaseCollapsesInto({ ...REL(sha('1')), files: null }, covered)).toBeNull();
+    expect(releaseCollapsesInto(REL(sha('1'), Array.from({ length: 300 }, () => 'package.json')), covered)).toBeNull(); // possibly truncated
+    expect(releaseCollapsesInto(REL(sha('1'), ['pnpm-lock.yaml', 'CHANGELOG-2026.md']), covered)).toBe(sha('1'));
+  });
+  it('a package.json (root or workspace) is release-only only when its patch changes just the version line', () => {
+    const covered = new Set([sha('1')]);
+    const withPkg = (filename: string, patch: string | null) => ({ subject: 'chore: release v1.3.1399 [skip ci]', parents: [sha('1')], files: [{ filename, patch }] });
+    expect(releaseCollapsesInto(withPkg('package.json', VERSION_PATCH), covered)).toBe(sha('1'));
+    expect(releaseCollapsesInto(withPkg('packages/threadline-core/package.json', VERSION_PATCH), covered)).toBe(sha('1'));
+    expect(releaseCollapsesInto(withPkg('package.json', VERSION_PATCH + '\n-    "test": "vitest run",\n+    "test": "exit 0",'), covered)).toBeNull();
+    expect(releaseCollapsesInto(withPkg('package.json', null), covered)).toBeNull(); // GitHub omitted the patch
+    expect(releaseCollapsesInto(withPkg('package.json', '@@ -1 +1 @@\n {'), covered)).toBeNull(); // no changed line
+    expect(patchChangesOnlyVersion('-  "version": "1.0.0",\n+  "version": "1.0.1",')).toBe(true);
+    expect(patchChangesOnlyVersion('+  "versionX": "1",')).toBe(false);
+  });
+  it('a release whose parent this machine has no main record for (a force-pushed main) is verified', async () => {
+    const s = svcSetup({ commitInfo: async () => REL(sha('9')) });
+    s.svc.noteMainHead(sha('1'));
+    await s.svc.settle();
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    await s.svc.settle();
+    expect(s.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha)).toEqual([sha('2')]);
+  });
+  it('a release commit whose parent was already queued triggers no main verify of its own', async () => {
+    const s = svcSetup({ commitInfo: async (x) => (x === sha('2') ? REL(sha('1')) : { subject: 'feat: x (#1)', parents: [sha('0')] }) });
+    s.svc.noteMainHead(sha('1'));
+    await s.svc.settle();
+    expect(s.spawned).toHaveLength(1);
+    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    await s.svc.settle();
+    expect(s.svc.snapshot().queue.filter((e) => e.kind === 'main')).toHaveLength(0);
+    expect(s.auditLines().some((l) => l.event === 'main-release-collapsed' && l.into === sha('1'))).toBe(true);
+    // A non-release head still verifies.
+    s.svc.noteMainHead(sha('3')); s.advance(10 * MIN); s.svc.noteMainHead(sha('3'));
+    await s.svc.settle();
+    expect(s.svc.snapshot().queue.filter((e) => e.kind === 'main').map((e) => e.headSha)).toEqual([sha('3')]);
+  });
+});
+
+describe('green main record feeds PR isolation; repeat flakes escalate', () => {
+  it('PR verifies get isolation allowed only after this machine has a green main record', async () => {
+    const s = svcSetup({ views: { 3: view(3, sha('c')), 4: view(4, sha('e')) } });
+    await s.svc.request(3);
+    expect((s.inputOf(0) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: false, notCleanOnGreenMain: [] });
+    await s.finish(0, ok(record({ pr: 3, headSha: sha('c') })));
+    s.svc.noteMainHead(sha('1'));
+    await s.finish(1, ok({ ...mainRecord(sha('1'), 'success'), flakyRetried: [{ file: 'tests/e2e/x.test.ts', lane: 'e2e', firstMessage: 'boom' }] }));
+    await s.svc.request(4);
+    expect((s.inputOf(2) as unknown as { isolation: unknown }).isolation).toEqual({ allowed: true, notCleanOnGreenMain: ['tests/e2e/x.test.ts'] });
+  });
+  it('the same file re-run-passed 3 times within 7 days re-raises its item as a new episode, with the count; once per window', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 6; i++) views[i] = view(i, (i.toString(16).padStart(2, '0')).repeat(20));
+    const s = svcSetup({ views });
+    const fl = [{ file: 'tests/e2e/f.test.ts', lane: 'e2e', firstMessage: 'boom' }];
+    for (let i = 1; i <= 6; i++) {
+      await s.svc.request(i);
+      await s.finish(s.spawned.length - 1, ok(record({ pr: i, headSha: views[i].headRefOid, finishedAt: new Date(Date.parse('2026-10-21T12:00:00.000Z') + i * 60 * MIN).toISOString(), flakyRetried: fl })));
+      s.advance(60 * MIN);
+    }
+    expect(s.signals.filter((k) => k === 'local-verify:flaky:tests/e2e/f.test.ts')).toHaveLength(1);
+    const repeats = s.signalDetails.filter((x) => x.key.startsWith('local-verify:flaky:tests/e2e/f.test.ts:repeat-'));
+    expect(repeats).toHaveLength(1); // the 3rd pass escalates; 4th–6th are inside the same window
+    expect(repeats[0].detail).toMatchObject({ count: 3, windowDays: 7 });
+  });
+  it('decideFlakyEscalation: both sides', () => {
+    const now = Date.parse('2026-10-21T12:00:00.000Z');
+    const ago = (d: number) => new Date(now - d * 24 * 60 * MIN).toISOString();
+    expect(decideFlakyEscalation({ seen: [ago(1), ago(2)], escalatedAt: null }, now)).toEqual({ escalate: false, count: 2 });
+    expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: null }, now)).toEqual({ escalate: true, count: 3 });
+    expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(8)], escalatedAt: null }, now)).toEqual({ escalate: false, count: 2 }); // outside the window
+    expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(2) }, now).escalate).toBe(false);
+    expect(decideFlakyEscalation({ seen: [ago(1), ago(2), ago(3)], escalatedAt: ago(8) }, now).escalate).toBe(true);
   });
 });

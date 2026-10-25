@@ -163,6 +163,35 @@ export function summarizeVitestListJson(jsonText) {
   return { testCaseCount: parsed.length, testFileCount: files.size };
 }
 
+/**
+ * Parse `vitest list --filesOnly --json` output: an array of `{ file }` entries.
+ * This listing never imports a test file, so it stays fast however many files a
+ * change reaches — the full listing (which collects every test case) is only run
+ * once this count is under the smoke cap.
+ */
+export function summarizeVitestFilesOnlyJson(jsonText) {
+  const text = String(jsonText);
+  if (text.trim().length === 0) throw new Error('Vitest files-only list JSON is empty');
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`Vitest files-only list JSON is malformed: ${err instanceof Error ? err.message : err}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error('Vitest files-only list JSON must be an array');
+  const files = new Set();
+  for (const [index, entry] of parsed.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Vitest files-only list entry ${index} must be an object`);
+    }
+    if (typeof entry.file !== 'string' || entry.file.trim().length === 0 || !path.isAbsolute(entry.file)) {
+      throw new Error(`Vitest files-only list entry ${index} has an invalid absolute file path`);
+    }
+    files.add(path.normalize(entry.file));
+  }
+  return { testFileCount: files.size };
+}
+
 export function evaluateAffectedSmokeSelection(
   { changedFileCount, testFileCount, testCaseCount },
   limits = DEFAULT_SMOKE_LIMITS,

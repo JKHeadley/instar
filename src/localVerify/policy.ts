@@ -29,7 +29,7 @@ export const LOCAL_VERIFY_DEADLINES: Readonly<LocalVerifyDeadlines> = Object.fre
   fetchMs: 5 * MIN,
   npmCiMs: 10 * MIN,
   buildLintMs: 15 * MIN,
-  lanes: Object.freeze({ unit: 10 * MIN, integration: 30 * MIN, e2e: 45 * MIN }),
+  lanes: Object.freeze({ unit: 20 * MIN, integration: 30 * MIN, e2e: 45 * MIN }),
   totalActiveMs: 120 * MIN,
   gitStepMs: 2 * MIN,
 });
@@ -40,6 +40,20 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   /** Poll interval while waiting in place. */
   holderPollMs: 30_000,
   queueCap: 10,
+  /**
+   * Isolation re-run (Throughput budget, evidence-per-run "known-flaky"): a lane whose ONLY
+   * problem is 1..N failed files re-runs exactly those files once, one at a time. More than N
+   * failed files is a real break (no re-run). N is also the cap across a whole verify.
+   */
+  isolationRerunMaxFiles: 3,
+  /**
+   * The e2e lane runs as this many vitest shards at once (spec "Parallel lanes"). Each
+   * shard has its own TMPDIR and tmux server. Measured on the Studio 2026-10-22: one
+   * e2e process 23-25 min; two shards 11 and 20 min, beside the other two lanes.
+   */
+  e2eShards: 2,
+  /** Unit-lane workers while the lanes run at once (pinned in the lane's env). */
+  unitWorkersParallel: 4,
   /** Oldest queued entry waiting longer than this (capacity waits included) raises `local-verify:starved`. */
   starvedAfterMs: 3 * 60 * MIN,
   /** Automatic re-runs of an `error` outcome. */
@@ -71,6 +85,8 @@ export function computePolicyHash(): string {
     harnessGlobs: HARNESS_GLOBS,
     toolchain: { packages: TOOLCHAIN_PACKAGES, scopes: TOOLCHAIN_SCOPES },
     deadlines: LOCAL_VERIFY_DEADLINES,
+    e2eShards: LOCAL_VERIFY_LIMITS.e2eShards,
+    unitWorkersParallel: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
   };
   return crypto.createHash('sha256').update(stable(policy)).digest('hex');
 }

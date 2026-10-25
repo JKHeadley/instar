@@ -7,6 +7,7 @@
  */
 
 import type { LaneTotals } from './laneReport.js';
+import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
 
@@ -33,12 +34,35 @@ export interface LocalVerifyRecord {
   verifierVersion: string;
   policyHash: string;
   /**
+   * A flagged record's independent second-pass review (spec "Harness-changing PRs"):
+   * an instar-dev trace the PR changed, read from the head's tree, whose second pass
+   * concurred and whose coveredFiles include every flagged path. Absent = none found.
+   */
+  independentReview?: { trace: string; concurred: true };
+  /**
    * 'main' for a post-merge verify of `main` itself (piece 3a): pr is 0, headSha == baseSha,
    * and the record never enters the PR index or journal (it feeds main health only).
    * Absent on every PR record.
    */
   kind?: 'main';
+  /**
+   * Files that failed in their lane and then passed when re-run alone, once, in the same
+   * verify (the evidence-per-run form of the spec's "known-flaky" idea, Throughput budget).
+   * Present only when at least one file was re-run and passed; the lane then counted as
+   * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
+   */
+  flakyRetried?: FlakyRetry[];
 }
+
+export interface FlakyRetry {
+  file: string;
+  lane: string;
+  /** The first run's failure (first failing test + message), bounded. */
+  firstMessage: string;
+}
+
+/** At most this many flaky entries on a record (the re-run cap is smaller). */
+export const FLAKY_RETRIED_MAX = 10;
 
 /** The `pr` value a `main` verify carries (records keyed by PR never use it). */
 export const MAIN_VERIFY_PR = 0;
@@ -92,6 +116,18 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (x.errorStep !== undefined && typeof x.errorStep !== 'string') errors.push('errorStep');
   for (const k of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
     if (typeof x[k] !== 'boolean') errors.push(k);
+  }
+  if (x.flakyRetried !== undefined) {
+    const ok = Array.isArray(x.flakyRetried) && x.flakyRetried.length <= FLAKY_RETRIED_MAX && x.flakyRetried.every((f) => {
+      const r = f as Record<string, unknown>;
+      return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
+        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
+    });
+    if (!ok) errors.push('flakyRetried');
+  }
+  if (x.independentReview !== undefined) {
+    const ir = x.independentReview as Record<string, unknown> | null;
+    if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }

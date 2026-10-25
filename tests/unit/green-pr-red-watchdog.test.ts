@@ -66,7 +66,7 @@ describe('failingChecksFromRollup', () => {
   it('returns only latest-run failing checks with their completedAt', () => {
     const rollup = [
       { name: 'shard 1', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW), completedAt: iso(NOW) },
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 2 * H), completedAt: iso(NOW - 2 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 2 * H), completedAt: iso(NOW - 2 * H) },
     ];
     const failing = failingChecksFromRollup(rollup);
     expect(failing).toHaveLength(1);
@@ -76,8 +76,8 @@ describe('failingChecksFromRollup', () => {
 
   it('does NOT report a failing check that a later run turned green (the 2026-07-08 regression)', () => {
     const rollup = [
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H), completedAt: iso(NOW - 3 * H) },
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 1 * H), completedAt: iso(NOW - 1 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H), completedAt: iso(NOW - 3 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 1 * H), completedAt: iso(NOW - 1 * H) },
     ];
     expect(failingChecksFromRollup(rollup)).toEqual([]);
   });
@@ -115,29 +115,52 @@ describe('stuckRedChecks', () => {
 describe('deriveRollup — latest-run dedup fix', () => {
   it('a stale FAILED run superseded by a passing rerun reads SUCCESS, not FAILURE', () => {
     const rollup = [
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H) },
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 1 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 1 * H) },
     ];
     expect(deriveRollup(rollup)).toBe('SUCCESS');
   });
   it('a genuinely-failed latest run still reads FAILURE', () => {
     const rollup = [
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 3 * H) },
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 1 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: iso(NOW - 3 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 1 * H) },
     ];
     expect(deriveRollup(rollup)).toBe('FAILURE');
   });
   it('an in-progress rerun reads PENDING even after a prior failure', () => {
     const rollup = [
-      { name: 'shard 4', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H) },
-      { name: 'shard 4', status: 'IN_PROGRESS', conclusion: null, startedAt: iso(NOW - 1 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: iso(NOW - 3 * H) },
+      { name: 'shard 4', workflowName: 'CI', status: 'IN_PROGRESS', conclusion: null, startedAt: iso(NOW - 1 * H) },
     ];
     expect(deriveRollup(rollup)).toBe('PENDING');
   });
   it('all-green reads SUCCESS; a string passthrough is preserved', () => {
-    expect(deriveRollup([{ name: 'a', status: 'COMPLETED', conclusion: 'SUCCESS' }])).toBe('SUCCESS');
+    expect(deriveRollup([{ name: 'a', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS' }])).toBe('SUCCESS');
     expect(deriveRollup('SUCCESS')).toBe('SUCCESS');
     expect(deriveRollup(null)).toBeNull();
+  });});
+
+describe('deriveRollup — zero checks is not green (PR #2302)', () => {
+  it('an empty rollup reads NO_CHECKS, not SUCCESS', () => {
+    expect(deriveRollup([])).toBe('NO_CHECKS');
+  });
+  it('only Vercel (a commit status + a non-workflow check run) reads NO_CHECKS', () => {
+    const rollup = [
+      { __typename: 'StatusContext', context: 'Vercel', state: 'SUCCESS' },
+      { __typename: 'CheckRun', name: 'Vercel Preview Comments', workflowName: '', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    ];
+    expect(deriveRollup(rollup)).toBe('NO_CHECKS');
+  });
+  it('one GitHub Actions check alongside Vercel reads SUCCESS', () => {
+    const rollup = [
+      { __typename: 'StatusContext', context: 'Vercel', state: 'SUCCESS' },
+      { __typename: 'CheckRun', name: 'Type Check', workflowName: 'CI', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    ];
+    expect(deriveRollup(rollup)).toBe('SUCCESS');
+  });
+  it('a failing or pending status still wins over NO_CHECKS', () => {
+    expect(deriveRollup([{ context: 'Vercel', state: 'FAILURE' }])).toBe('FAILURE');
+    expect(deriveRollup([{ context: 'Vercel', state: 'PENDING' }])).toBe('PENDING');
   });
 });
 
@@ -158,7 +181,7 @@ function harness(prs: PrSummary[], opts: { epoch?: number } = {}): Harness {
     holdsLease: () => true,
     leaseEpoch: () => opts.epoch ?? 1,
     listOpenPrs: async () => prs,
-    protectedPaths: async () => ({ touches: false, unverifiable: false }),
+    codeOwnedPaths: async () => ({ touches: false, files: [], unverifiable: false }),
     refetchPr: async () => ({ title: 'feat', labels: [], isDraft: false, headRefOid: 'sha100', state: 'OPEN', autoMergeRequest: null }),
     disarmArmedEpisodes: async () => true,
     resolveGhLogin: async () => 'echo-bot',

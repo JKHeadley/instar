@@ -66,7 +66,13 @@ describe('server-boot wiring: PeerPresencePuller (HTTP presence transport)', () 
     const resolverIdx = src.indexOf('_resolvePeerUrls = () =>');
     expect(resolverIdx).toBeGreaterThan(0);
     const block = src.slice(resolverIdx, resolverIdx + 600);
-    expect(block).toContain('peerUrl(m.machineId)');
+    // Names the shared resolver itself, not the `peerUrl` wrapper it used to go
+    // through: the wrapper collapsed every admissible rope to one URL, which is
+    // the defect the selection-aware resolver fixes. Asserting the resolver by
+    // name is strictly stronger — a regression back to the lossy wrapper fails
+    // here instead of passing.
+    expect(block).toContain('resolveMeshPeerPreferredSelection(');
+    expect(block).toContain('meshResolver');
     expect(block).not.toContain('!!m.entry.lastKnownUrl');
     expect(block).not.toContain('url: m.entry.lastKnownUrl');
   });

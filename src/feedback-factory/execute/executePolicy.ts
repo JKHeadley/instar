@@ -37,6 +37,12 @@ export const MERGE_RETRY_DELAY_MS = HOUR_MS;
 export const VERIFY_QUIET_MS = 30 * DAY_MS;
 /** Dependency install retry ladder (§4 step 3). */
 export const DEPS_RETRY_LADDER_MS = [30 * 60_000, HOUR_MS, 4 * HOUR_MS] as const;
+/**
+ * After a failed confinement canary, how long until the next attempt may run it again, by consecutive
+ * failure. Running the canary is itself safe (it is the check, and no fix attempt starts unless it
+ * passes), so a fixed day-long stop only delayed the evidence. A pass resets the ladder.
+ */
+export const CANARY_RETRY_LADDER_MS = [HOUR_MS, 2 * HOUR_MS, 4 * HOUR_MS, 8 * HOUR_MS, DAY_MS] as const;
 /** The summary must show deps-unavailable within this long. */
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
@@ -78,6 +84,13 @@ export interface ExecuteLiveConfig {
    * to publish (`publish-fork-unset`).
    */
   publishRepo: string | null;
+  /**
+   * Who admits a fix PR to merge. `independent` (the default, operator directive 2026-10-21 /
+   * 2026-10-23, topic 18330): a cross-family reviewer AND the Claude clean-door reviewer both pass
+   * the exact head; the owner's own GitHub approval still admits on its own, and CODEOWNERS-owned
+   * paths always wait for their owner. `operator`: the original rule, the owner's approval only.
+   */
+  reviewGate: 'independent' | 'operator';
   actionTopicId?: number;
 }
 
@@ -110,6 +123,7 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     baseSmokeTests: smoke && smoke.length > 0 ? smoke : [...EXECUTE_CONFIG_DEFAULTS.baseSmokeTests],
     maxDurationMinutes: int(raw?.maxDurationMinutes, EXECUTE_CONFIG_DEFAULTS.maxDurationMinutes, 10, EXECUTION_LEASE_MS / 60_000),
     publishRepo: publish,
+    reviewGate: raw?.reviewGate === 'operator' ? 'operator' : 'independent',
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }

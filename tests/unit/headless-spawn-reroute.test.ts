@@ -28,6 +28,8 @@ import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const mockTmuxSessions = new Set<string>();
+/** What `tmux show-environment -t … CLAUDE_CONFIG_DIR` answers ('' = unparseable). */
+let mockShowEnvironment = '';
 /** Every `new-session` argv captured, in call order (for argv-pin assertions). */
 const newSessionArgvs: string[][] = [];
 /** Every send-keys `-l` literal payload captured (for the sanitizer assertion). */
@@ -66,6 +68,7 @@ vi.mock('node:child_process', () => {
       // pane_current_command — report a live claude so isSessionAlive passes.
       return 'claude||claude';
     }
+    if (args[0] === 'show-environment') return mockShowEnvironment;
     return '';
   };
   return {
@@ -605,6 +608,84 @@ describe('monitorTick rerouted-interactive branch — expired login', () => {
     expect(firstSeen.has('proj-le-1')).toBe(false);
     expect(saved.endedWorkEvidence).toBeUndefined(); // proved idle → never queued for revival
     reportSpy.mockRestore();
+  });
+
+  it('ending a session at the frame reports its live config home to the login-expired sink', async () => {
+    const env = seed('le-9', DEAD_LOGIN_PANE);
+    (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+    const sightings: Array<{ configHome: string; session: string }> = [];
+    env.manager.setLoginExpiredSink((input) => sightings.push(input));
+    await env.maintenanceTick();
+    expect(sightings).toEqual([]); // first sighting only records the dwell
+    env.firstSeen.set('proj-le-9', Date.now() - 61_000);
+    await env.maintenanceTick();
+    expect(env.state.getSession('le-9')!.status).toBe('killed');
+    expect(sightings).toEqual([{ configHome: '/home/x/.claude-followme-a', session: 'proj-le-9' }]);
+  });
+
+  it('data flow: two sessions ended at the frame + an unreadable credential → the real poller flips needs-reauth', async () => {
+    const { SubscriptionPool } = await import('../../src/core/SubscriptionPool.js');
+    const { QuotaPoller } = await import('../../src/core/QuotaPoller.js');
+    const pool = new SubscriptionPool({ stateDir: tmpDir });
+    pool.addFixture({ id: 'jg', nickname: 'jg', email: 'jg@example.test', provider: 'anthropic',
+      framework: 'claude-code', configHome: '/home/x/.claude-followme-a' });
+    const poller = new QuotaPoller({
+      pool,
+      tokenResolver: () => ({ observationOnly: true, reason: 'credential-token-shape-invalid' }),
+      fetchImpl: async () => { throw new Error('no usage read expected'); },
+    });
+    for (const id of ['le-11', 'le-12']) {
+      const env = seed(id, DEAD_LOGIN_PANE);
+      (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+      env.manager.setLoginExpiredSink((input) => poller.noteCliLoginExpired(input));
+      await env.maintenanceTick();
+      env.firstSeen.set(`proj-${id}`, Date.now() - 61_000);
+      await env.maintenanceTick();
+      expect(env.state.getSession(id)!.status).toBe('killed');
+    }
+    await poller.pollAll();
+    expect(pool.get('jg')!.status).toBe('needs-reauth');
+  });
+
+  it('a session with CLAUDE_CONFIG_DIR explicitly unset reports the DEFAULT home; an unparseable tmux answer reports nothing', async () => {
+    const os = await import('node:os');
+    const prev = process.env.CLAUDE_CONFIG_DIR; delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      // Unparseable answer (the mock default) → no guessed slot, no sighting.
+      mockShowEnvironment = '';
+      const a = seed('le-13', DEAD_LOGIN_PANE);
+      const sightingsA: Array<{ configHome: string; session: string }> = [];
+      a.manager.setLoginExpiredSink((input) => sightingsA.push(input));
+      await a.maintenanceTick();
+      a.firstSeen.set('proj-le-13', Date.now() - 61_000);
+      await a.maintenanceTick();
+      expect(a.state.getSession('le-13')!.status).toBe('killed');
+      expect(sightingsA).toEqual([]);
+      // Explicitly unset (tmux prints `-CLAUDE_CONFIG_DIR`) → the default home.
+      mockShowEnvironment = '-CLAUDE_CONFIG_DIR';
+      const b = seed('le-14', DEAD_LOGIN_PANE);
+      const sightingsB: Array<{ configHome: string; session: string }> = [];
+      b.manager.setLoginExpiredSink((input) => sightingsB.push(input));
+      await b.maintenanceTick();
+      b.firstSeen.set('proj-le-14', Date.now() - 61_000);
+      await b.maintenanceTick();
+      expect(sightingsB).toEqual([{ configHome: path.join(os.homedir(), '.claude'), session: 'proj-le-14' }]);
+      // The plain resolver (no opts) still reports nothing for an unset var.
+      expect(b.manager.configHomeForSession('proj-le-14')).toBeUndefined();
+    } finally {
+      mockShowEnvironment = '';
+      if (prev !== undefined) process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
+  it('a throwing login-expired sink never stops the session being ended', async () => {
+    const env = seed('le-10', DEAD_LOGIN_PANE);
+    (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+    env.manager.setLoginExpiredSink(() => { throw new Error('sink down'); });
+    await env.maintenanceTick();
+    env.firstSeen.set('proj-le-10', Date.now() - 61_000);
+    await env.maintenanceTick();
+    expect(env.state.getSession('le-10')!.status).toBe('killed');
   });
 
   it('a protected session showing the frame is left running', async () => {

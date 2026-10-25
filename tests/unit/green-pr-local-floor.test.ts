@@ -46,7 +46,7 @@ function harness(prs: PrSummary[], policy: { reviewsRequired: boolean; lastPushA
     leaseEpoch: () => 1,
     listOpenPrs: async () => prs,
     ...(policy === 'absent' ? {} : { rulesetReviewPolicy: async () => { if (policy === 'throw') throw new Error('ruleset unreadable'); return policy; } }),
-    protectedPaths: async () => ({ touches: false, unverifiable: false }),
+    codeOwnedPaths: async () => ({ touches: false, files: [], unverifiable: false }),
     refetchPr: async (n) => {
       const p = prs.find((x) => x.number === n)!;
       return { title: p.title, labels: p.labels, isDraft: p.isDraft, headRefOid: p.headRefOid, state: 'OPEN' };
@@ -82,6 +82,33 @@ function hook(over: Partial<{ floor: 'local' | 'actions' | null; health: 'health
 }
 
 const cfg = { agentNamespace: 'echo', repo: 'JKHeadley/instar', enabled: true, expectedGhLogin: 'echo-bot', mergeStrategy: 'auto' as const };
+
+describe('local floor — a flagged record without an independent review (directive 2026-10-22)', () => {
+  it('refused:needs-independent-review is terminal for the head: no ladder, no attention item, no re-spawn until the head moves', async () => {
+    const prs = [pr()];
+    const h = harness(prs);
+    const lines: string[][] = [];
+    h.deps.postAttentionAggregate = async (l) => { lines.push(l); };
+    h.deps.runner.run = async (a) => { h.runCalls.push(a); return { outcome: 'refused:needs-independent-review' } as never; };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['100:sha100:main', '100:sha101:main']) }).lv);
+    await w.tick();
+    expect(h.runCalls).toHaveLength(1);
+    expect(h.state.episodes[100]).toMatchObject({ lastOutcome: 'refused:needs-independent-review', headRefOid: 'sha100', attempts: 0 });
+    expect(h.audits.some((a) => a.event === 'needs-independent-review')).toBe(true);
+    expect(lines.flat().some((l) => /approv|operator|review/i.test(l))).toBe(false);
+    h.clock.t += 60 * 60_000;
+    await w.tick();
+    expect(h.runCalls).toHaveLength(1); // same head: not attempted again
+    // The trace is committed: a new head (with its own record) is attempted.
+    prs[0] = pr({ headRefOid: 'sha101' });
+    h.deps.runner.run = async (a) => { h.runCalls.push(a); return { outcome: 'merged', confirmedMerged: true }; };
+    h.clock.t += 60 * 60_000;
+    await w.tick();
+    expect(h.runCalls).toHaveLength(2);
+    expect(h.runCalls[1]).toMatchObject({ pr: 100 });
+  });
+});
 
 describe('local floor — candidacy and merge strategy', () => {
   it('merges a PR with a record even while its Actions rollup is PENDING, with strategy sync', async () => {
@@ -413,5 +440,18 @@ describe('boot timeout invariant accounts for sync under a configured local floo
   it('auto + local floor with the default 25-min deadline passes', () => {
     const w = new GreenPrAutoMerger(harness([]).deps, { ...base, mergeTimeoutMs: 1_500_000, floor: 'local' });
     expect(w.invariantOk).toBe(true);
+  });
+});
+
+describe('local floor — protected paths are judged by the record, not the watcher', () => {
+  it('a protected-path PR with a record is attempted without the watcher reading any review (safe-merge decides)', async () => {
+    const h = harness([pr()]);
+    let reads = 0;
+    h.deps.codeOwnedPaths = async () => ({ touches: false, files: [], protectedFiles: ['scripts/safe-merge.mjs'], unverifiable: false });
+    h.deps.independentReviewAtHead = async () => { reads++; return { ok: false, unverifiable: false }; };
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['100:sha100:main']) }).lv);
+    expect((await w.tick()).acted).toBe(true);
+    expect(reads).toBe(0);
   });
 });

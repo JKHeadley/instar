@@ -99,7 +99,7 @@ describe('TelegramAdapter — the lease holder creates once and records the lane
     const recorded: number[] = [];
     const a = makeAdapter({ getAttentionHubTopicId: () => null, systemTopics: { canCreate: () => true, recordAttentionHubTopicId: id => recorded.push(id) } });
     const rec = stubApi(a);
-    const item = await a.createAttentionItem({ id: 'hub-c', title: 't', summary: 's', category: 'general', priority: 'HIGH' });
+    const item = await a.createAttentionItem({ id: 'hub-c', title: 't', summary: 's', category: 'general', priority: 'HIGH', sourceContext: 'agent' });
     expect(rec.created).toHaveLength(1);
     expect(recorded).toEqual([item.topicId]);
   });

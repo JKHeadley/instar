@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T17:02:58.733Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "8dc251c85f13eb168ad96da9fc3da921d3759cc0dad6d445e69ab68ff339e5ae",
+  "coveredFiles": [
+    "docs/specs/executor-clone-base-objects.eli16.md",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/executor-clone-base-objects.md",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes the canary output-tail feature from this PR, restoring confinementCanary.ts and its tests to main; a failing probe records only its exit code, as before.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

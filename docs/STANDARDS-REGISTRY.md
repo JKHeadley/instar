@@ -1,6 +1,29 @@
 # The Instar Standards Registry — A Living Constitution
 
-*The engineering principles that guide how Instar is built. Each one is a rule, what it means in practice, the failure it was earned from, and how it traces back to the one thing we're building. Seeded 2026-05-23 as the first tangible artifact of the [North Star — Continuous Working Awareness](./NORTH-STAR.md) doc. This document is meant to grow.*
+The master constitution for **both Instar 1.x and Instar 2.0** lives in the
+[Instar 2.0 purpose](https://github.com/JKHeadley/instar-2/blob/main/docs/00-the-purpose.md)
+and [Instar 2.0 rule book](https://github.com/JKHeadley/instar-2/blob/main/docs/01-the-rules.md),
+read in that order. Their Rules govern; their Values guide judgment. This registry
+preserves 1.x standards, incident histories and implementation references beneath
+that single authority. Where retained 1.x wording differs, the master governs;
+a correspondence in subject does not make the two wordings interchangeable.
+
+A reader or review that needs the constitution must read both master documents.
+This file alone is not the complete constitution. Naming the master here does not
+certify that existing loaders fetch it or that existing implementations enforce it.
+
+**Proposed 2.0 amendments** — these 1.x articles contain distinct obligations with
+no direct counterpart in the master. Their existing text and anchors are retained
+unchanged below, including their existing 1.x ratification status:
+
+- [Never Silently Cut the Data a Decision Depends On](#never-silently-cut-the-data-a-decision-depends-on) — remains pending operator ratification in 1.x.
+- [Telegram Message Origin Is Mandatory; Its Display Is Optional](#telegram-message-origin-is-mandatory-its-display-is-optional) — retains its recorded 1.x ratification; adoption into 2.0 is proposed.
+
+Listing an amendment here does not approve it in 2.0 or permit it to override the
+master. Changes to the master require Justin's code-owner approval in instar-2.
+Changes to this registry also require Justin's code-owner approval. The retained
+1.x articles remain applicable within the master; historical references below to
+this registry as the constitution do not create a second constitutional authority.
 
 ---
 
@@ -10,7 +33,7 @@ Instar has one founding goal: **build a coherent, self-evolving agent.** Almost 
 
 > **On the "earned from" stories.** Each one names the *crystallizing* instance — the moment the lesson finally hardened into a standard — but it is almost never the *first* instance. Behind nearly every standard here is a long tail of earlier recurrences. A standard typically emerges only after a pattern repeats often enough that the cost of re-paying it becomes obviously larger than the cost of enforcing against it structurally. That history isn't a weakness in the provenance; it's the *strength* of it. These rules earned their place by recurring, and the recurrence is the proof that structure — not willpower — is the only thing that ever stopped them. (The single incident is cited for legibility, not because it was the only time.)
 
-This registry is distinct from the Values & Identity doc. That one is about who an *agent* is (personal / relationship / organizational values). This one is about **how the Instar framework itself is engineered.** It is the constitution a spec or a build must be checked against.
+This registry is distinct from the Values & Identity doc. That one is about who an *agent* is (personal / relationship / organizational values). This one is about **how the Instar framework itself is engineered.** Its implementation references and incident histories support checks against the master constitution named above.
 
 It is also a working part of the machine, not just a reference:
 
@@ -878,7 +901,7 @@ that reset-safe posture must be explicit and tested rather than assumed.
 **Tree placement.** **ROOT / FOUNDATIONAL** — this standard declares no parent, and that is a stated position rather than an omission. It bounds every other article's machinery rather than deriving from one of them: *Structure beats Willpower* says a behavior that matters belongs in structure, and this article asks whether the structure proposed is the simplest that delivers it. The two are read together, never one against the other. If a genuine parent is later identified, this becomes a child declaration.
 **Fails.** If the review of a change cannot state its simplest robust route, fail closed on landing that change's added machinery: the simpler route may proceed.
 **Judgment-bound.** Accepted 2026-09-24 by operator ruling as NOT mechanisable: whether added machinery prevents a credible failure the simpler route cannot handle, and whether its benefit warrants its cost, is a design judgment. A classifier or checker over the declaration would detect a well-formed claim and not an over-engineered design, and building one would add exactly the machinery this article exists to refuse. The obligation is to make the judgment good: the independent reviewer answers the question for every design and landing, and retrospectives record where the answer was wrong.
-**In practice.** In Instar 1.x the existing review is the side-effects review and the spec convergence review. Neither template yet carries a field named `simplestRobustRoute`; until one does, this article is what requires the answer, and the reviewer states it in the review's prose. Adding that question to the existing templates is a wording change to review that already runs, not new machinery. Before adding a rule, classifier, catalog, special case, extra review round or pin ruling, ask whether a floor, a budget, or an agent with clear instructions and scoped tools would do. Say plainly when a piece is cut for that reason. For an autonomous capability, a hand-driven run is not proof: completion means the shipped path finished a real case unattended. Apply 80/20 to the value of each mechanism as well as to the remaining findings. Preserve real protection and useful recovery; remove ceremony that proves only that other ceremony occurred.
+**In practice.** In Instar 1.x the existing review is the side-effects review and the spec convergence review. Neither template yet carries a field named `simplestRobustRoute`; until one does, this article is what requires the answer, and the reviewer states it in the review's prose. Adding that question to the existing templates is a wording change to review that already runs, not new machinery. Before adding a rule, classifier, catalog, special case, extra review round or pin ruling, ask whether a floor, a budget, or an agent with clear instructions and scoped tools would do. Say plainly when a piece is cut for that reason. For an autonomous capability, a hand-driven run is not proof: completion means the shipped path finished a real case unattended. Apply 80/20 to the value of each mechanism as well as to the remaining findings. Preserve real protection and useful recovery; remove ceremony that proves only that other ceremony occurred. **Fractal 80/20 convergence, proportion, and found problems (operator, 2026-10-22, topic 127831).** A design, spec or single-artifact review has converged when a round finds nothing that would change what gets built; convergence does not mean every long-tail issue is resolved, and wording or long-tail findings are recorded as accepted decisions or sent to a named queue rather than iterated on. Audit-shaped sweeps keep the zero-new bar of *Iterative Audit to Convergence*. Effort is proportioned to the change: a small, reversible change gets a short spec, one review round and targeted tests (the push and merge test gates still apply), and the full review machinery is for large, irreversible or security-sensitive changes; reports state rounds and attempts beside the change size so a mismatch is visible. A problem found during work is triaged on the spot: if it blocks the current work it is fixed now; if it is major it gets its own topic and a session that runs it to completion on its own; otherwise it goes to a named queue. It never silently becomes the current work's scope. Earned from one requested feature that spent 18 review rounds and 9 commit attempts, absorbed 13 found problems, and was still unbuilt 14 hours into its run.
 **Earned from.** 2026-09-23 (topic 52075). Designing Instar 2.0, one request-phrasing change took three builder rounds, four design rulings, two source reviews and two gates, and the design had accumulated 116 rules, 25 holds and 301 pins. Fractal 80/20 had limited how long each design was refined but never asked whether its machinery should exist; reviews converged on correct details while accepting an unnecessarily complicated premise. The same day, a scripted page-driving relogin engine was reported working from hand-driven runs while the shipped engine had completed zero real cases. The operator warned that the design "better not result in an extremely brittle, extremely limited system due to paranoid over engineering", adopted a 17-line simplicity audit, and directed a standing Occam's-razor standard. It was ratified as Instar 2.0 Rule 116 (PR 116, approved 2026-09-24 15:58Z) and mirrored here.
 **Traces to the goal.** A coherent agent must remain operable, understandable and repairable by itself and its operator. Machinery whose review, operation and recovery cost exceeds the failures it prevents makes the agent brittle and limited, the opposite of a self-evolving one. Simplicity is how a framework keeps its safeguards real rather than ceremonial.
 
@@ -1319,4 +1342,4 @@ This is the through-line of the entire registry: the Genesis taught that for an 
 
 ---
 
-*This document's canonical home is here in the Instar repo (`docs/`) — the source of truth the spec-review conformance gate and the runtime Usher read from. It's a beacon, not a stone tablet: it is meant to grow, and it amends itself through the loop described above (agent proposes with a story, operator ratifies).*
+*This document is the retained 1.x registry at `docs/STANDARDS-REGISTRY.md`. The master constitution is the pair of Instar 2.0 documents linked at the opening; this registry supplies 1.x context and proposed amendments beneath it.*

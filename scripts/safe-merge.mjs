@@ -54,7 +54,9 @@ import { fileURLToPath } from 'node:url';
 import { checkPrDescriptionEli16 } from './eli16-pr-description-check.mjs';
 import { evaluateDecisionAuditPresence } from './decision-audit-presence-check.mjs';
 import { checkReleaseFragment } from './check-release-fragment.mjs';
-import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, approvedAtHead, extractRulesetReviewPolicy, reviewPrecheckPasses } from './local-verify-floor.mjs';
+import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
+import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles } from './local-verify-floor.mjs';
+import { isTracePath } from './lib/instar-dev-trace.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -215,15 +217,34 @@ export function capabilities() {
   };
 }
 
-/** Classify `gh pr checks --json` rows. `pending` is matched ONLY on the
- * bucket field — a check NAMED "block-pending-migrations" never loops the
- * wait (the round-1 foundation bug). */
+/**
+ * `gh pr checks --json` rows collapsed to the LATEST run per workflow + check name — the
+ * rule GitHub applies to a required context, shared with the green-PR watcher
+ * (scripts/latest-run-per-check.mjs). gh still lists a failed run that a newer
+ * rerun on the same head superseded; judging the old row refused PR 2289
+ * (2026-10-22) while GitHub showed the context green. A queued rerun (no start
+ * time yet) is the latest run, so it keeps the settle loop waiting.
+ */
+export function latestCheckRows(rows) {
+  return latestPerName(rows, {
+    name: (r) => String(r.name ?? ''),
+    workflow: (r) => String(r.workflow ?? ''),
+    // GitHub treats the most recently COMPLETED run as the latest (a run that started
+    // first but finished last wins — PR 2296, 2026-10-22); open runs win via `open`.
+    order: (r) => runTimeMs(r.completedAt) || runTimeMs(r.startedAt),
+    open: (r) => String(r.bucket ?? '').toLowerCase() === 'pending',
+  });
+}
+
+/** Classify `gh pr checks --json` rows (latest run per check name). `pending`
+ * is matched ONLY on the bucket field — a check NAMED "block-pending-migrations"
+ * never loops the wait (the round-1 foundation bug). */
 export function classifyChecks(rows) {
   const pending = [];
   const failed = [];
   let sawE2e = false;
   let e2ePassed = false;
-  for (const row of rows) {
+  for (const row of latestCheckRows(rows)) {
     const name = String(row.name ?? '');
     const bucket = String(row.bucket ?? '').toLowerCase();
     if (!name) continue;
@@ -235,7 +256,11 @@ export function classifyChecks(rows) {
     }
     if (!ok) failed.push(`${name}: ${bucket}`);
   }
-  return { pending, failed, sawE2e, e2ePassed, settled: pending.length === 0 };
+  // Zero rows ("no checks reported" right after a push, before GitHub registers any
+  // run) is NOT settled: an empty set must never read as green. The caller keeps
+  // waiting within its deadline and then refuses checks-timeout.
+  const noChecks = latestCheckRows(rows).filter(r => String(r?.name ?? '')).length === 0;
+  return { pending, failed, sawE2e, e2ePassed, noChecks, settled: !noChecks && pending.length === 0 };
 }
 
 /**
@@ -395,8 +420,6 @@ export const UNMEASURABLE = 'refused:verify-record-unmeasurable';
  * @param {object|null} a.record               the server index record (null = absent)
  * @param {{state: string, mainHead: string|null}|null} a.mainHealth
  * @param {Array<{name: string, ok: boolean, detail?: string}>} a.bodyChecks
- * @param {boolean} a.operatorApprovedHead
- * @param {{matches: boolean, reason?: string}|null} a.approverAcceptance  (needed only on the approval path)
  * @returns {{ok: true} | {ok: false, result: string, problems: string[]}}
  */
 export function evaluateLocalPredicate(a) {
@@ -431,13 +454,13 @@ export function evaluateLocalPredicate(a) {
   const notBool = FLAG_KEYS.filter(k => typeof r[k] !== 'boolean');
   if (notBool.length) return refuse(UNMEASURABLE, `record flag(s) not boolean: ${notBool.join(', ')}`);
   const flags = FLAG_KEYS.filter(k => r[k] === true);
-  if (flags.length) {
-    if (a.operatorApprovedHead !== true) {
-      return refuse('refused:needs-operator-approval', `the record is ${flags.join('+')}; the operator must approve exactly head ${r.headSha} on GitHub`);
-    }
-    if (a.approverAcceptance?.matches !== true) {
-      return refuse('refused:approver-dependent', `approver dependence is not covered by a matching acceptance (${a.approverAcceptance?.reason ?? 'unknown'})`);
-    }
+  // A flagged record needs an independent second-pass review of exactly this head,
+  // which the verifier found in the head's tree and recorded. Operator approval is
+  // NOT a substitute: the operator approves constitution changes only, and GitHub
+  // enforces those through CODEOWNERS (directive 2026-10-22; spec "Harness-changing PRs").
+  if (flags.length && !hasIndependentReview(r)) {
+    return refuse('refused:needs-independent-review',
+      `the record is ${flags.join('+')}; head ${r.headSha} needs an instar-dev trace in the PR whose second pass concurred and whose coveredFiles include every flagged path (the verifier found none)`);
   }
   return { ok: true };
 }
@@ -456,24 +479,10 @@ export function verifyRequestOutcome(post) {
   return null;
 }
 
-/**
- * Decision 16: reuse the feedback executor's approver-independence check and
- * its PIN acceptance, read from `GET /feedback-factory/execute/status`. The
- * acceptance counts only when the executor's approver IS the operator login
- * and the agent is either independent of it or the operator accepted exactly
- * the current sticky reason set. `null` body ⇒ the executor is not constructed.
- */
-export function approverAcceptanceFromExecutorStatus(body, operatorGhLogin) {
-  if (!body || typeof body !== 'object') return { matches: false, reason: 'executor-not-constructed' };
-  const av = body.availability;
-  if (!av || typeof av !== 'object') return { matches: false, reason: 'executor-availability-unread' };
-  const op = String(operatorGhLogin ?? '').toLowerCase();
-  if (!op || String(av.approver ?? '').toLowerCase() !== op) return { matches: false, reason: `approver-not-operator (${av.approver ?? 'none'})` };
-  const ind = av.independence;
-  if (!ind || typeof ind !== 'object') return { matches: false, reason: 'independence-unread' };
-  if (ind.independent === true) return { matches: true, reason: 'independent' };
-  if (ind.accepted === true) return { matches: true, reason: 'accepted' };
-  return { matches: false, reason: `not-accepted (${(ind.reasons ?? []).join(',') || 'unknown'})` };
+/** The verifier recorded a concurring independent review (an instar-dev trace path). */
+export function hasIndependentReview(record) {
+  const ir = record?.independentReview;
+  return !!ir && typeof ir === 'object' && ir.concurred === true && isTracePath(ir.trace);
 }
 
 const FILE_STATUS_TO_NAME_STATUS = { added: 'A', removed: 'D', modified: 'M', renamed: 'R', copied: 'C', changed: 'M', unchanged: 'M' };
@@ -612,30 +621,9 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
   });
   const authorType = live.author?.is_bot === true ? 'Bot' : 'User';
   const bodyChecks = runLocalBodyChecks({ title: live.title, body: live.body, authorLogin: live.author?.login ?? '', authorType, files, decisionRecords });
-  const flagged = ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'].some(k => record[k] === true);
-  let operatorApproved = false;
-  let acceptance = null;
-  if (flagged) {
-    try {
-      const pages = readJson(['api', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--paginate', '--slurp']);
-      const reviews = (Array.isArray(pages) ? pages : [pages]).flat().map(r => ({
-        login: String(r?.user?.login ?? ''), state: String(r?.state ?? ''), commitId: String(r?.commit_id ?? ''), submittedAt: String(r?.submitted_at ?? ''),
-      }));
-      operatorApproved = approvedAtHead(reviews, agent.operatorGhLogin, live.headRefOid).approved;
-    } catch (e) {
-      return refuse(UNMEASURABLE, `review read failed: ${String(e?.message ?? e).slice(0, 200)}`);
-    }
-    if (operatorApproved) {
-      let ex;
-      try { ex = await serverGet('/feedback-factory/execute/status'); } catch { ex = null; }
-      acceptance = ex && ex.status === 200
-        ? approverAcceptanceFromExecutorStatus(ex.body, agent.operatorGhLogin)
-        : { matches: false, reason: ex && ex.status === 503 ? 'executor-not-constructed' : 'executor-status-unreadable' };
-    }
-  }
   return evaluateLocalPredicate({
     repo, pr: Number(pr), livePr: { headRefOid: live.headRefOid, baseRefName: live.baseRefName }, record,
-    mainHealth: status?.mainHealth ?? null, bodyChecks, operatorApprovedHead: operatorApproved, approverAcceptance: acceptance,
+    mainHealth: status?.mainHealth ?? null, bodyChecks,
   });
 }
 
@@ -663,14 +651,59 @@ function ghJson(args) {
 
 function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
-  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket'], { allowFail: true });
+  // The run times are what lets classifyChecks keep only the latest run per name.
+  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket,startedAt,completedAt,workflow'], { allowFail: true });
+  return parseChecksRows(r.stdout, r.stderr);
+}
+
+/** gh's answer for a head GitHub has not registered any check run on yet (e.g. right after a push). */
+const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+
+/**
+ * Parse `gh pr checks --json` output. An empty stdout whose stderr says "no checks
+ * reported" (seen right after a push, PRs 2296/2314) is ZERO rows — not settled,
+ * so the caller keeps waiting (classifyChecks never reads zero rows as green). Any
+ * other unparseable, non-array or empty answer throws (retried, then
+ * contexts-unverifiable), with gh's stderr in the message so it is diagnosable.
+ */
+export function parseChecksRows(stdout, stderr = '') {
+  const err = String(stderr || '').trim().slice(0, 200);
+  const errNote = err ? ` (stderr: ${err})` : '';
+  if (!String(stdout || '').trim() && NO_CHECKS_REPORTED_RE.test(String(stderr || ''))) return [];
+  let rows;
   try {
-    const rows = JSON.parse(r.stdout);
-    if (!Array.isArray(rows)) throw new Error('not an array');
-    return rows;
+    rows = JSON.parse(stdout);
   } catch {
-    throw new Error(`gh pr checks returned unparseable JSON: ${(r.stdout || '').slice(0, 200)}`);
+    throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}${errNote}`);
   }
+  if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}${errNote}`);
+  if (rows.length === 0) throw new Error(`gh pr checks returned no checks${errNote}`);
+  return rows;
+}
+
+/** Backoff (ms) between the extra reads of an empty/unparseable checks response. */
+export const CHECKS_READ_RETRY_BACKOFF_MS = [5_000, 10_000];
+
+/**
+ * Read the checks, retrying a transient empty/unparseable response (seen once
+ * from gh) a couple of times with a short backoff. Throws the last error when
+ * every read failed, or once the merge deadline has passed (no retry after it)
+ * — the caller refuses `contexts-unverifiable`.
+ */
+export function readChecksWithRetry(read, sleepFn, backoffMs = CHECKS_READ_RETRY_BACKOFF_MS, deadline = Infinity, now = Date.now) {
+  let lastErr;
+  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+    if (attempt > 0) {
+      if (now() > deadline) break; // past the merge deadline: refuse now, never wait longer
+      sleepFn(backoffMs[attempt - 1]);
+    }
+    try {
+      return read();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -836,6 +869,22 @@ function fetchCheckRunsWithProducers(repo, headSha) {
   }));
 }
 
+/**
+ * True when no GitHub Actions check run exists on the head. "No checks ran"
+ * is NOT green: it looks like "all green" at a glance, and with no required
+ * checks GitHub's native auto-merge would merge it at once (PR #2302,
+ * 2026-10-22: pull_request never fired; only Vercel reported).
+ */
+export function noActionsChecksRan(checkRuns) {
+  return !(checkRuns ?? []).some(cr => cr?.appSlug === 'github-actions');
+}
+
+function refuseNoChecksRan(pr, head) {
+  result({ result: 'refused:no-checks-ran', pr: Number(pr), head });
+  console.error(`safe-merge: REFUSING — NO GitHub Actions checks ran on head ${String(head).slice(0, 12)}. This is NOT green. CI never started (a conflict with main can suppress pull_request); rebase or trigger the workflow, then retry.`);
+  process.exit(1);
+}
+
 /** Raw text of a gh call; null on failure. */
 function ghText(args) {
   const r = gh(args, { allowFail: true });
@@ -843,11 +892,33 @@ function ghText(args) {
 }
 
 /**
- * The agent home that owns THIS copy of safe-merge: the parent of the git
- * common dir (a worktree under `<home>/.worktrees/` resolves to `<home>`).
- * Derived from the script's own location, never from the environment.
+ * The agent home that owns THIS copy of safe-merge, derived from the script's
+ * own location, never from the environment:
+ *  - an installed copy (`<home>/.instar/shadow-install/node_modules/instar/scripts/`,
+ *    the one the green-PR watcher runs) resolves to `<home>` from the path itself,
+ *    when `<home>/.instar/config.json` exists (else the git rule below).
+ *    Before this, it resolved only by accident — through the git repo the agent
+ *    home happens to be — and to `…/node_modules/instar` on an agent home that
+ *    is not a git checkout;
+ *  - a source checkout resolves to the parent of the git common dir (a worktree
+ *    under `<home>/.worktrees/` resolves to `<home>`).
  */
+export function installedAgentHome(scriptDir) {
+  const parts = path.resolve(scriptDir).split(path.sep);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    if (parts[i] === 'shadow-install' && parts[i - 1] === '.instar' && i >= 2) {
+      const home = parts.slice(0, i - 1).join(path.sep) || path.sep;
+      // Only an agent home carries .instar/config.json; a user-level
+      // ~/.instar/shadow-install must not resolve to ~ (falls through to git).
+      return fs.existsSync(path.join(home, '.instar', 'config.json')) ? home : null;
+    }
+  }
+  return null;
+}
+
 export function resolveAgentHome(scriptDir, run = spawnSync) {
+  const installed = installedAgentHome(scriptDir);
+  if (installed) return installed;
   // Every GIT_* variable is dropped: an inherited GIT_DIR or GIT_COMMON_DIR would
   // make git answer for another repository, and so point this at another agent's
   // config file, server and token (second-pass finding).
@@ -947,7 +1018,32 @@ function reviewPrecheck({ repo, pr, view, args }) {
   if (!reviewPrecheckPasses({ policy: reviewPolicy, reviewDecision: view.reviewDecision })) {
     refuseApprovalRequired({ repo, pr, view, args, policy: reviewPolicy, via: 'ruleset-precheck' });
   }
+  // require_code_owner_review: a PR touching a CODEOWNERS-owned path (the constitution)
+  // waits for the code owner — never try a merge GitHub will refuse.
+  if (reviewPolicy.codeOwnerReviewRequired === true && view.reviewDecision !== 'APPROVED') {
+    const owned = fetchCodeOwnedFiles(repo, pr, view.baseRefName || 'main');
+    if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })) {
+      refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10) }, via: 'code-owner-review' });
+    }
+  }
   return protection;
+}
+
+/** Pure: the code-owner review GitHub requires is still outstanding for these owned files. */
+export function codeOwnerReviewPending({ policy, ownedFiles, reviewDecision }) {
+  return !reviewPrecheckPasses({ policy, reviewDecision, codeOwnedTouched: (ownedFiles ?? []).length > 0 });
+}
+
+/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns. Throws when unreadable. */
+function fetchCodeOwnedFiles(repo, pr, base) {
+  const co = gh(['api', `repos/${repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw'], { allowFail: true });
+  let rules;
+  if (co.status === 0) rules = parseCodeowners(co.stdout);
+  else if (/HTTP 404/.test(co.stderr || '')) rules = [];
+  if (!rules) throw new Error(`CODEOWNERS unverifiable: ${(co.stderr || '').slice(0, 200)}`);
+  const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
+  const files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => String(f?.filename ?? '')).filter(Boolean);
+  return codeOwnedFiles(files, rules);
 }
 
 /** The head-pinned merge plus the independent confirmation (B10). Always exits. */
@@ -1051,6 +1147,17 @@ async function main() {
   // foreground/background poller does (the failure mode that wedged hot-branch
   // merges: the watcher is killed before slow CI finishes).
   if (args.auto) {
+    // Zero Actions checks is never green: refuse before arming (GitHub would
+    // otherwise merge at once when no check is required).
+    let headRuns;
+    try {
+      headRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
+    } catch (e) {
+      result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
+      console.error(`safe-merge: REFUSING — could not read the head's check runs: ${e.message}`);
+      process.exit(1);
+    }
+    if (noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     const autoArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--auto'];
     if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
     if (args.deleteBranch) autoArgs.push('--delete-branch');
@@ -1148,7 +1255,7 @@ async function main() {
   for (;;) {
     let rows;
     try {
-      rows = fetchChecksRows(pr, repo);
+      rows = readChecksWithRetry(() => fetchChecksRows(pr, repo), sleep, CHECKS_READ_RETRY_BACKOFF_MS, deadline);
     } catch (e) {
       result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
       console.error(`safe-merge: REFUSING — ${e.message}`);
@@ -1157,7 +1264,7 @@ async function main() {
     checksState = classifyChecks(rows);
     if (checksState.settled) break;
     if (Date.now() > deadline) {
-      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10) });
+      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });
       console.error('safe-merge: timed out waiting for checks. NOT merging.');
       process.exit(1);
     }
@@ -1170,6 +1277,10 @@ async function main() {
     process.exit(1);
   }
   if (!checksState.sawE2e || !checksState.e2ePassed) {
+    // Say which: nothing ran at all, or the e2e check specifically is missing/red.
+    let headRuns = null;
+    try { headRuns = fetchCheckRunsWithProducers(repo, pinnedHead); } catch { /* @silent-fallback-ok: refusing either way; this only picks the message */ }
+    if (headRuns && noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     result({ result: 'refused:e2e-missing-or-red' });
     console.error('safe-merge: REFUSING — the e2e check is missing or did not pass. The e2e job is the one --admin bypasses; do not merge without it.');
     process.exit(1);

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "transfer-drain-close-refused",
+  "sessionId": "37678437-a720-4594-ab10-56fab9bb5ff9",
+  "timestamp": "2026-10-23T20:22:30.233Z",
+  "artifactPath": "upgrades/side-effects/transfer-drain-close-refused.md",
+  "artifactSha256": "d807af916b8d10a59ec748af82bb81ebd99210c5b495740e4c0025a93f7dfd3c",
+  "coveredFiles": [
+    "tests/unit/ws12-drain-wiring.test.ts",
+    "upgrades/side-effects/transfer-drain-close-refused.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only follow-up to the Tier-1 drain fix: widen a source-shape test's slice window and assert the detail fallback; fully reverted by one revert.",
+  "eli16Path": "upgrades/transfer-drain-close-refused.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/transfer-drain-close-refused.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

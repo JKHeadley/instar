@@ -1993,6 +1993,19 @@ export function describeLingerOutcome(outcome: LingerOutcome, user: string): str
   }
 }
 
+/**
+ * Stop only the main process when the service stops or restarts.
+ *
+ * systemd's default (KillMode=control-group) kills EVERY process the service ever
+ * started, and the tmux server that holds all agent sessions is one of them: it
+ * daemonizes but stays in the service's cgroup. So a routine `systemctl --user
+ * restart` killed every session, live autonomous runs included (Mama PC,
+ * 2026-10-22). launchd on macOS only kills the job's process group, which tmux
+ * leaves via setsid, so sessions there already survive a restart; this gives
+ * Linux the same behavior. Existing units get it from PostUpdateMigrator.
+ */
+export const SYSTEMD_KILL_MODE_LINE = 'KillMode=process';
+
 function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const serviceName = `instar-${projectName}.service`;
   const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -2014,6 +2027,7 @@ After=network.target
 
 [Service]
 Type=simple
+${SYSTEMD_KILL_MODE_LINE}
 ExecStart=${execStart}
 WorkingDirectory=${projectDir}
 Restart=always

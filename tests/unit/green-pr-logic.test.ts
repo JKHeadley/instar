@@ -78,6 +78,8 @@ describe('classifyCandidate', () => {
   it('skips an unsettled / red PR', () => {
     expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo').skip).toBe('not-settled-green');
     expect(classifyCandidate(basePr({ statusRollup: 'FAILURE' }), 'echo').skip).toBe('not-settled-green');
+    // Zero GitHub Actions checks is its own, named skip — never green.
+    expect(classifyCandidate(basePr({ statusRollup: 'NO_CHECKS' }), 'echo').skip).toBe('no-checks-ran');
   });
 });
 

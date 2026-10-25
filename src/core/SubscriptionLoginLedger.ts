@@ -20,6 +20,9 @@ export const SUBSCRIPTION_LOGIN_CAUSE_CLASSES = [
   // The Codex CLI's own login check AND the live authenticated read both said signed out, on two
   // consecutive polls (spec skill-driven-signin-repair).
   'cli-signed-out-auth-refused',
+  // The stored Claude credential was unreadable AND Claude Code itself showed "Login expired" in
+  // at least two separate sessions under that config home within an hour.
+  'cli-login-expired-observed',
   'unrecognized-reason',
 ] as const;
 
@@ -264,10 +267,15 @@ export class SubscriptionLoginLedger {
         authResult = 'clean';
         const clearAccumulatorSql = `D${'ELETE'} FROM absence_accumulators WHERE accountId=? AND machineId=?`;
         this.db.prepare(clearAccumulatorSql).run(accountId, this.machineId);
+        // An open provisional read window closes either because the read came clean
+        // ('resolved-read-window') or because the absence was CORROBORATED into needs-reauth
+        // ('escalated-to-needs-reauth') — the history route must not count the latter as resolved.
+        const windowOutcome = outcome.kind === 'transition-to-needs-reauth'
+          ? 'escalated-to-needs-reauth' : 'resolved-read-window';
         this.db.prepare(`
-          UPDATE credential_read_windows SET closedAt=?,outcome='resolved-read-window'
+          UPDATE credential_read_windows SET closedAt=?,outcome=?
           WHERE accountId=? AND machineId=? AND closedAt IS NULL
-        `).run(input.at, accountId, this.machineId);
+        `).run(input.at, windowOutcome, accountId, this.machineId);
         if (outcome.kind === 'transition-to-needs-reauth') {
           this.recordStatusInTransaction(accountId, input.at, 'needs-reauth', outcome.causeClass, outcome.corroboration);
         } else if (outcome.kind === 'transition-to-active') {

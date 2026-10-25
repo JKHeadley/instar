@@ -73,6 +73,9 @@ class AnthropicHeadlessOneShotCompletion implements OneShotCompletion {
     if (this.config.apiBaseUrl) {
       childEnv['ANTHROPIC_BASE_URL'] = this.config.apiBaseUrl;
     }
+    if (this.config.configDir) {
+      childEnv['CLAUDE_CONFIG_DIR'] = this.config.configDir;
+    }
 
     // Set up abort signal wiring
     const abortSignal = options?.signal;

@@ -96,6 +96,16 @@ export interface Session {
   /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
    *  chokepoint — see src/core/WorkEvidence.ts). */
   endedWorkEvidence?: string[];
+  /** When this session was first observed idle at a prompt (ISO-8601), persisted
+   *  so the idle clock survives a server restart. `SessionManager.idlePromptSince`
+   *  is in-memory, so without this an agent that restarts more often than the
+   *  topic-bound idle threshold (240m) can never close an idle conversation and
+   *  fills its session slots (sagemind, 2026-10-22: 20/20, 17 sessions idle
+   *  17-64h). Cleared the moment the session is observed active. Absent on
+   *  legacy records and on sessions that have never been seen idle; seeding from
+   *  it is corroborated against the framework transcript — see
+   *  src/core/idleSincePersistence.ts. */
+  idleSince?: string;
   /** Working directory the session was spawned with (reap-notify R2.8/L13 —
    *  recorded so a resume-queue entry can revive the session in ITS tree).
    *  Absent on legacy records ⇒ the module project dir. */
@@ -4572,6 +4582,19 @@ export interface InstarConfig {
       slowRetry?: { enabled?: boolean; delaysMs?: number[]; maxRetries?: number;
         /** Local hours in which an approval re-offer is never sent (default 23 → 8); `null` disables. */
         quietHours?: { startHour: number; endHour: number } | null };
+      /**
+       * Last-resort model for the repair's own model calls (spec relogin-last-resort-model): a
+       * lightweight model over an Anthropic API key the operator placed in the vault under
+       * `keyName` (default `relogin_last_resort_anthropic_api_key`). Placing the key is the
+       * consent to spend; `ANTHROPIC_API_KEY` and `intelligenceProvider` are never read. Used only
+       * after the shared provider failed or is absent, and only for the repair. With it available,
+       * an agent-session repair with no other healthy account on the machine drives the server-side
+       * browser path instead of waiting on the operator. Absent ⇒ on when the key exists; off with
+       * `enabled: false`. `model` is a tier (`fast` = haiku, the default; `balanced`; `capable`);
+       * the call runs `claude -p` with the key in the child's environment only, in a dedicated
+       * empty config home under the state dir. Caps default to 60 calls per drive and 300 per day.
+       */
+      lastResort?: { enabled?: boolean; keyName?: string; model?: string; maxCallsPerDrive?: number; maxCallsPerDay?: number };
     };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */
@@ -7643,6 +7666,23 @@ export interface MonitoringConfig {
      *  opt in for a steady heartbeat). Decoupled from `digestEvenWhenCalm`, which
      *  only governs whether the digest OBJECT/API renders a calm summary. */
     digestSendOnCalmWeeks?: boolean;
+    /**
+     * Standard A/B of maturation-followthrough-fix: read the real dark-flag
+     * inventory from the `/guards` posture surface instead of only the specs
+     * that registered a rollout stage, and give every dark flag a durable
+     * owner + deadline + proof-of-life record.
+     *
+     * Ships DARK (`enabled: false`) and dry-run-first. With `enabled: false`
+     * the analyst reverts to exactly the InitiativeTracker-only behavior and
+     * R3 keeps its old place in the headline, so rollback is a single flag.
+     * With `dryRun: true` the durable registry IS written (the soak accrues
+     * real evidence from day one, which an in-memory counter can never do)
+     * but no R7 finding reaches the digest.
+     */
+    darkFlagInventory?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+    };
     /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
     incubationWindows?: {
       lowRisk?: number;

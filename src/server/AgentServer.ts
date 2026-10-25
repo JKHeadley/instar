@@ -70,7 +70,7 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
-import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
+import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
 import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
@@ -171,7 +171,7 @@ import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js'
 import { BlockerLifecycleService } from '../monitoring/BlockerLifecycleService.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
-import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials , type PeerEndpointKind } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
 import { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
 import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
@@ -260,6 +260,15 @@ import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
+import { buildGuardInventory } from '../monitoring/guardPostureView.js';
+import {
+  readGuardPostureBootSnapshot,
+  resolveGuardConfigSnapshot,
+} from '../monitoring/guardPosture.js';
+import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
+import { GuardRegistry } from '../monitoring/GuardRegistry.js';
+import { DEV_GATED_FEATURES } from '../core/devGatedFeatures.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -891,7 +900,14 @@ export class AgentServer {
     /** Kick the working-set carrier on the machine that just acquired a topic. */
     kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
-    resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
+    resolvePeerUrls?: () => Array<{
+      machineId: string;
+      url: string;
+      kind: PeerEndpointKind;
+      ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+    }>;
+    /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
+    recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -1643,7 +1659,9 @@ export class AgentServer {
             holderMachineId: () =>
               options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : options.meshSelfId ?? 'local',
             resolvePeerUrls: options.resolvePeerUrls ?? null,
-            isPeerUrlAllowed: (url) => isPeerUrlAllowedForCredentials(url, peerExtraAllowlist).ok,
+            // Only a URL is known at this injected boundary, so the kind is the explicit
+      // `last-known-url` value rather than an absent argument.
+      isPeerUrlAllowed: (url) => isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, peerExtraAllowlist).ok,
             authToken: options.config.authToken,
           });
         } catch (err) {
@@ -2838,7 +2856,7 @@ export class AgentServer {
                   try { return options.quotaTracker ? !options.quotaTracker.shouldSpawnSession('low').allowed : false; } catch { return true; } // @silent-fallback-ok: an unreadable quota brake refuses admission (safe side)
                 },
                 updatePending: () => {
-                  try { return Boolean(options.autoUpdater?.getStatus().pendingUpdate); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
+                  try { return executorUpdatePending(options.autoUpdater?.getStatus()); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
                 },
                 raiseAttention: async (item) => {
                   const enqueue = this.telegramAdapter?.createAttentionItem;
@@ -3598,6 +3616,18 @@ export class AgentServer {
           settings: resolveGrowthSettings({
             ...(options.config.monitoring?.growthAnalyst ?? {}),
             enabled: growthAnalystEnabled,
+            // Standards A/B ride the dev-agent gate exactly like the analyst
+            // itself: `enabled` is omitted from the shipped defaults, so the
+            // gate decides (LIVE on a dev agent, DARK on the fleet) and the
+            // resolved value is fed in so GET /growth/status reports honestly
+            // rather than reading a `false` the config never set.
+            darkFlagInventory: {
+              ...(options.config.monitoring?.growthAnalyst?.darkFlagInventory ?? {}),
+              enabled: resolveDevAgentGate(
+                options.config.monitoring?.growthAnalyst?.darkFlagInventory?.enabled,
+                options.config,
+              ),
+            },
           }),
           tracker: options.initiativeTracker,
           approvalLedger: this.approvalLedger,
@@ -3607,6 +3637,50 @@ export class AgentServer {
           // R6 dev-gate conformance: feed the live config so the analyst can flag
           // a registered dev-gated feature observed DARK on this dev agent.
           liveConfig: options.config,
+          // ── Standards A + B (maturation-followthrough-fix) ──
+          // The code-derived dark-flag source. Built through the SAME pure
+          // funnel `/guards` uses (buildGuardInventory), so the engine and the
+          // operator's read surface can never disagree about what is dark.
+          // Reads config/boot/accept state per call — this runs on the analyst's
+          // cadence, not per request, and a read failure degrades to null
+          // (R7 skipped) rather than a wrong classification.
+          darkFlagInventory: () => {
+            const projectDir = path.dirname(options.config.stateDir!);
+            const snapshot = resolveGuardConfigSnapshot(projectDir);
+            // A config-read failure must NOT become a truthful-looking empty
+            // inventory: an empty list would read as "nothing is dark" and
+            // could graduate the whole registry to tombstones. Skip instead.
+            if (snapshot.readError) {
+              console.warn(`[GrowthMilestoneAnalyst] guard snapshot read failed: ${snapshot.readError}`);
+              return null;
+            }
+            const selfMachineId = options.meshSelfId ?? null;
+            return buildGuardInventory({
+              snapshot,
+              bootSnapshot: readGuardPostureBootSnapshot(options.config.stateDir!),
+              registry: options.guardRegistry ?? new GuardRegistry(),
+              now: Date.now(),
+              acceptedFallbacks: scopeAcceptedFallbacks(
+                readAcceptedFallbacks(options.config.stateDir!),
+                selfMachineId,
+              ),
+            }).guards;
+          },
+          darkFlagRegistry: new DarkFlagMaturationRegistry({
+            stateDir: options.config.stateDir,
+            // Machine-local BY DESIGN: a guard's effective state is a fact about
+            // the machine it runs on, so this registry grades THIS machine only.
+            machineId: options.meshSelfId ?? 'single-machine',
+            onError: (where, err) =>
+              console.warn(`[DarkFlagMaturationRegistry] ${where}:`, err),
+          }),
+          // Owner derivation from a REAL code source only. A dev-gated feature
+          // runs live on this agent under the dev gate, so the agent owns
+          // graduating or killing it. Everything else stays un-owned, which is
+          // itself a surfaced finding — we never invent an owner to make the
+          // registry look complete.
+          darkFlagOwnerFor: (row) =>
+            DEV_GATED_FEATURES.some((f) => f.configPath === row.key) ? 'agent' : null,
           onError: (where, err) => console.warn(`[GrowthMilestoneAnalyst] ${where}:`, err),
         });
       }
@@ -4839,6 +4913,7 @@ export class AgentServer {
       passkeyProofBrowser: options.passkeyProofBrowser ?? null,
       poolLink: options.poolLink ?? null,
       poolPollCache: options.poolPollCache ?? null,
+      recordRopeResult: options.recordRopeResult ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
       messageLedger: options.messageLedger ?? null,
       currentInboundByTopic: options.currentInboundByTopic ?? null,

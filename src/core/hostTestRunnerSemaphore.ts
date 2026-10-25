@@ -66,8 +66,16 @@ export const HOST_TEST_TTL_MAX_MS = 14_400_000; // 4h = 4× default
 export const HOST_TEST_POISON_CEILING = 64;
 /** Lockless fail-open storm ceiling — O_EXCL witness slots (§2.4, pinned). */
 export const WEDGE_STORM_CEILING = 8;
-/** Background-class suite-lane wait budget default (2 min, fail-loud). */
-export const HOST_TEST_ACQUIRE_MS_DEFAULT = 120_000;
+/**
+ * Suite-lane wait budget default, both run classes (45 min, fail-loud). It must cover
+ * one full suite ahead in the queue: the measured p95 suite hold was ~41 min, so the
+ * old 2 min (10 min interactive) turned ordinary queueing into exit-75 failures.
+ * Host-tunable via the tuning file's `acquireMs` / `acquireMsInteractive` (CMT-908).
+ */
+export const HOST_TEST_ACQUIRE_MS_DEFAULT = 2_700_000;
+/** Sane range for a tuning-file wait budget (10 s .. 4 h). */
+export const HOST_TEST_ACQUIRE_MS_MIN = 10_000;
+export const HOST_TEST_ACQUIRE_MS_MAX = 14_400_000;
 /** Targeted-lane wait budget default (1 min, fail-loud THROW). */
 export const HOST_TEST_TARGETED_ACQUIRE_MS_DEFAULT = 60_000;
 /** A lock older than this is provably wedged (critical section is sub-ms). */
@@ -164,6 +172,10 @@ export interface TestRunnerTuningFile {
   maxConcurrent?: number;
   targetedMax?: number;
   ttlSignal?: boolean;
+  /** Suite-lane wait budget, ms (background class; interactive defaults to it). */
+  acquireMs?: number;
+  /** Suite-lane wait budget for interactive runs (pre-push, TTY), ms. */
+  acquireMsInteractive?: number;
   flippedAt?: string;
   by?: string;
   [k: string]: unknown;
@@ -345,6 +357,7 @@ export function resolveAcquireBudgetMs(
   lane: TestLane,
   runClass: TestRunClass,
   env: NodeJS.ProcessEnv = process.env,
+  tuning: TestRunnerTuningFile | null = null,
 ): number {
   const readMs = (key: string): number | null => {
     const raw = env[key];
@@ -352,12 +365,19 @@ export function resolveAcquireBudgetMs(
     const n = Number(raw);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
   };
+  // Tuning-file budgets (host-uniform, CMT-908): honored only inside a sane range;
+  // anything else falls through to the code default.
+  const tuningMs = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v >= HOST_TEST_ACQUIRE_MS_MIN && v <= HOST_TEST_ACQUIRE_MS_MAX
+      ? Math.floor(v)
+      : null;
   if (lane === 'targeted') {
     return readMs('INSTAR_HOST_TEST_TARGETED_ACQUIRE_MS') ?? HOST_TEST_TARGETED_ACQUIRE_MS_DEFAULT;
   }
-  const background = readMs('INSTAR_HOST_TEST_ACQUIRE_MS') ?? HOST_TEST_ACQUIRE_MS_DEFAULT;
+  const background =
+    readMs('INSTAR_HOST_TEST_ACQUIRE_MS') ?? tuningMs(tuning?.acquireMs) ?? HOST_TEST_ACQUIRE_MS_DEFAULT;
   if (runClass === 'background') return background;
-  return readMs('INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE') ?? 5 * background;
+  return readMs('INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE') ?? tuningMs(tuning?.acquireMsInteractive) ?? background;
 }
 
 /** Stamped per-row ttl at acquire (env-read, sanity-ranged). */
@@ -1536,7 +1556,7 @@ export class HostTestRunnerSemaphore {
 
   async acquire(req: AcquireRequest): Promise<AcquireOutcome> {
     const ctx = this.resolveContext();
-    const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env);
+    const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env, ctx.tuning.file);
     const startMs = this.now();
     const deadline = startMs + budgetMs;
     let lockEverAcquired = false;

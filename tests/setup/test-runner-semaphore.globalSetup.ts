@@ -269,6 +269,15 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
       if (targeted && argv.poolShaping.length === 0 && bound !== null && bound <= 4) {
         lane = 'targeted';
       }
+    } else if (configName === 'push') {
+      // The push config runs ONE worker (fileParallelism: false), so it is light by
+      // construction. In the cap-1 suite lane a `git push` queued behind full suites
+      // (p95 hold ~41 min) and failed with exit 75. Same state check as above: the
+      // RESOLVED pool bound decides, so pool-shaping flags still land in the suite lane.
+      const bound = resolvedPoolBound(ctx.config as Parameters<typeof resolvedPoolBound>[0]);
+      if (argv.poolShaping.length === 0 && bound !== null && bound <= 4) {
+        lane = 'targeted';
+      }
     }
 
     // ── Re-entrancy: lane-scoped ancestry+holders cross-check (§2.5) ──────
@@ -312,7 +321,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
 
     // ── Acquire ───────────────────────────────────────────────────────────
     const runClass = deriveRunClass(configName);
-    const budgetMs = resolveAcquireBudgetMs(lane, runClass, process.env);
+    const budgetMs = resolveAcquireBudgetMs(lane, runClass, process.env, context.tuning.file);
     let lastWaitLineAt = 0;
     const outcome = await sem.acquire({
       lane,

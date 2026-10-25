@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-23T17:43:52.193Z",
+  "slug": "executor-independent-review-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 355,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/executePolicy.ts",
+      "src/feedback-factory/execute/executorPorts.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/feedback-factory/execute/reviewGate.ts"
+    ],
+    "addedLines": 350,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

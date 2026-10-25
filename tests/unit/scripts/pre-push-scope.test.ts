@@ -5,6 +5,7 @@ import {
   evaluateSmokeBreadth,
   failedTestFilesFromVitestJson,
   resolvePrePushBase,
+  summarizeVitestFilesOnlyJson,
   summarizeVitestListJson,
 } from '../../../scripts/lib/pre-push-scope.mjs';
 
@@ -191,5 +192,15 @@ describe('pre-push smoke scope helpers', () => {
     }), { cwd: '/repo' });
 
     expect(failed).toEqual([]);
+  });
+  it('summarizes a files-only listing (no test cases) and rejects malformed entries', () => {
+    expect(
+      summarizeVitestFilesOnlyJson(JSON.stringify([{ file: '/repo/tests/a.test.ts' }, { file: '/repo/tests/b.test.ts' }, { file: '/repo/tests/a.test.ts' }])),
+    ).toEqual({ testFileCount: 2 });
+    expect(summarizeVitestFilesOnlyJson('[]')).toEqual({ testFileCount: 0 });
+    expect(() => summarizeVitestFilesOnlyJson('')).toThrow(/empty/);
+    expect(() => summarizeVitestFilesOnlyJson('{')).toThrow(/malformed/);
+    expect(() => summarizeVitestFilesOnlyJson('{}')).toThrow(/array/);
+    expect(() => summarizeVitestFilesOnlyJson(JSON.stringify([{ file: 'relative.test.ts' }]))).toThrow(/absolute/);
   });
 });

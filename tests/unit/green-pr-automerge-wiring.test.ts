@@ -14,9 +14,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-import { buildGreenPrDeps, buildGuardLatchStore, resolveGreenPrAgentNamespace, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { artifactSha256 } from '../../scripts/lib/instar-dev-trace.mjs';
+import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { installedSafeMergePath } from '../../src/core/installedSafeMerge.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
 let dir: string;
@@ -188,5 +191,122 @@ describe('buildGreenPrDeps — disarm seam (Blocker 3)', () => {
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
     expect(await deps.disarmArmedEpisodes(99)).toBe(false);
+  });
+});
+
+describe('the watcher runs the INSTALLED safe-merge, never the checkout copy (ACT-150)', () => {
+  it('resolveGreenPrPaths: repoPath is the working checkout, safeMergePath is the installed package copy', () => {
+    const p = resolveGreenPrPaths(dir);
+    expect(p.repoPath).toBe(dir);
+    expect(p.safeMergePath).toBe(installedSafeMergePath());
+    expect(p.safeMergePath).not.toBe(path.join(dir, 'scripts', 'safe-merge.mjs'));
+    expect(fs.existsSync(p.safeMergePath)).toBe(true);
+  });
+
+  it('installedSafeMergePath is <package>/scripts/safe-merge.mjs beside dist/', () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    expect(installedSafeMergePath()).toBe(path.join(root, 'scripts', 'safe-merge.mjs'));
+  });
+
+  it('the CONSTRUCTED MergeRunner gets the installed path (wiring integrity)', () => {
+    const { ghExec } = fakeGh({});
+    const { repoPath, safeMergePath: installed } = resolveGreenPrPaths(dir);
+    const opts = baseOpts({ ghExec, repoPath, safeMergePath: installed });
+    const deps = buildGreenPrDeps(opts, buildGuardLatchStore(opts));
+    expect((deps.runner as DefaultMergeRunner).resolvedSafeMergePath).toBe(installedSafeMergePath());
+  });
+
+  it('isAnalyzableGreenPrRepo still requires the instar source checkout (git + its safe-merge marker) AND the installed copy', () => {
+    const installed = installedSafeMergePath();
+    // No .git → not analyzable.
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(false);
+    fs.mkdirSync(path.join(dir, '.git'));
+    // A git repo that is not an instar checkout → not analyzable.
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(false);
+    fs.mkdirSync(path.join(dir, 'scripts'));
+    fs.writeFileSync(path.join(dir, 'scripts', 'safe-merge.mjs'), '// stale checkout copy\n');
+    expect(isAnalyzableGreenPrRepo(dir, installed)).toBe(true);
+    // The installed copy missing → not analyzable, even with the checkout copy present.
+    expect(isAnalyzableGreenPrRepo(dir, path.join(dir, 'nope', 'safe-merge.mjs'))).toBe(false);
+  });
+});
+
+describe('buildGreenPrDeps — codeOwnedPaths reads CODEOWNERS from the base branch on GitHub (directive 2026-10-22)', () => {
+  const CODEOWNERS = '# ownership\ndocs/STANDARDS-REGISTRY.md   @JKHeadley\n.github/CODEOWNERS @JKHeadley\n';
+  const ghFor = (o: { codeowners?: { code: number; stdout?: string; stderr?: string }; files?: string[]; filesCode?: number }) => {
+    const calls: string[][] = [];
+    const ghExec = async (args: string[]) => {
+      calls.push(args);
+      const p = args[1] ?? '';
+      if (p.includes('/contents/.github/CODEOWNERS')) {
+        const c = o.codeowners ?? { code: 0, stdout: CODEOWNERS };
+        return { stdout: c.stdout ?? '', stderr: c.stderr ?? '', code: c.code };
+      }
+      if (p.endsWith('/files')) return { stdout: (o.files ?? []).join('\n'), stderr: '', code: o.filesCode ?? 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    };
+    return { ghExec, calls };
+  };
+  const prOf = { number: 9, title: 't', labels: [], isDraft: false, headRefName: 'echo/x', headRefOid: 'h', baseRefName: 'main', mergeable: 'MERGEABLE', statusRollup: 'SUCCESS' };
+  const depsWith = (g: ReturnType<typeof ghFor>) => buildGreenPrDeps(baseOpts({ ghExec: g.ghExec }), buildGuardLatchStore(baseOpts({ ghExec: g.ghExec })));
+
+  it('a constitution file is code-owned; CODEOWNERS is read at the PR base ref', async () => {
+    const g = ghFor({ files: ['docs/STANDARDS-REGISTRY.md', 'src/a.ts'] });
+    const v = await depsWith(g).codeOwnedPaths(prOf as never);
+    expect(v).toEqual({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], protectedFiles: [], unverifiable: false });
+    expect(g.calls.some((c) => c[1] === 'repos/JKHeadley/instar/contents/.github/CODEOWNERS?ref=main')).toBe(true);
+  });
+
+  it('protected-but-not-code-owned paths (safe-merge, the watcher, .github/workflows) are not code-owned', async () => {
+    const g = ghFor({ files: ['scripts/safe-merge.mjs', 'src/monitoring/GreenPrAutoMerger.ts', '.github/workflows/ci.yml'] });
+    expect(await depsWith(g).codeOwnedPaths(prOf as never)).toEqual({
+      touches: false, files: [], protectedFiles: ['scripts/safe-merge.mjs', 'src/monitoring/GreenPrAutoMerger.ts', '.github/workflows/ci.yml'], unverifiable: false,
+    });
+  });
+
+  it('an unreadable CODEOWNERS or file list is unverifiable; a 404 CODEOWNERS owns nothing', async () => {
+    expect((await depsWith(ghFor({ codeowners: { code: 1, stderr: 'HTTP 500' }, files: ['a'] })).codeOwnedPaths(prOf as never)).unverifiable).toBe(true);
+    expect((await depsWith(ghFor({ filesCode: 1 })).codeOwnedPaths(prOf as never)).unverifiable).toBe(true);
+    expect(await depsWith(ghFor({ codeowners: { code: 1, stderr: 'gh: Not Found (HTTP 404)' }, files: ['docs/STANDARDS-REGISTRY.md'] })).codeOwnedPaths(prOf as never))
+      .toEqual({ touches: false, files: [], protectedFiles: [], unverifiable: false });
+  });
+
+  it('independentReviewAtHead reads the PR\'s trace and artifact at the head ref and applies the shared judge', async () => {
+    const TRACE = '.instar/instar-dev-traces/t.json';
+    const ART = 'upgrades/side-effects/a.md';
+    const ARTIFACT = 'x'.repeat(300) + '\n\n## Second-pass review\n\n**Reviewer:** codey\n';
+    const TC = '7'.repeat(40);
+    const traceBody = (over: Record<string, unknown> = {}) => JSON.stringify({ phase: 'complete', artifactPath: ART, coveredFiles: ['scripts/safe-merge.mjs'], secondPass: 'true', reviewerConcurred: true, artifactSha256: artifactSha256(ARTIFACT), ...over });
+    const mk = (traceText: string | null, files = [TRACE, 'scripts/safe-merge.mjs'], changedSinceTrace: string[] = [TRACE]) => {
+      const calls: string[][] = [];
+      const ghExec = async (args: string[]) => {
+        calls.push(args);
+        const p = args[1] ?? '';
+        if (p.endsWith('/files')) return { stdout: files.join('\n'), stderr: '', code: 0 };
+        if (p === `repos/JKHeadley/instar/contents/${TRACE}?ref=h`) return traceText == null ? { stdout: '', stderr: 'HTTP 404', code: 1 } : { stdout: traceText, stderr: '', code: 0 };
+        if (p === `repos/JKHeadley/instar/contents/${ART}?ref=h`) return { stdout: ARTIFACT, stderr: '', code: 0 };
+        if (p === `repos/JKHeadley/instar/commits?sha=h&path=${encodeURIComponent(TRACE)}&per_page=1`) return { stdout: `${TC}\n`, stderr: '', code: 0 };
+        if (p === `repos/JKHeadley/instar/compare/${TC}...h`) return { stdout: changedSinceTrace.join('\n'), stderr: '', code: 0 };
+        return { stdout: '', stderr: 'HTTP 404', code: 1 };
+      };
+      return { ghExec, calls };
+    };
+    const ok = mk(traceBody());
+    expect(await depsWith(ok).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs'])).toEqual({ ok: true, unverifiable: false });
+    expect(ok.calls.some((c) => c[1] === `repos/JKHeadley/instar/contents/${TRACE}?ref=h`)).toBe(true);
+    expect((await depsWith(mk(traceBody({ coveredFiles: ['src/x.ts'] }))).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs'])).problem).toMatch(/not-covered/);
+    expect((await depsWith(mk(traceBody({ reviewerConcurred: false }))).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs'])).ok).toBe(false);
+    // Not at the head (pushed later) → absent from the head ref.
+    expect((await depsWith(mk(null)).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs'])).ok).toBe(false);
+    expect((await depsWith(mk(traceBody(), ['scripts/safe-merge.mjs'])).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs'])).problem).toBe('no-trace-in-pr');
+    // Bound to the head: a flagged file changed after the trace's last commit needs a new review.
+    const stale = await depsWith(mk(traceBody(), undefined, ['scripts/safe-merge.mjs'])).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs']);
+    expect(stale).toMatchObject({ ok: false, problem: expect.stringMatching(/flagged-changed-after-trace:scripts\/safe-merge\.mjs/) });
+    // GitHub's compare lists at most 300 files: a list that long may hide a flagged path → unverifiable.
+    const many = Array.from({ length: 300 }, (_, i) => `src/gen/f${i}.ts`);
+    const truncated = await depsWith(mk(traceBody(), undefined, many)).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs']);
+    expect(truncated).toEqual({ ok: false, unverifiable: true, problem: 'review-binding-truncated' });
+    const under = await depsWith(mk(traceBody(), undefined, many.slice(0, 299))).independentReviewAtHead!(prOf as never, ['scripts/safe-merge.mjs']);
+    expect(under).toEqual({ ok: true, unverifiable: false });
   });
 });

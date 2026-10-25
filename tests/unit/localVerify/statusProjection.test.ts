@@ -39,8 +39,6 @@ function input(over: Partial<ProjectionInput> = {}, prOver: Partial<ProjectionIn
     record: record(),
     verifying: false,
     mainHealth: { state: 'healthy', mainHeadSha: sha('b') },
-    operatorApprovedHead: false,
-    approverAcceptanceMatches: false,
     ...over,
   };
 }
@@ -92,17 +90,16 @@ describe('projectLocal — what success requires, in full', () => {
   });
 
   for (const flag of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
-    it(`${flag} needs operatorApprovedHead AND a matching approver acceptance`, () => {
+    it(`${flag} needs the verifier-recorded independent review — operator approval is not an input`, () => {
       const r = record({ [flag]: true });
-      expect(projectLocal(input({ record: r }))).toMatchObject({ state: 'pending', reason: 'awaiting-operator-approval' });
-      expect(projectLocal(input({ record: r, operatorApprovedHead: true }))).toMatchObject({ state: 'pending', reason: 'approver-dependent' });
-      expect(projectLocal(input({ record: r, approverAcceptanceMatches: true })).state).toBe('pending');
-      expect(projectLocal(input({ record: r, operatorApprovedHead: true, approverAcceptanceMatches: true })).state).toBe('success');
+      expect(projectLocal(input({ record: r }))).toMatchObject({ state: 'pending', reason: 'awaiting-independent-review' });
+      expect(projectLocal(input({ record: r })).description).toMatch(/^awaiting-independent-review · /);
+      expect(projectLocal(input({ record: record({ [flag]: true, independentReview: { trace: '.instar/instar-dev-traces/t.json', concurred: true } }) })).state).toBe('success');
     });
   }
 
-  it('an ordinary PR does not need the approval path', () => {
-    expect(projectLocal(input({ operatorApprovedHead: false, approverAcceptanceMatches: false })).state).toBe('success');
+  it('an ordinary PR needs no independent review', () => {
+    expect(projectLocal(input({})).state).toBe('success');
   });
 
   for (const state of ['main-suspect', 'main-red'] as const) {

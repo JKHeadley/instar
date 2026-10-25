@@ -20,7 +20,7 @@ import type { LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { buildStatusReconciler } from '../../src/localVerify/localVerifyWiring.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
-import { evaluateRequiredContexts, ACTIONS_FLOOR_CONTEXTS, approverAcceptanceFromExecutorStatus, selectSafeMergeFloor } from '../../scripts/safe-merge.mjs';
+import { evaluateRequiredContexts, ACTIONS_FLOOR_CONTEXTS, selectSafeMergeFloor } from '../../scripts/safe-merge.mjs';
 
 const REPO = 'JKHeadley/instar';
 const sha = (c: string) => c.repeat(40);
@@ -190,7 +190,7 @@ describe('local-verify routes (integration)', () => {
       repo: REPO, repoPath: home, stateDir: s.stateDir, machineId: 'm1', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
       service: s.svc, localVerifyEnabled: () => true, postStatuses: () => false, configFloor: () => 'local', watcherRepo: () => REPO,
       lease: { holdsLease: () => true, leaseEpoch: () => 1, leaseHolder: () => 'm1' },
-      gh, floorExports: { evaluate: evaluateRequiredContexts, actionsFloor: ACTIONS_FLOOR_CONTEXTS, approverAcceptance: approverAcceptanceFromExecutorStatus },
+      gh, floorExports: { evaluate: evaluateRequiredContexts, actionsFloor: ACTIONS_FLOOR_CONTEXTS },
     });
     expect(built.reason).toBeNull();
     await built.reconciler!.pass();
@@ -204,6 +204,7 @@ describe('local-verify routes (integration)', () => {
       takeoverFloorCheck: 'not-built',
       lastPass: { outcome: 'ok', heads: 1 },
       mainHealth: { mainHead: sha('b') },
+      flakyFiles: {}, // file → { count, lastSeen, lane } once an isolation re-run finds a flaky file
     });
     expect(calls.some((c) => c.includes('POST'))).toBe(false);
     // The would-post is audited (the PR is on the actions floor until the settings make local effective).
@@ -236,7 +237,7 @@ describe('local-verify routes (integration)', () => {
       repo: REPO, repoPath: home, stateDir: s.stateDir, machineId: 'm1', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
       service: s.svc, localVerifyEnabled: () => true, postStatuses: () => false, configFloor: () => 'local', watcherRepo: () => REPO,
       lease: { holdsLease: () => true, leaseEpoch: () => 1, leaseHolder: () => 'm1' },
-      gh, floorExports: { evaluate: evaluateRequiredContexts, actionsFloor: ACTIONS_FLOOR_CONTEXTS, approverAcceptance: approverAcceptanceFromExecutorStatus },
+      gh, floorExports: { evaluate: evaluateRequiredContexts, actionsFloor: ACTIONS_FLOOR_CONTEXTS },
     });
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc, localVerifyStatus: built.reconciler }));
     const serverGet = async (p: string) => { const r = await request(a).get(p); return { status: r.status, body: r.body }; };

@@ -1349,6 +1349,10 @@ const LOCAL_VERIFY_CLONE_VERBS: ReadonlySet<string> = new Set([
   'fetch', 'merge-tree', 'commit-tree', 'update-ref', 'checkout', 'diff', 'merge-base', 'status',
   // Reads the orchestrator needs over the merge tree (file text, object checks).
   'show', 'rev-parse', 'cat-file', 'ls-tree',
+  // The independent-review head binding (spec §2, amended 2026-10-22) reads
+  // `git log <base>..<head> -- <paths>` in the bare clone. Missing here, every
+  // flagged PR was refused `trace-commit-unreadable` (found 2026-10-23, PR #2326).
+  'log',
 ]);
 
 /** Realpath of `p`, or of its nearest existing ancestor joined with the rest (for paths not yet created). */
