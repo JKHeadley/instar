@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { CANARY_PROBE_DETAIL_BUDGET, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { PROBE_TAIL_CHARS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 
 const DAY = 24 * 60 * 60_000;
@@ -270,6 +270,36 @@ describe('workspaces and the confined spawn', () => {
     expect((await h.exec.tick()).started).toBe(1);
   });
 
+  it('a crash-leftover canary sibling fixture under .worktrees is swept after 14 days; a fresh one and other entries are kept', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    const worktrees = path.join(h.agentHome, '.worktrees');
+    const stale = path.join(worktrees, '.feedback-canary-sib-0123456789abcdef0123456789abcdef');
+    const fresh = path.join(worktrees, '.feedback-canary-sib-fedcba9876543210fedcba9876543210');
+    const other = path.join(worktrees, '.feedback-canary-sib-not-ours-x');
+    for (const d of [stale, fresh, other]) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'n.txt'), 'x'); }
+    const old = new Date(Date.now() - 20 * 24 * 60 * 60_000);
+    fs.utimesSync(stale, old, old);
+    fs.utimesSync(other, old, old);
+    await h.exec.tick();
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+  });
+
+  it('a day-long latch from a different canary version is not in force; a failing current canary re-latches under its own version', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    // 2026-10-25: a latch recorded by the old canary held the executor for 24h after the fix to the
+    // confinement had already installed. The fix ships with a new canary version, so it clears itself.
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 24 * 60 * 60_000, episode: 1, failures: 8, canaryVersion: 'feedback-canary-v1', failed: ['session-bash-write-in-workspace'] }));
+    expect((await h.exec.refreshAvailability()).reason).toBe('ok');
+    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: '', stderr: 'x' } : defaultRun(cmd));
+    await h.exec.tick();
+    expect(h.exec.summary().profileUnenforceable).toMatchObject({ canaryVersion: CANARY_VERSION, failures: 9 });
+    expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
+  });
+
   it('a failing base-unit-smoke probe stores its own output: the real latch write keeps the whole tail', async () => {
     h = await createExecHarness();
     await h.workItem('c1');
@@ -329,7 +359,7 @@ describe('workspaces and the confined spawn', () => {
   it('a clear drops only the wait, and its cooldown survives the canary re-latching', async () => {
     h = await createExecHarness();
     await h.workItem('c1');
-    const latched = { until: h.now.value + 24 * 60 * 60_000, episode: 2, failures: 5, failed: ['base-unit-smoke'] };
+    const latched = { until: h.now.value + 24 * 60 * 60_000, episode: 2, failures: 5, canaryVersion: CANARY_VERSION, failed: ['base-unit-smoke'] };
     h.store.setMeta('exec:profile_unenforceable', JSON.stringify(latched));
     expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
 
@@ -340,7 +370,7 @@ describe('workspaces and the confined spawn', () => {
 
     // The brake has to hold across a re-latch. Keyed inside the latch it vanished the moment a
     // failing canary rewrote the row — releasing exactly when a clear costs a whole canary run.
-    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 60 * 60_000, episode: 2, failures: 6, failed: ['base-unit-smoke'] }));
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 60 * 60_000, episode: 2, failures: 6, canaryVersion: CANARY_VERSION, failed: ['base-unit-smoke'] }));
     expect(h.exec.retryCanaryNow('test')).toMatchObject({ cleared: false, reason: 'cleared-too-recently' });
     h.now.value += 11 * 60_000;
     expect(h.exec.retryCanaryNow('test')).toEqual({ cleared: true });

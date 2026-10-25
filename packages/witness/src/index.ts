@@ -65,3 +65,24 @@ export {
   type SealBytesCheck,
   type SealReference,
 } from './seal.js';
+export { verifyRecordWithBinding, ISSUER_KEY_CHECKED, ISSUER_KEY_NOT_CHECKED, type LocalVerifyResult } from './localverify.js';
+export {
+  DEFAULT_REGISTRY,
+  LOOKUP_MAX_LIMIT,
+  REGISTRY_MAX_RESPONSE_BYTES,
+  REGISTRY_TIMEOUT_MS,
+  RegistryError,
+  UNVERIFIED_NOTE,
+  assessLookupPage,
+  assessRecordEntry,
+  assessSingleRecord,
+  registryBase,
+  registryRequest,
+  type AssessedPage,
+  type AssessedRecord,
+  type RegistryRecordStatus,
+  type RegistryResponse,
+  type RequestOptions,
+  type ServerLookupPage,
+  type ServerRecordEntry,
+} from './registry.js';

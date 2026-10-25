@@ -72,7 +72,7 @@ No new static heuristic at a competing-signals decision point. The hash check is
 
 - Other agents: Dawn (and Carl's SealKeeper, through Dawn) consume the emitted reference string and the `export` JSON. The old two-item form still verifies, so records already issued keep working. The new `seals` / `sealsMissing` / `provisional` fields are additions to the export JSON.
 - Install base: Instar agents are unaffected; the package is standalone and nothing in `src/` imports it.
-- External systems: merging publishes `instar-witness` 0.2.0 to npm through the existing `publish-witness.yml` workflow (it runs on any push touching `packages/witness/**`). The version is bumped in this PR (0.1.0 → 0.2.0: new reference form, new `seals` export fields) so the publish is not refused as a duplicate.
+- External systems: merging publishes `instar-witness` 0.3.0 to npm through the existing `publish-witness.yml` workflow (it runs on any push touching `packages/witness/**`). The version is bumped in this PR (0.2.0 → 0.3.0, after the registry-client release took 0.2.0: new reference form, new `seals` export fields) so the publish is not refused as a duplicate.
 - Persistent state: a new `seals/` directory in the Witness home (`~/.threadline/witness` or `--home`), mode 0700, files 0600, named by hash. Nothing else on disk changes.
 - Timing/runtime: none; no network, no clocks beyond what verify already used.
 - Operator surface: none. "No operator-facing actions."

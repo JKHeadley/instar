@@ -12775,6 +12775,22 @@ export async function startServer(options: StartOptions): Promise<void> {
           // (update-train churn) forgot which dead sessions were already
           // announced and re-posted the same death once per boot.
           statePath: path.join(config.stateDir, 'state', 'session-monitor-ctx-notified.json'),
+          // A topic an ONLINE peer actively owns is not this machine's to monitor:
+          // route() forwards its inbound to that owner, so a stale local mapping
+          // must never produce a "session has stopped" notice or a local triage
+          // respawn. Placing/transferring records and a dark owner can fall
+          // through to local dispatch, so those keep today's monitoring. Late-bound
+          // reads (assigned further down; a read before assignment throws and the
+          // monitor treats it as owned here).
+          isTopicOwnedByPeer: (topicId) => {
+            if (_sessionPoolStage() === 'dark') return false;
+            const reg = sessionOwnershipRegistry;
+            const self = _meshSelfId;
+            if (!reg || !self) return false;
+            const rec = reg.read(String(topicId));
+            if (!rec || rec.status !== 'active' || rec.ownerMachineId === self) return false;
+            return isOwnerReachableShared(rec.ownerMachineId);
+          },
         },
         config.monitoring.sessionMonitor,
       );

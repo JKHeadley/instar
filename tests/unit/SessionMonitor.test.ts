@@ -137,6 +137,61 @@ describe('SessionMonitor', () => {
     });
   });
 
+  describe('topic owned by another pool machine', () => {
+    function deadTopicDeps(isTopicOwnedByPeer?: (topicId: number) => boolean) {
+      const now = Date.now();
+      return createMockDeps({
+        getActiveTopicSessions: vi.fn(() => new Map([[128732, 'echo-feature-maturation']])),
+        isSessionAlive: vi.fn(() => false),
+        getTopicHistory: vi.fn(() => [
+          { text: 'Please give me the tldr', fromUser: true, timestamp: new Date(now - 11_000).toISOString() },
+        ]),
+        triggerTriage: vi.fn(async () => ({ resolved: false })),
+        ...(isTopicOwnedByPeer ? { isTopicOwnedByPeer } : {}),
+      });
+    }
+
+    it('posts no notice and runs no triage for a topic a peer owns (stale local mapping)', async () => {
+      const recovery = { checkAndRecover: vi.fn(async () => ({ recovered: false, failureType: null, message: '' })) };
+      deps = { ...deadTopicDeps(vi.fn(() => true)), sessionRecovery: recovery as any };
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      await monitor.poll();
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+      expect(recovery.checkAndRecover).not.toHaveBeenCalled();
+      expect(monitor.getStatus().trackedSessions).toBe(0);
+    });
+
+    it('still notifies for a topic this machine owns', async () => {
+      deps = deadTopicDeps(vi.fn(() => false));
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      await monitor.poll();
+      expect(deps.sendToTopic).toHaveBeenCalledWith(128732, expect.stringContaining('session has stopped'));
+    });
+
+    it('treats an ownership lookup that throws as owned here (monitors as before)', async () => {
+      deps = deadTopicDeps(vi.fn(() => { throw new Error('registry unreadable'); }));
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      await monitor.poll();
+      expect(deps.triggerTriage).toHaveBeenCalled();
+    });
+
+    it('starts monitoring again once ownership returns to this machine', async () => {
+      let peerOwns = true;
+      deps = deadTopicDeps(vi.fn(() => peerOwns));
+      monitor = new SessionMonitor(deps);
+      await monitor.poll();
+      expect(deps.triggerTriage).not.toHaveBeenCalled();
+      peerOwns = false;
+      await monitor.poll();
+      await monitor.poll();
+      expect(deps.triggerTriage).toHaveBeenCalled();
+    });
+  });
+
   describe('unresponsive session detection', () => {
     it('detects unresponsive session when user message unanswered for 10+ min', async () => {
       const now = Date.now();

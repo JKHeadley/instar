@@ -13,9 +13,18 @@
  *   witness seal-evidence <seal-file> [--url <where-to-fetch>]           (the v0 form, still accepted)
  *   witness export [--seal <file>]...  the binding chain, every record, and their SEAL bytes, as JSON
  *
+ * Registry commands — the ONLY ones that talk to a network, and only when run:
+ *   witness publish <record.json> --binding <binding.json>   verify locally, then POST to the registry
+ *   witness lookup --subject <did> | --issuer <did> [--limit N] [--cursor C]   re-verifies every record
+ *   witness get <recordHash>          one record from the registry, re-verified here
+ *   witness stats                     the registry's own counts (its word, unverified)
+ *   --registry <url> picks the server; without it the current default (DEFAULT_REGISTRY in registry.ts) is used,
+ *   and every registry command prints the server it talked to as `registry`.
+ *
  * Common options: --home <dir> (default $WITNESS_HOME or ~/.threadline/witness),
  * --identity <file> (default ~/.threadline/identity.json). Output is JSON on stdout;
- * errors go to stderr with exit code 1. Nothing is ever sent anywhere.
+ * errors go to stderr with exit code 1. Nothing is ever sent anywhere except by the
+ * four registry commands above, each of which names the server it talks to.
  */
 
 import crypto from 'node:crypto';
@@ -26,9 +35,14 @@ import { parseArgs } from 'node:util';
 import { loadOrCreateWitnessKey, KEY_FILE_NAME } from './keyfile.js';
 import { publicKeyFromPrivate, type WitnessKeyPair } from './keys.js';
 import { createBinding, verifyBinding, threadlineFingerprint, type KeyBinding } from './binding.js';
-import { createRecord, verifyRecord, CLAIMS, type Claim } from './record.js';
+import { createRecord, CLAIMS, type Claim } from './record.js';
 import { WitnessStore } from './store.js';
 import { publicKeyFromDidKey } from './didkey.js';
+import { recordHash } from './record.js';
+import { verifyRecordWithBinding } from './localverify.js';
+import {
+  LOOKUP_MAX_LIMIT, RegistryError, UNVERIFIED_NOTE, assessLookupPage, assessSingleRecord, registryBase, registryRequest,
+} from './registry.js';
 import {
   SEAL_LABELS_NOTE, SEAL_REFERENCE_PROVISIONAL_NOTE, checkSealBytes, formatSealkeeperReference,
   parseSealReference, sealReferencesIn, sha256Hex, type SealReference,
@@ -161,7 +175,7 @@ function describeSeal(ref: SealReference, bytesChecked: boolean): Record<string,
   return base;
 }
 
-export function run(argv: string[]): unknown {
+export async function run(argv: string[]): Promise<unknown> {
   const [command, ...rest] = argv;
   const { values, positionals } = parseArgs({
     args: rest,
@@ -180,9 +194,30 @@ export function run(argv: string[]): unknown {
       url: { type: 'string' },
       party: { type: 'string' },
       seal: { type: 'string', multiple: true },
+      registry: { type: 'string' },
+      limit: { type: 'string' },
+      cursor: { type: 'string' },
     },
   });
   const home = path.resolve(values.home ?? defaultHome());
+  // Only the four registry commands ever open a connection; everything else stays offline.
+  const registry = (): URL => {
+    try {
+      return registryBase(values.registry);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  };
+  const ask = async (route: string, options?: Parameters<typeof registryRequest>[2]) => {
+    try {
+      return await registryRequest(registry(), route, options);
+    } catch (err) {
+      if (err instanceof RegistryError) fail(err.message);
+      throw err;
+    }
+  };
+  const unexpected = (what: string, status: number, text: string): never =>
+    fail(`registry answered ${status} to ${what}: ${text.slice(0, 300) || '(empty body)'}`);
 
   switch (command) {
     case 'init': {
@@ -241,24 +276,10 @@ export function run(argv: string[]): unknown {
       const file = positionals[0];
       if (!file) fail('verify needs a record file');
       if (!values.binding) fail('verify needs --binding <binding.json> naming the issuer\'s key');
-      const b = verifyBinding(readJson(path.resolve(values.binding), 'binding'));
-      if (!b.ok) return { ok: false, reason: `binding: ${b.reason}` };
-      const record = readJson(path.resolve(file), 'record') as { issuer?: unknown };
-      if (record.issuer !== b.binding.agent) return { ok: false, reason: 'the record\'s issuer is not the agent this binding names' };
-      // A binding only names the issuer by string; anyone can make one with their own keys
-      // under your name. For did:key the name IS the Threadline key, so check it offline.
-      let issuerKeyCheck: string;
-      if (b.binding.agent.startsWith('did:key:')) {
-        const named = publicKeyFromDidKey(b.binding.agent);
-        if (!named) return { ok: false, reason: 'the issuer is a did:key but not an Ed25519 one' };
-        if (named !== b.binding.threadline_public_key) {
-          return { ok: false, reason: 'the binding\'s Threadline key is not the key the issuer did:key names (a binding made by someone else)' };
-        }
-        issuerKeyCheck = 'checked: the issuer did:key is the binding\'s Threadline key';
-      } else {
-        issuerKeyCheck = 'NOT checked offline: a did:web issuer\'s key is in its did document, so this binding is only known to carry the issuer\'s name';
-      }
-      const verdict = verifyRecord(record, b.binding.witness_public_key);
+      // The same check the registry commands run on every record they read back (localverify.ts).
+      const record = readJson(path.resolve(file), 'record');
+      const v = verifyRecordWithBinding(record, readJson(path.resolve(values.binding), 'binding'));
+      if (!v.ok) return v;
       const evidence = Array.isArray((record as { evidence?: unknown }).evidence) ? (record as { evidence: string[] }).evidence : [];
       const refs = sealReferencesIn(evidence);
       const check = checkSealBytes(refs, readSealFiles(values.seal));
@@ -272,12 +293,82 @@ export function run(argv: string[]): unknown {
       const seals = refs.map((r) => describeSeal(r, r.format !== 'malformed' && check.matched.has(r.sha256)));
       const provisional = refs.some((r) => r.provisional);
       return {
-        ...verdict,
-        threadlineFingerprint: b.binding.threadline_fingerprint,
-        issuerKeyCheck,
+        ok: true,
+        expired: v.expired,
+        threadlineFingerprint: v.threadlineFingerprint,
+        issuerKeyCheck: v.issuerKeyCheck,
         ...(refs.length ? { seals } : {}),
         ...(provisional ? { provisional: SEAL_REFERENCE_PROVISIONAL_NOTE } : {}),
       };
+    }
+    case 'publish': {
+      const file = positionals[0];
+      if (!file) fail('publish needs a record file');
+      if (!values.binding) fail('publish needs --binding <binding.json> naming the issuer\'s key');
+      const record = readJson(path.resolve(file), 'record');
+      const binding = readJson(path.resolve(values.binding), 'binding');
+      // Verify here first: a record this machine will not vouch for is never sent anywhere.
+      const local = verifyRecordWithBinding(record, binding);
+      if (!local.ok) fail(`refusing to publish: the record does not verify locally (${local.reason})`);
+      const localHash = recordHash(local.record);
+      const res = await ask('/witness/records', { method: 'POST', body: { record, binding } });
+      const body = (res.json && typeof res.json === 'object' ? res.json : {}) as Record<string, unknown>;
+      if (res.status === 422) {
+        // The server runs the same verify as this package; its reason is printed unchanged.
+        fail(`registry refused the record: ${typeof body.reason === 'string' ? body.reason : res.text.slice(0, 300)}`);
+      }
+      if (res.status !== 201 && res.status !== 200) unexpected('publish', res.status, res.text);
+      if (body.ok !== true || typeof body.recordHash !== 'string') unexpected('publish', res.status, res.text);
+      if (body.recordHash !== localHash) {
+        fail(`registry reports recordHash ${body.recordHash} but the record hashes to ${localHash} here; ` +
+          'the server did not store what was sent, or hashes it differently. Not treating it as published.');
+      }
+      return {
+        ok: true,
+        recordHash: localHash,
+        duplicate: body.duplicate === true,
+        registered: body.registered === true,
+        registry: registry().origin,
+      };
+    }
+    case 'lookup': {
+      if (!values.subject && !values.issuer) fail('lookup needs --subject <did> and/or --issuer <did>');
+      const q = new URLSearchParams();
+      if (values.subject) q.set('subject', values.subject);
+      if (values.issuer) q.set('issuer', values.issuer);
+      if (values.limit !== undefined) {
+        const n = Number(values.limit);
+        if (!Number.isInteger(n) || n < 1 || n > LOOKUP_MAX_LIMIT) fail(`--limit must be an integer from 1 to ${LOOKUP_MAX_LIMIT}`);
+        q.set('limit', String(n));
+      }
+      if (values.cursor) q.set('cursor', values.cursor);
+      const res = await ask(`/witness/records?${q}`);
+      if (res.status !== 200) unexpected('lookup', res.status, res.text);
+      if (!res.json || typeof res.json !== 'object') unexpected('lookup', res.status, res.text);
+      const page = assessLookupPage(res.json as Parameters<typeof assessLookupPage>[0]);
+      return {
+        registry: registry().origin,
+        query: { ...(values.subject ? { subject: values.subject } : {}), ...(values.issuer ? { issuer: values.issuer } : {}) },
+        count: page.records.length,
+        counts: page.counts,
+        records: page.records,
+        ...(page.next ? { next: page.next } : {}),
+        note: page.note,
+      };
+    }
+    case 'get': {
+      const hash = positionals[0];
+      if (!hash || !/^[0-9a-f]{64}$/.test(hash)) fail('get needs a recordHash (64 hex characters)');
+      const res = await ask(`/witness/records/${hash}`);
+      if (res.status === 404) fail(`the registry has no record ${hash}`);
+      if (res.status !== 200) unexpected('get', res.status, res.text);
+      return { registry: registry().origin, ...assessSingleRecord(hash, res.json), note: UNVERIFIED_NOTE };
+    }
+    case 'stats': {
+      const res = await ask('/witness/stats');
+      if (res.status !== 200) unexpected('stats', res.status, res.text);
+      if (res.json === undefined) unexpected('stats', res.status, res.text);
+      return res.json; // the server's word, printed as-is; nothing here is verifiable locally
     }
     case 'seal-evidence': {
       const file = positionals[0];
@@ -323,7 +414,7 @@ export function run(argv: string[]): unknown {
       };
     }
     default:
-      fail(`unknown command "${command ?? ''}". Commands: init, bind, sign, verify, seal-evidence, export`);
+      fail(`unknown command "${command ?? ''}". Commands: init, bind, sign, verify, seal-evidence, export, publish, lookup, get, stats`);
   }
 }
 
@@ -336,10 +427,11 @@ function isInvokedDirectly(): boolean {
 }
 const invokedDirectly = isInvokedDirectly();
 if (invokedDirectly) {
-  try {
-    process.stdout.write(JSON.stringify(run(process.argv.slice(2)), null, 2) + '\n');
-  } catch (err) {
-    process.stderr.write(`witness: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
+  run(process.argv.slice(2)).then(
+    (result) => { process.stdout.write(JSON.stringify(result, null, 2) + '\n'); },
+    (err) => {
+      process.stderr.write(`witness: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    },
+  );
 }

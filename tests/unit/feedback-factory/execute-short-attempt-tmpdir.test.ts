@@ -36,11 +36,14 @@ describe('shortAttemptTmpDir', () => {
     expect(shortAttemptTmpDir('i-1', 1, '/t')).toBe(shortAttemptTmpDir('i-1', 1, '/t'));
     expect(shortAttemptTmpDir('i-1', 1, '/t')).not.toBe(shortAttemptTmpDir('i-1', 2, '/t'));
     expect(shortAttemptTmpDir('i-1', 1, '/t')).not.toBe(shortAttemptTmpDir('i-2', 1, '/t'));
+    expect(path.basename(shortAttemptTmpDir('i-1', 1, '/t', '/h'))).toMatch(SHORT_ATTEMPT_TMP_RE);
   });
 
   it('the executor uses it for every attempt path reader (one derivation, never a stored string)', () => {
     const paths = FeedbackExecutorService.prototype.attemptPaths.call({ opts: { paths: { agentHome: '/h' } } }, { initiativeId: 'init-x', attempt: 3 });
-    expect(paths.tmpDir).toBe(shortAttemptTmpDir('init-x', 3));
+    expect(paths.tmpDir).toBe(shortAttemptTmpDir('init-x', 3, shortTmpRealRoot(), '/h'));
+    // Scoped to the agent home: a second executor on the same host never shares the directory.
+    expect(shortAttemptTmpDir('init-x', 3, '/t', '/h')).not.toBe(shortAttemptTmpDir('init-x', 3, '/t', '/other-home'));
     expect(paths.workspace.startsWith('/h/.worktrees/feedback-')).toBe(true);
     expect(paths.workspace.endsWith('-a3')).toBe(true);
     expect(paths.tmpDir.startsWith('/h/')).toBe(false);
@@ -71,7 +74,7 @@ describe('shortAttemptTmpDir', () => {
     expect(rt.filesystem.allowWrite).not.toContain('/private/tmp');
     // The other shared temp roots, which no attempt path sits under, stay denied.
     expect(rt.filesystem.denyWrite).toEqual(expect.arrayContaining(['/var/tmp']));
-    const cc = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.worktrees'], worktreeChildren: ['w', 'w-publish'] }) as { env: { TMPDIR: string }; permissions: { allow: string[] } };
+    const cc = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.worktrees'] }) as { env: { TMPDIR: string }; permissions: { allow: string[] } };
     expect(cc.env.TMPDIR).toBe(tmpDir);
     expect(cc.permissions.allow).toContain(`Edit(/${tmpDir}/**)`.replace('//', '/' + '/'));
   });

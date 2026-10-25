@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-25T21:32:36.939Z",
+  "slug": "canary-sandbox-e2big",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 123,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/attemptFs.ts",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 91,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
