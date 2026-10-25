@@ -19,3 +19,5 @@ Nothing to do. PRs that wait on the local merge check are now merged in the orde
 - `tests/unit/green-pr-local-floor.test.ts` ("merge line hand-off": exact target, not-eligible reasons, actions floor, dryRun/latch/lease, in-flight wait without a breaker feed, code-owner wait)
 - `tests/unit/localVerify/mergeLineWiring.test.ts` (status gate, unknown head listed first, kill switch)
 - `tests/integration/local-verify-routes.test.ts` (merge hold over HTTP), `tests/e2e/local-verify-lifecycle.test.ts` (wired through the production function, alive over HTTP)
+
+Re-queued 2026-10-24 (PDT evening) so the verifier tests this head on the current main; no code change.
