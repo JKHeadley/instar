@@ -144,3 +144,10 @@ Verified by reading code (not prose): (a) `MachineCapacity.online` and `isPlacem
 ## Class-Closure Declaration (display-only mirror)
 
 Not applicable: this change fixes no defect in an agent-authored artifact and adds no self-triggered controller — the sampler fires no restart/swap/respawn/notify/retry/kill; it only samples and caches.
+
+### Full-suite follow-ups (author, 2026-10-25, after the hour-long push-config run)
+
+- `peer-presence-wiring` ratchet: the new puller deps moved below the `fetchPeerCapacity` block so the ratchet's 900-char window still sees the signed `session-status` call (no behaviour change).
+- `keyword-intent-decision` ratchet: `parseLinuxPressureFile`'s parameter renamed `content` → `psiFile` (a `/proc/pressure/memory` body is not a user message; the detector keys on the name).
+- `stage-b-evidence-code-binding`: `machineLiveness.ts`, `machineLoadReport.ts` and `hostMemoryPressure.ts` entered the certified set's import closure via `MachinePoolRegistry`; excluded with reasons in `src/data/stageBCertifiedSet.ts` (reporting-only, outside Stage-B canaried delivery).
+- `SelfUnblockProbeProviders` + `quota-manager-lifecycle` (10 s timeouts): reproduced identically on pristine `origin/main` with the same dependencies on this machine — environmental, not this change; CI is the arbiter.

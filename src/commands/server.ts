@@ -27056,10 +27056,6 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .filter((m) => !m.entry.revokedAt)
                 .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) })),
             recordHeartbeat: (obs) => { machinePoolRegistry?.recordHeartbeat(obs); },
-            // trustworthy-machine-load A1/A4: failure shapes + peer sightings are
-            // display-only evidence slots (never placement inputs).
-            recordPullFailure: (machineId, shape) => { machinePoolRegistry?.recordPullFailure(machineId, shape); },
-            recordPeerSightings: (observer, sightings) => { machinePoolRegistry?.recordPeerSightings(observer, sightings); },
             log: (line) => console.log(pc.dim(`  [peer-presence] ${line}`)),
             onPeerRecorded: (m) => onPeerBack(m), // ws re-arm + queued-commitment re-fire; no-op when dark
             fetchPeerCapacity: async (machineId, url) => {
@@ -27082,6 +27078,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return null;
             },
+            // trustworthy-machine-load A1/A4: failure shapes + peer sightings are
+            // display-only evidence slots (never placement inputs).
+            recordPullFailure: (machineId, shape) => { machinePoolRegistry?.recordPullFailure(machineId, shape); },
+            recordPeerSightings: (observer, sightings) => { machinePoolRegistry?.recordPeerSightings(observer, sightings); },
             // REPLICATION-GATED: present only when replication.enabled === true.
             ..._journalDeltaDeps,
             // COMMITMENTS-COHERENCE-SPEC §3.2 — pull delta pages when the

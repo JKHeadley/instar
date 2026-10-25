@@ -210,9 +210,9 @@ export function parseDarwinPressureLevel(out: string): NativeMemoryPressure | nu
 }
 
 /** Linux/WSL `/proc/pressure/memory`: `some avg10=…` / `full avg10=…` (percent of time stalled). */
-export function parseLinuxPressureFile(content: string): NativeMemoryPressure | null {
-  const some = content.match(/^some\s+avg10=([\d.]+)/m);
-  const full = content.match(/^full\s+avg10=([\d.]+)/m);
+export function parseLinuxPressureFile(psiFile: string): NativeMemoryPressure | null {
+  const some = psiFile.match(/^some\s+avg10=([\d.]+)/m);
+  const full = psiFile.match(/^full\s+avg10=([\d.]+)/m);
   if (!some && !full) return null;
   const fullV = full ? Number(full[1]) : 0;
   const someV = some ? Number(some[1]) : 0;
