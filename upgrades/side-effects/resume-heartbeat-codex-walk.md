@@ -151,3 +151,11 @@ The reviewer traced `findRolloutFileSync` end to end (no path stats the archive;
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable (the defect is in runtime TypeScript, not an LLM prompt, hook, config, skill or standards text). This change adds no self-triggered controller: the heartbeat interval already existed and is unchanged; the background enumeration is a bounded, single-flight, non-actuating filesystem read that restarts, swaps, spawns, notifies or kills nothing.
+
+## Addendum (2026-10-24) — a transcript check that errors is reported, not swallowed
+
+The no-silent-fallbacks ratchet (`tests/unit/no-silent-fallbacks.test.ts`) flagged the two bare `catch` blocks this change introduced in `TopicResumeMap.claudeTranscriptExists` (the `fs.existsSync` on this project's `~/.claude` transcript dir, and the `claudeConfigHomes()` enumeration of pooled `~/.claude-*` homes). Both turned an ERROR into "transcript not found" silently. That matters: `TopicResumeMap.get()` reads a miss as "transcript gone" and may expire a live session's resume entry, so the next spawn would start fresh instead of resuming.
+
+- **Decision point:** `TopicResumeMap.claudeTranscriptExists` — **modify (observability only)**. The verdict is unchanged (an error is still a miss; nothing is deleted or substituted). Each catch now reports through `DegradationReporter` (feature `TopicResumeMap.claudeTranscriptExists`, with the layout that failed and the error message). The reporter's per-feature alert cooldown (1 h) means a heartbeat-rate failure surfaces once an hour, never as a flood.
+- **No new write path, config key, route, or stored-format change.** No self-action. No framework-launch or messaging surface touched.
+- **Evidence:** `tests/unit/no-silent-fallbacks.test.ts` green at the existing baseline (494); `npx tsc --noEmit` and `npm run lint` clean; the 30 unit files, 15 integration files and 10 e2e files that reference the resume maps, heartbeat or Codex rollout lookup all pass (582 / 174 / 177 tests).

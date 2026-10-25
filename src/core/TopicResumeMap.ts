@@ -478,8 +478,13 @@ export class TopicResumeMap {
     const jsonlPath = path.join(this.claudeProjectJsonlDir(), `${uuid}.jsonl`);
     try {
       if (fs.existsSync(jsonlPath)) return true;
-    } catch {
-      // Can't check the Claude layout — try the pooled homes.
+    } catch (err) {
+      // Can't check the Claude layout — try the pooled homes, but say so: a
+      // transcript that exists yet reads as missing is how a live session's
+      // resume entry gets expired out from under it.
+      DegradationReporter.getInstance().report(
+        this.transcriptCheckFailure('this project\'s ~/.claude transcript dir', err),
+      );
     }
     // Claude, pooled logins: a session launched under a subscription-pool account
     // writes under ~/.claude-*/projects/<slug>/ (Resume Follows the Account §3.3).
@@ -489,9 +494,28 @@ export class TopicResumeMap {
       for (const home of claudeConfigHomes()) {
         if (fs.existsSync(path.join(home, 'projects', this.claudeProjectDirName(), `${uuid}.jsonl`))) return true;
       }
-    } catch {
-      // Can't enumerate login folders — not found.
+    } catch (err) {
+      // Can't enumerate login folders — not found, and reported (same risk as above).
+      DegradationReporter.getInstance().report(
+        this.transcriptCheckFailure('the pooled ~/.claude-* login homes', err),
+      );
     }
     return false;
+  }
+
+  /**
+   * The degradation event for a Claude transcript check that ERRORS (not merely
+   * misses): the caller reads the miss as "transcript gone" and may expire a live
+   * session's resume entry. DegradationReporter applies a per-feature alert
+   * cooldown, so a heartbeat-rate failure surfaces once an hour, never as a flood.
+   */
+  private transcriptCheckFailure(layout: string, err: unknown): Parameters<DegradationReporter['report']>[0] {
+    return {
+      feature: 'TopicResumeMap.claudeTranscriptExists',
+      primary: `Confirm a Claude session transcript exists by checking ${layout}`,
+      fallback: 'The check is treated as a miss (transcript not found)',
+      reason: `Transcript lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'A live Claude session can read as missing — its resume entry may be expired, and the next spawn would start a fresh conversation instead of resuming',
+    };
   }
 }

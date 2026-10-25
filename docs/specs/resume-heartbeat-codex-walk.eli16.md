@@ -44,3 +44,7 @@ One pull request, one patch release. No configuration, no migration, no change t
 ## What you actually need to decide
 
 Nothing beyond reviewing the PR: it is a bug fix with no new capability and no new setting. The question for the reader is only "is checking each session in its own framework's files, with a bounded Codex lookup, the right shape?" — yes or no.
+
+## Addendum (2026-10-24)
+
+If the check for a Claude session's transcript file fails for a reason other than "the file is not there" (the folder cannot be read, the list of login folders cannot be enumerated), the server now records that as a degradation it can report, instead of quietly treating it as a missing transcript. The decision is the same as before (a failed check still counts as a miss, and nothing is deleted); the difference is that the failure is visible, because a live session wrongly read as missing could lose its resume entry.
