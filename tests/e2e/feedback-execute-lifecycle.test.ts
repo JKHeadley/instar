@@ -28,7 +28,8 @@ import { RateLimiter, RATE_LIMITS } from '../../src/feedback-factory/receiver/de
 import { FakeBlobServer } from '../fixtures/FakeBlobServer.js';
 import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID } from '../../src/feedback-factory/triage/FeedbackTriageArbiter.js';
 import { decisionRow, packetsFrom } from '../fixtures/feedbackTriageHarness.js';
-import { readCallLines } from '../fixtures/feedbackExecuteHarness.js';
+import { defaultCanaryTranscript } from '../fixtures/feedbackExecuteHarness.js';
+import { SESSION_CANARY_STEPS } from '../../src/feedback-factory/execute/confinementCanary.js';
 
 const AUTH = 'feedback-execute-e2e-auth';
 const PIN = '161803';
@@ -109,13 +110,12 @@ function executorEdge(root: string, clock: { now: number }) {
         if (input.name.startsWith('feedback-canary-')) {
           fs.writeFileSync(/create (\S+\.feedback-canary-ok-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
           fs.writeFileSync(/echo ok > (\S+\.feedback-canary-bash-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
-          fs.writeFileSync(/write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)![1], JSON.stringify({ attempted: Array.from({ length: 16 }, (_, i) => i + 1), outputs: { 9: 'exit 0' } }));
-          // The session's own transcript: every requested Read attempted and refused.
+          fs.writeFileSync(/write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)![1], JSON.stringify({ attempted: Array.from({ length: SESSION_CANARY_STEPS }, (_, i) => i + 1), outputs: { 9: 'exit 0' } }));
+          // The session's own transcript: every requested Read, Write and Grep attempted and refused.
           const sessionUuid = '00000000-0000-4000-8000-000000000001';
           const dir = path.join(root, 'claude-home', 'projects', 'key');
           fs.mkdirSync(dir, { recursive: true });
-          const reads = [...input.prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
-          fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${reads.flatMap((file, i) => readCallLines(`r${i}`, file)).join('\n')}\n`);
+          fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${defaultCanaryTranscript(input.prompt).join('\n')}\n`);
           return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}`, transcript: { configHome: path.join(root, 'claude-home'), sessionUuid } };
         } else {
           // The confined build session: reproduce with a failing test, fix, write the result file.

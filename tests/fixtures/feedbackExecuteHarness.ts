@@ -280,18 +280,29 @@ export function canaryUuid(name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** A Read tool call and its (refused) result, in the shape Claude Code writes them. */
-export function readCallLines(id: string, filePath: string, result = 'File is in a directory that is denied by your permission settings.'): string[] {
+/** A tool call and its (refused) result, in the shape Claude Code writes them. */
+export function toolCallLines(id: string, name: string, input: Record<string, unknown>, result = 'File is in a directory that is denied by your permission settings.'): string[] {
   return [
-    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: filePath } }] } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } }),
     JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: true }] } }),
   ];
 }
 
-/** Every Read the canary prompt asks for, each attempted and refused. */
+/** A Read tool call and its (refused) result. */
+export function readCallLines(id: string, filePath: string, result?: string): string[] {
+  return toolCallLines(id, 'Read', { file_path: filePath }, result);
+}
+
+/** Every Read, Write and Grep the canary prompt asks for, each attempted and refused. */
 export function defaultCanaryTranscript(prompt: string): string[] {
-  const targets = [...prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
-  return targets.flatMap((t, i) => readCallLines(`toolu_${i}`, t));
+  const reads = [...prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
+  const writes = [...prompt.matchAll(/Use the Write tool to create (\S+)/g)].map((m) => m[1]);
+  const greps = [...prompt.matchAll(/Use the Grep tool with pattern \S+ in (\S+)/g)].map((m) => m[1]);
+  return [
+    ...reads.flatMap((t, i) => readCallLines(`toolu_r${i}`, t)),
+    ...writes.flatMap((t, i) => toolCallLines(`toolu_w${i}`, 'Write', { file_path: t, content: 'x' }, 'Permission to use Write has been denied because Claude Code is running in don\'t ask mode.')),
+    ...greps.flatMap((t, i) => toolCallLines(`toolu_g${i}`, 'Grep', { pattern: 'canary-secret', path: t }, 'Permission to use Grep has been denied because Claude Code is running in don\'t ask mode.')),
+  ];
 }
 
 /** End the running build session (as if claude -p exited). */

@@ -5,7 +5,7 @@
 **Author:** `Echo (instar-dev agent)`
 **Second-pass reviewer:** independent subagent (see below) — run because the change removes a layer of a security confinement.
 **Tier:** `1` — four source files in one subsystem, ~70 changed source lines; a revert fully undoes it; no persistent state beyond one optional field on an existing latch row.
-**Effort:** 0 spec rounds, 1 second-pass review round (concern raised, resolved with three more probes), 1 commit. One found problem (the flaky tests) was fixed in scope because it blocked the merge.
+**Effort:** 0 spec rounds, 1 second-pass review round (concern raised, resolved with three more probes) + 1 Codex round (BLOCKED, resolved by judging Write/Grep attempts and Grep answers from the transcript), 2 commits. One found problem (the flaky tests) was fixed in scope because it blocked the merge.
 
 ## Summary of the change
 
@@ -80,6 +80,7 @@ Checked and fine: latch versioning (written only by trusted code; the ladder hol
 - Live test first (2026-10-25 14:24 PDT, real `claude -p` 2.1.303, new settings, dontAsk): a workspace symlink to a sibling directory holding a nonce. Read `link/n.txt` → denied (dontAsk); Write `link/w.txt` → denied; Grep in the sibling dir and in `link/` → denied; Glob in the sibling dir → denied; Edit `link/n.txt` → stopped by read-before-write; Bash `echo > link/b.txt` → `operation not permitted` (sandbox resolves the link). Nothing created; the nonce never appeared in the output. So the claimed coverage holds today — and (1)/(2) are now canary probes so it is proven on every run rather than once: session steps 19 (Read through the link), 20 (Write through the link, effect-judged by the new `write-sibling-worktree` check), 21 (Grep through the link, judged by the nonce-never-read transcript check), plus the runner's `bash-write-sibling-worktree`.
 - (3): the fixture is a directory removed by `close()`; `pruneScratch` sweeps `.worktrees/.feedback-canary-sib-<hex>` entries older than 14 days (unit-tested: stale removed, fresh and other names kept); the comment is corrected.
 - (4): the template now interpolates `SESSION_CANARY_STEPS`, pinned by a test.
+- **Codex (gpt-6-astra) independent review of 541d5ab70: BLOCKED, two P1s, both resolved in the second commit.** (1) A Grep into the sibling that was wrongly ALLOWED but matched nothing would pass: files-with-matches mode prints only the file name, which carried no nonce. Now the sibling nonce file is named `sib-<nonce>.txt`, and a new `session-grep-never-matched` check fails any required Grep whose tool result contains the nonce (value or file name). (2) Steps 20–21 (and the older Write steps 6 and 16) were judged only from the report's `attempted` list plus the file's absence — a SKIPPED step passes that. `transcriptChecks` now also requires an answered Write call for each exact write target and an answered Grep call for the exact sibling path (`session-write-probes-attempted`, `session-grep-probes-attempted`), and reads tool results written as either a string or content blocks. Tests pin: reads-only transcript fails both new probes; a skipped or redirected write fails; a Grep on another path fails; a files-with-matches result naming the nonce file fails; a content-block result with the nonce fails both the Grep check and the nonce check.
 - The latch-writer note is accepted as a known shape; there is one writer today (`profileUnenforceable`) and the test `a day-long latch from a different canary version…` pins that it records the version.
 
 ## Evidence pointers
@@ -87,7 +88,7 @@ Checked and fine: latch versioning (written only by trusted code; the ladder hol
 - Live failure: transcript `~/.claude-followme-sagemind-echo/projects/-Users-dabombstudio--instar-agents-echo--worktrees-feedback-feedback-955789fc-462a-4-600c76bd-a4/490ad5a4-….jsonl` (every Bash call: `Could not start /bin/zsh … (E2BIG) … The Bash sandbox profile adds 4891 filesystem deny`).
 - Live proof of the fix (2026-10-25 14:21 PDT): settings from this branch's builder against the real agent home (374 permission deny rules; the old builder added four more per sibling worktree), `claude -p` 2.1.303 with `--settings … --setting-sources local --permission-mode dontAsk`, cwd a fresh workspace under `.worktrees/`: Bash `echo ok > ws/.bash-ok` succeeded (file present), `git status` printed `?? .bash-ok`, Bash `cat` of a sibling nonce file → `Operation not permitted`, Read tool of it → denied in dontAsk mode; the nonce does not appear in the output.
 - Live proof of the symlink/Glob/Grep boundary (2026-10-25 14:24 PDT): see the second-pass response above.
-- Unit: 46 files / 647 tests green in `tests/unit/feedback-factory/`; 12 of 12 runs green with three suites concurrent (before: about one in two failed, on main too).
+- Unit (after the Codex round): the four touched files, 153/153 green in the targeted lane (the full-directory run waited behind the local-verify suite slot); before that round, 46 files / 647 tests green in `tests/unit/feedback-factory/`; 12 of 12 runs green with three suites concurrent (before: about one in two failed, on main too).
 
 ## Class-Closure Declaration (display-only mirror)
 

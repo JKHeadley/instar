@@ -18,8 +18,8 @@ import {
 import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
-import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
-import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
+import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
+import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
 import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
@@ -478,7 +478,12 @@ describe('canary judgement', () => {
       // The report alone is not enough: no transcript → fail closed.
       expect(evaluateSessionCanary(p, fx, report, null).find((c) => c.probe === 'session-transcript-readable')!.ok).toBe(false);
       const transcript = path.join(p.tmpDir, 't.jsonl');
-      fs.writeFileSync(transcript, `${sessionReadTargets(p, fx).flatMap((t, i) => readCallLines(`r${i}`, t)).join('\n')}\n`);
+      const tools = sessionToolTargets(p, fx);
+      fs.writeFileSync(transcript, `${[
+        ...sessionReadTargets(p, fx).flatMap((t, i) => readCallLines(`r${i}`, t)),
+        ...tools.writes.flatMap((t, i) => toolCallLines(`w${i}`, 'Write', { file_path: t, content: 'x' }, 'denied')),
+        ...tools.greps.flatMap((t, i) => toolCallLines(`g${i}`, 'Grep', { pattern: 'canary-secret', path: t }, 'denied')),
+      ].join('\n')}\n`);
       expect(evaluateSessionCanary(p, fx, report, transcript).every((c) => c.ok)).toBe(true);
     } finally { await fx.close(); }
     expect(canaryStamp({ framework: 'claude-code', frameworkVersion: '1', sandboxRuntimeVersion: '0.0.77', depsHash: 'a' }))
@@ -501,11 +506,42 @@ describe('canary review-round regressions', () => {
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
     try {
       const targets = sessionReadTargets(p, fx);
-      expect(targets).toEqual([fx.noncePath, fx.homeNoncePath, canaryLinkPaths(p, fx).symLink, fx.siblingNoncePath, path.join(canaryLinkPaths(p, fx).siblingLink, 'n.txt')]);
+      expect(targets).toEqual([fx.noncePath, fx.homeNoncePath, canaryLinkPaths(p, fx).symLink, fx.siblingNoncePath, path.join(canaryLinkPaths(p, fx).siblingLink, `sib-${fx.nonce}.txt`)]);
       const t = path.join(p.tmpDir, 't.jsonl');
       const write = (lines: string[]) => fs.writeFileSync(t, `${lines.join('\n')}\n`);
       write(targets.flatMap((target, i) => readCallLines(`r${i}`, target)));
       expect(transcriptChecks(fx, t, targets).every((c) => c.ok)).toBe(true);
+      // Write and Grep attempts are judged from the transcript too (independent review of PR 2352):
+      // a skipped must-fail write is otherwise indistinguishable from a refused one, and a Grep is a
+      // read the Read-target check cannot see.
+      const tools = sessionToolTargets(p, fx);
+      expect(tools).toEqual({ writes: [`${fx.outsideWritePath}.w`, canaryLinkPaths(p, fx).depsWriteViaLink, path.join(canaryLinkPaths(p, fx).siblingLink, 'w.txt')], greps: [canaryLinkPaths(p, fx).siblingLink] });
+      const writeCalls = (ws = tools.writes) => ws.flatMap((w, i) => toolCallLines(`w${i}`, 'Write', { file_path: w, content: 'x' }, 'denied'));
+      const grepCalls = (result = 'Permission to use Grep has been denied', gp = tools.greps[0]) => toolCallLines('g0', 'Grep', { pattern: 'canary-secret', path: gp }, result);
+      const reads = targets.flatMap((target, i) => readCallLines(`r${i}`, target));
+      write([...reads, ...writeCalls(), ...grepCalls()]);
+      expect(transcriptChecks(fx, t, targets, tools).every((c) => c.ok)).toBe(true);
+      // Reads alone no longer pass: the Write and Grep probes were not attempted.
+      expect(transcriptChecks(fx, t.replace(/$/, ''), targets, tools).every((c) => c.ok)).toBe(true);
+      write(reads);
+      expect(transcriptChecks(fx, t, targets, tools).filter((c) => !c.ok).map((c) => c.probe)).toEqual(['session-write-probes-attempted', 'session-grep-probes-attempted']);
+      // One write skipped, or aimed at a different path, is a probe not attempted.
+      write([...reads, ...writeCalls(tools.writes.slice(0, 2)), ...grepCalls()]);
+      expect(transcriptChecks(fx, t, targets, tools).find((c) => c.probe === 'session-write-probes-attempted')!.ok).toBe(false);
+      write([...reads, ...writeCalls([tools.writes[0], tools.writes[1], path.join(p.workspace, 'w.txt')]), ...grepCalls()]);
+      expect(transcriptChecks(fx, t, targets, tools).find((c) => c.probe === 'session-write-probes-attempted')!.ok).toBe(false);
+      // A Grep aimed at a different path is not the probe.
+      write([...reads, ...writeCalls(), ...grepCalls('denied', p.workspace)]);
+      expect(transcriptChecks(fx, t, targets, tools).find((c) => c.probe === 'session-grep-probes-attempted')!.ok).toBe(false);
+      // A Grep that was wrongly ALLOWED fails even when it matched nothing: files-with-matches mode
+      // prints the nonce-named file, and that name is enough.
+      write([...reads, ...writeCalls(), ...grepCalls(`${path.join(canaryLinkPaths(p, fx).siblingLink, `sib-${fx.nonce}.txt`)}\n`)]);
+      expect(transcriptChecks(fx, t, targets, tools).find((c) => c.probe === 'session-grep-never-matched')!.ok).toBe(false);
+      // A result written as content blocks is read the same way.
+      write([...reads, ...writeCalls(), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'g0', name: 'Grep', input: { pattern: 'canary-secret', path: tools.greps[0] } }] } }),
+        JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'g0', content: [{ type: 'text', text: `1:canary-secret-${fx.nonce}` }] }] } })]);
+      expect(transcriptChecks(fx, t, targets, tools).filter((c) => !c.ok).map((c) => c.probe).sort()).toEqual(['session-grep-never-matched', 'session-transcript-nonce-never-read']);
+      write(reads);
       // The Read tool returned the nonce (e.g. through the workspace symlink) — whatever the report says.
       write(targets.flatMap((target, i) => readCallLines(`r${i}`, target, i === 2 ? `canary-secret-${fx.nonce}` : 'denied')));
       expect(transcriptChecks(fx, t, targets).find((c) => c.probe === 'session-transcript-nonce-never-read')!.ok).toBe(false);
@@ -569,7 +605,7 @@ describe('canary review-round regressions', () => {
       // `<workspace>/**` matches the path as written, so this is where an allow-without-resolving
       // bug would show).
       expect(fs.readlinkSync(l.siblingLink)).toBe(fx.siblingDir);
-      expect(prompt).toContain(`Read tool to read ${path.join(l.siblingLink, 'n.txt')}`);
+      expect(prompt).toContain(`Read tool to read ${path.join(l.siblingLink, `sib-${fx.nonce}.txt`)}`);
       expect(prompt).toContain(`Write tool to create ${path.join(l.siblingLink, 'w.txt')}`);
       expect(prompt).toContain(`Grep tool with pattern canary-secret in ${l.siblingLink}`);
       expect(prompt).toContain(`"${SESSION_CANARY_STEPS}": "..."`);
