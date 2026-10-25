@@ -96,8 +96,14 @@ export function commandFailureTail(
  * the ladder (the day it asked for was set at `until - DAY_MS`) so a deploy does not keep an
  * already-stale stop for the rest of its day.
  */
-export function effectiveLatchUntil(latch: { until: number; failures?: number } | null | undefined): number {
+export function effectiveLatchUntil(latch: { until: number; failures?: number; canaryVersion?: string } | null | undefined): number {
   if (!latch) return 0;
+  // A latch recorded by a different canary is not evidence about this one: the probes (or the
+  // confinement they check) changed, so the next tick runs the new canary instead of serving out a
+  // wait that may be a day long. This is how a fix to the confinement clears its own latch on
+  // install, with no lever pulled. Every failing run still rewrites the latch under the current
+  // version, so a still-broken sandbox climbs the ladder exactly as before.
+  if (latch.canaryVersion !== CANARY_VERSION) return 0;
   return latch.failures === undefined ? Math.min(latch.until, latch.until - DAY_MS + CANARY_RETRY_LADDER_MS[0]) : latch.until;
 }
 
@@ -124,7 +130,7 @@ export function clampProbeDetail(text: string): string {
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
-export const CANARY_VERSION = 'feedback-canary-v1';
+export const CANARY_VERSION = 'feedback-canary-v2';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
@@ -352,8 +358,19 @@ export function testRunnerSemaphoreFiles(holdersFile: string): string[] {
 /**
  * Claude Code permission paths use `//abs/path` for absolute paths. Claude Code applies deny
  * rules before allow rules, so a parent deny would also deny the workspace inside it; instead
- * the agent home's siblings of the workspace are denied one by one (`listChildren`), enumerated
- * at spawn time. The canary checks the result before every attempt.
+ * the agent home's own entries are denied one by one, enumerated at spawn time. The canary checks
+ * the result before every attempt.
+ *
+ * The entries under `<agent home>/.worktrees/` are deliberately NOT enumerated. Claude Code folds
+ * every Read/Edit deny rule into the Bash sandbox profile, and that profile is passed on the
+ * shell's command line: with 2,279 sibling worktrees (2026-10-25) it held 4,891 deny rules, the
+ * command line passed 1 MB, and every Bash call failed with E2BIG before running — the session
+ * canary's `session-bash-write-in-workspace` failure, which latched the executor for a day. A
+ * rule set that grows with the number of folders on the machine has no safe size. The siblings
+ * stay covered without it: the sandbox filesystem block read-denies the WHOLE home and re-allows
+ * only the attempt's own trees (reads: allowRead wins), and in `dontAsk` mode the file tools are
+ * refused every path outside the exact allow list below. The canary's sibling-worktree probes
+ * (Bash and the Read tool) prove both on every run.
  */
 function abs(p: string): string { return `/${path.resolve(p)}`; }
 
@@ -361,23 +378,15 @@ export interface ClaudeSettingsInput {
   paths: ConfinementPaths;
   /** Entries directly under the agent home (enumerated by trusted code just before spawn). */
   agentHomeChildren: string[];
-  /** Entries directly under `<agent home>/.worktrees/`. */
-  worktreeChildren: string[];
 }
 
 export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<string, unknown> {
   const p = input.paths;
   const worktrees = path.join(p.agentHome, '.worktrees');
-  const allowedUnderWorktrees = new Set([path.resolve(p.workspace), path.resolve(path.dirname(p.depsCache)), path.resolve(p.depsCache), path.resolve(p.tmpDir)]);
   const deniedPaths = new Set<string>();
   for (const child of input.agentHomeChildren) {
     const full = path.resolve(p.agentHome, child);
     if (full === path.resolve(worktrees)) continue;
-    deniedPaths.add(full);
-  }
-  for (const child of input.worktreeChildren) {
-    const full = path.resolve(worktrees, child);
-    if (allowedUnderWorktrees.has(full)) continue;
     deniedPaths.add(full);
   }
   deniedPaths.add(path.resolve(p.publishClone));

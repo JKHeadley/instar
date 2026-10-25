@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
+  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -182,6 +182,11 @@ export function prepareFailureStep(detail: string | null): string {
   if (/EEXIST|symlink/.test(detail)) return 'link-deps';
   if (/evidence/.test(detail)) return 'evidence';
   return 'other';
+}
+
+/** The attempt's temp directory, scoped to this agent home (see shortAttemptTmpDir). One derivation for every reader. */
+function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): string {
+  return shortAttemptTmpDir(row.initiativeId, row.attempt, shortTmpRealRoot(), path.resolve(agentHome));
 }
 
 export class FeedbackExecutorService {
@@ -583,7 +588,7 @@ export class FeedbackExecutorService {
     const base = path.join(this.opts.paths.agentHome, '.worktrees', `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`);
     // tmpDir is short and real on purpose (see shortAttemptTmpDir): under the agent home it is
     // too long for Claude Code's sandbox temp override, and every confined Bash call exits 1.
-    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: shortAttemptTmpDir(row.initiativeId, row.attempt), reviewDir: `${base}-review` };
+    return { workspace: base, publishClone: `${base}-publish`, baseClone: `${base}-base`, headClone: `${base}-head`, gateClone: `${base}-gate`, tmpDir: attemptTmpDirFor(this.opts.paths.agentHome, row), reviewDir: `${base}-review` };
   }
 
   private executeStateDir(): string { return path.join(this.opts.paths.stateDir, 'state', 'feedback-factory', 'execute'); }
@@ -712,7 +717,7 @@ export class FeedbackExecutorService {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = path.join(dir, `${this.settingsPrefix(attemptIdValue)}-${randomUUID().slice(0, 8)}.json`);
     const list = (dir2: string) => { try { return fs.readdirSync(dir2); } catch { return []; } }; // @silent-fallback-ok: an unreadable dir has no children to deny
-    const settings = buildClaudeSandboxSettings({ paths, agentHomeChildren: list(paths.agentHome), worktreeChildren: list(path.join(paths.agentHome, '.worktrees')) });
+    const settings = buildClaudeSandboxSettings({ paths, agentHomeChildren: list(paths.agentHome) });
     fs.writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o400, flag: 'wx' });
     return file;
   }
@@ -798,7 +803,7 @@ export class FeedbackExecutorService {
       const scrubbed = scrubForStore(p.detail, { maxBytes: CANARY_PROBE_DETAIL_BUDGET.maxBytes });
       return { probe: p.probe, detail: scrubbed.error ? '[detail withheld: scrub failed]' : clampProbeDetail(scrubbed.text) };
     });
-    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + retryInMs, episode, failures, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
+    this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + retryInMs, episode, failures, canaryVersion: CANARY_VERSION, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
     this.availability = null;
     await this.attention({
       id: `feedback-execute:profile-unenforceable:${episode}`,
@@ -1168,10 +1173,18 @@ export class FeedbackExecutorService {
         try { if (fs.statSync(full).mtimeMs < cutoff) removeAttemptTree(full, this.trashRoot(), 'feedback-execute scratch retention'); } catch { /* @silent-fallback-ok: retried next tick */ }
       }
     }
+    // A canary's sibling-worktree fixture (`.worktrees/.feedback-canary-sib-<nonce>/`) is removed by
+    // the fixture's close(); a crash leaves it behind. Only that exact shape is touched.
+    let siblings: string[] = [];
+    try { siblings = fs.readdirSync(path.join(this.opts.paths.agentHome, '.worktrees')).filter((name) => /^\.feedback-canary-sib-[0-9a-f]+$/.test(name)); } catch { siblings = []; } // @silent-fallback-ok: no worktrees directory yet
+    for (const name of siblings.slice(0, 200)) {
+      const full = path.join(this.opts.paths.agentHome, '.worktrees', name);
+      try { if (fs.statSync(full).mtimeMs < cutoff) removeAttemptTree(full, this.trashRoot(), 'feedback-execute stale canary sibling'); } catch { /* @silent-fallback-ok: retried next tick */ }
+    }
     // Attempt temp directories live under the system temp root (shortAttemptTmpDir), outside the
     // .worktrees sweep above: a crash between spawn and cleanup leaves one behind. Only our own
     // shape is touched, and only when no recorded attempt still maps to it.
-    const live = new Set(this.opts.store.inStates('claimed', 'running', 'verifying').map((r) => shortAttemptTmpDir(r.initiativeId, r.attempt)));
+    const live = new Set(this.opts.store.inStates('claimed', 'running', 'verifying').map((r) => attemptTmpDirFor(this.opts.paths.agentHome, r)));
     const root = shortTmpRealRoot();
     let scratch: string[] = [];
     try { scratch = fs.readdirSync(root).filter((name) => SHORT_ATTEMPT_TMP_RE.test(name)); } catch { scratch = []; } // @silent-fallback-ok: no temp root to sweep

@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath,
-  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil,
+  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
@@ -85,18 +85,21 @@ describe('policy', () => {
     expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
   });
 
-  it('Claude settings: dontAsk allowlist, denies web/MCP and every sibling of the workspace, no system-temp write deny', () => {
+  it('Claude settings: dontAsk allowlist, denies web/MCP and the agent home entries, no system-temp write deny', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/h.json', homeDir: '/u' };
-    const s = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.instar', '.worktrees', 'src'], worktreeChildren: ['w', 'w-publish', 'w-tmp', '.feedback-deps', 'other-a1'] }) as {
-      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; filesystem: { denyWrite: string[] } };
+    const s = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.instar', '.worktrees', 'src'] }) as {
+      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
       permissions: { defaultMode: string; deny: string[]; allow: string[] }; env: Record<string, string>;
     };
     expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
     expect(s.sandbox.filesystem.denyWrite).not.toContain('/tmp');
     expect(s.permissions.defaultMode).toBe('dontAsk');
-    expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/other-a1/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)']));
+    expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)']));
     expect(s.permissions.deny.some((d) => d === 'Read(//h/.worktrees/w/**)')).toBe(false);
     expect(s.permissions.deny.some((d) => d.startsWith('Write('))).toBe(false);
+    // Sibling worktrees are covered by the sandbox's whole-home read deny and the dontAsk allowlist,
+    // never one rule per folder: that list grows with the machine (2,279 folders = E2BIG on 2026-10-25).
+    expect(s.sandbox.filesystem).toMatchObject({ denyRead: expect.arrayContaining(['/u', '/h']), allowRead: expect.arrayContaining(['/h/.worktrees/w']) });
     expect(s.permissions.allow).toEqual(expect.arrayContaining(['Edit(//h/.worktrees/w/**)', 'Edit(//h/.worktrees/w-tmp/**)']));
     expect(s.env).toMatchObject({ TMPDIR: '/h/.worktrees/w-tmp', GIT_CONFIG_GLOBAL: '/dev/null' });
     expect(CLAUDE_CONFINED_PERMISSION_ARGS).toContain('dontAsk');
@@ -404,8 +407,12 @@ describe('canary judgement', () => {
     expect(clamped.endsWith('THE-REAL-ERROR')).toBe(true);
     // The migration is read by ONE function, so availability and the clear lever cannot disagree.
     expect(effectiveLatchUntil(null)).toBe(0);
-    expect(effectiveLatchUntil({ until: 5_000, failures: 3 })).toBe(5_000);
-    expect(effectiveLatchUntil({ until: 24 * 60 * 60_000 })).toBe(60 * 60_000);
+    expect(effectiveLatchUntil({ until: 5_000, failures: 3, canaryVersion: CANARY_VERSION })).toBe(5_000);
+    expect(effectiveLatchUntil({ until: 24 * 60 * 60_000, canaryVersion: CANARY_VERSION })).toBe(60 * 60_000);
+    // A latch written by a different canary (or by code from before latches carried a version) is
+    // not in force: the next tick runs the current canary instead of serving a day-long wait.
+    expect(effectiveLatchUntil({ until: 5_000, failures: 3 })).toBe(0);
+    expect(effectiveLatchUntil({ until: 5_000, failures: 3, canaryVersion: 'feedback-canary-v0' })).toBe(0);
     // ONE helper for the canary and for verifyFix: the canary rehearses the very commands the real
     // gate runs, so a redirect in one and not the other lets the rehearsal pass on a condition the
     // real gate still hits — burning attempts under a misattributed reason.
@@ -429,7 +436,12 @@ describe('canary judgement', () => {
       const broken = await runRunnerCanary({ paths: p, fixture: fx, runner: runner(() => 1), fullGate: null });
       expect(verdictOf(broken, 's').ok).toBe(false);
       const leaky = await runRunnerCanary({ paths: p, fixture: fx, runner: runner((c) => (/^cat /.test(c) ? 0 : confinedOk(c))), fullGate: null });
-      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home']);
+      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree']);
+      // The sibling probe reads a nonce placed beside the workspace under .worktrees/.
+      expect(fs.readFileSync(fx.siblingNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
+      expect(path.dirname(path.dirname(fx.siblingNoncePath))).toBe(path.join(p.agentHome, '.worktrees'));
+      expect(path.dirname(fx.siblingWritePath)).toBe(fx.siblingDir);
+      expect(good.find((x) => x.probe === 'bash-write-sibling-worktree')!.ok).toBe(true);
       // The home-directory probe reads a nonce placed directly under HOME (outside the agent home).
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
@@ -444,10 +456,11 @@ describe('canary judgement', () => {
       expect(effectChecks(p, fx, `canary-secret-${fx.nonce}`).find((c) => c.probe === 'secret-nonce-never-read')!.ok).toBe(false);
       expect(effectChecks(p, fx, '{"authToken": "x"}').find((c) => c.probe === 'config-never-read')!.ok).toBe(false);
       fs.writeFileSync(fx.outsideWritePath, 'x');
+      fs.writeFileSync(fx.siblingWritePath, 'x');
       fs.appendFileSync(path.join(p.workspace, '.git', 'config'), 'y');
       await new Promise<void>((resolve) => http.get(`http://127.0.0.1:${fx.listenerPort}/`, (res) => { res.resume(); res.on('end', resolve); }));
       const bad = effectChecks(p, fx, '').filter((c) => !c.ok).map((c) => c.probe);
-      expect(bad).toEqual(['write-outside-workspace', 'workspace-git-config-write', 'outbound-fetch']);
+      expect(bad).toEqual(['write-outside-workspace', 'write-sibling-worktree', 'workspace-git-config-write', 'outbound-fetch']);
     } finally { await fx.close(); }
   });
 
@@ -488,7 +501,7 @@ describe('canary review-round regressions', () => {
     const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
     try {
       const targets = sessionReadTargets(p, fx);
-      expect(targets).toEqual([fx.noncePath, fx.homeNoncePath, canaryLinkPaths(p, fx).symLink]);
+      expect(targets).toEqual([fx.noncePath, fx.homeNoncePath, canaryLinkPaths(p, fx).symLink, fx.siblingNoncePath, path.join(canaryLinkPaths(p, fx).siblingLink, 'n.txt')]);
       const t = path.join(p.tmpDir, 't.jsonl');
       const write = (lines: string[]) => fs.writeFileSync(t, `${lines.join('\n')}\n`);
       write(targets.flatMap((target, i) => readCallLines(`r${i}`, target)));
@@ -548,16 +561,34 @@ describe('canary review-round regressions', () => {
       expect(prompt).toContain(`Read tool to read ${l.symLink}`);
       expect(prompt).toContain(`Write tool to create ${l.depsWriteViaLink}`);
       expect(prompt).not.toContain('ln -s'); // a model asked to build the link itself declines; trusted code builds it
-      expect(SESSION_CANARY_STEPS).toBe(16);
-      linkEffectChecks(p, fx); // removes the link
+      expect(SESSION_CANARY_STEPS).toBe(21);
+      expect(prompt).toContain(`Bash tool: cat ${fx.siblingNoncePath}`);
+      expect(prompt).toContain(`Read tool to read ${fx.siblingNoncePath}`);
+      // The sibling directory is reached through a workspace symlink trusted code made: Read, Write
+      // and Grep through it must all be refused (2026-10-25 second-pass review: the allow rule
+      // `<workspace>/**` matches the path as written, so this is where an allow-without-resolving
+      // bug would show).
+      expect(fs.readlinkSync(l.siblingLink)).toBe(fx.siblingDir);
+      expect(prompt).toContain(`Read tool to read ${path.join(l.siblingLink, 'n.txt')}`);
+      expect(prompt).toContain(`Write tool to create ${path.join(l.siblingLink, 'w.txt')}`);
+      expect(prompt).toContain(`Grep tool with pattern canary-secret in ${l.siblingLink}`);
+      expect(prompt).toContain(`"${SESSION_CANARY_STEPS}": "..."`);
+      linkEffectChecks(p, fx); // removes the links
       expect(() => fs.lstatSync(l.symLink)).toThrow();
+      expect(() => fs.lstatSync(l.siblingLink)).toThrow();
     } finally { await fx.close(); }
+    // close() removes the sibling fixture directory, including a file the session wrote into it.
+    expect(fs.existsSync(fx.siblingDir)).toBe(false);
+    const fx2 = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    fs.writeFileSync(fx2.siblingWritePath, 'x');
+    await fx2.close();
+    expect(fs.existsSync(fx2.siblingDir)).toBe(false);
   });
 
   it('the Claude settings deny file-tool writes into the dependency cache and through the workspace node_modules link', async () => {
     const { buildClaudeSandboxSettings } = await import('../../../src/feedback-factory/execute/executePolicy.js');
     const p = paths2(tmp());
-    const deny = (buildClaudeSandboxSettings({ paths: p, agentHomeChildren: [], worktreeChildren: [] }) as { permissions: { deny: string[] } }).permissions.deny;
+    const deny = (buildClaudeSandboxSettings({ paths: p, agentHomeChildren: [] }) as { permissions: { deny: string[] } }).permissions.deny;
     for (const d of [path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
       expect(deny).toContain(`Edit(/${d}/**)`);
       expect(deny).toContain(`Edit(/${d})`);
@@ -829,6 +860,11 @@ describe('canary: a failing probe names what it observed', () => {
     expect(r.ok).toBe(false);                       // verdict unchanged
     expect(r.detail).toContain('absent');           // and now diagnosable
     expect(r.detail).not.toContain('fatal:');
+  });
+
+  it('a shell that never started (E2BIG) fails the probe instead of reading as clean git output', async () => {
+    const r = await gitProbe({ '9': 'ERROR: Could not start /bin/zsh: the command line plus environment exceed the OS exec argument limit (E2BIG).' });
+    expect(r.ok).toBe(false);
   });
 
   it('a genuine git failure fails and the detail quotes it', async () => {

@@ -12,6 +12,7 @@ import { FeedbackExecuteStore } from '../../src/feedback-factory/execute/Feedbac
 import { FeedbackExecutorService, type ConfinedSessionPort } from '../../src/feedback-factory/execute/FeedbackExecutorService.js';
 import { RESULT_FILE, type ExecuteLiveConfig } from '../../src/feedback-factory/execute/executePolicy.js';
 import type { ConfinedCommand, ConfinedResult, ConfinedRunner } from '../../src/feedback-factory/execute/ConfinedRunner.js';
+import { SESSION_CANARY_STEPS } from '../../src/feedback-factory/execute/confinementCanary.js';
 import type { AttemptGit, GitHubGateway } from '../../src/feedback-factory/execute/executorPorts.js';
 import type { DepsCachePort } from '../../src/feedback-factory/execute/depsCache.js';
 import type { PrReview, RepoInfo } from '../../src/feedback-factory/execute/reviewGate.js';
@@ -271,7 +272,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   return h;
 }
 
-export const CANARY_STEPS = Array.from({ length: 16 }, (_, i) => i + 1);
+export const CANARY_STEPS = Array.from({ length: SESSION_CANARY_STEPS }, (_, i) => i + 1);
 
 /** A stable uuid-shaped id per canary session name. */
 export function canaryUuid(name: string): string {

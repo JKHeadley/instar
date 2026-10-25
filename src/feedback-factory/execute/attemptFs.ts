@@ -50,8 +50,13 @@ export const SHORT_ATTEMPT_TMP_RE = /^fb-[0-9a-f]{10}$/;
  * the directory, and a write to `/tmp/feedback-canary-*` is still refused. The name is derived
  * from the attempt, so every path reader recomputes the same directory.
  */
-export function shortAttemptTmpDir(initiativeId: string, attempt: number, root: string = shortTmpRealRoot()): string {
-  const digest = createHash('sha256').update(`${initiativeId}-a${attempt}`).digest('hex').slice(0, 10);
+export function shortAttemptTmpDir(initiativeId: string, attempt: number, root: string = shortTmpRealRoot(), scope?: string): string {
+  // `scope` (the agent home) keeps two executors on one host apart: the root is shared by every
+  // process on the machine, and without it the same initiative id maps to the same directory,
+  // which ensurePrivateAttemptTmpDir then removes and recreates under the other one's live attempt.
+  // Measured 2026-10-25: concurrent test runs (each with its own agent home, all using initiative
+  // `feedback-c1`) failed one run in two that way — the canary report vanished mid-attempt.
+  const digest = createHash('sha256').update(scope === undefined ? `${initiativeId}-a${attempt}` : `${scope}\0${initiativeId}-a${attempt}`).digest('hex').slice(0, 10);
   return path.join(root, `fb-${digest}`);
 }
 
