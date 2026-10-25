@@ -226,6 +226,17 @@ describe('buildPasskeyHealthDigest + PasskeyDigestLedger — one item, honest bu
     expect(buildPasskeyHealthDigest({ ...base, cells: [], suspension: { state: 'suspended' } })).toMatchObject({ urgent: true, empty: false });
   });
 
+  it('a digest whose only content is unobserved peers is empty: it never posts, and an open item resolves', () => {
+    const peersOnly = buildPasskeyHealthDigest({ ...base, cells: [line('healthy')], unobservedPeers: ['m3', 'm4'], poolDegraded: true });
+    expect(peersOnly).toMatchObject({ empty: true, body: '' });
+    expect(peersOnly.counts.unobservedPeers).toBe(2);
+    const ledger = new PasskeyDigestLedger({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'pk-peers-only-')), now: () => T0 });
+    expect(ledger.decide(peersOnly)).toBe('none');
+    const real = buildPasskeyHealthDigest({ ...base, cells: [line('degraded')], unobservedPeers: ['m3'] });
+    ledger.record(real, ledger.decide(real) as 'buzz');
+    expect(ledger.decide(peersOnly)).toBe('resolve');
+  });
+
   it('buzzes on new content, then at most once per 24h; a peer-list change alone is silent; security buzzes regardless; an empty digest resolves once', () => {
     const ledger = new PasskeyDigestLedger({ stateDir: dir, now: () => now });
     const d1 = buildPasskeyHealthDigest({ ...base, cells: [line('degraded')] });

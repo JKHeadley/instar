@@ -424,7 +424,11 @@ export function buildPasskeyHealthDigest(input: PasskeyDigestInput): PasskeyDige
   // Both hashes cover the CONTENT only — the "As of" stamp is appended after hashing, so a tick that
   // changes nothing but the clock is `none`, never a silent re-upsert.
   const content = lines.join('\n');
-  const body = lines.length > 0 ? `${content}\nAs of ${input.nowIso}.` : '';
+  // A digest whose ONLY content is the unobserved-peer line asks nothing of a human (peer
+  // reachability is the rope-health surface's job): it is EMPTY, so it never posts and an open item
+  // resolves. Before this, every peer flap re-upserted a "0 cell(s) need attention" item into the
+  // Attention hub (147 such posts in 3 days on the dev agent, 2026-10-23).
+  const body = bodyWithoutPeers !== '' ? `${content}\nAs of ${input.nowIso}.` : '';
   const sha = (s: string) => createHash('sha256').update(s).digest('hex');
   const counts = { cells: cells.length, pendingRevokes: input.pendingRevokes.length, chromeGateFailures: input.chromeGateFailures.length, unobservedPeers: input.unobservedPeers.length };
   const title = cells.some((c) => c.state === 'security') ? 'Passkey SECURITY event — a cell signed in as a different account'

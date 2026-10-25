@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "passkey-digest-peer-only-noise",
+  "sessionId": "4ddad879-c737-4509-adf8-bb2079f2be6d",
+  "timestamp": "2026-10-23T18:59:35.143Z",
+  "artifactPath": "upgrades/side-effects/passkey-digest-peer-only-noise.md",
+  "artifactSha256": "8ff5d2ed4eb8b3875d38fd2480f0ca16e2fb8095bbd300a2c6ca1b22c8db26a2",
+  "coveredFiles": [
+    "src/core/PasskeyCellHealth.ts",
+    "tests/unit/passkey-cell-health.test.ts",
+    "upgrades/next/passkey-digest-peer-only-noise.md",
+    "upgrades/passkey-digest-peer-only-noise.eli16.md",
+    "upgrades/side-effects/passkey-digest-peer-only-noise.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one-line notifier content fix, no gate, revert fully undoes it",
+  "eli16Path": "upgrades/passkey-digest-peer-only-noise.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/passkey-digest-peer-only-noise.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
