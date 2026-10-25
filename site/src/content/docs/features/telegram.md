@@ -106,3 +106,13 @@ curl 'localhost:4040/telegram/search?q=deploy&limit=20'
 # Outbound message audit log statistics
 curl localhost:4040/telegram/log-stats
 ```
+
+## Telegram Web K drift
+
+When Telegram ships a new Web K build, the managed browser profile used for message-origin checks stops matching the reviewed build list. Re-enroll it with:
+
+```bash
+instar telegram-origin enroll-browser <profileId> [--evidence-out canary.json]
+```
+
+This is a local-only command, never an HTTP route. It retires the profile's browser, runs an authenticated read-only canary, and enrolls the observed build only if it is on the reviewed list (keeping one prior reviewed build). It sends nothing. See `docs/specs/telegram-message-origin.md`.

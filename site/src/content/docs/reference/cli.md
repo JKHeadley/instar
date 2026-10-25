@@ -214,6 +214,7 @@ instar migrate                  # Run pending migrations
 instar upgrade-ack              # Acknowledge an upgrade
 instar discovery                # Scan filesystem + registry + GitHub for existing agents
 instar gate                     # UnjustifiedStopGate operator tooling (enforcement mode, kill-switch, logs)
+instar telegram-origin enroll-browser <profileId>  # After a Telegram Web K update: read-only canary, enroll the build if reviewed (local-only, sends nothing)
 ```
 
 `instar gate status` shows the durable authority breaker and its next automatic
