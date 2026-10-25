@@ -71,6 +71,9 @@ import {
   REROUTED_LOGIN_EXPIRED_MARKER,
   REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
+  REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_MARKER,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
@@ -10573,6 +10576,24 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content = content.replace(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet now names the sign-in repair');
+    }
+    // CMT-1008: a readable credential plus the CLI's own screen now marks the account at once.
+    if (content.includes(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1)) {
+      content = content.replace(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
+    }
+    // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
+    // rerouted-job bullet when present, else appended. Idempotent via its marker.
+    if (!content.includes(INTERACTIVE_LOGIN_EXPIRED_MARKER)) {
+      const rrIdx = content.indexOf(REROUTED_LOGIN_EXPIRED_BULLET);
+      content = rrIdx >= 0
+        ? content.slice(0, rrIdx + REROUTED_LOGIN_EXPIRED_BULLET.length) + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET + content.slice(rrIdx + REROUTED_LOGIN_EXPIRED_BULLET.length)
+        : content + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added interactive expired-login bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: interactive expired-login bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
