@@ -44,6 +44,7 @@ import type { IntelligenceOptions } from '../core/types.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_RESUME_SANITY_CHECK } from '../data/provenanceCoverage.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JOB_SLUG_RE = /^[a-z0-9-]+$/;
@@ -246,7 +247,7 @@ export class ResumeQueueDrainer {
 
   constructor(deps: ResumeQueueDrainerDeps, cfg?: Partial<ResumeQueueDrainerConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_RESUME_DRAINER_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_RESUME_DRAINER_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import { MCP_PROCESS_SIGNATURES } from './mcpProcessSignatures.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** A live process as seen by the scanner (only the fields we classify on). */
 export interface FootprintProcess {
@@ -158,7 +159,7 @@ export class ProcessFootprintMonitor {
 
   constructor(deps: ProcessFootprintMonitorDeps, cfg?: Partial<ProcessFootprintMonitorConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_PROCESS_FOOTPRINT_MONITOR_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_PROCESS_FOOTPRINT_MONITOR_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 

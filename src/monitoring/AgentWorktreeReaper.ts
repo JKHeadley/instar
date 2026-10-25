@@ -32,6 +32,7 @@ import {
   type WorktreeEnumerationFailureHistoryPort,
   summarizeEnumerationError,
 } from './worktreeEnumeration.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface AgentWorktreeReaperConfig {
   enabled: boolean;
@@ -175,7 +176,7 @@ export class AgentWorktreeReaper extends EventEmitter {
   constructor(deps: AgentWorktreeReaperDeps, cfg?: Partial<AgentWorktreeReaperConfig>) {
     super();
     this.deps = deps;
-    this.cfg = { ...DEFAULT_AGENT_WORKTREE_REAPER_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_AGENT_WORKTREE_REAPER_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     this.warn = deps.warn ?? ((line) => console.warn(line));
     try {

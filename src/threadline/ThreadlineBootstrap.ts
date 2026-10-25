@@ -29,9 +29,42 @@ import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
 import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
+import { EventEmitter } from 'node:events';
+import { PairingInviteStore } from './PairingInviteStore.js';
+import { PairingInviteFlow, type InviteEvent } from './PairingInviteFlow.js';
+import { PairingHandshake, ALL_PAIRING_OPS, type HandshakeTimings, type PairingNotice } from './pairingHandshake.js';
+import { sign as edSign, verify as edVerify } from '@sagemindai/threadline-core';
+import nodeCrypto from 'node:crypto';
+import { MarkedPairingInviteFlow, PairingPendingAcceptMarkers } from './PairingPendingAcceptMarkers.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { IdentityManager } from './client/IdentityManager.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { IdentityManager, IdentityNotProvisionedError } from './client/IdentityManager.js';
+import { IdentityFileInvalidError } from '../identity/IdentityKeyFile.js';
 import { detectMachineName } from '../core/MachineIdentity.js';
+import { decodePlaintextPayload } from './autoAck.js';
+import { detectJoinedMesh } from './client/JoinedMeshDetector.js';
+import {
+  handleRelayUnknownSender,
+  newFingerprintProfileLevel,
+  relayUnknownSenderTrustCounters,
+  type RelayUnknownSenderTrustMode,
+} from './relayUnknownSenderTrust.js';
+import {
+  createEncryptToPinnedResolver,
+  createEncryptToPinnedClientOptions,
+  encryptToPinnedCounters,
+  ENCRYPT_TO_PINNED_DEFAULT,
+  labelUnverifiedPinnedPlaintext,
+  type EncryptToPinnedMode,
+} from './encryptToPinned.js';
+import {
+  noteEncryptedChat,
+  refuseDowngradeCounters,
+  reportDowngradeRefusal,
+  REFUSE_DOWNGRADE_DEFAULT,
+  shouldRefuseDowngradedPlaintext,
+  type RefuseDowngradeMode,
+} from './refuseDowngrade.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -48,6 +81,43 @@ export interface ThreadlineBootstrapConfig {
   port: number;
   /** Enable cloud relay connection (opt-in, default: false) */
   relayEnabled?: boolean;
+  /** The operator's display name, shown (as CLAIMED) in pairing invites. */
+  ownerName?: string;
+  /**
+   * This machine is a quiet standby of a multi-machine agent (the operator set
+   * `multiMachine.telegramPolling: false`, the same per-machine flag that keeps
+   * it off the Telegram poll). The relay admits ONE connection per agent
+   * identity and displaces the previous one, so a standby that connects knocks
+   * the awake machine off the relay and vice versa (instar#2122). A standby
+   * keeps its MCP tools and local discovery but does not connect to the relay.
+   */
+  relayStandby?: boolean;
+  /**
+   * Live relay ownership (ACT-1306 a). When supplied, the relay connection
+   * follows this predicate instead of being fixed at boot: the machine connects
+   * while it returns true and releases the connection after it has returned
+   * false for `relayReleaseAfterChecks` consecutive checks. Multi-machine agents
+   * pass "this machine holds the serving lease", the same live fact the Telegram
+   * poll follows, so a standby that never set `telegramPolling: false` no longer
+   * displaces the awake machine, and a standby that takes over also takes the
+   * relay. Ignored when `relayStandby` is true (the operator's explicit flag wins).
+   */
+  relayOwner?: () => boolean;
+  /** Called whenever live relay ownership releases (true) or takes (false) the connection. */
+  onRelayStandbyChange?: (standby: boolean) => void;
+  /** How often live relay ownership is checked. Default 5 s. */
+  relayOwnerCheckMs?: number;
+  /** Consecutive non-owner checks before releasing the connection. Default 3 (hysteresis). */
+  relayReleaseAfterChecks?: number;
+  /**
+   * After this machine is displaced from the relay by another connection using
+   * the same identity, wait this long, then reclaim the connection. This machine
+   * is the configured relay owner (a standby never connects), so reclaiming is
+   * the correct outcome; without it a displaced agent stayed off the relay until
+   * a restart (the 2026-10-05 sagemind laptop: 40 h unreachable). Default 15 min;
+   * 0 disables the reclaim (the pre-fix behaviour).
+   */
+  relayRearmAfterDisplacedMs?: number;
   /** Cloud relay URL */
   relayUrl?: string;
   /** Agent visibility on relay */
@@ -63,6 +133,29 @@ export interface ThreadlineBootstrapConfig {
    * complete pass-through (byte-identical legacy behavior).
    */
   getVerifiedPairingConfig?: () => { enabled: boolean; dryRun: boolean; credentialShareEnforced: boolean };
+  /**
+   * Live reader for the relay unknown-sender trust check
+   * (docs/specs/a2a-relay-unknown-sender-trust.md). Supplied by server.ts. When
+   * omitted the check is off: every unknown sender is handled as before.
+   */
+  getRelayUnknownSenderTrustMode?: () => RelayUnknownSenderTrustMode;
+  /**
+   * Live reader for encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9,
+   * `threadline.encryptToPinned`). Supplied by server.ts. When omitted it is the shipped
+   * default, enforce: ordinary chat to an invite-paired peer is always encrypted to its pin.
+   */
+  getEncryptToPinnedMode?: () => EncryptToPinnedMode;
+  /**
+   * Live reader for refuse-downgrade (docs/specs/threadline-standalone-pairing.md D6/D11,
+   * rollout step 6, `threadline.refuseDowngrade`). Supplied by server.ts. When omitted it is
+   * the shipped default, watch: marks are recorded and would-refuse plaintext is counted.
+   */
+  getRefuseDowngradeMode?: () => RefuseDowngradeMode;
+  /**
+   * Test hook: shorter pairing-handshake timers (docs/specs/a2a-pairing-invite-link.md §11.7). Never
+   * set in production; the defaults are the spec's.
+   */
+  pairingHandshakeTimings?: Partial<HandshakeTimings>;
 }
 
 export interface ThreadlineBootstrapResult {
@@ -79,6 +172,26 @@ export interface ThreadlineBootstrapResult {
   /** Trust manager */
   trustManager?: AgentTrustManager;
   /**
+   * Invite pairing (docs/specs/a2a-pairing-invite-link.md): the engine, its store, and the
+   * operator-facing events (prompts and alarms) for Telegram and the dashboard to surface.
+   */
+  pairingInvites?: {
+    flow: PairingInviteFlow;
+    /**
+     * The pairing handshake (spec §11): operator acts and inbound invite control go through it, so
+     * both sides are told how a pairing ended. Its notices are emitted on `events` as 'notice'.
+     */
+    handshake: PairingHandshake;
+    store: PairingInviteStore;
+    /** 'event': the engine's InviteEvent (prompts, alarms). 'notice': a PairingNotice (spec §11.7). */
+    events: EventEmitter;
+    /**
+     * Secret-free markers of invites waiting for this operator, so a restart that drops one (the
+     * engine keeps them in memory only) leaves a notice instead of nothing (spec §8).
+     */
+    markers?: PairingPendingAcceptMarkers;
+  };
+  /**
    * Most recent relay connection-LOSS event, or null if the relay has never
    * dropped. Exists so a status surface can report WHY the relay is down rather
    * than only that it is — the distinction the 2026-07-26 incident turned on,
@@ -86,6 +199,47 @@ export interface ThreadlineBootstrapResult {
    * gone. See relayConnectionObserver.ts.
    */
   getLastRelayEvent?: () => RelayConnectionEvent | null;
+  /**
+   * True when the standalone listener daemon owns inbound relay handling (the
+   * server only sends). The inbound-id ledger does not cover daemon-inbox mode,
+   * so `/threadline/health` never advertises `inbound-id-ledger` while this holds.
+   */
+  daemonHandlingRelay?: boolean;
+  /**
+   * True when the relay client was NOT created because this machine is a relay
+   * standby (`relayWanted && config.relayStandby`). A boot-time fact, threaded
+   * to the relay-send route so a standby can forward its sends to my machine
+   * that holds the connection (docs/specs/a2a-cross-machine-route.md §1). It is
+   * never recomputed from live config: a displaced or disconnected machine is
+   * NOT a standby and keeps today's 503.
+   */
+  relaySuppressedByStandby?: boolean;
+  /**
+   * a2a-single-agent-identity §1.1: LIVE — true while this machine is in the
+   * `identity-not-provisioned` posture (a joined machine with no usable agent identity:
+   * the relay connection is not attempted, `agent-info.json` is not rewritten). Flips to
+   * false when the reload lever finds an identity on disk.
+   */
+  identityNotProvisioned: () => boolean;
+  /**
+   * §2.2: the fingerprint the running relay client is CONNECTED as, or null when there is
+   * no live relay connection in this process (standby / daemon-handled / disconnected).
+   */
+  connectedAs: () => string | null;
+  /**
+   * The reload lever (§1.2): re-read this machine's OWN identity from disk, rebuild the
+   * relay client under the new key, re-run the standby + daemon predicate, and connect
+   * only where this process may (a standby stays disconnected by design). Local effect
+   * only; carries no key; installs nothing. Shared by adoption, the CLI route and the
+   * mirror repair.
+   */
+  reloadIdentity: () => Promise<{ fingerprint: string | null; connected: boolean; reason: string }>;
+  /**
+   * Live (ACT-1306 a): true while `config.relayOwner` has this machine off the
+   * relay because another machine holds the serving lease. Unlike the boot-time
+   * fact above, this changes as the lease moves.
+   */
+  isRelayReleasedForStandby?: () => boolean;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -121,7 +275,72 @@ export async function bootstrapThreadline(
   // relay client is constructed, so discovery advertises the routable identity
   // — not the orphan identity-keys.json hex key, which nothing on the relay
   // routing path reads.
-  const routingIdentity = new IdentityManager(config.stateDir).get();
+  const routingIdentityManager = new IdentityManager(config.stateDir);
+  const routingIdentity = routingIdentityManager.get();
+
+  // ── §1.1 identity-not-provisioned posture ───────────────────────
+  // A machine with no usable routing identity whose machine registry refuses a mint
+  // (joined, rows-without-own-id, or unreadable) boots in a NAMED posture: no relay
+  // connection is attempted, `agent-info.json` keeps the last value this machine actually
+  // published (the one memory §1.3 pins adoption on), and the adoption loop (wired in
+  // server.ts) fills the void. A standalone first machine with no identity is NOT this
+  // posture — it mints below, as before.
+  let identityNotProvisioned = false;
+  if (!routingIdentity) {
+    const verdict = detectJoinedMesh(config.stateDir);
+    identityNotProvisioned = !verdict.mintAllowed;
+    if (identityNotProvisioned) {
+      console.warn('Threadline: identity-not-provisioned — this machine is paired but holds no agent identity; the relay is not attempted and the identity is adopted from a sibling (or `instar identity adopt --from <machine>`)');
+    }
+  }
+
+  // ── §1.5 the legacy file is a mirror, repaired at first load ────
+  // When the two key files disagreed, the canonical one won AND the legacy file was
+  // rewritten to match (backup beside it). The listener daemon loads the legacy path as
+  // ITS key, so a daemon alive under the superseded key is SIGTERMed here and the server
+  // re-runs its own daemon decision below, taking the relay itself. A daemon that is not
+  // running is left alone (a relaunched one loads the right key and takes the relay back).
+  let daemonStoppedForMirrorRepair = false;
+  const mirrorRepaired = routingIdentityManager.legacyMirrorRepaired;
+  if (mirrorRepaired) {
+    DegradationReporter.getInstance().report({
+      feature: 'Threadline.identity',
+      primary: 'one agent identity across the canonical and the legacy key file',
+      fallback: `the legacy file was rewritten to mirror the canonical one (fingerprint ${routingIdentity?.fingerprint ?? 'unknown'}); the old file is kept at ${mirrorRepaired.backupPath || '(already matching)'}`,
+      reason: 'the legacy threadline/identity.json held a different identity than identity.json',
+      impact: 'a listener daemon that was running under the old key has been stopped so the server speaks under the canonical key',
+    });
+    const daemonPidPath = path.join(config.stateDir, 'listener-daemon.pid');
+    try {
+      const pid = parseInt(fs.readFileSync(daemonPidPath, 'utf-8').trim(), 10);
+      if (Number.isFinite(pid) && pid > 0) {
+        process.kill(pid, 0);
+        process.kill(pid, 'SIGTERM');
+        daemonStoppedForMirrorRepair = true;
+        console.warn(`Threadline: listener daemon (pid ${pid}) was running under the superseded legacy key — sent SIGTERM; the server takes the relay connection`);
+      }
+    } catch {
+      // No daemon alive (no pid file, dead pid) — nothing to stop.
+    }
+  }
+  // An identity file that exists but cannot be used is a degradation, not an
+  // empty state: nothing is minted over it (that would change this agent's
+  // address), so the agent stays off the relay until the file is restored.
+  // The reason carries lengths and the path only — never key material.
+  const identityProblem = routingIdentityManager.problem;
+  if (identityProblem) {
+    DegradationReporter.getInstance().report({
+      feature: 'Threadline.identity',
+      primary: 'load this agent\'s Threadline identity key',
+      fallback: routingIdentity
+        ? `the identity in the other key file is used (fingerprint ${routingIdentity.fingerprint}); the unusable file is left untouched`
+        : 'no routing identity: not relay-discoverable, relay connection will fail; the file is left untouched and no new identity is created',
+      reason: identityProblem.reason,
+      impact: routingIdentity
+        ? `${identityProblem.filePath} is ignored; if it held a different identity, that address is not in use`
+        : `other agents cannot reach this agent over Threadline until ${identityProblem.filePath} is restored or deliberately replaced`,
+    });
+  }
 
   // Announce presence for other agents to find us. When a routing identity
   // resolves, advertise its fingerprint (the routable relay address) AND set
@@ -130,25 +349,45 @@ export async function bootstrapThreadline(
   // identity on disk, or canonical identity.json is passphrase-encrypted and
   // locked at boot), OMIT both — an agent with no resolvable routing identity
   // is simply not relay-discoverable until it has one.
-  discovery.announcePresence({
-    capabilities: ['threadline', 'mcp'],
-    description: config.agentDescription ?? `${config.agentName} Instar agent`,
-    threadlineVersion: '1.0',
-    publicKey: routingIdentity?.publicKey.toString('hex'),
-    fingerprint: routingIdentity?.fingerprint,
-    framework: 'instar',
-    machine: detectMachineName(),
-  });
+  // §1.1: in the identity-not-provisioned posture the file is NOT rewritten — today it would
+  // be written with no `fingerprint`, erasing the last value this machine published, which
+  // is exactly the local memory §1.3 adoption pins on.
+  const announce = (identity: { publicKey: Buffer; fingerprint: string } | null) => {
+    discovery.announcePresence({
+      capabilities: ['threadline', 'mcp'],
+      description: config.agentDescription ?? `${config.agentName} Instar agent`,
+      threadlineVersion: '1.0',
+      publicKey: identity?.publicKey.toString('hex'),
+      fingerprint: identity?.fingerprint,
+      framework: 'instar',
+      machine: detectMachineName(),
+    });
+  };
+  if (!identityNotProvisioned) announce(routingIdentity);
 
   // Start heartbeat for liveness detection
   const stopHeartbeat = discovery.startPresenceHeartbeat();
+
+  if (routingIdentityManager.identityFilesDisagree) {
+    DegradationReporter.getInstance().report({
+      feature: 'Threadline.identity',
+      primary: 'one agent identity across the canonical and the legacy key file',
+      fallback: `the canonical file is used (fingerprint ${routingIdentity?.fingerprint ?? 'unknown'}); the legacy file is ignored`,
+      reason: 'the canonical and the legacy identity file hold two different valid identities',
+      impact: 'a tool that reads only the legacy file would present a different address; remove or replace the file that is wrong',
+    });
+  }
 
   // ── 4. Register MCP server into framework config(s) ──────────────
   await registerThreadlineMcp(config.projectDir, config.agentName, config.stateDir);
 
   // ── 5. Cloud Relay Connection (opt-in) ─────────────────────────
-  const relayEnabled = config.relayEnabled === true
+  const relayWanted = config.relayEnabled === true
     || process.env.THREADLINE_RELAY_ENABLED === 'true';
+  if (relayWanted && config.relayStandby) {
+    console.log('Threadline: relay connection SUPPRESSED (standby: multiMachine.telegramPolling=false) — the awake machine holds the agent\'s single relay connection');
+  }
+  const relayEnabled = relayWanted && !config.relayStandby;
 
   // Check if the standalone listener daemon should handle the relay connection.
   // Three checks, in order:
@@ -157,8 +396,11 @@ export async function bootstrapThreadline(
   //   3. Health file shows recent activity (last 5 min) → defer (daemon may be restarting)
   // This prevents the displacement race where the server briefly connects its own
   // relay client during restart, displacing the daemon.
+  // The decision is a FUNCTION so the reload lever (§1.2) and the mirror repair (§1.5) can
+  // re-run it; the boot-time value is captured once below, as before.
+  const decideDaemonHandlingRelay = (): boolean => {
   let daemonHandlingRelay = false;
-  if (relayEnabled) {
+  if (relayEnabled && !daemonStoppedForMirrorRepair) {
     // Check 1: Config-level opt-in — if the user configured a daemon, always defer
     const listenerConfigPath = path.join(config.stateDir, 'config.json');
     let listenerConfigEnabled = false;
@@ -212,16 +454,63 @@ export async function bootstrapThreadline(
       console.log(`Threadline: listener daemon was recently active — server will NOT connect to relay (daemon may be restarting)`);
     }
   }
+  return daemonHandlingRelay;
+  };
+  const daemonHandlingRelay = decideDaemonHandlingRelay();
 
   let relayClient: ThreadlineClient | undefined;
+  let relayRearmTimer: NodeJS.Timeout | null = null;
+  let relayOwnerTimer: NodeJS.Timeout | null = null;
+  /** True while live relay ownership (config.relayOwner) has this machine off the relay. */
+  let relayReleasedForStandby = false;
+  const relayOwnerSays = (): boolean => {
+    try { return config.relayOwner ? config.relayOwner() !== false : true; }
+    catch { return true; } // @silent-fallback-ok — an unreadable owner keeps today's behaviour (connect)
+  };
   let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
+  let pairingInvites: ThreadlineBootstrapResult['pairingInvites'];
+  // Relay unknown-sender trust: the live mode (off when server.ts supplies no reader).
+  const relayUnknownSenderTrustMode = (): RelayUnknownSenderTrustMode => {
+    try {
+      return config.getRelayUnknownSenderTrustMode?.() ?? { enabled: false, dryRun: true };
+    } catch {
+      return { enabled: false, dryRun: true }; // @silent-fallback-ok — an unreadable mode is today's behaviour
+    }
+  };
+  // Encrypt-to-pinned (spec threadline-standalone-pairing D9): the live mode. With no reader it
+  // is the shipped default (enforce, Justin 2026-10-20); so is a reader that throws (never off).
+  const encryptToPinnedMode = (): EncryptToPinnedMode => {
+    try {
+      return config.getEncryptToPinnedMode?.() ?? { ...ENCRYPT_TO_PINNED_DEFAULT };
+    } catch {
+      return { ...ENCRYPT_TO_PINNED_DEFAULT }; // @silent-fallback-ok — an unreadable mode is the shipped default (enforce), never off
+    }
+  };
+
+  // Refuse-downgrade (spec threadline-standalone-pairing D6, step 6): the live mode. With no
+  // reader it is the shipped default (watch); so is a reader that throws (never off).
+  const refuseDowngradeMode = (): RefuseDowngradeMode => {
+    try {
+      return config.getRefuseDowngradeMode?.() ?? { ...REFUSE_DOWNGRADE_DEFAULT };
+    } catch {
+      return { ...REFUSE_DOWNGRADE_DEFAULT }; // @silent-fallback-ok — an unreadable mode is the shipped default (watch), never off
+    }
+  };
 
   // Always create trust manager when relay is enabled — needed for processing
   // inbox entries even when the daemon handles the relay connection.
   if (relayEnabled) {
-    trustManager = new AgentTrustManager({ stateDir: config.stateDir });
+    trustManager = new AgentTrustManager({
+      stateDir: config.stateDir,
+      // A first contact is not a grant: while the unknown-sender check is
+      // enforcing, a new fingerprint profile starts `untrusted`.
+      newFingerprintProfileLevel: () => newFingerprintProfileLevel(relayUnknownSenderTrustMode()),
+      onFingerprintProfileCreated: (level) => {
+        if (level === 'untrusted') relayUnknownSenderTrustCounters.profilesCreatedUntrusted++;
+      },
+    });
   }
 
   if (relayEnabled) {
@@ -240,6 +529,123 @@ export async function bootstrapThreadline(
       stateDir: config.stateDir,
     });
 
+    // Verified pairing (spec FD4a): the peer's PINNED identity key lives in the trust
+    // profile, which survives a restart; the client's key cache does not. Without this, a
+    // credential or receipt between two verified agents fails after either one restarts
+    // (Echo's second review of #2173). Only a live pairing yields a key.
+    const pinnedTrust = trustManager;
+    relayClient.setPinnedKeyResolver((fp) => {
+      const p = pinnedTrust?.getProfileByFingerprint(fp);
+      if (!p?.peerIdentityPub) return null;
+      // invite-accepted too: B must decrypt the inviter's signed finish / used notice (invite spec §4.4).
+      if (p.pairingState !== 'pending-verification' && p.pairingState !== 'mutual-verified' && p.pairingState !== 'identity-verified' && p.pairingState !== 'invite-accepted') return null;
+      return Buffer.from(p.peerIdentityPub, 'hex');
+    });
+    // Ordinary chat to a peer paired BY INVITE goes encrypted to the pinned key, always
+    // (spec threadline-standalone-pairing D9, rollout step 5), behind the live switch
+    // `threadline.encryptToPinned` (off | watch | enforce). Only mutual-verified: an acceptor
+    // still waiting for the inviter's Finish holds a key the inviter cannot use yet, and a
+    // paused pin is back to unconfirmed. An `identity-verified` pairing inherited from a
+    // replicated record that says 'invite' counts too (rollout step 5b: same pinned key on
+    // every machine that can hold the relay). Only `pairingMethod: 'invite'`: both sides of one run
+    // 1.3.1352+, which decrypts to a pinned key without a cached key; an SAS-paired peer may
+    // not, and an inherited pairing whose record carried no method ('inherited'), so both keep the previous rule
+    // (encrypt when the relay gave us its keys).
+    relayClient.setEncryptToResolver(createEncryptToPinnedResolver({
+      trustManager: pinnedTrust,
+      mode: encryptToPinnedMode,
+      counters: encryptToPinnedCounters,
+    }), createEncryptToPinnedClientOptions({ mode: encryptToPinnedMode, counters: encryptToPinnedCounters }));
+
+    // Invite pairing engine (docs/specs/a2a-pairing-invite-link.md). Identity is read fresh on
+    // every use so a rotated key is never signed with stale material.
+    // The store comes from threadline-core: a corrupt file is moved aside and reported, and an
+    // unreadable one (permissions, I/O) makes the constructor throw rather than start empty and
+    // later overwrite it. That throw turns off invite pairing only, never the rest of Threadline.
+    try {
+      const client = relayClient;
+      const invStore = new PairingInviteStore(config.stateDir);
+      const invEvents = new EventEmitter();
+      // Invites pasted or forwarded here wait in the engine's memory (their secret never touches
+      // disk). The markers record only that one was waiting, so after a restart the operator is
+      // told to paste or forward it again instead of finding it silently gone.
+      const markers = new PairingPendingAcceptMarkers(config.stateDir);
+      try {
+        const notices = markers.convertAfterRestart();
+        if (notices.length) console.log(`[pairing-invite] ${notices.length} invite(s) waiting for approval were cleared by a restart; the operator will be told`);
+      } catch (err) {
+        console.warn(`[pairing-invite] could not read pending-accept markers: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const ownIdentity = () => {
+        const id = routingIdentityManager.get();
+        return id ? { fp: String(id.fingerprint).toLowerCase(), publicKeyHex: id.publicKey.toString('hex'), privateKey: id.privateKey } : null;
+      };
+      // The pairing handshake (spec §11) sits between the engine and the transport: it resends the
+      // accept until answered, answers accepts with signed receipts or refusals, runs the hello, and
+      // turns every outcome into an operator notice. The relay's verdict on every invite control
+      // message is logged (§11.8).
+      const handshake = new PairingHandshake({
+        store: invStore,
+        trust: trustManager!,
+        identity: () => {
+          const id = ownIdentity();
+          return id ? { fp: id.fp, publicKeyHex: id.publicKeyHex } : null;
+        },
+        signHex: (m) => {
+          const id = ownIdentity();
+          if (!id) throw new Error('this machine does not hold the Threadline identity');
+          return edSign(id.privateKey, Buffer.from(m)).toString('hex');
+        },
+        verifyHex: (keyHex, m, sigHex) => {
+          try { return edVerify(Buffer.from(keyHex, 'hex'), Buffer.from(m), Buffer.from(sigHex, 'hex')); } catch { return false; }
+        },
+        randomHex: (n) => nodeCrypto.randomBytes(n).toString('hex'),
+        sendPlaintext: (to, op, payload) => client.sendInviteControlPlaintext(to, op, payload),
+        sendToKey: (to, key, op, payload) => client.sendInviteControlToKey(to, key, op, payload),
+        awaitDelivery: async (messageId) => {
+          const v = await client.awaitRelayAck(messageId, 15_000);
+          return v ? { status: v.status, ...(v.reason ? { reason: v.reason } : v.reasonCode ? { reason: v.reasonCode } : {}) } : null;
+        },
+        notice: (n: PairingNotice) => {
+          console.log(`[pairing-invite] notice ${n.kind} ${JSON.stringify(n)}`);
+          invEvents.emit('notice', n);
+        },
+        forward: (e) => {
+          console.log(`[pairing-invite] ${e.kind} ${JSON.stringify(e)}`);
+          invEvents.emit('event', e);
+        },
+        log: (line) => console.log(line),
+        timings: config.pairingHandshakeTimings,
+      });
+      const flow = new MarkedPairingInviteFlow({
+        store: invStore,
+        trust: trustManager!,
+        identity: ownIdentity,
+        relayKeyFor: async (fp) => {
+          const known = client.getKnownAgents().find((a) => a.agentId === fp);
+          if (known?.publicKey) return Buffer.from(known.publicKey).toString('hex');
+          const fetched = await client.fetchPeerIdentityKey(fp).catch(() => null);
+          return fetched ? fetched.toString('hex') : null;
+        },
+        sendPlaintext: handshake.flowSendPlaintext,
+        sendToKey: handshake.flowSendToKey,
+        notify: (e: InviteEvent) => handshake.flowNotify(e as unknown as { kind: string; iid?: string }),
+        ownName: () => ({ owner: config.ownerName ?? '', agent: config.agentName }),
+      }, markers);
+      handshake.attach(flow);
+      pairingInvites = { flow, handshake, store: invStore, events: invEvents, markers };
+    } catch (err) {
+      // Reported, not just logged: "invite pairing is off" shows in /health and the degradation
+      // digest until the store file is readable again.
+      DegradationReporter.getInstance().report({
+        feature: 'Threadline.pairingInvites',
+        primary: 'pair with another agent by invite (pairing-invites.json)',
+        fallback: 'invite pairing is off on this agent; the rest of Threadline keeps running and the file is left untouched',
+        reason: err instanceof Error ? err.message : String(err),
+        impact: 'invites cannot be sent, accepted or finished until threadline/pairing-invites.json can be read; it is never replaced with an empty file',
+      });
+    }
+
     // Create inbound message gate (imports ThreadlineRouter lazily if needed)
     // For now, router is not available at bootstrap time — it's created in server.ts
     // The gate will be wired to the router after server setup
@@ -250,6 +656,14 @@ export async function bootstrapThreadline(
       ownFingerprint: routingIdentity?.fingerprint,
       // Live verified-pairing config reader (spec §3.10) — supplied by server.ts.
       getVerifiedPairingConfig: config.getVerifiedPairingConfig,
+      onInviteControl: (op, fromFp, payload) => {
+        // Through the handshake (spec §11): it answers accepts, verifies receipts, refusals and
+        // hellos, and reports outcomes to the operator. A refusal here is logged with its reason;
+        // the handshake decides whether the sender is told (§11.5).
+        void pairingInvites?.handshake.handleControl(op, fromFp, payload).then((r) => {
+          if (!r.ok) console.warn(`[pairing-invite] ${op} from ${fromFp.slice(0, 12)} refused: ${(r as { reason: string }).reason}`);
+        });
+      },
     });
 
     // Only wire inbound message handling and connect if daemon is NOT handling relay.
@@ -260,6 +674,9 @@ export async function bootstrapThreadline(
     // Route inbound relay messages through the gate
     relayClient.on('message', async (msg: ReceivedMessage) => {
       if (!inboundGate) return;
+      // Encrypted ordinary chat from an invite peer, verified against its pinned key, records
+      // the encryptedSeen mark (step 6). Off: nothing. Never blocks delivery.
+      noteEncryptedChat({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, msg);
       const decision = await inboundGate.evaluate(msg);
       if (decision.action === 'pass' && decision.message) {
         // Gate passed — emit for ThreadlineRouter to handle
@@ -274,18 +691,13 @@ export async function bootstrapThreadline(
       // Attempt to decode the base64 payload as plaintext JSON
       let textContent: string;
       let msgType: string | undefined;
-      try {
-        const payloadStr = Buffer.from(envelope.payload as string, 'base64').toString('utf-8');
-        const parsed = JSON.parse(payloadStr);
-        if (typeof parsed === 'object' && parsed !== null && 'text' in parsed) {
-          textContent = String(parsed.text);
-          msgType = parsed.type as string | undefined;
-        } else if (typeof parsed === 'string') {
-          textContent = parsed;
-        } else {
-          textContent = JSON.stringify(parsed);
-        }
-      } catch {
+      let resend = false;
+      const decoded = decodePlaintextPayload(envelope.payload);
+      if (decoded) {
+        textContent = decoded.text;
+        msgType = decoded.type;
+        resend = decoded.resend;
+      } else {
         textContent = `[undecryptable relay message from ${String(envelope.from).slice(0, 16)}]`;
       }
 
@@ -293,32 +705,75 @@ export async function bootstrapThreadline(
         from: String(envelope.from ?? 'unknown'),
         fromName: String(envelope.from ?? 'unknown').slice(0, 8),
         threadId: String(envelope.threadId ?? `relay-${Date.now()}`),
-        messageId: String(envelope.messageId ?? `msg-${Date.now()}`),
-        content: { content: textContent, type: msgType },
+        // inbound-id ledger §1: no fabricated `msg-<now>` id — a message with no
+        // id is UNKEYED (admitted, never deduplicated, counted).
+        messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
+        // No `type` key when the payload carries none: a present-but-undefined
+        // key reads as an operation name downstream.
+        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
         envelope: envelope as never,
       };
 
-      // Relay-authenticated unknown senders bypass the trust manager gate.
-      // The relay already verified their Ed25519 identity via challenge-response.
-      // We still run payload size checks but skip trust/rate checks.
+      // Payload size check, as in the gate.
       const payloadSize = Buffer.byteLength(JSON.stringify(received.content), 'utf-8');
       if (payloadSize > 64 * 1024) {
         console.log(`Threadline: relay message from ${received.from.slice(0, 8)} blocked (payload too large: ${payloadSize})`);
         return;
       }
 
-      // Record the interaction for trust building
-      trustManager!.recordMessageReceivedByFingerprint(received.from);
+      // Trust (docs/specs/a2a-relay-unknown-sender-trust.md, ACT-066). The relay
+      // proves the sender holds its fingerprint's key, not who it is. With the
+      // check on, the level comes from the trust manager the gate reads and the
+      // gate's operation table applies; off, today's `verified` handling stands.
+      // Invite pairing: the accept arrives as plaintext from a not-yet-known sender
+      // (docs/specs/a2a-pairing-invite-link.md §4.3). It is a CONTROL message for the gate, never
+      // conversation text, so it must not reach the unknown-sender router (which would treat it
+      // as an ordinary message and could spawn a session).
+      if (msgType && ALL_PAIRING_OPS.has(msgType)) {
+        void inboundGate.evaluate(received);
+        return;
+      }
 
-      // Emit gate-passed with relay-authenticated trust level
-      relayClient!.emit('gate-passed', {
-        action: 'pass' as const,
-        reason: 'relay-authenticated',
-        trustLevel: 'verified',
-        fingerprint: received.from,
-        message: received,
-      });
+      // No downgrade after encryption (spec D6, step 6): an invite peer that has sent us
+      // encrypted chat does not get plaintext delivered in its name. Enforce refuses here,
+      // before anything is recorded or routed; watch only counts.
+      if (shouldRefuseDowngradedPlaintext({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, received.from, msgType)) {
+        // Loud, never silent (Echo, 2026-10-20): named reason + remedy in the log, a per-peer
+        // record on /health, one degradation report and one encrypted notice back to the
+        // sender per peer per hour.
+        reportDowngradeRefusal({
+          trustManager,
+          report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+            feature: 'Threadline.refuseDowngrade',
+            primary: 'deliver messages from agents you paired with',
+            fallback: 'the unencrypted message was not delivered; encrypted messages from that agent still are',
+            reason,
+            impact,
+          }),
+          sendNotice: (fp, pinnedHex, text) => { relayClient!.sendNoticeToPinned(fp, pinnedHex, text); },
+        }, received.from);
+        return;
+      }
+
+      handleRelayUnknownSender(
+        {
+          trustManager: trustManager!,
+          mode: relayUnknownSenderTrustMode,
+          counters: relayUnknownSenderTrustCounters,
+          // Plaintext under an invite-paired peer's fingerprint is labelled unverified
+          // (never refused): the relay is the only evidence of who wrote it (spec D6/D9).
+          emit: (decision) => {
+            relayClient!.emit('gate-passed', labelUnverifiedPinnedPlaintext(
+              { trustManager, mode: encryptToPinnedMode, counters: encryptToPinnedCounters },
+              decision,
+              msgType,
+            ));
+          },
+        },
+        received,
+        msgType,
+      );
     });
 
     // Log auto-discovery results
@@ -335,13 +790,96 @@ export async function bootstrapThreadline(
       logDir: path.join(config.stateDir, '..', 'logs'),
     });
 
-    try {
+    // Displacement: alert, then reclaim after a pause. Bounded (one pending timer,
+    // at most one reclaim per window) so two misconfigured owners trade the
+    // connection at most every few minutes instead of every tick.
+    const rearmMs = config.relayRearmAfterDisplacedMs ?? 15 * 60_000;
+    const displacedClient = relayClient;
+    displacedClient.on('displaced', (reason: unknown) => {
+      DegradationReporter.getInstance().report({
+        feature: 'Threadline.relay',
+        primary: 'agent-to-agent messaging over the shared relay',
+        fallback: rearmMs > 0
+          ? `off the relay; reclaiming the connection in ${Math.round(rearmMs / 60_000)} min`
+          : 'off the relay until the server restarts (reclaim disabled)',
+        reason: `displaced by another connection using this identity: ${String(reason ?? 'unknown')}`,
+        impact: 'other agents cannot reach this agent over Threadline, and its sends do not leave',
+      });
+      if (rearmMs <= 0 || relayRearmTimer) return;
+      relayRearmTimer = setTimeout(() => {
+        relayRearmTimer = null;
+        // A machine that no longer owns the relay does not reclaim it: the
+        // displacement was the awake machine taking its connection (ACT-1306 a).
+        if (!relayOwnerSays()) {
+          console.log('Threadline: relay reclaim skipped — this machine is not the relay owner (standby)');
+          return;
+        }
+        displacedClient.reconnectRelay().then(
+          () => console.log('Threadline: relay connection reclaimed after displacement'),
+          (err: unknown) => console.error(`Threadline: relay reclaim failed — ${err instanceof Error ? err.message : err}; the client keeps retrying with backoff`),
+        );
+      }, rearmMs);
+      relayRearmTimer.unref?.();
+    });
+
+    const ownerAtBoot = relayOwnerSays();
+    if (!ownerAtBoot) {
+      relayReleasedForStandby = true;
+      config.onRelayStandbyChange?.(true);
+      console.log('Threadline: relay connection deferred — this machine does not hold the serving lease (standby); it connects if it takes over');
+    }
+    if (config.relayOwner) {
+      // ACT-1306 a — the relay follows the serving lease, like the Telegram poll.
+      const checkMs = config.relayOwnerCheckMs ?? 5_000;
+      const releaseAfter = Math.max(1, config.relayReleaseAfterChecks ?? 3);
+      const ownedClient = relayClient;
+      let notOwnerStreak = 0;
+      relayOwnerTimer = setInterval(() => {
+        const owner = relayOwnerSays();
+        if (owner) {
+          notOwnerStreak = 0;
+          if (!relayReleasedForStandby) return;
+          relayReleasedForStandby = false;
+          config.onRelayStandbyChange?.(false);
+          if (identityNotProvisioned) {
+            // a2a-single-agent-identity §1.1: no usable agent identity → no relay socket to
+            // open; the reload lever connects once adoption lands (and re-checks ownership).
+            console.warn('Threadline: this machine now holds the serving lease but has no agent identity (identity-not-provisioned) — relay connection not attempted');
+            return;
+          }
+          console.log('Threadline: this machine now holds the serving lease — taking the relay connection');
+          ownedClient.connect().then(
+            () => console.log(`Threadline: relay connected (fingerprint: ${ownedClient.fingerprint})`),
+            (err: unknown) => console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; retrying in the background with backoff`),
+          );
+          return;
+        }
+        if (relayReleasedForStandby) return;
+        if (++notOwnerStreak < releaseAfter) return;
+        relayReleasedForStandby = true;
+        config.onRelayStandbyChange?.(true);
+        if (relayRearmTimer) {
+          clearTimeout(relayRearmTimer);
+          relayRearmTimer = null;
+        }
+        console.log('Threadline: this machine no longer holds the serving lease — releasing the relay connection to the awake machine');
+        ownedClient.disconnect();
+      }, checkMs);
+      relayOwnerTimer.unref?.();
+    }
+    if (identityNotProvisioned) {
+      console.warn('Threadline: relay connection NOT attempted (identity-not-provisioned); it connects on the tick after the identity is adopted');
+    } else if (ownerAtBoot) try {
       await relayClient.connect();
       console.log(`Threadline: relay connected (fingerprint: ${relayClient.fingerprint})`);
     } catch (err) {
-      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}`);
-      console.log('Threadline: agent will operate in local-only mode');
-      relayClient = undefined;
+      // Keep the client: a failed first connect still schedules reconnects with
+      // backoff, and dropping the reference left the agent local-only for the
+      // life of the process even after the relay came back.
+      // Only a connection that was actually attempted retries. With no usable
+      // identity no relay socket was ever opened, so nothing will retry — say so.
+      const attempted = relayClient.connectionState !== 'disconnected' || !(err instanceof IdentityFileInvalidError || err instanceof IdentityNotProvisionedError);
+      console.error(`Threadline: relay connection failed — ${err instanceof Error ? err.message : err}; ${attempted ? 'retrying in the background with backoff' : 'NOT retrying: there is no usable identity to connect with (fix the identity, then restart)'}`);
     }
     } else {
       // Daemon handles the relay connection (both inbound and outbound).
@@ -358,13 +896,68 @@ export async function bootstrapThreadline(
     discovery,
     trustManager,
     relayClient,
+    pairingInvites,
     /** Most recent relay connection-loss event, or null if it has never dropped.
      *  Lets a status surface report WHY the relay is down instead of only that it
      *  is — the distinction the 2026-07-26 incident turned on. */
     getLastRelayEvent: () => relayObservability?.getLastEvent() ?? null,
+    daemonHandlingRelay,
+    relaySuppressedByStandby: relayWanted && (config.relayStandby === true || relayReleasedForStandby),
+    /** Live: true while live relay ownership has this machine off the relay. */
+    isRelayReleasedForStandby: () => relayReleasedForStandby,
     inboundGate,
+    identityNotProvisioned: () => identityNotProvisioned,
+    connectedAs: () => relayClient?.connectedAs ?? null,
+    reloadIdentity: async () => {
+      // Re-read disk through the single reader (the cache is invalidated, not reused).
+      let fingerprint: string | null;
+      let publicKey: Buffer | null = null;
+      if (relayClient) {
+        fingerprint = await relayClient.reloadIdentity({ connect: false });
+        publicKey = relayClient.publicKey;
+      } else {
+        const id = routingIdentityManager.reload();
+        fingerprint = id?.fingerprint ?? null;
+        publicKey = id?.publicKey ?? null;
+      }
+      if (!fingerprint || !publicKey) {
+        // A reload that finds no file re-enters the posture (counted as an adopt→lose cycle
+        // by the adoption loop, which reads the same disk).
+        identityNotProvisioned = !detectJoinedMesh(config.stateDir).mintAllowed;
+        inboundGate?.setOwnFingerprint(undefined);
+        return { fingerprint: null, connected: false, reason: identityNotProvisioned ? 'identity-not-provisioned' : 'no-identity' };
+      }
+      identityNotProvisioned = false;
+      inboundGate?.setOwnFingerprint(fingerprint);
+      announce({ publicKey, fingerprint });
+      if (!relayEnabled) return { fingerprint, connected: false, reason: config.relayStandby ? 'standby' : 'relay-disabled' };
+      // Re-run the standby + daemon predicate BEFORE any connect: a rebuilt machine is
+      // usually a standby, and a connect from it would displace the awake machine.
+      if (decideDaemonHandlingRelay()) return { fingerprint, connected: false, reason: 'daemon-handles-relay' };
+      if (!relayClient) return { fingerprint, connected: false, reason: 'no-relay-client' };
+      // ACT-1306 a: the relay follows the serving lease. A machine that does not hold it
+      // stays off the relay; the owner timer connects it if it takes over.
+      if (!relayOwnerSays()) return { fingerprint, connected: false, reason: 'not-relay-owner' };
+      try {
+        await relayClient.connect();
+        console.log(`Threadline: relay reconnected under the reloaded identity (fingerprint: ${relayClient.fingerprint})`);
+        return { fingerprint, connected: relayClient.connectionState === 'connected', reason: 'connected' };
+      } catch (err) {
+        console.error(`Threadline: relay connect after identity reload failed — ${err instanceof Error ? err.message : err}; the client keeps retrying with backoff`);
+        return { fingerprint, connected: false, reason: 'connect-failed' };
+      }
+    },
     shutdown: async () => {
       stopHeartbeat();
+      pairingInvites?.handshake.dispose();
+      if (relayOwnerTimer) {
+        clearInterval(relayOwnerTimer);
+        relayOwnerTimer = null;
+      }
+      if (relayRearmTimer) {
+        clearTimeout(relayRearmTimer);
+        relayRearmTimer = null;
+      }
       if (relayClient) {
         relayClient.disconnect();
       }
@@ -384,18 +977,19 @@ export async function bootstrapThreadline(
  * Register the Threadline MCP server into every framework config present.
  *
  * Claude Code: ~/.claude.json (local scope) + .mcp.json (project scope).
- * Codex CLI: `[mcp_servers."threadline"]` in ~/.codex/config.toml — added
- *   for the cross-framework portability audit (Gap 2). Before this, a
- *   Codex agent that joined the Threadline network had the relay running
- *   but no MCP tools advertised to its runtime. The Codex TOML format and
- *   path were empirically verified from a live ~/.codex/ (Codex CLI
- *   0.78.0); registration reuses the existing, tested
- *   OpenAiCodexMcpToolRegistry so the two writers cannot drift.
+ * Codex CLI: deliberately NOT written here. `~/.codex/config.toml` is ONE
+ *   file shared by every Codex on the machine, so a boot-time write of
+ *   `[mcp_servers."threadline"]` was last-writer-wins across agents AND
+ *   across tests (2026-10-20: an e2e run rewrote the operator's real
+ *   config.toml to point at a worktree + a /var/folders temp state dir).
+ *   Instar-launched Codex sessions never needed the shared entry — the
+ *   launch builders pin THIS agent's entry per spawn via
+ *   `-c mcp_servers.threadline.*` (frameworkSessionLaunch.ts). A
+ *   hand-started Codex that wants Threadline tools is connected on request
+ *   with `instar codex connect <agent>` (src/commands/codex.ts), the only
+ *   writer of the shared entry.
  *
  * The MCP server is a stdio process the framework launches as a subprocess.
- * Codex registration is gated on ~/.codex/ existing (Codex installed on
- * this machine) so a Claude-only host is never given a Codex config it
- * does not use.
  */
 async function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): Promise<void> {
   const absDir = path.resolve(projectDir);
@@ -459,31 +1053,5 @@ async function registerThreadlineMcp(projectDir: string, agentName: string, stat
     fs.renameSync(tmpPath, mcpJsonPath);
   } catch {
     // Non-fatal
-  }
-
-  // ── 3. Also register in Codex's ~/.codex/config.toml (portability Gap 2) ──
-  // Gated on ~/.codex/ existing so a Claude-only host never gets a Codex
-  // config it does not use. Reuses the existing OpenAiCodexMcpToolRegistry
-  // (idempotent remove-then-append of the [mcp_servers."threadline"] table)
-  // so the TOML writer is never duplicated. Non-fatal, matching the Claude
-  // registration blocks above.
-  try {
-    const codexHome = process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex');
-    if (fs.existsSync(codexHome)) {
-      const { createMcpToolRegistry } = await import(
-        '../providers/adapters/openai-codex/integration/mcpToolRegistry.js'
-      );
-      await createMcpToolRegistry().register(
-        {
-          kind: 'stdio',
-          name: 'threadline',
-          command: mcpEntry.command,
-          args: mcpEntry.args,
-        },
-        { scope: 'user' },
-      );
-    }
-  } catch {
-    // Non-fatal — Claude registration above is unaffected.
   }
 }

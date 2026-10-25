@@ -17,6 +17,7 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import { DegradationReporter } from './DegradationReporter.js';
 import { readSystemMemoryPressure } from './hostMemoryPressure.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type MemoryPressureState = 'normal' | 'warning' | 'elevated' | 'critical';
 
@@ -91,11 +92,7 @@ export class MemoryPressureMonitor extends EventEmitter {
     // Load persisted thresholds first, then overlay any explicit config.
     // Priority: explicit config > persisted file > defaults
     const persisted = this.loadPersistedThresholds();
-    this.thresholds = {
-      ...DEFAULT_THRESHOLDS,
-      ...persisted,
-      ...config.thresholds,
-    };
+    this.thresholds = mergeDefaults(DEFAULT_THRESHOLDS, persisted, config.thresholds);
     this.baseIntervalMs = config.checkIntervalMs ?? 30_000;
   }
 

@@ -160,6 +160,7 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
   const serverRecordDir = path.join(stateDir, 'state', 'autonomous-server');
   // Same roots as the journal writer's artifactRoots default (§3.1).
   const jailRoots = [conventionDir, serverRecordDir, stateDir];
+  const secretsDir = path.join(stateDir, 'secrets');
 
   let jailRejected = 0;
   let goneFromDisk = 0;
@@ -230,6 +231,15 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
     // has vanished counts as benign goneFromDisk.
     const jailed = jailContained(io, jailRoots, cand.abs);
     if (jailed === null) {
+      jailRejected++;
+      continue;
+    }
+    // The secrets tree (shared vault, agent-held passkey store, pending mint
+    // records, passkey browser profiles) is machine-local by design and never
+    // rides the carrier, whatever a journal row or artifact record claims
+    // (spec agent-held-google-passkey §3.1).
+    const jailedFolded = jailed.toLowerCase();
+    if (jailedFolded === secretsDir.toLowerCase() || jailedFolded.startsWith(secretsDir.toLowerCase() + path.sep)) {
       jailRejected++;
       continue;
     }

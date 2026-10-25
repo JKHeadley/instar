@@ -20,6 +20,7 @@ import {
   writeLease,
   readLease,
   lifelineOwnsPoll,
+  lifelinePollIsReachable,
   leasePath,
   DEFAULT_LEASE_STALE_MS,
   type PollOwnerLease,
@@ -130,5 +131,25 @@ describe('lifelineOwnsPoll — the server-side decision', () => {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(leasePath(stateDir), 'garbage');
     expect(lifelineOwnsPoll(stateDir, TOKEN, 1)).toBe(false);
+  });
+});
+
+describe('lifelinePollIsReachable — positive liveness evidence', () => {
+  it('TRUE only for a fresh matching lease at or behind the sample clock', () => {
+    writeLease(stateDir, TOKEN, 1, 1_000);
+    expect(lifelinePollIsReachable(stateDir, TOKEN, 1_000)).toBe(true);
+    expect(lifelinePollIsReachable(stateDir, TOKEN, 1_001)).toBe(true);
+  });
+
+  it('FALSE for future, stale, mismatched, absent, or invalid-time evidence', () => {
+    writeLease(stateDir, TOKEN, 1, 1_000);
+    expect(lifelinePollIsReachable(stateDir, TOKEN, 999)).toBe(false);
+    expect(lifelinePollIsReachable(stateDir, TOKEN, 1_000 + DEFAULT_LEASE_STALE_MS + 1)).toBe(false);
+    expect(lifelinePollIsReachable(stateDir, OTHER_TOKEN, 1_001)).toBe(false);
+    expect(lifelinePollIsReachable(stateDir, TOKEN, Number.NaN)).toBe(false);
+    SafeFsExecutor.safeUnlinkSync(leasePath(stateDir), {
+      operation: 'tests/unit/TelegramPollOwnerLease.test.ts',
+    });
+    expect(lifelinePollIsReachable(stateDir, TOKEN, 1_001)).toBe(false);
   });
 });

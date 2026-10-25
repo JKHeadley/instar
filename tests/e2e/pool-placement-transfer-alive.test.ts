@@ -22,13 +22,13 @@ import { SessionOwnershipRegistry, InMemorySessionOwnershipStore } from '../../s
 import { TopicPlacementPinStore } from '../../src/core/TopicPlacementPinStore.js';
 import type { InstarConfig, MachineIdentity } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 function identity(machineId: string, name: string): MachineIdentity {
   return { machineId, signingPublicKey: 'sk', encryptionPublicKey: 'ek', name, platform: 'darwin-arm64', createdAt: new Date().toISOString(), capabilities: ['sessions'] };
 }
 
 describe('E2E: pool placement + transfer routes are ALIVE through the real AgentServer', () => {
-  const PORT = 47213;
   const SELF = 'm_a';
   const PEER = 'm_b';
   const TOKEN = 'e2e-token';
@@ -36,7 +36,7 @@ describe('E2E: pool placement + transfer routes are ALIVE through the real Agent
   let server: AgentServer;
   let pinStore: TopicPlacementPinStore;
   let ownReg: SessionOwnershipRegistry;
-  const base = `http://127.0.0.1:${PORT}`;
+  let base: string;
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pool-alive-e2e-'));
@@ -68,13 +68,13 @@ describe('E2E: pool placement + transfer routes are ALIVE through the real Agent
       projectName: 'pool-alive-e2e',
       projectDir: dir,
       stateDir: dir,
-      port: PORT,
+      port: 0,
       authToken: TOKEN,
     } as unknown as InstarConfig;
 
     server = new AgentServer({
       config,
-      sessionManager: new SessionManager({ projectDir: dir, port: PORT }),
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       machinePoolRegistry: registry,
       sessionOwnershipRegistry: ownReg,
@@ -83,6 +83,7 @@ describe('E2E: pool placement + transfer routes are ALIVE through the real Agent
       resolveRouterUrl: () => null, // single node acting as holder
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {

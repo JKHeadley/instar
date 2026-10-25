@@ -1,0 +1,45 @@
+{
+  "ts": "2026-09-10T04:35:07.273Z",
+  "slug": "telegram-recovery-review-budget",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 67,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 62,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2010
+    ],
+    "notes": "Pre-claim failures repeated paid review without consuming a transport attempt. Durable spacing now precedes recovery review."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/telegram-origin/recovery-review-budget.test.ts",
+      "howCaught": "Recovery tick formerly repeated paid review after pre-claim refusal without a debit. Atomic fifteen-minute reservation precedes review, survives restart and concurrent owners, permits exactly 24 automatic starts within the original six-hour lifetime, and refuses all starts after expiry."
+    }
+  },
+  "verdict": "pass"
+}

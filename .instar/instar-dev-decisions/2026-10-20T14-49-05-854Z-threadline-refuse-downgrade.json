@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-20T14:49:05.854Z",
+  "slug": "threadline-refuse-downgrade",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 564,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ThreadlinePairingReplicatedStore.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/server/routes.ts",
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/encryptedSeenMark.ts",
+      "src/threadline/pairingReplicationWiring.ts",
+      "src/threadline/refuseDowngrade.ts"
+    ],
+    "addedLines": 558,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

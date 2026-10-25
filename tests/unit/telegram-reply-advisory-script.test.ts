@@ -353,7 +353,7 @@ describe('send failure outcome contract', () => {
       text: 'Your weekly check finished — all clear.',
       curl: { preflightBody: '{"advisories":[]}', sendExit: 7 },
     });
-    expect(stdout).toContain('AMBIGUOUS: no HTTP outcome — verify delivery before retrying');
+    expect(stdout).toContain('AMBIGUOUS: no HTTP outcome — hold pending authoritative receipt/outbox resolution');
     expect(stderr).toContain('AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl 7).');
     const dbPath = path.join(dir, '.instar', 'state', 'pending-relay.echo.sqlite');
     expect(fs.existsSync(dbPath)).toBe(false);

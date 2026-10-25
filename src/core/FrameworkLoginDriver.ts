@@ -26,6 +26,31 @@ import type { LoginArtifact, LoginDriver } from './EnrollmentWizard.js';
 import type { LoginFlowKind, LoginProvider } from './PendingLoginStore.js';
 
 /**
+ * The per-framework login COMMAND the enrollment wizard spawns to obtain a public
+ * verification URL/code. SINGLE SOURCE OF TRUTH — server.ts merges this with any
+ * `subscriptionPool.enrollment.loginCommands` operator override.
+ *
+ * INVARIANT (guarded by framework-login-driver.test.ts): every framework whose
+ * enrollment flow-kind is `device-code` (Codex/OpenAI, grok/xAI — see
+ * EnrollmentWizard.defaultKind / remoteKind) MUST pass `--device-auth`. The command
+ * must match the kind: a device-code kind with a plain (browser-callback) login
+ * command prints NO code for the wizard to scrape, and a follow-me enrollment onto a
+ * headless machine dies with `login-did-not-start`. This is exactly the Codex bug —
+ * `codex login` (browser) could never enroll a Codex account onto a remote machine;
+ * `codex login --device-auth` prints a portable code that works anywhere.
+ */
+export const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
+  'claude-code': 'claude auth login',
+  'codex-cli': 'codex login --device-auth',
+  'gemini-cli': 'gemini',
+  'pi-cli': 'pi login',
+  // grok-build: the binary is `grok` (NEVER the colliding `agent` name), and
+  // device-code auth is the phone-approvable flow the enrollment wizard scrapes
+  // (public code/URL only, never a token).
+  'grok-build': 'grok login --device-auth',
+};
+
+/**
  * The tmux session name an enrollment login pane runs under. SINGLE SOURCE OF TRUTH —
  * both the spawn (server.ts) and any consumer that needs to reach the live pane
  * (e.g. WS5.2 code paste-back submit-code in routes.ts) MUST derive the name through

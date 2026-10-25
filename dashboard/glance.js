@@ -47,6 +47,7 @@ export const GLANCE_ADOPTED_TABS = [
   'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
   // Phase 4 — the sweep: every remaining data-summary view on the floor.
   'pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives',
+  'origins', // real settings / recording / message drills in origin.js
   'feedback-drain', // operated summary reviewed against the F10/F11 floor
 ];
 
@@ -1793,6 +1794,7 @@ const INITIATIVE_STATUS_WORD = {
 const SIGNAL_REASON_WORD = {
   'needs-user': 'Waiting on you', 'next-check-due': 'Time for a check-in',
   'ready-to-advance': 'Ready to move forward', 'stale': "Hasn't moved in a while",
+  'feedback-summary': 'Feedback work items (see the triage queue)',
 };
 
 /** The single population for the list tile: the (already server-filtered) items. */

@@ -1,0 +1,72 @@
+{
+  "version": 3,
+  "slug": "assisted-subscription-relogin",
+  "sessionId": "837370b6-ed54-4cef-bc23-4915d7374189",
+  "timestamp": "2026-08-28T18:27:56.866Z",
+  "artifactPath": "upgrades/side-effects/assisted-subscription-relogin.md",
+  "artifactSha256": "a50f1d37fa2e19baa873b000585e51630e8c62bb30425b795685625344954789",
+  "specPath": "docs/specs/assisted-subscription-relogin.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/AnthropicReloginBrowserDriver.ts",
+    "src/core/BackupManager.ts",
+    "src/core/ChromeCdpReloginBrowser.ts",
+    "src/core/ClaudePasteBackController.ts",
+    "src/core/EnrollmentWizard.ts",
+    "src/core/PlaywrightProfileRegistry.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SubscriptionReloginOrchestrator.ts",
+    "src/core/SubscriptionReloginPolicy.ts",
+    "src/core/SubscriptionReloginRuntime.ts",
+    "src/core/SubscriptionReloginService.ts",
+    "src/core/SubscriptionReloginStore.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/core/componentCategories.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/llmBenchCoverage.ts",
+    "src/data/provenanceCoverage.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/DashboardOperatorSessionStore.ts",
+    "src/server/fileRoutes.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Action-bearing credential and browser automation with new routes, migration parity, durable recovery, mobile operator provisioning, and fleet rollout controls requires a converged approved specification and full Tier-2 gates.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "db4ad00e8576",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/assisted-subscription-relogin-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The subscription-relogin-redrive model drives a permanently rejecting provider for N and 2N ticks and across restart; durable episode attempts settle at three, the ten-minute wall-clock and breaker prevent refilling, and terminal/operator-only states stop autonomous re-entry."
+    }
+  }
+}

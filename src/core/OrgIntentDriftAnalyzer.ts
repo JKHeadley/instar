@@ -17,6 +17,7 @@
  */
 
 import type { ParsedOrgIntent } from './OrgIntentManager.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ const DEFAULT_THRESHOLDS = {
 
 export function analyzeOrgIntentDrift(input: DriftAnalysisInput): DriftAnalysis {
   const { entries, orgIntent, lookbackDays = 7 } = input;
-  const t = { ...DEFAULT_THRESHOLDS, ...(input.thresholds ?? {}) };
+  const t = mergeDefaults(DEFAULT_THRESHOLDS, (input.thresholds ?? {}));
 
   // No ORG-INTENT.md → analyzer has nothing to compare against.
   if (!orgIntent) {

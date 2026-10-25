@@ -71,6 +71,38 @@ export class InMemorySessionOwnershipStore {
   all() {
     return [...this.recs.values()];
   }
+  /** See SessionOwnershipStore.correctMaterializedStatus. */
+  correctMaterializedStatus(candidate: import('./SessionOwnership.js').SessionOwnershipRecord): boolean {
+    const current = this.recs.get(candidate.sessionKey) ?? null;
+    if (!isApplierStatusCorrection(current, candidate)) return false;
+    this.recs.set(candidate.sessionKey, candidate);
+    try {
+      this.onCommit?.(candidate);
+    } catch {
+      /* @silent-fallback-ok — the commit hook is an observability consumer; a listener throw must never fail the correction. */
+    }
+    return true;
+  }
+}
+
+/**
+ * The ONE predicate both stores use for a same-epoch status correction (keeps the
+ * two substrates from drifting): the current record must be the applier's own
+ * materialization of exactly this (owner, epoch) — nonce `applier:<owner>:<epoch>`
+ * on BOTH sides — currently `active`, and the candidate must be `released`.
+ */
+export function isApplierStatusCorrection(
+  current: import('./SessionOwnership.js').SessionOwnershipRecord | null,
+  candidate: import('./SessionOwnership.js').SessionOwnershipRecord,
+): boolean {
+  if (!current) return false;
+  const applierNonce = `applier:${candidate.ownerMachineId}:${candidate.ownershipEpoch}`;
+  return current.ownershipEpoch === candidate.ownershipEpoch
+    && current.ownerMachineId === candidate.ownerMachineId
+    && current.nonce === applierNonce
+    && candidate.nonce === applierNonce
+    && current.status === 'active'
+    && candidate.status === 'released';
 }
 
 /** Durable per-session CAS substrate (git single-ref fast-forward push). */
@@ -90,6 +122,19 @@ export interface SessionOwnershipStore {
    * implement it.
    */
   all?(): SessionOwnershipRecord[];
+  /**
+   * Bounded SAME-EPOCH status correction (2026-10-21 "a release replicates as a
+   * release"). The OwnershipApplier materializes a journal row into a local record
+   * stamped with its own nonce `applier:<owner>:<epoch>`. Before the fix, a
+   * `released` row was materialized as `active` — a record that is WRONG at the
+   * epoch it already holds, so the fast-forward CAS (strictly greater epoch) can
+   * never repair it. This lands `candidate` ONLY when the current record is the
+   * applier's own materialization of the same (owner, epoch) — same nonce, same
+   * owner, same epoch — currently `active`, and the candidate is `released`.
+   * Never a new authority: it corrects the applier's own earlier write from the
+   * same journal row. Returns true iff it landed.
+   */
+  correctMaterializedStatus?(candidate: SessionOwnershipRecord): boolean;
   /**
    * Interface-level commit hook (standby-write-reconciliation §3.2, round-2
    * S4): assignable listener each substrate fires at its OWN mutation point —

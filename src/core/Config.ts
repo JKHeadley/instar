@@ -16,6 +16,7 @@ import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
 import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
 import { resolveFrameworkAlias } from './frameworkFacts.js';
+import { agentRegistryPath } from './AgentRegistryPaths.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 10;
@@ -139,6 +140,47 @@ export function detectTmuxPath(): string | null {
  * entry is reported rather than silently discarded — the original bug was
  * silence.
  */
+/**
+ * `sessions.claudePath` was used verbatim, so a config copied from another
+ * machine kept a path that does not exist here. Every Claude session then
+ * died the instant it spawned, and with it the session's Telegram sending
+ * credential (instar#2122). Same rule as `mergeOperatorBinaryPaths`: a path
+ * we can positively show is absent is ignored in favour of detection, loudly.
+ * A bare command name, or a probe that fails, is kept as configured.
+ */
+export function resolveConfiguredClaudePath(
+  configured: string | undefined,
+  detect: () => string | null,
+  deps: { exists?: (p: string) => boolean; warn?: (msg: string) => void } = {},
+): string | null {
+  if (typeof configured !== 'string' || configured.trim() === '') return detect();
+  const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+  const warn = deps.warn ?? ((msg: string) => console.warn(msg));
+  let provablyAbsent = false;
+  if (configured.includes('/')) {
+    try {
+      provablyAbsent = !exists(configured);
+    } catch {
+      // @silent-fallback-ok — a failed probe is not evidence of absence.
+      provablyAbsent = false;
+    }
+  }
+  if (!provablyAbsent) return configured;
+  const detected = detect();
+  if (!detected) {
+    // Nothing to replace it with: keep the configured value (unchanged
+    // behaviour, and the hermetic-test convention of a placeholder path on a
+    // host without claude still satisfies the prerequisite check).
+    warn(`[config] sessions.claudePath points at ${configured}, which does not exist on this machine, and no claude binary was detected. Fix or remove sessions.claudePath.`);
+    return configured;
+  }
+  warn(
+    `[config] sessions.claudePath points at ${configured}, which does not exist on this machine — `
+      + `using the detected ${detected} instead. Fix or remove sessions.claudePath to silence this.`,
+  );
+  return detected;
+}
+
 export function mergeOperatorBinaryPaths(
   detected: Record<string, string>,
   configured: Record<string, string> | undefined,
@@ -794,9 +836,11 @@ export function resolveAgentDir(nameOrPath?: string): string {
     return agentDir;
   }
 
-  // Check global registry for the name (dynamic import to avoid circular deps)
+  // Resolve before the read fallback: an invalid explicit trial directory
+  // must never silently revert to another registry or a generic not-found.
+  const registryPath = agentRegistryPath();
+  // Check the selected registry for the name.
   try {
-    const registryPath = path.join(os.homedir(), '.instar', 'registry.json');
     if (fs.existsSync(registryPath)) {
       const data = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
       const entries = Array.isArray(data.entries) ? data.entries : [];
@@ -931,7 +975,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // message — the framework-portability bug.
     fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[] | undefined,
   );
-  const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
+  const claudePathDetected = resolveConfiguredClaudePath(fileConfig.sessions?.claudePath, detectClaudePath);
   const codexPathDetected = detectCodexPath();
   const geminiPathDetected = detectGeminiPath();
   const piPathDetected = detectPiPath();
@@ -1026,6 +1070,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     projectDir: resolvedProjectDir,
     maxSessions: fileConfig.sessions?.maxSessions ?? DEFAULT_MAX_SESSIONS,
     protectedSessions: fileConfig.sessions?.protectedSessions || [`${projectName}-server`],
+    standingSessions: normalizeStandingSessions(fileConfig.sessions?.standingSessions),
     completionPatterns: fileConfig.sessions?.completionPatterns || [
       'has been automatically paused',
       'Session ended',
@@ -1035,6 +1080,15 @@ export function loadConfig(projectDir?: string): InstarConfig {
     port: (fileConfig.port as number | undefined) ?? 4040,
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
+    ...(fileConfig.sessions?.resumeFollowsAccount &&
+    typeof fileConfig.sessions.resumeFollowsAccount === 'object'
+      ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }
+      : {}),
+    // CMT-798: retained per-version Claude executable (off switch + dir + grace).
+    ...(fileConfig.sessions?.retainedClaudeBinary &&
+    typeof fileConfig.sessions.retainedClaudeBinary === 'object'
+      ? { retainedClaudeBinary: fileConfig.sessions.retainedClaudeBinary as { enabled?: boolean; dir?: string; pruneGraceMs?: number } }
+      : {}),
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
     // Per-component framework routing (docs/specs/per-component-framework-routing.md).
     // LOAD-PATH FIX (2026-06-06): this field was documented + consumed
@@ -1215,4 +1269,10 @@ export function ensureStateDir(stateDir: string): void {
   for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true });
   }
+}
+
+/** `sessions.standingSessions` — keep only non-empty strings; anything else ⇒ []. */
+export function normalizeStandingSessions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((e): e is string => typeof e === 'string' && e.trim().length > 0).map(e => e.trim());
 }

@@ -192,6 +192,20 @@ describe('SessionManager behavioral tests', () => {
       expect(args).toContain('INSTAR_SENDER_CLASS=llm-session');
     });
 
+    // Spec feedback-inbox-vault-token §B: a job run gets its own declared-failure file.
+    it('a job spawn carries INSTAR_JOB_FAILURE_FILE named by its tmux session; a non-job spawn does not', async () => {
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'fail-file-job', prompt: 'p', jobSlug: 'feedback-factory-process' });
+      const failArg = newSessionArgs().find((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='));
+      expect(failArg).toBeDefined();
+      expect(failArg).toMatch(/[\\/]state[\\/]job-declared-failures[\\/]/);
+      expect(failArg!.endsWith(`${session.tmuxSession}.txt`)).toBe(true);
+
+      vi.mocked(execFileSync).mockClear();
+      await manager.spawnSession({ name: 'fail-file-plain', prompt: 'p' });
+      expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='))).toBe(false);
+    });
+
     it('an interactive (jobSlug-less) spawn carries NONE of the kind env vars', async () => {
       vi.mocked(execFileSync).mockClear();
       await manager.spawnSession({ name: 'kindless-job', prompt: 'p' });
@@ -237,12 +251,12 @@ describe('SessionManager behavioral tests', () => {
       });
 
       expect(session.framework).toBe('codex-cli');
-      expect(session.model).toBe('gpt-5.4-mini'); // haiku → light → gpt-5.4-mini on Codex (gpt-5.2 retired from ChatGPT-account Codex 2026-06-03)
+      expect(session.model).toBe('gpt-6-luna'); // haiku → light → gpt-6-luna on Codex (since 2026-09-23)
       // And it must NOT leak the Claude tier alias onto a Codex session.
       expect(session.model).not.toBe('haiku');
 
       const saved = state.getSession(session.id);
-      expect(saved!.model).toBe('gpt-5.4-mini');
+      expect(saved!.model).toBe('gpt-6-luna');
       expect(saved!.framework).toBe('codex-cli');
     });
 

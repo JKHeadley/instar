@@ -1,0 +1,52 @@
+{
+  "ts": "2026-10-09T18:57:59.783Z",
+  "slug": "a2a-single-agent-identity-part-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 2646,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/AgentIdentityAdoption.ts",
+      "src/core/AgentIdentityAudit.ts",
+      "src/core/AgentIdentityCoherence.ts",
+      "src/core/AgentIdentityHandover.ts",
+      "src/core/AgentIdentityLock.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/types.ts",
+      "src/server/routes/provenance.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/UnifiedTrustWiring.ts",
+      "src/threadline/client/IdentityManager.ts",
+      "src/threadline/client/JoinedMeshDetector.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/listener-daemon.ts"
+    ],
+    "addedLines": 2563,
+    "deletedLines": 83
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The parent spec (agent-identity-continuity-on-expansion, 2026-08-20) guarded only one of two mint sites and compared two fingerprint formulas; the Studio minted a second identity 2026-08-26 and the split went unreported until 2026-10-08 (ACT-058)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Two controllers registered in src/testing/selfActionRegistry.ts (agent-identity-adoption as a declared Eternal Sentinel with a 10-min request floor that survives restart via the responder's server-side share rate-limit + retryAfterMs and ONE escalation per refusal reason; agent-identity-coherence-detector raising one item per sorted-set episode, holder-only, deduped across restart by the attention store id). The ratchet drives both under the pinned never-repairs fixture at N and 2N ticks."
+    }
+  },
+  "verdict": "pass"
+}

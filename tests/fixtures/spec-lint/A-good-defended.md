@@ -4,12 +4,13 @@ title: "Fixture — defended machine-local surface (PASSES Standard A)"
 
 # Fixture spec — a well-defended machine-local surface
 
-This surface stores the Telegram bot token binding, which physically lives on one
-disk's keychain.
+The signing key is generated inside this machine's secure element and has no
+export path. There is no authority forbidding the move; the move is simply not
+possible — which is why the basis is stated as an impossibility rather than a
+prohibition, and why the barrier is permanent rather than temporary.
 
 ## Multi-machine posture
 
-The bot-token → forum/topic-id binding is machine-local: it is namespaced by the
-per-disk service credential and cannot be replicated safely.
+The attestation signing key is machine-local.
 
-machine-local-justification: physical-credential-locality
+machine-local-justification: physical-credential-locality impossible-because="the key is generated inside this machine's secure element and has no export path" permanence=permanent

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-09T00:54:46.078Z",
+  "slug": "a2a-ack-never-acked",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/WarrantsReplyGate.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/threadline/ack-never-acked.test.ts",
+      "howCaught": "A recognised ack is terminal at the receiver (runRelayAckStage returns before any send), so one message yields at most one ack per side and one session in total; the per-sender limiter still bounds acks for real messages. The test drives two handlers back to back until the wire is quiet."
+    }
+  },
+  "verdict": "pass"
+}

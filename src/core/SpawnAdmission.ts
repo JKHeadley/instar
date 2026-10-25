@@ -108,7 +108,9 @@ export interface AdmitInput {
     | 'telegram-respawn-context-exhausted'
     | 'telegram-respawn-dead'
     | 'slack-inbound-spawn'
-    | 'slack-recovery-spawn';
+    | 'slack-recovery-spawn'
+    // ACT-091: a topic-bound Threadline reply waking a dead/reaped topic session.
+    | 'threadline-topic-respawn';
   /**
    * TOCTOU guard (§3.1 item 2): when the router already produced a verdict for
    * this message, the seam CONSUMES it rather than re-resolving — the admission

@@ -152,6 +152,20 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Machine identity re-announce — one attempt per destination per 24h;
+    // the durable episode store separately caps one keyEpoch at three attempts.
+    controllerId: 'identity-reannounce',
+    actionVerb: 'retry-identity-reannounce',
+    direction: 'neutral',
+    resource: 'pool-shared',
+    failDirection: 'closed-queue',
+    perTargetCountCeiling: 1,
+    totalCountCeiling: 64,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 64, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Sparse liveness line — a DECLARED eternal sentinel (rate-floored, never
     // count-bounded; FD7). Registry rateFloorMs: 3,600,000.
     controllerId: 'liveness-heartbeat',
@@ -178,6 +192,35 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     totalCountCeiling: 6,
     windowMs: 60 * 60_000,
     rateBucket: { ratePerWindow: 6, windowMs: 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Feedback executor fix attempts (feedback-triage-and-execution §4). Telemetry only: the
+    // executor enforces its own caps (2 concurrent, 6 starts/day, 4 open PRs) in code.
+    controllerId: 'feedback-execute',
+    actionVerb: 'spawn-fix-attempt',
+    direction: 'amplifying',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 4,
+    totalCountCeiling: 6,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 6, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Slow automatic retry of a failed sign-in repair (spec
+    // relogin-unattended-agent-session-and-slow-retry). Telemetry first: the durable per-incident
+    // cap (slowRetryCount ≤ 3) and the 6 h / 24 h delays bind it in code.
+    controllerId: 'subscription-relogin-redrive',
+    actionVerb: 'relogin-redrive',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 20,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 20, windowMs: 24 * 60 * 60_000, refill: 'window' },
     ...COMMON,
   },
   {

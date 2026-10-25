@@ -45,6 +45,32 @@ function tokenCountLine(opts: {
   });
 }
 
+/**
+ * The session-close record codex appends after the last real quota event: a
+ * DIFFERENT limit family (`premium`) carrying credits/entitlement state and no
+ * usage windows at all. Taking the newest rate_limits record blindly let this
+ * one line erase a whole session of real quota, which is what blanked the
+ * Subscriptions cards the moment a session ended.
+ */
+function entitlementCloseLine(ts: string): string {
+  return JSON.stringify({
+    timestamp: ts,
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      rate_limits: {
+        limit_id: 'premium',
+        limit_name: null,
+        primary: null,
+        secondary: null,
+        credits: { has_credits: false, unlimited: false, balance: '0' },
+        plan_type: null,
+        rate_limit_reached_type: null,
+      },
+    },
+  });
+}
+
 function turnContextLine(model: string): string {
   return JSON.stringify({
     timestamp: '2026-05-30T19:20:00.000Z',
@@ -94,6 +120,71 @@ describe('parseUsageFromTail', () => {
     const tail = ['{not json', tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 1, secondaryUsed: 2 }), 'garbage'].join('\n');
     const snap = parseUsageFromTail(tail, '/x/rollout-x.jsonl', NOW_MS);
     expect(snap!.primary!.usedPercent).toBe(1);
+  });
+
+  it('keeps the codex quota when a window-less entitlement record closes the session', () => {
+    const tail = [
+      turnContextLine('gpt-5.5'),
+      tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 13, secondaryUsed: 93 }),
+      entitlementCloseLine('2026-05-30T19:22:00.500Z'),
+    ].join('\n');
+
+    const snap = parseUsageFromTail(tail, '/x/rollout-x.jsonl', NOW_MS);
+    expect(snap).not.toBeNull();
+    // The newest record is the entitlement one, but the codex windows survive.
+    expect(snap!.secondary!.usedPercent).toBe(93);
+    expect(snap!.primary!.usedPercent).toBe(13);
+    expect(snap!.planType).toBe('plus');
+    expect(snap!.capturedAt).toBe('2026-05-30T19:22:00.000Z');
+    expect(snap!.windowsUnavailable).toBeUndefined();
+  });
+
+  it('still takes the NEWEST codex record when several are present', () => {
+    const tail = [
+      tokenCountLine({ ts: '2026-05-30T19:00:00.000Z', primaryUsed: 5, secondaryUsed: 50 }),
+      entitlementCloseLine('2026-05-30T19:10:00.000Z'),
+      tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 13, secondaryUsed: 93 }),
+    ].join('\n');
+    const snap = parseUsageFromTail(tail, '/x/rollout-x.jsonl', NOW_MS);
+    expect(snap!.secondary!.usedPercent).toBe(93);
+    expect(snap!.capturedAt).toBe('2026-05-30T19:22:00.000Z');
+  });
+
+  it('reports windowsUnavailable when the only records carry no window', () => {
+    const tail = [
+      turnContextLine('gpt-5.5'),
+      entitlementCloseLine('2026-05-30T19:22:00.500Z'),
+    ].join('\n');
+    const snap = parseUsageFromTail(tail, '/x/rollout-x.jsonl', NOW_MS);
+    expect(snap).not.toBeNull();
+    expect(snap!.windowsUnavailable).toBe(true);
+    expect(snap!.primary).toBeNull();
+    expect(snap!.secondary).toBeNull();
+    expect(snap!.capturedAt).toBe('2026-05-30T19:22:00.500Z');
+  });
+
+  it('ignores a NON-codex limit family even when it does carry windows', () => {
+    const foreign = JSON.stringify({
+      timestamp: '2026-05-30T19:30:00.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rate_limits: {
+          limit_id: 'some-other-product',
+          primary: { used_percent: 99, window_minutes: 300, resets_at: 1780171524 },
+          plan_type: 'other',
+          rate_limit_reached_type: null,
+        },
+      },
+    });
+    const tail = [
+      tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 13, secondaryUsed: 93 }),
+      foreign,
+    ].join('\n');
+    const snap = parseUsageFromTail(tail, '/x/rollout-x.jsonl', NOW_MS);
+    // Another product's window must never be presented as this account's quota.
+    expect(snap!.primary!.usedPercent).toBe(13);
+    expect(snap!.planType).toBe('plus');
   });
 
   it('tolerates a missing window (only primary present)', () => {
@@ -166,6 +257,41 @@ describe('readLatestCodexUsage', () => {
 
   it('returns null when no sessions dir exists (pure Claude agent)', async () => {
     expect(await readLatestCodexUsage({ codexHome: home, nowMs: NOW_MS })).toBeNull();
+  });
+
+  it('falls through an entitlement-only rollout to an older one that has real windows', async () => {
+    const older = writeRollout('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '2026-05-30T12-00-00', [
+      tokenCountLine({ ts: '2026-05-30T19:22:00.000Z', primaryUsed: 13, secondaryUsed: 93 }),
+    ]);
+    const newer = writeRollout('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee', '2026-05-30T13-00-00', [
+      entitlementCloseLine('2026-05-30T19:40:00.000Z'),
+    ]);
+    // Stamp BOTH files relative to real wall-clock: the reader ranks by mtime,
+    // so pinning only one to a 2026-05-30 timestamp would leave the other on
+    // today's mtime and the ordering under test would never actually apply.
+    const realNow = Date.now();
+    const stamp = (file: string, msAgo: number) => {
+      const t = new Date(realNow - msAgo);
+      fs.utimesSync(file, t, t);
+    };
+    stamp(older, 120_000);
+    stamp(newer, 60_000);
+
+    const snap = await readLatestCodexUsage({ codexHome: home, nowMs: NOW_MS });
+    expect(snap).not.toBeNull();
+    expect(snap!.secondary!.usedPercent).toBe(93);
+    expect(snap!.windowsUnavailable).toBeUndefined();
+  });
+
+  it('returns the entitlement-only snapshot when NO rollout reports a window', async () => {
+    writeRollout('cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee', '2026-05-30T12-00-00', [
+      entitlementCloseLine('2026-05-30T19:40:00.000Z'),
+    ]);
+    const snap = await readLatestCodexUsage({ codexHome: home, nowMs: NOW_MS });
+    expect(snap).not.toBeNull();
+    expect(snap!.windowsUnavailable).toBe(true);
+    expect(snap!.primary).toBeNull();
+    expect(snap!.secondary).toBeNull();
   });
 
   it('returns null when rollouts exist but none carry rate-limit data', async () => {

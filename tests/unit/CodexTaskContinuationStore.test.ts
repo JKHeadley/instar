@@ -51,6 +51,7 @@ describe('parseContinuationTasks', () => {
 describe('CodexTaskContinuationStore', () => {
   const live = (dir: string, extra = {}) => new CodexTaskContinuationStore(dir, {
     enabled: true,
+    preparationCarrierEnabled: true,
     maxDurationSeconds: 3600,
     maxContinuations: 3,
     auditMaxRows: 20,
@@ -175,6 +176,52 @@ describe('CodexTaskContinuationStore', () => {
     ]);
     expect(fs.readFileSync(path.join(dir, 'continuation', 'audit.local.jsonl'), 'utf8')).toContain('"reason":"renewed"');
     expect(store.decide('458', 'new-session')).toMatchObject({ decision: 'continue', openTaskCount: 1 });
+  });
+
+  it('carries preparation without claiming the autonomous run is active and enforces one-way boundaries', () => {
+    const dir = temp();
+    const store = live(dir);
+    const started = store.start({
+      topicId: '36966', sessionId: 'w32-session',
+      tasks: ['repair admission', 'admit W32'],
+      mode: 'autonomous-preparation',
+    });
+    expect(started).toMatchObject({ active: true, mode: 'autonomous-preparation', preparationState: 'preparing' });
+    expect(store.decide('36966', 'w32-session')).toMatchObject({ decision: 'continue', openTaskCount: 2 });
+
+    const recovering = store.markPreparationRecovering('36966');
+    expect(recovering).toMatchObject({ active: true, preparationState: 'recovering' });
+    const promoted = store.promotePreparation('36966');
+    expect(promoted).toMatchObject({ active: false, preparationState: 'promoted' });
+    expect(store.decide('36966', 'w32-session')).toMatchObject({ decision: 'allow', reason: 'no-ledger' });
+    expect(() => store.markPreparationRecovering('36966')).toThrow('preparation-not-active');
+    expect(() => store.renew('36966')).toThrow('preparation-use-recover-route');
+    expect(() => store.start({ topicId: '36966', tasks: ['restart'], mode: 'autonomous-preparation' }))
+      .toThrow('preparation-ledger-exists');
+  });
+
+  it('terminalizes a failed preparation and rejects preparation transitions on ordinary ledgers', () => {
+    const store = live(temp());
+    store.start({ topicId: '36966', sessionId: 'w32-session', tasks: ['repair'], mode: 'autonomous-preparation' });
+    expect(store.terminalizePreparation('36966')).toMatchObject({ active: false, preparationState: 'terminal' });
+    expect(() => store.promotePreparation('36966')).toThrow('preparation-not-active');
+
+    store.start({ topicId: '458', sessionId: 'ordinary', tasks: ['one'] });
+    expect(() => store.markPreparationRecovering('458')).toThrow('preparation-not-active');
+  });
+
+  it('keeps autonomous preparation dark behind its independent config gate', () => {
+    const store = new CodexTaskContinuationStore(temp(), { enabled: true, preparationCarrierEnabled: false });
+    expect(() => store.start({ topicId: '36966', tasks: ['repair'], mode: 'autonomous-preparation' }))
+      .toThrow('preparation-carrier-disabled');
+    expect(store.start({ topicId: '458', tasks: ['ordinary'] })).toMatchObject({ active: true, mode: 'ordinary' });
+
+    const carrierDir = temp();
+    const enabled = live(carrierDir);
+    enabled.start({ topicId: '36966', sessionId: 'w32', tasks: ['repair'], mode: 'autonomous-preparation' });
+    const carrierOff = live(carrierDir, { preparationCarrierEnabled: false });
+    expect(carrierOff.decide('36966', 'w32')).toMatchObject({ decision: 'deactivate', reason: 'disabled' });
+    expect(carrierOff.read('36966')).toMatchObject({ active: false, preparationState: 'terminal' });
   });
 
   it('hard-disables without mutating into a continuation', () => {

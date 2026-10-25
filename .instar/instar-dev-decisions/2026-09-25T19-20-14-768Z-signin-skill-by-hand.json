@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-25T19:20:14.768Z",
+  "slug": "signin-skill-by-hand",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/builtinSkillContent.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

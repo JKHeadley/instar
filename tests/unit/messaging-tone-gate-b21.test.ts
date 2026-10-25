@@ -39,12 +39,13 @@ describe('MessagingToneGate — B21_USER_TASK_SUBSTITUTION', () => {
     expect(RULE_CLASSES['B21_USER_TASK_SUBSTITUTION']).toBe('behavioral-judgment');
   });
 
-  it('DISPOSITION ratchet: RULE_DISPOSITIONS covers exactly VALID_RULES; B21 is advisory (operator directive 2026-07-18)', () => {
+  it('DISPOSITION ratchet: RULE_DISPOSITIONS covers exactly VALID_RULES; only B2 and B21 are advisory', () => {
     expect(Object.keys(RULE_DISPOSITIONS).sort()).toEqual([...VALID_RULES].sort());
+    expect(RULE_DISPOSITIONS['B2_FILE_PATH']).toBe('advisory');
     expect(RULE_DISPOSITIONS['B21_USER_TASK_SUBSTITUTION']).toBe('advisory');
-    // Every OTHER rule keeps its blocking disposition until its own migration spec.
+    // Every OTHER rule keeps its blocking disposition until its own approved migration.
     for (const rule of VALID_RULES) {
-      if (rule !== 'B21_USER_TASK_SUBSTITUTION') {
+      if (rule !== 'B2_FILE_PATH' && rule !== 'B21_USER_TASK_SUBSTITUTION') {
         expect(RULE_DISPOSITIONS[rule]).toBe('blocking');
       }
     }

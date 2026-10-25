@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-20T03:48:29.733Z",
+  "slug": "invite-approval-owner-from-verified-operator",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 61,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/users/TopicOperatorStore.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -12,6 +12,7 @@ import type {
   McpRegistryOptions,
 } from '../../../primitives/integration/mcpToolRegistry.js';
 import { CapabilityFlag } from '../../../capabilities.js';
+import { assertManagedTelegramMcpRegistration } from '../../../primitives/integration/mcpToolRegistry.js';
 
 function configPath(scope: 'user' | 'project'): string {
   if (scope === 'user') {
@@ -47,6 +48,7 @@ class AnthropicHeadlessMcpToolRegistry implements McpToolRegistry {
   readonly capability = CapabilityFlag.McpToolRegistry;
 
   async register(spec: McpServerSpec, options?: McpRegistryOptions): Promise<void> {
+    assertManagedTelegramMcpRegistration(spec);
     const scope = options?.scope ?? 'user';
     const config = await readConfig(scope);
     const servers = (config['mcpServers'] as Record<string, unknown>) ?? {};

@@ -1,0 +1,39 @@
+{
+  "ts": "2026-09-26T08:57:51.991Z",
+  "slug": "origin-store-no-permanent-latch",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 362,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 306,
+    "deletedLines": 56
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "control-loop edge: generation failure -> backoff -> spawn; steady-state bound: at most 6 restarts per outage under sustained failure, horizon-independent (controller origin-store-worker-restart); settling brake: consecutive-failure cap restored only after a 5-minute failure-free healthy window, and openReplacement() carries the spent count across the 15-minute recovery reopen"
+    }
+  },
+  "verdict": "blocked"
+}

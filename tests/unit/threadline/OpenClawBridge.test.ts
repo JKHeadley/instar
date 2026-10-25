@@ -644,8 +644,14 @@ describe('OpenClawBridge', () => {
     it('different agents get different threads for same room', async () => {
       const { bridge, sendMock } = createBridge();
       await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-a', roomId: 'room-1' }));
-      // Small wait to ensure different Date.now() for threadId generation
-      await new Promise(r => setTimeout(r, 2));
+      // 2026-08-23: a `setTimeout(2)` stood here, with the comment "small wait to
+      // ensure different Date.now() for threadId generation". That sleep was not a
+      // test detail — it was the DEFECT, written down and worked around. The id
+      // carried no entropy but the clock, so two agents in one room within a
+      // millisecond collided; the sleep bought the millisecond and the assertion
+      // below then passed for a reason that had nothing to do with the property it
+      // claims to check. The e2e had no sleep and failed intermittently instead.
+      // Removed: the assertion now depends on the fix rather than on the delay.
       await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-b', roomId: 'room-1' }));
       // Different agents produce different mapping keys (roomId::agentId),
       // so they get independent thread assignments
@@ -654,6 +660,47 @@ describe('OpenClawBridge', () => {
       expect(threadA).not.toBeNull();
       expect(threadB).not.toBeNull();
       expect(threadA).not.toBe(threadB);
+    });
+
+    it('two agents in the same room at the SAME millisecond get different threads', async () => {
+      // The deterministic version of the race the e2e caught by luck. The clock is
+      // frozen, so if the threadId's only distinguishing input is the timestamp the
+      // two ids are byte-identical and this fails every run rather than one in
+      // hundreds. Uniqueness must come from entropy, never from how fast the
+      // caller happens to be.
+      const frozen = 1_756_000_000_000;
+      const spy = vi.spyOn(Date, 'now').mockReturnValue(frozen);
+      try {
+        const { bridge } = createBridge();
+        await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-a', roomId: 'shared' }));
+        await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-b', roomId: 'shared' }));
+
+        const threadA = bridge.getThreadId('shared', 'agent-a');
+        const threadB = bridge.getThreadId('shared', 'agent-b');
+        expect(threadA).not.toBeNull();
+        expect(threadB).not.toBeNull();
+        expect(threadA).not.toBe(threadB);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('the SAME agent re-entering a room at the same millisecond keeps ONE thread', async () => {
+      // The other side of the boundary: entropy must not leak into the reuse path.
+      // A fresh random suffix on every resolve would make every message its own
+      // thread — uniqueness bought at the cost of continuity, which is the failure
+      // this fix must not trade into.
+      const frozen = 1_756_000_000_000;
+      const spy = vi.spyOn(Date, 'now').mockReturnValue(frozen);
+      try {
+        const { bridge, sendMock } = createBridge();
+        await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-a', roomId: 'shared' }));
+        await bridge.processMessage(createMockRuntime(), createMockMessage({ userId: 'agent-a', roomId: 'shared' }));
+        expect(sendMock.mock.calls[0][0].threadId).toBe(sendMock.mock.calls[1][0].threadId);
+        expect(bridge.getMetrics().threadsActive).toBe(1);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('getThreadId returns null when no mapping exists', () => {

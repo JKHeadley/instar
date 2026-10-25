@@ -1,0 +1,205 @@
+import { createHash } from 'node:crypto';
+import type {
+  SubscriptionLoginCauseClass,
+  SubscriptionLoginEpisode,
+} from './SubscriptionLoginLedger.js';
+import type { SubscriptionReloginMode } from './SubscriptionReloginStore.js';
+
+const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
+  'no-refresh-token',
+  'exchange-failed',
+  'malformed-response',
+  'still-authfailed-after-refresh',
+  'cli-signed-out-auth-refused',
+  'cli-login-expired-observed',
+]);
+const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
+const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
+
+/**
+ * The (account × machine) passkey cell's state as the admission input sees it (spec
+ * agent-held-google-passkey §3.4 / §4). Only `ready` admits; every other value maps to a
+ * NAMED refusal. `unknown` = the state has not been computed on this machine (no store, no
+ * proof yet) and is refused too — a passkey repair never runs on an unproven cell.
+ */
+export type PasskeyCellAdmissionState =
+  | 'ready' | 'security' | 'breaker-open' | 'unverified-stopped' | 'quarantined' | 'rejected'
+  | 'suspended' | 'chrome-unverified' | 'unknown';
+
+const PASSKEY_CELL_REFUSALS: Record<Exclude<PasskeyCellAdmissionState, 'ready'>, SubscriptionReloginRefusal> = {
+  'security': 'passkey-cell-security',
+  'breaker-open': 'passkey-cell-breaker-open',
+  'unverified-stopped': 'passkey-cell-unverified-stopped',
+  'quarantined': 'passkey-cell-quarantined',
+  'rejected': 'passkey-cell-rejected',
+  'suspended': 'passkey-suspended',
+  'chrome-unverified': 'passkey-chrome-unverified',
+  'unknown': 'passkey-cell-state-unknown',
+};
+
+export type SubscriptionReloginRefusal =
+  | 'feature-off'
+  | 'pool-authority-not-ready'
+  | 'account-not-needs-reauth'
+  | 'source-episode-closed'
+  | 'source-episode-wrong-cell'
+  | 'source-not-exchange-corroborated'
+  | 'codex-live-read-disabled'
+  | 'source-not-directly-observed'
+  | 'cause-not-actionable'
+  | 'repair-already-live'
+  | 'pending-login-already-live'
+  | 'profile-unresolved'
+  | 'profile-ambiguous'
+  | 'profile-directory-missing'
+  | 'profile-not-dedicated'
+  | 'profile-identity-mismatch'
+  | 'vault-reference-missing'
+  | 'login-method-not-autonomous'
+  | 'framework-not-supported'
+  | 'breaker-open'
+  | 'passkey-binding-missing'
+  | 'passkey-cell-security'
+  | 'passkey-cell-breaker-open'
+  | 'passkey-cell-unverified-stopped'
+  | 'passkey-suspended'
+  | 'passkey-chrome-unverified'
+  | 'passkey-cell-quarantined'
+  | 'passkey-cell-rejected'
+  | 'passkey-cell-state-unknown';
+
+export interface SubscriptionReloginAdmissionInput {
+  configuredMode: 'off' | SubscriptionReloginMode;
+  poolAuthority: 'ready' | 'unconfigured' | 'invalid' | 'unavailable';
+  account: {
+    id: string;
+    machineId: string;
+    status: string;
+    framework: string;
+    provider: string;
+    identityHash: string;
+  };
+  sourceEpisode: SubscriptionLoginEpisode;
+  hasLiveRepair: boolean;
+  hasLivePendingLogin: boolean;
+  profile: null | {
+    id: string;
+    ambiguous: boolean;
+    dirExists: boolean;
+    dedicated: boolean;
+    identityHash: string;
+    loginMethod: string;
+    danglingRefs: string[];
+    /** The passkey store entry key bound to this account (google-passkey only). */
+    passkeyEntryKey?: string | null;
+    /** The cell's passkey state; null/undefined = not computed (treated as `unknown`). */
+    passkeyCell?: PasskeyCellAdmissionState | null;
+  };
+  breakerOpen: boolean;
+  unattended?: {
+    explicitlyEnabled: boolean;
+    successfulRepairs: number;
+    evidenceDays: number;
+    identityMismatches: number;
+    unexpectedOrigins: number;
+    minimumSuccessfulRepairs?: number;
+    minimumEvidenceDays?: number;
+    /** Helper-reported hard-line stops since the last success (any ⇒ held at approval). */
+    helperHardLines?: number;
+    /** The bound backup-code vault entry holds fewer than the unattended floor (⇒ held at approval). */
+    backupCodesLow?: boolean;
+  };
+}
+
+export type SubscriptionReloginAdmission =
+  | { admitted: false; reason: SubscriptionReloginRefusal }
+  | {
+      admitted: true;
+      mode: SubscriptionReloginMode;
+      unattendedHeld: boolean;
+      inputDigest: string;
+      profileId: string;
+    };
+
+/** Pure, deterministic admission. Metrics and LLM judgment are never action authority. */
+export function evaluateSubscriptionReloginAdmission(
+  input: SubscriptionReloginAdmissionInput,
+): SubscriptionReloginAdmission {
+  if (input.configuredMode === 'off') return refuse('feature-off');
+  if (input.poolAuthority !== 'ready') return refuse('pool-authority-not-ready');
+  if (input.account.status !== 'needs-reauth') return refuse('account-not-needs-reauth');
+  if (input.sourceEpisode.closedAt !== null) return refuse('source-episode-closed');
+  if (input.sourceEpisode.accountId !== input.account.id || input.sourceEpisode.machineId !== input.account.machineId)
+    return refuse('source-episode-wrong-cell');
+  if (input.sourceEpisode.corroboration !== 'exchange-corroborated')
+    return refuse('source-not-exchange-corroborated');
+  if (input.sourceEpisode.provenance !== 'observed') return refuse('source-not-directly-observed');
+  if (!ACTIONABLE_CAUSES.has(input.sourceEpisode.causeClass)) return refuse('cause-not-actionable');
+  if (input.hasLiveRepair) return refuse('repair-already-live');
+  if (input.hasLivePendingLogin) return refuse('pending-login-already-live');
+  if (!SUPPORTED_PROVIDER_PATHS.has(`${input.account.provider}:${input.account.framework}`))
+    return refuse('framework-not-supported');
+  if (!input.profile) return refuse('profile-unresolved');
+  if (input.profile.ambiguous) return refuse('profile-ambiguous');
+  if (!input.profile.dirExists) return refuse('profile-directory-missing');
+  if (!input.profile.dedicated) return refuse('profile-not-dedicated');
+  if (input.profile.identityHash !== input.account.identityHash) return refuse('profile-identity-mismatch');
+  if (input.profile.danglingRefs.length > 0) return refuse('vault-reference-missing');
+  if (!SUPPORTED_LOGIN_METHODS.has(input.profile.loginMethod)) return refuse('login-method-not-autonomous');
+  const passkeyEntryKey = input.profile.loginMethod === 'google-passkey' ? (input.profile.passkeyEntryKey ?? null) : null;
+  if (input.profile.loginMethod === 'google-passkey') {
+    if (!passkeyEntryKey) return refuse('passkey-binding-missing');
+    const cell = input.profile.passkeyCell ?? 'unknown';
+    if (cell !== 'ready') return refuse(PASSKEY_CELL_REFUSALS[cell]);
+  }
+  if (input.breakerOpen) return refuse('breaker-open');
+
+  let mode: SubscriptionReloginMode = input.configuredMode;
+  let unattendedHeld = false;
+  if (mode === 'unattended' && !unattendedGraduated(input.unattended)) {
+    mode = 'approval';
+    unattendedHeld = true;
+  }
+  return {
+    admitted: true,
+    mode,
+    unattendedHeld,
+    profileId: input.profile.id,
+    inputDigest: digest({
+      sourceEpisodeId: input.sourceEpisode.id,
+      accountId: input.account.id,
+      machineId: input.account.machineId,
+      framework: input.account.framework,
+      provider: input.account.provider,
+      identityHash: input.account.identityHash,
+      profileId: input.profile.id,
+      // The passkey method and its entry key are part of the approved input (spec §3.4): an
+      // approval for the password path can never authorize the passkey path, and vice versa.
+      // Added ONLY for the passkey method so every legacy digest stays byte-stable across the
+      // upgrade (an in-flight suggested episode is not invalidated by the release itself).
+      ...(passkeyEntryKey ? { loginMethod: input.profile.loginMethod, passkeyEntryKey } : {}),
+      mode,
+    }),
+  };
+}
+
+function unattendedGraduated(value: SubscriptionReloginAdmissionInput['unattended']): boolean {
+  const minimumSuccessfulRepairs = Math.max(0, Math.floor(value?.minimumSuccessfulRepairs ?? 10));
+  const minimumEvidenceDays = Math.max(0, Math.floor(value?.minimumEvidenceDays ?? 30));
+  return value?.explicitlyEnabled === true
+    && value.successfulRepairs >= minimumSuccessfulRepairs
+    && value.evidenceDays >= minimumEvidenceDays
+    && value.identityMismatches === 0
+    && value.unexpectedOrigins === 0
+    && (value.helperHardLines ?? 0) === 0
+    && value.backupCodesLow !== true;
+}
+
+function refuse(reason: SubscriptionReloginRefusal): SubscriptionReloginAdmission {
+  return { admitted: false, reason };
+}
+
+function digest(value: Record<string, unknown>): string {
+  const canonical = Object.keys(value).sort().map((key) => `${key}=${String(value[key])}`).join('\n');
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}

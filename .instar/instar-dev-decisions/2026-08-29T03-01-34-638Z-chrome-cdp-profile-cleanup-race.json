@@ -1,0 +1,26 @@
+{
+  "ts": "2026-08-29T03:01:34.638Z",
+  "slug": "chrome-cdp-profile-cleanup-race",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ChromeCdpReloginBrowser.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot close() teardown for one explicitly opened browser child, not a self-triggered loop or controller"
+  },
+  "verdict": "blocked"
+}

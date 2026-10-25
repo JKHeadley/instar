@@ -92,6 +92,9 @@ export interface RopeRecoveryProberDeps {
     | 'probe-sent' | 'probe-success' | 'probe-failure' | 'rope-recovered'
     | 'exhaustion-trip' | 'slow-alive-floor'
     | 'dry-run-would-probe' | 'dry-run-would-close') => void;
+  /** Typed probe outcomes feed the claimant's separate durable trigger. */
+  onAuthRejected?: (target: RopeProbeTarget, detail: string) => void;
+  onTypedSuccess?: (target: RopeProbeTarget) => void;
   /** Durable condition lifecycle. When present, process restarts cannot mint a
    *  new Attention episode while the same rope condition remains active. */
   observeAttentionCondition?: (identity: AttentionConditionIdentity) => AttentionConditionObservation;
@@ -123,6 +126,16 @@ interface RopeKeyState {
   lastClosedProbeFailures: number;
   /** Previous tick's dead flag (the rope-recovered breadcrumb keys on dead→clear). */
   prevDead: boolean;
+  /**
+   * Last time a probe to this rope was refused at the AUTH layer
+   * (`auth-rejected:*` — signature-invalid / unknown-sender / wrong-recipient).
+   * An auth refusal is POSITIVE liveness evidence: the peer's server dialed,
+   * answered, verified, and said no. RopeHealthMonitor consumes this to keep a
+   * provably-alive peer from classifying as 'peer-offline — expected' (the
+   * 2026-08-29 two-day one-way-mesh signature-mismatch incident, where the
+   * stopped heartbeat that justified 'expected' was itself CAUSED by the fault).
+   */
+  lastAuthRejectAt: number;
 }
 
 /** One row of the /health `ropeHealth` surface (spec §3). */
@@ -170,14 +183,19 @@ export class RopeRecoveryProber {
     const targets = this.d.listTargets();
     if (targets.length === 0) return; // single-machine / no dialable peers — strict no-op
     const targetByKey = new Map<string, RopeProbeTarget>();
-    for (const t of targets) targetByKey.set(this.key(t.machineId, t.kind), t);
+    // resolve() is already preference ordered; keep the first URL for a kind
+    // rather than overwriting it with the least-preferred same-kind fallback.
+    for (const t of targets) {
+      const k = this.key(t.machineId, t.kind);
+      if (!targetByKey.has(k)) targetByKey.set(k, t);
+    }
 
     for (const row of this.d.resolver.snapshot()) {
       const k = this.key(row.peer, row.kind);
       const target = targetByKey.get(k);
       if (!target) continue; // not currently dialable (evicted/undiscovered) — nothing to pin
 
-      const st = this.ropes.get(k) ?? { episode: null, lastClosedAt: 0, lastClosedProbeFailures: 0, prevDead: false };
+      const st = this.ropes.get(k) ?? { episode: null, lastClosedAt: 0, lastClosedProbeFailures: 0, prevDead: false, lastAuthRejectAt: 0 };
       this.ropes.set(k, st);
 
       // ── The rope-recovered breadcrumb keys on the DEAD FLAG clearing (R-r2-3). ──
@@ -232,10 +250,10 @@ export class RopeRecoveryProber {
       // Fire-and-forget: the tick is a carrier, never blocked on a dial.
       void this.d
         .sendProbe(target)
-        .then((res) => this.onProbeResult(k, row, res))
+        .then((res) => this.onProbeResult(k, row, target, res))
         .catch((err) => {
           // A sendProbe seam that throws despite its contract is a failure result.
-          this.onProbeResult(k, row, {
+          this.onProbeResult(k, row, target, {
             typedSuccess: false,
             detail: `send-error: ${err instanceof Error ? err.message : String(err)}`,
             latencyMs: 0,
@@ -268,13 +286,14 @@ export class RopeRecoveryProber {
     return this.cfg.midIntervalMs;
   }
 
-  private onProbeResult(k: string, rowAtSend: RopeHealthSnapshotRow, res: RopeProbeSendResult): void {
+  private onProbeResult(k: string, rowAtSend: RopeHealthSnapshotRow, target: RopeProbeTarget, res: RopeProbeSendResult): void {
     const st = this.ropes.get(k);
     const ep = st?.episode;
     if (!st || !ep) return; // episode closed while the probe was in flight — result moot
     const [peer, kind] = [rowAtSend.peer, rowAtSend.kind];
 
     if (res.typedSuccess) {
+      this.d.onTypedSuccess?.({ machineId: peer, kind: rowAtSend.kind, url: '' });
       this.d.recordMetric?.('probe-success');
       ep.probeFailures = 0;
       ep.unreclaimedSuccesses += 1;
@@ -291,7 +310,7 @@ export class RopeRecoveryProber {
           this.d.recordMetric?.('dry-run-would-close');
         }
       } else {
-        this.d.resolver.recordResult(peer, kind, true, res.latencyMs);
+        this.d.resolver.recordResult(peer, kind, true, res.latencyMs, target.url);
       }
       if (
         ep.unreclaimedSuccesses === this.cfg.maxUnreclaimedSuccesses &&
@@ -312,12 +331,16 @@ export class RopeRecoveryProber {
       }
     } else {
       this.d.recordMetric?.('probe-failure');
+      if (typeof res.detail === 'string' && res.detail.startsWith('auth-rejected')) {
+        st.lastAuthRejectAt = this.now();
+        this.d.onAuthRejected?.({ machineId: peer, kind: rowAtSend.kind, url: '' }, res.detail);
+      }
       ep.probeFailures += 1;
       ep.unreclaimedSuccesses = 0;
       if (this.cfg.dryRun) {
         ep.shadowStreak = 0;
       } else {
-        this.d.resolver.recordResult(peer, kind, false, res.latencyMs);
+        this.d.resolver.recordResult(peer, kind, false, res.latencyMs, target.url);
       }
       this.log(`probe failed ${peer}/${kind} (${res.detail}; consecutive ${ep.probeFailures})`);
       if (ep.probeFailures >= this.cfg.exhaustAttempts && !ep.exhausted) {
@@ -410,4 +433,19 @@ export class RopeRecoveryProber {
   episodeOpen(peer: string, kind: string): boolean {
     return !!this.ropes.get(this.key(peer, kind))?.episode;
   }
+
+  /**
+   * Freshest auth-layer refusal observed across this peer's ropes (epoch-ms),
+   * or null when none recorded. Read seam for RopeHealthMonitor's
+   * alive-but-rejecting classification; scheduling-state only, never persisted.
+   */
+  lastAuthRejectAtMs(peer: string): number | null {
+    let best = 0;
+    for (const [k, st] of this.ropes) {
+      if (!k.startsWith(`${peer} `)) continue;
+      if (st.lastAuthRejectAt > best) best = st.lastAuthRejectAt;
+    }
+    return best > 0 ? best : null;
+  }
+
 }

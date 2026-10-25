@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-01T07:38:21.043Z",
+  "slug": "codex-session-lifecycle-reliability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 212,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PendingInjectStore.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TrackedPhysicalEffectDispatcher.ts",
+      "src/monitoring/ContextCompactionControl.ts",
+      "src/monitoring/SessionRecovery.ts"
+    ],
+    "addedLines": 175,
+    "deletedLines": 37
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

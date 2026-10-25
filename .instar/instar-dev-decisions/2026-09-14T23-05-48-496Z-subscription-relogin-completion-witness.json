@@ -1,0 +1,39 @@
+{
+  "ts": "2026-09-14T23:05:48.496Z",
+  "slug": "subscription-relogin-completion-witness",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 165,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/PendingLoginStore.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 140,
+    "deletedLines": 25
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1988
+    ],
+    "notes": "The assisted re-login completion sweep reused settings-file existence as proof; an existing file survived failed repair and caused a false completion."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/enrollment-wizard.test.ts",
+      "howCaught": "Under repeated sweeps, absent/unreadable/unchanged revisions emit no completion; exact version CAS runs finalization once, a thrown finalizer remains pending, and terminal state is the settling brake."
+    }
+  },
+  "verdict": "pass"
+}

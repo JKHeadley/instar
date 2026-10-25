@@ -76,6 +76,8 @@ interface Harness {
   setRegistryOnline: (id: string, online: boolean) => void;
   setSplitBrain: (open: boolean) => void;
   failRaise: { on: boolean };
+  setAuthRejectAt: (id: string, atMs: number | null) => void;
+  authThrows: { on: boolean };
 }
 
 function mkMonitor(over: Partial<Parameters<typeof RopeHealthMonitor.prototype.evaluate>> & {
@@ -91,6 +93,8 @@ function mkMonitor(over: Partial<Parameters<typeof RopeHealthMonitor.prototype.e
   const stateFile = over.stateFile ?? path.join(tmp(), 'state', 'rope-health.json');
   let splitBrain = false;
   const failRaise = { on: false };
+  const authRejects = new Map<string, number | null>();
+  const authThrows = { on: false };
   const deps: RopeHealthMonitorDeps = {
     snapshot: () => rows.map((r) => ({ ...r })),
     selfMachineId: 'm_self',
@@ -110,6 +114,10 @@ function mkMonitor(over: Partial<Parameters<typeof RopeHealthMonitor.prototype.e
       return undefined;
     },
     splitBrainItemOpen: () => splitBrain,
+    readAuthRejectAtMs: (id) => {
+      if (authThrows.on) throw new Error('prober unreadable');
+      return authRejects.get(id) ?? null;
+    },
     stateFilePath: stateFile,
     recordMetric: (e) => metrics.push(e),
     now: () => nowMs,
@@ -133,6 +141,8 @@ function mkMonitor(over: Partial<Parameters<typeof RopeHealthMonitor.prototype.e
     setRegistryOnline: (id, o) => online.set(id, o),
     setSplitBrain: (open) => { splitBrain = open; },
     failRaise,
+    setAuthRejectAt: (id, atMs) => authRejects.set(id, atMs),
+    authThrows,
   };
 }
 
@@ -507,6 +517,78 @@ describe('RopeHealthMonitor — key-expiry tier (R-r2-3) + content scrub + diges
     expect(everything).not.toMatch(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
   });
 
+  it('key-expiry is scoped to nodes backing a mesh rope — a dead unrelated node stops warning', async () => {
+    // 2026-08-29: a device offline since 2026-08-13 was the tailnet-wide soonest expiry, so
+    // the digest warned permanently while every real mesh machine was months from expiry.
+    const nowMs = Date.parse('2026-08-29T19:00:00Z');
+    const raw = JSON.stringify({
+      BackendState: 'Running',
+      Self: { TailscaleIPs: ['100.124.55.70'], KeyExpiry: '2027-02-15T03:47:45Z' },
+      Peer: {
+        mesh: { TailscaleIPs: ['100.64.165.27'], KeyExpiry: '2026-12-11T18:50:57Z' },
+        dead: { TailscaleIPs: ['100.89.225.62'], KeyExpiry: '2026-08-13T05:48:14Z' },
+      },
+    });
+    const build = (addresses?: () => string[]) => new RopeHealthMonitor(
+      {
+        snapshot: () => [],
+        selfMachineId: 'm_self',
+        listPeers: () => [],
+        readHeartbeatAtMs: () => null,
+        raiseAttention: () => undefined,
+        execTailscaleStatusJson: async () => raw,
+        ...(addresses ? { meshTailscaleAddresses: addresses } : {}),
+        stateFilePath: path.join(tmp(), 'state', 'rope-health.json'),
+        now: () => nowMs,
+      },
+      { keyExpiryCheckIntervalMs: 0, writeDebounceMs: 0 },
+    );
+
+    const scoped = build(() => ['100.64.165.27']);
+    scoped.evaluate();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(scoped.status().keyExpiry.warn).toBe(false);
+    expect(scoped.status().keyExpiry.soonest!.expiresAtIso).toBe('2026-12-11T18:50:57.000Z');
+
+    // Same input, no scope wired ⇒ the previous tailnet-wide behaviour (the dead node wins).
+    const unscoped = build();
+    unscoped.evaluate();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(unscoped.status().keyExpiry.warn).toBe(true);
+    expect(unscoped.status().keyExpiry.soonest!.inDays).toBeLessThan(0);
+  });
+
+  it('a throwing / empty address source falls back to tailnet-wide, never to a silent empty scope', async () => {
+    const nowMs = Date.parse('2026-08-29T19:00:00Z');
+    const raw = JSON.stringify({
+      BackendState: 'Running',
+      Peer: { dead: { TailscaleIPs: ['100.89.225.62'], KeyExpiry: '2026-08-13T05:48:14Z' } },
+    });
+    for (const source of [
+      () => { throw new Error('registry unreadable'); },
+      () => [] as string[],
+    ]) {
+      const monitor = new RopeHealthMonitor(
+        {
+          snapshot: () => [],
+          selfMachineId: 'm_self',
+          listPeers: () => [],
+          readHeartbeatAtMs: () => null,
+          raiseAttention: () => undefined,
+          execTailscaleStatusJson: async () => raw,
+          meshTailscaleAddresses: source as () => string[],
+          stateFilePath: path.join(tmp(), 'state', 'rope-health.json'),
+          now: () => nowMs,
+        },
+        { keyExpiryCheckIntervalMs: 0, writeDebounceMs: 0 },
+      );
+      monitor.evaluate();
+      await new Promise((r) => setTimeout(r, 10));
+      // Degrades to the pre-scoping behaviour — a real expiry is still reported, never hidden.
+      expect(monitor.status().keyExpiry.warn).toBe(true);
+    }
+  });
+
   it('digest: null when everything is ok; ≤3 sentences, machine-NAMED (nickname), when not', () => {
     const h = mkMonitor();
     h.rows.push(row('m_peer', 'tailscale', false));
@@ -520,5 +602,104 @@ describe('RopeHealthMonitor — key-expiry tier (R-r2-3) + content scrub + diges
     expect(digest).toContain('the mini'); // nickname, never a URL/IP
     expect(digest).toContain('tailscale');
     expect((digest.match(/\./g) ?? []).length).toBeLessThanOrEqual(4);
+  });
+});
+
+
+/**
+ * Alive-but-rejecting (2026-08-29 signature-mismatch incident): a peer whose
+ * probes come back with a typed AUTH refusal is provably awake — its server
+ * dialed, answered, verified the envelope, and said no. It must never classify
+ * as 'peer-offline — expected', because BOTH signals that branch keys on (the
+ * registry-online flag and the heartbeat) are suppressed by the very fault:
+ * a peer that cannot authenticate to us stops being able to report in. That
+ * circularity kept a two-day one-way mesh outage silent.
+ */
+describe('RopeHealthMonitor — alive-but-rejecting (auth-reject evidence beats absence)', () => {
+  it('the regression: all-down + stopped heartbeat + registry-offline + fresh auth evidence ⇒ auth-rejected and ONE loud item, never peer-offline', () => {
+    const h = mkMonitor();
+    h.rows.push(row('m_peer', 'tailscale', true), row('m_peer', 'lan', true));
+    h.setRegistryOnline('m_peer', false);   // the fault suppressed its reporting
+    h.setHeartbeat('m_peer', null);          // and its heartbeat
+    h.setAuthRejectAt('m_peer', h.now());    // but probes are actively REFUSED
+    settleAllDown(h);
+    const view = h.monitor.status().peers.find((p) => p.machineId === 'm_peer')!;
+    expect(view.condition).toBe('auth-rejected');
+    expect(h.raised.length).toBe(1);
+    expect(h.raised[0].id).toMatch(/^rope-health-auth-rejected:/);
+    expect(h.raised[0].title).toContain('the mini');
+    expect(h.raised[0].body).toContain('AWAKE');
+    // escalate-once per episode: further evaluations do not re-raise
+    h.setNow(h.now() + MIN);
+    h.monitor.evaluate();
+    expect(h.raised.length).toBe(1);
+    // digest names it distinctly, not as an expected sleep
+    const digest = h.monitor.composeDigest()!;
+    expect(digest).toContain('refusing');
+    expect(digest).not.toContain('expected');
+  });
+
+  it('STALE auth evidence does not classify — falls through to the ordinary offline rule', () => {
+    const h = mkMonitor();
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setRegistryOnline('m_peer', false);
+    h.setHeartbeat('m_peer', null);
+    h.setAuthRejectAt('m_peer', h.now() - 46 * MIN); // past the 45-min freshness bound
+    settleAllDown(h);
+    expect(h.monitor.status().peers.find((p) => p.machineId === 'm_peer')!.condition).toBe('peer-offline');
+    expect(h.raised.length).toBe(0);
+  });
+
+  it('a THROWING evidence source is NO evidence (never a crash, never a claim)', () => {
+    const h = mkMonitor();
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setRegistryOnline('m_peer', false);
+    h.setHeartbeat('m_peer', null);
+    h.authThrows.on = true;
+    settleAllDown(h);
+    expect(h.monitor.status().peers.find((p) => p.machineId === 'm_peer')!.condition).toBe('peer-offline');
+  });
+
+  it('authRejectAlertEnabled:false still CLASSIFIES honestly but raises nothing', () => {
+    const h = mkMonitor({ cfg: { authRejectAlertEnabled: false } });
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setAuthRejectAt('m_peer', h.now());
+    settleAllDown(h);
+    expect(h.monitor.status().peers.find((p) => p.machineId === 'm_peer')!.condition).toBe('auth-rejected');
+    expect(h.raised.length).toBe(0);
+  });
+
+  it('a failed raise retries on the next evaluation (detected-but-silent is impossible)', () => {
+    const h = mkMonitor();
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setAuthRejectAt('m_peer', h.now());
+    h.failRaise.on = true;
+    settleAllDown(h);
+    expect(h.raised.length).toBe(0);
+    h.failRaise.on = false;
+    h.setNow(h.now() + MIN);
+    h.setAuthRejectAt('m_peer', h.now()); // evidence stays fresh
+    h.monitor.evaluate();
+    expect(h.raised.length).toBe(1);
+  });
+
+  it('recovery clears the per-episode raise latch (a NEW episode can alert again)', () => {
+    const h = mkMonitor();
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setAuthRejectAt('m_peer', h.now());
+    settleAllDown(h);
+    expect(h.raised.length).toBe(1);
+    // rope heals + evidence goes stale → sustained clear
+    h.rows.length = 0;
+    h.rows.push(row('m_peer', 'tailscale', false));
+    h.setAuthRejectAt('m_peer', null);
+    for (let i = 0; i < 12; i++) { h.monitor.evaluate(); h.setNow(h.now() + 2 * MIN); }
+    expect(h.monitor.status().peers.find((p) => p.machineId === 'm_peer')!.condition).toBe('ok');
+    // a fresh episode with fresh evidence raises ONE new item
+    h.rows.length = 0;
+    h.rows.push(row('m_peer', 'tailscale', true));
+    h.setAuthRejectAt('m_peer', h.now());
+    settleAllDown(h);
+    expect(h.raised.length).toBe(2);
   });
 });

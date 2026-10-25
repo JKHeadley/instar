@@ -10,7 +10,10 @@
  * Features:
  * - Glare resolution (Section 7.5.3): lexicographically lower pubkey wins
  * - Rate limiting: max 5 attempts/minute per agent, block after 10 failures/hour
- * - Persistent identity keys and relay tokens
+ * - Persistent relay tokens
+ * - The identity key is the agent's ONE identity, read through the client
+ *   IdentityManager. This class never writes an identity file (spec:
+ *   docs/specs/threadline-identity-single-writer.md).
  * - Replay protection via nonce tracking
  *
  * Part of Threadline Protocol Phase 3.
@@ -20,7 +23,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  generateIdentityKeyPair,
   generateEphemeralKeyPair,
   computeChallengeResponse,
   verify,
@@ -28,6 +30,8 @@ import {
   deriveRelayToken,
   type KeyPair,
 } from './ThreadlineCrypto.js';
+import { IdentityManager } from './client/IdentityManager.js';
+import { writeFileAtomicOwnerOnly } from '../identity/IdentityKeyFile.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -61,11 +65,6 @@ interface RateLimitEntry {
   attempts: number[];       // timestamps of recent attempts
   failures: number;         // failure count in current hour window
   blockedUntil?: number;    // epoch ms when block expires
-}
-
-interface StoredIdentity {
-  publicKey: string;        // hex
-  privateKey: string;       // hex
 }
 
 interface StoredRelayTokens {
@@ -105,6 +104,7 @@ function buildDeterministicSalt(pubA: Buffer, pubB: Buffer): Buffer {
 export class HandshakeManager {
   private readonly stateDir: string;
   private readonly localAgent: string;
+  private readonly identityManager: IdentityManager;
   private identityKey: KeyPair | null = null;
   private readonly handshakes = new Map<string, HandshakeState>();
   private readonly rateLimits = new Map<string, RateLimitEntry>();
@@ -113,8 +113,8 @@ export class HandshakeManager {
   constructor(stateDir: string, localAgent: string) {
     this.stateDir = path.join(stateDir, 'threadline');
     this.localAgent = localAgent;
+    this.identityManager = new IdentityManager(stateDir);
     this.ensureDirs();
-    this.loadIdentity();
     this.loadRelayTokens();
   }
 
@@ -421,42 +421,17 @@ export class HandshakeManager {
 
   // ── Private: Identity management ──────────────────────────────────
 
+  /**
+   * The agent's identity key, from the single identity source. A handshake is
+   * a deliberate use of the identity, so it may create one through the
+   * IdentityManager when none exists (which also honours the joined-mesh mint
+   * refusal and refuses to mint over an unusable file).
+   */
   private getOrCreateIdentity(): KeyPair {
     if (this.identityKey) return this.identityKey;
-
-    const identityPath = path.join(this.stateDir, 'identity.json');
-    if (fs.existsSync(identityPath)) {
-      const stored: StoredIdentity = JSON.parse(fs.readFileSync(identityPath, 'utf-8'));
-      this.identityKey = {
-        publicKey: Buffer.from(stored.publicKey, 'hex'),
-        privateKey: Buffer.from(stored.privateKey, 'hex'),
-      };
-    } else {
-      this.identityKey = generateIdentityKeyPair();
-      const stored: StoredIdentity = {
-        publicKey: this.identityKey.publicKey.toString('hex'),
-        privateKey: this.identityKey.privateKey.toString('hex'),
-      };
-      fs.writeFileSync(identityPath, JSON.stringify(stored, null, 2));
-    }
-
+    const identity = this.identityManager.getOrCreate();
+    this.identityKey = { publicKey: identity.publicKey, privateKey: identity.privateKey };
     return this.identityKey;
-  }
-
-  private loadIdentity(): void {
-    const identityPath = path.join(this.stateDir, 'identity.json');
-    if (fs.existsSync(identityPath)) {
-      try {
-        const stored: StoredIdentity = JSON.parse(fs.readFileSync(identityPath, 'utf-8'));
-        this.identityKey = {
-          publicKey: Buffer.from(stored.publicKey, 'hex'),
-          privateKey: Buffer.from(stored.privateKey, 'hex'),
-        };
-      } catch {
-        // Corrupt identity file — will regenerate
-        this.identityKey = null;
-      }
-    }
   }
 
   // ── Private: Relay token persistence ──────────────────────────────
@@ -474,7 +449,7 @@ export class HandshakeManager {
 
   private saveRelayTokens(): void {
     const tokensPath = path.join(this.stateDir, 'relay-tokens.json');
-    fs.writeFileSync(tokensPath, JSON.stringify(this.relayTokens, null, 2));
+    writeFileAtomicOwnerOnly(tokensPath, JSON.stringify(this.relayTokens, null, 2));
   }
 
   // ── Private: Rate limiting ────────────────────────────────────────

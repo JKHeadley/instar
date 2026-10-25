@@ -33,6 +33,7 @@ import { addUser, listUsers } from './commands/user.js';
 import { addJob, listJobs } from './commands/job.js';
 import { listRelationships, importRelationships, exportRelationships } from './commands/relationship.js';
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
+import { identityAdopt, identityInit, identityStatus } from './commands/identity.js';
 import pc from 'picocolors';
 import { getInstarVersion } from './core/Config.js';
 import { resolveAgentDir } from './core/Config.js';
@@ -593,6 +594,37 @@ worktreeCmd
       });
     } catch (err) {
       console.error(pc.red(`worktree create failed: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
+// ── Codex (hand-started Codex CLI) ────────────────────────────────
+
+const codexCmd = program
+  .command('codex')
+  .description(
+    'Tools for a Codex CLI the operator starts BY HAND. `connect <agent>` writes that ' +
+      "agent's Threadline MCP entry into the shared Codex user config " +
+      '($CODEX_HOME/config.toml, default ~/.codex/config.toml). Codex sessions Instar ' +
+      'launches never need this — each gets its own entry per session.',
+  );
+
+codexCmd
+  .command('connect <agent>')
+  .description(
+    "Point a hand-started Codex at ONE agent's Threadline MCP server by writing " +
+      '[mcp_servers."threadline"] into the shared Codex user config. The file is shared by ' +
+      'every Codex on this machine, so the entry names one agent at a time — the last one ' +
+      'connected. Honors CODEX_HOME.',
+  )
+  .option('--dry-run', 'Print the entry that would be written; write nothing')
+  .action(async (agent: string, opts: { dryRun?: boolean }) => {
+    const { connectCodex, formatConnectCodexReport } = await import('./commands/codex.js');
+    try {
+      const result = await connectCodex({ agent, dryRun: !!opts.dryRun });
+      console.log(formatConnectCodexReport(result));
+    } catch (err) {
+      console.error(pc.red(`codex connect failed: ${(err as Error).message}`));
       process.exit(1);
     }
   });
@@ -1759,7 +1791,7 @@ lifelineCmd
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
     const { readStartupMarker } = await import('./lifeline/startupMarker.js');
-    const { execFileSync, execSync } = await import('node:child_process');
+    const { execFileSync } = await import('node:child_process');
     const fs = await import('node:fs');
     const path = await import('node:path');
     const config = loadConfig(opts.dir);
@@ -1796,27 +1828,43 @@ lifelineCmd
       const uid = process.getuid?.() ?? 0;
       execFileSync('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { stdio: 'inherit' });
     } catch (err) {
-      // Fallback: maybe running under tmux (dev). Try SIGTERM via pkill.
+      // Fallback: maybe running under tmux (dev). Try SIGTERM directly.
       // The b2lead incident showed that SIGTERM-only fallback leaves
       // sleeping lifeline processes holding lifeline.lock, blocking the
       // respawn loop indefinitely. Escalate to SIGKILL after a short
       // grace period so the lock is released and the new lifeline can
       // take over.
-      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to pkill`));
-      const pattern = `${config.projectName}.*lifeline`;
-      try {
-        execSync(`pkill -TERM -f '${pattern}'`);
-      } catch {
-        /* no process to kill — escalation below is a no-op */
-      }
-      // Grace period for clean exit (signal handlers, queue flush, etc.).
-      // After this, anything still alive is stuck and holding the lock.
-      await new Promise(r => setTimeout(r, 3000));
-      try {
-        execSync(`pkill -KILL -f '${pattern}'`);
-        console.warn(pc.yellow(`escalated to SIGKILL — old lifeline did not exit on SIGTERM`));
-      } catch {
-        /* nothing left to kill — SIGTERM did its job */
+      // The fallback signals ONLY the lifeline's own recorded processes — the
+      // lock holder (`lifeline.lock`, the process actually wedging the respawn)
+      // and the startup-marker pid — and only while the live process at each pid
+      // is PROVEN to be the one that wrote the record (same process start time).
+      // It used to be `pkill -f '<projectName>.*lifeline'`, which matches ANY
+      // command line carrying both words — e.g. a `claude -p` builder whose
+      // prompt names the agent's home and mentions the lifeline — and SIGKILLed
+      // it. A keyword check on the command line is no better: a reused pid can
+      // belong to such a builder. Legacy records without a start time are
+      // never signalled.
+      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
+      const { provenLifelineRecords } = await import('./lifeline/lifelineLock.js');
+      const { checkRecordedProcess } = await import('./core/processIdentity.js');
+      const targets = provenLifelineRecords(path.join(config.stateDir, 'lifeline.lock'), baseline);
+      if (targets.length === 0) {
+        console.warn(pc.yellow('no lifeline process proven at the recorded pids — nothing to signal'));
+      } else {
+        for (const t of targets) {
+          try { process.kill(t.pid, 'SIGTERM'); } catch { /* already exited */ }
+        }
+        // Grace period for clean exit (signal handlers, queue flush, etc.).
+        // After this, anything still alive is stuck and holding the lock.
+        await new Promise(r => setTimeout(r, 3000));
+        // Re-prove identity before escalating — a pid freed during the grace
+        // window may already belong to another process.
+        for (const t of targets.filter(r => checkRecordedProcess(r) === 'same')) {
+          try {
+            process.kill(t.pid, 'SIGKILL');
+            console.warn(pc.yellow(`escalated to SIGKILL — old lifeline ${t.pid} did not exit on SIGTERM`));
+          } catch { /* exited in between */ }
+        }
       }
     }
 
@@ -1912,13 +1960,25 @@ autostartCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
-    const { installAutoStart } = await import('./commands/setup.js');
+    const { installAutoStart, takeLastLingerOutcome, describeLingerOutcome, currentSystemdUser } =
+      await import('./commands/setup.js');
     const config = loadConfig(opts.dir);
     const hasTelegram = config.messaging?.some((m: { type: string }) => m.type === 'telegram') ?? false;
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
       console.log(pc.green(`Auto-start installed for "${config.projectName}".`));
-      console.log(pc.dim('Your agent will start automatically when you log in.'));
+      // On Linux, "installed" and "starts at boot" are different facts: an
+      // enabled user service only runs while that user holds a login session
+      // unless lingering is on. Report which one is actually true rather than
+      // the old unconditional "starts when you log in" (2026-08-25, headless
+      // Linux host — the message was true in a way that meant never).
+      const linger = takeLastLingerOutcome();
+      if (linger) {
+        const line = describeLingerOutcome(linger, currentSystemdUser());
+        console.log(linger === 'needs-privilege' ? pc.yellow(line) : pc.dim(line));
+      } else {
+        console.log(pc.dim('Your agent will start automatically when you log in.'));
+      }
     } else {
       console.log(pc.red('Failed to install auto-start.'));
       console.log(pc.dim(`Platform: ${process.platform} — auto-start supports macOS and Linux.`));
@@ -2118,6 +2178,32 @@ machineCmd
   .description('Revoke a machine from the mesh')
   .option('-d, --dir <path>', 'Project directory')
   .action(removeMachine);
+
+// ── Agent identity (a2a-single-agent-identity §1.4) ──────────────────
+const identityCmd = program
+  .command('identity')
+  .description('This machine\'s AGENT identity: adopt it from a sibling, or mint a standalone one');
+
+identityCmd
+  .command('status')
+  .description('The on-disk posture + routing fingerprint (never key material)')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityStatus);
+
+identityCmd
+  .command('adopt')
+  .description('Move this machine\'s existing identity aside and adopt the one a named sibling publishes (run ON the affected machine, after the operator\'s yes)')
+  .requiredOption('--from <machine-name-or-id>', 'The sibling to adopt the identity from')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityAdopt);
+
+identityCmd
+  .command('init')
+  .description('Mint a NEW agent identity on a fleet with no usable candidate (peers must re-pin)')
+  .option('--standalone', 'Required: this is a standalone recovery mint')
+  .option('--i-understand-peers-must-repin', 'Required: acknowledge every peer must re-pin the new address')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityInit);
 
 program
   .command('whoami')
@@ -2556,6 +2642,18 @@ gateCmd
   .action(async (opts) => {
     const { gateResetBreaker } = await import('./commands/gate.js');
     return gateResetBreaker(opts);
+  });
+
+gateCmd
+  .command('between-window')
+  .description('Evaluate the W27 between-window charter-admission package against the Telegram store')
+  .requiredOption('--package <path>', 'Admission package JSON')
+  .option('--store <path>', 'Override telegram-messages.jsonl path')
+  .option('--json', 'Emit the raw JSON result')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { gateBetweenWindowAdmission } = await import('./commands/gate.js');
+    return gateBetweenWindowAdmission(opts);
   });
 
 // ── `instar dev:preflight` — contributor ship-gate verifier ────────

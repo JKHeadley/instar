@@ -1,0 +1,11 @@
+# Corrective round10 independent review
+
+The author keeps all previous declared classes; no quiet external round has been claimed. Please review the current complete spec and resolve prior findings on their actual merits.
+
+The exact operator requirement is universal recording with OPTIONAL DISPLAY for every agent message. An alert is still an agent message. Round9 Claude recommendation to force its footer always on violates that requirement. The finite eight variants are pre-rendered strings sharing the already-required one fixed-notice permit; removing variants does not eliminate process binding, IPC or existing authorization. The current spec also names one narrow notifier API and sabotage tests, addressing the concrete round9 GPT concern without a general unrecorded send path.
+
+The user expressly includes browser/operator-account sends. A public MTProto client is an available alternate transport, not enforcement of existing browser writes by itself. Browser ownership still must be implemented. A new MTProto client needs application/account authorization, which has not been established; the concrete Web K server-result seam has been demonstrated without a new login. Implementation order and production fallback now appear explicitly under activation. There is no invented operator policy forbidding enrollment. In round6 Claude explicitly said the bounded canary + enrolled fallback was adequate and TDLib-first was preference, not defect; round9 re-raised it without a new factual failure. Please resolve that inconsistency rather than treat any preference for a different architecture as an unresolved defect by default.
+
+The mandated heading Open questions must remain for the skill's structural checker. The adjacent paragraph explicitly scopes it to unresolved operator decisions and lists outstanding engineering verification. Do not infer a claim that all implementation tests are already done.
+
+Report concrete DESIGN/PRECISION counts, and explicitly withdraw prior findings if unsupported by the actual contract. Preserve real defects with the correction needed. The author does not request lower classes to obtain convergence; this memo is a factual argument for you to independently check, not authority to agree.

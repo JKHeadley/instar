@@ -121,6 +121,26 @@ beforeEach(() => {
   fs.mkdirSync(path.join(stateDir, 'state'), { recursive: true });
 });
 
+it.each([{ enabled: false, dryRun: true }, { enabled: true, dryRun: true }, { enabled: true, dryRun: false }])('persists cosmetic preferences independently of model-profile regime %j', async regime => {
+  const bundle = buildBundle(regime);
+  const app = buildApp(bundle);
+  const result = await request(app).post('/topic-profile/42').set('X-Instar-Request', '1')
+    .send({ messageOriginDisplay: { enabled: false, model: true } }).expect(200);
+  expect(result.body.pin.messageOriginDisplay).toEqual({ enabled: false, model: true });
+  expect(result.body.message).toContain('origin recording continues');
+  expect(bundle.respawns).toEqual([]);
+  expect(bundle.surface.renderReadout('42')).toContain('enabled hidden');
+  expect(bundle.surface.renderProposalEcho('42', { messageOriginDisplay: { enabled: false } })).toMatchObject({ ok: true });
+  const reloaded = buildBundle({ enabled: true, dryRun: false });
+  expect(reloaded.store.resolve('42')?.messageOriginDisplay).toEqual({ enabled: false, model: true });
+  await request(app).post('/topic-profile/42').set('X-Instar-Request', '1')
+    .send({ messageOriginDisplay: { enabled: 'false' } }).expect(400);
+  expect(bundle.store.resolve('42')?.messageOriginDisplay?.enabled).toBe(false);
+  await request(app).post('/topic-profile/42').set('X-Instar-Request', '1')
+    .send({ messageOriginDisplay: null }).expect(200);
+  expect(bundle.store.resolve('42')?.messageOriginDisplay).toBeNull();
+});
+
 afterEach(() => {
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,

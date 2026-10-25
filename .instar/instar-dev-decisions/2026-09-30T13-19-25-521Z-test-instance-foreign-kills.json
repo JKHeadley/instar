@@ -1,0 +1,35 @@
+{
+  "ts": "2026-09-30T13:19:25.521Z",
+  "slug": "test-instance-foreign-kills",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/OrphanProcessReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 508,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/core/SessionManager.ts",
+      "src/core/processIdentity.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/lifelineLock.ts",
+      "src/lifeline/startupMarker.ts",
+      "src/monitoring/OrphanProcessReaper.ts",
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 325,
+    "deletedLines": 183
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop: the change only narrows which pid or tmux session existing kills may signal, adding ownership proof before each signal. lifeline restart is an operator-invoked one-shot; pipe/triage/orphan kills keep their existing cadence."
+  },
+  "verdict": "pass"
+}

@@ -105,6 +105,31 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'subscriptionRelogin',
+    prefixes: ['/subscription-relogin'],
+    description: 'Bounded Claude Code and Codex sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair; approval mode uses one operator click, while unattended mode requires an exact identity allowlist plus configured evidence floors. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident. On macOS the browser step can be done by one short-lived agent session following /subscription-signin section 3 (navigation agent-session), which posts the Claude code to a loopback, per-episode-token code route; that path honors unattended mode exactly like the others. A failed repair (not a safety refusal or operator cancel) retries itself slowly while the incident stays open: 6 h, then 24 h apart, at most 3 times; the episode carries nextAttemptAt.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.subscriptionRelogin,
+      mode: ctx.config.subscriptionPool?.assistedRelogin?.enabled === true
+        ? (ctx.config.subscriptionPool.assistedRelogin.dryRun === true
+          ? 'observe'
+          : (ctx.config.subscriptionPool.assistedRelogin.mode ?? 'approval'))
+        : 'off',
+      endpoints: [
+        'GET /subscription-relogin',
+        'POST /subscription-relogin/configure',
+        'GET /subscription-relogin/:episodeId/events',
+        'POST /subscription-relogin/repair-cell',
+        'POST /subscription-relogin/:episodeId/approve',
+        'POST /subscription-relogin/:episodeId/approve-with-mandate',
+        'POST /subscription-relogin/:episodeId/cancel',
+        'POST /subscription-relogin/:episodeId/retry',
+        'POST /subscription-relogin/:episodeId/code',
+      ],
+      navigation: ctx.config.subscriptionPool?.assistedRelogin?.navigation ?? 'default',
+    }),
+  },
+  {
     key: 'credentialRepointing',
     prefixes: ['/credentials'],
     description: 'Live credential re-pointing (WS5.2) — manual levers that MOVE a pool account\'s OAuth credential between config-home "slots" without restarting the sessions reading them (the staged §2.3 exchange), plus the ledger census + the single secret-scrub audit chokepoint. POST /credentials/swap exchanges two slots\' credentials live; POST /credentials/set-default flips which account ~/.claude serves (CMT-1337 zero-touch default flip); POST /credentials/restore-enrollment tears down to the enrollment layout, parking any identity-incoherent blob one-directionally (never exchanged into a healthy slot). GET /credentials/locations is the ledger read (slot ↔ account, since, lastVerifiedAt, quarantine, journal tail, mode); GET /credentials/rebalancer is the autonomous-balancer surface (503 in Increment A). All levers are DETECTIVE controls — operator notification + audit + param-validate + per-pair cooldown + a §0.g force budget on force:true. No token material ever exits any /credentials/* surface (the CredentialAuditEmit scrub chokepoint). Ships DARK behind subscriptionPool.credentialRepointing.enabled — every lever 503s/no-ops while disabled (byte-for-byte today\'s behavior).',
@@ -138,6 +163,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       runtimeEnriched: !!ctx.guardRegistry,
       pool: !!ctx.listPoolMachines,
       endpoints: ['GET /guards', 'GET /guards?scope=pool'],
+    }),
+  },
+  {
+    key: 'agentIdentity',
+    prefixes: ['/agent-identity'],
+    description: 'Agent identity across machines (a2a-single-agent-identity §1–§2): one agent, one routing fingerprint, on every machine. A joined or rebuilt machine ADOPTS the identity its siblings publish (signed observe/request mesh verbs, sealed to its registry key, reachable-agree + local-memory pin) and never mints one; a paired machine with no identity boots identity-not-provisioned (relay not attempted, lease yielded only to a live provisioned sibling, ONE agent-identity-missing item naming the refusal and the lever). GET /agent-identity/audit is the key-free audit (?scope=pool merges every online machine); POST /agent-identity/reload re-reads THIS machine\'s own disk and rebuilds its relay client (local effect only, carries no key, 429 inside 60 s). The continuous coherence check (one formula, every 5 min, self = disk AND connectedAs) is read on GET /threadline/health → identityCoherence; the lease holder raises ONE agent-identity-split item per episode. Replacing an EXISTING identity is the agent\'s action after the operator\'s yes: `instar identity adopt --from <sibling>` on that machine. Always on; a single machine reads cannot-tell.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.agentIdentity,
+      posture: ctx.agentIdentity?.notProvisioned() ? 'identity-not-provisioned' : 'provisioned',
+      endpoints: ['GET /agent-identity/audit', 'GET /agent-identity/audit?scope=pool', 'POST /agent-identity/reload', 'GET /threadline/health (identityCoherence)'],
     }),
   },
   {
@@ -237,6 +272,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'machineIdentityRecovery',
+    prefixes: ['/identity-recovery', '/identity-changes'],
+    description: 'Machine identity continuity after local key loss: keychain-escrowed recovery roots, bounded challenge/claim re-announcement, corroboration and quarantine, sticky revocation, non-authoritative endpoint telemetry, and an attributable identity-change ledger. First root establishment is pairing-code-only; later operator fanout requires a pinned recovery-root grant. Registry First: read GET /identity-recovery and GET /identity-changes before explaining a peer authentication failure or signing-key change.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.identityStore && !!ctx.identityReannounce,
+      endpoints: [
+        'GET /identity-recovery',
+        'GET /identity-changes',
+        'POST /identity-recovery/quarantines/:id/approve',
+        'POST /identity-recovery/quarantines/:id/deny',
+        'POST /identity-recovery/rotations/:machineId/:epoch/ack',
+      ],
+    }),
+  },
+  {
     key: 'singleMachineFailoverGap',
     // The route lives under the already-claimed '/pool' top-level prefix (owned
     // by the multiMachinePool entry), so this dedicated awareness entry claims
@@ -299,10 +349,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'parallelWork',
     prefixes: ['/parallel-work'],
-    description: 'Parallel-Work Awareness — a cross-topic read index over the Topic-Intent layer: every topic, its current focus, high-specificity tags, and whether a session is live on it. Lets the agent see what all its hands are doing across topics/sessions (the overlap-councilor read surface; the proactive ParallelWorkSentinel is Phase B, ships dark). Signal-only; never gates.',
+    description: 'Parallel-Work Awareness — a cross-topic read index over the Topic-Intent layer PLUS action-derived activity notes (CMT-810): every topic, its current focus, high-specificity tags, its lastAction (the concrete action it last claimed or asked the operator to approve — written automatically by the action-claim observer the moment the turn finishes), and whether a session is live on it. Lets the agent see what all its hands are doing across topics/sessions before advising the operator (the overlap-councilor read surface; the proactive ParallelWorkSentinel is Phase B, dev-gated, with a verifiable runtime at /parallel-work/sentinel). Signal-only; never gates.',
     build: ({ ctx }) => ({
       configured: !!ctx.parallelActivityIndex,
-      endpoints: ['GET /parallel-work/activities'],
+      actionNotes: !!ctx.topicActionNotes,
+      sentinelConstructed: !!ctx.parallelWorkSentinel,
+      endpoints: ['GET /parallel-work/activities', 'GET /parallel-work/sentinel'],
     }),
   },
   {
@@ -788,6 +840,47 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'windowLifecycle',
+    prefixes: ['/window-lifecycle'],
+    description: 'Window lifecycle obligation ledger — Echo build-lane authority compiled from the live tenets and window charter. It re-queries production evidence and executor registries, enforces lifecycle transitions and closure, exposes native-adapter admission, waiver/rollback/re-enable controls, and records signed shadow-enforcement maturation evidence. GET /window-lifecycle reports the authoritative ledger and closure evaluation; mutating routes are Echo-scoped and fail closed.',
+    build: ({ ctx }) => ({
+      configured: ctx.config.projectName === 'echo',
+      endpoints: [
+        'GET /window-lifecycle',
+        'GET /window-lifecycle/enforcement',
+        'POST /window-lifecycle/compile',
+        'POST /window-lifecycle/evidence',
+        'POST /window-lifecycle/evaluate',
+        'POST /window-lifecycle/tick',
+        'POST /window-lifecycle/transition',
+        'POST /window-lifecycle/native-admission',
+        'POST /window-lifecycle/waiver',
+        'POST /window-lifecycle/rollback',
+        'POST /window-lifecycle/reenable',
+        'POST /window-lifecycle/enforcement/record-shadow',
+        'POST /window-lifecycle/enforcement/graduate',
+        'POST /window-lifecycle/enforcement/off',
+        'POST /window-lifecycle/remediation/:obligationId/resolve',
+      ],
+    }),
+  },
+  {
+    key: 'windowRunLiveness',
+    prefixes: ['/window-run-liveness'],
+    description: 'Authoritative five-predicate autonomous-window liveness plus an explicitly enabled durable cadence executor. The executor consumes server-minted work receipts for distinct 30-minute intervals and independently delivers due 3-hour Telegram synthesis; it never labels narration as progress. Missing predicates revoke active, permit at most one durable bounded recovery, and then settle loudly to stalled/failed.',
+    build: ({ ctx }) => ({
+      configured: ctx.config.projectName === 'echo' && resolveDevAgentGate(ctx.config.monitoring?.windowRunLiveness?.enabled, ctx.config),
+      endpoints: [
+        'GET /window-run-liveness',
+        'POST /window-run-liveness/register',
+        'POST /window-run-liveness/tick',
+        'POST /window-run-liveness/work-advance',
+        'GET /window-run-liveness/cadence',
+        'POST /window-run-liveness/cadence/tick',
+      ],
+    }),
+  },
+  {
     key: 'semantic',
     prefixes: ['/semantic'],
     description: 'Semantic memory — successor to deprecated /memory',
@@ -836,7 +929,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'codexTaskContinuation',
     prefixes: ['/continuation'],
-    description: 'Bounded ordinary-work continuation for Codex — explicit per-topic task ledgers keep a local Codex session moving only while unchecked tasks and both duration/count budgets remain. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop. Off by default.',
+    description: 'Bounded Codex continuation — explicit per-topic task ledgers keep ordinary work moving and, behind a separate dark gate, truthfully carry pre-admission autonomous preparation without claiming the run is active. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop.',
     build: ({ ctx }) => ({
       enabled: (ctx.liveConfig?.get(
         'autonomousSessions.codexTaskContinuation',
@@ -850,6 +943,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /continuation/:topic/stop',
         'POST /continuation/stop-all',
         'POST /continuation/decide',
+        'POST /autonomous/preparation/start — begin a bounded inactive preparation carrier',
+        'POST /autonomous/preparation/:topic/recover — move a live carrier to recovering',
+        'POST /autonomous/preparation/:topic/promote — retire only after independent active admission',
+        'POST /autonomous/preparation/:topic/terminalize — retire a failed inactive preparation',
       ],
     }),
   },
@@ -967,7 +1064,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'feedbackInbox',
     prefixes: ['/feedback-inbox'],
-    description: 'Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving end) — read-only status of the cloud Blob-inbox → durable canonical FeedbackStore mover on the operated machine. Ships dark (feedbackFactory.receiverPersistence.enabled + Blob token env required); 503 when dark.',
+    description: 'Feedback-inbox drainer (feedback-factory-migration Q2b, Option-B receiving end) — read-only status of the cloud Blob-inbox → durable canonical FeedbackStore mover on the operated machine. Ships dark (feedbackFactory.receiverPersistence.enabled required; runs only on the operated host; Blob token from env FEEDBACK_INBOX_BLOB_TOKEN, else vault key feedback_inbox_blob_token); 503 when dark.',
     build: ({ ctx }) => ({
       enabled: !!ctx.inboxDrainer,
       endpoints: [
@@ -984,6 +1081,37 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /feedback-factory/stats — { total, byStatus, clusterCount, dispatchCount, lastWriteAt } over the canonical store (read-only)',
         'POST /feedback-factory/process — TRIGGER one clustering pass over the canonical store (appends local JSONL; idempotent + forward-only) → { processed, metrics, stats }',
+      ],
+    }),
+  },
+  {
+    key: 'feedbackTriage',
+    // Routes live under /feedback-factory (claimed by feedbackFactoryProcessing); this entry surfaces the triage block.
+    prefixes: [],
+    description: 'Feedback TRIAGE (docs/specs/feedback-triage-and-execution.md) — a registered frontier-model authority decides work/hold/ignore for each feedback work item (with severity, priority and a reason) inside deterministic floors; hold/ignore pause the Initiative (never archive), ignore runs in shadow until a separate PIN approval. Dev-gated dark (feedbackFactory.triage) — LIVE on a development agent, 503 on the fleet; inert until the operator approves the triage authority on the dashboard Feedback Drain tab. The executor is its own entry (feedbackExecute).',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.feedbackTriage,
+      endpoints: [
+        'GET /feedback-factory/triage/queue — work items in rank order { rank, initiativeId, title, summary, severity, priority, executionState, prLink }',
+        'GET /feedback-factory/triage/summary — counts by disposition/reason, authority state, last tick, self-heal/quota/brake state, floors fired today, rule-default agreement, calls used, ignoreLiveRecommended',
+        'POST /feedback-factory/triage/tick — owner-only, single-flight, rate-limited; 202 { runId } (409 naming the owner elsewhere)',
+        'GET /feedback-factory/triage/authority/proposal — the server-computed triage authority the operator approves with the dashboard PIN',
+        'POST /feedback-factory/triage/plan — render a PIN-bound operator action (ignore-live, accept-approver-dependence, publish-secret-shape); the commit route needs the dashboard PIN',
+      ],
+    }),
+  },
+  {
+    key: 'feedbackExecute',
+    // Routes live under /feedback-factory (claimed by feedbackFactoryProcessing); this entry surfaces the executor block.
+    prefixes: [],
+    description: 'Feedback EXECUTOR (docs/specs/feedback-triage-and-execution.md §4) — turns the top-ranked triage work items into pull requests through OS-sandboxed Claude Code build sessions (no network, no credentials, no reads outside the attempt workspace; a must-fail/must-succeed canary before every attempt). Trusted code re-verifies the fix confined, refuses tooling-path and secret-shaped changes, publishes from its own clone, and merges ONLY the exact head the repository owner approved (safe-merge --auto --match-head-commit). Refuses to run while the agent itself could act as the approver unless a PIN-bound acceptance exists. Dev-gated (feedbackFactory.execute), dry-run first; 503 without a source checkout.',
+    build: ({ ctx }) => ({
+      enabled: !!ctx.feedbackExecute,
+      endpoints: [
+        'GET /feedback-factory/execute/status — availability + reason (approver-not-independent / auto-merge-disabled / profile-unenforceable / deps-unavailable / dry-run), attempt counts, limits, canary and dependency-cache state',
+        'POST /feedback-factory/execute/tick — owner-only, single-flight, rate-limited; 202 { runId } (409 naming the owner elsewhere; 503 when it refuses to run)',
+        'POST /feedback-factory/execute/stop — the operator\'s stop for one item (disarms an armed merge); POST /feedback-factory/execute/release — let a parked item be tried again',
+        'POST /feedback-factory/execute/revoke-acceptance — withdraw the approver-dependence acceptance (reduces authority; Bearer)',
       ],
     }),
   },
@@ -1375,9 +1503,15 @@ const FEATURE_GUIDE_TRIGGERS: ReadonlyArray<{ context: string; action: string }>
  * here — never both, never neither.
  */
 export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }> = [
+  { prefix: 'memory-picker', reason: 'Jev memory picker (jev-memory-picker spec) — POST /memory-picker/session-context is the session-start hook\'s call (and its compaction twin); dev-gated, shadow by default (503 when off); the agent learns it via the CLAUDE.md awareness card, not /capabilities' },
+  { prefix: 'jev-correction', reason: 'Jev correction-detector shadow (jev-correction-shadow spec) — GET /jev-correction/summary reads a dark, log-only research instrument comparing Jev with the correction sentinel\'s Layer-0 detector; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether Jev should feed the sentinel' },
+  { prefix: 'jev-review-flag', reason: 'Jev review-flag shadow (jev-review-flag-shadow spec) — GET /jev-review-flag/summary reads a dark, log-only research instrument; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether a visible flag is worth building' },
+  { prefix: 'jev-circles', reason: 'Jev "going in circles" shadow (jev-circles-shadow spec) — GET /jev-circles/summary reads a dark, log-only research instrument; the agent learns it via the CLAUDE.md awareness card, not /capabilities, until the soak decides whether a nudge is worth building' },
+  { prefix: 'jev-audit', reason: 'Jev job-completion audit (jev-job-supervision spec) — POST /jev-audit/batch is the cadence trigger the jev-completion-audit built-in job calls; ships dark (503 unless constructed; inert without an enabled soak); the agent learns it via the CLAUDE.md awareness card, not /capabilities, and it has no read surface by design' },
   { prefix: 'mcp', reason: 'Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC) — ships dark/experimental behind sessions.dynamicMcp.enabled (the routes 503 when off); the agent learns it via the CLAUDE.md awareness section, not /capabilities, until it matures past dark' },
   { prefix: 'users', reason: 'POST /users/allow-test-identity (silent-loss-refusal-conservation §2.D) — a dashboard-PIN-gated route that mints a signed allow-marker for a legitimate user whose id collides with a known test-identity marker; operator/support-only, not an agent-invokable conversational capability' },
   { prefix: 'a2a', reason: 'same-machine agent-to-agent transport — peers discover each other via AgentRegistry, not /capabilities' },
+  { prefix: 'gate', reason: 'operator/internal admission-check namespace; POST /gate/between-window-admission validates W27 charter-opening evidence packages and is not a user/agent-invokable runtime capability' },
   { prefix: 'health', reason: 'basic liveness check, no auth' },
   { prefix: 'ping', reason: 'synchronous noop, used by tunnel/lifeline probes' },
   { prefix: 'whoami', reason: 'internal identity probe (sentinel/relay layer 1c)' },
@@ -1438,6 +1572,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'orphaned-work', reason: 'OrphanedWorkSentinel read-only snapshot (agent worktrees with uncommitted work whose owning session died — the silent-uncommitted-death backstop) — operational observability the agent READS, like /worktrees/agent-reaper; dev-gated dark, 503 on the fleet; not a user-invokable capability' },
   { prefix: 'external-hog', reason: 'ExternalHogSentinel status (GET) + the PIN-gated arm / Bearer disarm (POST) for the external-hog zombie auto-kill sentinel — operational observability the agent READS + an operator PIN action, like /green-pr-automerge; dev-gated dark, 503 on the fleet; surfaced via the CLAUDE.md agent-awareness section, not a user-invokable capability' },
   { prefix: 'playwright-profiles', reason: 'dev-gated Playwright profile↔accounts registry; surfaced to agents via the CLAUDE.md template + the session-start boot block (503 on the fleet), not /capabilities — same class as intelligence/topic-profile' },
+  { prefix: 'passkeys', reason: 'agent-held Google passkeys (spec agent-held-google-passkey §3.2–§3.4, §5.1) — dashboard-PIN-gated operator levers (grant / revoke / issuer-add / issuer-remove / revert-method / exclude-peer / include-peer), the reads of this machine\'s grants + issuers (GET /passkeys/grants), revoke outbox (GET /passkeys/outbox, POST /passkeys/outbox/tick), the per-cell view + pool read path (GET /passkeys[?scope=pool], GET /passkeys/pool-state, POST /passkeys/pool-state/tick, GET /passkeys/admission), cell health + the one digest (GET /passkeys/health, POST /passkeys/health/outcome, POST /passkeys/health/digest/refresh, PIN POST /passkeys/attest-google-removed), the operator-triggered cold proof (PIN POST /passkeys/prove — §3.8) and the signed passkey-cell mandate receiver (POST /passkeys/cell-action, signature + expected-issuer set + nonce ledger are the authority); dev-gated (503 on the fleet), surfaced via the Playwright Profile Registry CLAUDE.md bullet, not /capabilities — same class as playwright-profiles' },
   { prefix: 'pr-leases', reason: 'dev-gated parallel-hand PR-push lease (stops two of my own sessions racing one branch); a PreToolUse git-push guard consults it and the CLAUDE.md template documents it — internal coordination machinery, 503 on the fleet, not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
   { prefix: 'gemini-loop', reason: 'GeminiLoopRunner (need-gem-002) multi-turn loop-driver — the dark, developmentAgent-gated mechanism the apprenticeship machinery uses to drive a Gemini mentee across turns. 503 on the fleet (dark); not a general user-invokable capability yet. Reclassify under apprenticeshipProgram if/when it graduates live.' },

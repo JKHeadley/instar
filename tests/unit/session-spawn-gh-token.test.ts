@@ -173,4 +173,16 @@ describe('spawn-time GH_TOKEN injection (P3b)', () => {
     const env = envAssignments(argv);
     expect(env).toContain('GH_TOKEN=ghp_interactive_token');
   });
+
+  // Spec feedback-inbox-vault-token §B: the rerouted lane is where subscription
+  // job spawns go, so it must hand the job its declared-failure file too.
+  it('rerouted interactive JOB spawn carries INSTAR_JOB_FAILURE_FILE named by its tmux session', async () => {
+    const manager = makeManager(tmpDir, { mode: 'force' });
+    const session = await manager.spawnSession({ name: 'job-fail-file', prompt: 'p', jobSlug: 'feedback-factory-process' });
+    const argv = lastNewSessionArgv();
+    expect(argv).toContain('200');
+    const env = envAssignments(argv);
+    expect(env).toContain(`INSTAR_JOB_FAILURE_FILE=${path.join(tmpDir, 'state', 'state', 'job-declared-failures', `${session.tmuxSession}.txt`)}`);
+    expect(fs.existsSync(path.join(tmpDir, 'state', 'state', 'job-declared-failures'))).toBe(true);
+  });
 });

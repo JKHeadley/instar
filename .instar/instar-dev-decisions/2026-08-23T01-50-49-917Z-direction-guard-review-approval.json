@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-23T01:50:49.917Z",
+  "slug": "direction-guard-review-approval",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 132,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "scripts/standards-direction-guard.mjs"
+    ],
+    "addedLines": 131,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

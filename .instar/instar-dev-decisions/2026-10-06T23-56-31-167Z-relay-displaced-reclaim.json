@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-06T23:56:31.167Z",
+  "slug": "relay-displaced-reclaim",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/client/RelayClient.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relayConnectionObserver.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 95,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/client/RelayClient.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/relayConnectionObserver.ts"
+    ],
+    "addedLines": 89,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The displaced handler set shouldReconnect=false but left state 'connected', so the relay's follow-up 4001 close emitted a non-terminal 'disconnected' that overwrote the terminal event; health then reported recoverable while no retry was ever scheduled. Observed live on sagemind's laptop 2026-10-05T07:51Z (relay-events log: displaced then disconnected 5 s later)."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

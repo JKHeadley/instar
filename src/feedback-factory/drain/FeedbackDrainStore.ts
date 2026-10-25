@@ -6,6 +6,7 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from '../../core/SqliteRegistry.js';
 import type { CanonicalPipelineStageMetadata } from '../../core/canonicalPipelineRegistry.js';
 import { NativeModuleHealer } from '../../memory/NativeModuleHealer.js';
+import type { ReadinessCallDiagnosis } from './FeedbackReadinessArbiter.js';
 
 export const FEEDBACK_DRAIN_STORE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -24,10 +25,24 @@ export class DrainConflictError extends Error {
 
 function sqliteFileIdentity(filePath: string): string {
   const stat = fs.statSync(filePath);
-  // dev+ino alone is not a durable replacement detector: Linux may recycle an
+  // ino alone is not a durable replacement detector: Linux may recycle an
   // inode immediately after the operated directory is destroyed. Birth time
   // stays stable across routine close/reopen but changes for restored bytes.
-  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+  // st_dev is deliberately excluded: macOS APFS renumbers it across reboots
+  // and remounts, which made an untouched DB look restored from a snapshot.
+  return `${stat.ino}:${stat.birthtimeMs}`;
+}
+
+/**
+ * Compare a recorded identity against the current one on inode + birth time.
+ * Checkpoints written before st_dev was dropped carry `dev:ino:birthtime`;
+ * their dev part is ignored so they still compare correctly.
+ */
+export function sameSqliteFileIdentity(recorded: string, current: string): boolean {
+  if (typeof recorded !== 'string') return false;
+  const parts = recorded.split(':');
+  const durable = parts.length === 3 ? parts.slice(1).join(':') : recorded;
+  return durable === current;
 }
 
 export interface ReadinessProjection {
@@ -88,6 +103,16 @@ export type FeedbackDrainCrashPoint =
   | 'retry-after-update' | 'retry-after-commit'
   | 'run-after-transition' | 'run-after-commit'
   | 'restore-after-claims' | 'restore-after-runs' | 'restore-after-epoch' | 'restore-after-commit';
+
+/** Readiness progress age for one authority generation (spec feedback-factory-operating-drain.md line 270: exposed, never acted on). */
+export interface ReadinessProgress {
+  /** Ticks in a row in which no readiness call produced a usable answer. */
+  consecutiveFailedTicks: number;
+  /** When the current run of failed ticks started (ms epoch), or null when the last tick succeeded. */
+  stalledSince: number | null;
+  /** When a readiness call last succeeded (ms epoch), or null when none has been recorded. */
+  lastSuccessAt: number | null;
+}
 
 export interface AuthorityRecord {
   authorityId: string;
@@ -203,6 +228,7 @@ CREATE TABLE IF NOT EXISTS drain_audit (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
   from_state TEXT, to_state TEXT, reason TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_drain_audit_kind ON drain_audit(kind, sequence);
 CREATE TABLE IF NOT EXISTS source_projection (
   ingest_sequence INTEGER PRIMARY KEY AUTOINCREMENT, source_record_id TEXT NOT NULL UNIQUE,
   generation_id TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL,
@@ -225,6 +251,18 @@ CREATE INDEX IF NOT EXISTS idx_request_replay_expiry ON request_replay(expires_a
 `;
 
 const clamp = (value: string, max: number): string => value.replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
+/** True when two source lines differ only in the fields a processing (LWW) update rewrites. */
+function sameExceptLwwFields(priorRaw: string, nextRaw: string): boolean {
+  try {
+    const strip = (raw: string) => {
+      const row = JSON.parse(raw) as Record<string, unknown>;
+      // The entity id is compared by the caller; processing re-keys it as feedbackId.
+      for (const key of ['status', 'clusterId', 'feedbackId', 'feedback_id', 'id']) delete row[key];
+      return JSON.stringify(row, Object.keys(row).sort());
+    };
+    return strip(priorRaw) === strip(nextRaw);
+  } catch { return false; }
+}
 const canonical = (value: unknown): string => JSON.stringify(value, Object.keys(value as object).sort());
 
 export class FeedbackDrainStore {
@@ -278,9 +316,7 @@ export class FeedbackDrainStore {
   /** Quiescent, checksummed SQLite checkpoint metadata consumed by BackupManager. */
   checkpointForBackup(ownerAuthorityEpoch: number): { schemaVersion: 1; snapshotId: string; checksum: string; dbFileIdentity: string; ownerAuthorityEpoch: number; createdAt: string; manifestChecksum: string } {
     if (this.dbPath === ':memory:') throw new Error('in-memory feedback drain cannot be checkpointed for backup');
-    const recordedEpoch = this.ownerAuthorityEpoch();
-    if (recordedEpoch === null) this.setMeta('owner_authority_epoch', String(ownerAuthorityEpoch));
-    else if (recordedEpoch !== ownerAuthorityEpoch) throw new DrainConflictError('backup owner authority epoch is stale');
+    this.advanceOwnerAuthorityEpoch(ownerAuthorityEpoch, 'backup owner authority epoch is stale');
     const checkpointRows = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number; log: number; checkpointed: number }>;
     const checkpoint = checkpointRows[0];
     if (!checkpoint || checkpoint.busy !== 0 || checkpoint.checkpointed !== checkpoint.log) {
@@ -314,8 +350,7 @@ export class FeedbackDrainStore {
     if (checkpoint.schemaVersion !== 1 || createHash('sha256').update(JSON.stringify(payload)).digest('hex') !== checkpoint.manifestChecksum) {
       throw new DrainConflictError('feedback drain checkpoint manifest checksum is invalid');
     }
-    const currentIdentity = sqliteFileIdentity(this.dbPath);
-    if (currentIdentity === checkpoint.dbFileIdentity) return false;
+    if (sameSqliteFileIdentity(checkpoint.dbFileIdentity, sqliteFileIdentity(this.dbPath))) return false;
     const currentChecksum = createHash('sha256').update(fs.readFileSync(this.dbPath)).digest('hex');
     if (currentChecksum !== checkpoint.checksum || this.ownerAuthorityEpoch() !== checkpoint.ownerAuthorityEpoch) {
       throw new DrainConflictError('restored feedback drain does not match its checkpoint');
@@ -335,13 +370,23 @@ export class FeedbackDrainStore {
     }).immediate();
   }
 
-  projectSourceGeneration(input: { filePath: string; generationId: string; limit?: number; crashPoint?: 'after-read' | 'after-insert' | 'after-commit' }): { projected: number; replayed: number; byteOffset: number; lagBytes: number } {
+  /**
+   * Spec: a later last-write-wins update is a NEW source record (its own sourceRecordId), and a
+   * duplicate sourceRecordId with different bytes is corruption that holds. Before 2026-10-01
+   * the processing writer re-appended each processed report under its ORIGINAL sourceRecordId
+   * (live: 1,000 such lines), and the drain failed every run on the first one. Such a line is
+   * accepted as a superseded version only when it differs from the projected record in the LWW
+   * fields alone (status, clusterId). Any other difference, or the id bound to another report,
+   * is quarantined: that line alone is held in source_conflicts, the cursor moves on, and every
+   * run reports `source-record-quarantined` until an operator repairs it.
+   */
+  projectSourceGeneration(input: { filePath: string; generationId: string; limit?: number; crashPoint?: 'after-read' | 'after-insert' | 'after-commit' }): { projected: number; replayed: number; superseded: number; quarantined: number; byteOffset: number; lagBytes: number } {
     const limit = Math.max(0, Math.min(500, Math.trunc(input.limit ?? 500)));
     const generationId = clamp(input.generationId, 200);
     const cursor = this.db.prepare(`SELECT generation_id,byte_offset,last_record_checksum FROM source_cursors WHERE cursor_id='canonical-feedback'`).get() as { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined;
-    if (!generationId) return { projected: 0, replayed: 0, byteOffset: 0, lagBytes: 0 };
+    if (!generationId) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: 0, lagBytes: 0 };
     if (!fs.existsSync(input.filePath)) {
-      if (!cursor) return { projected: 0, replayed: 0, byteOffset: 0, lagBytes: 0 };
+      if (!cursor) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: 0, lagBytes: 0 };
       this.setMeta('source_integrity_hold', 'source-generation-missing');
       throw new DrainConflictError('durable source generation is missing');
     }
@@ -349,7 +394,7 @@ export class FeedbackDrainStore {
     const offset = cursor?.byte_offset ?? 0;
     const size = fs.statSync(input.filePath).size;
     if (size < offset) throw new DrainConflictError('source generation truncated before durable cursor');
-    if (size === offset || limit === 0) return { projected: 0, replayed: 0, byteOffset: offset, lagBytes: size - offset };
+    if (size === offset || limit === 0) return { projected: 0, replayed: 0, superseded: 0, quarantined: 0, byteOffset: offset, lagBytes: size - offset };
     const buffer = Buffer.allocUnsafe(Math.min(size - offset, 4 * 1024 * 1024));
     const fd = fs.openSync(input.filePath, 'r'); let bytesRead = 0;
     try { bytesRead = fs.readSync(fd, buffer, 0, buffer.length, offset); } finally { fs.closeSync(fd); }
@@ -370,42 +415,57 @@ export class FeedbackDrainStore {
       records.push({ sourceId: clamp(sourceId, 300), entityId: clamp(entityId, 300), checksum: createHash('sha256').update(raw).digest('hex'), raw, offset: recordOffset, length: newline - (recordOffset - offset) + 1 });
     }
     if (input.crashPoint === 'after-read') throw new Error('injected crash after source read');
-    let projected = 0; let replayed = 0;
-    const sourceConflict = this.db.transaction((): boolean => {
+    let projected = 0; let replayed = 0; let superseded = 0; let quarantined = 0;
+    this.db.transaction(() => {
+      const bySource = this.db.prepare('SELECT record_checksum,entity_id,record_json FROM source_projection WHERE source_record_id=?');
       for (const record of records) {
-        const prior = this.db.prepare('SELECT record_checksum FROM source_projection WHERE source_record_id=?').get(record.sourceId) as { record_checksum: string } | undefined;
-        if (prior && prior.record_checksum !== record.checksum) {
-          this.db.prepare(`INSERT INTO source_conflicts VALUES (?,?,?,?,?) ON CONFLICT(source_record_id) DO UPDATE SET observed_checksum=excluded.observed_checksum,reason=excluded.reason,created_at=excluded.created_at`)
-            .run(record.sourceId, prior.record_checksum, record.checksum, 'source-record-checksum-conflict', this.now());
-          this.setMeta('source_integrity_hold', 'source-record-checksum-conflict');
-          return true;
-        }
-        if (prior) replayed++;
-        else {
+        const prior = bySource.get(record.sourceId) as { record_checksum: string; entity_id: string; record_json: string } | undefined;
+        if (!prior) {
           this.db.prepare(`INSERT INTO source_projection(source_record_id,generation_id,byte_offset,byte_length,record_checksum,entity_id,record_json,created_at) VALUES (?,?,?,?,?,?,?,?)`)
             .run(record.sourceId, generationId, record.offset, record.length, record.checksum, record.entityId, record.raw, this.now());
           projected++;
+        } else if (prior.record_checksum === record.checksum) {
+          replayed++;
+        } else if (prior.entity_id === record.entityId && sameExceptLwwFields(prior.record_json, record.raw)) {
+          superseded++;
+          // Self-heal: the earlier build recorded this legacy LWW update as a conflict.
+          const cleared = this.db.prepare(`DELETE FROM source_conflicts WHERE source_record_id=? AND reason='source-record-checksum-conflict'`).run(record.sourceId);
+          if (cleared.changes > 0) this.audit('source-record', record.sourceId, 'source-record-checksum-conflict', 'superseded-version', 'cleared-misclassified-conflict');
+        } else {
+          const reason = prior.entity_id === record.entityId ? 'source-record-content-conflict' : 'source-record-identity-conflict';
+          this.db.prepare(`INSERT INTO source_conflicts VALUES (?,?,?,?,?) ON CONFLICT(source_record_id) DO UPDATE SET observed_checksum=excluded.observed_checksum,reason=excluded.reason,created_at=excluded.created_at`)
+            .run(record.sourceId, prior.record_checksum, record.checksum, reason, this.now());
+          this.setMeta('source_integrity_hold', reason);
+          this.audit('source-record', record.sourceId, prior.entity_id, record.entityId, `quarantined-${reason}`);
+          quarantined++;
         }
       }
+      // Lift only a hold this path owns, and only once no conflict of any kind remains.
+      const hold = this.db.prepare(`SELECT value FROM drain_meta WHERE key='source_integrity_hold'`).get() as { value: string } | undefined;
+      const remaining = this.db.prepare(`SELECT COUNT(*) n FROM source_conflicts`).get() as { n: number };
+      if (hold?.value.startsWith('source-record-') && remaining.n === 0) this.db.prepare(`DELETE FROM drain_meta WHERE key='source_integrity_hold'`).run();
       if (input.crashPoint === 'after-insert') throw new Error('injected crash after projection insert');
       const nextOffset = offset + consumed;
       const checksum = records.at(-1)?.checksum ?? cursor?.last_record_checksum ?? '';
       this.db.prepare(`INSERT INTO source_cursors(cursor_id,generation_id,byte_offset,last_record_checksum,updated_at) VALUES ('canonical-feedback',?,?,?,?)
         ON CONFLICT(cursor_id) DO UPDATE SET generation_id=excluded.generation_id,byte_offset=excluded.byte_offset,last_record_checksum=excluded.last_record_checksum,updated_at=excluded.updated_at`)
         .run(generationId, nextOffset, checksum, this.now());
-      return false;
     }).immediate();
-    if (sourceConflict) throw new DrainConflictError('source record checksum conflicts with its projection');
     const byteOffset = offset + consumed;
     this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES ('source_lag_bytes',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(Math.max(0, size - byteOffset)));
     if (input.crashPoint === 'after-commit') throw new Error('injected crash after projection commit');
-    return { projected, replayed, byteOffset, lagBytes: Math.max(0, size - byteOffset) };
+    return { projected, replayed, superseded, quarantined, byteOffset, lagBytes: Math.max(0, size - byteOffset) };
   }
 
   sourceCursor(): { generationId: string; byteOffset: number; lastRecordChecksum: string } | null {
     const row: { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined =
       this.db.prepare(`SELECT generation_id,byte_offset,last_record_checksum FROM source_cursors WHERE cursor_id='canonical-feedback'`).get() as { generation_id: string; byte_offset: number; last_record_checksum: string } | undefined;
     return row ? { generationId: row.generation_id, byteOffset: row.byte_offset, lastRecordChecksum: row.last_record_checksum } : null;
+  }
+
+  /** Source lines held as corrupt and awaiting operator repair (spec: persistent attention). */
+  quarantinedSourceRecords(): number {
+    return Number((this.db.prepare(`SELECT COUNT(*) n FROM source_conflicts WHERE reason IN ('source-record-content-conflict','source-record-identity-conflict','reconciliation-checksum-conflict')`).get() as { n: number }).n);
   }
 
   pendingProjectedFeedback(limit = 500): Array<{ ingestSequence: number; record: Record<string, unknown> }> {
@@ -423,7 +483,14 @@ export class FeedbackDrainStore {
     this.setMeta('processing_ingest_sequence', String(ingestSequence));
   }
 
-  acceptSourceHandoff(input: { fromGenerationId: string; finalOffset: number; toGenerationId: string }): void {
+  /**
+   * Move the cursor across a validated compaction handoff. `startOffset` (the manifest's
+   * checksum-verified end of the copied prefix) skips rows the cursor already read in the old
+   * generation; without it a compaction re-reads the whole corpus at 500 rows per run.
+   */
+  acceptSourceHandoff(input: { fromGenerationId: string; finalOffset: number; toGenerationId: string; startOffset?: number }): void {
+    const startOffset = input.startOffset ?? 0;
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0) throw new DrainConflictError('source handoff start offset is invalid');
     this.db.transaction(() => {
       const cursor = this.sourceCursor();
       if (!cursor || cursor.generationId !== input.fromGenerationId || cursor.byteOffset !== input.finalOffset) {
@@ -431,8 +498,8 @@ export class FeedbackDrainStore {
       }
       const existing = this.db.prepare(`SELECT COUNT(*) n FROM source_projection WHERE generation_id=?`).get(input.toGenerationId) as { n: number };
       if (existing.n > 0) throw new DrainConflictError('target source generation was projected before handoff acceptance');
-      this.db.prepare(`UPDATE source_cursors SET generation_id=?,byte_offset=0,last_record_checksum='',updated_at=? WHERE cursor_id='canonical-feedback' AND generation_id=? AND byte_offset=?`)
-        .run(input.toGenerationId, this.now(), input.fromGenerationId, input.finalOffset);
+      this.db.prepare(`UPDATE source_cursors SET generation_id=?,byte_offset=?,last_record_checksum='',updated_at=? WHERE cursor_id='canonical-feedback' AND generation_id=? AND byte_offset=?`)
+        .run(input.toGenerationId, startOffset, this.now(), input.fromGenerationId, input.finalOffset);
       this.audit('source-generation', input.toGenerationId, input.fromGenerationId, input.toGenerationId, 'checksummed-handoff-accepted');
     }).immediate();
   }
@@ -603,9 +670,9 @@ export class FeedbackDrainStore {
 
   claimNext(input: { consumerId: string; ownerAuthorityEpoch: number; leaseMs: number; now?: number }): Claim | null {
     const claim = this.db.transaction(() => {
-      this.assertOrInitializeOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
+      this.advanceOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
       const now = input.now ?? this.now();
-      const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
+      const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
       if (!row) return null;
       const token = this.tokenFactory();
       const tokenHash = this.hashToken(token);
@@ -752,7 +819,7 @@ export class FeedbackDrainStore {
     const restoredDbChecksum = createHash('sha256').update(fs.readFileSync(this.dbPath)).digest('hex');
     if (checkpoint.schemaVersion !== 1 || checkpoint.manifestChecksum !== expectedManifest || input.manifestChecksum !== checkpoint.manifestChecksum ||
         input.snapshotId !== checkpoint.snapshotId || checkpoint.checksum !== restoredDbChecksum || checkpoint.ownerAuthorityEpoch !== input.restoredOwnerAuthorityEpoch ||
-        checkpoint.dbFileIdentity === sqliteFileIdentity(this.dbPath)) {
+        sameSqliteFileIdentity(checkpoint.dbFileIdentity, sqliteFileIdentity(this.dbPath))) {
       throw new DrainConflictError('restored checkpoint identity or checksum verification failed');
     }
     }
@@ -782,6 +849,8 @@ export class FeedbackDrainStore {
       }
       this.inject('restore-after-runs');
       this.setMeta('owner_authority_epoch', String(nextEpoch));
+      // A restore breaks owner continuity: the readiness authority needs a fresh approval.
+      this.setMeta('drain_owner_continuity', JSON.stringify({ host: '', sinceEpoch: nextEpoch }));
       this.inject('restore-after-epoch');
       this.audit('restore', input.operatorDecisionRef, String(input.restoredOwnerAuthorityEpoch), String(nextEpoch), 'restore-owner-epoch-bump');
       return { ownerAuthorityEpoch: nextEpoch, invalidatedClaims: claims.length, abandonedRuns: activeRuns.length };
@@ -849,6 +918,7 @@ export class FeedbackDrainStore {
       if (active) return { runId: active.run_id, state: active.state, acquired: false };
       const now = this.now(); const runId = `run:${randomUUID()}`;
       this.db.prepare(`INSERT INTO drain_runs(run_id,state,owner_host,owner_epoch,lease_expires_at,reason,created_at,updated_at) VALUES (?,'accepted',?,?,?,?,?,?)`).run(runId, clamp(input.ownerHost, 200), input.ownerEpoch, now + input.leaseMs, '', now, now);
+      this.noteDrainOwner(clamp(input.ownerHost, 200), input.ownerEpoch);
       return { runId, state: 'accepted' as const, acquired: true };
     }).immediate();
   }
@@ -903,7 +973,7 @@ export class FeedbackDrainStore {
   } {
     const now = input.now ?? this.now();
     const limit = Math.max(0, Math.min(1_000, Math.trunc(input.limit ?? 500)));
-    this.assertOrInitializeOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
+    this.advanceOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
     const foreignActive = this.db.prepare(`SELECT 1 found FROM drain_runs WHERE state IN ('accepted','running') AND (owner_host!=? OR owner_epoch!=?) LIMIT 1`)
       .get(clamp(input.ownerHost, 200), input.ownerAuthorityEpoch) as { found: 1 } | undefined;
     if (foreignActive) throw new DrainConflictError('retention writer fence is not owned');
@@ -1004,6 +1074,9 @@ export class FeedbackDrainStore {
         input.modelFamily, input.promptVersion, input.schemaVersion, input.decisionPointId,
         input.maxBatch, input.maxTokens, input.maxDailySpendUsd, revoked ? 1 : 0, now);
       this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES ('authority_generation',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(String(generation));
+      // An operator approval binds this machine at this epoch; it starts continuity when the
+      // durable record names a different (or no) drain owner.
+      if (!revoked) this.noteDrainOwner(input.ownerMachineId, input.ownerEpoch);
       const payloadHash = createHash('sha256').update(canonical({ ...input, operatorDecisionRef: undefined, generation, revoked })).digest('hex');
       const prior = this.db.prepare('SELECT checksum FROM authority_audit ORDER BY sequence DESC LIMIT 1').get() as { checksum: string } | undefined;
       const previousChecksum = prior?.checksum ?? '0'.repeat(64);
@@ -1025,6 +1098,104 @@ export class FeedbackDrainStore {
     const row: { mode: 'active' | 'proposal-only'; reason: string; updated_at: number } | undefined =
       this.db.prepare(`SELECT mode,reason,updated_at FROM authority_posture WHERE authority_id=? AND generation=?`).get(authorityId, generation) as { mode: 'active' | 'proposal-only'; reason: string; updated_at: number } | undefined;
     return row ? { mode: row.mode, reason: row.reason, updatedAt: row.updated_at } : { mode: 'active', reason: '', updatedAt: 0 };
+  }
+
+  /**
+   * The first owner epoch of the drain owner's unbroken tenure. A same-machine lease
+   * re-acquire (routine restart/release) advances the epoch without breaking tenure;
+   * another machine running the drain, or a restore, starts a new tenure.
+   */
+  drainOwnerContinuity(): { host: string; sinceEpoch: number } | null {
+    const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { value: string } | undefined;
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.value) as { host?: unknown; sinceEpoch?: unknown };
+        if (typeof parsed.host === 'string' && Number.isSafeInteger(parsed.sinceEpoch)) return { host: parsed.host, sinceEpoch: Number(parsed.sinceEpoch) };
+      } catch { /* corrupt marker: fall through to null, which fails authority closed */ }
+      return null;
+    }
+    // Pre-marker stores: derive tenure from the durable run history. A foreign run or a
+    // restore breaks it; only runs after the latest break count.
+    const last = this.db.prepare(`SELECT owner_host FROM drain_runs ORDER BY created_at DESC, run_id DESC LIMIT 1`).get() as { owner_host: string } | undefined;
+    if (!last) return null;
+    const since = this.db.prepare(`SELECT MIN(owner_epoch) since FROM drain_runs WHERE owner_host=? AND created_at > MAX(
+      COALESCE((SELECT MAX(created_at) FROM drain_runs WHERE owner_host!=?), -1),
+      COALESCE((SELECT MAX(created_at) FROM drain_audit WHERE kind='restore'), -1))`).get(last.owner_host, last.owner_host) as { since: number | null };
+    return since.since === null ? null : { host: last.owner_host, sinceEpoch: Number(since.since) };
+  }
+
+  /** Whether an authority's owner binding still holds for this owner at this epoch. */
+  authorityOwnerCurrent(authority: AuthorityRecord, ownerHost: string, ownerEpoch: number): boolean {
+    if (authority.ownerMachineId !== ownerHost || authority.ownerEpoch > ownerEpoch) return false;
+    if (authority.ownerEpoch === ownerEpoch) return true;
+    const tenure = this.drainOwnerContinuity();
+    return Boolean(tenure && tenure.host === ownerHost && tenure.sinceEpoch <= authority.ownerEpoch);
+  }
+
+  private noteDrainOwner(host: string, epoch: number): void {
+    const stored = this.db.prepare(`SELECT 1 found FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { found: 1 } | undefined;
+    const tenure = this.drainOwnerContinuity();
+    if (stored && tenure?.host === host) return;
+    // First write on a pre-marker store persists the derived tenure when it is this owner's.
+    this.setMeta('drain_owner_continuity', JSON.stringify(tenure?.host === host ? tenure : { host, sinceEpoch: epoch }));
+  }
+
+  /**
+   * Count a tick in which no readiness call produced a usable answer (timeout, provider error,
+   * rate limit, rejected answer); returns the consecutive count. Exposure only: the count never
+   * demotes (the demotion list in feedback-factory-operating-drain.md line 121 is closed, and an
+   * invocation failure is not on it). The first failure after a success opens a stall episode.
+   */
+  recordAuthorityTransientFailure(authorityId: string, generation: number): number {
+    const key = `authority_transient_failures:${authorityId}:${generation}`;
+    const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key=?`).get(key) as { value: string } | undefined;
+    const count = (Number(row?.value ?? 0) || 0) + 1;
+    this.setMeta(key, String(count));
+    // Stamp the episode start on the first strike — or when no stamp exists yet (a store that
+    // upgraded mid-episode already holds a count from the old rule and would never see count 1).
+    const sinceKey = `authority_readiness_stall_since:${authorityId}:${generation}`;
+    const since = this.db.prepare(`SELECT 1 found FROM drain_meta WHERE key=?`).get(sinceKey) as { found: 1 } | undefined;
+    if (count === 1 || !since) this.setMeta(sinceKey, String(this.now()));
+    return count;
+  }
+
+  /** A tick with at least one usable answer closes any stall episode and stamps the last success. */
+  clearAuthorityTransientFailures(authorityId: string, generation: number): void {
+    this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_transient_failures:${authorityId}:${generation}`);
+    this.db.prepare(`DELETE FROM drain_meta WHERE key=?`).run(`authority_readiness_stall_since:${authorityId}:${generation}`);
+    this.setMeta(`authority_readiness_last_success_at:${authorityId}:${generation}`, String(this.now()));
+  }
+
+  /**
+   * Readiness progress for one authority generation: how many ticks in a row produced no usable
+   * answer, when that run started, and when a call last succeeded (null = never recorded).
+   */
+  readinessProgress(authorityId: string, generation: number): ReadinessProgress {
+    const read = (prefix: string): number | null => {
+      const row = this.db.prepare(`SELECT value FROM drain_meta WHERE key=?`).get(`${prefix}:${authorityId}:${generation}`) as { value: string } | undefined;
+      const value = Number(row?.value);
+      return Number.isFinite(value) ? value : null;
+    };
+    return {
+      consecutiveFailedTicks: read('authority_transient_failures') ?? 0,
+      stalledSince: read('authority_readiness_stall_since'),
+      lastSuccessAt: read('authority_readiness_last_success_at'),
+    };
+  }
+
+  /** Durably record why a readiness call failed (kind 'readiness-call', keyed by run id). */
+  recordReadinessDiagnosis(runId: string, outcome: 'contract-violation' | 'output-rejected' | 'call-failed', diagnosis: ReadinessCallDiagnosis): void {
+    this.audit('readiness-call', runId, null, outcome, JSON.stringify(diagnosis), 8_000);
+  }
+
+  /** The most recent readiness-call diagnosis, or null when none is retained. */
+  lastReadinessDiagnosis(): { runId: string; outcome: string; at: number; diagnosis: ReadinessCallDiagnosis | null; raw: string } | null {
+    const row = this.db.prepare(`SELECT entity_id,to_state,reason,created_at FROM drain_audit WHERE kind='readiness-call' ORDER BY sequence DESC LIMIT 1`)
+      .get() as { entity_id: string; to_state: string; reason: string; created_at: number } | undefined;
+    if (!row) return null;
+    let diagnosis: ReadinessCallDiagnosis | null = null;
+    try { diagnosis = JSON.parse(row.reason) as ReadinessCallDiagnosis; } catch { /* clamped or legacy text: the raw reason is still returned */ }
+    return { runId: row.entity_id, outcome: row.to_state, at: row.created_at, diagnosis, raw: diagnosis ? '' : row.reason };
   }
 
   demoteAuthority(authorityId: string, generation: number, reason: string): void {
@@ -1074,6 +1245,42 @@ export class FeedbackDrainStore {
       return true;
     }).immediate();
   }
+
+  /**
+   * Fail-closed reservation of model CALLS against an authority's UTC-day call cap, counted
+   * in the same authority_daily_usage row (its `decisions` column). The triage authority is
+   * capped by calls, not dollars (docs/specs/feedback-triage-and-execution.md §1, "Spend").
+   */
+  reserveAuthorityCalls(authority: AuthorityRecord, calls: number, maxCallsPerDay: number, now = this.now()): boolean {
+    if (!Number.isSafeInteger(calls) || calls < 1 || !Number.isSafeInteger(maxCallsPerDay) || maxCallsPerDay < 1) return false;
+    const day = new Date(now).toISOString().slice(0, 10);
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation) return false;
+      const used = this.authorityCallsToday(authority, now);
+      if (used + calls > maxCallsPerDay) return false;
+      this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)
+        VALUES (?,?,?,0,?,?) ON CONFLICT(authority_id,generation,utc_day) DO UPDATE SET
+        decisions=authority_daily_usage.decisions+excluded.decisions,updated_at=excluded.updated_at`)
+        .run(authority.authorityId, authority.generation, day, calls, now);
+      return true;
+    }).immediate();
+  }
+
+  /** Model calls reserved today (UTC) for this authority generation. */
+  authorityCallsToday(authority: Pick<AuthorityRecord, 'authorityId' | 'generation'>, now = this.now()): number {
+    const day = new Date(now).toISOString().slice(0, 10);
+    const row = this.db.prepare(`SELECT decisions FROM authority_daily_usage WHERE authority_id=? AND generation=? AND utc_day=?`)
+      .get(authority.authorityId, authority.generation, day) as { decisions: number } | undefined;
+    return Number(row?.decisions ?? 0);
+  }
+
+  /**
+   * The connection to feedback-drain.db for stages that keep their own tables in the same
+   * file (the triage disposition record), so they share the WAL, the backup checkpoint and
+   * the owner-epoch fence instead of opening a second database.
+   */
+  sharedDatabase(): BetterSqliteDatabase { return this.db; }
 
   private latestAuthority(authorityId: string): AuthorityRecord | null {
     const row = this.db.prepare('SELECT * FROM authority_records WHERE authority_id=? ORDER BY generation DESC LIMIT 1').get(authorityId) as Record<string, unknown> | undefined;
@@ -1144,11 +1351,19 @@ export class FeedbackDrainStore {
     }
   }
 
-  private assertOrInitializeOwnerAuthorityEpoch(epoch: number): void {
+  /**
+   * The recorded owner epoch follows the live owner epoch forward and never moves back.
+   * A newer epoch (a coordinator lease re-acquire, a failover) supersedes every older
+   * claim; an older one is a stale writer and is refused. A restored DB file is caught
+   * before any writer opens by restorePending()'s checkpoint identity check.
+   */
+  private advanceOwnerAuthorityEpoch(epoch: number, staleMessage = 'owner authority epoch is stale'): void {
     if (!Number.isSafeInteger(epoch) || epoch < 1) throw new DrainConflictError('owner authority epoch is invalid');
     const current = this.ownerAuthorityEpoch();
-    if (current === null) this.setMeta('owner_authority_epoch', String(epoch));
-    else if (current !== epoch) throw new DrainConflictError('owner authority epoch is stale');
+    if (current !== null && epoch < current) throw new DrainConflictError(staleMessage);
+    if (current === epoch) return;
+    this.setMeta('owner_authority_epoch', String(epoch));
+    if (current !== null) this.audit('owner-epoch', 'owner_authority_epoch', String(current), String(epoch), 'owner-epoch-advance');
   }
 
   private hashToken(token: string): string { return createHmac('sha256', this.hmacKey).update(token).digest('hex'); }
@@ -1165,9 +1380,9 @@ export class FeedbackDrainStore {
   private setMeta(key: string, value: string): void {
     this.db.prepare(`INSERT INTO drain_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, value);
   }
-  private audit(kind: string, entityId: string, from: string | null, to: string, reason: string): void {
+  private audit(kind: string, entityId: string, from: string | null, to: string, reason: string, maxReason = 500): void {
     this.db.prepare('INSERT INTO drain_audit(kind,entity_id,from_state,to_state,reason,created_at) VALUES (?,?,?,?,?,?)')
-      .run(kind, entityId, from, to, clamp(reason, 500), this.now());
+      .run(kind, entityId, from, to, clamp(reason, maxReason), this.now());
   }
 
   private readinessFromRow(row: Record<string, unknown>): ReadinessProjection {

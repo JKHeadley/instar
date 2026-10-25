@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-23T19:36:17.622Z",
+  "slug": "attention-hub-signal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 255,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/attentionHubPolicy.ts",
+      "src/monitoring/machineCoherenceEffectsExecutor.ts",
+      "src/monitoring/ropeSinkRouter.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 247,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds no self-triggered action: the change only withholds posts the existing notify/attention paths already make (it can reduce, never increase, notify volume); the one new timing rule is a repost throttle that only suppresses."
+  },
+  "verdict": "pass"
+}

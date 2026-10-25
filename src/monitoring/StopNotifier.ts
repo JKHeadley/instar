@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * StopNotifier — Layer B of notify-on-stop (docs/specs/NOTIFY-ON-STOP-SPEC.md,
  * Task 2 of the 2026-05-27 silent-stalls postmortem).
@@ -97,7 +98,7 @@ export class StopNotifier {
     private readonly deps: StopNotifierDeps,
     cfg: StopNotifierConfig = {},
   ) {
-    this.cfg = { ...DEFAULTS, ...cfg };
+    this.cfg = mergeDefaults(DEFAULTS, cfg);
   }
 
   get enabled(): boolean {

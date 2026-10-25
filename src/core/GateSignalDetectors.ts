@@ -66,6 +66,15 @@ export interface GateSignal {
   normalizedValue?: string;
   /** Detector self-confidence, clamped to [0,1] at emit. */
   confidence?: number;
+  /**
+   * Who decided `detected` (jev-signal-live). Absent on the plain detector
+   * path. `jev` = a confident Jev answer decided it; `detector` = the detector
+   * decided (Jev unsure/unavailable, or Jev disputes a detector match — then
+   * `modelProbability` carries Jev's low answer and the detection stands).
+   */
+  source?: 'jev' | 'detector';
+  /** Jev's probability for this kind, when Jev answered (clamped to [0,1]). */
+  modelProbability?: number;
 }
 
 /** Hard caps so an adversarial candidate can't inflate the signal payload. */

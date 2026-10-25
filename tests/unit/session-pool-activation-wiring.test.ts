@@ -17,6 +17,14 @@ const SERVER = path.join(process.cwd(), 'src/commands/server.ts');
 describe('Session Pool activation wiring (§L4)', () => {
   const src = fs.readFileSync(SERVER, 'utf-8');
 
+  const ownerAcceptedBlock = (): string => {
+    const idx = src.indexOf('onAccepted: (cmd) => {');
+    expect(idx).toBeGreaterThan(0);
+    const end = src.indexOf('// ── WS1.2 owner-side drain runner', idx);
+    expect(end).toBeGreaterThan(idx);
+    return src.slice(idx, end);
+  };
+
   it('the inbound interception is GATED on a non-dark rollout stage (default-dark → inert)', () => {
     expect(src).toContain("_sessionRouter && _sessionPoolStage() !== 'dark'");
     // The stage getter defaults to dark until startServer wires it to liveConfig.
@@ -103,11 +111,7 @@ describe('Session Pool activation wiring (§L4)', () => {
   });
 
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
-    const idx = src.indexOf('onAccepted: (cmd) => {');
-    expect(idx).toBeGreaterThan(0);
-    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
-    // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 7500);
+    const block = ownerAcceptedBlock();
     // Gated on a non-dark stage (early return), then the Telegram arm requires
     // Telegram present. (WS1.1 split the combined gate so a Slack routing key
     // branches between the two: dark-gate stays shared, the !telegram gate now
@@ -121,14 +125,13 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(block).toContain('spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text');
     // Fire-and-forget + fail-safe (the receipt is already durably ACKed before this).
     expect(block).toContain('owner-side resume failed');
+    const resumeFailureIdx = block.indexOf('owner-side resume failed');
+    expect(block.indexOf('_inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId', resumeFailureIdx))
+      .toBeGreaterThan(resumeFailureIdx);
   });
 
   it('bug #13: a forwarded follow-up to an already-running moved session INJECTS, never re-spawns', () => {
-    const idx = src.indexOf('onAccepted: (cmd) => {');
-    expect(idx).toBeGreaterThan(0);
-    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
-    // now prefixes the onAccepted body before the stage gate.
-    const block = src.slice(idx, idx + 7500);
+    const block = ownerAcceptedBlock();
     // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
     const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
     const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');

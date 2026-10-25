@@ -66,6 +66,22 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    key: 'multiMachine.identityReannounce.identityDivergenceMonitor',
+    kind: 'config',
+    configPath: 'multiMachine.identityReannounce.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.identityReannounce.dryRun',
+    expectedTickMs: 120_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'IdentityDivergenceMonitor',
+    description: 'Equal-epoch signing/recovery divergence monitor: compares authenticated live projections, deduplicates durable episodes, and raises a critical attention item while automatic identity recovery remains fail-closed.',
+    loadBearing: true,
+    criticalPath: 'machine identity authenticity and recovery continuity across the pool',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-08-30',
+  },
+  {
     key: 'multiMachine.peerExecution.enabled',
     kind: 'config',
     configPath: 'multiMachine.peerExecution.enabled',
@@ -763,10 +779,17 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     kind: 'config',
     configPath: 'monitoring.parallelWorkSentinel.enabled',
     defaultEnabled: false,
+    // Default cadence (monitoring.parallelWorkSentinel.cadenceMinutes, 15). The
+    // staleness threshold is 5× this, so an operator cadence above 75 min reads
+    // on-stale between ticks — honest: the guard then genuinely runs that rarely.
+    expectedTickMs: 15 * 60_000,
     process: 'server',
-    expectRuntime: false,
+    // expectRuntime honesty: TRUE only because AgentServer registers
+    // ParallelWorkSentinel.guardStatus() at construction (CMT-810, Defect 2 —
+    // before that the row read on-unverified/not-instrumented forever).
+    expectRuntime: true,
     component: 'ParallelWorkSentinel',
-    description: 'Cross-topic overlap councilor (dev-gated, Phase B).',
+    description: 'Cross-topic overlap councilor (dev-gated, Phase B). Ticks on a cadence over the parallel-activity index; lastTickAt confirms it is genuinely running.',
   },
   {
     key: 'monitoring.resourceLedger.enabled',
@@ -987,6 +1010,22 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Un-droppable growth-digest delivery: a retryable blocked send re-queues + escalates instead of consuming its weekly window (dev-gated).',
   },
   {
+    // A/B (maturation-followthrough-fix Standards A + B): the engine reads the
+    // real dark-flag inventory and every dark flag gets owner + deadline +
+    // proof-of-life. Registered here deliberately so this feature DOGFOODS its
+    // own guarantee — it is itself a staged switch, so its own registry tracks
+    // it, and the Guard-Posture Tripwire catches an enabled→disabled rollback.
+    key: 'monitoring.growthAnalyst.darkFlagInventory.enabled',
+    kind: 'config',
+    configPath: 'monitoring.growthAnalyst.darkFlagInventory.enabled',
+    dryRunConfigPath: 'monitoring.growthAnalyst.darkFlagInventory.dryRun',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'GrowthMilestoneAnalyst',
+    description: 'Code-derived staged-switch inventory: every dark / dry-run guard gets a durable owner, deadline and proof-of-life instead of only the features whose spec opted in.',
+  },
+  {
     key: 'monitoring.blockerLedger.enabled',
     kind: 'config',
     configPath: 'monitoring.blockerLedger.enabled',
@@ -1087,6 +1126,30 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'CoherenceJournal',
     description: 'Cross-machine coherence journal (dev-gated).',
   },
+  // ── Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md) ──
+  // Code-default ON with a runtime getter that reports the EFFECTIVE state:
+  // `enabled` only once the guard is armed (the lifeline proved it sends the
+  // secret, or there is no lifeline to wait for) and not bypassed. An unarmed
+  // or bypassed guard therefore derives off-runtime-divergent (loud).
+  // `dryRun` is reported only for observe HELD by config: default observe
+  // already protects the critical path once armed (unproven identity dropped,
+  // unproven taps refused) and ends by its own exit rule, so reporting it as
+  // a dry run would alarm on every healthy fleet agent once the calendar
+  // soak window below has passed. A held observe is a soak that lapses to a
+  // load-bearing gap.
+  {
+    key: 'telegramIngress.lifelineSecret',
+    kind: 'code-default',
+    defaultEnabled: true,
+    process: 'server',
+    expectRuntime: true,
+    component: 'LifelineIngressGuard',
+    description: 'Lifeline ingress secret — the internal Telegram routes accept a sender identity only from a caller that proves it is the lifeline (observe on the fleet until the exit rule, enforce on a development agent).',
+    loadBearing: true,
+    criticalPath: 'operator identity on Telegram ingress (operator binding, button approvals)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-10-12',
+  },
   // ── Code-default guards (no config key; default-ON in code) ──
   {
     key: 'messaging.attentionTopicGuard',
@@ -1143,6 +1206,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
   { component: 'AgentIdentityDivergenceDetector', reason: 'Pure decision function over injected peer observations (agree / disagree / cannot-tell). It IS wired at boot in AgentServer and raises one deduped Attention item on a real split, but it registers no runtime getter and carries no enabled flag, so there is nothing for the /guards inventory to report a posture FOR. It moves to GUARD_MANIFEST if it ever gains a config gate or a status surface.' },
   { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },
   { component: 'DeferralPatternSentinel', reason: 'Increment-1 core only: pure injected-deps detector over the existing judgment-provenance store; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. It moves to GUARD_MANIFEST when a later increment wires it at boot.' },

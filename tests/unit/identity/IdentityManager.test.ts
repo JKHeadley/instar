@@ -153,10 +153,14 @@ describe('CanonicalIdentityManager', () => {
   });
 
   describe('corrupted file handling', () => {
-    it('returns null for corrupted JSON', () => {
+    // An identity file that exists but cannot be parsed is NOT "no identity":
+    // answering null invites the caller to create a new identity over it.
+    it('throws (never null) for corrupted JSON and leaves the file untouched', () => {
       fs.mkdirSync(tmpDir, { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'identity.json'), 'not json');
-      expect(manager.load()).toBeNull();
+      const file = path.join(tmpDir, 'identity.json');
+      fs.writeFileSync(file, 'not json');
+      expect(() => manager.load()).toThrow(/cannot be used/);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('not json');
     });
   });
 });

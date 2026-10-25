@@ -100,14 +100,19 @@ describe('IdentityManager', () => {
   });
 
   describe('error handling', () => {
-    it('handles corrupted key file gracefully', () => {
+    // A corrupted file used to be answered by minting a NEW identity over it —
+    // silently changing the agent's address. It must fail loudly and leave the
+    // file exactly as it was (spec: threadline-identity-single-writer).
+    it('refuses to mint over a corrupted key file and leaves it untouched', () => {
       const keyDir = path.join(tmpDir, 'threadline');
       fs.mkdirSync(keyDir, { recursive: true });
-      fs.writeFileSync(path.join(keyDir, 'identity.json'), 'not valid json');
+      const file = path.join(keyDir, 'identity.json');
+      fs.writeFileSync(file, 'not valid json');
 
-      // Should generate a new identity instead of crashing
-      const id = manager.getOrCreate();
-      expect(id.fingerprint).toHaveLength(32);
+      expect(manager.get()).toBeNull();
+      expect(manager.problem?.code).toBe('identity-file-invalid');
+      expect(() => manager.getOrCreate()).toThrow(/cannot be used/);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('not valid json');
     });
   });
 });

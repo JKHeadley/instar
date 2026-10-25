@@ -13,12 +13,22 @@ import {
   UsageError,
   capabilities,
   classifyChecks,
+  codeOwnerReviewPending,
   evaluateRequiredContexts,
   classifyMergeFailure,
   isAutoMergeUnavailable,
+  extractRulesetReviewPolicy,
+  isNonPusherApprovalRequired,
+  reviewUrlFor,
   CONTRACT_VERSION,
   DEFAULT_REPO,
   REQUIRED_CONTEXTS_FLOOR,
+  CLASSIC_PROTECTION_CONTEXTS_PINNED,
+  ACTIONS_FLOOR_CONTEXTS,
+  LOCAL_VERIFY_CONTEXT,
+  fetchProtectionContexts,
+  extractBranchProtection,
+  noActionsChecksRan,
 } from '../../scripts/safe-merge.mjs';
 
 describe('parseArgs — strict argv', () => {
@@ -85,6 +95,22 @@ describe('parseArgs — strict argv', () => {
   });
 });
 
+describe('parseArgs — --attempt-token (ACT-141: argv identity for orphan reap)', () => {
+  it('accepts a hex token and records it without changing the merge', () => {
+    const a = parseArgs(['5', '--squash', '--attempt-token', 'abcd1234abcd1234']);
+    expect(a.attemptToken).toBe('abcd1234abcd1234');
+    expect(a.method).toBe('--squash');
+    expect(a.pr).toBe('5');
+  });
+  it('rejects a missing or non-hex value', () => {
+    expect(() => parseArgs(['5', '--attempt-token'])).toThrow(/requires a value/);
+    expect(() => parseArgs(['5', '--attempt-token', 'not-hex!'])).toThrow(/must be hex/);
+  });
+  it('advertises the attempt-token capability', () => {
+    expect(capabilities().features).toContain('attempt-token');
+  });
+});
+
 describe('capabilities — contract probe', () => {
   it('reports the contract version and feature set', () => {
     const c = capabilities();
@@ -110,6 +136,22 @@ describe('isAutoMergeUnavailable — the repo-disabled discriminator (mergerunne
     expect(isAutoMergeUnavailable('HTTP 502 Bad Gateway')).toBe(false);
     expect(isAutoMergeUnavailable('')).toBe(false);
     expect(isAutoMergeUnavailable(undefined)).toBe(false);
+  });
+});
+
+describe('noActionsChecksRan — zero checks is not green (PR #2302)', () => {
+  it('no check runs at all → nothing ran', () => {
+    expect(noActionsChecksRan([])).toBe(true);
+    expect(noActionsChecksRan(undefined)).toBe(true);
+  });
+  it('only a Vercel check run → nothing ran', () => {
+    expect(noActionsChecksRan([{ name: 'Vercel Preview Comments', conclusion: 'success', appSlug: 'vercel', workflowPath: null }])).toBe(true);
+  });
+  it('one GitHub Actions check run → checks ran', () => {
+    expect(noActionsChecksRan([
+      { name: 'Vercel Preview Comments', conclusion: 'success', appSlug: 'vercel', workflowPath: null },
+      { name: 'Type Check', conclusion: 'success', appSlug: 'github-actions', workflowPath: '.github/workflows/ci.yml' },
+    ])).toBe(false);
   });
 });
 
@@ -257,5 +299,195 @@ describe('REQUIRED_CONTEXTS_FLOOR — code-pinned minimum', () => {
       expect(pin.workflowPath).toMatch(/^\.github\/workflows\//);
       expect(pin.appSlug).toBeTruthy();
     }
+  });
+});
+
+describe('ruleset review policy — request the approval up front, never a reviewer-less dead end (2026-08-22)', () => {
+  // Verbatim shape of GET /repos/JKHeadley/instar/rules/branches/main after the
+  // 2026-08-22 17:03 PDT ruleset change: 0 required approvals but
+  // require_last_push_approval:true. The wrapper read only classic protection,
+  // declared PR #1963 mergeable, and GitHub refused the merge — leaving the
+  // operator with "waiting for someone to request your review".
+  const RULES = [
+    { type: 'deletion', ruleset_id: 1 },
+    { type: 'required_status_checks', ruleset_id: 1, parameters: { required_status_checks: [{ context: 'e2e' }] } },
+    { type: 'pull_request', ruleset_id: 1, parameters: { required_approving_review_count: 0, require_last_push_approval: true, dismiss_stale_reviews_on_push: false } },
+  ];
+
+  it('detects require_last_push_approval even with zero required approvals', () => {
+    expect(extractRulesetReviewPolicy(RULES)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: true, codeOwnerReviewRequired: false });
+  });
+
+  it('detects a positive required_approving_review_count', () => {
+    const rules = [{ type: 'pull_request', parameters: { required_approving_review_count: 1 } }];
+    expect(extractRulesetReviewPolicy(rules)).toEqual({ reviewsRequired: true, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+  });
+
+  it('honours require_code_owner_review: an owned (constitution) PR waits for APPROVED; a non-owned PR is unaffected', () => {
+    const rules = [{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_code_owner_review: true } }];
+    const policy = extractRulesetReviewPolicy(rules);
+    expect(policy).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: true });
+    expect(codeOwnerReviewPending({ policy, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'REVIEW_REQUIRED' })).toBe(true);
+    expect(codeOwnerReviewPending({ policy, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'APPROVED' })).toBe(false);
+    expect(codeOwnerReviewPending({ policy, ownedFiles: [], reviewDecision: 'REVIEW_REQUIRED' })).toBe(false);
+    // Without the ruleset flag, owned files alone do not hold a merge.
+    expect(codeOwnerReviewPending({ policy: { ...policy, codeOwnerReviewRequired: false }, ownedFiles: ['docs/STANDARDS-REGISTRY.md'], reviewDecision: 'REVIEW_REQUIRED' })).toBe(false);
+  });
+
+  it('reports no policy when there is no pull_request rule (the pre-change state) — no over-block', () => {
+    expect(extractRulesetReviewPolicy(RULES.filter(r => r.type !== 'pull_request'))).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+    expect(extractRulesetReviewPolicy([])).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+    expect(extractRulesetReviewPolicy(null)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false, codeOwnerReviewRequired: false });
+  });
+
+  it("matches GitHub's verbatim non-pusher refusal on the merge path", () => {
+    expect(isNonPusherApprovalRequired('GraphQL: Repository rule violations found\nNew changes require approval from someone other than the last pusher.\n (mergePullRequest)')).toBe(true);
+  });
+
+  it('does NOT match an unrelated merge failure (stays a normal merge-command-failed)', () => {
+    expect(isNonPusherApprovalRequired('GraphQL: Pull request is not mergeable (mergePullRequest)')).toBe(false);
+    expect(isNonPusherApprovalRequired('')).toBe(false);
+  });
+
+  it('the review link is the Files tab, where Review changes → Approve lives', () => {
+    expect(reviewUrlFor('JKHeadley/instar', 1963)).toBe('https://github.com/JKHeadley/instar/pull/1963/files');
+  });
+
+  it('parseArgs accepts --request-review-from as a login list and rejects junk', () => {
+    expect(parseArgs(['1963', '--squash', '--admin', '--request-review-from', 'JKHeadley,octocat']).requestReviewFrom).toEqual(['JKHeadley', 'octocat']);
+    expect(parseArgs(['1963']).requestReviewFrom).toEqual([]);
+    expect(() => parseArgs(['1963', '--request-review-from', 'not a login!'])).toThrow(UsageError);
+  });
+
+  it('advertises the new capabilities so the orchestrator can key on the slug', () => {
+    const caps = capabilities();
+    expect(caps.features).toContain('approval-required-refusal');
+    expect(caps.features).toContain('request-review-from');
+  });
+});
+
+describe('ACTIONS_FLOOR_CONTEXTS — one shared floor incl. the 12 classic-protection contexts (local-verify-merge-authority §3)', () => {
+  const CLASSIC_12 = [
+    'Type Check', 'Integration Tests', 'E2E Tests', 'Build',
+    'Unit Tests (node 20, shard 1/4)', 'Unit Tests (node 20, shard 2/4)', 'Unit Tests (node 20, shard 3/4)', 'Unit Tests (node 20, shard 4/4)',
+    'Unit Tests (node 22, shard 1/4)', 'Unit Tests (node 22, shard 2/4)', 'Unit Tests (node 22, shard 3/4)', 'Unit Tests (node 22, shard 4/4)',
+  ];
+
+  it('pins exactly the 12 classic contexts, each bound to ci.yml + github-actions', () => {
+    expect(CLASSIC_PROTECTION_CONTEXTS_PINNED.map(p => p.context)).toEqual(CLASSIC_12);
+    for (const pin of CLASSIC_PROTECTION_CONTEXTS_PINNED) {
+      expect(pin.workflowPath).toBe('.github/workflows/ci.yml');
+      expect(pin.appSlug).toBe('github-actions');
+    }
+  });
+
+  it('is REQUIRED_CONTEXTS_FLOOR plus the 12, deduplicated, without instar/local-verify', () => {
+    const names = ACTIONS_FLOOR_CONTEXTS.map(p => p.context);
+    for (const n of [...REQUIRED_CONTEXTS_FLOOR.map(f => f.context), ...CLASSIC_12]) expect(names).toContain(n);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).not.toContain(LOCAL_VERIFY_CONTEXT);
+    expect(names.length).toBe(14); // 6 floor + 8 unit shards (4 classic already in the floor)
+  });
+
+  it('refuses a merge whose unit shards never ran, even when protection lists nothing', () => {
+    const runs = REQUIRED_CONTEXTS_FLOOR.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug, workflowPath: f.workflowPath }));
+    const r = evaluateRequiredContexts({ protectionContexts: [], rulesetContexts: [], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: runs });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/Unit Tests \(node 22, shard 4\/4\)/);
+  });
+
+  it('refuses a unit shard from the wrong producer', () => {
+    const runs = ACTIONS_FLOOR_CONTEXTS.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug,
+      workflowPath: f.context.startsWith('Unit Tests (node 20, shard 1') ? '.github/workflows/evil.yml' : f.workflowPath }));
+    const r = evaluateRequiredContexts({ protectionContexts: [], rulesetContexts: [], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: runs });
+    expect(r.ok).toBe(false);
+    expect(r.problems.join(' ')).toMatch(/WRONG producer/);
+  });
+});
+
+describe('instar/local-verify is read from combined statuses, never check runs', () => {
+  const allGreenRuns = ACTIONS_FLOOR_CONTEXTS.map(f => ({ name: f.context, conclusion: 'success', appSlug: f.appSlug, workflowPath: f.workflowPath }));
+  const base = { protectionContexts: [], rulesetContexts: [LOCAL_VERIFY_CONTEXT], floor: ACTIONS_FLOOR_CONTEXTS, extraFloor: [], checkRuns: allGreenRuns };
+
+  it('an Actions-floor merge succeeds when the required status is success (the mirror green)', () => {
+    const r = evaluateRequiredContexts({ ...base, commitStatuses: [{ context: LOCAL_VERIFY_CONTEXT, state: 'success' }] });
+    expect(r).toEqual({ ok: true, problems: [] });
+  });
+
+  it('refuses when the status is pending, failure, or absent', () => {
+    for (const commitStatuses of [[{ context: LOCAL_VERIFY_CONTEXT, state: 'pending' }], [{ context: LOCAL_VERIFY_CONTEXT, state: 'failure' }], []]) {
+      const r = evaluateRequiredContexts({ ...base, commitStatuses });
+      expect(r.ok).toBe(false);
+      expect(r.problems.join(' ')).toMatch(/instar\/local-verify/);
+    }
+  });
+
+  it('a check RUN named instar/local-verify does not satisfy it', () => {
+    const r = evaluateRequiredContexts({ ...base, checkRuns: [...allGreenRuns, { name: LOCAL_VERIFY_CONTEXT, conclusion: 'success', appSlug: 'github-actions', workflowPath: '.github/workflows/ci.yml' }] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('a success status for a different context does not satisfy it', () => {
+    const r = evaluateRequiredContexts({ ...base, commitStatuses: [{ context: 'ci/other', state: 'success' }] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('when local-verify is not required, statuses are irrelevant (behaviour unchanged)', () => {
+    const r = evaluateRequiredContexts({ ...base, rulesetContexts: [] });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('fetchProtectionContexts — reads /branches/<b>; a /protection 404 no longer means "none"', () => {
+  const BRANCH = {
+    name: 'main', protected: true,
+    protection: { required_status_checks: {
+      enforcement_level: 'non_admins',
+      contexts: ['Type Check', 'Build'],
+      checks: [{ context: 'Type Check', app_id: 15368 }, { context: 'Unit Tests (node 20, shard 1/4)', app_id: 15368 }],
+    } },
+  };
+  const fakeGh = (responses) => (args) => {
+    const path = args[1];
+    const hit = Object.entries(responses).find(([k]) => path.endsWith(k));
+    if (!hit) throw new Error(`unexpected gh call ${path}`);
+    return hit[1];
+  };
+  const ok = (data) => ({ status: 0, stdout: JSON.stringify(data), stderr: '' });
+  const notFound = { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+
+  it('non-admin: /protection 404 → contexts from /branches (contexts ∪ checks[].context), reviewsRequired false', () => {
+    const r = fetchProtectionContexts('JKHeadley/instar', 'main', fakeGh({ '/branches/main': ok(BRANCH), '/protection': notFound }));
+    expect(r.contexts.sort()).toEqual(['Build', 'Type Check', 'Unit Tests (node 20, shard 1/4)']);
+    expect(r.reviewsRequired).toBe(false);
+  });
+
+  it('admin: a readable /protection supplies the classic reviews flag and its contexts are unioned', () => {
+    const r = fetchProtectionContexts('JKHeadley/instar', 'main', fakeGh({
+      '/branches/main': ok(BRANCH),
+      '/protection': ok({ required_status_checks: { contexts: ['E2E Tests'] }, required_pull_request_reviews: { required_approving_review_count: 1 } }),
+    }));
+    expect(r.contexts).toContain('E2E Tests');
+    expect(r.contexts).toContain('Build');
+    expect(r.reviewsRequired).toBe(true);
+  });
+
+  it('an unprotected branch contributes nothing', () => {
+    const r = fetchProtectionContexts('o/r', 'dev', fakeGh({ '/branches/dev': ok({ name: 'dev', protected: false }), '/protection': notFound }));
+    expect(r).toEqual({ contexts: [], reviewsRequired: false });
+  });
+
+  it('a /branches failure is unverifiable (throws → refused:contexts-unverifiable), never "none"', () => {
+    expect(() => fetchProtectionContexts('o/r', 'main', fakeGh({ '/branches/main': notFound, '/protection': notFound }))).toThrow(/unverifiable/);
+  });
+
+  it('a non-404 /protection failure is unverifiable', () => {
+    expect(() => fetchProtectionContexts('o/r', 'main', fakeGh({ '/branches/main': ok(BRANCH), '/protection': { status: 1, stdout: '', stderr: 'HTTP 502' } }))).toThrow(/unverifiable/);
+  });
+
+  it('extractBranchProtection: review requirements come only from the ruleset when /protection is unreadable', () => {
+    expect(extractBranchProtection(BRANCH, null).reviewsRequired).toBe(false);
+    expect(extractRulesetReviewPolicy([{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_last_push_approval: true } }]))
+      .toEqual({ reviewsRequired: false, lastPushApprovalRequired: true, codeOwnerReviewRequired: false });
   });
 });

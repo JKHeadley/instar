@@ -48,6 +48,7 @@ import {
   RESERVED_MAINTENANCE_CONTROLLER,
 } from './task-flow-types.js';
 import type { SharedStateLedger } from '../core/SharedStateLedger.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface TaskFlowRegistryOptions {
   store: TaskFlowStore;
@@ -91,9 +92,9 @@ export class TaskFlowRegistry extends EventEmitter {
     super();
     this.store = opts.store;
     this.ledger = opts.ledger;
-    this.thresholds = { ...DEFAULT_THRESHOLDS, ...(opts.thresholds ?? {}) };
-    this.rateLimits = { ...DEFAULT_RATE_LIMITS, ...(opts.rateLimits ?? {}) };
-    this.cacheConfig = { ...DEFAULT_CACHE_CONFIG, ...(opts.cache ?? {}) };
+    this.thresholds = mergeDefaults(DEFAULT_THRESHOLDS, (opts.thresholds ?? {}));
+    this.rateLimits = mergeDefaults(DEFAULT_RATE_LIMITS, (opts.rateLimits ?? {}));
+    this.cacheConfig = mergeDefaults(DEFAULT_CACHE_CONFIG, (opts.cache ?? {}));
     this.now = opts.now ?? (() => Date.now());
     this.cache = new LruCache<TaskFlowRecord>({
       maxEntries: this.cacheConfig.maxEntries,

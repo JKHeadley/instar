@@ -22,6 +22,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export type LocalProvider = 'ollama' | 'lmstudio';
 
@@ -82,7 +83,7 @@ export class TopicLocalModelStore {
   }
 
   snapshot(): Record<string, TopicLocalModelEntry> {
-    return { ...this.configDefaults, ...this.overrides };
+    return mergeDefaults(this.configDefaults, this.overrides);
   }
 
   private load(): void {

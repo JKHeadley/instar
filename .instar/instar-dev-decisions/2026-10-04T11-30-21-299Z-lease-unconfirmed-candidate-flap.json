@@ -1,0 +1,34 @@
+{
+  "ts": "2026-10-04T11:30:21.299Z",
+  "slug": "lease-unconfirmed-candidate-flap",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 583,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MachinePoolRegistry.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/leaseLiveness.ts",
+      "src/core/leaseMediumSelection.ts",
+      "src/core/types.ts",
+      "src/monitoring/DegradationReporter.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 508,
+    "deletedLines": 75
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -39,13 +39,27 @@
           "id": "consumer-handoff",
           "metadataCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FEEDBACK_INITIATIVE_CONSUMER_STAGE",
           "implementationCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer"
+        },
+        {
+          "id": "triage",
+          "metadataCitation": "src/feedback-factory/triage/FeedbackTriageArbiter.ts#FEEDBACK_TRIAGE_STAGE",
+          "implementationCitation": "src/feedback-factory/triage/FeedbackTriageService.ts#FeedbackTriageService"
+        },
+        {
+          "id": "execute",
+          "metadataCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FEEDBACK_EXECUTE_STAGE",
+          "implementationCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService"
         }
       ],
       "ingress": {
         "surfaceIds": [
           "feedback-factory-process-route",
           "feedback-factory-process-job",
-          "feedback-factory-drain-route"
+          "feedback-factory-drain-route",
+          "feedback-factory-triage-route",
+          "feedback-factory-triage-job",
+          "feedback-factory-execute-route",
+          "feedback-factory-execute-job"
         ],
         "wiringCitation": "src/server/AgentServer.ts#AgentServer"
       },
@@ -91,12 +105,26 @@
           "implementationCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer",
           "persistentState": "artifact linkage row",
           "idempotencyKey": "feedbackWorkKey"
+        },
+        {
+          "from": "consumer-handoff",
+          "to": "triage",
+          "implementationCitation": "src/feedback-factory/triage/FeedbackTriageService.ts#FeedbackTriageService",
+          "persistentState": "owner-epoch-fenced triage disposition row in feedback-drain.db",
+          "idempotencyKey": "initiative id plus triage decision sequence"
+        },
+        {
+          "from": "triage",
+          "to": "execute",
+          "implementationCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService",
+          "persistentState": "owner-epoch-fenced execution attempt row in feedback-drain.db",
+          "idempotencyKey": "initiative id plus attempt number"
         }
       ],
       "terminalHandoff": {
-        "stage": "consumer-handoff",
-        "consumer": "FeedbackInitiativeConsumer",
-        "consumerCitation": "src/feedback-factory/drain/FeedbackInitiativeConsumer.ts#FeedbackInitiativeConsumer"
+        "stage": "execute",
+        "consumer": "FeedbackExecutorService",
+        "consumerCitation": "src/feedback-factory/execute/FeedbackExecutorService.ts#FeedbackExecutorService"
       },
       "cadence": {
         "triggerCitation": "src/scaffold/templates/jobs/instar/feedback-factory-process.md#Feedback-Factory Operating Drain"

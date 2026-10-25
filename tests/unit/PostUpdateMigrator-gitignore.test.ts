@@ -195,4 +195,15 @@ describe('PostUpdateMigrator.migrateGitignore — pr-gate entry', () => {
     expect(content).toContain('*.log');
     expect(content).toContain('.instar/secrets/pr-gate/');
   });
+  it('adds the whole secrets tree to both the project and the .instar gitignore, once (agent-held-google-passkey §3.1)', () => {
+    const r1: MigrationResult = { upgraded: [], errors: [] };
+    runMigrate(r1);
+    const r2: MigrationResult = { upgraded: [], errors: [] };
+    runMigrate(r2);
+    const project = fs.readFileSync(path.join(projectDir, '.gitignore'), 'utf-8').split('\n');
+    const instar = fs.readFileSync(path.join(projectDir, '.instar', '.gitignore'), 'utf-8').split('\n');
+    expect(project.filter((l) => l.trim() === '.instar/secrets/')).toHaveLength(1);
+    expect(instar.filter((l) => l.trim() === 'secrets/')).toHaveLength(1);
+    expect(r2.upgraded.some((m) => m.includes('secrets/'))).toBe(false);
+  });
 });

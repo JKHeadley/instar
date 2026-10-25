@@ -28,6 +28,8 @@ import {
 } from '../../src/core/CompositeCredentialIdentityOracle.js';
 import type { IdentityOracle, IdentityOracleResult } from '../../src/core/CredentialLocationLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { EnrollmentWizard } from '../../src/core/EnrollmentWizard.js';
+import { PendingLoginStore } from '../../src/core/PendingLoginStore.js';
 
 /** Stands in for the Anthropic OAuth oracle: it cannot speak for a Codex slot. */
 const anthropicOnly: IdentityOracle = {
@@ -256,6 +258,62 @@ describe('enrolment oracle wiring — the server must supply an oracle that spea
     expect(server).toContain('subscriptionIdentityOracle,');
     // The exact wiring that silently disabled Codex enrolment for two releases.
     expect(server).not.toContain('subscriptionIdentityOracle: credentialIdentityOracle');
+
+    // SCOPED to the EnrollmentWizard's own argument object. The three assertions above
+    // are file-wide and passed UNCHANGED while the wizard was being handed the
+    // Anthropic-only oracle — `oracle: credentialIdentityOracle,` legitimately belongs to
+    // the location ledger, and `subscriptionIdentityOracle,` matches its own construction.
+    // A file-wide `toContain` cannot tell those apart, which is why the guard missed the
+    // bug it was written for. Read the wizard's argument object specifically.
+    const wizardAt = server.indexOf('new EnrollmentWizard({');
+    expect(wizardAt, 'EnrollmentWizard construction not found').toBeGreaterThan(-1);
+    const wizardArgs = server.slice(wizardAt, server.indexOf('\n    });', wizardAt));
+    expect(wizardArgs, 'the wizard must receive the Codex-capable oracle').toContain('oracle: subscriptionIdentityOracle,');
+    expect(wizardArgs, 'the wizard must NOT receive the Anthropic-only oracle').not.toContain('oracle: credentialIdentityOracle,');
+  });
+
+  it('THE REGRESSION GUARD: a Codex follow-me completion is VALIDATED with the composite oracle and HELD with the Anthropic-only one', async () => {
+    // Why this exists: the two string assertions above passed UNCHANGED both before and
+    // after the fix that made Codex enrolment work at all — `oracle: credentialIdentityOracle,`
+    // still appears (the ledger's line) and `subscriptionIdentityOracle,` appears at its own
+    // construction. A guard written for this bug class could not see the bug, so it is
+    // restated here as behaviour through the wizard that actually consumes the oracle.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-oracle-'));
+    try {
+      const home = writeCodexHome(root, 'slot', 'enrolled@example.com', 'acct-enrolled');
+      const composite = new CompositeCredentialIdentityOracle({ anthropic: anthropicOnly });
+
+      const makeWizard = (oracle: IdentityOracle) => new EnrollmentWizard({
+        store: new PendingLoginStore({ stateDir: fs.mkdtempSync(path.join(root, 'state-')) }),
+        driveLogin: async () => ({ verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB' }),
+        ensureReady: async () => {},
+        oracle,
+      });
+
+      const seed = async (wizard: EnrollmentWizard) => {
+        await wizard.start({
+          id: 'codex-acct', label: 'codex-acct', provider: 'openai', framework: 'codex-cli',
+          configHome: home, expectedEmail: 'enrolled@example.com',
+        });
+      };
+
+      // CONTROL: the Anthropic-only oracle cannot read a Codex slot, so the gate fails
+      // closed — this is the exact `missing-completed-email` hold seen in production.
+      const plainWizard = makeWizard(anthropicOnly);
+      await seed(plainWizard);
+      const held = await plainWizard.completeFollowMe('codex-acct', 'Test Machine');
+      expect(held.outcome, 'the Anthropic-only oracle must HOLD a Codex enrolment').toBe('held');
+      if (held.outcome === 'held') expect(held.reason).toBe('missing-completed-email');
+
+      // THE PROPERTY: the composite oracle resolves the same slot, so the same gate passes.
+      const compositeWizard = makeWizard(composite);
+      await seed(compositeWizard);
+      const ok = await compositeWizard.completeFollowMe('codex-acct', 'Test Machine');
+      expect(ok.outcome, 'the composite oracle must VALIDATE the same Codex enrolment').toBe('validated');
+      if (ok.outcome === 'validated') expect(ok.email).toBe('enrolled@example.com');
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, reason: 'test cleanup' });
+    }
   });
 
   it('the credential-LOCATION ledger keeps the Anthropic oracle — scope stays narrow', () => {

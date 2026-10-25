@@ -20,6 +20,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { telegramFetch } from '../../messaging/telegram-egress.js';
+import { sendOriginSetupGreeting } from '../../messaging/telegram-origin/OriginSetupGreeting.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -822,53 +823,18 @@ STEPS:
     Lifeline topic — switching to manual." Output
     AGENTIC_FAILED: topics-create-failed and exit.
 
-14. Seed the Lifeline topic with one orienting message via
-    sendMessage + message_thread_id. This is a NEUTRAL channel-
-    purpose blurb, not the agent's personal greeting (that's a
-    separate step after server start — see Phase 5 of the wizard).
-    Use the agent's first-person voice. This message is RICHER
-    than a plain label because new users see it first and need to
-    understand how topics work:
+14. Defer the Lifeline orienting message until the server is running.
+    The wizard's post-start greeting action calls the authenticated local
+    /telegram/setup/greeting route. The server authors the fixed orientation
+    (each topic is a conversation thread; the user can ask to create a topic)
+    and personal hello, records its origin, and only then calls sendMessage
+    with the configured Lifeline message_thread_id. Do not call the Bot API
+    directly for this message before the origin service is available.
 
-       text: |
-         Hey ${userName} — I'm ${agentName}. This is the **Lifeline** topic.
-
-         Quick orientation: each topic is a separate conversation
-         thread (like Slack channels). Lifeline is the main
-         channel between us — anything that doesn't fit elsewhere,
-         send it here.
-
-         You can ask me to create new topics for different tasks
-         ("create a topic for deployment issues") and I'll
-         proactively create topics when something's worth a
-         dedicated thread.
-
-         A few more topics (Updates, Dashboard, Attention) will
-         appear automatically once my server starts. I'll send my
-         proper hello here in Lifeline a few seconds after that.
-
-    Via:
-      curl -s -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \\
-        -H 'Content-Type: application/json' \\
-        -d '{"chat_id": "<FORUM_CHAT_ID>",
-             "message_thread_id": <LIFELINE_TOPIC_ID>,
-             "text": "<intro text>"}'
-
-    Capture result.message_id as LIFELINE_INTRO_MESSAGE_ID — used
-    in 14b for pinning.
-
-14b. Pin the Lifeline intro so users scrolling back later don't
-     lose the orientation. Requires admin rights from step 12b;
-     non-fatal if 12b skipped.
-
-       curl -s -X POST "https://api.telegram.org/bot<TOKEN>/pinChatMessage" \\
-         -H 'Content-Type: application/json' \\
-         -d '{"chat_id": "<FORUM_CHAT_ID>",
-              "message_id": <LIFELINE_INTRO_MESSAGE_ID>,
-              "disable_notification": true}'
-
-     If response.ok is false, narrate "Couldn't pin the Lifeline
-     intro" and continue. NOT AGENTIC_FAILED.
+14b. The same server action captures the confirmed receipt as
+     LIFELINE_INTRO_MESSAGE_ID and invokes pinChatMessage with that ID.
+     Pinning is non-fatal if the bot lacks administrator rights —
+     NOT AGENTIC_FAILED. No speculative ID or separate raw send is needed.
 
 15. Write the config. Read the existing .instar/config.json. Filter
     out any existing { type: "telegram" } entries. Push:
@@ -945,66 +911,18 @@ export async function runSendLifelineGreeting(
   answers: WizardAnswers,
   options: CodexDriverOptions,
 ): Promise<Partial<WizardAnswers>> {
-  const configPath = path.join(options.projectDir, '.instar', 'config.json');
-  let token = '';
-  let chatId = '';
-  let lifelineTopicId = 0;
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(raw) as {
-      messaging?: Array<{
-        type: string;
-        config?: { token?: string; chatId?: string; lifelineTopicId?: number };
-      }>;
-    };
-    const tg = (config.messaging || []).find((m) => m.type === 'telegram');
-    if (!tg?.config) return {};
-    token = tg.config.token ?? '';
-    chatId = tg.config.chatId ?? '';
-    lifelineTopicId = tg.config.lifelineTopicId ?? 0;
-  } catch {
-    return {};
-  }
-  if (!token || !chatId || !lifelineTopicId) {
-    // No Telegram configured, or partial config (manual backstop
-    // didn't capture chat id). Silent skip.
-    return {};
-  }
-
   const agentName = (answers.agentName || 'your agent').trim();
-  const userName = (answers.userName || 'there').trim();
-  const autonomy = answers.autonomy || 'proactive';
-  const autonomyBlurb =
-    autonomy === 'guided'
-      ? 'I\'ll check with you before doing things.'
-      : autonomy === 'autonomous'
-        ? 'I\'ll own outcomes end-to-end and report back when something needs you.'
-        : 'I\'ll take initiative on obvious next steps and ask when uncertain.';
-
-  const greeting = `Hey ${userName}, ${agentName} here — server's up and I'm online.\n\n${autonomyBlurb}\n\nAnything we set up just now — name, focus, autonomy, messaging — you can change anytime just by chatting me. What would you like to work on first?`;
-
   try {
-    // RULE 3: EXEMPT — this is a fire-and-forget POST to send a
-    // wizard-completion greeting, NOT a state-detection probe.
-    // Failure is silently swallowed (non-fatal) so there's no
-    // detection-result branching to canary against.
-    const res = await telegramFetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_thread_id: lifelineTopicId,
-        text: greeting,
-      }),
+    const sent = await sendOriginSetupGreeting(options.projectDir, {
+      agentName, userName: (answers.userName || 'there').trim(), autonomy: answers.autonomy || 'proactive',
     });
-    const data = (await res.json()) as { ok: boolean };
-    if (data.ok) {
+    if (sent) {
       console.log();
       console.log(pc.green(`  ✓ ${agentName} said hello in the Lifeline topic.`));
     }
   } catch {
-    // Non-fatal — server is up, agent will reach out on its own
-    // schedule. Don't block the wizard's completion.
+    // Setup can finish, but never bypass the running server's origin boundary.
+    console.log(pc.yellow('  The greeting is held; the server has not confirmed delivery.'));
   }
   return {};
 }

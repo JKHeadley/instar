@@ -29,9 +29,9 @@ import { TopicPlacementPinStore } from '../../src/core/TopicPlacementPinStore.js
 import { OwnershipReconciler } from '../../src/core/OwnershipReconciler.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 describe('E2E: OwnershipReconciler is ALIVE + converges through the real AgentServer', () => {
-  const PORT = 47261;
   const SELF = 'm_a'; // owns topic 700
   const PEER = 'm_b'; // pin target — the reconciler should transfer 700 SELF -> PEER
   const TOKEN = 'e2e-recon-token';
@@ -39,7 +39,7 @@ describe('E2E: OwnershipReconciler is ALIVE + converges through the real AgentSe
   let server: AgentServer;
   let reconciler: OwnershipReconciler;
   let ownReg: SessionOwnershipRegistry;
-  const base = `http://127.0.0.1:${PORT}`;
+  let base: string;
   const auth = { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
 
   beforeAll(async () => {
@@ -75,19 +75,20 @@ describe('E2E: OwnershipReconciler is ALIVE + converges through the real AgentSe
       projectName: 'recon-alive-e2e',
       projectDir: dir,
       stateDir: dir,
-      port: PORT,
+      port: 0,
       authToken: TOKEN,
     } as unknown as InstarConfig;
 
     server = new AgentServer({
       config,
-      sessionManager: new SessionManager({ projectDir: dir, port: PORT }),
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       sessionOwnershipRegistry: ownReg,
       ownershipReconciler: reconciler,
       meshSelfId: SELF,
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {

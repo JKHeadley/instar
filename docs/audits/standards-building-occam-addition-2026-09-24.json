@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-24T18:36:10.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/standards-building-occam-addition-2026-09-24.md",
+  "convergenceSha256": "b4c184b13e8d11b40cc066ed33bf9b20924cfa5c5b50dc589734286f60e5ca79",
+  "areas": {
+    "Building": {
+      "areaSha256": "3031d13ba311e50e26889bfd59512bd05c3cb45710220ade2ce6f1b428b41409",
+      "verdict": "accepted"
+    }
+  }
+}

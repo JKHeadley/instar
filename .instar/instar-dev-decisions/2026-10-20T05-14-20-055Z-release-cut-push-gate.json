@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-20T05:14:20.055Z",
+  "slug": "release-cut-push-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/release-cut-diff.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-destructive.js",
+      "scripts/pre-push-gate.js",
+      "scripts/release-cut-diff.mjs"
+    ],
+    "addedLines": 32,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

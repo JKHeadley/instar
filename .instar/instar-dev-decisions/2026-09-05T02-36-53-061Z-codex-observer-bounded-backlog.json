@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-05T02:36:53.061Z",
+  "slug": "codex-observer-bounded-backlog",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/CodexDeliveryObserver.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -2,7 +2,7 @@
  * Tests for ThreadlineBootstrap — auto-wiring Threadline into the agent server.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,11 @@ import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
 import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// HOME → temp for every test here: bootstrapThreadline() writes the user-scope
+// ~/.claude.json, and this file must never touch the operator's real one.
+useHermeticHome();
 
 /** Write a canonical (unencrypted) identity.json and return its expected fingerprint + hex pubkey. */
 function seedCanonicalIdentity(stateDir: string): { fingerprint: string; publicKeyHex: string } {
@@ -57,6 +62,23 @@ describe('ThreadlineBootstrap', () => {
     expect(result.shutdown).toBeInstanceOf(Function);
 
     await result.shutdown();
+  });
+
+  it('a quiet standby (relayStandby) never connects to the relay even when the relay is enabled (instar#2122)', async () => {
+    // The relay admits ONE connection per agent identity; a standby that
+    // connected displaced the awake machine and vice versa.
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
+    try {
+      const result = await bootstrapThreadline({
+        agentName: 'test-agent', stateDir, projectDir, port: 4040,
+        relayEnabled: true, relayUrl: 'wss://127.0.0.1:1/never', relayStandby: true,
+      });
+      expect(result.relayClient).toBeUndefined();
+      expect(logs.some((l) => l.includes('relay connection SUPPRESSED (standby'))).toBe(true);
+      expect(result.handshakeManager).toBeDefined(); // local Threadline still works
+      await result.shutdown();
+    } finally { spy.mockRestore(); }
   });
 
   // NOTE: tests asserting orphan `identity-keys.json` creation / persistence /

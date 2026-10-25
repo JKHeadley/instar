@@ -1,0 +1,28 @@
+{
+  "ts": "2026-09-23T04:59:00.791Z",
+  "slug": "passkey-inc3-browser",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 832,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/PasskeyBrowserPolicy.ts",
+      "src/core/PasskeyWebAuthnFixture.ts"
+    ],
+    "addedLines": 781,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: ChromeCdpReloginBrowser.open() spawns exactly one Chrome process per operator-approved repair episode (the orchestrator bounds attempts); the browser never restarts, retries or respawns itself."
+  },
+  "verdict": "pass"
+}

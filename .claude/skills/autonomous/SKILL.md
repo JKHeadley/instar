@@ -34,11 +34,11 @@ User: /autonomous --duration=8h --goal="Complete Slack feature parity"
 Agent: Here's my task breakdown for autonomous mode:
 
 TASKS (all must be complete before I can exit):
-1. [ ] Implement job-specific Slack channels
-2. [ ] Build full PresenceProxy Slack integration
-3. [ ] Update dashboard HTML with platform badges
-4. [ ] Implement Slack Lifeline process
-5. [ ] Add platform dropdown to new session UI
+- [ ] (1) Implement job-specific Slack channels
+- [ ] (2) Build full PresenceProxy Slack integration
+- [ ] (3) Update dashboard HTML with platform badges
+- [ ] (4) Implement Slack Lifeline process
+- [ ] (5) Add platform dropdown to new session UI
 ...
 
 Completion promise: "ALL_TASKS_COMPLETE"
@@ -47,6 +47,13 @@ Emergency stop: "stop everything" via messaging
 
 Shall I proceed? (The stop hook will prevent me from exiting until all tasks are done)
 ```
+
+<!-- CHECKBOX_TASK_LIST — task lines MUST be `- [ ] text` (a dash bullet). The server's task
+parser reads only dash-bullet checkboxes; numbered `1. [ ]` lines are invisible to it, so no
+work receipt can ever be minted against them and the run is never admitted. Put any number
+inside the text: `- [ ] (1) text`. -->
+**Task lines must use `- [ ]` checkboxes** (put a number inside the text if you want one:
+`- [ ] (1) ...`). Numbered `1. [ ]` lines are not read as tasks by the server.
 
 **The user must confirm before the hook activates.** This is the safety gate.
 
@@ -69,7 +76,7 @@ hooks = s.setdefault('hooks', {}).setdefault('Stop', [])
 # never deployed, so the hook silently failed every Stop and the loop never
 # re-engaged.) Self-heal: drop any prior autonomous-stop-hook entry (incl. the
 # legacy wrong path), then add exactly one correct-path entry.
-correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'
+correct = 'bash \"\${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"'
 before = json.dumps(hooks)
 hooks[:] = [e for e in hooks if not any('autonomous-stop-hook' in str(h.get('command','')) for h in e.get('hooks', []))]
 hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': correct, 'timeout': 10000}]})
@@ -104,7 +111,7 @@ Write this content:
      when set, the stop-hook RUNS it on a met:true verdict and only allows the exit if it ALSO
      passes (fail/timeout → keep working). This sentinel is the PostUpdateMigrator marker that
      re-deploys this SKILL.md to existing agents. Spec: autonomous-completion-real-checks.md -->
-<!-- SCOPE_ACCRETION — scope-accretion completion discipline: register the run server-side
+<!-- W32_PREPARING_LIVENESS — scope-accretion completion discipline: register the run server-side
      (POST /autonomous/register) and record the returned run_id in the frontmatter; the server
      then holds completion while deliverables THIS run creates sit unbuilt, uncorroborated, and
      unratified. This sentinel is the PostUpdateMigrator marker that re-deploys this SKILL.md to
@@ -112,7 +119,8 @@ Write this content:
 
 ```markdown
 ---
-active: true
+active: {false when POST /autonomous/register returns preparationRequired:true; true otherwise}
+status: {the initialStatus returned by POST /autonomous/register; active when absent}
 iteration: 1
 session_id: {VALUE OF $CLAUDE_CODE_SESSION_ID — get via: echo $CLAUDE_CODE_SESSION_ID}
 goal: "YOUR GOAL"
@@ -193,7 +201,11 @@ jq -nc --arg t "TOPIC_ID" --arg c "YOUR completion_condition text" --arg w "$(pw
     --data-binary @- "http://localhost:${PORT}/autonomous/register"
 ```
 
-Write the returned `runId` into the state file's `run_id:` frontmatter field. If the mission is
+Write the returned `runId` into the state file's `run_id:` frontmatter field. When the response says
+`preparationRequired:true`, write `active:false` and `status:preparing`; the server's five-predicate
+liveness authority is the only path that may later promote the canonical file to `active:true`.
+When that field is absent/false (authority dark, observe-only/dry-run, or non-Echo), preserve the legacy `active:true` start; shadow observation must not alter compatibility state.
+If the mission is
 GENUINELY draft-only (the operator asked for drafts, not builds), list those exact repo-relative
 paths in `declaredDeliverables` — that list is operator-visible at setup and immutable mid-run.
 If the server is unreachable, leave `run_id` empty and continue — the gate degrades honestly.
@@ -255,6 +267,25 @@ sweep is the enforcement. If deferral is genuinely right, ASK the operator in th
 "ratify deferral of <paths>?"); a server-authored enumeration message will list the exact set,
 and only the verified operator's reply binds it. The operator can also ratify from the dashboard
 (PIN-gated).
+
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
+### Found problems (applies to the scope-accretion sweep): triage, never accrete
+
+Finding problems along the way is good. Triage each one on the spot; only the first kind joins this work:
+
+1. **Blocks the current work?** Fix it now.
+2. **A major issue** (broken for users, a safety/security/data-loss risk, or more than about a day of work)? Spin it off: a new topic with its own session (dashboard New Session, or `POST /sessions/create`) whose brief starts an `/autonomous` run to complete it under these same 80/20 + triage rules; tell the operator in one line.
+3. **Everything else** → a queue, and say which: an instar defect or improvement → the feedback queue (`/feedback`); an improvement to this agent's own process → the evolution queue (`/commit-action`).
+
+Never add a found problem to the task list silently, and never draft a spec or audit for a non-blocking one inside this run.
+
+This is how accretion and triage fit: work you CREATE for the goal joins your bar (above); a
+problem you merely FIND is triaged. A spun-off or queued problem is not a deferral of your goal —
+it was never your goal. The server's completion sweep cannot tell whose files are whose, though: it
+counts every new worktree and commit in this agent home since the run started, including the
+spun-off session's. So when you spin one off, ask in the topic right away to "ratify deferral" of
+its paths (and of any artifact you already drafted for a found problem), so they do not hold your
+run. Do the asked-for work first; an unrelated fix never goes ahead of it.
 
 ### The Defer-to-Future-Self Trap
 
@@ -339,7 +370,9 @@ genuinely done:
 2. Run `npx tsc --noEmit` — zero errors
 3. Run relevant tests
 4. Write learnings to MEMORY.md
-5. Send final report via messaging
+5. Send final report via messaging. Include a **proportion line**: what was asked, the size of
+   what shipped, review rounds and commit/gate attempts used, and each found problem with its
+   triage. Say plainly if the effort was out of line with the size (a signal, never a gate).
 6. Output: `<promise>ALL_TASKS_COMPLETE</promise>`
 
 The stop hook detects the promise and allows exit.
@@ -389,8 +422,13 @@ Remaining:
 - [task 4]
 
 Issues: none
+Found (triaged): none
 EOF
 ```
+
+The FINAL report, on every completion path, adds the proportion line from Step 4: asked vs
+shipped, rounds and gate attempts, found problems with their triage, and a one-line flag if the
+effort was out of line with the size.
 
 ---
 

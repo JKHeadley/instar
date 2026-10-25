@@ -8,6 +8,7 @@
  */
 
 import type { MessageEnvelope, AgentFingerprint } from './types.js';
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ export class InMemoryOfflineQueue implements IOfflineQueue {
   private readonly expiryCallbacks: Array<(expired: MessageEnvelope[]) => void> = [];
 
   constructor(config?: Partial<OfflineQueueConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
 
     // Periodic expiry check every 30 seconds
     this.expiryTimer = setInterval(() => {

@@ -18,22 +18,25 @@
 // one FAIL or a crash was detected. Designed for both human reading + CI.
 //
 // USAGE:
-//   node verify.mjs --dir <agent-home> [--stale-ms <ms>] [--tail-lines <N>] [--quiet]
+//   node verify.mjs --dir <agent-home> [--stale-ms <ms>] [--tail-lines <N>] [--quiet] [--no-lease]
+//   --no-lease: no lifeline was started (no bot), so the lease + demote checks are
+//   reported as skipped and only crash detection gates the verdict.
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ── CLI parsing (tiny, no deps) ─────────────────────────────────────────
 function parseArgs(argv) {
-  const out = { dir: null, staleMs: 90_000, tailLines: 200, quiet: false };
+  const out = { dir: null, staleMs: 90_000, tailLines: 200, quiet: false, expectLease: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dir') out.dir = argv[++i];
     else if (a === '--stale-ms') out.staleMs = Number(argv[++i]);
     else if (a === '--tail-lines') out.tailLines = Number(argv[++i]);
     else if (a === '--quiet') out.quiet = true;
+    else if (a === '--no-lease') out.expectLease = false;
     else if (a === '--help' || a === '-h') {
-      process.stdout.write('verify.mjs --dir <agent-home> [--stale-ms <ms>] [--tail-lines <N>] [--quiet]\n');
+      process.stdout.write('verify.mjs --dir <agent-home> [--stale-ms <ms>] [--tail-lines <N>] [--quiet] [--no-lease]\n');
       process.exit(0);
     }
   }
@@ -154,8 +157,16 @@ export function runVerify(dir, opts = {}) {
   const now = opts.now ?? Date.now();
   const staleMs = opts.staleMs ?? 90_000;
   const tailLines = opts.tailLines ?? 200;
+  const expectLease = opts.expectLease !== false;
   const leaseResult = checkLease(dir, now, staleMs);
   const demoteResult = checkServerDemote(dir);
+  if (!expectLease) {
+    // No lifeline was started, so there is no lease to find: skipped, not failed.
+    for (const c of [...Object.values(leaseResult.checks), ...Object.values(demoteResult)]) {
+      c.pass = true;
+      c.detail = 'skipped (--no-lease: no lifeline started)';
+    }
+  }
   const crashes = tailCrashLines(dir, tailLines);
 
   const checks = { ...leaseResult.checks, ...demoteResult, 'crashes.found': {
@@ -179,7 +190,7 @@ if (isMain) {
     process.stderr.write(`error: not a directory: ${args.dir}\n`);
     process.exit(2);
   }
-  const report = runVerify(args.dir, { staleMs: args.staleMs, tailLines: args.tailLines });
+  const report = runVerify(args.dir, { staleMs: args.staleMs, tailLines: args.tailLines, expectLease: args.expectLease });
   if (!args.quiet) process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   process.exit(report.allPass ? 0 : 1);
 }

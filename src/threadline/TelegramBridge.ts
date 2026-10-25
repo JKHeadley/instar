@@ -28,6 +28,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { TelegramBridgeConfig } from './TelegramBridgeConfig.js';
+import type { TelegramOriginService } from '../messaging/telegram-origin/TelegramOriginService.js';
+import { withThreadlineForwardedAuthor } from './TelegramOriginAttribution.js';
 
 // Topic-name length cap: Telegram allows 128 chars, we leave headroom.
 const MAX_TOPIC_NAME = 96;
@@ -88,6 +90,7 @@ export interface TelegramBridgeOptions {
   localAgentName: string;
   config: TelegramBridgeConfig;
   telegram: TelegramSink;
+  originService?: TelegramOriginService;
   /** Live one-voice predicate; false immediately silences every mirror path. */
   isOwner?: () => boolean;
   /** Optional override for the bindings filename (testing). */
@@ -102,6 +105,7 @@ export class TelegramBridge {
   private readonly localAgentName: string;
   private readonly cfg: TelegramBridgeConfig;
   private readonly telegram: TelegramSink;
+  private readonly originService?: TelegramOriginService;
   private readonly isOwner: () => boolean;
   private readonly log: NonNullable<TelegramBridgeOptions['log']>;
   private bindings = new Map<string, TelegramBridgeBinding>(); // threadId → binding
@@ -111,6 +115,7 @@ export class TelegramBridge {
     this.localAgentName = opts.localAgentName;
     this.cfg = opts.config;
     this.telegram = opts.telegram;
+    this.originService = opts.originService;
     this.isOwner = opts.isOwner ?? (() => true);
     this.log = opts.log ?? {
       info: (m) => console.log(`[tg-bridge] ${m}`),
@@ -207,7 +212,7 @@ export class TelegramBridge {
       }
       if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
       const body = this.formatInboundBody(evt);
-      await this.postSafe(existing.topicId, body, evt.threadId);
+      await this.postSafe(existing.topicId, body, evt.threadId, 'inbound');
       return { posted: true, topicId: existing.topicId };
     }
 
@@ -248,7 +253,7 @@ export class TelegramBridge {
     }
 
     const body = this.formatInboundBody(evt);
-    await this.postSafe(topicId, body, evt.threadId);
+    await this.postSafe(topicId, body, evt.threadId, 'inbound');
     return { posted: true, topicId };
   }
 
@@ -269,7 +274,7 @@ export class TelegramBridge {
     if (!binding) return { posted: false, reason: 'no-binding' };
 
     const body = this.formatOutboundBody(evt);
-    await this.postSafe(binding.topicId, body, evt.threadId);
+    await this.postSafe(binding.topicId, body, evt.threadId, 'outbound');
     return { posted: true, topicId: binding.topicId };
   }
 
@@ -293,10 +298,11 @@ export class TelegramBridge {
 
   // ── Post (failure-tolerant) ────────────────────────────────────
 
-  private async postSafe(topicId: number, body: string, threadId: string): Promise<void> {
+  private async postSafe(topicId: number, body: string, threadId: string, direction: 'inbound' | 'outbound'): Promise<void> {
     try {
       if (!this.ownsMirrorVoice()) return;
-      await this.telegram.sendToTopic(topicId, body, { silent: true, skipStallClear: true });
+      await withThreadlineForwardedAuthor(this.originService, direction, topicId, body,
+        () => this.telegram.sendToTopic(topicId, body, { silent: true, skipStallClear: true }));
       if (!this.ownsMirrorVoice()) return;
       const binding = this.bindings.get(threadId);
       if (binding) {

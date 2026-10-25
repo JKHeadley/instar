@@ -171,6 +171,24 @@ describe('wave-1 route entries (§3.5)', () => {
       expect(entry?.story?.fileLevel, path).toBe('git-sync-excluded');
     }
   });
+
+  it('W32 liveness and preparation mutations stay with the local owning executor', () => {
+    for (const path of [
+      '/window-run-liveness/register',
+      '/window-run-liveness/tick',
+      '/window-run-liveness/work-advance',
+      '/window-run-liveness/cadence/tick',
+      '/autonomous/preparation/start',
+      '/autonomous/preparation/36966/recover',
+      '/autonomous/preparation/36966/promote',
+      '/autonomous/preparation/36966/terminalize',
+    ]) {
+      const entry = reg.entryForRoute('POST', path);
+      expect(entry?.domain, path).toBe('machine-local');
+      expect(entry?.story?.logical, path).toBe('per-machine-path');
+      expect(entry?.story?.onSharedGitSyncedPath, path).toBe(false);
+    }
+  });
 });
 
 describe('registry↔wiring identity (the PR-#334 dead-code lesson)', () => {

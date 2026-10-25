@@ -32,6 +32,7 @@ describe('proactive-swap routes (integration)', () => {
   let server: TestServer;
   let dir: string;
   let swapCalls: Array<{ sessionName: string; exhaustedAccountId: string }>;
+  let defaultFlipCalls: string[];
 
   function boot(opts: {
     withMonitor: boolean;
@@ -40,6 +41,7 @@ describe('proactive-swap routes (integration)', () => {
   }): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proactive-int-'));
     swapCalls = [];
+    defaultFlipCalls = [];
     const pool = new SubscriptionPool({ stateDir: dir });
     // "hot" is at pressure; "cool" is the sub-threshold alternate.
     pool.addFixture({ id: 'hot', nickname: 'Hot', provider: 'anthropic', framework: 'claude-code', configHome: '/h/hot', email: 'a@x.io' });
@@ -82,7 +84,7 @@ describe('proactive-swap routes (integration)', () => {
         // one untagged interactive session running on the default login
         listRunningSessions: () => [{
           sessionName: 'interactive',
-          accountId: null,
+          accountId: opts.loginLoss ? 'hot' : null,
           ...(opts.loginLoss ? { loginLossAccountId: 'hot', refreshable: true } : {}),
           startedAt: '2026-06-09T11:00:00Z',
         }],
@@ -93,6 +95,16 @@ describe('proactive-swap routes (integration)', () => {
         },
         now: () => now,
         antiThrash: { engine, getKnobs: () => knobs },
+        ...(!opts.loginLoss ? {
+          defaultSlotRepoint: {
+            enabled: true,
+            dryRun: false,
+            setDefaultAccount: async (accountId: string) => {
+              defaultFlipCalls.push(accountId);
+              return { ok: true, outcome: 'swapped' };
+            },
+          },
+        } : {}),
         ...(opts.loginLoss ? { loginLoss: opts.loginLoss } : {}),
       });
     }
@@ -120,13 +132,14 @@ describe('proactive-swap routes (integration)', () => {
     expect(r.body.running).toBe(false);
   });
 
-  it('POST check runs a pass and swaps the at-pressure (untagged→default) session', async () => {
+  it('POST check re-points the default slot and never swaps the untagged live session', async () => {
     await boot({ withMonitor: true, defaultAccountId: 'hot' });
     const r = await post('/subscription-pool/proactive-swap/check');
     expect(r.status).toBe(200);
     expect(r.body.enabled).toBe(true);
-    expect(r.body.swapped).toEqual(['interactive']);
-    expect(swapCalls).toEqual([{ sessionName: 'interactive', exhaustedAccountId: 'hot' }]);
+    expect(r.body.swapped).toEqual([]);
+    expect(defaultFlipCalls).toEqual(['cool']);
+    expect(swapCalls).toEqual([]);
   });
 
   it('POST check is a no-op when the default login is not at pressure', async () => {

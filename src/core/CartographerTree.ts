@@ -336,14 +336,19 @@ export class CartographerTree {
     chunkNodes: number;
     onYield: () => Promise<void>;
     shouldAbort?: () => boolean;
+    maxChunkMs?: number;
   }): Promise<{ nodeCount: number }> {
     this.ensureDirs();
     const chunk = Math.max(1, opts.chunkNodes);
+    const maxChunkMs = Math.max(1, opts.maxChunkMs ?? 50);
     let ops = 0;
+    let lastYieldAt = Date.now();
     const tick = async (): Promise<void> => {
       ops += 1;
-      if (ops % chunk === 0) {
+      const now = Date.now();
+      if (ops % chunk === 0 || now - lastYieldAt >= maxChunkMs) {
         await opts.onYield();
+        lastYieldAt = Date.now();
         if (opts.shouldAbort?.()) throw new Error('cartographer-scaffold-aborted');
       }
     };

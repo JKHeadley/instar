@@ -1,0 +1,40 @@
+{
+  "ts": "2026-10-15T00:02:49.392Z",
+  "slug": "parallel-activity-action-notes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 763,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/ParallelActivityIndex.ts",
+      "src/core/PoolActivityView.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicActionNoteStore.ts",
+      "src/core/action-claim.ts",
+      "src/core/types.ts",
+      "src/monitoring/ParallelWorkSentinel.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 730,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

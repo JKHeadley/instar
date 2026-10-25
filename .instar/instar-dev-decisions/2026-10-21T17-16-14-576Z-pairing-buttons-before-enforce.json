@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-21T17:16:14.576Z",
+  "slug": "pairing-buttons-before-enforce",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/LifelineIngressGuard.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

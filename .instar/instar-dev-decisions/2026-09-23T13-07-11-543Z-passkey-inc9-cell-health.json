@@ -1,0 +1,36 @@
+{
+  "ts": "2026-09-23T13:07:11.543Z",
+  "slug": "passkey-inc9-cell-health",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 757,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PasskeyCellActions.ts",
+      "src/core/PasskeyCellHealth.ts",
+      "src/core/PasskeyPoolState.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 752,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the digest pass emits at most one keyed upsert per 5-minute tick under a 24h buzz floor and never restarts, retries or kills; the proof-scheduling loop is a later increment and will register there"
+  },
+  "verdict": "pass"
+}

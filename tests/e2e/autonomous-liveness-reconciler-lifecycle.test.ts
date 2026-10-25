@@ -32,24 +32,28 @@ const AUTH = 'test-liveness-e2e';
 interface Knobs {
   runs: ReconcilerActiveRun[];
   liveTopics: Set<number>;
+  idleTopics: Map<number, string>;
   queuedTopics: Set<number>;
   operatorStopped: Set<number>;
   ownerElsewhere: Set<number>;
   leaseHeld: boolean;
   pressure: 'normal' | 'moderate' | 'critical';
   respawned: number[];
+  idleRecovered: number[];
 }
 
 function buildKnobs(): Knobs {
   return {
     runs: [],
     liveTopics: new Set<number>(),
+    idleTopics: new Map<number, string>(),
     queuedTopics: new Set<number>(),
     operatorStopped: new Set<number>(),
     ownerElsewhere: new Set<number>(),
     leaseHeld: true,
     pressure: 'normal',
     respawned: [],
+    idleRecovered: [],
   };
 }
 
@@ -58,6 +62,7 @@ function liveReconciler(k: Knobs, now: { v: number }): AutonomousLivenessReconci
     now: () => now.v,
     listActiveRuns: () => k.runs,
     liveTopicSnapshot: () => k.liveTopics,
+    idleTopicSnapshot: () => k.idleTopics,
     queuePaused: () => false,
     topicInResumeQueue: (t) => k.queuedTopics.has(t),
     operatorStoppedSince: (t) => k.operatorStopped.has(t),
@@ -73,6 +78,11 @@ function liveReconciler(k: Knobs, now: { v: number }): AutonomousLivenessReconci
     resolveCwd: () => '/agent/home/.worktrees/run',
     bindingUnambiguous: () => true,
     respawn: async ({ topicId }) => { k.respawned.push(topicId); },
+    recoverIdle: async ({ topicId }) => {
+      k.idleRecovered.push(topicId);
+      k.idleTopics.delete(topicId);
+      return true;
+    },
     claimInflight: () => true,
     releaseClaim: () => {},
     settleKill: async () => {},
@@ -154,6 +164,17 @@ describe('AutonomousLivenessReconciler lifecycle (e2e)', () => {
     // The route reflects the live respawn total.
     const res = await request(app).get('/autonomous/liveness').set(auth());
     expect(res.body.respawnTotal).toBeGreaterThanOrEqual(1);
+  });
+
+  it('active run at a completed turn → canonical idle recovery after debounce', async () => {
+    const k = buildKnobs(); const t = { v: 2_000_000 };
+    const r = liveReconciler(k, t);
+    k.runs = [run({ topicId: 556 })];
+    k.liveTopics.add(556);
+    k.idleTopics.set(556, 'echo-topic-556');
+    await r.tick(); t.v += 61_000; await r.tick();
+    expect(k.idleRecovered).toEqual([556]);
+    expect(r.status().conditions).toContainEqual(expect.objectContaining({ topicId: 556, state: 'turn-revived' }));
   });
 
   it('operator-stopped → NOT respawned', async () => {

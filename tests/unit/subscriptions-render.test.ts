@@ -18,7 +18,12 @@ import {
   friendlyProvider,
   countdown,
   relativeAge,
+  slowRetryLabel,
+  staleReadingAge,
   quotaBar,
+  quotaSeverity,
+  QUOTA_WARN_PCT,
+  QUOTA_CRITICAL_PCT,
   renderAccounts,
   renderPendingLogins,
   renderDisabled,
@@ -26,6 +31,7 @@ import {
   groupMatrixRowsByProvider,
   buildMatrixModel,
   renderOutcomeCard,
+  providerClass,
 } from '../../dashboard/subscriptions.js';
 
 let doc: Document;
@@ -77,6 +83,35 @@ describe('countdown', () => {
   });
 });
 
+describe('assisted re-login account controls', () => {
+  it('renders one-click repair without exposing hostile episode data as markup', () => {
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'needs-reauth' }], NOW, null, [
+      { id: 'repair-<img src=x onerror=1>', accountId: 'a1', state: 'suggested' },
+    ]);
+    const button = target.querySelector('[data-relogin-action="approve"]');
+    expect(button?.textContent).toBe('Repair sign-in');
+    expect(target.querySelector('img')).toBeNull();
+  });
+
+  it('shows cancel for an active repair and retry only for a safe failed terminal', () => {
+    const account = [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'needs-reauth' }];
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'browser-driving' }]);
+    expect(target.querySelector('[data-relogin-action="cancel"]')).toBeTruthy();
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'failed' }]);
+    expect(target.querySelector('[data-relogin-action="retry"]')).toBeTruthy();
+  });
+
+  it('does not offer a stale failed repair after current account truth is active', () => {
+    const account = [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active' }];
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'failed' }]);
+    expect(target.querySelector('[data-relogin-action="retry"]')).toBeNull();
+    expect(target.textContent).not.toContain('Sign-in repair stopped safely');
+  });
+});
+
 describe('friendly wording', () => {
   it('maps status + provider to plain words', () => {
     expect(friendlyStatus('rate-limited')).toBe('At its limit');
@@ -93,6 +128,57 @@ describe('quotaBar', () => {
     expect(fill.style.width).toBe('100%'); // clamped from 171.6
     expect(bar.querySelector('.sub-quota-pct')!.textContent).toContain('100% used');
     expect(bar.querySelector('.sub-quota-pct')!.textContent).toContain('resets in 2h');
+  });
+
+  // Severity bands. Both sides of BOTH boundaries, so an off-by-one in either
+  // comparison fails here rather than shipping a bar that reads one band early.
+  it.each([
+    [0, 'ok'],
+    [74, 'ok'],
+    [QUOTA_WARN_PCT - 1, 'ok'],
+    [QUOTA_WARN_PCT, 'warn'],
+    [89, 'warn'],
+    [QUOTA_CRITICAL_PCT - 1, 'warn'],
+    [QUOTA_CRITICAL_PCT, 'critical'],
+    [100, 'critical'],
+  ])('quotaSeverity(%i) → %s', (pct, expected) => {
+    expect(quotaSeverity(pct)).toBe(expected);
+  });
+
+  it('severity is derived from the CLAMPED number, not the raw input', () => {
+    expect(quotaSeverity(1000)).toBe('critical'); // clamps to 100
+    expect(quotaSeverity(-50)).toBe('ok'); // clamps to 0
+    expect(quotaSeverity('not a number')).toBe('ok'); // non-finite → 0
+    expect(quotaSeverity(74.6)).toBe('warn'); // rounds to 75, crossing the band
+  });
+
+  it('the fill carries its severity class alongside the base class', () => {
+    const cls = (pct: number) =>
+      (quotaBar(doc, 'Weekly', pct, null, NOW).querySelector('.sub-quota-fill') as HTMLElement)
+        .getAttribute('class');
+    expect(cls(22)).toBe('sub-quota-fill sub-quota-ok');
+    expect(cls(83)).toBe('sub-quota-fill sub-quota-warn');
+    expect(cls(100)).toBe('sub-quota-fill sub-quota-critical');
+  });
+
+  it('the class attribute stays a closed-set literal — no data reaches it', () => {
+    // A hostile percent must not be able to smuggle anything into the attribute:
+    // the severity map is keyed by one of exactly three strings.
+    const fill = quotaBar(doc, 'Weekly', '50" onload="x' as unknown as number, null, NOW)
+      .querySelector('.sub-quota-fill') as HTMLElement;
+    expect(fill.getAttribute('class')).toBe('sub-quota-fill sub-quota-ok');
+    expect(fill.style.width).toBe('0%'); // non-finite → clamped to 0
+  });
+});
+
+describe('staleReadingAge', () => {
+  it('is empty below the threshold and an age above it', () => {
+    expect(staleReadingAge(new Date(NOW - 60 * 60 * 1000).toISOString(), NOW)).toBe('');
+    expect(staleReadingAge(new Date(NOW - 7 * 60 * 60 * 1000).toISOString(), NOW)).toBe('7h ago');
+  });
+  it('is empty for a missing or unparseable timestamp', () => {
+    expect(staleReadingAge(undefined, NOW)).toBe('');
+    expect(staleReadingAge('not a date', NOW)).toBe('');
   });
 });
 
@@ -166,6 +252,43 @@ describe('renderAccounts', () => {
     expect(t.querySelector('.sub-account-noquota')).toBeTruthy();
     expect(t.querySelector('.sub-account-noquota')!.textContent).toContain('yet');
   });
+  it('an entitlement-only codex account names the condition instead of implying a pending read', () => {
+    // The account ANSWERED the poll and reported no usage window at all. "yet"
+    // would promise a number no future poll can produce (the dawn@ case).
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'c', nickname: 'dawn', provider: 'openai', framework: 'codex-cli', status: 'active',
+      lastQuota: { source: 'codex-rollout', measuredAt: '2026-06-07T00:00:00Z', noQuotaWindow: true },
+    }], NOW);
+    const line = t.querySelector('.sub-account-noquota');
+    expect(line).toBeTruthy();
+    expect(line!.textContent).toContain('no usage window');
+    expect(line!.textContent).not.toContain('yet');
+  });
+
+  it('an account with NO reading at all still reads as pending, not as "no window"', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'c2', nickname: 'codey', provider: 'openai', framework: 'codex-cli', status: 'active',
+    }], NOW);
+    expect(t.querySelector('.sub-account-noquota')!.textContent).toContain('yet');
+  });
+
+  it('a stale reading is labelled with its age; a fresh one is not', () => {
+    const card = (measuredAt) => {
+      const t = el();
+      renderAccounts(doc, t, [{
+        id: 'c3', nickname: 'amrch', provider: 'openai', framework: 'codex-cli', status: 'active',
+        lastQuota: { source: 'codex-rollout', measuredAt, sevenDay: { utilizationPct: 86, resetsAt: '2026-06-09T00:00:00Z' } },
+      }], NOW);
+      return t.querySelector('.sub-account-quota-age');
+    };
+    // Codex quota only advances when something runs on the account, so a bar
+    // shown without its age asserts a freshness we do not have.
+    expect(card('2026-06-01T00:00:00Z')!.textContent).toBe('Reading from 6d ago');
+    expect(card('2026-06-06T23:30:00Z')).toBeNull();
+  });
+
   it('a grok account names the PERMANENT condition instead of implying a pending read', () => {
     // grok-build has no usage surface at all, so no poll will ever produce a
     // snapshot — "yet" would promise a reading that cannot arrive (round-11).
@@ -344,6 +467,131 @@ describe('renderAccountMatrix', () => {
     expect(cell!.textContent).toContain('Needs sign-in');
     expect(cell!.querySelector('.sub-matrix-setup')!.textContent).toBe('Sign in');
     expect(t.querySelector('.sub-matrix-active')).toBeNull();
+  });
+
+  it('keeps every durable autonomous-repair state on the repair surface and suppresses competing manual sign-in', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    for (const state of ['suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
+      'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only']) {
+      const t = el();
+      renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, {}, [
+        { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
+      ]);
+      const cell = t.querySelector('[data-cell-key="a1::m1"]');
+      if (state === 'waiting-operator-only') {
+        // A repair waiting on the operator also offers the one-tap phone Sign in
+        // (spec skill-driven-signin-repair, operator contact).
+        expect(cell!.querySelector('[data-matrix-setup]')!.textContent, state).toBe('Sign in');
+      } else {
+        expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      }
+      const action = state === 'suggested' ? 'approve' : 'cancel';
+      expect(cell!.querySelector(`[data-matrix-relogin][data-repair-action="${action}"]`), state).toBeTruthy();
+      if (state !== 'suggested') expect(cell!.textContent, state).toMatch(/Repairing sign-in|needs your help/);
+    }
+  });
+
+  it('offers retry after a safe failure and restores manual fallback after a refusal', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const failed = el();
+    renderAccountMatrix(doc, failed, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed' },
+    ]);
+    expect(failed.querySelector('[data-repair-action="retry"]')!.textContent).toBe('Try repair again');
+    expect(failed.querySelector('[data-matrix-setup]')).toBeNull();
+
+    const refused = el();
+    renderAccountMatrix(doc, refused, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'refused' },
+    ]);
+    expect(refused.querySelector('[data-matrix-relogin]')).toBeNull();
+    expect(refused.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('shows when a failed repair will try again on its own (spec relogin-unattended-agent-session-and-slow-retry)', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const scheduled = el();
+    renderAccountMatrix(doc, scheduled, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: new Date(Date.now() + 5.6 * 3_600_000).toISOString() },
+    ]);
+    expect(scheduled.textContent).toContain('Trying again on its own in about 6 h.');
+    expect(scheduled.querySelector('[data-repair-action="retry"]')!.textContent).toBe('Try repair again');
+    const hold = scheduled.querySelector('.sub-matrix-repair-hold')!;
+    expect(hold.textContent).toBe('Don’t retry on its own');
+    expect(hold.getAttribute('data-repair-action')).toBe('cancel');
+    const none = el();
+    renderAccountMatrix(doc, none, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null },
+    ]);
+    expect(none.textContent).not.toContain('Trying again on its own');
+    expect(none.querySelector('.sub-matrix-repair-hold')).toBeNull();
+    const held = el();
+    renderAccountMatrix(doc, held, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null, slowRetryHeld: true },
+    ]);
+    expect(held.textContent).toContain('Won’t try again on its own. Try repair again any time.');
+    const now = Date.parse('2026-10-14T10:00:00Z');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:00:30Z' }, now)).toBe('Trying again on its own shortly.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:20:00Z' }, now)).toBe('Trying again on its own in 20 min.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-17T10:00:00Z' }, now)).toBe('Trying again on its own in about 3 days.');
+    expect(slowRetryLabel({ state: 'refused', nextAttemptAt: '2026-10-14T12:00:00Z' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: 'not-a-date' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', mode: 'approval', nextAttemptAt: '2026-10-14T16:00:00Z' }, now)).toBe('Will offer to try again in about 6 h.');
+  });
+
+  it('lets current Active truth suppress a stale failed repair episode', () => {
+    const active = el();
+    renderAccountMatrix(doc, active, poolScope, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-old', accountId: 'a1', machineId: 'm1', state: 'failed' },
+    ]);
+    const cell = active.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell!.textContent).toContain('Active');
+    expect(cell!.textContent).not.toContain('Sign-in repair stopped safely');
+    expect(cell!.querySelector('[data-repair-action="retry"]')).toBeNull();
+  });
+
+  it('applies only known repair states with current-state precedence', () => {
+    const render = (status: string, state: string) => {
+      const target = el();
+      renderAccountMatrix(doc, target, {
+        enabled: true,
+        accounts: [{ id: 'a1', email: 'a1@x.com', status, machineId: 'm1', machineNickname: 'Laptop' }],
+        pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+      }, { enabled: true, logins: [] }, {}, [
+        { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
+      ]);
+      return target.querySelector('[data-cell-key="a1::m1"]');
+    };
+
+    expect(render('active', 'suggested')!.querySelector('[data-matrix-relogin]')).toBeNull();
+    expect(render('needs-reauth', 'suggested')!.querySelector('[data-repair-action="approve"]')).toBeTruthy();
+    expect(render('needs-reauth', 'failed')!.querySelector('[data-repair-action="retry"]')).toBeTruthy();
+    expect(render('active', 'auth-verifying')!.textContent).toContain('Repairing sign-in');
+    expect(render('active', 'future-state')!.querySelector('[data-matrix-relogin]')).toBeNull();
+  });
+
+  it('suppresses manual sign-in when the machine repair status is unavailable', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {}, [], [{ machineId: 'm1', error: 'timeout' }]);
+    const cell = t.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell!.textContent).toContain('Repair status is unavailable');
+    expect(cell!.querySelector('[data-matrix-setup]')).toBeNull();
   });
 
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
@@ -746,6 +994,24 @@ describe('renderAccounts — provider grouping', () => {
     expect(order(t)).toEqual(['Claude', 'a1', 'a2', 'Codex', 'c1']);
   });
 
+  it('colors each provider at a glance: heading and every card carry the provider class', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW);
+    const hs = Array.from(t.querySelectorAll('.sub-provider-heading'));
+    expect(hs.map((h) => h.classList.contains('sub-prov-claude'))).toEqual([true, false]);
+    expect(hs.map((h) => h.classList.contains('sub-prov-codex'))).toEqual([false, true]);
+    const cards = Array.from(t.querySelectorAll('.sub-account'));
+    expect(cards.map((c) => [c.classList.contains('sub-prov-claude'), c.classList.contains('sub-prov-codex')]))
+      .toEqual([[true, false], [false, true]]);
+  });
+
+  it('providerClass is a closed mapping; an unknown or hostile provider never becomes a raw class', () => {
+    expect(providerClass('anthropic')).toBe('sub-prov-claude');
+    expect(providerClass('openai')).toBe('sub-prov-codex');
+    expect(providerClass('x" onmouseover="alert(1)')).toBe('sub-prov-other');
+    expect(providerClass(undefined)).toBe('sub-prov-other');
+  });
+
   it('CONTROL: a single-provider list is UNCHANGED — no heading at all', () => {
     // Most installs have one provider. Without this, "we grouped everything" would
     // silently add a redundant heading to the common case.
@@ -841,6 +1107,17 @@ describe('renderAccountMatrix — provider grouping', () => {
     const a2At = rowText.findIndex((x) => x.includes('a2@x.com'));
     expect(claudeAt).toBeLessThan(a2At);
     expect(a2At).toBeLessThan(codexAt);
+  });
+
+  it('colors the grid: each band and each account row carry their provider class', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, mixedPool, pending, {});
+    const bands = Array.from(t.querySelectorAll('.sub-matrix-group'));
+    expect(bands.map((b) => b.className)).toEqual(['sub-matrix-group sub-prov-claude', 'sub-matrix-group sub-prov-codex']);
+    const rows = Array.from(t.querySelectorAll('tbody tr')).filter((r) => r.querySelector('.sub-matrix-acct'));
+    const byEmail = Object.fromEntries(rows.map((r) => [r.querySelector('.sub-matrix-acct')!.textContent, r.className]));
+    expect(byEmail['a2@x.com']).toBe('sub-prov-claude');
+    expect(byEmail['c1@x.com']).toBe('sub-prov-codex');
   });
 
   it('the band spans the whole grid so it reads as a band, not a stray cell', () => {

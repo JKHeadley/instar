@@ -7,6 +7,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { QueueReason } from './queueDeliveryNotice.js';
+import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 
 export interface QueuedMessage {
   id: string;
@@ -16,6 +18,8 @@ export interface QueuedMessage {
   fromUsername?: string;
   fromFirstName: string;
   timestamp: string;
+  /** Why the initial delivery was queued. Missing means a legacy queue entry. */
+  queueReason?: QueueReason;
   voiceFile?: string;
   photoPath?: string;
   documentPath?: string;
@@ -58,6 +62,9 @@ export class MessageQueue {
    * Returns true if the message was actually added.
    */
   enqueue(msg: QueuedMessage): boolean {
+    // A pairing invite carries a one-time secret: it is never written to disk here
+    // (docs/specs/a2a-pairing-invite-link.md §6.1). The sender forwards it again later.
+    if (typeof msg.text === 'string' && msg.text.includes(INVITE_PREFIX)) return false;
     if (this.deliveredIds.has(msg.id)) return false;       // already handled — never re-queue
     if (this.queue.some(m => m.id === msg.id)) return false; // already queued — no duplicate copy
     this.queue.push(msg);

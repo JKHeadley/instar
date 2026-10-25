@@ -1,0 +1,54 @@
+{
+  "checkedAt": "2026-09-06T23:52:09.061Z",
+  "operation": "signed read-only origin capability negotiation",
+  "messagesSent": 0,
+  "peers": [
+    {
+      "machineId": "m_4cbc0d4a0c557cf7e221882f9b42518f",
+      "nickname": "Mac Mini",
+      "status": 403,
+      "ok": false,
+      "reason": "claim-unauthorized"
+    },
+    {
+      "machineId": "m_cc2ec651a91f03f85abb19bfe5e7e8f7",
+      "nickname": "Laptop",
+      "ok": false,
+      "reason": "peer-probe-unavailable"
+    }
+  ],
+  "laterReadOnlyCheck": {
+    "checkedAt": "2026-09-07T02:54:32.051315+00:00",
+    "operation": "authenticated health/capabilities/origin-status and existing execution-path discovery",
+    "peers": [
+      {
+        "nickname": "Mac Mini",
+        "healthStatus": 200,
+        "capabilitiesStatus": 200,
+        "version": "1.3.1226",
+        "originStatus": 404,
+        "ropeHealth": "ok"
+      },
+      {
+        "nickname": "Laptop",
+        "healthStatus": 200,
+        "capabilitiesStatus": 200,
+        "version": "1.3.1226",
+        "originStatus": 404,
+        "ropeHealth": "ok"
+      }
+    ],
+    "managedSsh": {
+      "dryRun": true,
+      "listener": false,
+      "standingConnection": false,
+      "bootstrapReason": "mutual-ssh-mesh-500"
+    },
+    "manualSshConfig": "absent",
+    "isolatedRemoteExecutorVerified": false,
+    "crossMachineOriginTrialPassed": false,
+    "messagesSent": 0,
+    "changesMade": false,
+    "note": "Reachability supersedes the older unavailable observation; no current origin runtime or isolated execution path is established."
+  }
+}

@@ -400,7 +400,7 @@ export class InvalidParentProjectError extends Error {
 export interface DigestItem {
   initiativeId: string;
   title: string;
-  reason: 'stale' | 'needs-user' | 'next-check-due' | 'ready-to-advance';
+  reason: 'stale' | 'needs-user' | 'next-check-due' | 'ready-to-advance' | 'feedback-summary';
   detail: string;
 }
 
@@ -1395,6 +1395,8 @@ export class InitiativeTracker {
     if (this.isTaskFlowEnabled()) this.refreshCacheFromTaskFlow();
     const items: DigestItem[] = [];
     const nowMs = now.getTime();
+    let feedbackActive = 0;
+    let feedbackReady = 0;
     for (const initiative of this.initiatives.values()) {
       if (initiative.status !== 'active') continue;
 
@@ -1421,6 +1423,16 @@ export class InitiativeTracker {
         }
       }
 
+      // Feedback-linked Initiatives are ranked by feedback triage; they never flood the digest
+      // with per-item ready-to-advance/stale flags (docs/specs/feedback-triage-and-execution.md §2).
+      if (initiative.feedbackWorkKey) {
+        feedbackActive++;
+        const cur = initiative.phases[initiative.currentPhaseIndex];
+        const prev = initiative.currentPhaseIndex > 0 ? initiative.phases[initiative.currentPhaseIndex - 1] : undefined;
+        if (prev?.status === 'done' && cur?.status === 'pending') feedbackReady++;
+        continue;
+      }
+
       const current = initiative.phases[initiative.currentPhaseIndex];
       const previous = initiative.currentPhaseIndex > 0
         ? initiative.phases[initiative.currentPhaseIndex - 1]
@@ -1445,6 +1457,15 @@ export class InitiativeTracker {
           detail: `No movement in ${days} days.`,
         });
       }
+    }
+    if (feedbackActive > 0) {
+      items.push({
+        initiativeId: 'feedback-triage-queue',
+        title: 'Feedback work items',
+        reason: 'feedback-summary',
+        detail: `${feedbackActive} active feedback work item${feedbackActive === 1 ? '' : 's'} (${feedbackReady} past triage). ` +
+          'Ranked in the feedback triage queue: dashboard Feedback Drain tab, or GET /feedback-factory/triage/queue.',
+      });
     }
     return { generatedAt: now.toISOString(), items };
   }

@@ -33,6 +33,11 @@ export const STRONG_WORK_EVIDENCE = [
   // the operator origin veto (an explicit operator/user/emergency kill is never
   // auto-revived on a dirty worktree alone). Ships dev-gated (ON dev / OFF fleet).
   'uncommitted-worktree-work',
+  // A Claude Code tool shell (a running Bash call, typically a
+  // `run_in_background` watch or build) was still alive under the session when
+  // it was reaped under pressure. The session was waiting on its own work, so
+  // it is revived. Collected PRE-kill by the SessionReaper.
+  'background-shell',
 ] as const;
 
 export const WEAK_WORK_EVIDENCE = [

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-22T16:18:46.354Z",
+  "slug": "peer-homebase-binding-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/ConversationStore.ts",
+      "src/threadline/ThreadResumeMap.ts",
+      "src/threadline/hubCommands.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

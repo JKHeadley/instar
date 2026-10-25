@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-01T08:44:24.610Z",
+  "slug": "relogin-pool-one-click",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/coordination/AccountFollowMeMandateDelivery.ts",
+      "src/coordination/DeliveredMandateStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

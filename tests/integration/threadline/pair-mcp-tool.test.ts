@@ -19,6 +19,10 @@ import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import type { ThreadlineMCPDeps } from '../../../src/threadline/ThreadlineMCPServer.js';
+import { generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+/** A real Ed25519 key: pinning refuses small-order and off-curve keys (SEC-16), so fixtures must be real. */
+const PEER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
+const OTHER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
 
 const PEER_FP = '8c7928aa9f04fbda947172a2f9b2d81a';
 const OWN_FP = '1111111111111111111111111111aaaa';
@@ -27,13 +31,13 @@ const SAS_WORDS = ['abandon', 'ability', 'able', 'about', 'above', 'absent'];
 
 let dirs: string[] = [];
 
-async function makeCtx() {
+async function makeCtx(opts: { reload?: boolean; extra?: Record<string, unknown> } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-mcp-'));
   dirs.push(stateDir);
   const trustManager = new AgentTrustManager({ stateDir });
   trustManager.recordPendingVerification(PEER_FP, {
     pairingId: PAIRING_ID,
-    peerIdentityPub: 'deadbeef'.repeat(8),
+    peerIdentityPub: PEER_KEY,
     sasWords: SAS_WORDS,
     sasFingerprint: 'a1b2c3d4e5f60718',
     ownFp: OWN_FP,
@@ -53,6 +57,8 @@ async function makeCtx() {
     sendMessage: vi.fn(),
     getThreadHistory: vi.fn(),
     registry: null,
+    reloadTrustBeforePairingRead: opts.reload,
+    ...(opts.extra ?? {}),
   } as unknown as ThreadlineMCPDeps;
 
   const server = new ThreadlineMCPServer(
@@ -63,7 +69,7 @@ async function makeCtx() {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test-client', version: '1.0.0' });
   await Promise.all([client.connect(clientTransport), mcpServer.connect(serverTransport)]);
-  return { trustManager, server, client, close: async () => { await client.close(); await server.stop(); } };
+  return { trustManager, stateDir, server, client, close: async () => { await client.close(); await server.stop(); } };
 }
 
 function parse(result: any) {
@@ -74,6 +80,23 @@ describe('threadline_pair MCP tool (integration)', () => {
   afterEach(() => {
     for (const d of dirs) { try { SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'pair-mcp-tool.test.ts:cleanup' }); } catch { /* ignore */ } }
     dirs = [];
+  });
+
+  it('in stdio mode, status sees a pairing the SERVER started after this process loaded (spec §3.6)', async () => {
+    for (const reload of [true, false]) {
+      const ctx = await makeCtx({ reload });
+      try {
+        // A second trust manager on the same state dir stands in for the agent server.
+        const serverSide = new AgentTrustManager({ stateDir: ctx.stateDir });
+        serverSide.recordPendingVerification('f'.repeat(32), {
+          pairingId: 'b'.repeat(32), peerIdentityPub: OTHER_KEY, sasWords: SAS_WORDS,
+          sasFingerprint: '0102030405060708', ownFp: OWN_FP, displayName: 'later',
+        });
+        serverSide.flush();
+        const out = parse(await ctx.client.callTool({ name: 'threadline_pair', arguments: { action: 'status' } }));
+        expect(out.count).toBe(reload ? 2 : 1);
+      } finally { await ctx.close(); }
+    }
   });
 
   it('status lists the pending pairing without SAS words', async () => {
@@ -127,5 +150,31 @@ describe('threadline_pair MCP tool (integration)', () => {
       const res = await ctx.client.callTool({ name: 'threadline_pair', arguments: { action: 'verify' } });
       expect(res.isError).toBe(true);
     } finally { await ctx.close(); }
+  });
+
+  it('invite makes an invite through the server and tells the agent the operator must send it privately and finish it', async () => {
+    const createInvite = vi.fn().mockResolvedValue({ success: true, status: 200, body: { ok: true, iid: 'a'.repeat(32), exp: '2026-10-14T13:00:00Z', message: 'agent invites you… tlinv1:x.y' } });
+    const ctx = await makeCtx({ extra: { createInvite } });
+    try {
+      const out = parse(await ctx.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite', ttlMinutes: 30, fingerprint: PEER_FP.toUpperCase() } }));
+      expect(createInvite).toHaveBeenCalledWith({ ttlMinutes: 30, bindFp: PEER_FP });
+      expect(out.message).toContain('tlinv1:');
+      expect(out.instruction).toMatch(/PRIVATELY/);
+      expect(out.instruction).toMatch(/cannot approve or finish/);
+    } finally { await ctx.close(); }
+  });
+
+  it('invite without a reachable server, or refused by it, is an error', async () => {
+    const none = await makeCtx();
+    try {
+      const r = await none.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite' } });
+      expect(r.isError).toBe(true);
+    } finally { await none.close(); }
+    const refused = await makeCtx({ extra: { createInvite: vi.fn().mockResolvedValue({ success: false, status: 503, error: 'verified pairing not enabled' }) } });
+    try {
+      const r = await refused.client.callTool({ name: 'threadline_pair', arguments: { action: 'invite' } });
+      expect(r.isError).toBe(true);
+      expect(JSON.stringify(r.content)).toContain('not enabled');
+    } finally { await refused.close(); }
   });
 });

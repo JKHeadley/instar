@@ -108,7 +108,7 @@ export function meshEndpointsEqual(
 ): boolean {
   const norm = (x: MeshEndpoint[] | undefined) =>
     (x ?? [])
-      .map((e) => `${e.kind} ${normalizeEndpointUrl(e.url)}`)
+      .map((e) => `${e.kind} ${e.origin ?? 'advertised'} ${normalizeEndpointUrl(e.url)}`)
       .sort()
       .join('|');
   return norm(a) === norm(b);

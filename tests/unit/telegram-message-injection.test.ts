@@ -84,17 +84,17 @@ describe('Telegram message injection logic', () => {
     expect(funnel).toContain("'-l'");
   });
 
-  it('sendInput sends Enter key separately', () => {
+  it('sendInput delegates to the canonical injection funnel', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/core/SessionManager.ts'),
       'utf-8'
     );
-    // Should have two execFileSync calls in sendInput method — one for text, one for Enter
-    // Match the method definition specifically (not call sites)
+    // sendInput must not duplicate raw tmux mutation; rawInject owns the
+    // journaled text + separate Enter effect for every in-process caller.
     const sendInputMatch = source.match(/sendInput\(tmuxSession: string[\s\S]*?(?=\n\s{2}\w|\n\s{2}\/\*\*)/);
     if (sendInputMatch) {
       const sendInputBody = sendInputMatch[0];
-      expect(sendInputBody).toContain("'Enter'");
+      expect(sendInputBody).toMatch(/return this\.rawInject\(tmuxSession, input\)/);
     }
   });
 });

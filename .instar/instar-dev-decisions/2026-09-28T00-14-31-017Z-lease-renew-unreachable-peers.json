@@ -1,0 +1,24 @@
+{
+  "ts": "2026-09-28T00:14:31.017Z",
+  "slug": "lease-renew-unreachable-peers",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 108,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/HttpLeaseTransport.ts",
+      "src/core/LeaseCoordinator.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

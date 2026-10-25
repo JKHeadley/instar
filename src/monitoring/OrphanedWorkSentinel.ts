@@ -36,6 +36,7 @@ import {
   type WorktreeEnumeration,
   type WorktreeEnumerationFailureHistoryPort,
 } from './worktreeEnumeration.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface OrphanedWorkSentinelConfig {
   /** developmentAgent-gated at the wiring site; omitted from the default. */
@@ -153,7 +154,7 @@ export class OrphanedWorkSentinel extends EventEmitter {
   constructor(deps: OrphanedWorkSentinelDeps, cfg?: Partial<OrphanedWorkSentinelConfig>) {
     super();
     this.deps = deps;
-    this.cfg = { ...DEFAULT_ORPHANED_WORK_SENTINEL_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_ORPHANED_WORK_SENTINEL_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     this.warn = deps.warn ?? ((line) => console.warn(line));
     try {

@@ -77,9 +77,36 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
       expect(handoffBranch).not.toContain("The user's latest message:");
     });
 
-    it('claudeResume + killFresh delegate to the real resume map', () => {
+    it('claudeResume delegates to the real resume map', () => {
       expect(depsBlock()).toContain('_topicResumeMap?.getProvenance(n) === \'hook\'');
-      expect(depsBlock()).toContain('_topicResumeMap?.remove(Number(topic))');
+      expect(depsBlock()).toContain('_topicResumeMap?.park(n, reason)');
+    });
+
+    // Regression (second-pass review, topic 60487): killFresh used to call
+    // _topicResumeMap.remove(), which DELETES the entry. The orchestrator has
+    // already PARKED it by then (recoverable, and already invisible to every
+    // resolution read), so the delete was redundant — and it made the new
+    // kill-failure abort unrecoverable: unpark() finds nothing to restore, so a
+    // session that survived a failed kill permanently lost its resume id. This
+    // pins the destructive call out. Paired with the orchestrator unit test
+    // 'a failed FRESH kill un-parks the still-live session's resume entry',
+    // which asserts the abort restores what the port left parked.
+    it('killFresh never DELETES the resume entry — the orchestrator parked it, and a park is recoverable', () => {
+      expect(depsBlock()).not.toContain('_topicResumeMap?.remove(');
+    });
+
+    // Regression (topic 60487, 2026-08-27): both kill ports were wired to
+    // killSession(), which resolves BY ID — but listTopicSessions() supplies
+    // the session's TMUX NAME. The lookup missed, the kill returned false with
+    // no kill, and the respawn then injected into the still-live old session
+    // while the audit recorded `respawn-applied`. killSessionByTmuxName is the
+    // single place that name->id resolution lives (SessionManager §W26 lane 1).
+    it('both kill ports resolve the tmux NAME they are given — never killSession(id)', () => {
+      const block = depsBlock();
+      expect(block).toContain('killForResume: async (sessionName) => sessionManager.killSessionByTmuxName(sessionName)');
+      expect(block).toContain('return sessionManager.killSessionByTmuxName(sessionName);');
+      // and neither port may hand a name to the id-resolving kill
+      expect(block).not.toContain('sessionManager.killSession(sessionName)');
     });
 
     it('isProtectedSession fails CLOSED to protected (§8 hard invariant), not open', () => {

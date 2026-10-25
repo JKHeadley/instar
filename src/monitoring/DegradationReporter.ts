@@ -53,6 +53,8 @@ export interface DegradationEvent {
   reported: boolean;
   /** Whether this was sent as a Telegram alert */
   alerted: boolean;
+  /** Internal observability only: never deliver to a user-facing alert path. */
+  internalOnly?: boolean;
 }
 
 /**
@@ -91,6 +93,8 @@ export interface NormalizedDegradationEvent {
    * (alert path, audit log) can recover the original quintuple.
    */
   legacy?: DegradationEvent;
+  /** Preserved across dispatch and durable queue replay. */
+  internalOnly?: boolean;
   /**
    * §A40 / §A52 probe-source binding. Optional; set by probe emit-sites
    * migrated to F-8-rest Tier-2 enforcement.
@@ -504,7 +508,7 @@ export class DegradationReporter {
       return;
     }
 
-    if (this.remediator) {
+    if (this.remediator && !full.internalOnly) {
       // Fire-and-forget — dispatch errors land in console.error but never
       // crash the caller. The legacy `.report(...)` API is sync-shaped.
       this.remediator.dispatch(normalized).catch((err) => {
@@ -515,7 +519,7 @@ export class DegradationReporter {
       return;
     }
 
-    // No Remediator wired — legacy alert path runs unchanged.
+    // Internal-only events deliberately bypass remediation/attention dispatch.
     this.reportEvent(full);
   }
 
@@ -554,7 +558,7 @@ export class DegradationReporter {
       return;
     }
 
-    if (this.remediator) {
+    if (this.remediator && !stamped.internalOnly) {
       this.remediator.dispatch(stamped).catch((err) => {
         console.error(
           `[DEGRADATION] Remediator dispatch failed for ${stamped.subsystem}: ${err instanceof Error ? err.message : err}`
@@ -609,6 +613,7 @@ export class DegradationReporter {
       timestamp: legacy.timestamp,
       monotonicTs: monotonicNow(),
       legacy,
+      internalOnly: legacy.internalOnly === true,
     };
   }
 
@@ -803,7 +808,7 @@ export class DegradationReporter {
     // Send Telegram alert (with per-feature cooldown to avoid spam)
     // C1: user-facing degradation alerts are OFF by default. The record above
     // (feedback) and below (persistToDisk) is unaffected — only delivery stops.
-    if (this.telegramSender && this.alertTopicId && !event.alerted && this.notifyUser) {
+    if (this.telegramSender && this.alertTopicId && !event.alerted && this.notifyUser && !event.internalOnly) {
       const lastAlert = this.lastAlertTime.get(event.feature) ?? 0;
       const now = Date.now();
 
@@ -1022,7 +1027,7 @@ export class DegradationReporter {
     }
 
     for (const event of queued) {
-      if (this.remediator) {
+      if (this.remediator && !event.internalOnly) {
         // Fire-and-forget; replay does not wait for individual dispatches.
         this.remediator.dispatch(event).catch((err) => {
           console.error(
@@ -1031,7 +1036,10 @@ export class DegradationReporter {
         });
       } else if (event.legacy) {
         // Fall back to the legacy alert path for legacy-shaped queued events.
-        this.reportEvent(event.legacy);
+        this.reportEvent({
+          ...event.legacy,
+          internalOnly: event.internalOnly === true || event.legacy.internalOnly === true,
+        });
       }
     }
 

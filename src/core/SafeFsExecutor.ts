@@ -24,11 +24,18 @@ import {
   assertNotInstarSourceTree,
   SourceTreeGuardError,
 } from './SourceTreeGuard.js';
-import { appendAuditEntry } from './SafeGitExecutor.js';
+import { appendAuditEntry, isLocalVerifyClonePath } from './SafeGitExecutor.js';
 
 export interface SafeFsOptions {
   /** Caller label for error messages and audit log. */
   operation: string;
+  /**
+   * Opt-in: local-verify's own clone and run directories (docs/specs/local-verify-merge-authority.md
+   * §2). Admits a target only when its realpath is THIS agent's `verifyRoot`
+   * (`<agentHome>/.worktrees/.verify`, realpath'd) or below it — the run worktrees are copies of the
+   * instar source, which the guard would otherwise refuse. Never widens anything else.
+   */
+  localVerifyScopeOk?: { verifyRoot: string };
 }
 
 export type SafeRmOptions = fs.RmOptions & SafeFsOptions;
@@ -95,8 +102,12 @@ function isUnderAgentRuntimeState(canonical: string): boolean {
   return canonical.length > idx + marker.length;
 }
 
-function guard(target: string, operation: string, fnName: string): string {
+function guard(target: string, operation: string, fnName: string, localVerifyScopeOk?: { verifyRoot: string }): string {
   const canonical = canonicalizeTarget(target);
+  if (localVerifyScopeOk && isLocalVerifyClonePath(canonical, localVerifyScopeOk.verifyRoot)) {
+    audit(fnName, operation, canonical, 'allowed', 'local-verify-scope-carveout');
+    return canonical;
+  }
   // Carve-out: runtime state under `.instar/` is gitignored, not source code.
   // The guard's brittle-block is a false positive for these paths in
   // agent-mode deployments where the agent dir IS a checkout of the source.
@@ -158,8 +169,8 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.rm wrapper. */
   static async safeRm(target: string, opts: SafeRmOptions): Promise<void> {
-    const { operation, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRm');
+    const { operation, localVerifyScopeOk, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRm', localVerifyScopeOk);
     try {
       await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRm', operation, canonical, 'allowed');
@@ -171,8 +182,8 @@ export class SafeFsExecutor {
 
   /** Sync fs.rmSync wrapper. */
   static safeRmSync(target: string, opts: SafeRmOptions): void {
-    const { operation, ...rmOpts } = opts;
-    const canonical = guard(target, operation, 'safeRmSync');
+    const { operation, localVerifyScopeOk, ...rmOpts } = opts;
+    const canonical = guard(target, operation, 'safeRmSync', localVerifyScopeOk);
     try {
       fs.rmSync(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRmSync', operation, canonical, 'allowed');

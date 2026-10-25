@@ -1,0 +1,24 @@
+{
+  "ts": "2026-09-30T11:38:52.234Z",
+  "slug": "test-instance-foreign-kills",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/core/SessionManager.ts",
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 57,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

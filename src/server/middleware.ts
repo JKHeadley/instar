@@ -48,7 +48,17 @@ export function duplicateResponseGuard(req: Request, res: Response, next: NextFu
   next();
 }
 
+/** The skill-driven sign-in helper's code route: token-authed, loopback-only, never CORS-enabled. */
+export const RELOGIN_HELPER_CODE_PATH = /^\/subscription-relogin\/[A-Za-z0-9._:-]{1,160}\/code$/;
+
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // The sign-in helper's code route sends NO CORS headers, so no browser page can reach it
+  // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
+  if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+    if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
   // Restrict CORS to localhost origins only — this is a local management API
   const origin = req.headers.origin;
   if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
@@ -117,6 +127,26 @@ export function _resetDeprecationLogCache(): void {
  *   the backward-compatibility deprecation window with a deduped log
  *   line. See spec docs/specs/telegram-delivery-robustness.md § Layer 1b.
  */
+/**
+ * Token-only Bearer compare, extracted from the authenticated branch of
+ * `GET /health` so both it and the `/threadline/peers/health?scope=pool` read
+ * use ONE comparison (copying auth logic is how comparisons drift). Reads ONLY
+ * the `Authorization` header — never a query-string token, which would land in
+ * fan-out URLs and logs. No `authToken` configured ⇒ true (an install with no
+ * token has no secret to guard — the same posture `/health` has always had).
+ * The `X-Instar-AgentId` mismatch rule is NOT part of this helper; callers that
+ * need it apply it separately (`/health` never did).
+ */
+export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
+  if (!authToken) return true;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const token = header.slice(7);
+  const ha = createHash('sha256').update(token).digest();
+  const hb = createHash('sha256').update(authToken).digest();
+  return timingSafeEqual(ha, hb);
+}
+
 export function authMiddleware(authToken?: string | (() => string | undefined), agentId?: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Resolve the token per-request so runtime rotation takes effect
@@ -216,6 +246,13 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
         return;
       }
       // Fall through to the standard bearer check below.
+    }
+
+    // Skill-driven sign-in helper code route: the per-episode token in X-Relogin-Helper-Token IS
+    // the auth, enforced (with loopback-only) in the route handler. POST only.
+    if (req.method === 'POST' && RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+      next();
+      return;
     }
 
     // Secret drop routes — the token in the URL IS the auth.

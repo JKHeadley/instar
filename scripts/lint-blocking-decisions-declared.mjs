@@ -10,7 +10,7 @@
  * ── What this measures, and what it certifies ──────────────────────────────
  * Declared explicitly, per *Verify the State, Not Its Symbol* tooth (D):
  *
- *   MEASURED  — every `.sh` / `.js` / `.mjs` file under `src/templates/` is
+ *   MEASURED  — every `.sh` / `.js` / `.mjs` / `.ps1` file under `src/templates/` is
  *               DECLARED, in the baseline manifest, as either a blocking
  *               decision surface or a non-blocking one; the blocking set has not
  *               grown past its committed ceiling; and every non-blocking
@@ -62,7 +62,7 @@ const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
 const MANIFEST_REL = 'scripts/blocking-decision-surfaces-baseline.json';
 const POPULATION_DIR = 'src/templates';
-const EXTENSIONS = new Set(['.sh', '.js', '.mjs']);
+const EXTENSIONS = new Set(['.sh', '.js', '.mjs', '.ps1']);
 const JSON_OUT = process.argv.includes('--json');
 
 /** Hash LF-normalized bytes so a CRLF checkout does not manufacture drift. */

@@ -86,7 +86,8 @@ describe('SessionWatchdog — non-blocking wiring guards (regression)', () => {
   });
 
   it('poll yields the event loop between sessions', () => {
-    const pollBody = src.slice(src.indexOf('private async poll('), src.indexOf('private async poll(') + 900);
+    const pollStart = src.indexOf('private async poll(');
+    const pollBody = src.slice(pollStart, src.indexOf('\n  private async ', pollStart + 1));
     expect(pollBody).toContain('setImmediate');
   });
 });

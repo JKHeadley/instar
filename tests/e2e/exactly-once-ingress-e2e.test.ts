@@ -20,16 +20,18 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { MessageProcessingLedger } from '../../src/messaging/MessageProcessingLedger.js';
 import { dedupeKeyFor, decideIngress, commitInboundReply } from '../../src/messaging/ingressDedup.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 const AUTH = 'test-auth-exactly-once';
 const TOPIC = 13481;
 
 describe('Exactly-once ingress gate — alive in a real booted server', () => {
-  const PORT = 19500 + Math.floor(Math.random() * 80);
   let stateDir: string;
   let server: AgentServer;
+  let base: string;
   let ledger: MessageProcessingLedger;
 
   beforeAll(async () => {
@@ -48,7 +50,7 @@ describe('Exactly-once ingress gate — alive in a real booted server', () => {
       projectName: 'exactly-once-e2e',
       projectDir: stateDir,
       stateDir,
-      port: PORT,
+      port: 0,
       host: '127.0.0.1',
       authToken: AUTH,
       claudePath: 'claude',
@@ -60,7 +62,7 @@ describe('Exactly-once ingress gate — alive in a real booted server', () => {
     } as InstarConfig;
 
     const state = new StateManager(stateDir);
-    const sessionManager = new SessionManager({ stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: stateDir, port: PORT });
+    const sessionManager = new SessionManager({ stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: stateDir, port: 0 });
 
     server = new AgentServer({
       config,
@@ -70,6 +72,7 @@ describe('Exactly-once ingress gate — alive in a real booted server', () => {
       currentInboundByTopic: new Map<string, string>(),
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {
@@ -79,9 +82,10 @@ describe('Exactly-once ingress gate — alive in a real booted server', () => {
   }, 10000);
 
   it('drops an already-replied redelivery over real HTTP (200 + deduped, not routed)', async () => {
-    const resp = await fetch(`http://127.0.0.1:${PORT}/internal/telegram-forward`, {
+    const resp = await fetch(`${base}/internal/telegram-forward`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}` },
+      // The forward route requires the lifeline ingress secret; this request stands in for the lifeline.
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}`, [LIFELINE_SECRET_HEADER]: ensureLifelineIngressSecret(stateDir) },
       body: JSON.stringify({ topicId: TOPIC, text: 'hello again', fromUserId: 1, fromUsername: 't', fromFirstName: 'T', messageId: 99 }),
     });
     expect(resp.status).toBe(200);

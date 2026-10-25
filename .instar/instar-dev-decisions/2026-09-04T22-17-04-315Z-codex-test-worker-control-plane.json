@@ -1,0 +1,40 @@
+{
+  "ts": "2026-09-04T22:17:04.315Z",
+  "slug": "codex-test-worker-control-plane",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 278,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StuckInputSentinel.ts",
+      "src/lifeline/MessageQueue.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/queueDeliveryNotice.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 232,
+    "deletedLines": 46
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The watchdog's control-loop edge is bounded to exact identity-fenced signals; stable esbuild services settle at zero interventions, replacement sessions discard stale escalation, and MAX_RETRIES plus ReapAuthority provide the terminal settling brakes."
+    }
+  },
+  "verdict": "pass"
+}

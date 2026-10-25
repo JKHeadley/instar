@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -137,7 +138,7 @@ interface RegistryValidationResult {
  * Rejects zombie entries (path doesn't exist) and path traversal attempts.
  */
 export function validateRegistry(projectDir: string): RegistryValidationResult {
-  const registryPath = path.join(os.homedir(), '.instar', 'registry.json');
+  const registryPath = agentRegistryPath();
   const validAgents: LocalAgent[] = [];
   const zombieEntries: string[] = [];
 

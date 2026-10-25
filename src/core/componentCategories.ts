@@ -90,6 +90,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   OverrideDetector: 'gate',
   TaskClassifier: 'gate',
   FeedbackReadinessArbiter: 'gate',
+  FeedbackTriageArbiter: 'gate',
+  FeedbackTriageSecondOpinion: 'gate',
+  'subscription-relogin-supervisor': 'gate', // closed-action validator over provider browser state
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',
@@ -149,6 +152,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
   'correction-class-review': 'reflector', // standards/process class review proposal for each correction
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
+  'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 

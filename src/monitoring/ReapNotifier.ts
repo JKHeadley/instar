@@ -43,6 +43,7 @@
 import type { Session } from '../core/types.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
 import { buildReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface ReapEvent {
   session: Pick<Session, 'name' | 'tmuxSession'>;
@@ -68,6 +69,26 @@ export interface ReapNotifierDeps {
   resolveTopic: (tmuxSession: string) => number | null;
   /** The always-on system/lifeline topic, or null if none is configured. */
   lifelineTopic: () => number | null;
+  /**
+   * Last-resort delivery for a notice that has no lifeline topic to go to.
+   * Wired to the server's notification gateway, which already reaches whichever
+   * platform the agent actually uses (Telegram topic AND/OR Slack attention
+   * channel) — unlike `lifelineTopic`, which is Telegram-shaped.
+   *
+   * Without it a Slack-only agent dropped every unbound-session and
+   * cross-topic notice it ever produced: the indra agent's own records show
+   * repeated `notify:no-topic` / "lifeline topic not configured" outcomes, so
+   * the one layer whose job is to say "your work was interrupted" was speaking
+   * into a channel that did not exist. Returns true when it delivered.
+   */
+  fallbackNotify?: (text: string) => boolean;
+  /**
+   * Raise ONE visible item when a notice has nowhere at all to go. A notice
+   * recorded as undeliverable and then forgotten is the same silence the
+   * notifier exists to prevent — so the absence of a destination is itself
+   * reported, once, rather than per notice.
+   */
+  raiseNoDestination?: (detail: string) => void;
   /** Legacy delivery (perTopic:false and drainEnabled:false modes). */
   send: (topicId: number, text: string) => void | Promise<void>;
   /** Durable store enqueue (v2). Returns false on PK-dedupe no-op. */
@@ -201,7 +222,7 @@ export class ReapNotifier {
 
   constructor(deps: ReapNotifierDeps, opts?: Partial<ReapNotifierOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_REAP_NOTIFIER_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_REAP_NOTIFIER_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -362,12 +383,42 @@ export class ReapNotifier {
     }
     if (lifelineParts.length > 0) {
       if (lifeline == null) {
+        // No lifeline topic. Before this, that ended the story: the notice was
+        // recorded as `no-topic` and dropped, which on a Slack-only agent means
+        // EVERY such notice is dropped, forever, silently. Try the gateway that
+        // knows the agent's real platforms first.
+        const text = lifelineParts.join('\n\n');
+        let delivered = false;
+        try {
+          delivered = this.deps.fallbackNotify?.(text) ?? false;
+        } catch {
+          // @silent-fallback-ok: a failing fallback must not lose the record
+          // below, which is the whole audit trail for this notice.
+          delivered = false;
+        }
         this.deps.recordNotify?.({
           noticeId: this.nextNoticeId('lifeline'),
           topicId: null,
-          outcome: 'no-topic',
-          detail: 'lifeline topic not configured',
+          outcome: delivered ? 'sent' : 'no-topic',
+          detail: delivered
+            ? 'no lifeline topic — delivered via the notification gateway'
+            : 'lifeline topic not configured and no fallback destination',
         });
+        if (!delivered) {
+          // Loud in the log too: on an agent with no Telegram adapter at all the
+          // attention item below cannot be raised either, and a dropped notice
+          // that leaves no trace anywhere is the exact failure being fixed.
+          console.warn(
+            '[reap-notify] a session-interrupted notice had NO destination (no lifeline topic, no '
+            + 'fallback channel) — it was not delivered to anyone.',
+          );
+          try {
+            this.deps.raiseNoDestination?.(
+              'A session-interrupted notice had nowhere to go: this agent has no lifeline topic '
+              + 'and no reachable fallback channel, so notices about interrupted work are being dropped.',
+            );
+          } catch { /* @silent-fallback-ok: reporting the gap must never throw into the flush */ }
+        }
       } else {
         await this.deliver(lifeline, lifelineParts.join('\n\n'), 'SUMMARY');
       }

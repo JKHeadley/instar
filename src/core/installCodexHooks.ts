@@ -97,7 +97,7 @@ export function buildInstarCodexHookGroups(
     // tool_input.cmd (Claude uses tool_input.command); the scripts accept both field
     // names AND both tool names (Bash | exec_command).
     PreToolUse: [
-      { matcher: '.*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js')] },
+      { matcher: '.*', hooks: [node('telegram-origin-guard.js'), sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js')] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.
@@ -143,7 +143,7 @@ export function buildInstarCodexHookGroups(
       { matcher: '', hooks: [sh('session-start.sh')] },
     ],
     UserPromptSubmit: [
-      { matcher: '', hooks: [sh('telegram-topic-context.sh')] },
+      { matcher: '', hooks: [sh('telegram-topic-context.sh'), node('hook-event-reporter.js')] },
     ],
   };
 }

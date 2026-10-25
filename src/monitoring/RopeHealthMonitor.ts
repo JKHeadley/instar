@@ -54,8 +54,9 @@ import {
   parseTailscaleStatus,
   soonestKeyExpiry,
 } from '../core/tailscaleStatusParser.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
-export type RopeHealthCondition = 'ok' | 'degraded' | 'peer-offline' | 'urgent' | 'unknown';
+export type RopeHealthCondition = 'ok' | 'degraded' | 'peer-offline' | 'auth-rejected' | 'urgent' | 'unknown';
 
 export interface RopeHealthPeerInfo {
   machineId: string;
@@ -70,7 +71,9 @@ export type RopeHealthMetricEvent =
   | 'transition-ok'
   | 'transition-degraded'
   | 'transition-peer-offline'
+  | 'transition-auth-rejected'
   | 'transition-urgent'
+  | 'auth-rejected-episode'
   | 'urgent-episode'
   | 'suppressed-by-sleep-gate'
   | 'suppressed-by-split-brain'
@@ -95,11 +98,28 @@ export interface RopeHealthMonitorDeps {
   /** Episode-registry check: a split-brain item already open for this peer wins. */
   splitBrainItemOpen?: (peerMachineId: string) => boolean;
   /**
+   * Freshest auth-layer probe refusal for this peer (epoch-ms), or null — from
+   * RopeRecoveryProber. An auth refusal is POSITIVE liveness evidence (the
+   * peer's server answered and said no), so an all-down peer with fresh
+   * evidence classifies 'auth-rejected' (loud), never 'peer-offline — expected'
+   * (the 2026-08-29 signature-mismatch incident: the stopped heartbeat that
+   * justified 'expected' was itself caused by the fault it excused).
+   */
+  readAuthRejectAtMs?: (machineId: string) => number | null;
+  /**
    * Bounded exec seam for `tailscale status --json` (R-r2-3). Resolves to the
    * raw stdout, or null when the CLI is absent/timed out (the expiry tier is
    * then silently absent). Default impl provided; tests inject.
    */
   execTailscaleStatusJson?: () => Promise<string | null>;
+  /**
+   * The tailnet addresses that actually BACK a mesh rope (from the peers' tailscale
+   * endpoints). Supplied ⇒ the key-expiry tier considers only those nodes plus self;
+   * absent ⇒ tailnet-wide, the previous behaviour. A tailnet holds every device the
+   * operator owns, so without this a long-dead unrelated node is the permanent global
+   * minimum expiry and the warning never clears.
+   */
+  meshTailscaleAddresses?: () => string[];
   /** Durable state file (state/rope-health.json). */
   stateFilePath: string;
   recordMetric?: (event: RopeHealthMetricEvent) => void;
@@ -116,6 +136,12 @@ export interface RopeHealthMonitorConfig {
   clearSustainMs: number;
   /** Tailscale key expiry warning horizon. Default 14. */
   keyExpiryWarnDays: number;
+  /** The alive-but-rejecting tier master. Default true — near-zero false-positive
+   *  evidence (a signed probe answered with a typed auth refusal). */
+  authRejectAlertEnabled: boolean;
+  /** How fresh auth-reject evidence must be to classify (default 45 min ≈ 3× the
+   *  probe floor, so a single stale refusal from a past episode cannot linger). */
+  authRejectFreshnessMs: number;
   /** The monitor's OWN evaluation loop cadence. Default 30000. */
   evaluateIntervalMs: number;
   /** Key-expiry exec cadence. Default 3600000 (hourly). */
@@ -145,6 +171,8 @@ export const ROPE_HEALTH_DEFAULTS: RopeHealthMonitorConfig = {
   urgentDebounceMs: 60_000,
   clearSustainMs: 600_000,
   keyExpiryWarnDays: 14,
+  authRejectAlertEnabled: true,
+  authRejectFreshnessMs: 45 * 60_000,
   evaluateIntervalMs: 30_000,
   keyExpiryCheckIntervalMs: 3_600_000,
   wakeGraceMaxMs: 300_000,
@@ -198,6 +226,8 @@ interface PeerRuntimeState {
   episodeKey: string | null;
   /** When the ONE urgent item for this episode was raised (lastAlertAt). */
   urgentRaisedAt: number | null;
+  /** When the ONE auth-rejected item for this episode was raised. */
+  authRejectRaisedAt: number | null;
   /** Urgent detected but attention delivery failed — retried next evaluation. */
   detectedNotNotified: boolean;
   /** Continuous-health start while an episode is still open (clear-sustain). */
@@ -303,7 +333,7 @@ export class RopeHealthMonitor {
 
   constructor(deps: RopeHealthMonitorDeps, cfg?: Partial<RopeHealthMonitorConfig>) {
     this.d = deps;
-    this.cfg = { ...ROPE_HEALTH_DEFAULTS, ...cfg };
+    this.cfg = mergeDefaults(ROPE_HEALTH_DEFAULTS, cfg);
     this.loadState();
   }
 
@@ -431,6 +461,26 @@ export class RopeHealthMonitor {
         st.postOnsetBeatObservedAt = nowMs;
       }
 
+      // ── Alive-but-rejecting (checked FIRST — evidence beats absence). ──
+      // A fresh auth-layer probe refusal is POSITIVE proof the peer's server is
+      // up: it dialed, answered, verified the envelope, and refused. Such a peer
+      // must never fall into either 'peer-offline — expected' branch below —
+      // both key on signals (registry-online, heartbeat) that the auth fault
+      // itself suppresses (the peer's inbound writes to us stop when it cannot
+      // authenticate, so the very symptom excused the outage for two days on
+      // 2026-08-29). Evidence freshness is bounded so one stale refusal from a
+      // long-closed episode cannot keep reviving the classification.
+      const authRejectAt = this.safeAuthRejectAt(peer.machineId);
+      const authFresh = authRejectAt !== null && nowMs - authRejectAt <= this.cfg.authRejectFreshnessMs;
+      if (authFresh) {
+        st.condition = 'auth-rejected';
+        this.recordTransition(prev, st.condition);
+        if (this.cfg.authRejectAlertEnabled && st.authRejectRaisedAt === null) {
+          this.raiseAuthRejected(peer, st, nowMs);
+        }
+        continue;
+      }
+
       if (!peer.registryOnline) {
         // WS4.2 'offline since <t>' — expected. Never urgent.
         st.condition = 'peer-offline';
@@ -499,6 +549,7 @@ export class RopeHealthMonitor {
       st.consecutiveObservations = 0;
       st.episodeKey = null;
       st.urgentRaisedAt = null;
+      st.authRejectRaisedAt = null;
       st.detectedNotNotified = false;
       st.postOnsetBeatObservedAt = null;
       st.healthySince = null;
@@ -511,6 +562,48 @@ export class RopeHealthMonitor {
     if (nowMs - this.ownWakeAt > this.cfg.wakeGraceMaxMs) return false; // bounded (P1-A7)
     // Suppress only while some rope has NOT been re-observed post-wake.
     return peerRows.some((r) => Math.max(r.lastOkAt, r.lastFailAt) <= this.ownWakeAt!);
+  }
+
+  /** Read the prober's auth-reject evidence, fail-silent to null (⇒ no claim). */
+  private safeAuthRejectAt(machineId: string): number | null {
+    try {
+      return this.d.readAuthRejectAtMs?.(machineId) ?? null;
+    } catch {
+      // @silent-fallback-ok: unreadable evidence is NO evidence — the peer then
+      // classifies by the ordinary offline/urgent rules, never a crash.
+      return null;
+    }
+  }
+
+  private raiseAuthRejected(peer: RopeHealthPeerInfo, st: PeerRuntimeState, nowMs: number): void {
+    const sinceMin = st.allDownSince ? Math.round((nowMs - st.allDownSince) / 60_000) : 0;
+    // Content scrub: nickname + relative time ONLY (no key material, no ids).
+    const item = {
+      id: `rope-health-auth-rejected:${st.episodeKey ?? peer.machineId}`,
+      title: `${peer.nickname} is refusing this machine's signed messages`,
+      body:
+        `Every mesh rope to ${peer.nickname} is down (~${sinceMin} min), but it is provably AWAKE: ` +
+        `it answers probes and refuses them at the signature layer. This is a key/identity mismatch ` +
+        `(e.g. a rotated machine key the peer never learned), not a sleeping machine — the mesh is ` +
+        `likely running one-way until the stored identity is repaired. ` +
+        `Episode ${st.episodeKey ?? 'n/a'}; this is the ONE alert for this episode.`,
+    };
+    try {
+      const r = this.d.raiseAttention(item);
+      if (r && typeof (r as Promise<unknown>).then === 'function') {
+        void (r as Promise<unknown>).then(
+          () => { st.authRejectRaisedAt = this.now(); this.metric('auth-rejected-episode'); this.scheduleWrite(); },
+          () => { /* delivery failed — retried next evaluation (authRejectRaisedAt stays null) */ },
+        );
+      } else {
+        st.authRejectRaisedAt = this.now();
+        this.metric('auth-rejected-episode');
+        this.scheduleWrite();
+      }
+    } catch {
+      // Detected-but-silent must not be silent forever: authRejectRaisedAt stays
+      // null so the next evaluation retries the raise.
+    }
   }
 
   private raiseUrgent(peer: RopeHealthPeerInfo, st: PeerRuntimeState, nowMs: number): void {
@@ -584,14 +677,17 @@ export class RopeHealthMonitor {
           }
           return;
         }
-        const parse = parseTailscaleStatus(raw);
+        const scope = this.safeMeshAddresses();
+        const parse = parseTailscaleStatus(raw, scope);
         if (!parse.parsed) {
           this.keyExpiryAvailable = false;
           this.keyExpirySoonest = null;
           return;
         }
         this.keyExpiryAvailable = true;
-        this.keyExpirySoonest = soonestKeyExpiry(parse, this.now());
+        this.keyExpirySoonest = soonestKeyExpiry(parse, this.now(), {
+          meshScopedOnly: scope !== undefined && scope.size > 0,
+        });
         if (this.keyExpiryWarn()) this.metric('key-expiry-warning');
       })
       .catch((err) => {
@@ -603,6 +699,24 @@ export class RopeHealthMonitor {
       .finally(() => {
         this.keyExpiryInFlight = false;
       });
+  }
+
+  /**
+   * Read the mesh-backing tailnet address set, fail-silent to undefined (⇒ tailnet-wide,
+   * the previous behaviour). Never throws into the expiry tier.
+   */
+  private safeMeshAddresses(): ReadonlySet<string> | undefined {
+    if (!this.d.meshTailscaleAddresses) return undefined;
+    try {
+      const list = this.d.meshTailscaleAddresses();
+      if (!Array.isArray(list) || list.length === 0) return undefined;
+      return new Set(list.filter((a): a is string => typeof a === 'string' && a.length > 0));
+    } catch {
+      // @silent-fallback-ok: an unreadable registry means NO scoping this pass, which is
+      // exactly the pre-scoping behaviour — never a crash, never a silent empty scope
+      // (an empty set would scope the scan down to self alone and hide a real warning).
+      return undefined;
+    }
   }
 
   private keyExpiryWarn(): boolean {
@@ -676,6 +790,9 @@ export class RopeHealthMonitor {
       if (st.condition === 'urgent') {
         const min = st.allDownSince ? Math.round((nowMs - st.allDownSince) / 60_000) : 0;
         sentences.push(`ALL mesh ropes to ${p.nickname} are down (~${min} min) while its heartbeat still advances — alive but unreachable.`);
+      } else if (st.condition === 'auth-rejected') {
+        const min = st.allDownSince ? Math.round((nowMs - st.allDownSince) / 60_000) : 0;
+        sentences.push(`${p.nickname} is AWAKE but refusing this machine's signed messages (~${min} min) — a key/identity mismatch, not a sleeping machine.`);
       } else if (st.condition === 'peer-offline') {
         const min = st.allDownSince ? Math.round((nowMs - st.allDownSince) / 60_000) : 0;
         sentences.push(`${p.nickname} is offline (~${min} min) — expected (its heartbeat stopped).`);
@@ -782,6 +899,7 @@ export class RopeHealthMonitor {
           consecutiveObservations: st.consecutiveObservations,
           episodeKey: st.episodeKey,
           urgentRaisedAt: st.urgentRaisedAt,
+          authRejectRaisedAt: st.authRejectRaisedAt,
           detectedNotNotified: st.detectedNotNotified,
         };
       }
@@ -814,6 +932,7 @@ export class RopeHealthMonitor {
           consecutiveObservations: 0,
           episodeKey: typeof p.episodeKey === 'string' ? p.episodeKey : null,
           urgentRaisedAt: typeof p.urgentRaisedAt === 'number' ? p.urgentRaisedAt : null,
+          authRejectRaisedAt: typeof p.authRejectRaisedAt === 'number' ? p.authRejectRaisedAt : null,
           detectedNotNotified: p.detectedNotNotified === true,
         });
       }
@@ -831,6 +950,7 @@ function freshPeerState(): PeerRuntimeState {
     consecutiveObservations: 0,
     episodeKey: null,
     urgentRaisedAt: null,
+    authRejectRaisedAt: null,
     detectedNotNotified: false,
     healthySince: null,
     postOnsetBeatObservedAt: null,
@@ -838,5 +958,5 @@ function freshPeerState(): PeerRuntimeState {
 }
 
 function isCondition(v: unknown): v is RopeHealthCondition {
-  return v === 'ok' || v === 'degraded' || v === 'peer-offline' || v === 'urgent' || v === 'unknown';
+  return v === 'ok' || v === 'degraded' || v === 'peer-offline' || v === 'auth-rejected' || v === 'urgent' || v === 'unknown';
 }

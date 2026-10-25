@@ -20,6 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { PairingPendingStore, type PendingPairingRecord } from './PairingPendingStore.js';
+import { deriveSASv2, deriveSasBitsV2, deriveSasFingerprintV2, derivePairingIdV2 } from './ThreadlineCrypto.js';
+import { isAcceptableIdentityKey, type InviteTrust } from '@sagemindai/threadline-core';
+import { earliestMark } from './encryptedSeenMark.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -49,7 +52,20 @@ export type AgentTrustSource =
  * outbound CredentialShareGate enforces the encrypted-path half). It cannot be reached
  * locally (only an inbound replicated record sets it), so it can never be self-granted.
  */
-export type PairingState = 'pending-verification' | 'mutual-verified' | 'verification-failed' | 'identity-verified';
+export type PairingState =
+  | 'pending-verification'
+  | 'mutual-verified'
+  | 'verification-failed'
+  | 'identity-verified'
+  /**
+   * Invite flow (docs/specs/a2a-pairing-invite-link.md §4.3–4.4): this side approved an
+   * invite and pinned the peer's key, but the pairing is not finished (or was paused by a
+   * second accept). NOT credential-eligible.
+   */
+  | 'invite-accepted';
+
+/** How a pinned identity key was verified (spec threadline-standalone-pairing D9). */
+export type PairingMethod = 'invite' | 'sas' | 'inherited';
 
 export interface AgentTrustHistory {
   messagesReceived: number;
@@ -71,6 +87,26 @@ export interface AgentTrustProfile {
   blockedOperations: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set when the relay unknown-sender path wrote this profile on a first contact
+   * while its trust check was observing (docs/specs/a2a-relay-unknown-sender-trust.md).
+   * While `source` is still `setup-default`, that check treats the profile as
+   * absent: a first contact is not a grant. Absent on every other profile.
+   */
+  relayFirstContact?: boolean;
+
+  /**
+   * The peer's homebase topic — where notices about THIS agent go
+   * (docs/specs/peer-conversation-homebase-topic.md §2.2).
+   *
+   * Stored on the trust profile rather than in a new per-agent map on purpose: it is
+   * per-peer data keyed by fingerprint, the profile is already the durable per-peer record,
+   * and a separate map would be a second place for the same fact to be torn.
+   *
+   * Absent means no homebase — routing falls through to existing behaviour, which is the
+   * correct degraded state rather than an error.
+   */
+  homebaseTopicId?: number;
 
   // ── Verified-Pairing state (Secure A2A Verified Pairing, §3.7) ──
   // Stored ON the trust profile so there is no cross-file torn state. The
@@ -84,13 +120,55 @@ export interface AgentTrustProfile {
   peerIdentityPub?: string;
   /** SAS fingerprint (FD3) — logged/audited value; the SAS WORDS are never stored here. */
   sasFingerprint?: string;
+  /**
+   * HOW the pinned key was verified (docs/specs/threadline-standalone-pairing.md D9):
+   * `invite` (invite-link pairing), `sas` (operator SAS comparison) or `inherited` (a
+   * replicated result from another of this agent's machines whose record carried no
+   * method). An inherited pairing whose record DID carry a method stores that method
+   * (`invite` | `sas`, rollout step 5b), so D9 applies on every machine that holds the
+   * same pinned key. D9's encrypt-to-pinned rule applies only to `invite`. Profiles from before this field are backfilled on load:
+   * a `mutual-verified` profile gets `sas` when it holds a sasFingerprint, else `invite`.
+   */
+  pairingMethod?: PairingMethod;
   /** When this side's operator SAS-confirmed the peer (ISO-8601). */
   verifiedAt?: string;
   /** Optional liveness flag (FD8): a signature-verified inbound peer receipt arrived. */
   peerAcked?: boolean;
+  /** When the current pairing was recorded on THIS machine (ISO-8601). Receipts older
+   *  than this (minus clock skew) are stale (FD4 v2: the SAS no longer changes per handshake). */
+  pairingRecordedAt?: string;
   /** When the pairingState is `identity-verified` (§3.8), the machine id whose operator
    *  SAS-compared (carried by the replicated record). Audit/observability only. */
   inheritedFromMachine?: string;
+  /**
+   * Set when an invite pairing was paused because its invite was used twice (spec
+   * a2a-pairing-invite-link §4.4.2): the reason given at the pause. Exposed to the invite engine
+   * as `via: "paused: <reason>"`, so a late Finish cannot re-promote the pin
+   * (threadline-standalone-pairing step 3 follow-up). Cleared only by markInviteVerified.
+   */
+  invitePausedReason?: string;
+  /** When the pause was recorded (ISO-8601). An inherited verification ends the pause only if it is later. */
+  invitePausedAt?: string;
+  /** Read-only view for threadline-core's InviteTrust: `paused: <reason>` while paused. */
+  readonly via?: string;
+  /**
+   * When this peer first sent us ENCRYPTED ordinary chat (docs/specs/threadline-standalone-pairing.md
+   * D6/D11, rollout step 6). Bound to `peerIdentityPub`: it is dropped whenever the pinned key
+   * changes. Set once, merged with the agent's other machines as a union keeping the earliest
+   * time, and removed only when the person unpairs (markVerificationFailed) or the inherited pin
+   * it belongs to is forgotten. While `threadline.refuseDowngrade` enforces, plaintext under this
+   * peer's fingerprint is refused.
+   */
+  encryptedSeenAt?: string;
+}
+
+/**
+ * SEC-16 (spec threadline-standalone-pairing D8): a key that is small-order or not canonical is
+ * refused when pinning. Hex in, so every pinning path can share it.
+ */
+function isPinnableIdentityKeyHex(hex: string | undefined): boolean {
+  if (!hex || !/^[0-9a-fA-F]{64}$/.test(hex)) return false;
+  return isAcceptableIdentityKey(Buffer.from(hex, 'hex'));
 }
 
 export interface TrustAuditEntry {
@@ -131,10 +209,16 @@ export interface PairingReplicationEmitter {
     peerIdentityPub: string;
     verifiedAt: string;
     verifiedOnMachine: string;
+    /** How the peer was paired (D9/D11, the optional sixth field): 'invite' | 'sas'. */
+    pairingMethod?: 'invite' | 'sas';
   }): void;
   /** Emit a `delete` tombstone for a revoked / verification-failed pairing (un-verify
    *  sticks pool-wide), keyed on the peer fingerprint. */
-  emitRevoke(peerFp: string, deletedAt: string): void;
+  emitRevoke(peerFp: string, deletedAt: string, peerIdentityPub?: string): void;
+  /** Rollout step 6 (D11): this machine recorded the encryptedSeen mark for this pinned key. */
+  emitEncryptedSeen?(peerFp: string, peerIdentityPub: string, at: string): void;
+  /** Rollout step 6 (D11): the person unpaired here, so every earlier mark for this key is void. */
+  emitEncryptedSeenUnpaired?(peerFp: string, peerIdentityPub: string | undefined, at: string): void;
 }
 
 export interface InteractionStats {
@@ -201,7 +285,7 @@ interface ProfilesFile {
   updatedAt: string;
 }
 
-export class AgentTrustManager {
+export class AgentTrustManager implements InviteTrust {
   private readonly threadlineDir: string;
   private readonly profilesPath: string;
   private readonly auditPath: string;
@@ -216,13 +300,31 @@ export class AgentTrustManager {
   private pairingReplication?: PairingReplicationEmitter;
   /** This machine's id (stamped into a replicated `verifiedOnMachine`). Absent ⇒ '?'. */
   private machineId: string;
+  /**
+   * Live reader: the level a NEW fingerprint profile is created at
+   * (docs/specs/a2a-relay-unknown-sender-trust.md). Absent ⇒ `verified`, today's
+   * behaviour byte-for-byte.
+   */
+  private readonly newFingerprintProfileLevel: (() => AgentTrustLevel) | null;
+  /** Told the level of every fingerprint profile this manager creates (counters only). */
+  private readonly onFingerprintProfileCreated: ((level: AgentTrustLevel) => void) | null;
 
   constructor(options: {
     stateDir: string;
     onTrustChange?: TrustChangeCallback;
     /** This machine's id, stamped into a replicated verified-identity result (§3.8). */
     machineId?: string;
+    /**
+     * The level a new fingerprint profile is created at, read per creation.
+     * Absent ⇒ `verified`. Only `verified` or `untrusted` are honoured; any other
+     * answer (or a throw) falls back to `verified`, so this can only ever LOWER
+     * the default, never raise it.
+     */
+    newFingerprintProfileLevel?: () => AgentTrustLevel;
+    onFingerprintProfileCreated?: (level: AgentTrustLevel) => void;
   }) {
+    this.newFingerprintProfileLevel = options.newFingerprintProfileLevel ?? null;
+    this.onFingerprintProfileCreated = options.onFingerprintProfileCreated ?? null;
     this.threadlineDir = path.join(options.stateDir, 'threadline');
     fs.mkdirSync(this.threadlineDir, { recursive: true });
     this.profilesPath = path.join(this.threadlineDir, 'trust-profiles.json');
@@ -301,7 +403,7 @@ export class AgentTrustManager {
   getProfileByFingerprint(fingerprint: string): AgentTrustProfile | null {
     for (const profile of Object.values(this.profiles)) {
       if (profile.fingerprint === fingerprint) {
-        return profile;
+        return withPausedVia(profile);
       }
     }
     return null;
@@ -310,14 +412,21 @@ export class AgentTrustManager {
   /**
    * Get or create a trust profile keyed by fingerprint.
    * For relay agents, the fingerprint IS the identity.
-   * Relay agents default to 'verified' (can send messages) rather than
-   * 'untrusted' (probes only), since they've already authenticated with the relay.
+   * New profiles default to 'verified' (can send messages); while the relay
+   * unknown-sender check is enforcing they start 'untrusted' (probes only) —
+   * the relay proves key possession, not identity
+   * (docs/specs/a2a-relay-unknown-sender-trust.md).
    *
    * IMPORTANT: Always keys by fingerprint to avoid collisions between
    * same-named agents on different machines. Display name is stored in
    * the profile's `agent` field for human readability.
    */
-  getOrCreateProfileByFingerprint(fingerprint: string, displayName?: string): AgentTrustProfile {
+  getOrCreateProfileByFingerprint(
+    fingerprint: string,
+    displayName?: string,
+    /** Stamp a NEW profile as a relay first contact in its first (atomic) write. */
+    createOpts?: { relayFirstContact?: boolean },
+  ): AgentTrustProfile {
     // Check if profile already exists by fingerprint
     const existing = this.getProfileByFingerprint(fingerprint);
     if (existing) {
@@ -329,12 +438,20 @@ export class AgentTrustManager {
       return existing;
     }
 
-    // Create new profile keyed by fingerprint to prevent same-name collisions
+    // Create new profile keyed by fingerprint to prevent same-name collisions.
+    // The level is `verified` unless the relay unknown-sender check is enforcing
+    // (a first contact proves key possession, not a grant) — then `untrusted`.
+    let level: AgentTrustLevel = 'verified';
+    if (this.newFingerprintProfileLevel) {
+      try {
+        if (this.newFingerprintProfileLevel() === 'untrusted') level = 'untrusted';
+      } catch { /* @silent-fallback-ok — an unreadable mode keeps today's default */ }
+    }
     const now = new Date().toISOString();
     this.profiles[fingerprint] = {
       agent: displayName ?? fingerprint,
       fingerprint,
-      level: 'verified',
+      level,
       source: 'setup-default',
       history: {
         messagesReceived: 0,
@@ -344,12 +461,14 @@ export class AgentTrustManager {
         lastInteraction: '',
         streakSinceIncident: 0,
       },
-      allowedOperations: [...DEFAULT_ALLOWED_OPS.verified],
+      allowedOperations: [...DEFAULT_ALLOWED_OPS[level]],
       blockedOperations: [],
       createdAt: now,
       updatedAt: now,
+      ...(createOpts?.relayFirstContact ? { relayFirstContact: true } : {}),
     };
     this.save();
+    try { this.onFingerprintProfileCreated?.(level); } catch { /* @silent-fallback-ok — counters never break trust */ }
     return this.profiles[fingerprint];
   }
 
@@ -358,7 +477,24 @@ export class AgentTrustManager {
    */
   getTrustLevelByFingerprint(fingerprint: string): AgentTrustLevel {
     const profile = this.getProfileByFingerprint(fingerprint);
+    if (profile && this.isUngrantedFirstContact(profile)) return 'untrusted';
     return profile?.level ?? 'untrusted';
+  }
+
+  /**
+   * A profile the relay unknown-sender path wrote at first contact while its
+   * check was observing, never since decided by anyone (source still
+   * `setup-default`). While that check ENFORCES, it counts as no grant on every
+   * path — the relay gate included — so a soak period hands out nothing that
+   * outlives it (docs/specs/a2a-relay-unknown-sender-trust.md).
+   */
+  private isUngrantedFirstContact(profile: AgentTrustProfile): boolean {
+    if (!profile.relayFirstContact || profile.source !== 'setup-default' || !this.newFingerprintProfileLevel) return false;
+    try {
+      return this.newFingerprintProfileLevel() === 'untrusted';
+    } catch {
+      return false; // @silent-fallback-ok — an unreadable mode keeps today's answer
+    }
   }
 
   /**
@@ -366,7 +502,7 @@ export class AgentTrustManager {
    */
   getAllowedOperationsByFingerprint(fingerprint: string): string[] {
     const profile = this.getProfileByFingerprint(fingerprint);
-    if (!profile) return [...DEFAULT_ALLOWED_OPS.untrusted];
+    if (!profile || this.isUngrantedFirstContact(profile)) return [...DEFAULT_ALLOWED_OPS.untrusted];
     const base = profile.allowedOperations.length > 0
       ? [...profile.allowedOperations]
       : [...DEFAULT_ALLOWED_OPS[profile.level]];
@@ -499,6 +635,37 @@ export class AgentTrustManager {
    * Returns false for a self-pair (peerFp === ownFp, FD12). Does NOT touch the
    * trust source or level — that only happens at `markMutualVerified`.
    */
+  /**
+   * Record the peer's homebase topic id.
+   *
+   * Deliberately NOT part of `markMutualVerified`: creating a Telegram topic is an external
+   * side-effect, and a failure there must never fail or delay a pairing. The homebase is
+   * recorded downstream, so a pairing succeeds whether or not its topic did.
+   *
+   * Idempotent, and refuses to overwrite a DIFFERENT existing id — a second write with a new
+   * topic would silently orphan the first and is the shape of the duplicate-topic bug the
+   * spec accepts but does not invite. Returns false when it refuses.
+   */
+  setHomebaseTopic(peerFp: string, topicId: number): boolean {
+    if (!peerFp || !Number.isInteger(topicId)) return false;
+    const profile = this.getProfileByFingerprint(peerFp);
+    if (!profile) return false;
+    if (typeof profile.homebaseTopicId === 'number' && profile.homebaseTopicId !== topicId) {
+      return false;
+    }
+    if (profile.homebaseTopicId === topicId) return true;
+    profile.homebaseTopicId = topicId;
+    profile.updatedAt = new Date().toISOString();
+    this.save();
+    return true;
+  }
+
+  /** The peer's homebase topic, or undefined when it has none. */
+  getHomebaseTopic(peerFp: string): number | undefined {
+    if (!peerFp) return undefined;
+    return this.getProfileByFingerprint(peerFp)?.homebaseTopicId;
+  }
+
   recordPendingVerification(
     peerFp: string,
     args: {
@@ -512,6 +679,7 @@ export class AgentTrustManager {
   ): boolean {
     // FD12 — self-pair guard.
     if (!peerFp || peerFp === args.ownFp) return false;
+    if (!isPinnableIdentityKeyHex(args.peerIdentityPub)) return false; // SEC-16
 
     const profile = this.getOrCreateProfileByFingerprint(peerFp, args.displayName);
     const now = new Date().toISOString();
@@ -519,11 +687,19 @@ export class AgentTrustManager {
     // A new pairingId is a new handshake epoch → reset to pending + clear prior confirm.
     profile.pairingState = 'pending-verification';
     profile.pairingId = args.pairingId;
+    if (profile.peerIdentityPub !== args.peerIdentityPub) profile.encryptedSeenAt = undefined; // the mark belongs to its pin
     profile.peerIdentityPub = args.peerIdentityPub;
     profile.sasFingerprint = args.sasFingerprint;
+    profile.pairingMethod = 'sas';
     profile.verifiedAt = undefined;
     profile.peerAcked = undefined;
+    profile.pairingRecordedAt = now;
     profile.updatedAt = now;
+    // A pairing back at pending is no longer verified, so it must not keep the
+    // credential-authorizing source (Echo's second review, item 2). The trust LEVEL is left
+    // alone: an operator may have set it independently, and credentials are gated on the
+    // source and the pairing state, not on the level.
+    if (profile.source === 'mutual-verified') profile.source = 'setup-default';
 
     const record: PendingPairingRecord = {
       pairingId: args.pairingId,
@@ -581,7 +757,10 @@ export class AgentTrustManager {
 
     // Record fields first (single source of truth, write source LAST).
     profile.pairingState = 'mutual-verified';
+    profile.pairingMethod = 'sas';
     profile.verifiedAt = now;
+    profile.invitePausedReason = undefined; // an operator's 12-word confirm also ends a pause
+    profile.invitePausedAt = undefined;
     if (typeof args.peerAcked === 'boolean') profile.peerAcked = args.peerAcked;
 
     // Raise to 'trusted' if below; never to 'autonomous' (FD6).
@@ -607,6 +786,7 @@ export class AgentTrustManager {
           peerIdentityPub: profile.peerIdentityPub,
           verifiedAt: now,
           verifiedOnMachine: this.machineId,
+          pairingMethod: 'sas',
         });
       } catch { /* replication failure never breaks the local trust write */ }
     }
@@ -638,11 +818,196 @@ export class AgentTrustManager {
   }
 
   /**
+   * Start (or re-check) a v2 static-key pairing with a peer (spec §3.2, FD4 v2).
+   *
+   * Both sides call this independently with the two Ed25519 identity keys; the 12 SAS
+   * words are a function of those keys alone, so no round trip is needed. The pairingId
+   * identifies the KEY PAIR, so it changes exactly when either key rotates. Rules:
+   *  - a changed pairingId (either key rotated, or first time) → pending-verification;
+   *  - same pairingId and already mutual/identity-verified → unchanged ('already-verified');
+   *  - same pairingId and verification-failed → refused unless `clearFailed` (an
+   *    operator-PIN-gated clear at the route): a denied match must NOT silently return to
+   *    pending, because the same static words would be shown again (spec §3.2);
+   *  - same pairingId and pending → unchanged ('already-pending'), re-recording the
+   *    machine-local words if they were lost (e.g. the 0600 store was cleared).
+   * The peer fingerprint must be the first 16 bytes of the supplied peer key.
+   */
+  startStaticPairing(
+    peerFp: string,
+    args: { ownIdentityPub: Buffer; peerIdentityPub: Buffer; ownFp: string; displayName?: string; clearFailed?: boolean },
+  ):
+    | { outcome: 'started' | 'already-pending' | 'already-verified'; pairingId: string; sasFingerprint: string }
+    | { outcome: 'self-pair' | 'fingerprint-mismatch' | 'refused-failed' | 'unacceptable-key' } {
+    const fp = (peerFp || '').toLowerCase();
+    if (!fp || fp === (args.ownFp || '').toLowerCase()) return { outcome: 'self-pair' };
+    if (args.peerIdentityPub.length !== 32 || args.peerIdentityPub.subarray(0, 16).toString('hex') !== fp) {
+      return { outcome: 'fingerprint-mismatch' };
+    }
+    if (!isAcceptableIdentityKey(args.peerIdentityPub)) return { outcome: 'unacceptable-key' };
+    const pairingId = derivePairingIdV2(args.ownIdentityPub, args.peerIdentityPub);
+    const sasBits = deriveSasBitsV2(args.ownIdentityPub, args.peerIdentityPub);
+    const sasFingerprint = deriveSasFingerprintV2(sasBits);
+    const peerPubHex = args.peerIdentityPub.toString('hex');
+
+    const existing = this.getProfileByFingerprint(fp);
+    // A denied match stays denied WHATEVER the pairingId (spec §3.2): only an operator
+    // PIN clear (`clearFailed`, checked at the route) reopens it. A changed pairingId
+    // (our key rotated) must not be a back door to pending.
+    if (existing?.pairingState === 'verification-failed' && !args.clearFailed) {
+      return { outcome: 'refused-failed' };
+    }
+    // An inherited pairing (§3.8) has no local pairingId; it binds on the pinned key.
+    // A start for the same key leaves it identity-verified rather than demoting it.
+    if (existing?.pairingState === 'identity-verified' && existing.peerIdentityPub === peerPubHex) {
+      return { outcome: 'already-verified', pairingId, sasFingerprint };
+    }
+    const samePair = !!existing && existing.pairingId === pairingId && existing.peerIdentityPub === peerPubHex;
+    if (existing && samePair) {
+      if (existing.pairingState === 'mutual-verified') {
+        return { outcome: 'already-verified', pairingId, sasFingerprint };
+      }
+      if (existing.pairingState === 'pending-verification' && this.pendingStore.get(fp)) {
+        return { outcome: 'already-pending', pairingId, sasFingerprint };
+      }
+    }
+    const recorded = this.recordPendingVerification(fp, {
+      pairingId,
+      peerIdentityPub: peerPubHex,
+      sasWords: deriveSASv2(args.ownIdentityPub, args.peerIdentityPub),
+      sasFingerprint,
+      ownFp: args.ownFp,
+      displayName: args.displayName,
+    });
+    if (!recorded) return { outcome: 'self-pair' };
+    return { outcome: 'started', pairingId, sasFingerprint };
+  }
+
+  /**
    * Mark a pairing 'verification-failed' (operator-asserted SAS mismatch, §3.2).
    * Forces the peer to 'untrusted', clears the mutual-verified source, and
    * discards the pending SAS store. NOT used for a missing-receipt timeout
    * (that simply stays 'pending-verification').
    */
+  // ── Invite flow (docs/specs/a2a-pairing-invite-link.md) ─────────────────────
+
+  /**
+   * B side, after its operator approved an invite: pin the inviter's identity key in state
+   * `invite-accepted`. Not credential-eligible until the inviter finishes (markInviteVerified).
+   * Never downgrades an existing verified pairing for the SAME key.
+   */
+  recordInviteAccepted(peerFp: string, args: { peerIdentityPub: string; displayName?: string; ownFp?: string }): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const key = String(args.peerIdentityPub || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(fp) || !/^[0-9a-f]{64}$/.test(key) || key.slice(0, 32) !== fp) return false;
+    if (args.ownFp && fp === args.ownFp.toLowerCase()) return false; // self-pair
+    if (!isPinnableIdentityKeyHex(key)) return false; // SEC-16
+    const profile = this.getOrCreateProfileByFingerprint(fp, args.displayName);
+    if ((profile.pairingState === 'mutual-verified' || profile.pairingState === 'identity-verified') && profile.peerIdentityPub === key) {
+      return true; // already verified for this exact key
+    }
+    const now = new Date().toISOString();
+    profile.pairingState = 'invite-accepted';
+    if (profile.peerIdentityPub !== key) profile.encryptedSeenAt = undefined; // the mark belongs to its pin
+    profile.peerIdentityPub = key;
+    // The operator approved a NEW invite from this peer: that is the re-confirmation a pause
+    // waits for (a2a-pairing-invite-link §4.4.2), so the new invite's Finish may complete.
+    profile.invitePausedReason = undefined;
+    profile.invitePausedAt = undefined;
+    profile.pairingId = undefined;
+    profile.sasFingerprint = undefined;
+    profile.pairingMethod = 'invite';
+    profile.verifiedAt = undefined;
+    profile.peerAcked = undefined;
+    profile.pairingRecordedAt = now;
+    if (profile.source === 'mutual-verified') profile.source = 'setup-default';
+    profile.updatedAt = now;
+    this.save();
+    return true;
+  }
+
+  /**
+   * Either side, when the invite flow completes (A on its operator's Finish; B on a valid
+   * signed finish): pin the key and mark `mutual-verified`. Same write order and effects as
+   * markMutualVerified (record first, level raised to trusted, source LAST, replication).
+   */
+  markInviteVerified(
+    peerFp: string,
+    args: { peerIdentityPub: string; displayName?: string; ownFp?: string; via: string; ownIdentityPub?: string },
+  ): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const key = String(args.peerIdentityPub || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(fp) || !/^[0-9a-f]{64}$/.test(key) || key.slice(0, 32) !== fp) return false;
+    if (args.ownFp && fp === args.ownFp.toLowerCase()) return false;
+    if (!isPinnableIdentityKeyHex(key)) return false; // SEC-16
+    const profile = this.getOrCreateProfileByFingerprint(fp, args.displayName);
+    // A pinned key may only be replaced by re-pairing: never silently swap keys here.
+    if (profile.peerIdentityPub && profile.peerIdentityPub !== key && profile.pairingState !== 'verification-failed' && profile.pairingState !== undefined) {
+      return false;
+    }
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = 'mutual-verified';
+    if (profile.peerIdentityPub !== key) profile.encryptedSeenAt = undefined; // the mark belongs to its pin
+    profile.peerIdentityPub = key;
+    profile.invitePausedReason = undefined; // a completed pairing ends a pause
+    profile.invitePausedAt = undefined;
+    // The same pairingId v2 uses (HKDF over the two identity keys), so the credential gate can
+    // check our own key has not rotated since verification (CredentialShareGate check 3).
+    profile.pairingId = args.ownIdentityPub
+      ? derivePairingIdV2(Buffer.from(args.ownIdentityPub, 'hex'), Buffer.from(key, 'hex'))
+      : undefined;
+    profile.sasFingerprint = undefined;
+    profile.pairingMethod = 'invite';
+    profile.verifiedAt = now;
+    if (this.compareTrust(profile.level, 'trusted') < 0) profile.level = 'trusted';
+    profile.allowedOperations = [...DEFAULT_ALLOWED_OPS[profile.level]];
+    profile.source = 'mutual-verified'; // LAST: the credential-share authorization bit
+    profile.updatedAt = now;
+    this.save();
+    if (this.pairingReplication) {
+      try {
+        this.pairingReplication.emitVerified({ peerFp: fp, peerIdentityPub: key, verifiedAt: now, verifiedOnMachine: this.machineId, pairingMethod: 'invite' });
+      } catch { /* replication failure never breaks the local trust write */ }
+    }
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'mutual-verified',
+      reason: `Invite pairing completed (${args.via})`, userInitiated: true,
+    });
+    if (this.onTrustChange) {
+      this.onTrustChange({ agent: profile.agent, previousLevel, newLevel: profile.level, reason: 'Invite pairing completed', userInitiated: true });
+    }
+    return true;
+  }
+
+  /**
+   * A second valid accept arrived for an invite this agent already used (spec §4.4.2): pause
+   * the first acceptor. Back to `invite-accepted`, credential-ineligible, until the operator
+   * re-confirms. Applies whatever the timing, including after Finish. Revokes any replicated
+   * copy so other machines stop honouring it too.
+   */
+  demoteInvitePairing(peerFp: string, reason: string): boolean {
+    const fp = String(peerFp || '').toLowerCase();
+    const profile = this.getProfileByFingerprint(fp);
+    if (!profile || !profile.pairingState) return false;
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = 'invite-accepted';
+    profile.verifiedAt = undefined;
+    profile.invitePausedReason = String(reason || 'invite used twice');
+    profile.invitePausedAt = now;
+    if (profile.source === 'mutual-verified') profile.source = 'setup-default';
+    profile.updatedAt = now;
+    this.save();
+    if (this.pairingReplication) {
+      try { this.pairingReplication.emitRevoke(fp, now, profile.peerIdentityPub); } catch { /* best effort */ }
+    }
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'setup-default',
+      reason: `Invite pairing paused: ${reason}`, userInitiated: false,
+    });
+    return true;
+  }
+
   markVerificationFailed(peerFp: string, reason: string): boolean {
     const profile = this.getProfileByFingerprint(peerFp);
     if (!profile) return false;
@@ -653,6 +1018,9 @@ export class AgentTrustManager {
     profile.pairingState = 'verification-failed';
     profile.verifiedAt = undefined;
     profile.peerAcked = undefined;
+    // The person unpaired (D8/D11): the encryptedSeen mark goes with the pairing, here and, through
+    // the replicated unpair record, on every other machine of this agent.
+    profile.encryptedSeenAt = undefined;
     profile.level = 'untrusted';
     profile.source = 'setup-default';
     profile.allowedOperations = [...DEFAULT_ALLOWED_OPS.untrusted];
@@ -664,8 +1032,11 @@ export class AgentTrustManager {
     // §3.8 — propagate the un-verify as a TOMBSTONE so it sticks pool-wide (even on a
     // peer machine that was offline at revoke time). Best-effort; never throws out.
     if (this.pairingReplication) {
-      try { this.pairingReplication.emitRevoke(peerFp, now); }
+      try { this.pairingReplication.emitRevoke(peerFp, now, profile.peerIdentityPub); }
       catch { /* replication failure never breaks the local trust write */ }
+      // Always sent (not only when THIS machine held a mark): another machine may hold one.
+      try { this.pairingReplication.emitEncryptedSeenUnpaired?.(peerFp, profile.peerIdentityPub, now); }
+      catch { /* best effort */ }
     }
 
     this.writeAudit({
@@ -744,9 +1115,20 @@ export class AgentTrustManager {
    */
   inheritReplicatedVerification(
     peerFp: string,
-    args: { peerIdentityPub: string; verifiedAt?: string; verifiedOnMachine?: string; presentedIdentityPub?: string; displayName?: string },
+    args: {
+      peerIdentityPub: string;
+      verifiedAt?: string;
+      verifiedOnMachine?: string;
+      presentedIdentityPub?: string;
+      displayName?: string;
+      /** The replicated method (D9/D11). 'invite' | 'sas' is stored as-is so the
+       *  encrypt-to-pinned resolver applies D9 here with the same pinned key; absent or
+       *  unknown is stored as 'inherited' (treated as not-invite). */
+      pairingMethod?: 'invite' | 'sas';
+    },
   ): boolean {
     if (!peerFp || !args.peerIdentityPub) return false;
+    if (!isPinnableIdentityKeyHex(args.peerIdentityPub)) return false; // SEC-16
 
     const profile = this.getOrCreateProfileByFingerprint(peerFp, args.displayName);
 
@@ -773,8 +1155,30 @@ export class AgentTrustManager {
     const previousLevel = profile.level;
     const now = new Date().toISOString();
 
+    // Never downgrade a known 'invite' for the SAME pinned key (D11 mixed versions): the
+    // method is the peer's capability, and a record from an older machine without the field
+    // says nothing new about it. A different key starts over.
+    const sameKey = !!profile.peerIdentityPub && profile.peerIdentityPub.toLowerCase() === args.peerIdentityPub.toLowerCase();
+    const keepInvite = sameKey && profile.pairingState === 'identity-verified' && profile.pairingMethod === 'invite';
+    const method: PairingMethod = args.pairingMethod === 'invite' || args.pairingMethod === 'sas' ? args.pairingMethod : 'inherited';
+
     profile.pairingState = 'identity-verified';
-    profile.peerIdentityPub = args.peerIdentityPub;
+    profile.pairingMethod = keepInvite ? 'invite' : method;
+    if (!sameKey) profile.encryptedSeenAt = undefined; // the mark belongs to its pin
+    profile.peerIdentityPub = args.peerIdentityPub.toLowerCase(); // stored lowercase, as every other pin path compares it (Echo, step 6 review)
+    // An inherited verification ends a pause only if it is an operator's confirm made AFTER the
+    // pause: its verifiedAt must be present and strictly later than this machine's recorded
+    // invitePausedAt. The revoke tombstone a demote sends is best-effort, and the replicated store
+    // can hold a concurrent put and tombstone as two versions, so an older put can still arrive
+    // here; this local timestamp check, not the tombstone, is what keeps it from clearing the pause
+    // (Echo's review of #2230). Otherwise the key is pinned as before and the pause stays.
+    // Times are compared with Date.parse; a missing or unparsable time counts as not later. verifiedAt
+    // comes from the other machine's clock: if that clock runs behind, a genuinely newer confirm can
+    // look older and the pause stays. That is the safe direction and is deliberately not "fixed".
+    if (profile.invitePausedReason !== undefined && isLaterThan(args.verifiedAt, profile.invitePausedAt)) {
+      profile.invitePausedReason = undefined;
+      profile.invitePausedAt = undefined;
+    }
     if (args.verifiedAt) profile.verifiedAt = args.verifiedAt;
     if (args.verifiedOnMachine) profile.inheritedFromMachine = args.verifiedOnMachine;
 
@@ -797,6 +1201,128 @@ export class AgentTrustManager {
       reason: `Inherited replicated verification (identity-verified${args.verifiedOnMachine ? `, from ${args.verifiedOnMachine}` : ''})`,
       userInitiated: false,
     });
+    return true;
+  }
+
+  /**
+   * Upgrade migration (D11, rollout step 5b): re-send the replicated record of every LOCAL
+   * invite-paired, mutual-verified profile so its `pairingMethod` reaches the agent's other
+   * machines (records sent before the sixth field existed carry none). The emitter stamps a
+   * fresh HLC, so the re-sent record supersedes the old one; `verifiedAt` stays the original
+   * verification time. Only runs with the replication emitter attached (the
+   * `multiMachine.stateSync.threadlinePairing.enabled` gate). Idempotent through
+   * `alreadyPublished`, which the caller answers from THIS machine's own replicated stream
+   * (a record for that key already carrying 'invite' ⇒ skip). Inherited profiles never
+   * re-send. Returns the number of records emitted.
+   */
+  republishInvitePairingMethods(alreadyPublished: (peerFp: string, peerIdentityPub: string) => boolean): number {
+    if (!this.pairingReplication) return 0;
+    let sent = 0;
+    for (const profile of Object.values(this.profiles)) {
+      const fp = profile.fingerprint;
+      const key = profile.peerIdentityPub;
+      if (!fp || !key) continue;
+      if (profile.pairingState !== 'mutual-verified' || profile.source !== 'mutual-verified' || profile.pairingMethod !== 'invite') continue;
+      let published = false;
+      try { published = alreadyPublished(fp, key); } catch { published = false; }
+      if (published) continue;
+      try {
+        this.pairingReplication.emitVerified({
+          peerFp: fp,
+          peerIdentityPub: key,
+          verifiedAt: profile.verifiedAt ?? new Date().toISOString(),
+          verifiedOnMachine: this.machineId,
+          pairingMethod: 'invite',
+        });
+        sent++;
+      } catch { /* replication failure never breaks anything local */ }
+    }
+    return sent;
+  }
+
+  /**
+   * A replicated REVOKE for an inherited pairing (step 5b): the person unpaired on another
+   * of this agent's machines. Acts ONLY on an `identity-verified` profile — the state only
+   * inheritance sets — so a pairing established on THIS machine is never touched. When
+   * `revokedKeys` names keys, the profile must be pinned to one of them (a revoke for key K
+   * never touches a pin to another key); `unkeyed` (a tombstone from a machine that does
+   * not send the key) applies to the fingerprint.
+   *
+   * The inherited pin is FORGOTTEN, not marked verification-failed: the pairing state,
+   * method, pinned key and verification fields are cleared, the trust source goes back to
+   * setup-default and the level is clamped to `verified` (the same clamp as
+   * downgradeToPending), so credential-share and encrypt-to-pinned stop for the peer. A
+   * later, newer replicated record can be inherited again. Emits nothing (the revoke is
+   * already replicated). Returns true iff the profile was changed.
+   */
+  revokeInheritedVerification(
+    peerFp: string,
+    revoke: { keys: ReadonlySet<string>; unkeyed: boolean },
+    reason = 'replicated revoke',
+  ): boolean {
+    const profile = this.getProfileByFingerprint(String(peerFp || '').toLowerCase()) ?? this.getProfileByFingerprint(peerFp);
+    if (!profile || profile.pairingState !== 'identity-verified') return false;
+    const pinned = profile.peerIdentityPub?.toLowerCase();
+    if (!revoke.unkeyed && (!pinned || !revoke.keys.has(pinned))) return false;
+    const previousLevel = profile.level;
+    const now = new Date().toISOString();
+    profile.pairingState = undefined;
+    profile.pairingMethod = undefined;
+    profile.peerIdentityPub = undefined;
+    profile.verifiedAt = undefined;
+    profile.peerAcked = undefined;
+    profile.inheritedFromMachine = undefined;
+    // The mark lives with the pin. If a newer record re-pins the same key, the merge pass
+    // restores the mark from the replicated mark records (unless the person unpaired since).
+    profile.encryptedSeenAt = undefined;
+    profile.source = 'setup-default';
+    if (this.compareTrust(profile.level, 'verified') > 0) profile.level = 'verified';
+    profile.allowedOperations = [...DEFAULT_ALLOWED_OPS[profile.level]];
+    profile.updatedAt = now;
+    this.save();
+    this.writeAudit({
+      timestamp: now, agent: profile.agent, previousLevel, newLevel: profile.level, source: 'system',
+      reason: `Inherited pairing revoked (${reason})`, userInitiated: false,
+    });
+    return true;
+  }
+
+  /**
+   * Rollout step 6 (D6/D11): this peer sent us ENCRYPTED ordinary chat, verified against
+   * `peerIdentityPub`. Set once: an existing mark is never moved. Only for a pinned peer whose
+   * pinned key is exactly that key. Replicated to this agent's other machines as a mark record
+   * (best effort). Returns true when the mark is now set (newly or already).
+   */
+  markEncryptedSeen(peerFp: string, peerIdentityPub: string): boolean {
+    const profile = this.getProfileByFingerprint(String(peerFp || '').toLowerCase());
+    const key = String(peerIdentityPub || '').toLowerCase();
+    if (!profile?.peerIdentityPub || profile.peerIdentityPub.toLowerCase() !== key || !profile.fingerprint) return false;
+    if (profile.encryptedSeenAt) return true;
+    const now = new Date().toISOString();
+    profile.encryptedSeenAt = now;
+    profile.updatedAt = now;
+    this.save();
+    if (this.pairingReplication) {
+      try { this.pairingReplication.emitEncryptedSeen?.(profile.fingerprint, key, now); }
+      catch { /* replication failure never breaks the local write */ }
+    }
+    return true;
+  }
+
+  /**
+   * Rollout step 6 (D11): fold in the unified mark another machine recorded for this peer — a
+   * union keeping the earliest time. Applies only when `peerIdentityPub` is the key pinned here.
+   * Never clears and never moves a mark later. Emits nothing (it is already replicated). Returns
+   * true when the stored mark changed.
+   */
+  mergeEncryptedSeen(peerFp: string, peerIdentityPub: string, at: string): boolean {
+    const profile = this.getProfileByFingerprint(String(peerFp || '').toLowerCase());
+    if (!profile?.peerIdentityPub || profile.peerIdentityPub.toLowerCase() !== String(peerIdentityPub || '').toLowerCase()) return false;
+    const merged = earliestMark(profile.encryptedSeenAt, at);
+    if (merged === undefined || merged === profile.encryptedSeenAt) return false;
+    profile.encryptedSeenAt = merged;
+    profile.updatedAt = new Date().toISOString();
+    this.save();
     return true;
   }
 
@@ -1126,6 +1652,7 @@ export class AgentTrustManager {
    */
   reload(): void {
     this.profiles = this.loadProfiles();
+    this.pendingStore.reload();
   }
 
   /**
@@ -1168,6 +1695,7 @@ export class AgentTrustManager {
       profiles: {},
       updatedAt: '',
     });
+    backfillPairingMethod(data.profiles);
     return data.profiles;
   }
 
@@ -1194,4 +1722,51 @@ export class AgentTrustManager {
   private compareTrust(a: AgentTrustLevel, b: AgentTrustLevel): number {
     return TRUST_ORDER.indexOf(a) - TRUST_ORDER.indexOf(b);
   }
+}
+
+/**
+ * The profile as threadline-core's invite engine reads it: `via` is `paused: <reason>` while an
+ * invite pairing is paused (core's handleFinish refuses a Finish then). A getter, so it is never
+ * written to the trust file and always reflects the stored pause.
+ */
+// Core must read the profile ONLY through getProfileByFingerprint: a clone or spread drops this
+// getter, so a paused pin would read as not paused and fail open.
+function withPausedVia(profile: AgentTrustProfile): AgentTrustProfile {
+  if (!Object.prototype.hasOwnProperty.call(profile, 'via')) {
+    Object.defineProperty(profile, 'via', {
+      enumerable: false,
+      configurable: true,
+      get(this: AgentTrustProfile) {
+        return this.invitePausedReason !== undefined ? `paused: ${this.invitePausedReason}` : undefined;
+      },
+    });
+  }
+  return profile;
+}
+
+/** True only when `a` is a valid time strictly later than `b` (a valid time). Missing or unparsable → false. */
+function isLaterThan(a: string | undefined, b: string | undefined): boolean {
+  const ta = a ? Date.parse(a) : NaN;
+  const tb = b ? Date.parse(b) : NaN;
+  return Number.isFinite(ta) && Number.isFinite(tb) && ta > tb;
+}
+
+/**
+ * Backfill `pairingMethod` on profiles written before it existed (spec
+ * threadline-standalone-pairing D9). Idempotent and in memory: a `mutual-verified` profile
+ * with no method gets `sas` when it holds a sasFingerprint (only the SAS path sets one),
+ * else `invite` (the invite path clears it). An existing value is never overwritten. The
+ * field reaches disk with the next save, like every other profile field.
+ * Returns the number of profiles changed.
+ */
+export function backfillPairingMethod(profiles: Record<string, AgentTrustProfile> | undefined | null): number {
+  if (!profiles || typeof profiles !== 'object') return 0;
+  let changed = 0;
+  for (const p of Object.values(profiles)) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.pairingState !== 'mutual-verified' || p.pairingMethod) continue;
+    p.pairingMethod = p.sasFingerprint ? 'sas' : 'invite';
+    changed++;
+  }
+  return changed;
 }

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-11T23:18:17.952Z",
+  "slug": "threadline-verified-pairing-v2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts",
+      "src/threadline/CredentialShareGate.ts",
+      "src/threadline/client/ThreadlineClient.ts"
+    ],
+    "addedLines": 94,
+    "deletedLines": 19
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2173
+    ],
+    "notes": "The v2 gate required a cached X25519 key; the real clients never hold one for each other, so credentials between verified agents were always refused. Hidden because the earlier E2E hand-built the relay client and its cache."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

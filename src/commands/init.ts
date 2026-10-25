@@ -39,7 +39,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
-import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT, SUBSCRIPTION_SIGNIN_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -69,6 +69,7 @@ import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
+import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -452,6 +453,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
+  installBrowserScripts(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -654,7 +657,10 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   ensureStateDir(stateDir);
   console.log(pc.green('  Created:') + ' .instar/');
 
-  // Write config
+  // Write config. A reviewed package carrying valid Echo-signed Stage-B
+  // evidence enables the observer on the first restart; pre-release builds
+  // without that evidence remain dark.
+  const stageBReleaseCleared = verifyBundledStageBReleaseEvidence(getInstarVersion()) === null;
   const config: Partial<InstarConfig> = {
     projectName,
     port,
@@ -683,6 +689,12 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       quotaTracking: false,
       memoryMonitoring: true,
       healthCheckIntervalMs: 30000,
+    },
+    codexSessionLifecycle: {
+      ledgerObserverEnabled: stageBReleaseCleared,
+      candidateCanaryEnabled: false,
+      stageBPendingActivation: stageBReleaseCleared,
+      stageCRecoveryEnabled: false,
     },
     authToken: randomUUID(),
     relationships: {
@@ -843,6 +855,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installBrowserScripts(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS + Windows)');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -1142,6 +1156,14 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   try {
     const machineIdentityManager = new MachineIdentityManager(stateDir);
     const machineIdentity = await machineIdentityManager.generateIdentity({ name: agentName });
+    // The entries are PROJECT-relative (`.instar/machine/signing-key.pem`,
+    // `.instar/identity.json*`), so they belong in the project `.gitignore`
+    // next to the one written above — the stateDir call alone put them in
+    // `.instar/.gitignore` where they match nothing (found by the §5.4 walk
+    // of a2a-single-agent-identity; the other two init paths already pass
+    // projectDir). Both are kept: the stateDir file still carries the
+    // stateDir-relative entries it always did.
+    ensureGitignore(projectDir);
     ensureGitignore(stateDir);
     console.log(`  ${pc.green('✓')} Generated machine identity: ${machineIdentity.machineId.slice(0, 12)}...`);
   } catch {
@@ -1667,6 +1689,16 @@ export function installBuiltinSkills(skillsDir: string, port: number): void {
       name: 'iterative-converging-audit',
       description: 'Run any "find all instances of X" sweep as an iterative loop that does NOT stop at one pass — audit, fix, RE-audit, until a clean pass finds nothing new. For audits, reviews, research, compliance checks.',
       content: ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT,
+    },
+    'subscription-signin': {
+      name: 'subscription-signin',
+      description: 'The standard, proven procedure for keeping Claude Code and Codex subscriptions signed in: Google-account profiles, normal-browser sign-in, repair, verification, hand-off.',
+      content: SUBSCRIPTION_SIGNIN_SKILL_CONTENT,
+    },
+    'normal-chrome-browser': {
+      name: 'normal-chrome-browser',
+      description: 'Drive a real, signed-in, non-automated Chrome per account profile from the shell on macOS (Apple Events) or Windows (real OS input + UI Automation): read pages, click, type, run code in the page, find out why a button stays disabled.',
+      content: NORMAL_CHROME_BROWSER_SKILL_CONTENT,
     },
     'agent-readiness': {
       name: 'agent-readiness',
@@ -3973,6 +4005,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   // framework-neutral).
   installSerendipityCapture(projectDir);
   installSecretDropRetrieve(projectDir);
+  installBrowserScripts(projectDir);
 }
 
 /**
@@ -4381,6 +4414,7 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 
@@ -4473,6 +4507,11 @@ process.stdin.on('end', async () => {
       // detail. Optional + designed-benign: the receiver stores extra fields
       // as-is and a payload without it remains valid.
       file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
+      // jev-circles-shadow (docs/specs/jev-circles-shadow.md): the session's own
+      // transcript path, so the server can build the measured action window
+      // (commands, results AND failures — a failed tool fires PostToolUseFailure,
+      // which this hook never sees). A path, never content.
+      transcript_path: input.transcript_path || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);
@@ -4984,6 +5023,43 @@ function installSecretGet(projectDir: string): void {
 }
 
 /**
+ * The normal-Chrome helper scripts shipped in src/templates/scripts/browser/: the three macOS tools
+ * (Apple Events) and the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
+ * with its WSL wrapper (ndrive.sh). All five install everywhere; each refuses the wrong platform itself.
+ */
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
+/** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
+export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+
+/**
+ * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
+ * /normal-chrome-browser skill. Built-in and non-customizable, so they are always
+ * overwritten (init, refreshScripts, and PostUpdateMigrator.migrateScripts all call
+ * this). Framework-neutral; each script refuses to run on the wrong platform.
+ * Returns the names written. Specs: docs/specs/normal-chrome-builtin-skill.md,
+ * docs/specs/normal-chrome-cross-platform.md.
+ */
+export function installBrowserScripts(projectDir: string): string[] {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
+  const modDir = __dirname;
+  const written: string[] = [];
+  for (const name of BROWSER_SCRIPT_NAMES) {
+    const candidates = [
+      path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
+      path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),
+    ];
+    const source = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!source) continue;
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    const target = path.join(scriptsDir, name);
+    fs.writeFileSync(target, fs.readFileSync(source, 'utf-8'), { mode: 0o755 });
+    fs.chmodSync(target, 0o755); // writeFileSync's mode applies only on create; an existing copy keeps its old mode otherwise
+    written.push(name);
+  }
+  return written;
+}
+
+/**
  * Install the session-clock injector (.instar/scripts/emit-session-clock.sh).
  * Shared routine for the time-awareness feature: renders the SESSION CLOCK line
  * (render mode for the autonomous-stop-hook, query mode via GET /session/clock)
@@ -5096,7 +5172,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
   const sessionStartHook = {
     type: 'command',
-    command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh',
+    command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
     timeout: 5,
   };
 
@@ -5152,7 +5228,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // PostToolUse: scope coherence collector tracks implementation depth
   const scopeCollectorHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-collector.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-collector.js"',
     timeout: 5000,
   };
 
@@ -5165,7 +5241,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // (scope collector also added to Read and Skill)
   const claimInterceptHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept.js"',
     timeout: 5000,
   };
 
@@ -5191,21 +5267,21 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // Stop: response review pipeline — Coherence Gate LLM-powered review
   const responseReviewHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/response-review.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/response-review.js"',
     timeout: 10000,
   };
 
   // Stop: scope coherence checkpoint fires the zoom-out prompt
   const scopeCheckpointHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-checkpoint.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/scope-coherence-checkpoint.js"',
     timeout: 10000,
   };
 
   // Stop: claim intercept response checks direct text for false claims
   const claimInterceptResponseHook = {
     type: 'command',
-    command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept-response.js',
+    command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/claim-intercept-response.js"',
     timeout: 10000,
   };
 
@@ -5247,7 +5323,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   if (!hasAutonomousHook) {
     const autonomousEntry = { matcher: '', hooks: [{
       type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
+      command: 'bash "${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh"',
       timeout: 10000,
     }] };
     const stopGateIndex = stopHooks.findIndex(e =>
@@ -5274,7 +5350,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       matcher: '',
       hooks: [{
         type: 'command',
-        command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js',
+        command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/auto-approve-permissions.js"',
         timeout: 5000,
       }],
     });

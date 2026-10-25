@@ -28,6 +28,7 @@ import type { MessageProvenance } from '../messaging/shared/MessageProvenance.js
 export interface RelayResult {
   messageId: number;
   topicId: number;
+  destinationStoreConfirmed?: boolean;
 }
 
 /**
@@ -146,7 +147,7 @@ export async function relayOutbound(
       log(`[telegram-relay] holder ${url} returned ${resp.status} for topic ${topicId} (${Date.now() - started}ms) — reply not delivered`);
       return null;
     }
-    const j = (await resp.json().catch(() => ({}))) as { messageId?: number };
+    const j = (await resp.json().catch(() => ({}))) as { messageId?: number; destinationStoreConfirmed?: boolean };
     // Truthful success: the holder must report a REAL positive Telegram
     // messageId. A 2xx with a missing/0 messageId means the holder accepted the
     // request but did NOT confirm a Telegram delivery — treat that as FAILURE,
@@ -157,7 +158,11 @@ export async function relayOutbound(
       log(`[telegram-relay] holder ${url} returned ok but NO confirmed messageId for topic ${topicId} (${Date.now() - started}ms) — treating as undelivered`);
       return null;
     }
-    return { messageId: j.messageId, topicId };
+    if (j.destinationStoreConfirmed !== true) {
+      log(`[telegram-relay] holder ${url} returned messageId ${j.messageId} but NO destination-store confirmation for topic ${topicId} (${Date.now() - started}ms) — treating as undelivered`);
+      return null;
+    }
+    return { messageId: j.messageId, topicId, destinationStoreConfirmed: true };
   } catch (err) {
     const reason = ac.signal.aborted
       ? `timeout after ${deps.timeoutMs}ms`

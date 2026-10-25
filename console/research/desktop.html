@@ -1,0 +1,67 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark"><title>The same products on desktop</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{--ground:#0A0E17;--surface:#111827;--line:#243247;--text:#E2E8F0;--text-2:#94A3B8;--text-3:#64748B;--accent:#6EC6C8;--warn:#F59E0B;--ok:#4ADE80}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;line-height:1.55;font-size:15px}
+.wrap{max-width:900px;margin:0 auto;padding:28px 18px 64px}
+h1{font-family:'Archivo',sans-serif;font-size:25px;line-height:1.2;margin:0 0 8px;text-wrap:balance}
+.sub{color:var(--text-2);margin:0 0 26px}
+h2{font-family:'Archivo',sans-serif;font-size:18px;margin:34px 0 3px}
+.src{font-size:12px;color:var(--text-3);margin:0 0 12px}
+img{width:100%;border-radius:10px;border:1px solid var(--line);display:block}
+.read{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:13px 15px;margin:13px 0 0}
+.read b{color:var(--accent)}
+.gap{background:var(--surface);border:1px dashed var(--warn);border-radius:8px;padding:13px 15px;margin:13px 0 0;color:var(--text-2)}
+.gap b{color:var(--warn)}
+.verdict{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;margin:32px 0 0}
+.verdict h3{font-family:'Archivo',sans-serif;margin:0 0 10px;font-size:17px}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:'Archivo',sans-serif;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3)}
+.note{color:var(--text-3);font-size:13px;margin-top:26px;border-top:1px solid var(--line);padding-top:14px}
+a{color:var(--accent)}
+</style></head><body><div class="wrap">
+
+<h1>The same products on desktop</h1>
+<p class="sub">You were right that phone screenshots answer a different question. Captured on a 1440&times;900 desktop browser today, plus one that had to be established from documentation because every automated route is blocked. The desktop answer turns out to be the more useful one.</p>
+
+<h2>Grok — desktop web</h2>
+<p class="src">grok.com, signed out</p>
+<img src="d-grok.png" alt="Grok desktop web, signed out">
+<div class="read"><b>The extra space is used for nothing.</b> One question, one input, a thin top bar. No sidebar, no panels, no dashboard. Desktop here is not a denser phone — it is an emptier one.</div>
+
+<h2>Meta AI — desktop web</h2>
+<p class="src">meta.ai, signed out</p>
+<img src="d-metaai.png" alt="Meta AI desktop web">
+<div class="read">Same again: a <b>two-icon rail</b>, a centred headline, a centred composer, and a very large amount of nothing. The rail holds new-chat and history — not categories.</div>
+
+<h2>Cursor Desktop — the agent console</h2>
+<p class="src">cursor.com product shot. Cursor is where Grok Bot's admin plane now lives post-acquisition. This is the closest thing to what we are actually building.</p>
+<img src="d-cursor.png" alt="Cursor Desktop three-pane agent console">
+<div class="read"><b>Three panes, no tabs.</b> Left is a task list under a heading that says what it is for — "Ready for review 5" — each row a title, a time, and one line of status with its diff. Middle is the agent's thread: a compact trace (Thought 4s · Read AppManager.tsx · Searched expose patterns), then <b>a decision asked inline as numbered options</b>. Right is the artifact it produced.
+<br><br>So the desktop space does not go to more metrics. It goes to <b>showing you the work</b>.</div>
+
+<h2>ChatGPT / Dots — desktop, documented but not photographed</h2>
+<p class="src">No image: chatgpt.com, openai.com (three pages), help.openai.com and a third-party write-up all refuse automated browsers; the Dots announcement also returns 403 to an authenticated fetch. Seven routes, seven refusals. So this section is text evidence, clearly marked as such.</p>
+<div class="gap"><b>What the documentation does establish.</b> A dot is not a tab or a pane — it sits in the <b>sidebar, directly under "New chat"</b>, and opening one gives you <b>a dedicated chat</b>. The sidebar also carries conversation history and Projects, with a Chat/Work switch.
+<br><br>And one detail worth more than a screenshot: of the dot's cloud computer, the documentation says <b>"you can open the computer, watch it work, or take over."</b> That is three rungs — a status line, a preview, and a takeover — rather than a single always-on view.
+<br><br>So ChatGPT reaches the same place by a different road: <b>a sidebar list of named things, each opening into a thread.</b> No categories.</div>
+
+<div class="verdict">
+<h3>What this changes</h3>
+<table>
+<tr><th>&nbsp;</th><th>What they do on desktop</th><th>What I built</th></tr>
+<tr><td>Structure</td><td>panes: list → thread → artifact</td><td>5 tabs you switch between</td></tr>
+<tr><td>Left column</td><td>a task list with a plain heading</td><td>invented category names</td></tr>
+<tr><td>Extra space</td><td>shows the work product</td><td>stretched rows, wider gaps</td></tr>
+<tr><td>Decisions</td><td>inline in the thread, numbered</td><td>separate queue behind a banner</td></tr>
+</table>
+<p>The phone screenshots said "fewer things per row". The desktop ones say something stronger: <b>stop building a place to navigate and build a place to watch work happen.</b> Left list of what is running and what wants you, middle the conversation, right what it produced.</p>
+<p>That also dissolves the Work-and-Capacity problem rather than renaming it. There is no category to name, because there are no categories — just your conversations, your running work, and the thing in front of you.</p>
+</div>
+
+<p class="note">Grok and Meta AI captured live from their signed-out web apps. Cursor is the product shot published on their own homepage. Nothing here is a mockup or reconstruction.</p>
+</div></body></html>

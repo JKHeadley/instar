@@ -12,7 +12,7 @@ function serviceWith(storeOverrides: Record<string, unknown> = {}) {
     pendingProjectedFeedback: vi.fn(() => []), acknowledgeProcessedProjection: vi.fn(), markClusteringSucceeded: vi.fn(),
     ensureReadiness: vi.fn(), dueReadiness: vi.fn(() => []), getAuthority: vi.fn(() => null), readyReadiness: vi.fn(() => []),
     simulateClaims: vi.fn(() => 0), reconcileExpiredLeases: vi.fn(), reconcileSourceProjection: vi.fn(() => ({ checked: 0 })),
-    sourceCompactionDue: vi.fn(() => false), recordSourceCompaction: vi.fn(),
+    sourceCompactionDue: vi.fn(() => false), recordSourceCompaction: vi.fn(), quarantinedSourceRecords: vi.fn(() => 0),
     pruneOperationalHistory: vi.fn(() => ({ retiredWork: 0, prunedAudit: 0, prunedRuns: 0, checkpointed: true })),
     ...storeOverrides,
   };

@@ -19,6 +19,8 @@ import path from 'node:path';
 import {
   atomicWriteFileSync,
   classifyDfSourceLocal,
+  classifyLinuxMountLocal,
+  fstypeForPath,
   legacyPidDeathLockReclaim,
   probeDfHostLocalDetailed,
   pruneHolders,
@@ -216,6 +218,171 @@ describe('hostSemaphoreCore — extraction', () => {
     expect(classifyDfSourceLocal('nfs-host:/export')).toBe(false);
     expect(classifyDfSourceLocal('map auto_home')).toBe(false);
     expect(classifyDfSourceLocal('')).toBe(false);
+  });
+
+  // ── Linux fstype second opinion (2026-08-25 WSL2 finding) ───────────────
+  //
+  // The df-source column cannot see several ordinary LOCAL Linux filesystems
+  // because none of them names a block device. Before this, the test-runner
+  // lane failed OPEN on them (bound present, guarding nothing) and the spawn
+  // lane failed CLOSED (reclaim off, cap slowly clogs). These tests pin both
+  // the newly-correct verdicts AND the rejections that must stay rejections.
+
+  const MOUNTS = [
+    '/dev/sdd / ext4 rw,relatime 0 0',
+    'tmpfs /tmp tmpfs rw,nosuid,nodev 0 0',
+    'overlay /var/lib/docker/overlay2/abc/merged overlay rw 0 0',
+    'devtmpfs /dev devtmpfs rw 0 0',
+    'rpool/ROOT/ubuntu /srv/pool zfs rw 0 0',
+    'C:\\134 /mnt/c 9p rw,aname=drvfs 0 0',
+    'nfs-host:/export /srv/remote nfs4 rw 0 0',
+    '//fileserver/share /srv/smb cifs rw 0 0',
+    'myfs /srv/virtio virtiofs rw 0 0',
+    'bucket-name /srv/cloud fuse.gcsfuse rw 0 0',
+    'tmpfs /srv/with\\040space tmpfs rw 0 0',
+  ].join('\n');
+
+  it('fstypeForPath resolves the LONGEST matching mount point, not the first', () => {
+    // `/` is a prefix of everything — a shorter match must never win, or every
+    // nested mount would report the root filesystem's type.
+    expect(fstypeForPath(MOUNTS, '/home/echo/.instar')).toBe('ext4');
+    expect(fstypeForPath(MOUNTS, '/tmp/holders.json')).toBe('tmpfs');
+    expect(fstypeForPath(MOUNTS, '/var/lib/docker/overlay2/abc/merged/root')).toBe('overlay');
+    expect(fstypeForPath(MOUNTS, '/mnt/c/Users/x')).toBe('9p');
+  });
+
+  it('fstypeForPath does not treat a same-prefix sibling directory as a mount match', () => {
+    // `/tmp` must not match `/tmpfoo` — that would misattribute the fstype.
+    expect(fstypeForPath('tmpfs /tmp tmpfs rw 0 0\n/dev/sdd / ext4 rw 0 0', '/tmpfoo/x')).toBe('ext4');
+  });
+
+  it('fstypeForPath decodes octal-escaped mount points', () => {
+    expect(fstypeForPath(MOUNTS, '/srv/with space/holders.json')).toBe('tmpfs');
+  });
+
+  it('fstypeForPath returns null when nothing matches', () => {
+    expect(fstypeForPath('tmpfs /tmp tmpfs rw 0 0', '/home/echo')).toBeNull();
+    expect(fstypeForPath('', '/home/echo')).toBeNull();
+    expect(fstypeForPath('garbage-line-without-enough-fields', '/home/echo')).toBeNull();
+  });
+
+  it('classifyLinuxMountLocal accepts the local filesystems df-source cannot see', () => {
+    expect(classifyLinuxMountLocal(MOUNTS, '/tmp/holders.json')).toBe(true); // tmpfs
+    expect(classifyLinuxMountLocal(MOUNTS, '/var/lib/docker/overlay2/abc/merged/x')).toBe(true); // overlay
+    expect(classifyLinuxMountLocal(MOUNTS, '/dev/shm')).toBe(true); // devtmpfs
+    expect(classifyLinuxMountLocal(MOUNTS, '/srv/pool/data')).toBe(true); // zfs
+    expect(classifyLinuxMountLocal(MOUNTS, '/home/echo/.instar')).toBe(true); // ext4
+  });
+
+  it('classifyLinuxMountLocal never upgrades a filesystem that must not hold the lock', () => {
+    // Network by definition.
+    expect(classifyLinuxMountLocal(MOUNTS, '/srv/remote/x')).toBeNull(); // nfs4
+    expect(classifyLinuxMountLocal(MOUNTS, '/srv/smb/x')).toBeNull(); // cifs
+    expect(classifyLinuxMountLocal(MOUNTS, '/srv/cloud/x')).toBeNull(); // fuse.gcsfuse
+    // Same machine, but unsafe or shareable — deliberate rejections.
+    expect(classifyLinuxMountLocal(MOUNTS, '/mnt/c/Users/x')).toBeNull(); // 9p/drvfs
+    expect(classifyLinuxMountLocal(MOUNTS, '/srv/virtio/x')).toBeNull(); // virtiofs
+    // Unknown fstype → null, so the df-source fail-closed verdict stands.
+    expect(classifyLinuxMountLocal('somefs /srv/x weirdfs rw 0 0', '/srv/x/y')).toBeNull();
+  });
+
+  it('probeDfHostLocalDetailed: linux fstype rescues the local verdicts df-source cannot reach', () => {
+    // df on a tmpfs/overlay/zfs mount prints a NON-/dev source, which is
+    // exactly what the source classifier fails closed on. These drive the real
+    // probe end-to-end (df output injected) so the wiring is covered, not just
+    // the pure classifier underneath it.
+    const dfOut = (source: string) =>
+      `Filesystem 512-blocks Used Available Capacity Mounted on\n${source} 100 1 99 1% /whatever\n`;
+
+    const onTmpfs = probeDfHostLocalDetailed('/tmp/holders.json', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('tmpfs'),
+      readProcMounts: () => 'tmpfs /tmp tmpfs rw 0 0\n/dev/sdd / ext4 rw 0 0',
+    });
+    expect(onTmpfs.status).toBe('local');
+    expect(onTmpfs.fstype).toBe('tmpfs');
+
+    const onOverlay = probeDfHostLocalDetailed('/app/state', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('overlay'),
+      readProcMounts: () => 'overlay / overlay rw 0 0',
+    });
+    expect(onOverlay.status).toBe('local');
+    expect(onOverlay.fstype).toBe('overlay');
+
+    const onZfs = probeDfHostLocalDetailed('/srv/pool/data', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('rpool/ROOT/ubuntu'),
+      readProcMounts: () => 'rpool/ROOT/ubuntu /srv/pool zfs rw 0 0\n/dev/sdd / ext4 rw 0 0',
+    });
+    expect(onZfs.status).toBe('local');
+    expect(onZfs.fstype).toBe('zfs');
+  });
+
+  it('probeDfHostLocalDetailed: the linux path never rescues a filesystem that must stay rejected', () => {
+    const dfOut = (source: string) =>
+      `Filesystem 512-blocks Used Available Capacity Mounted on\n${source} 100 1 99 1% /whatever\n`;
+
+    // A FUSE cloud mount names a bucket, which has the same shape as a ZFS
+    // pool. Only the fstype separates them — this is why the pool-name shape
+    // is deliberately not pattern-matched.
+    const onGcsfuse = probeDfHostLocalDetailed('/srv/cloud/x', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('bucket-name'),
+      readProcMounts: () => 'bucket-name /srv/cloud fuse.gcsfuse rw 0 0',
+    });
+    expect(onGcsfuse.status).toBe('not-local');
+    expect(onGcsfuse.fstype).toBeUndefined();
+
+    // WSL's Windows-drive translation layer: same machine, unreliable locking.
+    const onDrvfs = probeDfHostLocalDetailed('/mnt/c/Users/x', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('drvfs'),
+      readProcMounts: () => 'C:\\134 /mnt/c 9p rw,aname=drvfs 0 0',
+    });
+    expect(onDrvfs.status).toBe('not-local');
+
+    // An unknown fstype leaves the pre-existing fail-closed verdict alone.
+    const onWeird = probeDfHostLocalDetailed('/srv/x/y', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut('somefs'),
+      readProcMounts: () => 'somefs /srv/x weirdfs rw 0 0',
+    });
+    expect(onWeird.status).toBe('not-local');
+  });
+
+  it('probeDfHostLocalDetailed: macOS never reads procfs, and a linux host without procfs is unchanged', () => {
+    const dfOut = `Filesystem 512-blocks Used Available Capacity Mounted on\ntmpfs 100 1 99 1% /whatever\n`;
+
+    const mac = probeDfHostLocalDetailed('/tmp/x', 3000, {
+      platform: 'darwin',
+      runDf: () => dfOut,
+      readProcMounts: () => {
+        throw new Error('procfs must not be read off linux');
+      },
+    });
+    expect(mac.status).toBe('not-local'); // byte-identical to pre-fix behaviour
+    expect(mac.fstype).toBeUndefined();
+
+    const noProc = probeDfHostLocalDetailed('/tmp/x', 3000, {
+      platform: 'linux',
+      runDf: () => dfOut,
+      readProcMounts: () => null,
+    });
+    expect(noProc.status).toBe('not-local');
+  });
+
+  it('probeDfHostLocalDetailed: a /dev-backed source still short-circuits before procfs is consulted', () => {
+    const res = probeDfHostLocalDetailed('/home/echo/.instar', 3000, {
+      platform: 'linux',
+      runDf: () =>
+        `Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/sdd 100 1 99 1% /\n`,
+      readProcMounts: () => {
+        throw new Error('procfs must not be consulted when df already said local');
+      },
+    });
+    expect(res.status).toBe('local');
+    expect(res.fstype).toBeUndefined();
   });
 
   it('probeDfHostLocalDetailed distinguishes unknown (failed probe) from not-local (positive classification)', () => {

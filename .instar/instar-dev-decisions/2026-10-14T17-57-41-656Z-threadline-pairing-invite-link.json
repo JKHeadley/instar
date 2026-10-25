@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-14T17:57:41.656Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 185,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteFlow.ts",
+      "src/threadline/PairingInviteStore.ts"
+    ],
+    "addedLines": 184,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "operator-driven hard-bounded finish retry: at most 5 sends over ~10 min after an operator Finish, stops on ack, never self-triggered"
+  },
+  "verdict": "pass"
+}

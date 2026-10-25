@@ -107,4 +107,43 @@ describe('feedback drain destructive backup/restore', () => {
     } finally { restored.close(); }
     expect(new FeedbackConsumerPromotionStore(path.join(operatedDir, 'consumer-live.json')).isLive()).toBe(true);
   });
+
+  it('self-heals a recorded epoch left behind by the live lease epoch, and still detects a restore afterwards', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-epoch-')); dirs.push(dir);
+    const dbPath = path.join(dir, 'feedback-drain.db');
+    const checkpointPath = path.join(dir, 'feedback-drain-checkpoint.json');
+    const savedDb = path.join(dir, 'saved.db');
+    const savedOldDb = path.join(dir, 'saved-old.db');
+    let store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    // The live shape: an epoch-1 checkpoint from before the coordinator, then the drain at lease epoch 22677.
+    store.checkpointForBackup(1);
+    store.close(); fs.copyFileSync(dbPath, savedOldDb);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    expect(store.restorePending()).toBe(false);
+    const healed = store.checkpointForBackup(22_677);
+    expect(healed.ownerAuthorityEpoch).toBe(22_677);
+    expect(store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 }).checkpointed).toBe(true);
+    expect(() => store.checkpointForBackup(22_676)).toThrow(/stale/);
+    store.close();
+    fs.copyFileSync(dbPath, savedDb);
+
+    // Restoring the healed snapshot onto a new file is detected and admitted only through finalizeRestore.
+    SafeFsExecutor.safeRmSync(dbPath, { force: true, operation: 'feedback-drain epoch restore fixture' });
+    fs.copyFileSync(savedDb, dbPath);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    try {
+      expect(store.restorePending()).toBe(true);
+      expect(store.finalizeRestore({ restoredOwnerAuthorityEpoch: 22_677, operatorDecisionRef: 'restore-epoch-fixture', snapshotId: healed.snapshotId,
+        manifestChecksum: healed.manifestChecksum, oldOwnerQuiesced: true }).ownerAuthorityEpoch).toBe(22_678);
+    } finally { store.close(); }
+
+    // Restoring the pre-heal (epoch 1) bytes under the newer checkpoint is refused, not silently advanced.
+    fs.writeFileSync(checkpointPath, JSON.stringify(healed));
+    SafeFsExecutor.safeRmSync(dbPath, { force: true, operation: 'feedback-drain epoch restore fixture' });
+    fs.copyFileSync(savedOldDb, dbPath);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    try {
+      expect(() => store.restorePending()).toThrow(/does not match its checkpoint/);
+    } finally { store.close(); }
+  });
 });

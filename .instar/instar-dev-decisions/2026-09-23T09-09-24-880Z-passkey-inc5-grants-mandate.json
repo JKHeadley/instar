@@ -1,0 +1,41 @@
+{
+  "ts": "2026-09-23T09:09:24.880Z",
+  "slug": "passkey-inc5-grants-mandate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 1279,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PasskeyCellActions.ts",
+      "src/core/PasskeyCellMandate.ts",
+      "src/core/PasskeyGrantStore.ts",
+      "src/core/PasskeyIssuerSet.ts",
+      "src/core/PasskeyNonceLedger.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1277,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-driven actions only: a PIN lever or a verified mandate applies once and stops; no timer, retry loop or re-delivery exists on this build (the revoke outbox is a later increment and registers its controller then)."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-21T07:58:28.644Z",
+  "slug": "write-domain-pairing-enable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2248
+    ],
+    "notes": "The route POST /threadline/pairing/enable landed with #2248 (threadline enable without restart) carrying no write-domain declaration, so the §3.5 ratchet went red on main and on every branch containing that merge. The route region is byte-identical between this branch and origin/main, which is how it was attributed to main rather than to this branch. Caught by the ratchet exactly as designed; fixed here because it was blocking this PR and the Zero-Failure Standard owns it."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-14T22:52:04.084Z",
+  "slug": "ws52-account-follow-me-email-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/PendingLoginStore.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

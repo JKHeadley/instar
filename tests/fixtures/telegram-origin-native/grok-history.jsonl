@@ -1,0 +1,4 @@
+{"type": "user", "prompt_index": 0, "content": "Fixture"}
+{"type": "assistant", "model_id": "grok-native-first", "content": "Fixture"}
+{"type": "user", "prompt_index": 1, "content": "Fixture two"}
+{"type": "assistant", "model_id": "grok-4.6-build", "model_fingerprint": "fixture", "reasoning_effort": "high", "content": "Fixture"}

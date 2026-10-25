@@ -27,7 +27,7 @@
 
 import {
   DP_COMPLETION_CLAIM_VERIFY, DP_CORRECTION_CLASS_REVIEW, DP_EXTERNAL_HOG_KILL_LEAVE,
-  DP_FEEDBACK_READINESS, DP_MESSAGING_TONE_GATE,
+  DP_FEEDBACK_READINESS, DP_FEEDBACK_TRIAGE, DP_MESSAGING_TONE_GATE,
 } from '../data/provenanceCoverage.js';
 import {
   HOG_SUSTAINED_RIGHT_RULE_ID,
@@ -89,6 +89,7 @@ const WINDOW_UNKNOWN_RULES: Readonly<Record<string, string>> = {
   [DP_CORRECTION_CLASS_REVIEW]: 'correction-review-window-unknown-v1',
   [DP_COMPLETION_CLAIM_VERIFY]: 'completion-claim-window-unknown-v1',
   [DP_FEEDBACK_READINESS]: 'feedback-readiness-window-unknown-v1',
+  [DP_FEEDBACK_TRIAGE]: 'feedback-triage-window-unknown-v1',
 };
 
 export const GRADE_PASS_POINTS: ReadonlyArray<string> = [
@@ -97,6 +98,7 @@ export const GRADE_PASS_POINTS: ReadonlyArray<string> = [
   DP_CORRECTION_CLASS_REVIEW,
   DP_COMPLETION_CLAIM_VERIFY,
   DP_FEEDBACK_READINESS,
+  DP_FEEDBACK_TRIAGE,
 ];
 
 /**

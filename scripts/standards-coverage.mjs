@@ -56,6 +56,7 @@ import yaml from 'js-yaml';
 import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
 import {
   evaluateStandardsDirection,
+  evaluateOperatorReviewApproval,
   inventoryStandardsArticles,
   readCandidateApproverKey,
   readDirectionApprovalLedger,
@@ -190,6 +191,24 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Constrain the model\'s output with structure, never by matching its prose',
   'Distinct from Cross-Machine Coherence',
   'Distinct from Deferral = Deletion',
+  // Added 2026-08-22 with *Never Silently Cut the Data a Decision Depends On*.
+  // NARRATIVE, never ENFORCEMENT: it demarcates which of two sibling articles
+  // governs which side of the same verb (storing a bounded record vs. bounding a
+  // judgment's input). Scanning it for guards would let a boundary statement read
+  // as a live check.
+  //
+  // KEPT IN SYNC WITH `src/core/StandardsRegistryParser.ts` — this list exists in
+  // two places, and the 2026-08-22 independent review found the article added to
+  // the parser copy only, so the CLI and the library disagreed about whether the
+  // section was recognized. The duplicated-definition trap, hit inside the change
+  // that was about not trusting a single reading.
+  'Distinct from Expected Capacity Enforcement',
+  // Added 2026-08-22, on the operator's ruling that a standard must register
+  // whether it is ACTUALLY enforced rather than be inferred as enforced because a
+  // guard exists. NARRATIVE, never ENFORCEMENT: this field states the LIMITS of
+  // the guards named in `Applied through`, so scanning it as enforcement would
+  // count a sentence about what is NOT covered as coverage.
+  'Enforcement state — PARTIAL, and the number is the point',
   'Distinct from the OnboardingGate',
   // Added 2026-08-07 by operator ruling on external-review finding 4: an article
   // honestly labelled `documented-only` must carry a COUNTDOWN — a deadline and a
@@ -585,10 +604,22 @@ function validateRootSelfWiring() {
     return exactKeys(config, ['branches']) &&
       Array.isArray(config.branches) && config.branches.length === 1 && config.branches[0] === 'main';
   };
-  if (!exactKeys(workflow.on, ['push', 'pull_request', 'workflow_dispatch']) ||
+  // `pull_request_review` added 2026-08-22 and pinned, not merely permitted.
+  // The direction guard accepts the operator's approval as proof, but CI fired
+  // on push — before any approval could exist — so approving left the check
+  // red and finished, with nothing to re-run it. `dismissed` is pinned beside
+  // `submitted` because withdrawing an approval must re-run the guard and turn
+  // the check red again: a gate that only re-evaluates toward passing is not a
+  // gate. Pinning the types means neither can be dropped silently.
+  const reviewTrigger = workflow.on?.pull_request_review;
+  const reviewTriggerWired = exactKeys(reviewTrigger, ['types']) &&
+    Array.isArray(reviewTrigger.types) && reviewTrigger.types.length === 2 &&
+    reviewTrigger.types.includes('submitted') && reviewTrigger.types.includes('dismissed');
+  if (!exactKeys(workflow.on, ['push', 'pull_request', 'pull_request_review', 'workflow_dispatch']) ||
     !(workflow.on.workflow_dispatch === null || exactKeys(workflow.on.workflow_dispatch, [])) ||
+    !reviewTriggerWired ||
     !eventTargetsMain('push') || !eventTargetsMain('pull_request')) {
-    errors.push('The Root self-wiring requires top-level push and pull_request CI triggers targeting main');
+    errors.push('The Root self-wiring requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
   }
   const job = workflow.jobs?.['standards-coverage'];
   const steps = Array.isArray(job?.steps) ? job.steps : [];
@@ -599,8 +630,20 @@ function validateRootSelfWiring() {
     STANDARDS_DIRECTION_BASE_FILE: '${{ runner.temp }}/standards-registry-base.md',
     STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: '${{ runner.temp }}/standards-direction-approver-base.pem',
     STANDARDS_DIRECTION_BASE_REVISION: "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+    // Path B (2026-08-22): the operator-review context the guard reads. Pinned
+    // here for the same reason as the others — this contract is deliberately
+    // EXACT so the CI wiring cannot be quietly rearranged, and adding an input
+    // to the check must therefore be a visible, declared edit rather than a
+    // silent one. The guard caught exactly that when this key was introduced.
+    STANDARDS_DIRECTION_REVIEW_FILE: '${{ runner.temp }}/standards-direction-review.json',
   };
-  if (!exactKeys(job, ['name', 'runs-on', 'steps']) ||
+  if (!exactKeys(job, ['name', 'runs-on', 'permissions', 'steps']) ||
+    // Second-pass finding 2: the token scope path B needs is now EXPLICIT and
+    // pinned, not inherited from the repository's default workflow permission —
+    // a tightened org default would otherwise 403 the association call and
+    // silently restore the always-refuse-on-push state this fix ends.
+    !exactKeys(job.permissions, ['contents', 'pull-requests']) ||
+    job.permissions.contents !== 'read' || job.permissions['pull-requests'] !== 'read' ||
     job.name !== 'Standards Enforcement Coverage' || job['runs-on'] !== 'ubuntu-latest' ||
     !exactKeys(checkStep, ['run', 'env']) || !exactKeys(checkStep?.env, Object.keys(checkEnv)) ||
     Object.entries(checkEnv).some(([key, value]) => checkStep.env[key] !== value) ||
@@ -611,6 +654,11 @@ function validateRootSelfWiring() {
   const setupStep = steps.find((step) => step?.uses === 'actions/setup-node@v4');
   const installStep = steps.find((step) => step?.run === 'npm ci --ignore-scripts');
   const baseStep = steps.find((step) => step?.id === 'area-audit-base');
+  // Path B's evidence-gathering step. Pinned into the ordered prefix so it
+  // cannot be dropped without this check failing — an absent step would make
+  // every operator approval read as UNAVAILABLE, which fails safe but would
+  // silently return the operator to needing a key.
+  const reviewStep = steps.find((step) => step?.name === 'Fetch operator review context (direction guard path B)');
   const expectedBaseRun = [
     'git cat-file -e "$BASE_SHA^{commit}"',
     'if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then',
@@ -623,8 +671,58 @@ function validateRootSelfWiring() {
     'git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
     '',
   ].join('\n');
+  // Second-pass finding 1 (2026-08-23): the pin used to constrain this step's KEYS
+  // and env map but not its `run`, so the entire push-resolution branch could be
+  // deleted — returning the guard to refusing on every push — with every ratchet
+  // assertion still green. The body is pinned literally now, exactly as the
+  // protected-base step's is, so a behaviour edit here is a DECLARED edit.
+  const expectedReviewRun = [
+    'set -u',
+    'assoc_failed=0',
+    'if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+    '  if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then',
+    `    match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "\${associated:-[]}" 2>/dev/null || echo '')`,
+    '  else',
+    "    associated='[]'",
+    "    match=''",
+    '    assoc_failed=1',
+    '  fi',
+    "  PR=''",
+    "  HEAD_SHA=''",
+    "  PR_AUTHOR=''",
+    '  if [ -n "$match" ]; then',
+    `    PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')`,
+    `    HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')`,
+    `    PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')`,
+    '  fi',
+    `  echo "path-b: event=\${EVENT_NAME} associated=$(jq -r 'length' <<< "\${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=\${PR:-none} assoc-failed=\${assoc_failed}"`,
+    'fi',
+    'echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"',
+    'if [ "$assoc_failed" = "1" ]; then',
+    `  printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"`,
+    'elif [ -z "$PR" ]; then',
+    '  jq -n --arg headSha "$HEAD_SHA" \\',
+    '        --arg ownerLogin "$OWNER_LOGIN" \\',
+    '        --arg ownerType "$OWNER_TYPE" \\',
+    '        --arg prAuthorLogin "$PR_AUTHOR" \\',
+    "     '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+    `     > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+    'elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then',
+    `  echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"`,
+    '  jq -n --argjson reviews "$reviews" \\',
+    '        --arg headSha "$HEAD_SHA" \\',
+    '        --arg ownerLogin "$OWNER_LOGIN" \\',
+    '        --arg ownerType "$OWNER_TYPE" \\',
+    '        --arg prAuthorLogin "$PR_AUTHOR" \\',
+    "     '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+    `     > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+    'else',
+    `  printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"`,
+    'fi',
+    '',
+  ].join('\n');
   const expectedBaseSha = "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}";
-  const exactPrefix = [checkoutStep, setupStep, installStep, baseStep, checkStep];
+  const exactPrefix = [checkoutStep, setupStep, installStep, baseStep, reviewStep, checkStep];
   const ordered = exactPrefix.every((step, index) => step && steps[index] === step);
   const protectedBaseWired = ordered &&
     exactKeys(checkoutStep, ['uses', 'with']) && exactKeys(checkoutStep.with, ['fetch-depth']) && checkoutStep.with['fetch-depth'] === 0 &&
@@ -633,7 +731,18 @@ function validateRootSelfWiring() {
     exactKeys(baseStep, ['name', 'id', 'env', 'run']) &&
     baseStep.name === 'Resolve protected-base area ledger' &&
     exactKeys(baseStep.env, ['BASE_SHA']) && baseStep.env.BASE_SHA === expectedBaseSha &&
-    baseStep.run === expectedBaseRun;
+    baseStep.run === expectedBaseRun &&
+    // 2026-08-23: the `if:` key is GONE from this pin because it is gone from the
+    // step. Gating the evidence-gathering on `pull_request` made the guard refuse
+    // on every push to main — the operator's approval existed, on the pull request
+    // that produced the commit, and the step simply was not run to go and read it.
+    // The pin follows the step: EVENT_NAME and PUSH_SHA are the inputs the push
+    // branch needs, and their presence here is what makes adding them a declared
+    // edit rather than a silent one.
+    exactKeys(reviewStep, ['name', 'env', 'run']) &&
+    reviewStep.run === expectedReviewRun &&
+    exactKeys(reviewStep.env, ['GH_TOKEN', 'EVENT_NAME', 'PR', 'HEAD_SHA', 'PR_AUTHOR', 'PUSH_SHA', 'OWNER_LOGIN', 'OWNER_TYPE', 'OUT']) &&
+    reviewStep.env.OUT === '${{ runner.temp }}/standards-direction-review.json';
   if (!protectedBaseWired) {
     errors.push('The Root self-wiring requires dependency install plus full-history protected-base extraction and required base env on the standards check');
   }
@@ -1317,6 +1426,31 @@ function compute() {
     if (key.revision !== base.revision) {
       key.errors.push('protected-base registry and approver trust root resolved from different revisions');
     }
+    // PATH B context (2026-08-22). The WORKFLOW fetches the reviews and writes
+    // them here, so this script performs no network I/O and stays testable.
+    // Absent, unreadable or malformed => UNAVAILABLE, which falls back to
+    // requiring a signed ratification. It never becomes an approval.
+    const review = (() => {
+      const file = process.env.STANDARDS_DIRECTION_REVIEW_FILE;
+      if (!file) return null;
+      let raw;
+      try {
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file');
+        raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch (err) {
+        return { approved: false, approvedBy: null, reason: `review context unreadable (${err.message})` };
+      }
+      if (!isPlainObject(raw)) return { approved: false, approvedBy: null, reason: 'review context is not an object' };
+      return evaluateOperatorReviewApproval({
+        reviews: raw.reviews,
+        ownerLogin: raw.ownerLogin,
+        ownerType: raw.ownerType,
+        headSha: raw.headSha,
+        prAuthorLogin: raw.prAuthorLogin,
+      });
+    })();
+
     const assessed = evaluateStandardsDirection({
       baseMarkdown: base.markdown,
       candidateMarkdown: markdown,
@@ -1324,6 +1458,7 @@ function compute() {
       approverPublicKeyPem: key.pem,
       candidateApproverPublicKeyPem: candidateKey.pem,
       baseRevision: base.revision ?? 'unknown-protected-base',
+      reviewApproval: review,
     });
     assessed.errors.unshift(...approvals.errors, ...candidateKey.errors, ...key.errors);
     if (assessed.errors.length > 0) assessed.status = 'not-proven';

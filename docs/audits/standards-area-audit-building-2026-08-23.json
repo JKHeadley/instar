@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-23T06:10:18.000Z",
+  "reviewers": [
+    "echo:claude-opus-5",
+    "codex-cli:gpt-5.5:external-adversarial-answer-withheld",
+    "merge-delta-lens",
+    "prompt-truncation-verification-lens"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 5
+  },
+  "convergenceReport": "docs/specs/reports/building-family-area-audit-2026-08-23-round2.md",
+  "convergenceSha256": "a1d6a15ccfde8c97e4728a6a0bc18b98ce1cf034073737d6615386e3c62add09",
+  "areas": {
+    "Building": {
+      "areaSha256": "05d92649023c23dbccd6f64bbf757b5dfd0209cf1632c17243a7d3171e2fcba5",
+      "verdict": "accepted"
+    }
+  }
+}

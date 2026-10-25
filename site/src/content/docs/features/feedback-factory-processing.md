@@ -24,6 +24,13 @@ deliberately enabled.
 - **The `feedback-factory-process` job** — a built-in `supervision: tier1` job on a recurring
   schedule that calls the process trigger and validates the pass against the post-pass stats.
   It ships `enabled: false` (fleet-dark) and is installed for every agent on update.
+- **The `feedback-factory-triage` job** — every 15 minutes it triggers one
+  `POST /feedback-factory/triage/tick`: the operator-approved triage authority decides
+  work / hold / ignore for feedback work items within deterministic floors. Inert until
+  the operator approves that authority; development-agent live, fleet dark.
+- **The `feedback-factory-action-list` job** — once a day it triggers
+  `POST /feedback-factory/triage/action-list`, which sends the operator only new items
+  that need them, each with a direct link, outside the 23:00–07:30 quiet window.
 
 ## Operating drain and readiness API
 

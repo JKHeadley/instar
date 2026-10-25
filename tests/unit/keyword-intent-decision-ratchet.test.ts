@@ -175,6 +175,7 @@ const ALLOWLIST: Record<string, string> = {
   'core/action-claim.ts': 'VERB_LEMMAS/FUTURE_LEAD — classifies the agent\'s own outbound "did I promise a future action"; audit "Related", not user-intent gating.',
   // Process / error-message signature matchers (classify a thrown error, not user text).
   'core/crossModelReviewer.ts': 'classifyReviewFailure — classifies an error message (rate-limited/timeout); TIER_WORDS is a structured-output enum (survivor #3).',
+  'core/CliLoginStatus.ts': 'classifyCodexLoginStatus — classifies the `codex login status` CLI process output ("Logged in" / "Not logged in"), a process-signature matcher like classifyReviewFailure; never reads user text (spec skill-driven-signin-repair).',
   // Structured LLM-output field parsing (parses the model\'s own response, never gates prose).
   'core/LLMConflictResolver.ts': 'content.match(/^Machine A intent:/m) — parses structured LLM output fields, not keyword-gating user intent.',
   // Doc-template migration content matching (CLAUDE.md template text, not a user message).

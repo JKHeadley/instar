@@ -31,6 +31,17 @@ export function buildPromptGateDecisionContext(input: {
 }
 import { createHash, randomBytes } from 'node:crypto';
 import { trimTrailingBlankRows } from '../core/paneText.js';
+import { boundedTail } from '../core/boundedInput.js';
+
+/**
+ * Bound on the terminal tail handed to the blocking-prompt classifier.
+ *
+ * DERIVED (*Never Silently Cut the Data a Decision Depends On*): the caller selects the last 20
+ * lines, and a terminal line is at most a few hundred characters, so 6,000
+ * admits an ordinary 20-line tail whole. Re-derive if the line window changes.
+ * (Was 3,000 applied from the WRONG END — see the comment at the use.)
+ */
+const PROMPT_GATE_CONTEXT_MAX_CHARS = 6000;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -617,8 +628,16 @@ export class InputDetector extends EventEmitter {
     // Skip if terminal shows active Claude Code work (tool calls, thinking)
     if (/Scampering|Thinking|Reading \d+ file|Writing to|Editing/i.test(tailText)) return;
 
-    // Sanitize: take last 20 lines, strip any remaining ANSI
-    const context = lines.slice(-20).join('\n').slice(0, 3000);
+    // Sanitize: take last 20 lines, strip any remaining ANSI.
+    //
+    // *Never Silently Cut the Data a Decision Depends On*. `slice(-20)` takes the newest lines —
+    // correct, because a blocking prompt sits at the BOTTOM of a terminal — and
+    // the old `.slice(0, 3000)` then cut from the top of those, discarding the
+    // bottom. On a session with long lines this gate could throw away the very
+    // prompt it exists to find, and answer NO_PROMPT with confidence, leaving a
+    // session wedged on a question nobody could see. Bound from the same end
+    // the line selection came from, and disclose the cut.
+    const context = boundedTail(lines.slice(-20).join('\n'), PROMPT_GATE_CONTEXT_MAX_CHARS);
 
     // Skip LLM call if we have already classified this exact context as
     // NO_PROMPT for this session. Idle sessions show the same output across

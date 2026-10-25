@@ -148,6 +148,10 @@ describe('AgentServer', () => {
 
   describe('GET /sessions/:name/output', () => {
     it('returns output for valid session', async () => {
+      project.state.saveSession({
+        id: 'test-output-session', name: 'test-session', tmuxSession: 'test-test-session',
+        status: 'running', startedAt: new Date().toISOString(),
+      });
       // captureOutput returns 'mock output' for any session
       const res = await request(app).get('/sessions/test-session/output');
       expect(res.status).toBe(200);

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-23T04:48:13.919Z",
+  "slug": "passkey-inc1-sync-filter",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SecretSync.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/templates/scripts/secret-get.mjs matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/SecretSync.ts",
+      "src/templates/scripts/secret-get.mjs"
+    ],
+    "addedLines": 52,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

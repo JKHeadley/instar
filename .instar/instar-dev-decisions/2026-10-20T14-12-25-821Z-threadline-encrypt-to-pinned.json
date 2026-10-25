@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-20T14:12:25.821Z",
+  "slug": "threadline-encrypt-to-pinned",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 265,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/A2ARedeliverySentinel.ts",
+      "src/monitoring/CollaborationRedriveEngine.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/encryptToPinned.ts"
+    ],
+    "addedLines": 232,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -8,7 +8,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SubscriptionPool, ValidationError } from '../../src/core/SubscriptionPool.js';
+import {
+  MAX_BOUNDED_POOL_SCAN,
+  SubscriptionPool,
+  SubscriptionPoolUnavailableError,
+  ValidationError,
+} from '../../src/core/SubscriptionPool.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function tmpDir(): string {
@@ -145,7 +150,10 @@ describe('SubscriptionPool', () => {
     expect(pool.locallyExecutable().map((a) => a.id)).toEqual([VALID.id]);
   });
 
-  it('update returns null for an unknown id', () => {
+  it('unconfigured authority permits safe reads and first-create, but no other mutation', () => {
+    expect(pool.get('nope')).toBeNull();
+    expect(() => pool.update('nope', { nickname: 'x' })).toThrow(SubscriptionPoolUnavailableError);
+    pool.addFixture({ ...VALID });
     expect(pool.update('nope', { nickname: 'x' })).toBeNull();
   });
 
@@ -193,12 +201,74 @@ describe('SubscriptionPool', () => {
     expect(h.message).toContain('1 usable');
   });
 
-  // ── corruption resilience ───────────────────────────────────────
-  it('starts fresh on a corrupt store file (loses no credentials — there are none)', () => {
+  // ── authority foundation ────────────────────────────────────────
+  it('advertises static v1 compatibility independently from live authority state', () => {
+    expect(SubscriptionPool.getContractCapability()).toEqual({ version: 1 });
+    expect(pool.getContractCapability()).toEqual({ version: 1 });
+    expect(pool.getAvailability()).toEqual({
+      state: 'unconfigured', reason: 'not-initialized', maintenance: null,
+    });
+  });
+
+  it('fails closed on corrupt authority instead of silently publishing an empty pool', () => {
     fs.writeFileSync(path.join(dir, 'subscription-pool.json'), '{ not valid json');
-    const fresh = new SubscriptionPool({ stateDir: dir });
-    expect(fresh.size()).toBe(0);
-    // And is writable again afterwards.
-    expect(fresh.addFixture({ ...VALID }).id).toBe('claude-acct-2');
+    const invalid = new SubscriptionPool({ stateDir: dir });
+    expect(invalid.getAvailability()).toEqual({ state: 'invalid', reason: 'parse', maintenance: null });
+    expect(() => invalid.size()).toThrow(SubscriptionPoolUnavailableError);
+    expect(() => invalid.list()).toThrow(SubscriptionPoolUnavailableError);
+    expect(() => invalid.addFixture({ ...VALID })).toThrow(SubscriptionPoolUnavailableError);
+  });
+
+  it('rejects duplicate ids during load before publishing array or index', () => {
+    const account = pool.addFixture({ ...VALID });
+    const file = path.join(dir, 'subscription-pool.json');
+    const store = JSON.parse(fs.readFileSync(file, 'utf8'));
+    store.accounts.push({ ...account });
+    fs.writeFileSync(file, JSON.stringify(store));
+    const invalid = new SubscriptionPool({ stateDir: dir });
+    expect(invalid.getAvailability().reason).toBe('duplicate-id');
+    expect(() => invalid.get(VALID.id)).toThrow(SubscriptionPoolUnavailableError);
+  });
+
+  it('uses indexed get and a backing-prefix bounded scan with an honest examined count', () => {
+    for (let i = 0; i < 6; i += 1) {
+      pool.addFixture({ ...VALID, id: `acct-${i}`, email: `p${i}@example.com` });
+    }
+    const file = path.join(dir, 'subscription-pool.json');
+    const store = JSON.parse(fs.readFileSync(file, 'utf8'));
+    store.accounts[0].email = '';
+    store.accounts[1].email = '   ';
+    fs.writeFileSync(file, JSON.stringify(store));
+    pool = new SubscriptionPool({ stateDir: dir });
+    // Repair-only rows consume the prefix even though they are not publicly visible.
+    const scan = pool.scanAccountsBounded(4);
+    expect(scan.examined).toBe(4);
+    expect(scan.truncated).toBe(true);
+    expect(scan.accounts.map((account) => account.id)).toEqual(['acct-2', 'acct-3']);
+    expect(pool.get('acct-5')?.id).toBe('acct-5');
+    expect(pool.scanAccountsBounded(MAX_BOUNDED_POOL_SCAN + 1).examined).toBe(6);
+  });
+
+  it('uses the machine-bound authority directory for fresh production-style callers', () => {
+    pool = new SubscriptionPool({ stateDir: dir, machineId: 'm_local' });
+    pool.addFixture({ ...VALID });
+    expect(fs.existsSync(path.join(dir, 'subscription-pool.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'state', 'subscription-pool', 'accounts.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'state', 'subscription-pool.initialized.json'))).toBe(true);
+    const restarted = new SubscriptionPool({ stateDir: dir, machineId: 'm_local' });
+    expect(restarted.getAvailability()).toEqual({ state: 'ready', reason: null, maintenance: null });
+    expect(restarted.get(VALID.id)?.email).toBe(VALID.email);
+    restarted.update(VALID.id, { nickname: 'after-restart' });
+    const twiceRestarted = new SubscriptionPool({ stateDir: dir, machineId: 'm_local' });
+    expect(twiceRestarted.get(VALID.id)?.nickname).toBe('after-restart');
+  });
+
+  it('reports missing machine identity as unavailable without weakening static compatibility', () => {
+    pool = new SubscriptionPool({ stateDir: dir, machineId: null });
+    expect(pool.getContractCapability()).toEqual({ version: 1 });
+    expect(pool.getAvailability()).toEqual({
+      state: 'unavailable', reason: 'machine-identity-unavailable', maintenance: null,
+    });
+    expect(() => pool.list()).toThrow(SubscriptionPoolUnavailableError);
   });
 });

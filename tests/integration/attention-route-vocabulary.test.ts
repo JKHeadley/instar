@@ -52,6 +52,21 @@ function makeApp() {
 }
 
 describe('Attention route vocabulary compatibility', () => {
+  it('applies every documented bound alias while an unbounded read returns the full population', async () => {
+    const { app } = makeApp();
+    for (const id of ['a', 'b', 'c']) {
+      await request(app).post('/attention').send({ id, title: id, summary: id, category: 'general', priority: 'NORMAL' }).expect(201);
+    }
+
+    for (const key of ['limit', 'count', 'take', 'pageSize']) {
+      const bounded = await request(app).get('/attention').query({ [key]: 2 }).expect(200);
+      expect(bounded.body.count).toBe(2);
+      expect(bounded.body.items.map((x: StubItem) => x.id)).toEqual(['a', 'b']);
+    }
+    const unbounded = await request(app).get('/attention').expect(200);
+    expect(unbounded.body.count).toBe(3);
+  });
+
   it('accepts documented POST aliases and stores canonical priority/source fields', async () => {
     const { app, capturedCreates } = makeApp();
 

@@ -36,6 +36,7 @@ import type { StateManager } from '../core/StateManager.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
+import type { SessionPlatformInfo } from './sessionPlatform.js';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
@@ -87,6 +88,7 @@ export class WebSocketManager {
   private selfMachineId?: string;
   /** One multiplexed upstream proxy per peer machine (requesting side). */
   private peerProxies = new Map<string, PeerStreamProxy>();
+  private resolveSessionPlatform?: (tmuxSession: string) => SessionPlatformInfo;
 
   constructor(options: {
     server: HttpServer;
@@ -99,6 +101,10 @@ export class WebSocketManager {
     poolStreamAllowRemoteInput?: boolean;
     poolStreamConnector?: PoolStreamConnector;
     selfMachineId?: string;
+    /** Which messaging platform a local session is bound to (the same
+     *  derivation GET /sessions uses). Without it every local row lacks
+     *  `platform` and the dashboard draws the headless icon. */
+    resolveSessionPlatform?: (tmuxSession: string) => SessionPlatformInfo;
   }) {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
@@ -108,6 +114,7 @@ export class WebSocketManager {
     this.poolStreamAllowRemoteInput = options.poolStreamAllowRemoteInput ?? false;
     this.poolStreamConnector = options.poolStreamConnector;
     this.selfMachineId = options.selfMachineId;
+    this.resolveSessionPlatform = options.resolveSessionPlatform;
     if (options.instarDir) {
       this.registryPath = path.join(options.instarDir, 'topic-session-registry.json');
     }
@@ -561,6 +568,14 @@ export class WebSocketManager {
         model: s.model,
         type: s.jobSlug ? 'job' : 'interactive',
       };
+
+      if (this.resolveSessionPlatform) {
+        try {
+          Object.assign(base, this.resolveSessionPlatform(s.tmuxSession));
+        } catch {
+          // Adapter lookup failed — leave platform unset (dashboard shows headless)
+        }
+      }
 
       // Enrich with hook event telemetry when available
       if (this.hookEventReceiver) {

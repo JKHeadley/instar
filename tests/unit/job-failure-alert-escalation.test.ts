@@ -25,9 +25,19 @@ vi.mock('croner', () => ({
   },
 }));
 
-vi.mock('../../src/scheduler/JobLoader.js', () => ({
-  loadJobs: vi.fn().mockReturnValue([]),
-}));
+vi.mock('../../src/scheduler/JobLoader.js', () => {
+  const loadJobs = vi.fn().mockReturnValue([]);
+  return {
+    loadJobs,
+    // The scheduler's trigger-boundary reload uses the detailed loader; keep
+    // the mock derived from `loadJobs` so `vi.mocked(loadJobs).mockReturnValue`
+    // still steers what the scheduler sees.
+    loadJobsDetailed: vi.fn((jobsFile: string) => ({
+      jobs: loadJobs(jobsFile), problems: [], bodyFailures: [], diagnostics: [],
+    })),
+    formatLoadProblem: vi.fn((p: { message: string }) => p.message),
+  };
+});
 
 interface AlertState {
   lastObservedFailures: number;

@@ -20,7 +20,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
+import {
+  SingleInstanceLock,
+  readPidStartedAt,
+  readSelfStartedAt,
+  PID_START_MISMATCH_MS,
+} from '../../src/core/SingleInstanceLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function makeStateDir(): string {
@@ -38,6 +43,8 @@ interface Overrides {
   now?: () => number;
   autoHealStaleHostRename?: boolean;
   staleHostRenameMs?: number;
+  pidStartedAt?: (pid: number) => number | null;
+  selfStartedAt?: () => number | null;
 }
 
 function makeLock(stateDir: string, o: Overrides = {}): SingleInstanceLock {
@@ -54,11 +61,16 @@ function makeLock(stateDir: string, o: Overrides = {}): SingleInstanceLock {
     now: o.now,
     autoHealStaleHostRename: o.autoHealStaleHostRename,
     staleHostRenameMs: o.staleHostRenameMs,
+    ...(o.pidStartedAt ? { pidStartedAt: o.pidStartedAt } : {}),
+    ...(o.selfStartedAt ? { selfStartedAt: o.selfStartedAt } : {}),
     log: () => {},
   });
 }
 
-function seedLock(stateDir: string, rec: { pid: number; hostname: string; heartbeat?: number }): void {
+function seedLock(
+  stateDir: string,
+  rec: { pid: number; hostname: string; heartbeat?: number; startedAt?: number },
+): void {
   const localDir = path.join(stateDir, 'local');
   fs.mkdirSync(localDir, { recursive: true });
   fs.writeFileSync(
@@ -72,6 +84,192 @@ describe('SingleInstanceLock', () => {
   beforeEach(() => { dir = makeStateDir(); });
   afterEach(() => {
     try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/single-instance-lock.test.ts:afterEach' }); } catch { /* ignore */ }
+  });
+
+  // ── PID-REUSE GUARD ───────────────────────────────────────────────
+  //
+  // The 2026-10-12 `inspec` wedge: a host that recycles its whole pid space
+  // every 5-11 minutes keeps handing the dead holder's pid to unrelated live
+  // processes, so `pidAlive()` answers "still running" indefinitely and the
+  // server refuses to boot. 42 consecutive spawns were refused across ~3.5h
+  // (and ~35h over the preceding weekend) before a pid happened to be free.
+
+  it('reclaims a lock whose pid is ALIVE but is a REUSED pid (start time far from the record)', async () => {
+    const holderStart = 1_000_000_000_000;
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      // The live pid 12345 is some OTHER process, started 10 minutes later —
+      // well past the skew, which is the shape pid reuse always has.
+      pidStartedAt: () => holderStart + PID_START_MISMATCH_MS + 480_000,
+      selfStartedAt: () => holderStart + 900_000,
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(true);
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'local', 'server-instance.lock'), 'utf-8'));
+    expect(rec.pid).toBe(process.pid);
+  });
+
+  it('still refuses when the live pid start time MATCHES the record (the genuine holder)', async () => {
+    const holderStart = 1_000_000_000_000;
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      pidStartedAt: () => holderStart + 500, // within tolerance
+      selfStartedAt: () => holderStart + 900_000,
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(false);
+    expect(r.reason).toBe('duplicate-live-instance');
+  });
+
+  it('never evicts a holder whose observed start is EARLIER than the record (one-sided test)', async () => {
+    // A clock step between write and probe can make a genuine holder read as
+    // started "before" its own record. That direction has no detection value
+    // (a reused pid is always newer) and must never reclaim.
+    const holderStart = 1_000_000_000_000;
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      pidStartedAt: () => holderStart - 3_600_000, // an hour "earlier"
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(false);
+    expect(r.reason).toBe('duplicate-live-instance');
+  });
+
+  it('treats a start inside the skew window as the genuine holder', async () => {
+    const holderStart = 1_000_000_000_000;
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      pidStartedAt: () => holderStart + PID_START_MISMATCH_MS - 1,
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(false);
+  });
+
+  it('probes a pid\'s start time at most once per acquire(), not once per poll', async () => {
+    const holderStart = 1_000_000_000_000;
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });
+    let probes = 0;
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 200, // ~20 polls at pollIntervalMs 10
+      pidStartedAt: () => { probes++; return holderStart; },
+    });
+    await lock.acquire();
+    expect(probes).toBe(1);
+  });
+
+  it('writes a legacy (pid-only) record when its own start time is unreadable', async () => {
+    const lock = makeLock(dir, { selfStartedAt: () => null });
+    await lock.acquire();
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'local', 'server-instance.lock'), 'utf-8'));
+    expect(rec.startedAt).toBeUndefined();
+  });
+
+  it('keeps the pid-only verdict when the candidate start time cannot be read (conservative)', async () => {
+    seedLock(dir, { pid: 12345, hostname: HOST, startedAt: 1_000_000_000_000 });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      pidStartedAt: () => null, // ps failed / process vanished mid-probe
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(false);
+    expect(r.reason).toBe('duplicate-live-instance');
+  });
+
+  it('keeps the pid-only verdict for a legacy record with no startedAt (backward compatible)', async () => {
+    seedLock(dir, { pid: 12345, hostname: HOST }); // written by an older build
+    let probed = false;
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      pidStartedAt: () => { probed = true; return 1; },
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(false);
+    expect(r.reason).toBe('duplicate-live-instance');
+    expect(probed).toBe(false); // nothing to compare against — never probed
+  });
+
+  it('records our own startedAt so the next boot can detect a reused pid', async () => {
+    const lock = makeLock(dir, { selfStartedAt: () => 1_700_000_000_123 });
+    await lock.acquire();
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'local', 'server-instance.lock'), 'utf-8'));
+    expect(rec.startedAt).toBe(1_700_000_000_000); // rounded to ps's 1s resolution
+  });
+
+  it('preserves startedAt across a heartbeat refresh', async () => {
+    const lock = makeLock(dir, { selfStartedAt: () => 1_700_000_000_000 });
+    await lock.acquire();
+    lock.heartbeat();
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'local', 'server-instance.lock'), 'utf-8'));
+    expect(rec.startedAt).toBe(1_700_000_000_000);
+  });
+
+  it('a reused pid is also treated as dead by the single-host-rename auto-heal', async () => {
+    const holderStart = 1_000_000_000_000;
+    const now = holderStart + 10_000_000;
+    seedLock(dir, { pid: 12345, hostname: 'old-host-name', heartbeat: holderStart, startedAt: holderStart });
+    const lock = makeLock(dir, {
+      alivePids: new Set([process.pid, 12345]),
+      handoffGraceMs: 50,
+      autoHealStaleHostRename: true,
+      staleHostRenameMs: 1000,
+      now: () => now,
+      pidStartedAt: () => holderStart + PID_START_MISMATCH_MS + 480_000,
+      selfStartedAt: () => now,
+    });
+    const r = await lock.acquire();
+    expect(r.acquired).toBe(true);
+  });
+
+  describe('readPidStartedAt / readSelfStartedAt (the real ps read)', () => {
+    it('agree with each other for THIS process to within the 1s lstart resolution', () => {
+      const viaPid = readPidStartedAt(process.pid);
+      const viaSelf = readSelfStartedAt();
+      expect(viaPid).not.toBeNull();
+      expect(viaSelf).not.toBeNull();
+      // Both are the same `ps -o lstart=` read of the same process; they are not
+      // allowed to disagree by more than the 1s print resolution — a looser bound
+      // here would hide a systematic write/read bias behind the guard's own skew.
+      expect(Math.abs((viaPid as number) - (viaSelf as number))).toBeLessThanOrEqual(1000);
+      // And both are a sane recent instant (this process started in the last day).
+      expect(Date.now() - (viaSelf as number)).toBeLessThan(86_400_000);
+    });
+
+    it('returns null for an invalid or dead pid', () => {
+      expect(readPidStartedAt(0)).toBeNull();
+      expect(readPidStartedAt(-1)).toBeNull();
+      expect(readPidStartedAt(999_999, () => false)).toBeNull();
+    });
+  });
+
+  it('DEFAULTS round trip: a second lock over the same state dir reads the real holder as LIVE', async () => {
+    // No start-time overrides on either side — this exercises the real
+    // write (readSelfStartedAt) and read (readPidStartedAt) derivations together.
+    const first = new SingleInstanceLock({
+      stateDir: dir, hostname: () => HOST, isStateDirHostLocal: () => true,
+      handoffGraceMs: 50, pollIntervalMs: 10, sleep: async () => {}, env: {}, log: () => {},
+    });
+    expect((await first.acquire()).acquired).toBe(true);
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'local', 'server-instance.lock'), 'utf-8'));
+    expect(typeof rec.startedAt).toBe('number');
+    const second = new SingleInstanceLock({
+      stateDir: dir, hostname: () => HOST, isStateDirHostLocal: () => true,
+      handoffGraceMs: 50, pollIntervalMs: 10, sleep: async () => {}, env: {}, log: () => {},
+    });
+    const r = await second.acquire();
+    expect(r.acquired).toBe(false); // the holder (this very process) is genuinely live
+    expect(r.reason).toBe('duplicate-live-instance');
+    first.release();
   });
 
   it('acquires a free lock', async () => {

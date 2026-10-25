@@ -52,6 +52,10 @@ function makeFixture(): Fixture {
   execFileSync('git', ['-C', bareRepo, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' });
   execFileSync('git', ['-C', bareRepo, 'config', 'commit.gpgsign', 'false'], { stdio: 'pipe' });
+  // No detached auto-gc/maintenance: one still writing .git/objects after the
+  // test made cleanup's rmdir fail with ENOTEMPTY (CI, PR #2097).
+  execFileSync('git', ['-C', bareRepo, 'config', 'gc.auto', '0'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', bareRepo, 'config', 'maintenance.auto', 'false'], { stdio: 'pipe' });
   fs.writeFileSync(path.join(bareRepo, 'README.md'), '# Test\n');
   fs.writeFileSync(path.join(bareRepo, 'package.json'), JSON.stringify({
     name: 'instar',
@@ -103,7 +107,7 @@ function makeFixture(): Fixture {
 }
 
 function cleanup(fix: Fixture): void {
-  fs.rmSync(path.dirname(fix.instarHome), { recursive: true, force: true });
+  fs.rmSync(path.dirname(fix.instarHome), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 describe('createWorktree (integration)', () => {
@@ -135,11 +139,19 @@ describe('createWorktree (integration)', () => {
     expect(result.createdBranch).toBe(true);
     expect(fs.existsSync(result.worktreePath)).toBe(true);
 
-    // Per-worktree git identity is set; signing config is NOT.
+    // Per-worktree git identity is RESOLVED, not minted; signing config is NOT touched.
+    //
+    // W26 item 0(a): this used to assert `Instar Agent (<agent>)` /
+    // `<agent>@instar.local` — an address linked to no account, which trips
+    // GitHub's unattributed-changes rule and turns every release into a human
+    // approval. The manager now resolves the identity (config → agent repo →
+    // refuse) and hardcodes no domain, so the worktree inherits what the agent
+    // repo itself commits as. This fixture's repo is 'Test <test@example.com>'.
     const name = git(['config', 'user.name'], result.worktreePath);
     const email = git(['config', 'user.email'], result.worktreePath);
-    expect(name).toBe(`Instar Agent (${fix.agentName})`);
-    expect(email).toBe(`${fix.agentName}@instar.local`);
+    expect(name).toBe('Test');
+    expect(email).toBe('test@example.com');
+    expect(email).not.toContain('instar.local');
     // user.signingkey at the worktree-local scope must be unset (the manager
     // never touches it; the test passes `null` cwd default → empty stdout if absent).
     let signingKey = '';

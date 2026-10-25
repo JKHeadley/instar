@@ -48,7 +48,7 @@ export interface RequestChangeInput {
 export type RequestChangeResult =
   | { status: 'no-op'; reason: 'already-loaded' | 'not-loaded' | 'unknown-server' }
   | { status: 'needs-approval'; nonce: string; prompt: string }
-  | { status: 'aborted'; reason: 'mid-tool-use' }
+  | { status: 'aborted'; reason: 'mid-tool-use' | 'managed-profile-private' }
   | { status: 'restart-failed'; code: string }
   | { status: 'unsupported-unbound' }
   | { status: 'applied'; servers: string[] };
@@ -79,6 +79,8 @@ export interface DynamicMcpDeps {
   restartSession: (topicId: number) => Promise<{ ok: boolean; code?: string }>;
   /** Optional structured audit sink. */
   audit?: (entry: Record<string, unknown>) => void;
+  /** Throws when the live definition exposes a broker-owned Telegram profile. */
+  assertServerLoadAllowed?: (server: string) => void;
 }
 
 /** A short, server-authored approval prompt (never agent free-text). */
@@ -111,6 +113,10 @@ export class DynamicMcpManager {
 
   private async requestChangeLocked(input: RequestChangeInput): Promise<RequestChangeResult> {
     const { topicId, op, server, actor } = input;
+    if (op === 'load' && this.deps.assertServerLoadAllowed) {
+      try { this.deps.assertServerLoadAllowed(server); }
+      catch { this.audit({ topicId, op, server, outcome: 'managed-profile-private' }); return { status: 'aborted', reason: 'managed-profile-private' }; }
+    }
     const current = this.deps.currentServers(topicId);
     const names = this.deps.allServerNames();
     const mutateOp: McpMutateOp = { kind: op, server };

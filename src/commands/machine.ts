@@ -21,7 +21,7 @@ import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { GitSyncManager } from '../core/GitSync.js';
@@ -29,6 +29,91 @@ import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import type { MachineRole } from '../core/types.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
+
+export async function establishPairingRecoveryRoot(
+  config: ReturnType<typeof loadConfig>,
+  mgr: MachineIdentityManager,
+): Promise<void> {
+  if (!resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) return;
+  // Dry-run is byte-identical for identity + escrow stores. Even ensure() may
+  // mint and persist a keypair, so it must not be called merely to predict.
+  if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false) return;
+  const recoveryMod = await import('../core/MachineRecoveryKey.js');
+  const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+  const recovery = new recoveryMod.MachineRecoveryKey(secrets);
+  const current = mgr.loadIdentity();
+  const material = recovery.ensure(current.machineId, current.recoveryEpoch ?? 0, current.recoveryPublicKey);
+  if (!material) return; // no OS-keychain backing: escrow is unavailable by design
+  recovery.rememberIdentity(mgr.establishLocalRecoveryKey(material));
+}
+
+/** True when this machine holds the identity's private signing key (current or legacy file name). */
+function hasLocalSigningKey(mgr: MachineIdentityManager): boolean {
+  try {
+    return mgr.loadSigningKey().length > 0;
+  } catch {
+    // @silent-fallback-ok — a missing or unreadable key is exactly the "not made here" signal.
+    return false;
+  }
+}
+
+/**
+ * Give this machine's own keychain the chance to rebuild missing key files
+ * for its identity (the boot-time identity recovery path). True only when it
+ * did, which proves the identity belongs to this machine.
+ */
+async function recoversOwnKeys(config: ReturnType<typeof loadConfig>, mgr: MachineIdentityManager): Promise<boolean> {
+  try {
+    const { runMachineIdentityBootRecovery } = await import('../core/MachineIdentityBootRecovery.js');
+    const outcome = await runMachineIdentityBootRecovery({ config, manager: mgr });
+    return outcome === 'keys-recovered' && hasLocalSigningKey(mgr);
+  } catch {
+    // @silent-fallback-ok — recovery unavailable means it cannot vouch for the identity;
+    // the caller sets the copy aside (renamed, never deleted), which is reversible.
+    return false;
+  }
+}
+
+/**
+ * Move a copied machine identity (identity.json and any key files beside it)
+ * out of the way, never deleting it, so a fresh identity can be minted for
+ * this machine. Exported for tests.
+ */
+export function setAsideCopiedIdentity(mgr: MachineIdentityManager, why: string): string[] {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const moved: string[] = [];
+  const machineDir = path.dirname(mgr.identityPath);
+  for (const file of [mgr.identityPath, mgr.signingKeyPath, mgr.encryptionKeyPath,
+    path.join(machineDir, 'signing-private.pem'), path.join(machineDir, 'encryption-private.pem')]) {
+    if (!fs.existsSync(file)) continue;
+    const target = `${file}.copied-${stamp}`;
+    fs.renameSync(file, target);
+    moved.push(target);
+  }
+  console.log(pc.yellow(`  The machine identity here was copied from another machine (${why}). Set it aside and creating this machine's own.`));
+  return moved;
+}
+
+async function prepareFreshRevokedPairingIdentity(
+  config: ReturnType<typeof loadConfig>,
+  mgr: MachineIdentityManager,
+): Promise<void> {
+  if (!resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) {
+    throw new Error('Fresh same-principal re-pair requires recovery-key escrow to be enabled');
+  }
+  if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false) {
+    throw new Error('Fresh same-principal re-pair is unavailable while recovery-key escrow is in dry-run');
+  }
+  const recoveryMod = await import('../core/MachineRecoveryKey.js');
+  const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+  const recovery = new recoveryMod.MachineRecoveryKey(secrets);
+  const current = mgr.loadIdentity();
+  if (!current.recoveryPublicKey) throw new Error('Fresh same-principal re-pair requires an established recovery root');
+  const material = recovery.rotate(current.machineId, current.recoveryEpoch ?? 0, current.recoveryPublicKey);
+  if (!material) throw new Error('Fresh same-principal re-pair requires an OS-keychain-backed secret store');
+  recovery.rememberIdentity(mgr.prepareFreshPairingIdentity(material));
+}
 
 /**
  * Claim the fenced lease for THIS machine and propagate it to the substrate.
@@ -129,7 +214,7 @@ export async function listMachines(options: MachinesOptions): Promise<void> {
   for (const [machineId, entry] of machines) {
     const isLocal = machineId === localIdentity.machineId;
     const roleIcon = entry.role === 'awake' ? pc.green('▶') : pc.dim('○');
-    const statusIcon = entry.status === 'active' ? '' : pc.red(' [revoked]');
+    const statusIcon = isRegistryEntryActive(entry) ? '' : pc.red(' [revoked]');
     const localTag = isLocal ? pc.cyan(' (this machine)') : '';
 
     console.log(`  ${roleIcon} ${pc.bold(entry.name)}${localTag}${statusIcon}`);
@@ -195,7 +280,9 @@ export async function removeMachine(nameOrId: string, options: RemoveMachineOpti
   mgr.revokeMachine(machineId, localIdentity.machineId, 'Removed via CLI');
 
   console.log(pc.green(`Machine "${entry.name}" has been revoked.`));
-  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate.'));
+  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate to the mesh with its machine key.'));
+  // a2a-single-agent-identity §1.4: true of the MACHINE key, false of the AGENT key — say so.
+  console.log(pc.yellow(`${entry.name} is revoked for the mesh but still holds a copy of the agent identity and can sign as ${config.projectName} until the identity is rotated fleet-wide.`));
 }
 
 // ── instar whoami ────────────────────────────────────────────────
@@ -264,6 +351,8 @@ export async function startPairing(options: PairOptions): Promise<void> {
     console.log(pc.red('No machine identity. Run `instar init` first.'));
     process.exit(1);
   }
+
+  await establishPairingRecoveryRoot(config, mgr);
 
   const { generatePairingCode, createPairingSession } = await import('../core/PairingProtocol.js');
   const { migrateSecrets } = await import('../core/SecretMigrator.js');
@@ -455,36 +544,65 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // the name happened to line up) enabling broken commit-signing. Verified live
   // on a real two-machine mesh, 2026-05-28. generateIdentity writes the
   // canonical filenames, the identity, and self-registers as standby.
-  if (mgr.hasIdentity()) {
+  if (mgr.hasIdentity() && !hasLocalSigningKey(mgr) && !(await recoversOwnKeys(config, mgr))) {
+    // An identity file whose private signing key is absent AND which this
+    // machine's keychain cannot rebuild was not made here: it came with a
+    // copied or cloned agent home. Using it would make this machine claim
+    // another machine's id (ACT-1302). A genuine identity that lost only its
+    // key files is rebuilt by recoversOwnKeys and keeps its id.
+    setAsideCopiedIdentity(mgr, 'its private signing key is not on this machine');
+    const identity = await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+    console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+  } else if (mgr.hasIdentity()) {
     console.log(pc.yellow('  This machine already has an identity. Using existing.'));
   } else {
     const identity = await mgr.generateIdentity({ name: options.name, role: 'standby' });
     console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
   }
+  await establishPairingRecoveryRoot(config, mgr);
 
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
   const isTunnelUrl = repoUrl.startsWith('http://') || repoUrl.startsWith('https://');
   if (isTunnelUrl) {
     console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
-      const identity = mgr.loadIdentity();
+      let identity = mgr.loadIdentity();
       // Advertise our own reachable URL (if we already have one — a named tunnel
       // is known at config time; a quick tunnel is only known after our server
       // starts, so this may be null and the awake machine learns it later via the
       // heartbeat URL field instead).
       const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
       const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
-      const resp = await fetch(`${repoUrl}/api/pair`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pairingCode: options.code,
-          machineIdentity: identity,
-          ephemeralPublicKey: identity.encryptionPublicKey,
-          ...(advertisedUrl ? { advertisedUrl } : {}),
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const sendPairingRequest = () => fetch(`${repoUrl}/api/pair`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pairingCode: options.code,
+            machineIdentity: identity,
+            ephemeralPublicKey: identity.encryptionPublicKey,
+            ...(advertisedUrl ? { advertisedUrl } : {}),
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+      let resp = await sendPairingRequest();
+
+      if (resp.status === 409) {
+        const refusal = await resp.clone().json().catch(() => ({})) as { error?: string };
+        if (refusal.error === 'joiner-identity-is-inviter') {
+          // The inviter recognised its own id: this home's identity file is a copy.
+          setAsideCopiedIdentity(mgr, 'the machine being joined reports it as its own');
+          await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+          await establishPairingRecoveryRoot(config, mgr);
+          identity = mgr.loadIdentity();
+          console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+          resp = await sendPairingRequest();
+        } else if (refusal.error === 'fresh-pairing-identity-required') {
+          await prepareFreshRevokedPairingIdentity(config, mgr);
+          identity = mgr.loadIdentity();
+          console.log(pc.yellow('  Revoked prior identity detected — generated fresh signing, encryption, and recovery keys for this pairing code.'));
+          resp = await sendPairingRequest();
+        }
+      }
 
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
@@ -495,8 +613,22 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       const result = await resp.json() as {
         machineIdentity?: any;
         agentIdentityEnvelope?: any;
+        identityRecoveryBearerToken?: string;
         status?: string;
       };
+
+      // The ordinary authToken is intentionally machine-local. Recovery routes
+      // use a distinct agent-wide bearer conveyed only inside this
+      // code-authenticated pairing response, so peers with different local API
+      // tokens can still perform the recovery protocol.
+      if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
+        const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+        joinedConfig.multiMachine ??= {};
+        joinedConfig.multiMachine.identityReannounce ??= {};
+        joinedConfig.multiMachine.identityReannounce.sharedBearerToken = result.identityRecoveryBearerToken;
+        fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+        config = loadConfig(projectDir);
+      }
 
       // ── Install the AGENT identity carried by the pairing response ──────────────────
       // Spec: docs/specs/agent-identity-continuity-on-expansion.md §1.
@@ -565,6 +697,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   const { ensureGitignore } = await import('../core/MachineIdentity.js');
   ensureGitignore(config.projectDir);
 
+  let autoStarted = false;
   // Step 6: Install auto-start for THIS (the joined) home.
   // Without this, a joined agent has no LaunchAgent/systemd unit — the operator
   // must hand-start it, and worse: a stale `ai.instar.<projectName>` plist left
@@ -585,6 +718,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     ) ?? false;
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
+      autoStarted = true;
       console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
     }
   } catch (err) {
@@ -596,7 +730,14 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
   console.log();
   console.log(`  Next steps:`);
-  console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  if (autoStarted) {
+    // Auto-start already launched the server under its supervisor. Telling the
+    // operator to `instar server start` here produced a second, unsupervised
+    // server fighting the first for the port (instar#2122).
+    console.log(`  1. The server is already starting under auto-start — do not start another one.`);
+  } else {
+    console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  }
   console.log(`  2. Check health:     ${pc.cyan('instar doctor')}`);
   console.log(`  3. Wake up agent:    ${pc.cyan('instar wakeup')} (when ready)`);
   console.log();
@@ -639,6 +780,14 @@ export async function leaveMesh(options: LeaveOptions): Promise<void> {
     mgr.revokeMachine(identity.machineId, identity.machineId, 'Self-removal via `instar leave`');
   }
 
+  // De-pair destroys the escrowed recovery private key too. Keeping it would
+  // turn a deliberately removed machine into a future bearer of continuity.
+  try {
+    const recoveryMod = await import('../core/MachineRecoveryKey.js');
+    const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+    new recoveryMod.MachineRecoveryKey(secrets).destroy(identity.machineId);
+  } catch { /* local identity removal still proceeds; revocation is already sticky */ }
+
   // Remove local identity and keys
   mgr.removeLocalIdentity();
 
@@ -651,6 +800,67 @@ export async function leaveMesh(options: LeaveOptions): Promise<void> {
 interface WakeupOptions {
   dir?: string;
   force?: boolean;
+}
+
+/**
+ * The machine currently in charge: the live lease holder when this machine's
+ * own server answers, else the registry's awake role (which can lag).
+ *
+ * The read carries the agent's auth token: an unauthenticated /health omits the
+ * multiMachine block, so without it the live lease was never seen and the lookup
+ * always fell through to the registry (ACT-1306, instar#2122 step 5).
+ */
+export async function resolveAwakeMachine(
+  mgr: MachineIdentityManager,
+  port: number,
+  fetchFn: typeof fetch = fetch,
+  authToken?: string,
+): Promise<{ machineId: string; entry: import('../core/types.js').MachineRegistryEntry } | null> {
+  try {
+    const resp = await fetchFn(`http://localhost:${port}/health`, {
+      signal: AbortSignal.timeout(3000),
+      headers: typeof authToken === 'string' && authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (resp.ok) {
+      const health = await resp.json() as { multiMachine?: { syncStatus?: { leaseHolder?: string | null } } };
+      const holder = health.multiMachine?.syncStatus?.leaseHolder;
+      if (authToken && !health.multiMachine) {
+        // A token was sent but the answer is the anonymous one: the token is
+        // stale (e.g. a literal in config.json while the server uses the vault).
+        // Say so, rather than silently falling back to the lagging registry.
+        console.log('  Live lease lookup was not authorized by the local server (auth token rejected or stale); using the registry instead.');
+      }
+      if (holder) {
+        const entry = mgr.loadRegistry().machines[holder];
+        if (entry && entry.status === 'active' && !entry.revokedAt) return { machineId: holder, entry };
+      }
+    }
+  } catch { /* @silent-fallback-ok — no local server; the registry answers below */ }
+  return mgr.getAwakeMachine();
+}
+
+/**
+ * A reachable base URL for `machineId`'s server: every advertised endpoint
+ * (tailscale, lan, cloudflare) and the last-known URL are probed with /health;
+ * the first that answers wins. Never this machine's own server.
+ */
+export async function resolveAwakeServerUrl(
+  mgr: MachineIdentityManager,
+  machineId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<string | null> {
+  const entry = mgr.loadRegistry().machines[machineId];
+  const candidates = [
+    ...(entry?.endpoints ?? []).map((e) => e.url),
+    ...(entry?.lastKnownUrl ? [entry.lastKnownUrl] : []),
+  ].map((u) => u.replace(/\/+$/, ''));
+  for (const url of [...new Set(candidates)]) {
+    try {
+      const resp = await fetchFn(`${url}/health`, { signal: AbortSignal.timeout(3000) });
+      if (resp.ok) return url;
+    } catch { /* try the next rope */ }
+  }
+  return null;
 }
 
 export async function wakeup(options: WakeupOptions): Promise<void> {
@@ -678,8 +888,11 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     return;
   }
 
-  // Find the currently awake machine
-  const awake = mgr.getAwakeMachine();
+  // Find the currently awake machine. The LIVE lease is the authority; the
+  // registry's role field can lag (and once held a removed identity — Luna's
+  // Studio reported "Current location: mac-studio" while the laptop held the
+  // lease, instar#2122). Ask the local server first; fall back to the registry.
+  const awake = await resolveAwakeMachine(mgr, config.port, fetch, config.authToken);
 
   // Signing key for claiming the lease (canonical MachineIdentity name).
   const wakeupSigningKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
@@ -728,23 +941,17 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   console.log(`  Current location: ${pc.bold(awake.entry.name)}`);
   console.log('  Contacting for handoff...');
 
-  // Determine server URL — try tunnel first, fall back to localhost
-  let serverUrl = '';
-  try {
-    const healthResp = await fetch(`http://localhost:${config.port}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (healthResp.ok) {
-      const health = await healthResp.json() as { tunnelUrl?: string };
-      serverUrl = health.tunnelUrl || `http://localhost:${config.port}`;
-    }
-  } catch { /* server not reachable locally */ }
-
+  // The handoff challenge is signed for a RECEIVER machine id, so it must go to
+  // the AWAKE machine's server — not to this machine's own server (which used
+  // to happen, and answered "Invalid challenge signature" because it computed
+  // the message with itself as receiver; instar#2122).
+  const serverUrl = await resolveAwakeServerUrl(mgr, awake.machineId);
   if (!serverUrl) {
-    console.log(pc.red(`  Can't reach the server on port ${config.port}.`));
+    console.log(pc.red(`  Can't reach ${awake.entry.name} on any of its known addresses.`));
     console.log(pc.dim(`  The awake machine may be offline. Use --force to take over.`));
     process.exit(1);
   }
+  console.log(pc.dim(`  Reaching ${awake.entry.name} at ${redactUrl(serverUrl)}`));
 
   // Load signing key for challenge-response (canonical MachineIdentity name).
   const signingKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
@@ -854,7 +1061,7 @@ export async function doctor(options: DoctorOptions): Promise<void> {
   let registryAwakeCount: number | null = null;
   try {
     const registry = mgr.loadRegistry();
-    const active = Object.entries(registry.machines).filter(([, e]) => e.status === 'active');
+    const active = Object.entries(registry.machines).filter(([, e]) => isRegistryEntryActive(e));
     const awake = active.filter(([, e]) => e.role === 'awake');
     registryAwakeCount = awake.length;
 

@@ -100,6 +100,37 @@ describe('paneConfirmsModel — independent oracle', () => {
     const realAck = '❯ /model claude-fable-5\n  ⎿  Set model to Fable 5 and saved as your default for new sessions\n';
     expect(paneConfirmsModel(realAck, 'claude-fable-5')).toBe(true);
   });
+  // A shorter version is a literal PREFIX of a longer one, and \b sits between
+  // the digit and the separator — so before the (?![.\-]\d) guard, a pane
+  // reading "Set model to Fable 5.1" CONFIRMED a swap to claude-fable-5. The
+  // ledger would record 5 while the session ran 5.1, mis-attributing both the
+  // session's model and its cost. Dormant until a -N sibling existed; live the
+  // moment claude-fable-5-1 became pinnable (2026-09-06).
+  it('does NOT confirm a shorter version from a longer one (Fable 5 vs Fable 5.1)', () => {
+    const ack51 = '  ⎿  Set model to Fable 5.1 and saved as your default for new sessions\n';
+    expect(paneConfirmsModel(ack51, 'claude-fable-5')).toBe(false);
+    expect(paneConfirmsModel(ack51, 'claude-fable-5-1')).toBe(true);
+  });
+
+  it('does NOT confirm a longer version from a shorter one (the other direction)', () => {
+    const ack5 = '  ⎿  Set model to Fable 5 and saved as your default for new sessions\n';
+    expect(paneConfirmsModel(ack5, 'claude-fable-5-1')).toBe(false);
+    expect(paneConfirmsModel(ack5, 'claude-fable-5')).toBe(true);
+  });
+
+  it('rejects only a VERSION continuation, so a sentence-final period still confirms', () => {
+    // The guard must not turn every trailing punctuation mark into a false
+    // negative — it fires on a separator followed by a DIGIT, nothing else.
+    expect(paneConfirmsModel('  ⎿  Set model to Fable 5.\n', 'claude-fable-5')).toBe(true);
+  });
+
+  it('confirms the Claude 5 family display forms', () => {
+    expect(paneConfirmsModel('  ⎿  Set model to Opus 5 and saved\n', 'claude-opus-5')).toBe(true);
+    expect(paneConfirmsModel('  ⎿  Set model to Sonnet 5 and saved\n', 'claude-sonnet-5')).toBe(true);
+    // …and a Claude 5 ack must not confirm its 4-series predecessor.
+    expect(paneConfirmsModel('  ⎿  Set model to Opus 5 and saved\n', 'claude-opus-4-8')).toBe(false);
+  });
+
   it('confirms the multi-part-version display form (Opus 4.8)', () => {
     const realAck = '  ⎿  Set model to Opus 4.8 and saved as your default for new sessions\n';
     expect(paneConfirmsModel(realAck, 'claude-opus-4-8')).toBe(true);

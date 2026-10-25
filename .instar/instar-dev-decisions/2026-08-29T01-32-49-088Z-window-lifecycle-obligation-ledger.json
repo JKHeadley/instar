@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-29T01:32:49.088Z",
+  "slug": "window-lifecycle-obligation-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 898,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/BetweenWindowAdmissionGate.ts",
+      "src/core/WindowLifecycleObligationLedger.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 896,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

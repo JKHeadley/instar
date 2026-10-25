@@ -24,6 +24,7 @@ import { ReapGuard } from '../core/ReapGuard.js';
 import { CONFIRMED_MOVE_ASSERTION_TTL_MS, validateConfirmedMoveAssertion } from '../core/SessionManager.js';
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type PressureTier = 'normal' | 'moderate' | 'critical';
 export type Verdict = 'keep' | 'reap-eligible';
@@ -263,6 +264,10 @@ export interface SessionReaperDeps {
   frameworkForSession: (tmuxSession: string) => 'claude-code' | 'codex-cli' | undefined;
   /** Resolve+stat the session's transcript. Defaults to {@link probeTranscript}. */
   probeTranscript?: (session: Session) => TranscriptProbe;
+  /** The session's LIVE `CLAUDE_CONFIG_DIR` (a pool-routed claude session keeps
+   *  its transcript under `<configHome>/projects`). Absent/undefined → the
+   *  default home, exactly the prior behavior (unresolved → KEEP). */
+  configHomeForSession?: (tmuxSession: string) => string | undefined;
   /** The agent's session-launch cwd (config.projectDir) — Claude Code encodes it into
    *  the transcript path. Used by the fallback probe() to resolve transcripts; absent
    *  ⇒ '' ⇒ transcripts read as unresolved ⇒ KEEP (safe). */
@@ -378,6 +383,13 @@ export interface SessionReaperDeps {
    *  session's worktree holds real uncommitted work → the reap carries the
    *  `uncommitted-worktree-work` evidence. Absent ⇒ feature inert. */
   dirtyCheck?: (worktreePath: string) => boolean;
+  /** Is a Claude Code tool shell (a running Bash call, e.g. a `run_in_background`
+   *  watch) alive under this session? A session waiting on its own background
+   *  work is not abandoned: this blocks the 8h stale-idle relaxation, and when
+   *  such a session IS reaped under pressure the reap carries the strong
+   *  `background-shell` evidence so the resume queue revives it. Absent ⇒ the
+   *  prior behavior (stale-idle relaxes every child). */
+  hasLiveToolShell?: (tmuxSession: string) => boolean;
   protectedSessions: () => string[];
   pressure: () => PressureReading;
   /** `opts.bypassActiveProcessKeep` lets the reaper carry its already-made
@@ -565,7 +577,7 @@ export class SessionReaper extends EventEmitter {
   constructor(deps: SessionReaperDeps, cfg?: Partial<SessionReaperConfig>) {
     super();
     this.#deps = Object.freeze({ ...deps });
-    this.cfg = { ...DEFAULT_SESSION_REAPER_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_SESSION_REAPER_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     this.guard = new ReapGuard(deps, {
       minAgeMs: this.cfg.minAgeMinutes * 60_000,
@@ -627,7 +639,8 @@ export class SessionReaper extends EventEmitter {
     // everything (2026-06-06 grounding). Inject it via `transcriptProjectDir`; an
     // absent/wrong value still resolves to unresolved → KEEP (safe).
     const projectDir = this.#deps.transcriptProjectDir?.() ?? '';
-    return probeTranscript({ framework, sessionId, projectDir });
+    const configHome = framework === 'claude-code' ? this.#deps.configHomeForSession?.(session.tmuxSession) : undefined;
+    return probeTranscript({ framework, sessionId, projectDir, ...(configHome ? { configHome } : {}) });
   }
 
   /**
@@ -671,7 +684,7 @@ export class SessionReaper extends EventEmitter {
    * high confidence. Order: cheap protect-gates first (short-circuit), then the
    * positive-idle + activeness checks.
    */
-  evaluate(session: Session, opts?: { cpuFlat?: boolean }): SessionEvaluation {
+  evaluate(session: Session, opts?: { cpuFlat?: boolean; tier?: PressureTier }): SessionEvaluation {
     const framework = session.framework ?? this.#deps.frameworkForSession(session.tmuxSession);
     const frame = safeCapture(this.#deps, session.tmuxSession, this.cfg.paneCaptureLines);
     const transcript = this.probe(session);
@@ -706,7 +719,26 @@ export class SessionReaper extends EventEmitter {
       // growth + positive-idle checks below, which STILL must all clear before
       // the session is reap-eligible. Every other keep-reason — and the
       // off-pressure / can't-measure cases (cpuFlat !== true) — is unchanged.
-      if (blocked.reason === 'active-process' && (opts?.cpuFlat === true || staleIdle)) {
+      // A session still running its own tool shells (a coordinator whose watch
+      // loops wait on builders in other sessions) is quiet, not abandoned: its
+      // shells are neither the idle MCP children the stale-idle relax targets nor
+      // the wedged child the cpu-flat relax targets (a watch loop is CPU-flat by
+      // nature). Neither relax applies to it below `critical` pressure. At
+      // `critical` both existing relaxes stay available whatever the shell
+      // signal reads (live OR unknown), independent of the CPU feature flag —
+      // the emergency reclaim path; the reap then carries `background-shell`
+      // evidence when the shell was observed, making the session eligible for
+      // revival subject to the resume queue's gates and cap. (2026-09-28: a 2.0
+      // coordinating session was reaped three times in one day.) Probed lazily
+      // and at most once: only a session held by active-process with a relax
+      // pending below critical pays the fork.
+      let liveShell: boolean | undefined;
+      const hasShell = (): boolean => (liveShell ??= this.hasLiveToolShell(session));
+      const heldByProcess = blocked.reason === 'active-process';
+      const critical = opts?.tier === 'critical';
+      const cpuRelax = heldByProcess && opts?.cpuFlat === true && (critical || !hasShell());
+      const staleRelax = heldByProcess && staleIdle && (critical || !hasShell());
+      if (cpuRelax || staleRelax) {
         // Relax the active-process veto and fall through (no return) to the stateful
         // transcript-growth + positive-idle checks, which STILL must all clear before
         // the session is reap-eligible. Two independent reasons to relax:
@@ -714,8 +746,8 @@ export class SessionReaper extends EventEmitter {
         //   • staleIdle — no user message in 8h (abandoned); its idle children (e.g. the
         //     session's own idle MCP servers) must not shield a dead session forever.
         //     This is the active-process analogue of the #955 stale-commitment override.
-        if (opts?.cpuFlat === true) cpuTightened = true;
-        if (staleIdle) staleIdleRelaxed = true;
+        if (cpuRelax) cpuTightened = true;
+        if (staleRelax) staleIdleRelaxed = true;
       } else {
         // OBSERVE-ONLY busy-orphan detection — the inverse of the relax above.
         // A child is keeping this session, but if that child is provably BURNING
@@ -752,6 +784,15 @@ export class SessionReaper extends EventEmitter {
 
     // All gates clear: this tick the session is a reap candidate.
     return { verdict: 'reap-eligible', keptBy: 'all-clear', confidence: 'high', frame, transcript, cpuTightened, busyOrphanSuspect, staleIdleRelaxed };
+  }
+
+  /** `hasLiveToolShell` dep, fail-safe for the KEEP decision: a throwing probe
+   *  (unreadable tree) reads as "shell alive" — never relax a veto below
+   *  critical on a tree we could not inspect. Absent dep ⇒ false. */
+  private hasLiveToolShell(session: Session): boolean {
+    if (!this.#deps.hasLiveToolShell) return false;
+    try { return this.#deps.hasLiveToolShell(session.tmuxSession); }
+    catch { return true; }
   }
 
   /**
@@ -1737,7 +1778,7 @@ export class SessionReaper extends EventEmitter {
         const cpuFlat = this.cpuProgressFlat(session, pressure.tier);
         let evaln: SessionEvaluation;
         try {
-          evaln = this.evaluate(session, { cpuFlat });
+          evaln = this.evaluate(session, { cpuFlat, tier: pressure.tier });
         } catch {
           // A protect-signal threw — we cannot reason about this session, so
           // KEEP it (abort any reap-pending) and reset candidacy. Never reap on
@@ -1887,6 +1928,14 @@ export class SessionReaper extends EventEmitter {
       if (this.#deps.dirtyCheck && session.cwd) {
         try { if (this.#deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
         catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
+      }
+      // A session reaped while its own tool shell still runs (reachable only via
+      // a relax at critical pressure) was mid-work: tag it so it is eligible for
+      // revival, subject to the resume queue's existing gates and cap. A probe
+      // that throws (unreadable tree) omits the signal — unknown is not evidence.
+      if (this.#deps.hasLiveToolShell) {
+        try { if (this.#deps.hasLiveToolShell(session.tmuxSession)) workEvidence.push('background-shell'); }
+        catch { /* @silent-fallback-ok: evidence collection never endangers the kill path */ }
       }
       const r = await this.#deps.terminate(session.id, 'reaped-idle', {
         bypassActiveProcessKeep: relaxedActiveProcess,

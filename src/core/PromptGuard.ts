@@ -1,3 +1,4 @@
+import { mergeDefaults } from './mergeDefaults.js';
 /**
  * PromptGuard — Prompt injection defense for LLM conflict resolution.
  *
@@ -182,7 +183,7 @@ export class PromptGuard {
       ...BUILTIN_PATTERNS,
       ...(config?.customPatterns ?? []),
     ];
-    this.boundary = { ...DEFAULT_BOUNDARY, ...config?.boundary };
+    this.boundary = mergeDefaults(DEFAULT_BOUNDARY, config?.boundary);
     this.blockThreshold = config?.blockThreshold ?? 'high';
     this.maxOutputLength = config?.maxOutputLength ?? DEFAULT_MAX_OUTPUT_LENGTH;
     this.validateOutputStructure = config?.validateOutputStructure ?? true;

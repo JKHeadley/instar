@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-21T22:11:46.260Z",
+  "slug": "normal-chrome-builtin-skill",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 473,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/scaffold/templates.ts",
+      "src/templates/scripts/browser/chrome-js.sh",
+      "src/templates/scripts/browser/chrome-launch.sh",
+      "src/templates/scripts/browser/chrome-mainworld.sh"
+    ],
+    "addedLines": 470,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

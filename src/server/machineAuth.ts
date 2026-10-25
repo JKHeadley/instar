@@ -38,6 +38,10 @@ export interface MachineAuthDeps {
   securityLog: SecurityLog;
   /** This machine's ID (to reject self-requests) */
   localMachineId: string;
+  /** Durable typed-refusal evidence for identity recovery. */
+  onSignatureInvalid?: (machineId: string) => void;
+  /** Any fully verified request resets the consecutive-refusal run. */
+  onVerified?: (machineId: string, req: Request) => void;
 }
 
 // ── Middleware ──────────────────────────────────────────────────────
@@ -76,32 +80,16 @@ export function machineAuthMiddleware(deps: MachineAuthDeps) {
       return;
     }
 
-    // 3. Validate via NonceStore (timestamp window + nonce uniqueness + sequence)
+    // 3. Parse the anti-replay sequence, but do not consume it yet. An
+    // unauthenticated request must never advance a legitimate peer's durable
+    // watermark.
     const seqNum = parseInt(sequence, 10);
     if (isNaN(seqNum)) {
       res.status(400).json({ error: 'Invalid sequence number' });
       return;
     }
 
-    const nonceResult = deps.nonceStore.validate(
-      parseInt(timestamp, 10) * 1000, // Convert Unix seconds to ms
-      nonce,
-      seqNum,
-      machineId,
-    );
-
-    if (!nonceResult.valid) {
-      deps.securityLog.append({
-        event: 'replay_detected',
-        machineId,
-        reason: nonceResult.reason,
-        ip: req.ip || req.socket.remoteAddress || 'unknown',
-      });
-      res.status(403).json({ error: `Anti-replay check failed: ${nonceResult.reason}` });
-      return;
-    }
-
-    // 4. Verify Ed25519 signature
+    // 4. Verify Ed25519 signature before mutating replay state.
     const bodyHash = crypto.createHash('sha256')
       .update(JSON.stringify(req.body) || '')
       .digest('hex');
@@ -122,6 +110,7 @@ export function machineAuthMiddleware(deps: MachineAuthDeps) {
           machineId,
           ip: req.ip || req.socket.remoteAddress || 'unknown',
         });
+        deps.onSignatureInvalid?.(machineId);
         res.status(403).json({ error: 'Invalid signature' });
         return;
       }
@@ -136,11 +125,31 @@ export function machineAuthMiddleware(deps: MachineAuthDeps) {
       return;
     }
 
-    // 5. All checks passed — attach auth context
+    // 5. Only an authenticated request may consume nonce/sequence state.
+    const nonceResult = deps.nonceStore.validate(
+      parseInt(timestamp, 10) * 1000,
+      nonce,
+      seqNum,
+      machineId,
+    );
+    if (!nonceResult.valid) {
+      deps.securityLog.append({
+        event: 'replay_detected',
+        machineId,
+        reason: nonceResult.reason,
+        ip: req.ip || req.socket.remoteAddress || 'unknown',
+      });
+      res.status(403).json({ error: `Anti-replay check failed: ${nonceResult.reason}` });
+      return;
+    }
+
+    // 6. All checks passed — attach auth context
     (req as any).machineAuth = {
       machineId,
       sequence: seqNum,
     } satisfies MachineAuthContext;
+
+    deps.onVerified?.(machineId, req);
 
     next();
   };

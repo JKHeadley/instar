@@ -1,0 +1,30 @@
+{
+  "ts": "2026-08-28T18:52:04.419Z",
+  "slug": "assisted-subscription-relogin",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ChromeCdpReloginBrowser.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The subscription-relogin-redrive model drives a permanently rejecting provider for N and 2N ticks and across restart; durable episode attempts settle at three, the ten-minute wall-clock and breaker prevent refilling, and terminal/operator-only states stop autonomous re-entry."
+    }
+  },
+  "verdict": "blocked"
+}

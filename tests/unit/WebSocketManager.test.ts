@@ -69,6 +69,7 @@ function createTestManager(options: {
   hookEventReceiver?: any;
   poolStreamConnector?: any;
   selfMachineId?: string;
+  resolveSessionPlatform?: (tmuxSession: string) => any;
 } = {}) {
   const sessionManager = options.sessionManager ?? createMockSessionManager();
   const httpServer = createMockHttpServer();
@@ -84,6 +85,7 @@ function createTestManager(options: {
     hookEventReceiver: options.hookEventReceiver,
     poolStreamConnector: options.poolStreamConnector,
     selfMachineId: options.selfMachineId,
+    resolveSessionPlatform: options.resolveSessionPlatform,
   });
 
   /**
@@ -489,6 +491,39 @@ describe('WebSocketManager', () => {
       expect(sessions[0].telemetry.eventCount).toBe(42);
       expect(sessions[0].telemetry.toolsUsed).toBe(15);
       expect(sessions[0].telemetry.subagentsSpawned).toBe(2);
+    });
+  });
+
+  describe('session list platform (topic 112490)', () => {
+    const running = [{
+      id: 's1', name: 'door', tmuxSession: 'echo-door', status: 'running',
+      startedAt: '2026-10-21T00:00:00Z', jobSlug: null, model: 'claude-opus-5-5',
+    }];
+
+    it('carries platform from the injected resolver so local Telegram rows are not drawn as headless', () => {
+      const sessionManager = createMockSessionManager({ listRunningSessions: vi.fn(() => running) });
+      const { manager } = createTestManager({
+        sessionManager,
+        resolveSessionPlatform: (t: string) => (t === 'echo-door'
+          ? { platform: 'telegram', platformId: 112490, platformName: 'door model selection' }
+          : { platform: 'headless' }),
+      });
+      const [row] = (manager as any).buildSessionList();
+      expect(row.platform).toBe('telegram');
+      expect(row.platformId).toBe(112490);
+    });
+
+    it('leaves platform unset when no resolver is wired or it throws', () => {
+      const sessionManager = createMockSessionManager({ listRunningSessions: vi.fn(() => running) });
+      const { manager } = createTestManager({ sessionManager });
+      expect((manager as any).buildSessionList()[0].platform).toBeUndefined();
+
+      const sm2 = createMockSessionManager({ listRunningSessions: vi.fn(() => running) });
+      const { manager: m2 } = createTestManager({
+        sessionManager: sm2,
+        resolveSessionPlatform: () => { throw new Error('adapter down'); },
+      });
+      expect((m2 as any).buildSessionList()[0].platform).toBeUndefined();
     });
   });
 

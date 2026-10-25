@@ -16,6 +16,7 @@ import {
   verify,
 } from '../ThreadlineCrypto.js';
 import type { MessageEnvelope, AgentFingerprint } from '../relay/types.js';
+import { edPrivateToX25519, deriveX25519PublicKey, computeFingerprint } from '@sagemindai/threadline-core';
 
 /** HKDF info string for relay message encryption */
 const HKDF_INFO = 'threadline-relay-v1';
@@ -25,55 +26,20 @@ export interface PlaintextMessage {
   content: string;
   type?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * inbound-id ledger §5: a same-id resend is MARKED inside the encrypted,
+   * signed body (never a relay-visible outer field). Older receivers ignore it;
+   * a receiver uses it only to word a "resent copy" notice.
+   */
+  resend?: boolean;
 }
 
-/**
- * Convert Ed25519 private key to X25519 private key.
- *
- * The Ed25519 private key seed is hashed with SHA-512. The first 32 bytes
- * are clamped per RFC 7748 to produce the X25519 private key scalar.
- */
-export function edPrivateToX25519(edPrivateKey: Buffer): Buffer {
-  const hash = crypto.createHash('sha512').update(edPrivateKey).digest();
-  const scalar = Buffer.from(hash.subarray(0, 32));
-  // Clamp per RFC 7748
-  scalar[0] &= 248;
-  scalar[31] &= 127;
-  scalar[31] |= 64;
-  return scalar;
-}
-
-/**
- * Derive X25519 public key from Ed25519 private key.
- *
- * Since we can't do the birational map Ed25519→X25519 on public keys alone
- * in node:crypto, we derive the X25519 keypair from the Ed25519 seed.
- * Both sides need to share their X25519 public key alongside Ed25519.
- */
-export function deriveX25519PublicKey(edPrivateKey: Buffer): Buffer {
-  const x25519Private = edPrivateToX25519(edPrivateKey);
-
-  const privateKeyObj = crypto.createPrivateKey({
-    key: Buffer.concat([
-      Buffer.from('302e020100300506032b656e04220420', 'hex'),
-      x25519Private,
-    ]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-
-  const publicKeyDer = crypto.createPublicKey(privateKeyObj)
-    .export({ type: 'spki', format: 'der' });
-  return Buffer.from(publicKeyDer.subarray(-32));
-}
-
-/**
- * Compute agent fingerprint from Ed25519 public key.
- * First 16 bytes of the public key, hex-encoded (32 characters).
- */
-export function computeFingerprint(publicKey: Buffer): AgentFingerprint {
-  return publicKey.subarray(0, 16).toString('hex');
-}
+// The Ed25519→X25519 private-key conversion, the matching X25519 public key and the routing
+// fingerprint are the same code in `@sagemindai/threadline-core` (spec threadline-standalone-pairing
+// D1, rollout step 3), so they come from there. The MessageEncryptor class stays here: core's
+// EnvelopeCrypto.decrypt adds a check that the sender's X25519 key is bound to its identity key,
+// which this class does not make, so the two are not the same behaviour.
+export { edPrivateToX25519, deriveX25519PublicKey, computeFingerprint };
 
 /**
  * Perform X25519 key exchange between a private key and a public key.
@@ -137,6 +103,8 @@ export class MessageEncryptor {
     recipientX25519PubKey: Buffer,
     threadId: string,
     message: PlaintextMessage,
+    /** inbound-id ledger §5: echo the caller's id; mint a UUID only when absent. */
+    messageId?: string,
   ): MessageEnvelope {
     // 1. Generate ephemeral X25519 keypair for forward secrecy
     const ephemeral = generateEphemeralKeyPair();
@@ -159,7 +127,7 @@ export class MessageEncryptor {
     const plaintext = Buffer.from(JSON.stringify(message), 'utf-8');
     const nonce = crypto.randomBytes(24); // 192-bit nonce
 
-    const messageId = crypto.randomUUID();
+    const effectiveMessageId = messageId || crypto.randomUUID();
     const timestamp = new Date().toISOString();
 
     // Build envelope fields for AAD
@@ -167,7 +135,7 @@ export class MessageEncryptor {
       from: this.fingerprint,
       to: computeFingerprint(recipientEdPubKey),
       threadId,
-      messageId,
+      messageId: effectiveMessageId,
       timestamp,
       nonce: Buffer.from(nonce).toString('base64'),
       ephemeralPubKey: ephemeral.publicKey.toString('base64'),

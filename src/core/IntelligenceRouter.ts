@@ -1069,6 +1069,43 @@ export class IntelligenceRouter implements IntelligenceProvider {
     return { component, category, framework, available };
   }
 
+  /**
+   * Read-only preview of the PRIMARY (framework, model) that `evaluate()` would select
+   * for a call with these attribution facts — the same enforced nature plan or category
+   * routing, without failure-swap or degrade. Operator surfaces use it to pre-fill
+   * records that the call-time path later checks (e.g. the feedback readiness
+   * authority's provider/model). Returns null when the real call would have no primary
+   * route (enforced no-route, fail-closed gate, or an unavailable routed framework).
+   * `model` is the concrete id an enforced plan substitutes, else the caller's hint.
+   */
+  previewPrimary(
+    component: string,
+    opts: { category?: ComponentCategory; nature?: unknown; injectionExposed?: boolean; model?: string } = {},
+  ): { framework: IntelligenceFramework; model: string | undefined; source: 'nature-route' | 'category' } | null {
+    const natureRt = this.opts.resolveNatureRouting?.();
+    if (natureRt?.enabled && natureRt.dryRun === false) {
+      let resolution: RouteResolution | undefined;
+      try {
+        resolution = resolveRoute(component, opts.nature, mergeNatureRoutingChains(natureRt.chains), {
+          isDoorReachable: (d) => this.isCliDoorReachable(d),
+          isInjectionExposed: (comp) => isComponentInjectionExposed(comp, opts.injectionExposed === true),
+        });
+      } catch (e) {
+        // The designed fail-closed gate has no primary; any other resolver error falls
+        // through to category routing below, exactly as evaluate() does.
+        if (e instanceof RouterFailClosedError) return null;
+      }
+      if (resolution?.outcome === 'route') {
+        return { framework: resolution.primary.door as IntelligenceFramework, model: resolution.primary.modelId, source: 'nature-route' };
+      }
+      if (resolution?.outcome === 'no-route') return null;
+    }
+    const category = opts.category ?? categoryForComponent(component);
+    const framework = this.resolveFramework(component, category, this.opts.resolveConfig());
+    if (!this.resolveProvider(framework)) return null;
+    return { framework, model: opts.model, source: 'category' };
+  }
+
   /** Get-or-build the provider for a framework (cached). Default framework → shared provider. */
   private providerFor(framework: IntelligenceFramework): IntelligenceProvider | null {
     if (framework === this.opts.defaultFramework) return this.opts.defaultProvider;

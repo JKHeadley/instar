@@ -1,0 +1,44 @@
+{
+  "ts": "2026-10-15T00:04:30.110Z",
+  "slug": "parallel-activity-action-notes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 763,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/ParallelActivityIndex.ts",
+      "src/core/PoolActivityView.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicActionNoteStore.ts",
+      "src/core/action-claim.ts",
+      "src/core/types.ts",
+      "src/monitoring/ParallelWorkSentinel.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 730,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action is added: the detector matched regex pattern literals in the approval-request verb table ('restart(?:ing|s)?', 'kill(?:ing|s)?' in src/core/action-claim.ts), not calls. The only new timer is a one-shot early tick of the EXISTING read-only ParallelWorkSentinel 30s after boot (cleared on stop); its overlap nudge emit and containment (pair cooldown + hysteresis) are unchanged, and the new TopicActionNoteStore is written per observed turn, never on its own cadence."
+  },
+  "verdict": "blocked"
+}

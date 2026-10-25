@@ -40,6 +40,8 @@ export interface LocalActivityRow {
   running: boolean;
   stalenessMs: 0;
   intentVisibility: 'local';
+  /** CMT-810: the topic's latest action-derived note, when within the window. */
+  lastAction?: { kind: 'action-claim' | 'approval-request'; verb: string; excerpt: string; at: string } | null;
   possibleOverlap?: string[];
   recentMove?: boolean;
 }
@@ -69,7 +71,7 @@ export type PoolActivityRow = LocalActivityRow | RemoteActivityRow;
 export interface PoolViewDeps {
   ownMachineId: string;
   /** Today's local rows (ParallelActivityIndex.activities() shape). */
-  local: Array<{ topicId: number; focus: string | null; tags: string[]; refCount: number; updatedAt: number | null; nickname: string | null; running: boolean }>;
+  local: Array<{ topicId: number; focus: string | null; tags: string[]; refCount: number; updatedAt: number | null; nickname: string | null; running: boolean; lastAction?: { kind: 'action-claim' | 'approval-request'; verb: string; excerpt: string; at: number } | null }>;
   reader: CoherenceJournalReader;
   limit?: number;
 }
@@ -92,6 +94,7 @@ export function buildPoolActivityView(deps: PoolViewDeps): PoolViewResult {
     running: a.running,
     stalenessMs: 0 as const,
     intentVisibility: 'local' as const,
+    lastAction: a.lastAction ? { ...a.lastAction, at: new Date(a.lastAction.at).toISOString() } : null,
   }));
 
   // Replica folds: per-machine per-topic instance states from BOTH kinds.

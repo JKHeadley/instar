@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DrainConflictError, FeedbackDrainStore, type FeedbackDrainCrashPoint } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
+import { DrainConflictError, FeedbackDrainStore, sameSqliteFileIdentity, type FeedbackDrainCrashPoint } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const KEY = 'k'.repeat(32);
@@ -100,6 +101,20 @@ describe('FeedbackDrainStore', () => {
     const second = store.startRun({ ownerHost: 'b', ownerEpoch: 2, leaseMs: 1000 });
     expect(first).toMatchObject({ state: 'accepted', acquired: true });
     expect(second).toMatchObject({ runId: first.runId, state: 'accepted', acquired: false });
+  });
+
+  it('claims the oldest reported work first when rows are enqueued in the same clock tick', () => {
+    const auth = authority();
+    for (const [clusterId, firstSeenAt] of [['newer', 2], ['oldest', 1]] as const) {
+      store.ensureReadiness(clusterId, now);
+      store.approveReady({ clusterId, approvalKey: `approval-${clusterId}`, authorityId: auth.authorityId,
+        authorityGeneration: auth.generation, evidenceHash: `evidence-${clusterId}`, ...APPROVAL_BINDING });
+      store.enqueue({ clusterId, title: clusterId, summary: 'fairness', priority: 'normal', reportCount: 1,
+        firstSeenAt, lastSeenAt: 2, authorityRef: 'decision-1', evidenceRef: `evidence-${clusterId}` });
+    }
+
+    expect(store.claimNext({ consumerId: 'test', ownerAuthorityEpoch: 7, leaseMs: 1_000 })?.clusterId)
+      .toBe('oldest');
   });
 
   it('persists bounded agent-request replay protection instead of relying on process memory', () => {
@@ -230,7 +245,8 @@ describe('FeedbackDrainStore', () => {
       expect(() => store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1, crashPoint: 'after-commit' })).toThrow(/injected/);
       expect(store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toMatchObject({ projected: 0, lagBytes: 0 });
       fs.appendFileSync(source, `${JSON.stringify({ feedbackId: 'changed', sourceRecordId: 's1' })}\n`);
-      expect(() => store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toThrow(/checksum conflicts/);
+      // The same sourceRecordId bound to another report: that line is quarantined, the cursor moves on.
+      expect(store.projectSourceGeneration({ filePath: source, generationId: 'g1', limit: 1 })).toMatchObject({ projected: 0, quarantined: 1, lagBytes: 0 });
       expect(store.metrics().sourceChecksumConflicts).toBe(1);
       const bytes = fs.readFileSync(source, 'utf8').replace('"f1"', '"x1"');
       fs.writeFileSync(source, bytes);
@@ -357,11 +373,167 @@ describe('FeedbackDrainStore', () => {
       expect(checkpoint).toMatchObject({ ownerAuthorityEpoch: 7, createdAt: new Date(now).toISOString() });
       expect(checkpoint.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(JSON.parse(fs.readFileSync(path.join(dir, 'feedback-drain-checkpoint.json'), 'utf8'))).toEqual(checkpoint);
-      expect(() => disk.checkpointForBackup(8)).toThrow(DrainConflictError);
+      // A newer live owner epoch moves the recorded epoch forward; an older one is stale.
+      expect(disk.checkpointForBackup(8).ownerAuthorityEpoch).toBe(8);
+      expect(disk.ownerAuthorityEpoch()).toBe(8);
+      expect(() => disk.checkpointForBackup(7)).toThrow(DrainConflictError);
     } finally {
       disk.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'feedback-drain-store checkpoint test' });
     }
+  });
+
+  it('compares file identity on inode + birth time, ignoring a legacy st_dev part', () => {
+    // Live evidence: APFS renumbered st_dev 16777231 -> 16777232 on the same untouched file.
+    expect(sameSqliteFileIdentity('16777231:454176:1787103639952.4048', '454176:1787103639952.4048')).toBe(true);
+    expect(sameSqliteFileIdentity('454176:1787103639952.4048', '454176:1787103639952.4048')).toBe(true);
+    expect(sameSqliteFileIdentity('16777231:454177:1787103639952.4048', '454176:1787103639952.4048')).toBe(false);
+    expect(sameSqliteFileIdentity('16777231:454176:1787103640000', '454176:1787103639952.4048')).toBe(false);
+    expect(sameSqliteFileIdentity('454176:1', '454176:1787103639952.4048')).toBe(false);
+  });
+
+  describe('readiness authority owner continuity (live 2026-10-01: epoch 22677 -> 22679 on same-machine restarts)', () => {
+    function run(host: string, epoch: number) {
+      const started = store.startRun({ ownerHost: host, ownerEpoch: epoch, leaseMs: 60_000 });
+      store.transitionRun(started.runId, 'accepted', 'running', '', { ownerHost: host, ownerEpoch: epoch });
+      store.transitionRun(started.runId, 'running', 'succeeded', '', { ownerHost: host, ownerEpoch: epoch });
+      now += 1_000;
+    }
+
+    it('keeps an approved authority valid across same-machine epoch advances', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-a', 8);
+      run('machine-a', 9);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(true);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 6)).toBe(false);
+      expect(store.authorityOwnerCurrent(auth, 'machine-b', 9)).toBe(false);
+    });
+
+    it('requires re-approval once another machine has owned the drain, even after it comes back', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-b', 8);
+      run('machine-a', 9);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(false);
+      const fresh = authority('replace');
+      expect(fresh.generation).toBe(2);
+      expect(store.authorityOwnerCurrent({ ...fresh, ownerEpoch: 9 }, 'machine-a', 10)).toBe(true);
+    });
+
+    it('requires re-approval after a restore', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      store.finalizeRestore({ restoredOwnerAuthorityEpoch: 7, operatorDecisionRef: 'restore-1', oldOwnerQuiesced: true });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+      run('machine-a', 8);
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+    });
+
+    it('derives tenure from run history on a store written before the marker existed', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      run('machine-a', 9);
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='drain_owner_continuity'`).run();
+      expect(store.drainOwnerContinuity()).toEqual({ host: 'machine-a', sinceEpoch: 7 });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 9)).toBe(true);
+      // The next run persists the derived tenure instead of re-deriving forever.
+      run('machine-a', 10);
+      const marker = store['db'].prepare(`SELECT value FROM drain_meta WHERE key='drain_owner_continuity'`).get() as { value: string };
+      expect(JSON.parse(marker.value)).toEqual({ host: 'machine-a', sinceEpoch: 7 });
+    });
+
+    it('treats a restore recorded before the marker existed as a tenure break', () => {
+      const auth = authority();
+      run('machine-a', 7);
+      store.finalizeRestore({ restoredOwnerAuthorityEpoch: 7, operatorDecisionRef: 'restore-1', oldOwnerQuiesced: true });
+      now += 1_000;
+      run('machine-a', 8);
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='drain_owner_continuity'`).run();
+      expect(store.drainOwnerContinuity()).toEqual({ host: 'machine-a', sinceEpoch: 8 });
+      expect(store.authorityOwnerCurrent(auth, 'machine-a', 8)).toBe(false);
+    });
+
+    it('counts consecutive transient authority failures, exposes progress, and clears on success', () => {
+      expect(store.readinessProgress('frontier-reader', 1)).toEqual({ consecutiveFailedTicks: 0, stalledSince: null, lastSuccessAt: null });
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+      const since = store.readinessProgress('frontier-reader', 1).stalledSince;
+      expect(typeof since).toBe('number');
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(2);
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 2, stalledSince: since }); // the episode start holds
+      store.clearAuthorityTransientFailures('frontier-reader', 1);
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 0, stalledSince: null });
+      expect(typeof store.readinessProgress('frontier-reader', 1).lastSuccessAt).toBe('number');
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(1);
+      // A store upgraded mid-episode holds a count from the old three-strike rule but no episode
+      // stamp; the next strike stamps it instead of waiting for a count of 1 that never comes.
+      store['db'].prepare(`DELETE FROM drain_meta WHERE key='authority_readiness_stall_since:frontier-reader:1'`).run();
+      expect(store.readinessProgress('frontier-reader', 1)).toMatchObject({ consecutiveFailedTicks: 1, stalledSince: null });
+      expect(store.recordAuthorityTransientFailure('frontier-reader', 1)).toBe(2);
+      expect(typeof store.readinessProgress('frontier-reader', 1).stalledSince).toBe('number');
+    });
+  });
+
+  describe('restorePending across an st_dev change', () => {
+    let dir: string;
+    let dbPath: string;
+    let disk: FeedbackDrainStore | null;
+    const checkpointPath = () => path.join(dir, 'feedback-drain-checkpoint.json');
+    // Rewrite the signed checkpoint's identity (re-signing the manifest) to model a
+    // checkpoint recorded before a reboot, in the legacy dev:ino:birthtime form.
+    const rewriteIdentity = (identity: string) => {
+      const cp = JSON.parse(fs.readFileSync(checkpointPath(), 'utf8'));
+      cp.dbFileIdentity = identity;
+      const payload = { schemaVersion: cp.schemaVersion, snapshotId: cp.snapshotId, checksum: cp.checksum,
+        dbFileIdentity: cp.dbFileIdentity, ownerAuthorityEpoch: cp.ownerAuthorityEpoch, createdAt: cp.createdAt };
+      cp.manifestChecksum = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      fs.writeFileSync(checkpointPath(), JSON.stringify(cp));
+    };
+
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-identity-'));
+      dbPath = path.join(dir, 'feedback-drain.db');
+      disk = new FeedbackDrainStore({ dbPath, tokenHmacKey: KEY, clock: () => now });
+    });
+    afterEach(() => {
+      disk?.close();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'feedback-drain-store identity test' });
+    });
+
+    it('writes an identity without st_dev and treats the same file as not restored', () => {
+      const checkpoint = disk!.checkpointForBackup(1);
+      const stat = fs.statSync(dbPath);
+      expect(checkpoint.dbFileIdentity).toBe(`${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk!.restorePending()).toBe(false);
+    });
+
+    it('a legacy checkpoint whose st_dev differs from today is not a restore', () => {
+      disk!.checkpointForBackup(1);
+      const stat = fs.statSync(dbPath);
+      rewriteIdentity(`${Number(stat.dev) + 1}:${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk!.restorePending()).toBe(false);
+    });
+
+    it('a genuinely replaced file (new inode and birth time) is still detected as restored', () => {
+      disk!.checkpointForBackup(1);
+      const snapshot = path.join(dir, 'snapshot.db');
+      fs.copyFileSync(dbPath, snapshot);
+      const stat = fs.statSync(dbPath);
+      disk!.close();
+      disk = null;
+      for (const suffix of ['', '-wal', '-shm']) {
+        if (fs.existsSync(`${dbPath}${suffix}`)) SafeFsExecutor.safeUnlinkSync(`${dbPath}${suffix}`, { operation: 'feedback-drain-store identity test' });
+      }
+      fs.copyFileSync(snapshot, dbPath);
+      disk = new FeedbackDrainStore({ dbPath, tokenHmacKey: KEY, clock: () => now });
+      const restoredStat = fs.statSync(dbPath);
+      // Guard the fixture: the replacement really is a different file.
+      expect(`${restoredStat.ino}:${restoredStat.birthtimeMs}`).not.toBe(`${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk.restorePending()).toBe(true);
+      // Also with a legacy three-part checkpoint for the original file.
+      rewriteIdentity(`${stat.dev}:${stat.ino}:${stat.birthtimeMs}`);
+      expect(disk.restorePending()).toBe(true);
+    });
   });
 
   it('escapes control and newline injection at the authoritative queue boundary', () => {
@@ -383,6 +555,27 @@ describe('FeedbackDrainStore', () => {
     expect(store.lastRun()).toMatchObject({ state: 'abandoned', reason: 'cancelled-at-stage-boundary' });
   });
 
+  it('tracks the live owner epoch forward (a store stuck at 1 under a coordinator lease self-heals) and never back', () => {
+    const work = enqueue();
+    const old = store.claimNext({ consumerId: 'consumer', ownerAuthorityEpoch: 1, leaseMs: 60_000 })!;
+    expect(store.ownerAuthorityEpoch()).toBe(1);
+    // The live shape on the Studio: drain_meta at 1 while the drain runs at lease epoch 22677.
+    store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 });
+    expect(store.ownerAuthorityEpoch()).toBe(22_677);
+    const db = (store as unknown as { db: Database.Database }).db;
+    expect(db.prepare(`SELECT from_state,to_state,reason FROM drain_audit WHERE kind='owner-epoch'`).all())
+      .toEqual([{ from_state: '1', to_state: '22677', reason: 'owner-epoch-advance' }]);
+    // The pre-advance claim is superseded: it can no longer settle.
+    expect(() => store.complete({ workId: work.workId, leaseEpoch: old.leaseEpoch, claimToken: old.claimToken, ownerAuthorityEpoch: 1 })).toThrow(DrainConflictError);
+    expect(() => store.markArtifactReadable({ workId: work.workId, leaseEpoch: old.leaseEpoch, claimToken: old.claimToken, ownerAuthorityEpoch: 22_677, artifactId: 'x', artifactKind: 'initiative' })).toThrow(DrainConflictError);
+    // A same-machine lease re-acquire advances again; an older writer is refused everywhere.
+    store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_679 });
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 })).toThrow(DrainConflictError);
+    expect(() => store.claimNext({ consumerId: 'stale', ownerAuthorityEpoch: 22_678, leaseMs: 1_000 })).toThrow(DrainConflictError);
+    expect(store.ownerAuthorityEpoch()).toBe(22_679);
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 0 })).toThrow(DrainConflictError);
+  });
+
   it('prunes queue/audit at 400 days and run detail at 30 days, bounded and owner-fenced, while retaining idempotency tombstones', () => {
     const work = enqueue();
     const claim = store.claimNext({ consumerId: 'consumer', ownerAuthorityEpoch: 4, leaseMs: 100 });
@@ -392,7 +585,7 @@ describe('FeedbackDrainStore', () => {
     store.transitionRun(run.runId, 'accepted', 'running', '', { ownerHost: 'host', ownerEpoch: 4 });
     store.transitionRun(run.runId, 'running', 'succeeded', '', { ownerHost: 'host', ownerEpoch: 4 });
     now += 401 * 24 * 60 * 60 * 1000;
-    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 5, now })).toThrow(DrainConflictError);
+    expect(() => store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 3, now })).toThrow(DrainConflictError);
     const result = store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 4, now, limit: 100 });
     expect(result.retiredWork).toBe(1);
     expect(result.prunedAudit).toBeGreaterThan(0);

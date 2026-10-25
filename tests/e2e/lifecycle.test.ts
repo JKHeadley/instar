@@ -82,13 +82,28 @@ describeMaybe('E2E: Instar lifecycle', () => {
       {
         slug: 'e2e-health',
         name: 'E2E Health Check',
-        description: 'Fast health check for E2E testing',
-        schedule: '* * * * * *', // Every second
+        description: 'Manually-triggered health check for E2E testing',
+        // Keep the manual-trigger subject distinct from the every-second cron
+        // subject below. Sharing one slug made a correctly running cron session
+        // race the manual API request and trip the per-slug double-run guard.
+        schedule: '0 0 0 1 1 *',
         priority: 'high',
         expectedDurationMinutes: 1,
         model: 'haiku',
         enabled: true,
         execute: { type: 'prompt', value: 'Quick health check' },
+        tags: ['monitoring'],
+      },
+      {
+        slug: 'e2e-cron',
+        name: 'E2E Cron Check',
+        description: 'Fast cron check for E2E testing',
+        schedule: '* * * * * *', // Every second
+        priority: 'high',
+        expectedDurationMinutes: 1,
+        model: 'haiku',
+        enabled: true,
+        execute: { type: 'prompt', value: 'Quick cron check' },
         tags: ['monitoring'],
       },
     ];
@@ -189,8 +204,13 @@ describeMaybe('E2E: Instar lifecycle', () => {
       const sessions = execSync(`${tmuxPath} list-sessions -F "#{session_name}" 2>/dev/null || true`, {
         encoding: 'utf-8',
       }).trim();
+      const ownedPrefix = `${path.basename(projectDir)}-`;
       for (const session of sessions.split('\n').filter(Boolean)) {
-        if (session.includes('e2e-') || session.includes('job-e2e-')) {
+        // This suite runs concurrently with other real-tmux E2E files. Scope
+        // teardown to this fixture's project prefix; matching generic "e2e-"
+        // kills unrelated live sessions and makes their readiness assertions
+        // fail nondeterministically under the full repository gate.
+        if (session.startsWith(ownedPrefix)) {
           try { execSync(`${tmuxPath} kill-session -t '=${session}'`); } catch {}
         }
       }
@@ -307,7 +327,7 @@ describeMaybe('E2E: Instar lifecycle', () => {
   // ── Phase 7: Cron-triggered job ──────────────────────────
 
   it('cron triggers jobs automatically', async () => {
-    // The e2e-health job fires every second — wait for it
+    // The e2e-cron job fires every second — wait for it
     await waitFor(
       () => {
         const events = state.queryEvents({ type: 'job_triggered' });

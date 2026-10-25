@@ -51,6 +51,9 @@ const LONG_LIVED_STORES = [
   'src/messaging/pending-relay-store.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',
+  // A2A inbound message-id ledger: registers its handle in the constructor and
+  // unregisters in close() (docs/specs/a2a-inbound-id-ledger.md §1).
+  'src/threadline/InboundIdLedger.ts',
   // Durable Inbound Message Queue (CMT-1118): the custody store registers its
   // handle in the constructor (registerSqliteHandle), process-lifetime.
   'src/core/PendingInboundStore.ts',
@@ -67,6 +70,14 @@ const LONG_LIVED_STORES = [
   'src/feedback-factory/drain/FeedbackDrainStore.ts',
   // Self-heal episode state may remain open for governor queue continuation.
   'src/core/SelfHealGate.ts',
+  // Passive subscription sign-in history is process-lifetime durable state.
+  'src/core/SubscriptionLoginLedger.ts',
+  // Assisted relogin episodes, audit events, and notification outbox are
+  // process-lifetime durable state and participate in close-on-exit cleanup.
+  'src/core/SubscriptionReloginStore.ts',
+  // Codex lifecycle delivery/effect evidence are process-lifetime stores.
+  'src/core/InboundDeliveryStore.ts',
+  'src/core/RecoveryActuationAuthority.ts',
 ];
 
 /**
@@ -74,6 +85,8 @@ const LONG_LIVED_STORES = [
  * each documented as a transient (closes itself) or a non-owning helper.
  */
 const TRANSIENT_SKIP: Record<string, string> = {
+  'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
+  'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',

@@ -46,6 +46,13 @@ describe('SessionReaper wiring integrity', () => {
     expect(/composedRecoveryActive[\s\S]{0,400}rateLimitSentinel\.isRecoveryActive/.test(src)).toBe(true);
   });
 
+  it('reaper deps wire hasLiveToolShell to the real SessionManager probe', () => {
+    const src = read('src/commands/server.ts');
+    // Without it the stale-idle relaxation discards a session's own running
+    // shells again (2026-09-28 coordinator reaps) — the dead-dep trap.
+    expect(/hasLiveToolShell:\s*\(s\)\s*=>\s*sessionManager\.hasLiveToolShell\(s\)/.test(src)).toBe(true);
+  });
+
   it('reaper deps wire descendantCpuSeconds + the cpuAwareActiveProcessKeep dev-gate', () => {
     const src = read('src/commands/server.ts');
     // The CPU-progress dep that backs cpuAwareActiveProcessKeep must actually be

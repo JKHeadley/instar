@@ -11,6 +11,8 @@ import crypto from 'node:crypto';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
 import { LeaseCoordinator, type LeaseStore, type LeaseTransport } from '../../src/core/LeaseCoordinator.js';
 import type { LeaseRecord } from '../../src/core/types.js';
+import { MachinePoolRegistry } from '../../src/core/MachinePoolRegistry.js';
+import { buildLeaseLivenessCallbacks } from '../../src/core/leaseLiveness.js';
 
 function genKey() {
   return crypto.generateKeyPairSync('ed25519', {
@@ -152,7 +154,7 @@ describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
   function mkHeldCoordinator(opts: {
     soloEnabled?: boolean;
     preferred?: boolean;
-    allGone?: boolean;
+    allGone?: boolean | (() => boolean);
     mono?: () => number;
   }) {
     const store = new FakeStore();
@@ -168,7 +170,7 @@ describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
       onSelfSuspend: (r) => { suspendReason = r; },
       soloCaptainHold: () => (opts.soloEnabled ? { enabled: true } : null),
       isPreferredAwakeAgreed: () => opts.preferred ?? false,
-      allPeersPresumedGone: () => opts.allGone ?? false,
+      allPeersPresumedGone: () => typeof opts.allGone === 'function' ? opts.allGone() : opts.allGone ?? false,
     });
     return { lc, store, tunnel, getSuspend: () => suspendReason };
   }
@@ -181,6 +183,40 @@ describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
     expect(ok).toBe(true);
     expect(lc.holdsLease()).toBe(true);
     expect(lc.effectiveView().epoch).toBe(epochBefore); // SAME epoch, no inflation
+  });
+
+  it('characterises a stale forged receipt engaging enabled solo hold', async () => {
+    let mono = 0;
+    const router = new MachinePoolRegistry({ listMachines: () => [{ machineId: 'B' }], clockSkewToleranceMs: 10,
+      failoverThresholdMs: 10, now: () => 1_000, monoNow: () => mono });
+    router.recordHeartbeat({ machineId: 'B' });
+    mono = 11;
+    const callbacks = buildLeaseLivenessCallbacks({ selfMachineId: 'A', loadDiskRegistry: () => ({ machines: { B: { lastSeen: '' } } }),
+      getRouter: () => router, getFreshness: () => undefined, getLeaseFlapFixConfig: () => ({}), getSkewImmune: () => false,
+      failoverThresholdMs: 10, bootMonoMs: 0, monoNow: () => mono, wallNow: () => 1_000 });
+    const { lc } = mkHeldCoordinator({ soloEnabled: true, preferred: true, allGone: callbacks.allPeersPresumedGone, mono: () => mono });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    mono += TTL + 1;
+    expect(await lc.renew()).toBe(true);
+    expect(lc.holdsLease()).toBe(true);
+  });
+
+  it.each([
+    ['fresh receipt', true],
+    ['never observed', false],
+  ])('%s does not authorize solo hold past TTL', async (_label, freshReceipt) => {
+    let mono = 0;
+    const router = new MachinePoolRegistry({ listMachines: () => [{ machineId: 'B' }], clockSkewToleranceMs: 10,
+      failoverThresholdMs: TTL * 2, now: () => 1_000, monoNow: () => mono });
+    if (freshReceipt) router.recordHeartbeat({ machineId: 'B' });
+    const callbacks = buildLeaseLivenessCallbacks({ selfMachineId: 'A', loadDiskRegistry: () => ({ machines: { B: { lastSeen: '' } } }),
+      getRouter: () => router, getFreshness: () => undefined, getLeaseFlapFixConfig: () => ({}), getSkewImmune: () => false,
+      failoverThresholdMs: TTL * 2, bootMonoMs: 0, monoNow: () => mono, wallNow: () => 1_000 });
+    const { lc } = mkHeldCoordinator({ soloEnabled: true, preferred: true, allGone: callbacks.allPeersPresumedGone, mono: () => mono });
+    expect(await lc.acquireIfEligible()).toBe(true);
+    mono = TTL + 1;
+    expect(await lc.renew()).toBe(false);
+    expect(lc.holdsLease()).toBe(false);
   });
 
   it('peer merely unreachable (NOT presumed-gone) ⇒ self-suspends after ttl (conservative)', async () => {

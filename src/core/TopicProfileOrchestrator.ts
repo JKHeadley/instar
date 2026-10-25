@@ -129,6 +129,7 @@ export type ProfileSpawnFailureClass =
   | 'launch-arg-rejected'
   | 'model-rejected-by-account'
   | 'resume-id-mismatch'
+  | 'kill-failed'
   | 'quota'
   | 'tmux'
   | 'disk'
@@ -138,6 +139,13 @@ const BREAKER_ATTRIBUTABLE: ReadonlySet<ProfileSpawnFailureClass> = new Set([
   'cli-not-found',
   'launch-arg-rejected',
   'model-rejected-by-account',
+  // A kill that will not take is attributable to THIS pin's respawn, and it is
+  // what bounds the retry loop: the respawn is level-triggered on
+  // pin != last-applied, so without a counted failure a permanently-unkillable
+  // session would re-attempt on every idle window forever. Counting it means at
+  // most `spawnFailureBreakerThreshold` attempts, then the breaker trips, parks
+  // and reverts the pin, and tells the operator — a bounded, loud settle.
+  'kill-failed',
 ]);
 
 /** The launch characteristics actually applied to a live session at spawn. */
@@ -1042,6 +1050,7 @@ export class TopicProfileOrchestrator {
       }
     }
 
+    let killed: boolean;
     if (fresh) {
       // Park BOTH resume stores' entries BEFORE the kill (park, not delete —
       // §8 round-5) and set the topic-scoped, time-bounded durable
@@ -1049,9 +1058,26 @@ export class TopicProfileOrchestrator {
       this.deps.claudeResume.park(key, 'mid-framework-switch');
       this.deps.codexResume.park(key, 'mid-framework-switch');
       this.setSuppression(key);
-      await this.deps.sessions.killFresh(session.sessionName);
+      killed = await this.deps.sessions.killFresh(session.sessionName);
     } else {
-      await this.deps.sessions.killForResume(session.sessionName);
+      killed = await this.deps.sessions.killForResume(session.sessionName);
+    }
+
+    // The kill's boolean is the REAL outcome. Spawning after a failed kill does
+    // NOT respawn — the old session is still alive, so the spawn path finds it
+    // and merely injects into it, leaving the profile unchanged while this
+    // method reported `respawn-applied`. Abort instead, and restore the pre-kill
+    // state so the still-live session keeps its resume ability.
+    if (!killed) {
+      if (fresh) {
+        if (oldFramework === 'codex-cli') this.deps.codexResume.unpark(key);
+        else this.deps.claudeResume.unpark(key);
+        this.clearSuppression(key);
+      }
+      this.recordSpawnFailureInternal(key, 'kill-failed');
+      this.audit_({ type: 'respawn-kill-failed', topic: key, method, fresh });
+      this.teardownSlot(key);
+      return;
     }
 
     const outcome = await this.deps.sessions.spawn(key, resolved, { method, resumeId });
@@ -1064,7 +1090,23 @@ export class TopicProfileOrchestrator {
         this.codexFenceWindows.set(cwd, this.now() + RESPAWN_PHASE_TTL_MS);
       }
       this.discloseTerminal(key, slot, appliedToResolvedForDisclosure(resolved, applied), method, lossNote);
-      this.audit_({ type: 'respawn-applied', topic: key, method, fresh, breakerRevert: task.breakerRevert });
+      // Truth check on the success claim: the spawn reports the framework it
+      // ACTUALLY landed on. When that is not the framework the pin resolved to,
+      // the pin was not applied — record what happened rather than logging
+      // `respawn-applied` over it. Signal only: the disclosure above already
+      // told the user the real framework, and the next cycle re-attempts.
+      if (applied.framework !== resolved.framework) {
+        this.audit_({
+          type: 'respawn-profile-mismatch',
+          topic: key,
+          method,
+          fresh,
+          requestedFramework: resolved.framework,
+          appliedFramework: applied.framework,
+        });
+      } else {
+        this.audit_({ type: 'respawn-applied', topic: key, method, fresh, breakerRevert: task.breakerRevert });
+      }
     } else {
       this.recordSpawnFailureInternal(key, outcome.failureClass ?? 'unknown');
       this.audit_({ type: 'respawn-spawn-failed', topic: key, failureClass: outcome.failureClass ?? 'unknown' });

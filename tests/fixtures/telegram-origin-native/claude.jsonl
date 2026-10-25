@@ -1,0 +1,5 @@
+{"type": "user", "sessionId": "11111111-1111-4111-8111-111111111111", "uuid": "user-a", "message": {"role": "user", "content": "Fixture prompt"}}
+{"type": "assistant", "sessionId": "11111111-1111-4111-8111-111111111111", "uuid": "answer-a", "message": {"role": "assistant", "model": "claude-native-first", "content": []}}
+{"type": "user", "sessionId": "11111111-1111-4111-8111-111111111111", "uuid": "tool-a", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "fixture-tool", "content": "done"}]}}
+{"type": "user", "sessionId": "11111111-1111-4111-8111-111111111111", "uuid": "user-b", "message": {"role": "user", "content": "Second fixture prompt"}}
+{"type": "assistant", "sessionId": "11111111-1111-4111-8111-111111111111", "uuid": "answer-b", "message": {"role": "assistant", "model": "claude-native-second", "content": []}}

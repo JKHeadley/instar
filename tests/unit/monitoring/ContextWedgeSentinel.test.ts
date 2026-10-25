@@ -7,7 +7,7 @@
  * Spec: docs/specs/context-wedge-sentinel.md
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   ContextWedgeSentinel,
   detectContextWedge,
@@ -16,6 +16,7 @@ import {
   signatureIsTail,
   CONTEXT_WEDGE_PATTERNS,
   AUP_WEDGE_PATTERNS,
+  MIN_TICK_INTERVAL_MS,
   type WedgeRecoveryOutcome,
 } from '../../../src/monitoring/ContextWedgeSentinel.js';
 
@@ -341,5 +342,77 @@ describe('ContextWedgeSentinel — AUP wedge lifecycle', () => {
     await deps.drainTimers();
     expect(deps.captured).toHaveLength(1);
     expect(deps.captured[0].text).toMatch(/stuck-context/i);
+  });
+});
+
+// ── Regression: 2026-09-21 — undefined timing in cfg must not erase defaults ──
+// server.ts builds this cfg as `{ enabled, tickIntervalMs: wedgeCfg.tickIntervalMs,
+// confirmWindowMs: wedgeCfg.confirmWindowMs }`. With the shipped config
+// (`{"enabled": true}`) both timing keys arrive as explicit `undefined`; the old
+// `{ ...DEFAULT_CONFIG, ...cfg }` copied them over the defaults, so setInterval got
+// an undefined period and the scan loop ran every ~1ms (78% of the server's main
+// thread on an agent with five live sessions).
+describe('ContextWedgeSentinel — timing resolution (undefined-erasure regression)', () => {
+  const quietDeps = () => {
+    let captures = 0;
+    return {
+      get captures() { return captures; },
+      deps: {
+        getRecentOutput: () => { captures++; return 'all systems normal'; },
+        recoverFn: async () => 'detect-only' as WedgeRecoveryOutcome,
+        notifyFn: async () => {},
+        listSessionNames: () => ['a', 'b', 'c', 'd', 'e'],
+      },
+    };
+  };
+
+  it('explicit undefined timing keys fall back to the defaults (20s tick, 45s confirm)', () => {
+    const s = new ContextWedgeSentinel(quietDeps().deps, {
+      enabled: true,
+      tickIntervalMs: undefined,
+      confirmWindowMs: undefined,
+    });
+    expect(s.effectiveTiming).toEqual({ tickIntervalMs: 20_000, confirmWindowMs: 45_000 });
+  });
+
+  it('non-finite timing falls back to the defaults', () => {
+    const s = new ContextWedgeSentinel(quietDeps().deps, {
+      tickIntervalMs: Number.NaN,
+      confirmWindowMs: Number.POSITIVE_INFINITY,
+    });
+    expect(s.effectiveTiming).toEqual({ tickIntervalMs: 20_000, confirmWindowMs: 45_000 });
+  });
+
+  it('a zero or tiny scan period is floored, never a busy loop', () => {
+    expect(new ContextWedgeSentinel(quietDeps().deps, { tickIntervalMs: 0 }).effectiveTiming.tickIntervalMs).toBe(MIN_TICK_INTERVAL_MS);
+    expect(new ContextWedgeSentinel(quietDeps().deps, { tickIntervalMs: 5 }).effectiveTiming.tickIntervalMs).toBe(MIN_TICK_INTERVAL_MS);
+  });
+
+  it('explicit valid values are honoured, including a short one-shot confirm window', () => {
+    const s = new ContextWedgeSentinel(quietDeps().deps, { tickIntervalMs: 30_000, confirmWindowMs: 20 });
+    expect(s.effectiveTiming).toEqual({ tickIntervalMs: 30_000, confirmWindowMs: 20 });
+  });
+
+  it('the scan loop with the production cfg shape runs every 20s, not every millisecond', async () => {
+    vi.useFakeTimers();
+    try {
+      const rig = quietDeps();
+      const wedgeCfg: { enabled: boolean; tickIntervalMs?: number; confirmWindowMs?: number } = { enabled: true };
+      const s = new ContextWedgeSentinel(rig.deps, {
+        enabled: wedgeCfg.enabled,
+        tickIntervalMs: wedgeCfg.tickIntervalMs,
+        confirmWindowMs: wedgeCfg.confirmWindowMs,
+      });
+      s.start();
+      await vi.advanceTimersByTimeAsync(19_000);
+      expect(rig.captures).toBe(0); // the buggy build had captured ~95,000 panes by now
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(rig.captures).toBe(5); // one pass over the five sessions
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(rig.captures).toBe(15);
+      s.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

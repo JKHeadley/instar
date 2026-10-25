@@ -1,12 +1,14 @@
 /**
  * Version-skew detection + lifeline-restart signal coordination.
  *
- * The signal file `state/lifeline-restart-requested.json` is written by THREE
+ * The signal file `state/lifeline-restart-requested.json` is written by FOUR
  * independent channels (no single-point-of-failure):
  *
  *   1. AutoUpdater.requestRestart — when an apply crosses major.minor.
  *   2. Server /internal/telegram-forward 426 handler — direct evidence of skew.
  *   3. PostUpdateMigrator — one-time bootstrap nudge for currently-stuck lifelines.
+ *   4. Server lifeline-secret gate — a request on the internal Telegram routes
+ *      without the lifeline secret (docs/specs/telegram-internal-route-lifeline-secret.md).
  *
  * The signal is consumed by THREE independent readers:
  *
@@ -24,7 +26,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface LifelineRestartSignal {
   requestedAt: string;
-  requestedBy: 'auto-updater' | 'server-426' | 'post-update-migrator-bootstrap' | 'feedback-drain-default-migrator';
+  requestedBy: 'auto-updater' | 'server-426' | 'server-lifeline-secret' | 'post-update-migrator-bootstrap' | 'feedback-drain-default-migrator';
   reason: string;
   previousVersion: string;
   targetVersion: string;

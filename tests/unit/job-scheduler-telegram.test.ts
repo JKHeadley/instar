@@ -17,6 +17,7 @@ import os from 'node:os';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { Session, MessagingAdapter, JobDefinition, SessionManagerConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
 
 // We need to test JobScheduler internals without starting cron.
 // The approach: construct the scheduler with mock dependencies,
@@ -36,9 +37,19 @@ vi.mock('croner', () => ({
 }));
 
 // Mock JobLoader to return our test jobs
-vi.mock('../../src/scheduler/JobLoader.js', () => ({
-  loadJobs: vi.fn().mockReturnValue([]),
-}));
+vi.mock('../../src/scheduler/JobLoader.js', () => {
+  const loadJobs = vi.fn().mockReturnValue([]);
+  return {
+    loadJobs,
+    // The scheduler's trigger-boundary reload uses the detailed loader; keep
+    // the mock derived from `loadJobs` so a mocked return value still steers
+    // what the scheduler sees.
+    loadJobsDetailed: vi.fn((jobsFile: string) => ({
+      jobs: loadJobs(jobsFile), problems: [], bodyFailures: [], diagnostics: [],
+    })),
+    formatLoadProblem: vi.fn((p: { message: string }) => p.message),
+  };
+});
 
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
@@ -225,6 +236,25 @@ describe('JobScheduler Telegram notifications', () => {
       // Second sendToTopic call should be to the new topic
       expect(mockTelegram.sendToTopic).toHaveBeenCalledTimes(2);
       expect(mockTelegram.sendToTopic).toHaveBeenLastCalledWith(99, expect.any(String));
+    });
+
+    it.each(['held', 'outcome-unknown'] as const)('retains the original topic and custody after an origin %s', async outcome => {
+      const mockTelegram = {
+        sendToTopic: vi.fn().mockRejectedValue(new TelegramOriginHoldError('receipt-unavailable', 'original-operation', outcome)),
+        findOrCreateForumTopic: vi.fn().mockResolvedValue({ topicId: 99 }),
+      };
+      scheduler.setTelegram(mockTelegram as never);
+      injectJobs([{ slug: 'held-job', topicId: 42, telegramNotify: true }]);
+      const session = createSession({ jobSlug: 'held-job' });
+      const processQueue = vi.spyOn(scheduler as any, 'processQueue');
+
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+
+      expect(mockTelegram.sendToTopic).toHaveBeenCalledOnce();
+      expect(mockTelegram.findOrCreateForumTopic).not.toHaveBeenCalled();
+      expect((scheduler as any).jobs[0].topicId).toBe(42);
+      expect(state.getJobState('held-job')?.lastResult).toBe('success');
+      expect(processQueue).toHaveBeenCalledOnce();
     });
 
     it('falls back to generic messenger when no Telegram', async () => {

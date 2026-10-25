@@ -12,11 +12,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { processStartMs } from '../core/processIdentity.js';
 
 export interface StartupMarker {
   startedAt: string;
   pid: number;
   version: string;
+  /** Process start time of `pid` (core/processIdentity) — lets a restart prove
+   *  the pid is still this lifeline before signalling it. Absent on old markers. */
+  procStart?: number | null;
 }
 
 export function markerPath(stateDir: string): string {
@@ -28,6 +32,7 @@ export function writeStartupMarker(stateDir: string, version: string): StartupMa
     startedAt: new Date().toISOString(),
     pid: process.pid,
     version,
+    procStart: processStartMs(process.pid),
   };
   const p = markerPath(stateDir);
   const tmp = `${p}.${process.pid}.tmp`;

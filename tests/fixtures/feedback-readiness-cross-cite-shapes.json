@@ -1,0 +1,106 @@
+{
+ "description": "Live incident 2026-10-02 02:30 PDT (Mac Studio, drain run run:2e06aa3b-0dd9-4740-bff5-df9dba92c7f2, authority generation 4): the 10 due candidates of the one readiness call (one title trips the injection pre-filter, 9 go to the model), and three replies from real gpt-6-astra calls (codex-cli) on the same candidates and prompt, recorded 2026-10-02 04:4x PDT on a read-only copy. Two of three cross-cite the near-duplicate sibling cluster's evidence id, which the pre-fix parser refused as a contract violation and demoted the authority.",
+ "runId": "run:2e06aa3b-0dd9-4740-bff5-df9dba92c7f2",
+ "runStartedAt": 1790933422097,
+ "resolvedModel": {
+  "model": "gpt-6-astra",
+  "framework": "codex-cli"
+ },
+ "liveProvenanceHead": "{\"decisions\":[{\"clusterId\":\"[TOKEN:clus****]\",\"outcome\":\"ready\",\"confidence\":0.78,\"reasonCodes\":[\"specific-observability-gap\",\"bounded-task\"],\"evidenceIds\":[\"cluster:[TOKEN:clus****]\"]},{\"clusterId\":\"[TOKEN:clus****]\",\"outcome\":\"collecting\",\"confidence\":0.8,\"reasonCodes\":[\"multiple-failure-modes\",\"s",
+ "candidates": [
+  {
+   "clusterId": "cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post",
+   "title": "body-parser JSON errors log no route or caller \u2014 rejected POSTs are traceable only by inference",
+   "type": "improvement",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex",
+   "title": "Boot self-knowledge: 49 of 50 stored facts never reach context; byte-trim drops NEWEST first",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content",
+   "title": "broadcastDashboardUrl escalates an origin duplicate-content HOLD into a new pinned dashboard message (~140/day, exhausts bot send capacity)",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-built-in-jobs-are-hardcoded-to-execute-type-agentmd-pinning",
+   "title": "Built-in jobs are hardcoded to execute.type agentmd, pinning them into the shed-exposed admission class \u2014 8 enabled jobs run below 10% of their own scheduled attempts and cannot be re-registered locally",
+   "type": "improvement",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com",
+   "title": "Built-in reflection-trigger job: activity-log jq does not compile \u2014 RECENT ACTIVITY block is empty on every run",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j",
+   "title": "Built-in reflection-trigger job feeds itself zero activity: jq filter has 3 defects, all silenced by 2>/dev/null",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a",
+   "title": "Builtin job bodies that write shared workspace files need a declared write-resource the RUNNER honours -- a cooperative in-body lock cannot cover them",
+   "type": "feature",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon",
+   "title": "`checkInAt` is documented as agent-settable, read by the reconciler, typed on Commitment \u2014 and has NO WRITER anywhere. 0 of 1389 commitments have ever had one; the dated-reminder feature is unreachable.",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl",
+   "title": "CLAUDE.md bloat: Secret Drop rule re-appended non-idempotently (212 duplicates, 330KB)",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  },
+  {
+   "clusterId": "cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana",
+   "title": "Claude resume crash loop: account-home mismatch, unrelated analysis UUID, dead-pane fallback collision",
+   "type": "bug",
+   "reportCount": 1,
+   "createdAt": null,
+   "updatedAt": null
+  }
+ ],
+ "replies": [
+  {
+   "oldVerdict": "ReadinessContractViolation: readiness authority cited evidence outside the candidate packet",
+   "raw": "{\"decisions\":[{\"clusterId\":\"cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\",\"outcome\":\"ready\",\"confidence\":0.8,\"reasonCodes\":[\"specific-component\",\"clear-observability-gap\",\"bounded-task\"],\"evidenceIds\":[\"cluster:cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\"]},{\"clusterId\":\"cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\",\"outcome\":\"ready\",\"confidence\":0.78,\"reasonCodes\":[\"specific-component\",\"concrete-failure\",\"coherent-task-scope\"],\"evidenceIds\":[\"cluster:cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\"]},{\"clusterId\":\"cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\",\"outcome\":\"ready\",\"confidence\":0.86,\"reasonCodes\":[\"specific-component\",\"concrete-failure\",\"clear-expected-behavior\"],\"evidenceIds\":[\"cluster:cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\",\"outcome\":\"collecting\",\"confidence\":0.88,\"reasonCodes\":[\"overlapping-candidate-evidence\",\"task-ownership-unresolved\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\",\"cluster:cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\",\"outcome\":\"collecting\",\"confidence\":0.88,\"reasonCodes\":[\"overlapping-candidate-evidence\",\"task-ownership-unresolved\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\",\"cluster:cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\"]},{\"clusterId\":\"cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\",\"outcome\":\"collecting\",\"confidence\":0.77,\"reasonCodes\":[\"solution-proposal-only\",\"missing-concrete-failure-evidence\",\"scope-needs-definition\"],\"evidenceIds\":[\"cluster:cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\"]},{\"clusterId\":\"cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\",\"outcome\":\"ready\",\"confidence\":0.86,\"reasonCodes\":[\"specific-component\",\"concrete-behavior-gap\",\"coherent-task-scope\"],\"evidenceIds\":[\"cluster:cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\"]},{\"clusterId\":\"cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\",\"outcome\":\"ready\",\"confidence\":0.88,\"reasonCodes\":[\"concrete-failure\",\"clear-expected-behavior\",\"bounded-task\"],\"evidenceIds\":[\"cluster:cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\"]},{\"clusterId\":\"cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\",\"outcome\":\"collecting\",\"confidence\":0.84,\"reasonCodes\":[\"multiple-failure-mechanisms\",\"causal-link-unestablished\",\"scope-needs-definition\"],\"evidenceIds\":[\"cluster:cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\"]}]}"
+  },
+  {
+   "oldVerdict": "accepted",
+   "raw": "{\"decisions\":[{\"clusterId\":\"cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\",\"outcome\":\"collecting\",\"confidence\":0.93,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\"],\"evidenceIds\":[\"cluster:cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\"]},{\"clusterId\":\"cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\",\"outcome\":\"collecting\",\"confidence\":0.93,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\"],\"evidenceIds\":[\"cluster:cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\"]},{\"clusterId\":\"cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\",\"outcome\":\"collecting\",\"confidence\":0.93,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\"],\"evidenceIds\":[\"cluster:cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\",\"outcome\":\"collecting\",\"confidence\":0.95,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\",\"potential-duplicate\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\",\"outcome\":\"collecting\",\"confidence\":0.95,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\",\"potential-duplicate\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\"]},{\"clusterId\":\"cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\",\"outcome\":\"collecting\",\"confidence\":0.94,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\",\"acceptance-criteria-missing\"],\"evidenceIds\":[\"cluster:cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\"]},{\"clusterId\":\"cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\",\"outcome\":\"collecting\",\"confidence\":0.93,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\"],\"evidenceIds\":[\"cluster:cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\"]},{\"clusterId\":\"cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\",\"outcome\":\"collecting\",\"confidence\":0.93,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\"],\"evidenceIds\":[\"cluster:cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\"]},{\"clusterId\":\"cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\",\"outcome\":\"collecting\",\"confidence\":0.96,\"reasonCodes\":[\"supporting-evidence-missing\",\"ownership-unestablished\",\"single-task-scope-unclear\"],\"evidenceIds\":[\"cluster:cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\"]}]}"
+  },
+  {
+   "oldVerdict": "ReadinessContractViolation: readiness authority cited evidence outside the candidate packet",
+   "raw": "{\"decisions\":[{\"clusterId\":\"cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\",\"outcome\":\"ready\",\"confidence\":0.84,\"reasonCodes\":[\"specific-observable-gap\",\"bounded-task\"],\"evidenceIds\":[\"cluster:cluster-body-parser-json-errors-log-no-route-or-caller-rejected-post\"]},{\"clusterId\":\"cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\",\"outcome\":\"ready\",\"confidence\":0.83,\"reasonCodes\":[\"specific-failure-mechanism\",\"coherent-component-scope\"],\"evidenceIds\":[\"cluster:cluster-boot-self-knowledge-49-of-50-stored-facts-never-reach-contex\"]},{\"clusterId\":\"cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\",\"outcome\":\"ready\",\"confidence\":0.9,\"reasonCodes\":[\"specific-failure-mechanism\",\"bounded-task\",\"quantified-impact\"],\"evidenceIds\":[\"cluster:cluster-broadcastdashboardurl-escalates-an-origin-duplicate-content\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\",\"outcome\":\"escalate-human\",\"confidence\":0.9,\"reasonCodes\":[\"cross-cluster-task-overlap\",\"ownership-resolution-needed\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\",\"cluster:cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\"]},{\"clusterId\":\"cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\",\"outcome\":\"escalate-human\",\"confidence\":0.9,\"reasonCodes\":[\"cross-cluster-task-overlap\",\"ownership-resolution-needed\"],\"evidenceIds\":[\"cluster:cluster-built-in-reflection-trigger-job-feeds-itself-zero-activity-j\",\"cluster:cluster-built-in-reflection-trigger-job-activity-log-jq-does-not-com\"]},{\"clusterId\":\"cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\",\"outcome\":\"collecting\",\"confidence\":0.84,\"reasonCodes\":[\"solution-led-report\",\"missing-concrete-failure-evidence\",\"scope-needs-definition\"],\"evidenceIds\":[\"cluster:cluster-builtin-job-bodies-that-write-shared-workspace-files-need-a\"]},{\"clusterId\":\"cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\",\"outcome\":\"ready\",\"confidence\":0.91,\"reasonCodes\":[\"specific-missing-write-path\",\"coherent-component-scope\",\"quantified-impact\"],\"evidenceIds\":[\"cluster:cluster-checkinat-is-documented-as-agent-settable-read-by-the-recon\"]},{\"clusterId\":\"cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\",\"outcome\":\"ready\",\"confidence\":0.92,\"reasonCodes\":[\"specific-failure-mechanism\",\"bounded-task\",\"quantified-impact\"],\"evidenceIds\":[\"cluster:cluster-claude-md-bloat-secret-drop-rule-re-appended-non-idempotentl\"]},{\"clusterId\":\"cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\",\"outcome\":\"collecting\",\"confidence\":0.87,\"reasonCodes\":[\"multiple-unlinked-failure-mechanisms\",\"missing-causal-link\",\"scope-needs-definition\"],\"evidenceIds\":[\"cluster:cluster-claude-resume-crash-loop-account-home-mismatch-unrelated-ana\"]}]}"
+  }
+ ]
+}

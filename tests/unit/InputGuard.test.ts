@@ -4,6 +4,7 @@ import {
   INPUT_GUARD_COHERENCE_PROMPT_ID,
   type TopicBinding,
 } from '../../src/core/InputGuard.js';
+import { UNTAGGED_MESSAGE_MAX_CHARS } from '../../src/core/InputGuard.js';
 import { DP_INPUT_GUARD } from '../../src/data/provenanceCoverage.js';
 import type { IntelligenceOptions } from '../../src/core/types.js';
 
@@ -245,6 +246,62 @@ describe('InputGuard', () => {
       const serializedContext = JSON.stringify(options?.provenance?.context ?? {});
       expect(serializedContext).not.toContain('some untagged message');
       expect(serializedContext).not.toContain(BINDING.topicName);
+    });
+
+    // ── *Never Silently Cut the Data a Decision Depends On* ────────────────────────────────
+
+    it('sends an ordinary long message WHOLE — the old 500-char bound was an evasion route', async () => {
+      // This gate exists to spot an instruction injected into an untagged
+      // message. An injected payload can sit anywhere, so a bound that cuts the
+      // message lets an attacker pad the front and hide past the cut while the
+      // gate still answers confidently. Derived from the transport: a Telegram
+      // message cannot exceed 4,096 characters, so every one arrives whole.
+      let captured = '';
+      const evaluate = vi.fn(async (prompt: string) => {
+        captured = prompt;
+        return JSON.stringify({ verdict: 'COHERENT', reason: 'ok', confidence: 0.9 });
+      });
+      const guard = new InputGuard({
+        config: { enabled: true, topicCoherenceReview: true },
+        stateDir: '/tmp/instar-test-inputguard-bound',
+        intelligence: { evaluate },
+      });
+
+      // A realistic long operator message with the payload at the END.
+      const message = 'A'.repeat(3000) + ' PAYLOAD-AT-THE-END';
+      expect(message.length).toBeLessThanOrEqual(4096); // a legal Telegram message
+      const result = await guard.reviewTopicCoherence(message, BINDING);
+
+      expect(captured).toContain('PAYLOAD-AT-THE-END');
+      expect(captured).not.toContain('BOUNDED INPUT'); // nothing was cut
+      expect(result.verdict).toBe('coherent');
+      expect(evaluate.mock.calls[0][1]?.provenance?.context).toMatchObject({
+        messageWasTruncated: false,
+      });
+    });
+
+    it('DISCLOSES the cut when a message does exceed the bound', async () => {
+      // Longer than any Telegram message, but a channel that permits one exists.
+      // The residual is real; the marker is what lets the model weigh it rather
+      // than answer as if it had seen everything.
+      let captured = '';
+      const evaluate = vi.fn(async (prompt: string) => {
+        captured = prompt;
+        return JSON.stringify({ verdict: 'COHERENT', reason: 'ok', confidence: 0.9 });
+      });
+      const guard = new InputGuard({
+        config: { enabled: true, topicCoherenceReview: true },
+        stateDir: '/tmp/instar-test-inputguard-bound2',
+        intelligence: { evaluate },
+      });
+
+      await guard.reviewTopicCoherence('B'.repeat(UNTAGGED_MESSAGE_MAX_CHARS + 5000), BINDING);
+
+      expect(captured).toContain('BOUNDED INPUT');
+      expect(captured).toContain('LATER content was omitted');
+      expect(evaluate.mock.calls[0][1]?.provenance?.context).toMatchObject({
+        messageWasTruncated: true,
+      });
     });
 
     it('passes IntelligenceProvider suspicious verdicts through', async () => {

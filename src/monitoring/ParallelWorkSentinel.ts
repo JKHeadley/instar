@@ -64,16 +64,93 @@ export interface ParallelWorkSentinelEvents {
   overlap: [nudge: OverlapNudge];
 }
 
+/**
+ * Runtime instrumentation (CMT-810, Defect 2). Before this the guard-posture
+ * inventory graded the sentinel `on-unverified` / `not-instrumented` forever: the
+ * config said on, nothing anywhere confirmed a single tick had happened. A guard
+ * nobody can verify is indistinguishable from a guard that is off.
+ */
+export interface ParallelWorkSentinelStats {
+  enabled: true;
+  constructedAt: number;
+  /** Epoch ms of the last COMPLETED tick (0 = never ticked). */
+  lastTickAt: number;
+  tickCount: number;
+  /** Activities seen + nudges fired on the last tick. */
+  lastTickActivities: number;
+  lastTickNudges: number;
+  /** Total nudges emitted since construction. */
+  nudgesTotal: number;
+  /** Last tick that THREW (0 = never) + its message; the tick re-throws after recording. */
+  lastErrorAt: number;
+  lastError: string | null;
+  trackedPairs: number;
+}
+
 export class ParallelWorkSentinel extends EventEmitter {
   private readonly state = new Map<string, PairState>();
+  private readonly constructedAt: number;
+  private lastTickAt = 0;
+  private tickCount = 0;
+  private lastTickActivities = 0;
+  private lastTickNudges = 0;
+  private nudgesTotal = 0;
+  private lastErrorAt = 0;
+  private lastError: string | null = null;
 
   constructor(private readonly opts: ParallelWorkSentinelOptions) {
     super();
+    this.constructedAt = Date.now();
   }
 
-  /** Run one cadence tick. Pure-ish: side effects are the emitted nudges + the audit sink. */
+  /**
+   * Run one cadence tick. Pure-ish: side effects are the emitted nudges + the audit
+   * sink + the runtime counters. A tick that throws records the error (so /guards
+   * and /parallel-work/sentinel can show it) and re-throws for the caller's guard.
+   */
   tick(nowMs: number): OverlapNudge[] {
+    try {
+      const fired = this.runTick(nowMs);
+      this.lastTickAt = nowMs;
+      this.tickCount++;
+      this.lastTickNudges = fired.length;
+      this.nudgesTotal += fired.length;
+      return fired;
+    } catch (err) {
+      this.lastErrorAt = nowMs;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
+  }
+
+  /**
+   * GuardRegistry getter contract: a synchronous in-memory read. `lastTickAt` 0 while
+   * enabled reads as `on-stale` in the posture view — registration is not life; only a
+   * completed tick confirms the sentinel is genuinely running.
+   */
+  guardStatus(): { enabled: true; lastTickAt: number } {
+    return { enabled: true, lastTickAt: this.lastTickAt };
+  }
+
+  /** Full runtime stats (backs GET /parallel-work/sentinel). */
+  stats(): ParallelWorkSentinelStats {
+    return {
+      enabled: true,
+      constructedAt: this.constructedAt,
+      lastTickAt: this.lastTickAt,
+      tickCount: this.tickCount,
+      lastTickActivities: this.lastTickActivities,
+      lastTickNudges: this.lastTickNudges,
+      nudgesTotal: this.nudgesTotal,
+      lastErrorAt: this.lastErrorAt,
+      lastError: this.lastError,
+      trackedPairs: this.state.size,
+    };
+  }
+
+  private runTick(nowMs: number): OverlapNudge[] {
     const activities = this.opts.getActivities(nowMs);
+    this.lastTickActivities = activities.length;
     const pairs = detectOverlaps(activities, {
       nowMs,
       activityWindowMs: this.opts.activityWindowMs,

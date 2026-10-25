@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-21T20:32:49.980Z",
+  "slug": "pairing-explain-no-buttons",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "c061cbf91 posted the cause into forum topics for any sender."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

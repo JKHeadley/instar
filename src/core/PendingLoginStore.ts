@@ -62,6 +62,10 @@ export interface PendingLogin {
    *  against this before the account becomes selectable; a surprise email is held, not
    *  auto-used. Absent for a plain (non-follow-me) enrollment. Never a secret. */
   expectedEmail?: string;
+  /** Opaque revision of the slot auth material immediately before this login
+   * artifact was issued. Never sufficient to recover a credential. Undefined
+   * means automatic completion must fail closed. */
+  authRevisionBaseline?: string | null;
   /** ISO timestamp the code/URL expires. */
   ttlExpiresAt: string;
   status: PendingLoginStatus;
@@ -99,6 +103,7 @@ export interface IssueLoginInput {
   /** WS5.2 §5.3/S7 — the operator-expected account email (a follow-me login carries it
    *  so completion can validate the minted account against operator expectation). */
   expectedEmail?: string;
+  authRevisionBaseline?: string | null;
   /** TTL in ms from now (default 15 min — the observed Codex device-code TTL). */
   ttlMs?: number;
 }
@@ -191,6 +196,7 @@ export class PendingLoginStore {
       ...(input.userCode ? { userCode: input.userCode.trim() } : {}),
       ...(input.notice?.trim() ? { notice: input.notice.trim() } : {}),
       ...(input.expectedEmail?.trim() ? { expectedEmail: input.expectedEmail.trim() } : {}),
+      ...('authRevisionBaseline' in input ? { authRevisionBaseline: input.authRevisionBaseline ?? null } : {}),
       ttlExpiresAt: new Date(this.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
       status: 'pending',
       reissueCount: 0,
@@ -208,7 +214,7 @@ export class PendingLoginStore {
    * auto-reissue path. Bumps reissueCount, resets status to pending. Returns null
    * if not found.
    */
-  reissue(id: string, fresh: { verificationUrl: string; userCode?: string; ttlMs?: number }): PendingLogin | null {
+  reissue(id: string, fresh: { verificationUrl: string; userCode?: string; ttlMs?: number; authRevisionBaseline?: string | null }): PendingLogin | null {
     this.assertNoCredentialFields(fresh as unknown as Record<string, unknown>);
     const login = this.store.logins.find((l) => l.id === id);
     if (!login) return null;
@@ -218,6 +224,7 @@ export class PendingLoginStore {
     if (!fresh.verificationUrl?.trim()) throw new ValidationError('verificationUrl is required');
     login.verificationUrl = fresh.verificationUrl.trim();
     if (fresh.userCode !== undefined) login.userCode = fresh.userCode.trim();
+    if ('authRevisionBaseline' in fresh) login.authRevisionBaseline = fresh.authRevisionBaseline ?? null;
     login.ttlExpiresAt = new Date(this.now() + (fresh.ttlMs ?? DEFAULT_TTL_MS)).toISOString();
     login.status = 'pending';
     login.reissueCount += 1;
@@ -230,6 +237,23 @@ export class PendingLoginStore {
   /** Mark a login completed (the operator approved + the account enrolled). */
   complete(id: string): PendingLogin | null {
     return this.transition(id, 'completed');
+  }
+
+  /**
+   * Complete one exact pending revision and run its synchronous finalizer inside
+   * the same single-threaded CAS boundary. A competing sweep/version never runs
+   * the finalizer; a thrown finalizer leaves the durable row pending so the next
+   * sweep can retry it.
+   */
+  completeIfVersion(id: string, expectedVersion: number, finalize: (login: PendingLogin) => void): PendingLogin | null {
+    const login = this.store.logins.find((l) => l.id === id);
+    if (!login || login.version !== expectedVersion || this.withLiveStatus(login).status !== 'pending') return null;
+    finalize({ ...login });
+    login.status = 'completed';
+    login.updatedAt = new Date(this.now()).toISOString();
+    login.version += 1;
+    this.save();
+    return { ...login };
   }
 
   /** Cancel a login (operator/admin). */

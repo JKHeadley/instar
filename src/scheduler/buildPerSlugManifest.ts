@@ -43,6 +43,14 @@ export interface BuildPerSlugManifestInput {
   perMachineIndependent?: boolean;
   /** Preserved across regeneration (operator may have disabled the default). */
   disabledAtBodyHash?: string;
+  /** Jev job-completion audit eligibility (jev-job-supervision spec). Carried
+   *  here because the loader reads it from the MANIFEST — the built-in batch
+   *  job's own `completionAudit: excluded` is inert without this. */
+  completionAudit?: 'excluded' | 'eligible' | 'priority';
+  /** Repo-relative expected outputs the audit verifies (max 8, jailed). */
+  declaredEffects?: string[];
+  /** Same jail; verified only when the run claims the path on stdout. */
+  conditionalEffects?: string[];
 }
 
 export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugManifest {
@@ -66,6 +74,9 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.mcpAccess !== undefined) m.mcpAccess = input.mcpAccess;
   if (input.perMachineIndependent !== undefined) m.perMachineIndependent = input.perMachineIndependent;
   if (input.disabledAtBodyHash !== undefined) m.disabledAtBodyHash = input.disabledAtBodyHash;
+  if (input.completionAudit !== undefined) m.completionAudit = input.completionAudit;
+  if (input.declaredEffects !== undefined) m.declaredEffects = input.declaredEffects;
+  if (input.conditionalEffects !== undefined) m.conditionalEffects = input.conditionalEffects;
   return m;
 }
 

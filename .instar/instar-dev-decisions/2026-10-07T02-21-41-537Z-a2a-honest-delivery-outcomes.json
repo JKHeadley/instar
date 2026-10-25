@@ -1,0 +1,41 @@
+{
+  "ts": "2026-10-07T02:21:41.537Z",
+  "slug": "a2a-honest-delivery-outcomes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/client/RelayClient.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relayVerdict.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 1112,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/ListenerSessionManager.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/client/RelayClient.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/honestDeliveryWiring.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/relayVerdict.ts"
+    ],
+    "addedLines": 1017,
+    "deletedLines": 95
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

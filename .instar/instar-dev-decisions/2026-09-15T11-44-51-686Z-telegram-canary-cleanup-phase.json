@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-15T11:44:51.686Z",
+  "slug": "telegram-canary-cleanup-phase",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-origin/OriginDetectorCanary.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

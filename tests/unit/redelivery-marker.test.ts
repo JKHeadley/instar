@@ -111,6 +111,11 @@ describe('W21 — forgery: content can never mint the marker', () => {
   it('has no content-inspecting parameter at all — the flag is the ONLY input that marks', () => {
     // Structural: the builder receives a boolean, never the message body, so
     // there is nothing to string-match and therefore nothing to forge.
-    expect(buildInjectionTag.length).toBe(5);
+    // Six inputs: topicId, topicName, senderName, telegramUserId, reDelivered,
+    // signedByAgent. The sixth (2026-09-02) is the SAME class as the fifth — an
+    // in-process value carried from the ASP classifier's own verdict, never a
+    // message body — so the property this pins (no content-inspecting parameter)
+    // still holds. A seventh parameter must justify itself here the same way.
+    expect(buildInjectionTag.length).toBe(6);
   });
 });

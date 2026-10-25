@@ -161,14 +161,14 @@ describe('StallTriageNurse', () => {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'balanced' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.4-mini');
+        .toBe('gpt-6-sol');
     });
     it('codex-cli: legacy Claude tier name maps to Codex equivalent', () => {
       const nurse = new StallTriageNurse(deps, {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'haiku' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.4-mini'); // haiku → light tier; gpt-5.2 retired from ChatGPT-account Codex 2026-06-03
+        .toBe('gpt-6-luna'); // haiku → light tier (gpt-6-luna since 2026-09-23)
     });
     it('codex-cli: raw Codex model id passes through verbatim', () => {
       const nurse = new StallTriageNurse(deps, {
@@ -472,6 +472,7 @@ describe('StallTriageNurse', () => {
       expect(deps.sendToTopic).toHaveBeenCalledWith(
         1,
         expect.stringContaining('busy building'),
+        expect.objectContaining({ model: expect.objectContaining({ status: 'unknown', reason: 'author-provider-model-unavailable' }) }),
       );
       expect(result.actionsTaken).toContain('status_update');
     });
@@ -557,7 +558,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(3, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(3, expect.stringContaining('Interrupting'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(3, expect.stringContaining('Interrupting'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
     });
 
     it('unstick calls sendKey with C-c', async () => {
@@ -597,7 +598,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(4, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(4, expect.stringContaining('Unsticking'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(4, expect.stringContaining('Unsticking'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
     });
 
     it('restart calls sendToTopic then respawnSession', async () => {
@@ -616,7 +617,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(5, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(5, expect.stringContaining('Restarting'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(5, expect.stringContaining('Restarting'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
       expect(deps.respawnSession).toHaveBeenCalledWith('sess', 5, { silent: true });
     });
 

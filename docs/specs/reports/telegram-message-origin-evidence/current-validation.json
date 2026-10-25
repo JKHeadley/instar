@@ -1,0 +1,961 @@
+{
+  "capturedAt": "2026-09-07T07:18:02.438554+00:00",
+  "baseCommit": "77df8be42a24a09d991b044027161c95eb9322a5",
+  "sourceFingerprint": "9111d69153983a33b9ad2b435f4131014059dcd021bdd7fb9bffe1c75f22dd4b",
+  "fingerprintedFiles": 5568,
+  "build": {
+    "passed": true,
+    "log": "/tmp/echo-origin-final-build-13.log",
+    "buildNumber": 13
+  },
+  "lint": {
+    "passed": true,
+    "log": "/tmp/echo-origin-final-lint-13.log",
+    "buildNumber": 13
+  },
+  "fullSuite": {
+    "status": "passed",
+    "command": "npm run test:all",
+    "log": "/tmp/echo-69507-test-all-completion-12.log",
+    "startedAt": "2026-09-07T06:03:41.700413+00:00",
+    "sourceFingerprint": "9111d69153983a33b9ad2b435f4131014059dcd021bdd7fb9bffe1c75f22dd4b",
+    "build": 13,
+    "allThreeStagesRequired": true,
+    "execSessionId": 12749,
+    "completedStages": [
+      {
+        "name": "aggregate",
+        "passedFiles": 3341,
+        "skippedFiles": 4,
+        "passedTests": 51684,
+        "skippedTests": 29,
+        "todoTests": 3,
+        "failedTests": 0,
+        "durationSeconds": 2785.96
+      },
+      {
+        "name": "integration",
+        "passedFiles": 518,
+        "skippedFiles": 2,
+        "passedTests": 4179,
+        "skippedTests": 12,
+        "failedTests": 0,
+        "durationSeconds": 539.19
+      },
+      {
+        "name": "e2e",
+        "passedFiles": 368,
+        "skippedFiles": 1,
+        "passedTests": 3228,
+        "skippedTests": 7,
+        "todoTests": 3,
+        "failedTests": 0,
+        "durationSeconds": 1052.49
+      }
+    ],
+    "activeStage": null,
+    "lastObservedAt": "2026-09-07T06:59:26.812323+00:00",
+    "exitCode": 0,
+    "finishedAt": "2026-09-07T07:18:02.438554+00:00",
+    "failedTests": 0,
+    "sourceFingerprintVerifiedAfter": true,
+    "compiledHashesVerifiedAfter": 14,
+    "countsOverlap": true
+  },
+  "productionActivated": false,
+  "additionalTrials": {
+    "nativeCodex": {
+      "evidence": "/tmp/echo-origin-native-live-gGDFA4/evidence.json",
+      "cli": "codex-cli 0.153.4",
+      "actualCliProcesses": 2,
+      "nativeHookRecords": 2,
+      "states": [
+        "ready",
+        "unknown-requires-restart",
+        "ready"
+      ],
+      "passed": true,
+      "productionActivated": false
+    },
+    "ownerClientRestart": {
+      "evidence": "/tmp/echo-origin-owner-restart-DYaSvk/evidence.json",
+      "actualNodeProcesses": 4,
+      "loopbackHttpSends": 3,
+      "externalTelegramRequests": 0,
+      "passed": true,
+      "coverage": "production bootTelegramOrigin factory; full Lifeline/Supervisor/server startup not exercised"
+    },
+    "installedRelay": {
+      "evidence": "/tmp/echo-origin-installed-relay-YieyUs/evidence.json",
+      "runner": "/tmp/echo-origin-installed-relay-trial.mjs",
+      "buildLog": "/tmp/echo-origin-final-build-9.log",
+      "passed": true,
+      "acceptedOperations": 2,
+      "loopbackReceiptIds": [
+        6001,
+        6002
+      ],
+      "rejectedCredentialCases": [
+        "missing",
+        "foreign",
+        "revoked"
+      ],
+      "externalTelegramRequests": 0,
+      "modelEvidence": "configured",
+      "productionActivated": false,
+      "log": "/tmp/echo-origin-installed-relay-build9-final.log",
+      "runnerExitedCleanly": true
+    }
+  },
+  "previousRuns": [
+    {
+      "capturedAt": "2026-09-07T01:19:20.559036+00:00",
+      "sourceFingerprint": "8729c77c35ae21e5a6ed5a43bfea28a717f67520eff0fe5913d65dd4ad630185",
+      "fingerprintedFiles": 5508,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "failed",
+        "startedAt": "2026-09-07T01:19:20.559036+00:00",
+        "log": "/tmp/echo-69507-test-all-completion-3.log",
+        "exitCode": 1,
+        "passedFiles": 3316,
+        "failedFiles": 1,
+        "skippedFiles": 4,
+        "passedTests": 51530,
+        "failedTests": 1,
+        "skippedTests": 29,
+        "todoTests": 3,
+        "unhandledErrors": 0,
+        "durationSeconds": 2578.8,
+        "failure": "no-silent-fallbacks: 501 exceeds baseline 496; diagnostic fix in progress"
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T02:07:40.588132+00:00",
+      "sourceFingerprint": "2771d763f735d54edf6cdb190305721df95c331ed441ab8346d70850e5658f1b",
+      "fingerprintedFiles": 5509,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "startedAt": "2026-09-07T02:07:40.588132+00:00",
+        "log": "/tmp/echo-69507-test-all-completion-4.log",
+        "execSessionId": 66462,
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T02:20:19.829453+00:00",
+        "reason": "Superseded by notification implementation already authorized by the original hold-and-notify request; unnecessary additional approval question withdrawn.",
+        "partialPassedFiles": 87,
+        "partialTestsInPassedFiles": 5113,
+        "reportedFailures": []
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T02:49:04.291859+00:00",
+      "sourceFingerprint": "a3118c988d195eee834bd3a5a6009746a4acb85d83b79dc180058d5584b74487",
+      "fingerprintedFiles": 5526,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "startedAt": "2026-09-07T02:49:04.291859+00:00",
+        "log": "/tmp/echo-69507-test-all-completion-5.log",
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T02:51:36.890520+00:00",
+        "reason": "Stopped after guidance addenda were missing from feature-delivery completeness registry; production migrations pass, test registry corrected.",
+        "reportedFailures": [
+          "feature-delivery-completeness: new origin guidance addenda not registered"
+        ]
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T02:51:36.890520+00:00",
+      "sourceFingerprint": "abd1023d6a8e393684d7f2c2e1b140db9101b6c5cf13eb1e21a61844d48ffcfa",
+      "fingerprintedFiles": 5526,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "startedAt": "2026-09-07T02:51:36.890520+00:00",
+        "log": "/tmp/echo-69507-test-all-completion-6.log",
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T02:58:12.921859+00:00",
+        "reason": "Stopped before source changes to bind confirmed deterministic system notices to their specific producer identities; no recording bypass found.",
+        "reportedFailures": []
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T03:24:53.244716+00:00",
+      "sourceFingerprint": "7b181b1cfc2ee8a9094d9634581cc30f194c6445ad7c0f22eaa9487bac903ba8",
+      "fingerprintedFiles": 5533,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "startedAt": "2026-09-07T03:24:53.244716+00:00",
+        "log": "/tmp/echo-69507-test-all-completion-7.log",
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T03:35:06.432196+00:00",
+        "reason": "Stopped before narrow AgentTokenManager registry-root isolation fix discovered by kernel-sandboxed actual startup trial.",
+        "partialPassedFiles": 55,
+        "partialTestsInPassedFiles": 3660,
+        "reportedFailures": []
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T03:36:50.630124+00:00",
+      "sourceFingerprint": "5621141b5bcdda63d8a4b1478ed8ce10668b56af56aaf966086d448dbcede495",
+      "fingerprintedFiles": 5533,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "log": "/tmp/echo-69507-test-all-completion-8.log",
+        "startedAt": "2026-09-07T03:37:47.535303+00:00",
+        "execSessionId": 1607,
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T03:43:00.107159+00:00",
+        "reason": "Stopped before correcting confirmed missing phone audit/status interface and cosmetic preference incorrectly inheriting model-profile rollout gates.",
+        "partialPassedFiles": 36,
+        "partialTestsInPassedFiles": 2604,
+        "reportedFailures": []
+      }
+    },
+    {
+      "capturedAt": "2026-09-07T04:14:31.584948+00:00",
+      "sourceFingerprint": "424ac7f38277d8d962a25b3ee3963ccacd0b5d584d77f57bb0d968da95f68460",
+      "fingerprintedFiles": 5553,
+      "fullSuite": {
+        "command": "npm run test:all",
+        "status": "stopped",
+        "log": "/tmp/echo-69507-test-all-completion-9.log",
+        "startedAt": "2026-09-07T04:14:31.584948+00:00",
+        "execSessionId": 19309,
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T04:25:20.512213+00:00",
+        "reason": "Actual dashboard glance completeness failure: new origins tab missing adoption/renderer classification. Stopped before correcting dashboard integration; no grandfather ceiling increase authorized.",
+        "partialPassedFiles": 84,
+        "partialTestsInPassedFiles": 4922,
+        "reportedFailures": [
+          "dashboard-glance-word-budget: origins tab unclassified"
+        ]
+      }
+    },
+    {
+      "run": 10,
+      "fullSuite": {
+        "status": "failed",
+        "command": "npm run test:all",
+        "log": "/tmp/echo-69507-test-all-completion-10.log",
+        "execSessionId": 7385,
+        "startedAt": "2026-09-07T05:03:02.265015+00:00",
+        "sourceFingerprint": "1dd16ed8fc96d345e9143584bf72ce56d32ad01c907ffd4f57a3739088048360",
+        "build": 13,
+        "reportedFailures": [
+          {
+            "file": "tests/unit/respawn-collision-notice.test.ts",
+            "failure": "Old exact-source callback assertion expects direct bind; production now uses recorded deterministic producer. Behavioral two-branch replacement proposed; no edit yet."
+          },
+          {
+            "file": "tests/unit/telegram-origin/notice-policy-observer.test.ts",
+            "failure": "Initial encrypted-source read null immediately after open; expected authorized. Under source/watch race investigation."
+          },
+          {
+            "file": "tests/e2e/threadline-telegram-origin-authors.test.ts",
+            "failure": "Expected6 origin records got3 after LiveConfig update; display authority unavailable. Under investigation."
+          },
+          {
+            "file": "tests/unit/cold-start-fallback-wiring.test.ts",
+            "failure": "Old exact-source direct-send assertion; current code uses deterministic origin callback."
+          },
+          {
+            "file": "tests/integration/telegram-origin-detector-health.test.ts",
+            "failure": "Default1s wait assumes watcher delivery faster than independent5s refresh."
+          }
+        ],
+        "exitCode": 1,
+        "finishedAt": "2026-09-07T05:52:25.870221+00:00",
+        "failedFiles": 5,
+        "passedFiles": 3336,
+        "skippedFiles": 4,
+        "failedTests": 5,
+        "passedTests": 51678,
+        "skippedTests": 29,
+        "todoTests": 3,
+        "durationSeconds": 2846.59,
+        "completedStages": 1,
+        "integrationStageRan": false,
+        "e2eStageRan": false
+      }
+    },
+    {
+      "run": 11,
+      "fullSuite": {
+        "status": "stopped",
+        "command": "npm run test:all",
+        "log": "/tmp/echo-69507-test-all-completion-11.log",
+        "startedAt": "2026-09-07T05:58:01.368081+00:00",
+        "sourceFingerprint": "4ada9ff0ee312ec898fadfbc7008350c46e54038576847dfd1a36b3345ee68e3",
+        "build": 13,
+        "allThreeStagesRequired": true,
+        "execSessionId": 69060,
+        "exitCode": 130,
+        "stoppedAt": "2026-09-07T06:01:28.915482+00:00",
+        "reason": "Independent review found checkout fixture pollution in generationless respawn test; stopped early before narrow test-only temp-directory correction.",
+        "partialCompletedFiles": 33,
+        "reportedFailures": []
+      }
+    }
+  ],
+  "fingerprintPaths": [
+    "src",
+    "scripts",
+    "tests",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json",
+    "vitest.config.ts",
+    "vitest.integration.config.ts",
+    "vitest.e2e.config.ts",
+    "dashboard",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/standards-registry-area-audits.json",
+    "docs/audits/telegram-message-origin-interaction-family.json",
+    "docs/specs/reports/telegram-message-origin-interaction-family-review.md",
+    "specs/provider-portability/06-state-detector-registry.md"
+  ],
+  "focusedCorrection": {
+    "passedFiles": 7,
+    "passedTests": 124,
+    "typecheckExitCode": 0,
+    "log": "/tmp/echo-origin-fallback-guard-fix-tests.log"
+  },
+  "notificationDecision": {
+    "status": "engineering-correction-authorized-by-original-request",
+    "operatorReplyInferred": false,
+    "reason": "Personal client mute/archive inspection was an extra draft restriction added by the agent; original user instruction already authorizes notification using application permission."
+  },
+  "finalFocused": {
+    "noticeTests": 50,
+    "issuerAndCollectorTests": 21,
+    "collectorProductionE2ETests": 3,
+    "registryIsolationTests": 110,
+    "awarenessMigrationAndFallbackLog": "/tmp/echo-origin-final-awareness-ratchet-7.log",
+    "addendaParityLog": "/tmp/echo-origin-final-addenda-parity.log",
+    "noticeIdentity": {
+      "passedTests": 273,
+      "passedFiles": 24,
+      "log": "/tmp/origin-notice-identity-focused.log"
+    },
+    "lifecycleDiagnostics": {
+      "passedTests": 14,
+      "passedFiles": 2,
+      "log": "/tmp/echo-origin-lifecycle-diagnostic-guard.log",
+      "guardFinalLog": "/tmp/echo-origin-final-fallback-9.log",
+      "silentFallbackBaseline": 495
+    },
+    "leaseRenewal": {
+      "passedTests": 163,
+      "passedFiles": 5,
+      "focusedLog": "/tmp/echo-origin-lease-final-focused.log",
+      "realTimeE2ELog": "/tmp/echo-origin-lease-final-e2e.log",
+      "realTimeSeconds": 66.4,
+      "sameEpochAfterDefaultTtl": true,
+      "build": 9
+    },
+    "tokenIsolation": {
+      "passedTests": 46,
+      "unitLog": "/tmp/echo-registry-token-unit.log",
+      "actualProcessE2ELog": "/tmp/echo-registry-token-e2e.log",
+      "build": 10
+    },
+    "finalGuards": {
+      "passedTests": 176,
+      "passedFiles": 4,
+      "log": "/tmp/echo-origin-final-guards-13.log"
+    }
+  },
+  "startupTrialHandoffCorrection": "Build7 start signal was queued to an idle agent with send_message and did not launch the trial. Corrected using followup_task; trial has now been assigned to an active worker. No startup result claimed.",
+  "fullStartupTrial": {
+    "state": "bounded-final-runtime-assertions-passed; original cleanup audit remains failed; independent closure verified",
+    "testedBuild": "build7",
+    "actualLifelineLaunched": true,
+    "actualSupervisorLaunchedMain": true,
+    "leaseGap": "default lease TTL60s vs heartbeat checks120s; dedicated renew timer dev-gated; origin correctly holds when expired",
+    "fix": "narrow lifecycle-bound origin writer dependency on existing renewal, explicit config values preserved",
+    "isolationFinding": "Unconditional autostart installation created a task-named LaunchAgent; relaunched test main lacked private environment and launched a task Codex subprocess. Exact task label/plist/processes/session removed; existing production agent untouched.",
+    "passed": false,
+    "providerRequests": "unknown; absence of retained completion metadata is not proof of zero requests",
+    "isolationConforming": false,
+    "cleanupVerified": true,
+    "finalRepeat": {
+      "state": "runtime-assertions-passed-with-independent-closure",
+      "evidence": "/tmp/echo-origin-fullstart-verified-b94qpu4i/evidence.json",
+      "summary": "/tmp/echo-origin-fullstart-verified-b94qpu4i/bounded-result-summary.json",
+      "build": "12",
+      "actualEntrypoints": [
+        "cli lifeline start",
+        "ServerSupervisor",
+        "cli server start --foreground --no-telegram"
+      ],
+      "externalTransport": "Telegram HTTP replaced by failclosed loopback fixture",
+      "credentials": "actual SecretStore encrypted fixture placeholders; no real Telegram credentials",
+      "controls": {
+        "required": 15,
+        "observed": 15,
+        "allPassed": true
+      },
+      "runtimeAssertionsPassed": true,
+      "originalOverallOutcome": "failed",
+      "cleanupConservativeProblem": [
+        "identity changed before kill 96769"
+      ],
+      "independentClosure": {
+        "at": "2026-09-07T04:12:39.452Z",
+        "survivors": [],
+        "sockets": [],
+        "privateSocket": false,
+        "portsFree": {
+          "mainPort": true,
+          "fixturePort": true
+        },
+        "registryEntries": 0,
+        "closed": true
+      },
+      "lease": {
+        "seconds": 135,
+        "samples": 27,
+        "epochs": [
+          1
+        ],
+        "allHeld": true
+      },
+      "recoveredOriginalOperations": [
+        {
+          "phase": "owner-outage-held",
+          "operationId": "49861030-626f-4201-9269-174535fa754b",
+          "receipts": [
+            {
+              "child_id": "56ca6194-ff04-4748-afe2-03869ffe82cc",
+              "state": "accepted",
+              "message_id": "104"
+            }
+          ]
+        },
+        {
+          "phase": "startup-operation-queued-without-receipt",
+          "operationId": "362d6469-451c-40e0-8d71-3ebb3a7e9275",
+          "receipts": [
+            {
+              "child_id": "ef01223f-8a0a-4236-8e0b-24418550a7b7",
+              "state": "accepted",
+              "message_id": "105"
+            }
+          ]
+        }
+      ],
+      "mainPids": [
+        {
+          "role": "main",
+          "generation": 1,
+          "pid": 48234
+        },
+        {
+          "role": "main",
+          "generation": 2,
+          "pid": 96767
+        }
+      ],
+      "ownerPids": [
+        {
+          "role": "lifeline",
+          "generation": 1,
+          "pid": 47748
+        },
+        {
+          "role": "lifeline",
+          "generation": 2,
+          "pid": 92210
+        }
+      ],
+      "targetTopicSendCount": 6,
+      "distDigests": {
+        "commands/server.js": "f0be82272703f3625b6bc354912a50a48a5997b569dd9e19a971f57f119db9a2",
+        "lifeline/TelegramLifeline.js": "4c60a975e2c9fb6f123158b133943ab588288e842459afd4ab9d247253d2605c",
+        "lifeline/ServerSupervisor.js": "142b81b631d7fae4445c5eaf80beb1727bf758ae7629491015c82f434d7cb44e",
+        "core/MultiMachineCoordinator.js": "e6c680c1da7f8cc10d5710fc53d409ad429cd8515122f2aa4bff3f8869f771b7",
+        "messaging/telegram-origin/TelegramOriginBoot.js": "220fe890624030c92725615b2880a9f9d489cb6b41130f0293d26726af208fee"
+      },
+      "retainedSummary": "docs/specs/reports/telegram-message-origin-evidence/startup-build12.json"
+    },
+    "globalRegistryUnchanged": "unknown: escaped build7 LaunchAgent could invoke ordinary global registry pruning; no pretrial snapshot exists",
+    "globalTmuxRemainOnExit": "diagnostic harness set on; prior value unknown, no blind restoration attempted",
+    "boundedAttempts": [
+      {
+        "state": "failed",
+        "runner": "/tmp/echo-origin-fullstart-verified-yozxaqkl/host-run.mjs",
+        "evidence": "/tmp/echo-origin-fullstart-verified-yozxaqkl/evidence.json",
+        "isolationControls": "/tmp/echo-origin-fullstart-verified-mrm2e7m_/sandbox-controls.json",
+        "priorRootsClosure": "/tmp/echo-origin-prior-roots-closure.json",
+        "reviewer": "origin_security_review",
+        "build": 11,
+        "defaultLeaseConfig": true,
+        "kernelSandbox": "macOS Seatbelt inherited by descendants",
+        "hardDeadlineSeconds": 480,
+        "initialSendAccepted": true,
+        "leaseSamples": 27,
+        "sameEpochAfter135Seconds": true,
+        "ownerRestartPassed": true,
+        "passed": false,
+        "cleanupVerified": true,
+        "failure": "Seatbelt omitted read-only df exec; production single-instance guard correctly refused stale-lock reclamation without filesystem verification",
+        "mainRestartPassed": false
+      }
+    ],
+    "build13Attempts": [
+      {
+        "root": "/tmp/echo-origin-fullstart-verified-ka08ey95",
+        "status": "failed-detector-predicate-before-first-test-message",
+        "exactHealthRetained": false,
+        "originalCleanupPassed": false,
+        "independentClosurePassed": true,
+        "diagnosis": "Later retained health indicates native failed vs fixture expected unavailable; first attempt exact field remains inference."
+      },
+      {
+        "root": "/tmp/echo-origin-fullstart-verified-bubst7m0",
+        "status": "failed-native-fixture-predicate",
+        "exactHealthRetained": true,
+        "observed": "config healthy; notice healthy; ownedContracts pass all six checks; native failed with cleanupVerified true; restrictive outer sandbox conflicts with nested native fixture networking",
+        "productionCorrectionRequired": false,
+        "independentClosurePassed": true
+      }
+    ],
+    "build13Final": {
+      "build": "13",
+      "runtimeAssertionsPassed": true,
+      "originalOverallOutcome": "failed",
+      "cleanupConservativeProblem": [
+        "identity changed before kill 68302"
+      ],
+      "independentClosure": {
+        "at": "2026-09-07T05:11:42.699Z",
+        "survivors": [],
+        "sockets": [],
+        "privateSocket": false,
+        "portsFree": {
+          "mainPort": true,
+          "fixturePort": true
+        },
+        "registryEntries": 0,
+        "originalEvidenceUnchanged": true,
+        "closed": true
+      },
+      "controls": {
+        "observed": 15,
+        "allPassed": true
+      },
+      "lease": {
+        "seconds": 135,
+        "samples": 27,
+        "epochs": [
+          1
+        ],
+        "allHeld": true
+      },
+      "detectorHealth": [
+        {
+          "phase": "detector-health-before-restart",
+          "at": 1788757717190,
+          "health": {
+            "sources": {
+              "config": {
+                "state": "healthy",
+                "reason": "source-observed",
+                "attemptedAt": 1788757716477,
+                "succeededAt": 1788757716496,
+                "busy": false,
+                "revision": 3
+              },
+              "noticePolicy": {
+                "state": "healthy",
+                "reason": "policy-source-observed",
+                "attemptedAt": 1788757716431,
+                "succeededAt": 1788757716451,
+                "busy": false,
+                "revision": 5
+              },
+              "nativeObservations": {
+                "state": "idle",
+                "reason": "no-tracked-sessions",
+                "succeededAt": null,
+                "harnesses": {}
+              }
+            },
+            "canaries": {
+              "ownedContracts": {
+                "scope": "owned-file-backed-secretstore-fixture",
+                "osKeychainVerified": false,
+                "state": "pass",
+                "reason": "owned-file-key-contracts-verified",
+                "attemptedAt": 1788757706458,
+                "finishedAt": 1788757706859,
+                "validUntil": 1788761306859,
+                "attempts": 1,
+                "intervalMs": 3600000,
+                "checks": [
+                  "encrypted-config-read",
+                  "exact-hub-permission",
+                  "opt-out-observed",
+                  "hub-rebind-refused",
+                  "credential-rotation-refused",
+                  "malformed-source-refused"
+                ]
+              },
+              "nativeModels": {
+                "state": "failed",
+                "reason": "native-canary-failed",
+                "sampledAt": 1788757706966,
+                "validUntil": null,
+                "cleanupVerified": true,
+                "cliVersion": null,
+                "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+                "parserDigest": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+                "harness": "codex-cli",
+                "unsupportedHarnesses": [
+                  "claude-code",
+                  "gemini-cli",
+                  "pi-cli",
+                  "grok-build"
+                ],
+                "scope": "native-cli-format-with-loopback-provider",
+                "providerExecutionVerified": false
+              }
+            }
+          }
+        },
+        {
+          "phase": "detector-health-after-restart",
+          "at": 1788757870445,
+          "health": {
+            "sources": {
+              "config": {
+                "state": "healthy",
+                "reason": "source-observed",
+                "attemptedAt": 1788757869453,
+                "succeededAt": 1788757869472,
+                "busy": false,
+                "revision": 0
+              },
+              "noticePolicy": {
+                "state": "healthy",
+                "reason": "policy-source-observed",
+                "attemptedAt": 1788757869453,
+                "succeededAt": 1788757869472,
+                "busy": false,
+                "revision": 0
+              },
+              "nativeObservations": {
+                "state": "idle",
+                "reason": "no-tracked-sessions",
+                "succeededAt": null,
+                "harnesses": {}
+              }
+            },
+            "canaries": {
+              "ownedContracts": {
+                "scope": "owned-file-backed-secretstore-fixture",
+                "osKeychainVerified": false,
+                "state": "pass",
+                "reason": "owned-file-key-contracts-verified",
+                "attemptedAt": 1788757869518,
+                "finishedAt": 1788757869926,
+                "validUntil": 1788761469926,
+                "attempts": 1,
+                "intervalMs": 3600000,
+                "checks": [
+                  "encrypted-config-read",
+                  "exact-hub-permission",
+                  "opt-out-observed",
+                  "hub-rebind-refused",
+                  "credential-rotation-refused",
+                  "malformed-source-refused"
+                ]
+              },
+              "nativeModels": {
+                "state": "failed",
+                "reason": "native-canary-failed",
+                "sampledAt": 1788757869996,
+                "validUntil": null,
+                "cleanupVerified": true,
+                "cliVersion": null,
+                "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+                "parserDigest": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+                "harness": "codex-cli",
+                "unsupportedHarnesses": [
+                  "claude-code",
+                  "gemini-cli",
+                  "pi-cli",
+                  "grok-build"
+                ],
+                "scope": "native-cli-format-with-loopback-provider",
+                "providerExecutionVerified": false
+              }
+            }
+          }
+        }
+      ],
+      "originalHeldReceipts": [
+        {
+          "phase": "original-held-operation-accepted-by-new-main",
+          "at": 1788757870446,
+          "operationId": "575f9ce5-3080-47df-b448-b4f98d4cdb6e",
+          "receipt": {
+            "child_id": "31290b56-eb3e-4a79-8103-fd411a4d4e25",
+            "state": "accepted",
+            "message_id": "105"
+          },
+          "newMainPid": 68301
+        },
+        {
+          "phase": "original-owner-outage-operation-accepted",
+          "at": 1788757870446,
+          "operationId": "2611fa99-3a20-4a42-887e-32bc7554b03b",
+          "receipt": {
+            "child_id": "76eddd74-38dc-4e1d-b49f-84183ef1db0a",
+            "state": "accepted",
+            "message_id": "104"
+          }
+        }
+      ],
+      "acceptedReceiptPreserved": true,
+      "duplicateSuppressed": {
+        "phase": "accepted-content-repeat-suppressed",
+        "at": 1788757871455,
+        "sendCount": 5,
+        "response": {
+          "ok": true,
+          "suppressedDuplicate": true,
+          "originId": "e5c82dcf-fa88-4ebe-927d-ba4a9267e3c7",
+          "operationId": "db67ff81-0e05-4f13-9bec-057f8ab699e8",
+          "retryable": false
+        }
+      },
+      "targetTopicSendCount": 6,
+      "distDigests": {
+        "commands/server.js": "f0be82272703f3625b6bc354912a50a48a5997b569dd9e19a971f57f119db9a2",
+        "lifeline/TelegramLifeline.js": "4c60a975e2c9fb6f123158b133943ab588288e842459afd4ab9d247253d2605c",
+        "lifeline/ServerSupervisor.js": "142b81b631d7fae4445c5eaf80beb1727bf758ae7629491015c82f434d7cb44e",
+        "core/MultiMachineCoordinator.js": "e6c680c1da7f8cc10d5710fc53d409ad429cd8515122f2aa4bff3f8869f771b7",
+        "messaging/telegram-origin/TelegramOriginBoot.js": "62ce93c5f646043b969095537f5baa1f75687da4f74ff0c711339a34364c7bf3",
+        "messaging/telegram-origin/TelegramOriginRuntime.js": "0151d0749a96aaca14dd547e0479d507638de03983659700feb8853ab3bd3b79",
+        "messaging/telegram-origin/OriginConfigReader.js": "ee4f7296b6e8be65bf8c55f6f144dd50ee6c2142840e7187ef2937f80ff1248c",
+        "messaging/telegram-origin/OriginConfigReader.worker.js": "46dad6b9780cb453b25607f88661f2f76f78c3c58e886ba4c673fd05d8f6bbd0",
+        "messaging/telegram-origin/OriginNoticePolicyObserver.js": "32f1a0cc0b10c49a00d613b2f39b3ce3aa269716b200686b09a5ba61f0ca2148",
+        "messaging/telegram-origin/OriginDetectorCanary.js": "6eef9efd3e577e92caeaaba30cf31b101c8e675e1571af60bb4e69d5cc17891d",
+        "messaging/telegram-origin/OriginDetectorCanary.worker.js": "e78ece55f4245812ff07fee8d722065c11e62d092f6c737ee974ae95e9eadf1a",
+        "messaging/telegram-origin/OriginNativeCanaryLane.js": "764f6e501fbd3c7d73289b0675e51bbcaa2eb96c58ef215ef60141ca07551956",
+        "messaging/telegram-origin/RuntimeOriginObserver.js": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+        "core/SecretStore.js": "e1d78af0e982a7568c32873ede94bcc806a21cb52dfdf3b12e93aa70f696d8e9"
+      },
+      "nativeDiagnosticBoundary": "Outer kernel fixture intentionally does not establish native canary success; failed/unavailable must retain verified cleanup and explicit loopback scope. Separate build13 native E2E supplies native success evidence.",
+      "sourceFingerprint": "1dd16ed8fc96d345e9143584bf72ce56d32ad01c907ffd4f57a3739088048360",
+      "originalEvidenceSha256": "fc5633a2e59817398e3b9db174d006ae66c72abb1f31f06f01d947bca3513d3b",
+      "runtimeResultSha256": "99f10dbb7cf62f6c01bafbabad3ea6e50351e80c4b6d6570f6ddd2fe8c64763c",
+      "evidence": "docs/specs/reports/telegram-message-origin-evidence/startup-build13.json",
+      "privateRoot": "/tmp/echo-origin-fullstart-verified-w174ufhi"
+    }
+  },
+  "operatorSurface": {
+    "status": "build13-final-phone-passed",
+    "focusedPassedTests": 644,
+    "productionE2EPassedTests": 11,
+    "phoneBrowserEvidence": "/tmp/echo-origin-phone-browser-W5O3tS/evidence.json",
+    "phoneEvidenceBoundary": "Actual375x812 Chrome PIN unlock; all three shared tiles and audit record; display save preserves original evidence; Save at y676.7 after Display settings tap, no overflow. HTTP fixture excludes dashboard WebSocket health.",
+    "reviewers": [
+      "origin_correctness_review",
+      "origin_security_review",
+      "root"
+    ],
+    "pendingCorrections": [],
+    "focusedPassedFiles": 39,
+    "productionE2EPassedFiles": 3,
+    "phoneScreenshot": "/tmp/echo-origin-phone-browser-W5O3tS/phone.png",
+    "focusedLog": "/tmp/echo-origin-phone-final13-focused.log",
+    "e2eLog": "/tmp/echo-origin-phone-final13-e2e.log",
+    "retainedEvidence": "docs/specs/reports/telegram-message-origin-evidence/phone-build13.json",
+    "sourceDashboardLog": "/tmp/echo-origin-glance-all-dashboard-final-source.log",
+    "focusedExistingSkips": 1,
+    "phoneGlanceScreenshot": "/tmp/echo-origin-phone-browser-W5O3tS/glance.png"
+  },
+  "standardsRegistry": {
+    "state": "family-review-complete",
+    "articles": 91,
+    "newArticle": "Telegram Message Origin Is Mandatory; Its Display Is Optional",
+    "sourceAuthorization": "Justin topic 69507 explicit standard request and approval to build hold-and-notify",
+    "checksPassed": [
+      "code-backreference",
+      "tree-parentage",
+      "insertion-placement",
+      "single-governing-obligation",
+      "countdown",
+      "generated-hierarchy"
+    ],
+    "focusedTestLog": "/tmp/echo-origin-standards-registry-tests.log",
+    "focusedInitialResult": {
+      "passed": 49,
+      "failed": 1,
+      "reason": "live-registry count snapshot still 90 before the authorized article addition; count updated to91, family audit remains required"
+    },
+    "directionReview": "Repository requires approving operator review on final commit or independently signed direction ratification; no approval proof fabricated.",
+    "registrySha256": "2dc4f53726687c57e85ef608fc64830d8fe8df1ec41f3b19326aa2b212529035",
+    "familyAudit": "docs/audits/telegram-message-origin-interaction-family.json",
+    "familyReview": "docs/specs/reports/telegram-message-origin-interaction-family-review.md",
+    "floorLowered": false,
+    "focusedFinalResult": {
+      "passedTests": 50,
+      "log": "/tmp/echo-origin-standards-registry-tests-final.log"
+    }
+  },
+  "stageBPartition": {
+    "status": "passed",
+    "newExcludedUtility": "src/core/AgentRegistryPaths.ts",
+    "reviewer": "origin_security_review",
+    "certifiedFiles": 7,
+    "excludedFiles": 82,
+    "closureFiles": 89,
+    "certifiedFingerprintChanged": false,
+    "artifactDigestChanged": false,
+    "rebindingPerformed": false
+  },
+  "sideEffectsReview": {
+    "reviewer": "origin_security_review",
+    "concurred": true,
+    "reviewedBodySha256": "56f40fb7dfef1cc51ac6e7c0b7e869cca209bbbcbf6f60e7d506d0995990cbb8",
+    "appendedArtifactSha256": "27100124f072bf19ff95923a3bde0519f9fc9083b20b0a926189cb2d4ce3e2c3",
+    "boundary": "Artifact and direct production test claims; excludes full-suite success, overall cleanup success, physical peers, release certification and rollout",
+    "currentConcurrence": false,
+    "currentStatus": "Final complete regression result and test-only delta awaiting exact-body independent concurrence; previous bounded reviews retained.",
+    "build13Review": {
+      "reviewer": "origin_correctness_review",
+      "reviewedBodySha256": "103ac385b0de9c8e01bd4c04029c4355914577dcffa5bf2627188e88014ed19b",
+      "concurred": true,
+      "boundary": "Implementation and stated evidence only; excludes fullsuite success, original overall cleanup success, physical peers, release certification, commit approval and rollout."
+    }
+  },
+  "detectorReadiness": {
+    "state": "build13-focused-independent-review-and-actual-native-proof-passed",
+    "finding": "Precommit Rule3 gate found three unregistered readers/observers; independent review distinguished native hook carrier proof from current-model extraction.",
+    "ownedContracts": "Startup and scheduled isolated encrypted file-key/vault/hub checks implemented; 60 focused detector tests and82 secret/fallback regression tests pass.",
+    "nativeModel": "Final build13 installed Codex app-server two-turn loopback fixture passed actual kernel isolation and verified cleanup; final E2E and retained dist proof passed. Other harnesses unavailable.",
+    "authority": "Diagnostic only; grants no message, credential, model-observation or ownership authority.",
+    "peerInput": "Existing remote access route requested from operator; no reply inferred.",
+    "nativeModelDevelopmentTrial": {
+      "passed": true,
+      "evidence": "docs/specs/reports/telegram-message-origin-evidence/codex-model-canary-development.json",
+      "providerExecutionVerified": false,
+      "scope": "native-cli-format-with-loopback-provider",
+      "compiledScope": "Historical first targeted compiled output; final build13 package evidence is separately retained in codex-model-canary-build13.json."
+    },
+    "focusedLogs": [
+      "/tmp/echo-origin-detector-final-focused3.log",
+      "/tmp/echo-origin-detector-secret-regression.log"
+    ],
+    "reviewer": "origin_correctness_review",
+    "finalNativeEvidence": "/var/folders/6r/qnq82tbd6vdg3wg2v5m01cz00000gn/T/echo-origin-native-build13-gnLveI/evidence.json",
+    "retainedFinalNativeEvidence": "docs/specs/reports/telegram-message-origin-evidence/codex-model-canary-build13.json"
+  },
+  "build13": {
+    "passed": true,
+    "log": "/tmp/echo-origin-final-build-13.log",
+    "lintPassed": true,
+    "lintLog": "/tmp/echo-origin-final-lint-13.log",
+    "sourceFingerprint": "1dd16ed8fc96d345e9143584bf72ce56d32ad01c907ffd4f57a3739088048360",
+    "fingerprintedFiles": 5568,
+    "at": "2026-09-07T05:01:45.637132+00:00"
+  },
+  "precommit13": {
+    "migrationConsumer": "passed",
+    "rule3": "passed",
+    "protectMigration": "passed",
+    "e2ePairing": "passed",
+    "instarDevTrace": "pending-fresh-final-review-trace; not bypassed",
+    "log": "/tmp/echo-origin-precommit-review-13.log"
+  },
+  "testOnlyCorrectionBatch": {
+    "productionBuild": 13,
+    "productionChangeRequired": false,
+    "state": "reviewed-and-frozen",
+    "files": [
+      "tests/unit/respawn-collision-notice.test.ts",
+      "tests/unit/cold-start-fallback-wiring.test.ts",
+      "tests/unit/telegram-origin/notice-policy-observer.test.ts",
+      "tests/integration/telegram-origin-detector-health.test.ts",
+      "tests/e2e/threadline-telegram-origin-authors.test.ts",
+      "tests/e2e/telegram-origin-detector-canary.test.ts"
+    ],
+    "evidence": "/tmp/echo-origin-observer-open-race.log",
+    "firstRunResult": "5failures prevent fullsuite success; no partial green claim",
+    "reviewer": "root",
+    "compiledHashesVerified": 14,
+    "productionChanges": false,
+    "focusedResults": [
+      {
+        "tests": 22,
+        "files": 3,
+        "log": "/tmp/echo-origin-respawn-coldstart-correction-final.log"
+      },
+      {
+        "tests": 16,
+        "files": 3,
+        "log": "/tmp/echo-origin-observer-test-correction.log"
+      },
+      {
+        "tests": 1,
+        "files": 1,
+        "reviewer": "origin_activation_review"
+      }
+    ],
+    "independentReviews": [
+      {
+        "reviewer": "origin_correctness_review",
+        "concurred": true,
+        "scope": "Security and activation test-only corrections plus approved-standard parent metadata; no material findings; excludes fullsuite outcome."
+      },
+      {
+        "reviewer": "origin_security_review",
+        "concurred": false,
+        "finding": "Behavioral wiring assertions strong; generationless test must isolate its inbound fixture directory and clean after detached respawn."
+      },
+      {
+        "reviewer": "origin_security_review",
+        "concurred": true,
+        "scope": "Final isolated inbound fixture boundaries and real builder/wrapper/producer assertions; no material remaining issue; no fullsuite or rollout concurrence."
+      }
+    ],
+    "fixtureCleanup": {
+      "removed": 12,
+      "scope": "exact completion-worktree generationless fixture history/bootstrap files",
+      "identityChecks": [
+        "exact basename",
+        "regular non-symlink",
+        "size",
+        "SHA256"
+      ],
+      "executor": "SafeFsExecutor.safeUnlinkSync",
+      "productionFilesTouched": false
+    },
+    "fixtureIsolationFocused": {
+      "tests": 37,
+      "files": 5,
+      "log": "/tmp/echo-origin-respawn-fixture-isolation.log",
+      "checkoutFixtureFilesAfter": 0,
+      "survivingFixtureDirectories": 0
+    },
+    "finalReviewers": [
+      "root",
+      "origin_correctness_review",
+      "origin_security_review"
+    ]
+  },
+  "artifactSecretScan": {
+    "textArtifacts": 118,
+    "findings": 0,
+    "at": "2026-09-07T06:02:57.358818+00:00",
+    "scope": "private-key blocks, GitHub token shapes, Telegram bot token shapes; no claim of comprehensive secret detection"
+  }
+}

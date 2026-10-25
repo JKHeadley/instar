@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-09T19:46:40.439Z",
+  "slug": "a2a-peer-dark-reporting",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/A2ARedeliverySentinel.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A2ARedeliverySentinel dark pass: one item per (peer, episode) latched by the open episode; 12 h cooldown; restart rebuilds from the durable OPEN item; registry model a2a-peer-dark-raise"
+    },
+    "component": "A2ARedeliverySentinel"
+  },
+  "verdict": "pass"
+}

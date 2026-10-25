@@ -22,6 +22,7 @@ import type {
   McpServerSpec,
 } from '../../../primitives/integration/mcpToolRegistry.js';
 import { CapabilityFlag } from '../../../capabilities.js';
+import { assertManagedTelegramMcpRegistration } from '../../../primitives/integration/mcpToolRegistry.js';
 
 function configPath(scope: 'user' | 'project' | undefined, projectRoot?: string): string {
   if (scope === 'project' && projectRoot) {
@@ -78,6 +79,7 @@ class OpenAiCodexMcpToolRegistry implements McpToolRegistry {
   readonly capability = CapabilityFlag.McpToolRegistry;
 
   async register(spec: McpServerSpec, options?: McpRegistryOptions): Promise<void> {
+    assertManagedTelegramMcpRegistration(spec);
     const file = configPath(options?.scope);
     await fs.mkdir(path.dirname(file), { recursive: true });
     const existing = await readExistingConfig(file);

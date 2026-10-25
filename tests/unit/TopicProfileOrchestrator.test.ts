@@ -75,6 +75,8 @@ interface Harness {
   disclosures: Array<{ topic: string; text: string; auditSeq: number }>;
   audits: Array<Record<string, unknown>>;
   kills: Array<{ name: string; mode: 'resume' | 'fresh' }>;
+  /** Controls what the kill deps RETURN — a failed kill must abort the respawn. */
+  killResult: { value: boolean };
   spawns: Array<{
     topicKey: string;
     framework: IntelligenceFramework;
@@ -133,6 +135,7 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
   const disclosures: Harness['disclosures'] = [];
   const audits: Harness['audits'] = [];
   const kills: Harness['kills'] = [];
+  const killResult = { value: true };
   const spawns: Harness['spawns'] = [];
   const sessions = new Map<string, { sessionName: string; cwd: string } | null>();
   const idle = { value: 'confirmed-idle' as IdleReading };
@@ -183,11 +186,11 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
       readIdle: () => idle.value,
       killForResume: async (name) => {
         kills.push({ name, mode: 'resume' });
-        return true;
+        return killResult.value;
       },
       killFresh: async (name) => {
         kills.push({ name, mode: 'fresh' });
-        return true;
+        return killResult.value;
       },
       spawn: async (topicKey, resolved, directive) => {
         const outcome = spawnImpl.fn
@@ -250,6 +253,7 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
     disclosures,
     audits,
     kills,
+    killResult,
     spawns,
     sessions,
     idle,
@@ -512,6 +516,80 @@ describe('idle re-confirm + deferral', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('kill-path precision', () => {
+  // ── Regression: "the stop that does not stop" (topic 60487, 2026-08-27).
+  // The server wiring handed killSession() a TMUX NAME while it resolves BY ID,
+  // so the kill silently returned false. The orchestrator ignored that boolean
+  // and spawned anyway — which found the old session still alive and merely
+  // injected into it, leaving the framework unchanged while `respawn-applied`
+  // was written to the audit. These three lock the honest behaviour in.
+
+  it('a FAILED kill aborts the respawn instead of spawning into the still-live session', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.killResult.value = false;
+    await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
+    await waitUntil(() => h.audits.some((a) => a.type === 'respawn-kill-failed'));
+    expect(h.kills.length).toBe(1); // the kill was attempted...
+    expect(h.spawns.length).toBe(0); // ...and its failure stopped the respawn
+    expect(h.audits.some((a) => a.type === 'respawn-applied')).toBe(false);
+    const failure = h.audits.find((a) => a.type === 'respawn-kill-failed')!;
+    expect(failure.topic).toBe('7');
+    expect(failure.fresh).toBe(true);
+  });
+
+  it('a failed FRESH kill un-parks the still-live session\'s resume entry', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.killResult.value = false;
+    await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
+    await waitUntil(() => h.audits.some((a) => a.type === 'respawn-kill-failed'));
+    // The pre-kill park must be reversed for the framework still running,
+    // or the surviving session loses its resume id for nothing.
+    expect(h.claude.parks).toContain('7:mid-framework-switch');
+    expect(h.claude.unparks).toContain('7');
+  });
+
+  it('a failed kill COUNTS toward the breaker — the retry loop is bounded, not forever', async () => {
+    const h = makeHarness({ spawnFailureBreakerThreshold: 2 });
+    liveSession(h);
+    h.killResult.value = false;
+    // One real trip through the respawn path with a kill that will not take.
+    await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
+    await waitUntil(() => h.audits.some((a) => a.type === 'respawn-kill-failed'));
+    await waitUntil(() => (h.store.get('7')?.breakerCount ?? 0) === 1);
+    // The respawn is level-triggered on pin != last-applied, so an uncounted
+    // failure would re-attempt on every idle window forever. Counting it bounds
+    // the loop at `spawnFailureBreakerThreshold` and settles LOUDLY.
+    h.orch.recordSpawnFailure('7', 'kill-failed');
+    await waitForBreakerTrip(h);
+    expect(h.store.parkedFor('7')?.profile.framework).toBe('codex-cli');
+    expect(
+      h.disclosures.some((d) => d.text.includes("Couldn't launch with the requested profile")),
+    ).toBe(true);
+  });
+
+  it('a spawn that lands on a DIFFERENT framework is recorded as a mismatch, never as applied', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.spawnImpl.fn = async () => ({
+      ok: true,
+      // The pin asked for codex-cli; the spawn reports it landed on claude-code.
+      applied: {
+        framework: 'claude-code',
+        model: 'claude-opus-5',
+        modelTier: null,
+        thinkingMode: null,
+        effort: null,
+      },
+    });
+    await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
+    await waitUntil(() => h.audits.some((a) => a.type === 'respawn-profile-mismatch'));
+    expect(h.audits.some((a) => a.type === 'respawn-applied')).toBe(false);
+    const mismatch = h.audits.find((a) => a.type === 'respawn-profile-mismatch')!;
+    expect(mismatch.requestedFramework).toBe('codex-cli');
+    expect(mismatch.appliedFramework).toBe('claude-code');
+  });
+
   it('a framework switch PARKS both resume stores before a FRESH kill and discloses the honest loss', async () => {
     const h = makeHarness();
     liveSession(h);

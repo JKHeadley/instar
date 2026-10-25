@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CommonBlocker, JobDefinition } from './types.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,7 +94,7 @@ export class BlockerLearningLoop {
 
   constructor(config: LearningLoopConfig) {
     this.config = config;
-    this.thresholds = { ...DEFAULT_THRESHOLDS, ...config.promotionThresholds };
+    this.thresholds = mergeDefaults(DEFAULT_THRESHOLDS, config.promotionThresholds);
     this.expirationMs = (config.expirationDays ?? DEFAULT_EXPIRATION_DAYS) * 24 * 60 * 60 * 1000;
     this.pendingPruneMs = (config.pendingPruneDays ?? DEFAULT_PENDING_PRUNE_DAYS) * 24 * 60 * 60 * 1000;
     this.maxEntries = config.maxEntriesPerJob ?? DEFAULT_MAX_ENTRIES;

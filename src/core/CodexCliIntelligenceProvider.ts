@@ -37,6 +37,7 @@ import {
   maybeSweepStaleCodexOutDirs,
 } from '../providers/adapters/openai-codex/transport/codexSpawn.js';
 import { CodexUsageAccumulator } from '../providers/adapters/openai-codex/transport/codexUsageParser.js';
+import { scrubForStore } from './durableSecretScrub.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -97,6 +98,15 @@ function resolveIntelligenceScratchDir(): string {
 const EXEC_JSON_RECOVERY_LEVERS =
   'If this codex CLI predates --json/--output-last-message (< 0.20), disable exec-json mode via ' +
   '`intelligence.codexExecJson: false` in .instar/config.json or env INSTAR_CODEX_EXEC_JSON=0.';
+
+/**
+ * One line, at most 240 chars, secrets redacted — safe to carry inside a
+ * thrown Error. Scrubs a 3,000-char window FIRST, then cuts, so a secret
+ * straddling the cut is still recognised whole (same order as outputExcerpt).
+ */
+function boundedErrorEvent(message: string): string {
+  return scrubForStore(message.replace(/\s+/g, ' ').trim().slice(0, 3_000), { maxBytes: 8_192 }).text.slice(0, 240);
+}
 
 function unknownFlagHint(stderrTail: string): string {
   return /unexpected argument|unrecognized option|unknown (option|flag)/i.test(stderrTail)
@@ -234,12 +244,12 @@ export function _resetUsageDriftEmissionForTest(): void {
  */
 function tryParseCodexResultEvent(
   line: string,
-): { agentMessageText?: string; turnCompleted?: boolean } | null {
+): { agentMessageText?: string; turnCompleted?: boolean; errorMessage?: string } | null {
   const t = line.trim();
   if (!t.startsWith('{') || !t.endsWith('}')) return null;
   // Perf pre-filter — decides only whether to ATTEMPT the parse; it cannot
   // extract values (extraction is strictly the top-level JSON.parse below).
-  if (!t.includes('turn.completed') && !t.includes('agent_message')) return null;
+  if (!t.includes('turn.completed') && !t.includes('agent_message') && !t.includes('"error"') && !t.includes('turn.failed')) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(t);
@@ -249,6 +259,18 @@ function tryParseCodexResultEvent(
   if (typeof parsed !== 'object' || parsed === null) return null;
   const p = parsed as Record<string, unknown>;
   if (p['type'] === 'turn.completed') return { turnCompleted: true };
+  // In --json mode codex reports WHY a run failed on stdout, not stderr: a
+  // top-level `error` event (`{"type":"error","message":…}`) or a
+  // `turn.failed` carrying `error.message` (e.g. "exceeded retry limit, last
+  // status: 429 Too Many Requests"). Without this the thrown Error read only
+  // "exit 1" — the 2026-10-14 four-day sorter pause looked like a mystery.
+  if (p['type'] === 'error' && typeof p['message'] === 'string') return { errorMessage: p['message'] };
+  if (p['type'] === 'turn.failed') {
+    const err = p['error'];
+    if (typeof err === 'object' && err !== null && typeof (err as Record<string, unknown>)['message'] === 'string') {
+      return { errorMessage: (err as Record<string, unknown>)['message'] as string };
+    }
+  }
   if (p['type'] === 'item.completed') {
     const item = p['item'];
     if (
@@ -622,6 +644,10 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     const outFile = join(outDir, 'last-message.txt');
     const acc = new CodexUsageAccumulator();
     let exitedZero = false;
+    // The LAST `error` / `turn.failed` message seen on stdout — the only place
+    // codex says WHY a --json run failed (stderr is empty); carried into the
+    // thrown Error, bounded + scrubbed, when the child exits non-zero.
+    let lastErrorEvent: string | null = null;
     // Early-terminal-settle capture (codex 0.144 shutdown-linger regression):
     // codex writes --output-last-message and exits ~16-30s AFTER emitting
     // turn.completed, which trips the 30s timeout on an ALREADY-COMPLETED call.
@@ -655,6 +681,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           const ev = tryParseCodexResultEvent(line);
           if (ev?.agentMessageText != null) agentMessageText = ev.agentMessageText;
           if (ev?.turnCompleted) sawTerminalTurn = true;
+          if (ev?.errorMessage != null) lastErrorEvent = ev.errorMessage;
         },
         onOversizedLine: () => acc.noteOversizedDiscard(),
         // Settle EARLY once the terminal turn completed AND we hold its final
@@ -678,11 +705,13 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
 
       if (result.exitCode === 0) exitedZero = true;
       if (result.exitCode !== 0) {
-        // Bounded stderr tail only — JSONL payloads are never concatenated
-        // wholesale into thrown Errors.
+        // Bounded stderr tail plus the LAST error/turn.failed message from the
+        // event stream (bounded + secret-scrubbed) — JSONL payloads are never
+        // concatenated wholesale into thrown Errors.
         throw new Error(
           `Codex CLI error (exec --json, exit ${result.exitCode})` +
             (result.stderrTail ? ` — ${result.stderrTail}` : '') +
+            (lastErrorEvent ? ` — last event: ${boundedErrorEvent(lastErrorEvent)}` : '') +
             unknownFlagHint(result.stderrTail),
         );
       }

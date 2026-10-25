@@ -5,6 +5,32 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "telegram-origin-session-custody",
+      "description": "Machine-bound preparation credential verifiers and the owner-only notice IPC socket. Raw credentials are never persisted. Session liveness and incarnation must still be current; a copied verifier or stale socket never grants delivery authority. Excluded structurally from git sync and replicated backup.",
+      "scope": "machine-local", "freshness": "real-time", "conflictShape": "single-writer", "transport": "none",
+      "paths": ["origin-sessions-*.json", "origin-sessions-*.json.*.tmp", "origin-notice.sock"],
+      "grandfathered": false,
+      "retention": { "class": "A", "access": "bounded", "maxBytes": 16384000,
+        "note": "At most 1000 session verifiers; revoked at session end, replaced on incarnation rotation. Socket is removed on orderly owner close and contains no payload or credential." }
+    },
+    {
+      "category": "telegram-origin-retained-evidence",
+      "description": "Immutable Telegram origin envelopes, child/attempt receipts and idempotent metric events beside the canonical PendingRelayStore entries. Entries alone own execution; retained metadata, spool and archives never claim sends. Operator pool reads federate authorized shards and disclose missing coverage.",
+      "scope": "coherent-on-demand",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": ["state/pending-relay.*.sqlite", "state/telegram-origin-spool/", "state/telegram-origin-archives/"],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "maxAgeMs": 2592000000,
+        "note": "30 days hot; bounded indexed archive batches retain evidence indefinitely with count/digest manifests. Queue payload cleanup and archive movement never remove receipt/origin lookup or aggregate totals. Execution remains in the existing credential-owner queue; evidence copies are inert. Disk pressure never silently drops retained metadata."
+      }
+    },
+    {
       "category": "undated-action-resurfacer-ledger",
       "description": "Pool-agreed stable-owner event ledger for undated high/critical action cooldown, delivery claims, outcome observation, and terminal disposition. It is keyed to one machine's local action-id namespace and may act only when every registered pool member's latest authenticated advert agrees on that owner and the same owner holds the serving lease; missing or divergent adverts and handoffs away pause instead of starting a fresh ledger.",
       "scope": "machine-local",
@@ -734,6 +760,25 @@
       "paths": [
         "state/coherence-journal/"
       ],
+      "grandfathered": false
+    },
+    {
+      "category": "lifeline-ingress-guard",
+      "description": "Lifeline ingress secret and its guard evidence (docs/specs/telegram-internal-route-lifeline-secret.md): the 0600 secret the lifeline and server share on this disk, the guard's persisted arming/graduation/counter state, and the button-tap claim store. MACHINE-LOCAL: each machine runs its own lifeline-to-server loopback hop with its own secret; the secret must never leave the disk, and the evidence describes only that hop. All three are in KEY_MATERIAL_PATHS (never served, edited, backed up or committed).",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/lifeline-ingress-secret",
+        "state/lifeline-ingress-secret.guard.json",
+        "state/telegram-callback-seen.json"
+      ],
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2002,
+        "note": "One 64-character secret, one replace-in-place guard record (fixed fields, no event rows), and a tap claim map capped at 2000 ids and 7 days (oldest evicted on write)."
+      },
       "grandfathered": false
     },
     {
@@ -1510,6 +1555,168 @@
         "boundedByResolution": true,
         "maxOpenItems": 100,
         "note": "One record per deferred weekly window (window cardinality is tiny). RESOLVED by a successful send (removed), by exhaustion (terminal-failed, then removed on the next drain once the window is in recordedWindows), or by the drain clearing an already-decided window; never grows unbounded."
+      }
+    },
+    {
+      "category": "new-topic-default-profile",
+      "description": "Dashboard 'default for dashboard-created topics' record ({framework, model, updatedAt, updatedBy}), read only by this machine's POST /sessions/create (docs/specs/dashboard-door-model-controls.md §3.2). Machine-local in v1: migrating-to-unified via issue #2085 (expires 2027-03-25); the surface labels it replication:'local-only'.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/new-topic-default-profile.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "A single replace-in-place record; {clear:true} deletes the file. No rows accumulate."
+      }
+    },
+    {
+      "category": "feedback-triage-evidence",
+      "description": "Feedback triage audit stream (decision, floor and transition rows: ids, dispositions, reasons, scores and floors, never report text) plus the scrubbed per-decision evidence packets the triage authority saw. Written only by the drain's fenced canonical owner; the triage disposition tables themselves live inside the backed-up feedback-drain.db. Packets are never served raw over HTTP.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/feedback-triage.jsonl",
+        "state/feedback-factory/store/triage-packets/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 20971520,
+        "maxAgeMs": 7776000000,
+        "note": "Audit log rotated at 20 MB with 90-day retention of rotated segments; evidence packets kept 14 days (pruned each triage tick)."
+      }
+    },
+    {
+      "category": "feedback-execute-scratch",
+      "description": "Feedback executor working state (docs/specs/feedback-triage-and-execution.md §4): per-attempt confinement settings files, canary nonces, parked secret-shaped change sets awaiting the operator's PIN-approved publication, live-proof result files, and a trash directory the executor empties after moving finished attempt clones out of the source tree. Written only by the drain's fenced canonical owner; the execution table itself lives inside the backed-up feedback-drain.db. Held change sets are never served over HTTP.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/feedback-factory/execute/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 268435456,
+        "maxAgeMs": 2592000000,
+        "note": "Trash is emptied every executor tick; a held change set is removed when it is published; settings and canary files are small and per attempt."
+      }
+    },
+    {
+      "category": "local-verify-journal",
+      "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority §2 step 6).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/journal.jsonl",
+        "state/local-verify/closed-seen.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 500,
+        "note": "Compacted at every boot: records kept while the PR is open plus 14 days after it is first seen closed, newest 500."
+      }
+    },
+    {
+      "category": "local-verify-inflight",
+      "description": "local-verify two-phase in-flight intent (attempt token written before the run child is spawned, pid/pgid patched after) plus the run child's transient input/result/log files. Machine-local by construction: it names a process group on this host.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/inflight.json",
+        "state/local-verify/runs/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One run at a time; the intent is cleared on exit and the run's input/result files are removed then."
+      }
+    },
+    {
+      "category": "local-verify-main-health",
+      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority §2 Self-heal (c)).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-health.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file, overwritten atomically on every state change."
+      }
+    },
+    {
+      "category": "local-verify-audit",
+      "description": "local-verify metadata-only audit log (queue, start, cancel, overlap, record, orphan-reap events). No test output or PR content.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/local-verify.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 5242880,
+        "keepSegments": 10,
+        "note": "Rotates at 5 MB; 10 files kept (spec local-verify-merge-authority §2 step 8)."
+      }
+    },
+    {
+      "category": "local-verify-queue",
+      "description": "local-verify durable PR verify queue (pr, head, base, base branch, first-queued time, attempts, error retries; the in-flight PR entry first), rewritten atomically on every queue change and restored at boot so a server restart (an auto-update) resumes queued and interrupted verifies instead of losing them. Entries whose PR closed or whose head moved are dropped at restore. `main` verifies are not persisted (the reconcile loop re-derives them). Machine-local: it names this machine's pending runs.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/queue.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 11,
+        "note": "At most the queue cap (10) plus the one in-flight entry; replaced in place (and only when its content changes), never appended. An unreadable file is moved aside once to queue.json.corrupt-<ts> for inspection (operator-cleared; one per corruption event)."
+      }
+    },
+    {
+      "category": "local-verify-flaky",
+      "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised; plus this machine's last green `main` record (head, finish time, files not clean on it), which a PR verify's isolation re-run requires. Machine-local: it describes this machine's own runs.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/flaky-history.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 501,
+        "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window, plus one green-main entry; rewritten in place."
       }
     }
   ]

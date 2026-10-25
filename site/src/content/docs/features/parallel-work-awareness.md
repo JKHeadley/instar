@@ -54,4 +54,8 @@ and graduates only after it is shown to be quiet. When on, every transition (nud
 is audited to `logs/sentinel-events.jsonl`, and a nudge surfaces to the user as a calm
 councilor heads-up.
 
+To check that the councilor is genuinely ticking, call `GET /parallel-work/sentinel`. It
+returns the live counters plus `lastTickAtIso`, `tickAgeMs` and `cadenceMinutes` (default 15),
+or 503 when the sentinel is dark on this agent. It is read-only.
+
 Spec: `docs/specs/parallel-activity-coherence.md`.

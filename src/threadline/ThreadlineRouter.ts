@@ -133,6 +133,15 @@ export interface ThreadlineHandleResult {
    *  (PR-4: avoids the overhead of spawning/resuming when a session is
    *  already running for this thread). */
   injected?: boolean;
+  /**
+   * ACT-091: set when the message was typed into a live session that was
+   * MID-TURN, so it sits as queued input and `delivered` is `false` FOR NOW.
+   * Resolves once the text has left the prompt (`delivered: true`) or provably
+   * has not (`false`; `reason` names the case: stuck / ceiling / session-gone).
+   * The relay handler settles the auto-ack from this, never from the
+   * provisional `delivered`.
+   */
+  deliveryPending?: Promise<{ delivered: boolean; reason: string }>;
   /** The tmux session name handling this thread */
   sessionName?: string;
   /** Error message if handling failed */
@@ -141,6 +150,13 @@ export interface ThreadlineHandleResult {
   gateDecision?: string;
   /** Approval ID (if message was queued for approval) */
   approvalId?: string;
+  /**
+   * Which listed hand-off happened (inbound-id ledger §1). Set ONLY on the
+   * allowlisted success shapes: `live` (inject), `cold` (headless spawn for a
+   * new or resumed thread), `warm` (keep-alive spawn), `topic` (topic-linkage
+   * live-inject), `approval` (queued for approval). Absent ⇒ not a hand-off.
+   */
+  path?: 'live' | 'cold' | 'warm' | 'topic' | 'approval';
 }
 
 type CompleteThreadlineHandleResult = ThreadlineHandleResult & {
@@ -149,6 +165,16 @@ type CompleteThreadlineHandleResult = ThreadlineHandleResult & {
 };
 
 // ── Constants ───────────────────────────────────────────────────
+
+/**
+ * Prepend the inbound-id ledger's fixed server notice OUTSIDE the untrusted
+ * framing (before the grounding header). The notice is only ever a server
+ * constant (RESENT_COPY_NOTICE / PEER_HANDOFF_NOTICE), never peer text.
+ */
+export function withServerNotice(text: string, notice: string | null | undefined): string {
+  if (!notice) return text;
+  return `[server notice: ${notice}]\n\n${text}`;
+}
 
 const DEFAULT_MAX_HISTORY = 20;
 
@@ -540,8 +566,23 @@ export class ThreadlineRouter {
        * docs/specs/threadline-local-delivery-fingerprint-attribution.md
        */
       inboundSenderFingerprint?: string;
+      /**
+       * Inbound-id ledger §1: a fixed server notice ("resent copy — …") placed
+       * OUTSIDE the untrusted-message framing of the prompt / injected text.
+       * Only ever a server constant — never peer text.
+       */
+      resentNotice?: string | null;
+      /**
+       * Local-route trust (docs/specs/a2a-local-route-trust.md): the sender's
+       * trust level as the LOCAL route resolved it from the trust manager.
+       * Replaces the `verified` default ONLY where a local delivery (no
+       * relayContext) states a trust level — the live-inject grounding. Absent
+       * → the `verified` default, byte-for-byte.
+       */
+      localTrustLevel?: AgentTrustLevel;
     },
   ): Promise<CompleteThreadlineHandleResult> {
+    const notice = opts?.resentNotice ?? null;
     const { message } = envelope;
 
     // Only handle messages from other agents (not self-delivery)
@@ -599,19 +640,36 @@ export class ThreadlineRouter {
     // Record affinity (no-op for non-verified trust kinds).
     this.recordAffinity(relayContext, threadId);
 
+    const spawnInProgressRefusal = (): CompleteThreadlineHandleResult => ({
+      handled: false,
+      accepted: false,
+      delivered: false,
+      threadId,
+      error: 'Spawn already in progress for this thread',
+    });
+
+    // ACT-091: a TOPIC-LINKED thread is delivered by the TopicLinkageHandler,
+    // which serializes on the topic's own spawn guard and waits for an
+    // in-flight respawn before typing a later reply in. The per-thread spawn
+    // guard below protects the THREAD-WORKER spawn paths; applying it here would
+    // refuse every reply that arrives during a topic respawn (the whole respawn
+    // is now awaited), and a refused message reaches no session and no topic.
+    // So a topic-linked thread takes the guard only if it falls through to the
+    // thread-worker path.
+    const existingEntry = this.threadResumeMap.get(threadId);
+    const topicLinked = this.topicLinkageHandler !== null && existingEntry?.originTopicId !== undefined;
+    let guardHeld = false;
+    const takeSpawnGuard = (): boolean => {
+      if (this.pendingSpawns.has(threadId)) return false;
+      this.pendingSpawns.add(threadId);
+      guardHeld = true;
+      return true;
+    };
+
     // Prevent concurrent spawns for the same thread
-    if (this.pendingSpawns.has(threadId)) {
-      return {
-        handled: false,
-        accepted: false,
-        delivered: false,
-        threadId,
-        error: 'Spawn already in progress for this thread',
-      };
-    }
+    if (!topicLinked && !takeSpawnGuard()) return spawnInProgressRefusal();
 
     try {
-      this.pendingSpawns.add(threadId);
 
       // Phase 2: Check the autonomy gate before processing
       if (this.autonomyGate) {
@@ -637,6 +695,7 @@ export class ThreadlineRouter {
               threadId,
               gateDecision: 'queue-for-approval',
               approvalId: gateResult.approvalId,
+              path: 'approval',
             };
 
           case 'notify-and-deliver':
@@ -646,8 +705,7 @@ export class ThreadlineRouter {
         }
       }
 
-      // Check for existing resume entry
-      const existingEntry = this.threadResumeMap.get(threadId);
+      // (existingEntry — the resume entry — was read above, before the guard.)
 
       // THREAD-TOPIC-LINKAGE-SPEC.md: when the thread carries an originTopicId
       // (set on the outbound send by /threadline/relay-send), route the reply
@@ -658,25 +716,67 @@ export class ThreadlineRouter {
       // originTopicId (falls through to existing behavior).
       if (this.topicLinkageHandler && existingEntry?.originTopicId !== undefined) {
         try {
+          // Inbound-id ledger §1: a resent copy must stay labelled on the
+          // topic path too — the notice goes in front of the body here because
+          // the handler owns its own framing.
+          const topicEnvelope = notice
+            ? { ...envelope, message: { ...envelope.message, body: withServerNotice(envelope.message.body, notice) } }
+            : envelope;
           const outcome = await this.topicLinkageHandler.tryRouteReplyToTopic({
-            envelope,
+            envelope: topicEnvelope,
             threadEntry: {
               remoteAgent: existingEntry.remoteAgent,
               subject: existingEntry.subject,
               originTopicId: existingEntry.originTopicId,
               originSessionName: existingEntry.originSessionName,
+              machineOrigin: existingEntry.machineOrigin,
             },
           });
+          if (outcome.kind === 'routed' && outcome.deliveryMode === 'live-inject-pending' && outcome.settled) {
+            // ACT-091: queued input in a busy session — not delivered YET. The
+            // verdict follows once the text has left the prompt; the relay
+            // handler settles its ack from `deliveryPending`, never from here.
+            console.log(
+              `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: live-inject-pending (queued in a busy session; confirming)`,
+            );
+            return {
+              handled: true,
+              accepted: true,
+              delivered: false,
+              threadId,
+              injected: false,
+              deliveryPending: outcome.settled.then(
+                ({ outcome: o, settlement }) => {
+                  const delivered = o.kind === 'routed' && o.deliveryMode === 'live-inject';
+                  console.log(
+                    `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: pending inject settled ${settlement}${delivered ? '' : ' (no live session received it)'}`,
+                  );
+                  return { delivered, reason: settlement };
+                },
+                (err: unknown) => ({ delivered: false, reason: `settle-error: ${err instanceof Error ? err.message : String(err)}` }),
+              ),
+            };
+          }
           if (outcome.kind === 'routed') {
-            const delivered = outcome.deliveryMode === 'live-inject';
+            // ACT-091: `delivered`/`resumed` describe what a LIVE session
+            // actually received. `resume-pending` reached no session, so it is
+            // neither delivered nor resumed — reporting `resumed: true` for it
+            // made the relay log "Resumed session" for a message that landed
+            // nowhere.
+            const delivered =
+              outcome.deliveryMode === 'live-inject' || outcome.deliveryMode === 'respawn-inject';
+            console.log(
+              `[ThreadlineRouter] Topic-linked reply on thread ${threadId} → topic ${existingEntry.originTopicId}: ${outcome.deliveryMode}${delivered ? '' : ' (no live session received it)'}`,
+            );
             return {
               handled: true,
               accepted: true,
               delivered,
               queued: delivered ? undefined : true,
               threadId,
-              injected: delivered,
-              resumed: outcome.deliveryMode === 'resume-pending',
+              injected: outcome.deliveryMode === 'live-inject',
+              resumed: outcome.deliveryMode === 'respawn-inject',
+              ...(delivered ? { path: 'topic' as const } : {}),
             };
           }
           // 'no-linkage' or 'topic-expired' → fall through to existing path.
@@ -685,6 +785,9 @@ export class ThreadlineRouter {
             `[ThreadlineRouter] TopicLinkageHandler threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling through to thread-worker path`,
           );
         }
+        // Falling through to the thread-worker path: now take the per-thread
+        // spawn guard it relies on (ACT-091 — see above).
+        if (!takeSpawnGuard()) return spawnInProgressRefusal();
       }
 
       // PR-4: If we have a live-session delivery path AND the thread has a
@@ -693,12 +796,12 @@ export class ThreadlineRouter {
       // spawning a fresh Claude process. Fall through to resume/spawn on
       // failure.
       if (existingEntry && this.messageDelivery) {
-        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext);
+        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext, notice, opts?.localTrustLevel);
         if (injected) return injected;
       }
 
       if (existingEntry) {
-        return await this.resumeThread(threadId, existingEntry, envelope, relayContext);
+        return await this.resumeThread(threadId, existingEntry, envelope, relayContext, notice);
       } else {
         // Warm-session A2A (dark-ship): when the relay decided this inbound is
         // warm-eligible AND the feature is wired, spawn an interactive keep-alive
@@ -706,10 +809,10 @@ export class ThreadlineRouter {
         // session. Falls back to the normal cold-spawn on conflict/error or when
         // the feature is off (the dark-ship invariant).
         if (relayContext?.preferWarmSession && this.warmEnabled && this.warmSessionPool) {
-          const warm = await this.spawnWarmThread(threadId, envelope, relayContext);
+          const warm = await this.spawnWarmThread(threadId, envelope, relayContext, notice);
           if (warm) return warm;
         }
-        return await this.spawnNewThread(threadId, envelope, relayContext);
+        return await this.spawnNewThread(threadId, envelope, relayContext, notice);
       }
     } catch (err) {
       console.error(`[ThreadlineRouter] Error handling inbound message for thread ${threadId}:`, err);
@@ -721,7 +824,7 @@ export class ThreadlineRouter {
         error: err instanceof Error ? err.message : 'Unknown error',
       };
     } finally {
-      this.pendingSpawns.delete(threadId);
+      if (guardHeld) this.pendingSpawns.delete(threadId);
     }
   }
 
@@ -821,6 +924,7 @@ export class ThreadlineRouter {
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
+    notice: string | null = null,
   ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
@@ -840,6 +944,8 @@ export class ThreadlineRouter {
       entry.remoteAgent,
       '',
       relayContext,
+      undefined,
+      notice,
     );
 
     // Spawn with resume UUID — `--resume entry.uuid` reloads the transcript.
@@ -890,6 +996,7 @@ export class ThreadlineRouter {
       threadId,
       resumed: true,
       sessionName: spawnResult.tmuxSession || entry.sessionName,
+      path: 'cold',
     };
   }
 
@@ -899,6 +1006,7 @@ export class ThreadlineRouter {
     threadId: string,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
+    notice: string | null = null,
   ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
@@ -917,6 +1025,8 @@ export class ThreadlineRouter {
       message.from.agent,
       historyContext,
       relayContext,
+      undefined,
+      notice,
     );
 
     // Threadline A2A continuity: mint the conversation id up front and launch
@@ -997,6 +1107,7 @@ export class ThreadlineRouter {
       threadId,
       spawned: true,
       sessionName: newEntry.sessionName,
+      path: 'cold',
     };
   }
 
@@ -1019,6 +1130,7 @@ export class ThreadlineRouter {
     threadId: string,
     envelope: MessageEnvelope,
     relayContext: RelayMessageContext,
+    notice: string | null = null,
   ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.warmSessionPool) return null;
     const { message } = envelope;
@@ -1052,6 +1164,7 @@ export class ThreadlineRouter {
       historyContext,
       relayContext,
       THREAD_WARM_SPAWN_PROMPT_TEMPLATE,
+      notice,
     );
 
     const claudeUuid = crypto.randomUUID();
@@ -1162,6 +1275,7 @@ export class ThreadlineRouter {
       threadId,
       spawned: true,
       sessionName,
+      path: 'warm',
     };
   }
 
@@ -1178,6 +1292,8 @@ export class ThreadlineRouter {
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
+    notice: string | null = null,
+    localTrustLevel?: AgentTrustLevel,
   ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.messageDelivery) return null;
     if (!entry.sessionName) return null;
@@ -1190,7 +1306,7 @@ export class ThreadlineRouter {
       // land without the boundary. This also fixes the already-shipped slice-1
       // inject path, independent of warm sessions. We re-wrap by cloning the
       // envelope with a grounded body — deliverToSession formats envelope.message.body.
-      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext);
+      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext, notice, localTrustLevel);
 
       const result = await this.messageDelivery.deliverToSession(entry.sessionName, groundedEnvelope);
       if (!result.success) {
@@ -1219,6 +1335,7 @@ export class ThreadlineRouter {
         threadId,
         injected: true,
         sessionName: entry.sessionName,
+        path: 'live',
       };
     } catch (err) {
       console.warn(`[ThreadlineRouter] Live-session injection threw for thread ${threadId}:`, err);
@@ -1239,18 +1356,20 @@ export class ThreadlineRouter {
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
+    notice: string | null = null,
+    localTrustLevel?: AgentTrustLevel,
   ): MessageEnvelope {
     const grounding = buildRelayGroundingPreamble({
       agentName: this.config.localAgent,
       senderName: relayContext?.senderName ?? entry.remoteAgent,
       senderFingerprint: relayContext?.senderFingerprint ?? entry.remoteAgent,
-      trustLevel: relayContext?.trustLevel ?? 'verified',
+      trustLevel: relayContext?.trustLevel ?? localTrustLevel ?? 'verified',
       trustSource: relayContext?.trustSource,
       trustDate: relayContext?.trustDate,
       originFingerprint: relayContext?.originFingerprint,
       originName: relayContext?.originName,
     });
-    const groundedBody = `${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`;
+    const groundedBody = withServerNotice(`${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`, notice);
     return {
       ...envelope,
       message: {
@@ -1306,6 +1425,7 @@ export class ThreadlineRouter {
     historyContext: string,
     relayContext?: RelayMessageContext,
     template: string = THREAD_SPAWN_PROMPT_TEMPLATE,
+    notice: string | null = null,
   ): string {
     const historySection = historyContext
       ? `${historyContext}\n`
@@ -1340,9 +1460,9 @@ export class ThreadlineRouter {
         originName: relayContext.originName,
       });
 
-      return `${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`;
+      return withServerNotice(`${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`, notice);
     }
 
-    return basePrompt;
+    return withServerNotice(basePrompt, notice);
   }
 }

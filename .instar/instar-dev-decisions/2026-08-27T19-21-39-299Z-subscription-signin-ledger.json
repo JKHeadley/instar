@@ -1,0 +1,38 @@
+{
+  "ts": "2026-08-27T19:21:39.299Z",
+  "slug": "subscription-signin-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1752,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SubscriptionLoginLedger.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/SubscriptionPoolAuthority.ts",
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1709,
+    "deletedLines": 43
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

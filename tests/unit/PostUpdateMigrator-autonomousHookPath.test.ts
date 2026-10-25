@@ -30,7 +30,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
-const CORRECT_CMD = 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+const CORRECT_CMD = 'bash "${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh"';
 const WRONG_CMD = 'bash .instar/hooks/instar/autonomous-stop-hook.sh';
 
 function newMigrator(projectDir: string): PostUpdateMigrator {

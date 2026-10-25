@@ -37,6 +37,7 @@
  *           contexts that --admin would bypass, then merges. Use only when the
  *           repo has auto-merge disabled.
  *           [--match-head-commit <sha>] [--extra-floor <ctx,ctx>]
+ *           [--attempt-token <hex>]  (caller identity only; ignored by the merge)
  *         node scripts/safe-merge.mjs --capabilities
  *
  * Exit codes: 0 merged (independently confirmed) · 1 refused · 2 usage/error
@@ -46,6 +47,18 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { checkPrDescriptionEli16 } from './eli16-pr-description-check.mjs';
+import { evaluateDecisionAuditPresence } from './decision-audit-presence-check.mjs';
+import { checkReleaseFragment } from './check-release-fragment.mjs';
+import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
+import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles } from './local-verify-floor.mjs';
+import { isTracePath } from './lib/instar-dev-trace.mjs';
+
+export { extractRulesetReviewPolicy };
 
 export const CONTRACT_VERSION = 2;
 export const DEFAULT_REPO = 'JKHeadley/instar';
@@ -58,8 +71,9 @@ export const DEFAULT_DEADLINE_MS = 20 * 60 * 1000;
  * this list, never shrink it. Grounded against .github/workflows/ on
  * 2026-06-12: ci.yml job display names; decision-audit-gate.yml job id
  * `decision-audit`; eli16-pr-gate.yml job id `eli16`.
- * (The matrix-expanded unit shards ride branch protection's own required
- * list, which is unioned in — see evaluateRequiredContexts.)
+ * (The matrix-expanded unit shards are pinned separately in
+ * CLASSIC_PROTECTION_CONTEXTS_PINNED and joined into ACTIONS_FLOOR_CONTEXTS,
+ * the floor safe-merge actually enforces.)
  */
 export const REQUIRED_CONTEXTS_FLOOR = [
   { context: 'Type Check', workflowPath: '.github/workflows/ci.yml', appSlug: 'github-actions' },
@@ -70,11 +84,53 @@ export const REQUIRED_CONTEXTS_FLOOR = [
   { context: 'eli16', workflowPath: '.github/workflows/eli16-pr-gate.yml', appSlug: 'github-actions' },
 ];
 
+/**
+ * The commit-status context that `local-verify` posts
+ * (docs/specs/local-verify-merge-authority.md §3). It is a COMMIT STATUS, not
+ * a check run: wherever it is required it is read through the combined-status
+ * API (`GET /commits/{sha}/status`) and is green iff that entry is `success`.
+ * It is never searched among check runs, and it is never part of the Actions
+ * floor below (the server's mirror posts it FROM that floor, so including it
+ * would make the mirror wait on itself).
+ */
+export const LOCAL_VERIFY_CONTEXT = 'instar/local-verify';
+
+/**
+ * The 12 contexts `main`'s CLASSIC branch protection requires, pinned in code
+ * with their producer (read from `GET /repos/JKHeadley/instar/branches/main`
+ * → `protection.required_status_checks`, 2026-10-21; all are ci.yml jobs —
+ * the unit shards are the matrix-expanded `Unit Tests (node N, shard K/4)`).
+ * Pinned because the unit shards have only ever been required through classic
+ * protection: a reader that cannot see protection (or a fork merge decided by
+ * the mirror) would otherwise merge without unit tests.
+ */
+export const CLASSIC_PROTECTION_CONTEXTS_PINNED = [
+  'Type Check',
+  'Integration Tests',
+  'E2E Tests',
+  'Build',
+  ...[20, 22].flatMap(node => [1, 2, 3, 4].map(shard => `Unit Tests (node ${node}, shard ${shard}/4)`)),
+].map(context => ({ context, workflowPath: '.github/workflows/ci.yml', appSlug: 'github-actions' }));
+
+/**
+ * The ONE shared Actions-floor constant: `REQUIRED_CONTEXTS_FLOOR` extended
+ * with the pinned classic-protection contexts, deduplicated by context name,
+ * EXCLUDING `instar/local-verify`. Used by safe-merge's own Actions floor and
+ * (later) by the server-side local-verify mirror, both through
+ * `evaluateRequiredContexts` — there is no second implementation.
+ */
+export const ACTIONS_FLOOR_CONTEXTS = Object.freeze(
+  [...REQUIRED_CONTEXTS_FLOOR, ...CLASSIC_PROTECTION_CONTEXTS_PINNED]
+    .filter((pin, i, all) => pin.context !== LOCAL_VERIFY_CONTEXT &&
+      all.findIndex(p => p.context === pin.context) === i)
+    .map(pin => Object.freeze({ ...pin })));
+
 const ALLOWED_FLAGS = new Set([
   '--admin', '--auto', '--squash', '--merge', '--rebase', '--delete-branch', '--capabilities',
 ]);
 const ALLOWED_VALUE_FLAGS = new Set([
-  '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor',
+  '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor', '--request-review-from',
+  '--attempt-token',
 ]);
 
 /** Strict argv parser — unknown flags are REJECTED (spec §3.1: a stale or
@@ -84,6 +140,13 @@ export function parseArgs(argv) {
     pr: null, repo: DEFAULT_REPO, method: '--merge', admin: false, auto: false,
     deleteBranch: false, deadlineMs: DEFAULT_DEADLINE_MS,
     matchHeadCommit: null, extraFloor: [], capabilities: false,
+    // Logins to request review from when the base branch requires a non-pusher
+    // approval (2026-08-22). Empty ⇒ default to the repo owner at act time.
+    requestReviewFrom: [],
+    // The MergeRunner's per-attempt token, carried on argv so a surviving
+    // orphan's identity can be confirmed with `ps -o args=` on macOS as well
+    // as Linux. Identity only — it changes nothing about the merge.
+    attemptToken: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -107,6 +170,15 @@ export function parseArgs(argv) {
         out.matchHeadCommit = v;
       } else if (a === '--extra-floor') {
         out.extraFloor = v.split(',').map(s => s.trim()).filter(Boolean);
+      } else if (a === '--request-review-from') {
+        const logins = v.split(',').map(s => s.trim()).filter(Boolean);
+        for (const l of logins) {
+          if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(l)) throw new UsageError(`--request-review-from must be GitHub logins, got: ${l}`);
+        }
+        out.requestReviewFrom = logins;
+      } else if (a === '--attempt-token') {
+        if (!/^[0-9a-f]{8,64}$/i.test(v)) throw new UsageError(`--attempt-token must be hex, got: ${v}`);
+        out.attemptToken = v;
       }
       continue;
     }
@@ -138,20 +210,41 @@ export function capabilities() {
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
       'native-auto-merge', 'auto-arm-unavailable-detection',
+      'approval-required-refusal', 'request-review-from', 'local-floor', 'attempt-token',
     ],
+    floorModes: [...MERGE_FLOOR_MODES],
     exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
   };
 }
 
-/** Classify `gh pr checks --json` rows. `pending` is matched ONLY on the
- * bucket field — a check NAMED "block-pending-migrations" never loops the
- * wait (the round-1 foundation bug). */
+/**
+ * `gh pr checks --json` rows collapsed to the LATEST run per workflow + check name — the
+ * rule GitHub applies to a required context, shared with the green-PR watcher
+ * (scripts/latest-run-per-check.mjs). gh still lists a failed run that a newer
+ * rerun on the same head superseded; judging the old row refused PR 2289
+ * (2026-10-22) while GitHub showed the context green. A queued rerun (no start
+ * time yet) is the latest run, so it keeps the settle loop waiting.
+ */
+export function latestCheckRows(rows) {
+  return latestPerName(rows, {
+    name: (r) => String(r.name ?? ''),
+    workflow: (r) => String(r.workflow ?? ''),
+    // GitHub treats the most recently COMPLETED run as the latest (a run that started
+    // first but finished last wins — PR 2296, 2026-10-22); open runs win via `open`.
+    order: (r) => runTimeMs(r.completedAt) || runTimeMs(r.startedAt),
+    open: (r) => String(r.bucket ?? '').toLowerCase() === 'pending',
+  });
+}
+
+/** Classify `gh pr checks --json` rows (latest run per check name). `pending`
+ * is matched ONLY on the bucket field — a check NAMED "block-pending-migrations"
+ * never loops the wait (the round-1 foundation bug). */
 export function classifyChecks(rows) {
   const pending = [];
   const failed = [];
   let sawE2e = false;
   let e2ePassed = false;
-  for (const row of rows) {
+  for (const row of latestCheckRows(rows)) {
     const name = String(row.name ?? '');
     const bucket = String(row.bucket ?? '').toLowerCase();
     if (!name) continue;
@@ -163,7 +256,11 @@ export function classifyChecks(rows) {
     }
     if (!ok) failed.push(`${name}: ${bucket}`);
   }
-  return { pending, failed, sawE2e, e2ePassed, settled: pending.length === 0 };
+  // Zero rows ("no checks reported" right after a push, before GitHub registers any
+  // run) is NOT settled: an empty set must never read as green. The caller keeps
+  // waiting within its deadline and then refuses checks-timeout.
+  const noChecks = latestCheckRows(rows).filter(r => String(r?.name ?? '')).length === 0;
+  return { pending, failed, sawE2e, e2ePassed, noChecks, settled: !noChecks && pending.length === 0 };
 }
 
 /**
@@ -188,8 +285,12 @@ export function classifyChecks(rows) {
  * @param {Array<{context: string, workflowPath?: string, appSlug?: string}>} args.floor
  * @param {string[]} args.extraFloor          name-only extension (config/CLI)
  * @param {Array<{name: string, conclusion: string, appSlug: string|null, workflowPath: string|null}>} args.checkRuns
+ * @param {Array<{context: string, state: string}>} [args.commitStatuses]
+ *   entries of the combined-status API for the head. Consulted ONLY for
+ *   `instar/local-verify`, which is a commit status and is never looked for
+ *   among check runs (green iff its entry is `success`).
  */
-export function evaluateRequiredContexts({ protectionContexts, rulesetContexts, floor, extraFloor, checkRuns }) {
+export function evaluateRequiredContexts({ protectionContexts, rulesetContexts, floor, extraFloor, checkRuns, commitStatuses = [] }) {
   const problems = [];
   const successByName = new Map();
   for (const run of checkRuns) {
@@ -206,11 +307,20 @@ export function evaluateRequiredContexts({ protectionContexts, rulesetContexts, 
     ...extraFloor,
   ]);
   for (const ctx of union) {
+    if (ctx === LOCAL_VERIFY_CONTEXT) {
+      const entry = (commitStatuses ?? []).find(st => st?.context === LOCAL_VERIFY_CONTEXT);
+      const state = String(entry?.state ?? '').toLowerCase();
+      if (state !== 'success') {
+        problems.push(`required status "${ctx}" is ${entry ? `"${state || 'unknown'}"` : 'absent'} on the head (want "success")`);
+      }
+      continue;
+    }
     if (!successByName.has(ctx)) {
       problems.push(`required context "${ctx}" has no genuinely-successful run`);
     }
   }
   for (const pin of floor) {
+    if (pin.context === LOCAL_VERIFY_CONTEXT) continue; // a commit status, decided above
     const runs = successByName.get(pin.context) ?? [];
     if (runs.length === 0) continue; // already reported above
     const producerOk = runs.some(r =>
@@ -237,6 +347,40 @@ export function classifyMergeFailure(stderrText, status, signal) {
 }
 
 /**
+ * Ruleset review policy on the base branch (2026-08-22).
+ *
+ * `fetchProtectionContexts` reads CLASSIC branch protection only. A repo RULESET
+ * can ALSO demand reviews — `pull_request` rule with `required_approving_review_count`
+ * and/or `require_last_push_approval` ("approval of the most recent reviewable push
+ * by someone other than the pusher"). This wrapper never read that, so on
+ * 2026-08-22 it declared PR #1963 green-and-mergeable, ran `gh pr merge`, and
+ * GitHub refused with "New changes require approval from someone other than the
+ * last pusher" — leaving the operator staring at a PR with NO reviewer requested
+ * and a "waiting for someone to request your review" dead end instead of an
+ * Approve button. Reading the ruleset BEFORE merging is what lets us request the
+ * review up front and hand the operator a link that ends in one click.
+ *
+ * Pure: takes the parsed `/repos/{repo}/rules/branches/{branch}` array.
+ */
+
+/**
+ * GitHub's refusal text when a non-pusher approval is required (ruleset
+ * `require_last_push_approval`, or classic last-push-approval). Matched on the
+ * MERGE failure path as belt-and-braces for a ruleset that changes between the
+ * pre-check and the merge, or one the pre-check could not read.
+ */
+export function isNonPusherApprovalRequired(stderrText) {
+  const text = String(stderrText ?? '');
+  return /approval from someone other than the last pusher/i.test(text)
+    || /(Repository rule violations|review).*(approv|last pusher)/i.test(text);
+}
+
+/** The one link the operator needs: the PR's Files tab, where "Review changes → Approve" lives. */
+export function reviewUrlFor(repo, pr) {
+  return `https://github.com/${repo}/pull/${pr}/files`;
+}
+
+/**
  * The auto-merge-disabled discriminator (mergerunner-auto-arm-handoff §
  * "auto-merge-unavailable — terminal-non-ladder"). `classifyMergeFailure`
  * collapses BOTH "auto-merge is OFF on the repo" (a PERMANENT condition) and a
@@ -251,6 +395,236 @@ export function classifyMergeFailure(stderrText, status, signal) {
 export function isAutoMergeUnavailable(stderrText) {
   const text = String(stderrText ?? '');
   return /auto.?merge.*(not\s*(allowed|enabled))|allow\s*auto-?merge/i.test(text);
+}
+
+// ---------------------------------------------------------------------------
+// The `local` floor (docs/specs/local-verify-merge-authority.md §3)
+// ---------------------------------------------------------------------------
+
+/** The merge-time body checks safe-merge runs itself under the `local` floor. */
+export const LOCAL_FLOOR_BODY_CHECKS = Object.freeze(['eli16', 'decision-audit', 'release-fragment']);
+const SHA40_RE = /^[0-9a-f]{40}$/;
+const MAIN_HEALTH_STATES = new Set(['healthy', 'main-suspect', 'main-red']);
+
+/** Refusal for anything the local floor cannot measure. Never an Actions fallback. */
+export const UNMEASURABLE = 'refused:verify-record-unmeasurable';
+
+/**
+ * The §3 predicate, pure. Every input was read by the caller from the server
+ * index (never a file on disk) or re-read from GitHub just now.
+ *
+ * @param {object} a
+ * @param {string} a.repo                      the repo being merged
+ * @param {number} a.pr
+ * @param {{headRefOid: string, baseRefName: string}} a.livePr  fresh GitHub re-read
+ * @param {object|null} a.record               the server index record (null = absent)
+ * @param {{state: string, mainHead: string|null}|null} a.mainHealth
+ * @param {Array<{name: string, ok: boolean, detail?: string}>} a.bodyChecks
+ * @returns {{ok: true} | {ok: false, result: string, problems: string[]}}
+ */
+export function evaluateLocalPredicate(a) {
+  const refuse = (result, ...problems) => ({ ok: false, result, problems });
+  const r = a.record;
+  if (!r || typeof r !== 'object') return refuse(UNMEASURABLE, 'no local-verify record in the server index for this (pr, head, base)');
+  const mismatch = [];
+  if (r.repo !== a.repo) mismatch.push(`repo ${r.repo} ≠ ${a.repo}`);
+  if (r.pr !== Number(a.pr)) mismatch.push(`pr ${r.pr} ≠ ${a.pr}`);
+  if (!SHA40_RE.test(String(a.livePr?.headRefOid ?? '')) || r.headSha !== a.livePr.headRefOid) mismatch.push(`head ${r.headSha} ≠ live ${a.livePr?.headRefOid}`);
+  if (r.baseRefName !== a.livePr?.baseRefName) mismatch.push(`base ${r.baseRefName} ≠ live ${a.livePr?.baseRefName}`);
+  if (mismatch.length) return refuse('refused:verify-record-mismatch', ...mismatch);
+  if (r.outcome !== 'success') return refuse('refused:verify-failed', `record outcome is ${r.outcome}`);
+  const gating = Array.isArray(r.lanes) ? r.lanes.filter(l => l && l.gating === true) : [];
+  if (gating.length === 0) return refuse('refused:verify-lanes', 'the record has no gating lane');
+  const badLanes = gating.filter(l => !(l.failed === 0 && l.tests > 0 && l.files > 0));
+  if (badLanes.length) {
+    return refuse('refused:verify-lanes', ...badLanes.map(l => `lane ${l.name}: failed=${l.failed} tests=${l.tests} files=${l.files}`));
+  }
+  const mh = a.mainHealth;
+  if (!mh || !MAIN_HEALTH_STATES.has(mh.state)) return refuse(UNMEASURABLE, 'main health unreadable');
+  if (mh.state !== 'healthy') {
+    if (!SHA40_RE.test(String(mh.mainHead ?? '')) || r.baseSha !== mh.mainHead) {
+      return refuse('refused:main-red', `main is ${mh.state}; only a record verified against the current main head (${mh.mainHead ?? 'unknown'}) is admitted, this one was verified against ${r.baseSha}`);
+    }
+  }
+  const failedChecks = (a.bodyChecks ?? []).filter(c => !c.ok);
+  if (!Array.isArray(a.bodyChecks) || a.bodyChecks.length === 0) return refuse(UNMEASURABLE, 'merge-time body checks did not run');
+  if (failedChecks.length) return refuse('refused:body-checks', ...failedChecks.map(c => `${c.name}: ${c.detail ?? 'failed'}`));
+  const FLAG_KEYS = ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'];
+  // A flag that is not a boolean is unmeasurable, never "unflagged".
+  const notBool = FLAG_KEYS.filter(k => typeof r[k] !== 'boolean');
+  if (notBool.length) return refuse(UNMEASURABLE, `record flag(s) not boolean: ${notBool.join(', ')}`);
+  const flags = FLAG_KEYS.filter(k => r[k] === true);
+  // A flagged record needs an independent second-pass review of exactly this head,
+  // which the verifier found in the head's tree and recorded. Operator approval is
+  // NOT a substitute: the operator approves constitution changes only, and GitHub
+  // enforces those through CODEOWNERS (directive 2026-10-22; spec "Harness-changing PRs").
+  if (flags.length && !hasIndependentReview(r)) {
+    return refuse('refused:needs-independent-review',
+      `the record is ${flags.join('+')}; head ${r.headSha} needs an instar-dev trace in the PR whose second pass concurred and whose coveredFiles include every flagged path (the verifier found none)`);
+  }
+  return { ok: true };
+}
+
+/**
+ * The outcome of `POST /local-verify` for the verify-pending detail: the
+ * service's own status (queued / already-queued / in-flight / recorded) or
+ * refusal code (untrusted-head / queue-full / …). null when the answer is
+ * unreadable (a transport-level failure the caller treats as unmeasurable).
+ */
+export function verifyRequestOutcome(post) {
+  const b = post?.body;
+  if (!post || !b || typeof b !== 'object') return null;
+  if (b.ok === true && typeof b.status === 'string') return b.status;
+  if (b.ok === false && typeof b.code === 'string') return b.code;
+  return null;
+}
+
+/** The verifier recorded a concurring independent review (an instar-dev trace path). */
+export function hasIndependentReview(record) {
+  const ir = record?.independentReview;
+  return !!ir && typeof ir === 'object' && ir.concurred === true && isTracePath(ir.trace);
+}
+
+const FILE_STATUS_TO_NAME_STATUS = { added: 'A', removed: 'D', modified: 'M', renamed: 'R', copied: 'C', changed: 'M', unchanged: 'M' };
+
+/**
+ * The merge-time body checks, run from THIS (trusted) copy of the checkers over
+ * GitHub-read inputs: eli16 (PR body), decision-audit (changed files + the
+ * records at the head), release-fragment (changed files).
+ */
+export function runLocalBodyChecks({ title, body, authorLogin, authorType, files, decisionRecords }) {
+  const out = [];
+  const e = checkPrDescriptionEli16({ body, title, authorType });
+  out.push({ name: 'eli16', ok: e.ok, detail: e.ok ? undefined : e.reason });
+  const changes = (files ?? []).map(f => ({ status: FILE_STATUS_TO_NAME_STATUS[f.status] ?? 'M', file: f.filename }));
+  const d = evaluateDecisionAuditPresence({ changes, records: decisionRecords ?? [], title, authorType });
+  out.push({ name: 'decision-audit', ok: d.ok, detail: d.ok ? undefined : `uncovered: ${(d.uncoveredFiles ?? d.inScopeFiles ?? []).slice(0, 5).join(', ')}` });
+  const rf = checkReleaseFragment({ files: (files ?? []).map(f => ({ path: f.filename, status: f.status })), authorLogin, authorType, title });
+  out.push({ name: 'release-fragment', ok: rf.ok, detail: rf.ok ? undefined : rf.reason });
+  return out;
+}
+
+/** Decision-record files (added or modified at the head) the decision-audit check reads. */
+export function decisionRecordPaths(files) {
+  return (files ?? []).filter(f => f.status !== 'removed' && /^\.instar\/instar-dev-decisions\/.+\.json$/.test(f.filename)).map(f => f.filename);
+}
+
+/**
+ * Read the agent's server endpoint and floor config from its config file only
+ * (never the environment, so a session cannot point safe-merge at a stand-in
+ * server). A vault-backed token (`{"secret": true}`) is resolved lazily by the
+ * caller, only when the local floor actually needs the server.
+ */
+export function parseAgentServerConfig(text) {
+  const cfg = JSON.parse(text);
+  const gp = cfg?.monitoring?.greenPrAutoMerge ?? {};
+  const lv = cfg?.monitoring?.localVerify ?? {};
+  const raw = cfg?.authToken;
+  const port = Number(cfg?.port);
+  return {
+    port: Number.isInteger(port) && port > 0 && port < 65536 ? port : null,
+    tokenSource: typeof raw === 'string' && raw ? 'inline' : (raw && typeof raw === 'object' && raw.secret === true ? 'vault' : null),
+    inlineToken: typeof raw === 'string' && raw ? raw : null,
+    floor: gp.floor === 'local' ? 'local' : 'actions',
+    repo: typeof gp.repo === 'string' && gp.repo ? gp.repo : DEFAULT_REPO,
+    expectedGhLogin: typeof gp.expectedGhLogin === 'string' ? gp.expectedGhLogin : '',
+    operatorGhLogin: typeof lv.operatorGhLogin === 'string' && lv.operatorGhLogin.trim() ? lv.operatorGhLogin.trim() : 'JKHeadley',
+  };
+}
+
+/**
+ * Floor selection for one safe-merge run (synchronous path only; `--auto`
+ * keeps today's behaviour). Returns `{floor:'actions'}`, `{floor:'local',
+ * status}` (the server's /local-verify/status body), or a refusal. Never
+ * returns 'actions' because something was unreadable once the config floor is
+ * `local` for an eligible PR of the configured repo.
+ *
+ * @param {object} a
+ * @param {string} a.repo
+ * @param {object} a.view        the `gh pr view` read (author, isCrossRepository)
+ * @param {ReturnType<typeof parseAgentServerConfig>|null} a.agent  null = no config file
+ * @param {string|undefined} a.override  INSTAR_MERGE_FLOOR
+ * @param {(p: string) => Promise<{status: number, body: any}>} a.serverGet
+ */
+export async function selectSafeMergeFloor({ repo, view, agent, override, serverGet }) {
+  if (override === 'actions') return { floor: 'actions', reason: 'override' };
+  if (!agent) return { floor: 'actions', reason: 'no-agent-config' };
+  const eligible = isMergeEligible(view, agent);
+  const configured = selectMergeFloor({ effectiveFloor: agent.floor, configRepo: agent.repo, repo, eligible });
+  if (configured !== 'local') return { floor: 'actions', reason: agent.floor !== 'local' ? 'config-actions' : (eligible ? 'other-repo' : 'ineligible') };
+  let st;
+  try { st = await serverGet('/local-verify/status'); } catch (e) {
+    return { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`server unreachable: ${String(e?.message ?? e).slice(0, 200)}`] } };
+  }
+  if (!st || st.status !== 200 || !st.body || typeof st.body !== 'object') {
+    return { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`GET /local-verify/status answered ${st?.status ?? 'nothing'}`] } };
+  }
+  const effective = st.body?.floor?.effective;
+  if (effective === 'actions') return { floor: 'actions', reason: `server-effective-actions:${st.body?.floor?.reason ?? ''}` };
+  if (effective !== 'local') return { floor: 'local', refusal: { result: UNMEASURABLE, problems: ['server floor unreadable'] } };
+  return { floor: 'local', status: st.body };
+}
+
+/**
+ * The §3 predicate's inputs, gathered fresh (server index + GitHub), then
+ * judged by `evaluateLocalPredicate`. Any read failure is unmeasurable.
+ *
+ * @param {object} a
+ * @param {string} a.repo
+ * @param {number|string} a.pr
+ * @param {string} a.pinnedHead           the head safe-merge pinned (must still be the head)
+ * @param {object} a.status               /local-verify/status body
+ * @param {ReturnType<typeof parseAgentServerConfig>} a.agent
+ * @param {(p: string) => Promise<{status: number, body: any}>} a.serverGet
+ * @param {(args: string[]) => any} a.ghJson
+ * @param {(args: string[]) => string|null} a.ghText  raw text, null on failure
+ * @param {(p: string, body: object) => Promise<{status: number, body: any}>} [a.serverPost]  enqueues a verify when there is no record
+ */
+export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, serverGet, serverPost, ghJson: readJson, ghText }) {
+  const refuse = (result, ...problems) => ({ ok: false, result, problems });
+  let live;
+  try { live = readJson(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid,baseRefName,state,title,body,author']); } catch (e) {
+    return refuse(UNMEASURABLE, `PR re-read failed: ${String(e?.message ?? e).slice(0, 200)}`);
+  }
+  if (!SHA40_RE.test(String(live?.headRefOid ?? '')) || typeof live?.baseRefName !== 'string') return refuse(UNMEASURABLE, 'PR re-read returned no valid head/base');
+  if (live.headRefOid !== pinnedHead) return refuse('refused:head-moved', `head moved to ${live.headRefOid}`);
+  const q = `?pr=${encodeURIComponent(String(pr))}&head=${live.headRefOid}&base=${encodeURIComponent(live.baseRefName)}`;
+  let rec;
+  try { rec = await serverGet(`/local-verify/record${q}`); } catch (e) {
+    return refuse(UNMEASURABLE, `record read failed: ${String(e?.message ?? e).slice(0, 200)}`);
+  }
+  if (!rec || (rec.status !== 200 && rec.status !== 404)) return refuse(UNMEASURABLE, `GET /local-verify/record answered ${rec?.status ?? 'nothing'}`);
+  const record = rec.status === 200 ? (rec.body?.record ?? null) : null;
+  if (!record) {
+    // No record: ask the server to verify this PR (§2 "Other eligible PRs are
+    // verified on request") and answer verify-pending with the POST's outcome.
+    // Only a POST that cannot be made or read stays unmeasurable.
+    if (typeof serverPost !== 'function') return refuse(UNMEASURABLE, 'no local-verify record in the server index for this (pr, head, base)');
+    let post;
+    try { post = await serverPost('/local-verify', { pr: Number(pr) }); } catch (e) {
+      return refuse(UNMEASURABLE, `no record, and the verify request failed: ${String(e?.message ?? e).slice(0, 200)}`);
+    }
+    const outcome = verifyRequestOutcome(post);
+    if (!outcome) return refuse(UNMEASURABLE, `no record, and the verify request answered ${post?.status ?? 'nothing'}`);
+    return refuse('refused:verify-pending', `no local-verify record yet for head ${live.headRefOid}; verify request: ${outcome}`);
+  }
+  let files;
+  try {
+    const pages = readJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
+    files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => ({ filename: String(f?.filename ?? ''), status: String(f?.status ?? '') }));
+  } catch (e) {
+    return refuse(UNMEASURABLE, `changed-file read failed: ${String(e?.message ?? e).slice(0, 200)}`);
+  }
+  const decisionRecords = decisionRecordPaths(files).map(p => {
+    const t = ghText(['api', `repos/${repo}/contents/${p}?ref=${live.headRefOid}`, '-H', 'Accept: application/vnd.github.raw']);
+    try { return JSON.parse(t ?? ''); } catch { return {}; } // same as the CI check: an unreadable record covers nothing
+  });
+  const authorType = live.author?.is_bot === true ? 'Bot' : 'User';
+  const bodyChecks = runLocalBodyChecks({ title: live.title, body: live.body, authorLogin: live.author?.login ?? '', authorType, files, decisionRecords });
+  return evaluateLocalPredicate({
+    repo, pr: Number(pr), livePr: { headRefOid: live.headRefOid, baseRefName: live.baseRefName }, record,
+    mainHealth: status?.mainHealth ?? null, bodyChecks,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -277,31 +651,120 @@ function ghJson(args) {
 
 function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
-  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket'], { allowFail: true });
-  try {
-    const rows = JSON.parse(r.stdout);
-    if (!Array.isArray(rows)) throw new Error('not an array');
-    return rows;
-  } catch {
-    throw new Error(`gh pr checks returned unparseable JSON: ${(r.stdout || '').slice(0, 200)}`);
-  }
+  // The run times are what lets classifyChecks keep only the latest run per name.
+  const r = gh(['pr', 'checks', pr, '--repo', repo, '--json', 'name,state,bucket,startedAt,completedAt,workflow'], { allowFail: true });
+  return parseChecksRows(r.stdout, r.stderr);
 }
 
-function fetchProtectionContexts(repo, branch) {
-  const r = gh(['api', `repos/${repo}/branches/${branch}/protection`], { allowFail: true });
-  if (r.status !== 0) {
-    // 404 = no classic protection configured: an empty contribution to the
-    // union (the floor still applies). Anything else is unverifiable.
-    if (/HTTP 404/.test(r.stderr || '') || /Branch not protected/i.test(r.stderr || '')) {
-      return { contexts: [], reviewsRequired: false };
-    }
-    throw new Error(`branch protection unverifiable: ${(r.stderr || '').slice(0, 300)}`);
+/** gh's answer for a head GitHub has not registered any check run on yet (e.g. right after a push). */
+const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+
+/**
+ * Parse `gh pr checks --json` output. An empty stdout whose stderr says "no checks
+ * reported" (seen right after a push, PRs 2296/2314) is ZERO rows — not settled,
+ * so the caller keeps waiting (classifyChecks never reads zero rows as green). Any
+ * other unparseable, non-array or empty answer throws (retried, then
+ * contexts-unverifiable), with gh's stderr in the message so it is diagnosable.
+ */
+export function parseChecksRows(stdout, stderr = '') {
+  const err = String(stderr || '').trim().slice(0, 200);
+  const errNote = err ? ` (stderr: ${err})` : '';
+  if (!String(stdout || '').trim() && NO_CHECKS_REPORTED_RE.test(String(stderr || ''))) return [];
+  let rows;
+  try {
+    rows = JSON.parse(stdout);
+  } catch {
+    throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}${errNote}`);
   }
-  const data = JSON.parse(r.stdout);
-  return {
-    contexts: data?.required_status_checks?.contexts ?? [],
-    reviewsRequired: data?.required_pull_request_reviews != null,
+  if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}${errNote}`);
+  if (rows.length === 0) throw new Error(`gh pr checks returned no checks${errNote}`);
+  return rows;
+}
+
+/** Backoff (ms) between the extra reads of an empty/unparseable checks response. */
+export const CHECKS_READ_RETRY_BACKOFF_MS = [5_000, 10_000];
+
+/**
+ * Read the checks, retrying a transient empty/unparseable response (seen once
+ * from gh) a couple of times with a short backoff. Throws the last error when
+ * every read failed, or once the merge deadline has passed (no retry after it)
+ * — the caller refuses `contexts-unverifiable`.
+ */
+export function readChecksWithRetry(read, sleepFn, backoffMs = CHECKS_READ_RETRY_BACKOFF_MS, deadline = Infinity, now = Date.now) {
+  let lastErr;
+  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+    if (attempt > 0) {
+      if (now() > deadline) break; // past the merge deadline: refuse now, never wait longer
+      sleepFn(backoffMs[attempt - 1]);
+    }
+    try {
+      return read();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Pure read of branch-protection data. `branchData` is `GET /branches/<b>`
+ * (readable by a non-admin); `protectionData` is `GET /branches/<b>/protection`
+ * when it was readable (an admin token), else null. Required contexts come
+ * from `protection.required_status_checks` (`contexts` and/or
+ * `checks[].context`), unioned with the admin view when present.
+ * `reviewsRequired` is the classic required-reviews setting and is true only
+ * when the admin view was readable and shows it; otherwise review
+ * requirements come from the ruleset policy (`fetchRulesetReviewPolicy`).
+ */
+export function extractBranchProtection(branchData, protectionData) {
+  const contexts = new Set();
+  const addChecks = rsc => {
+    for (const c of rsc?.contexts ?? []) if (typeof c === 'string' && c) contexts.add(c);
+    for (const c of rsc?.checks ?? []) if (typeof c?.context === 'string' && c.context) contexts.add(c.context);
   };
+  addChecks(branchData?.protection?.required_status_checks);
+  if (protectionData) addChecks(protectionData.required_status_checks);
+  return {
+    contexts: [...contexts],
+    reviewsRequired: protectionData ? protectionData.required_pull_request_reviews != null : false,
+  };
+}
+
+/**
+ * Classic branch protection, read the way a NON-admin can see it. A 404 from
+ * `/protection` is what a non-admin always gets, so it no longer means "no
+ * protection" (that misread hid `main`'s 12 required Actions contexts); the
+ * contexts come from `GET /branches/<b>`, whose failure is unverifiable.
+ * `run` is injectable for tests.
+ */
+export function fetchProtectionContexts(repo, branch, run = gh) {
+  const b = run(['api', `repos/${repo}/branches/${branch}`], { allowFail: true });
+  if (b.status !== 0) {
+    throw new Error(`branch protection unverifiable: ${(b.stderr || '').slice(0, 300)}`);
+  }
+  let branchData;
+  try { branchData = JSON.parse(b.stdout); } catch {
+    throw new Error('branch protection unverifiable: GET /branches returned unparseable JSON');
+  }
+  let protectionData = null;
+  const p = run(['api', `repos/${repo}/branches/${branch}/protection`], { allowFail: true });
+  if (p.status === 0) {
+    try { protectionData = JSON.parse(p.stdout); } catch {
+      throw new Error('branch protection unverifiable: GET /protection returned unparseable JSON');
+    }
+  } else if (!/HTTP 40[34]/.test(p.stderr || '') && !/Branch not protected/i.test(p.stderr || '')) {
+    // 404/403 = not readable by this login (or genuinely unprotected): the
+    // classic review flag is then false and /branches is authoritative for
+    // contexts. Anything else is unverifiable.
+    throw new Error(`branch protection unverifiable: ${(p.stderr || '').slice(0, 300)}`);
+  }
+  return extractBranchProtection(branchData, protectionData);
+}
+
+/** Combined-status entries for the head (where `instar/local-verify` lives). */
+function fetchCommitStatuses(repo, headSha) {
+  const resp = ghJson(['api', `repos/${repo}/commits/${headSha}/status?per_page=100`]);
+  return (resp?.statuses ?? []).map(st => ({ context: st?.context ?? '', state: st?.state ?? '' }));
 }
 
 function fetchRulesetContexts(repo, branch) {
@@ -320,6 +783,71 @@ function fetchRulesetContexts(repo, branch) {
     }
   }
   return contexts;
+}
+
+function fetchRulesetReviewPolicy(repo, branch) {
+  const r = gh(['api', `repos/${repo}/rules/branches/${branch}`], { allowFail: true });
+  if (r.status !== 0) {
+    if (/HTTP 404/.test(r.stderr || '')) return { reviewsRequired: false, lastPushApprovalRequired: false };
+    throw new Error(`branch rulesets unverifiable: ${(r.stderr || '').slice(0, 300)}`);
+  }
+  return extractRulesetReviewPolicy(JSON.parse(r.stdout));
+}
+
+/** Who to ask for the approval: --request-review-from, else the repo owner. Never the PR author (GitHub rejects it). */
+function resolveReviewers(repo, args, view) {
+  let logins = Array.isArray(args.requestReviewFrom) && args.requestReviewFrom.length > 0 ? [...args.requestReviewFrom] : [];
+  if (logins.length === 0) {
+    try {
+      const owner = ghJson(['repo', 'view', repo, '--json', 'owner'])?.owner?.login;
+      if (owner) logins = [owner];
+    } catch { /* fall through — no default reviewer resolvable */ }
+  }
+  const author = view?.author?.login;
+  return logins.filter(l => l && l !== author);
+}
+
+/** Request review from `logins` on the PR. Idempotent at GitHub (re-requesting is a no-op). Never throws. */
+function requestReviewers(repo, pr, logins) {
+  if (!logins.length) return { requested: [], error: 'no-reviewer-resolvable' };
+  const args = ['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/requested_reviewers`];
+  for (const l of logins) args.push('-f', `reviewers[]=${l}`);
+  const r = gh(args, { allowFail: true });
+  if (r.status !== 0) return { requested: [], error: (r.stderr || '').slice(0, 200) };
+  try {
+    const body = JSON.parse(r.stdout);
+    const now = (body?.requested_reviewers ?? []).map(u => u?.login).filter(Boolean);
+    return { requested: logins.filter(l => now.includes(l)), error: null };
+  } catch {
+    return { requested: logins, error: null };
+  }
+}
+
+/**
+ * Refuse-with-a-link: the base branch needs a human approval that `--admin`
+ * cannot (and must not) bypass. Request the review so the operator's next
+ * step is ONE click, emit the distinct `refused:approval-required` slug with
+ * the direct Files-tab URL, and exit 1. This is the 2026-08-22 process fix:
+ * the operator should never have to ask the agent to request a review.
+ */
+function refuseApprovalRequired({ repo, pr, view, args, policy, via }) {
+  const reviewers = resolveReviewers(repo, args, view);
+  const rq = requestReviewers(repo, pr, reviewers);
+  const reviewUrl = reviewUrlFor(repo, pr);
+  result({
+    result: 'refused:approval-required',
+    pr: Number(pr),
+    reviewUrl,
+    reviewersRequested: rq.requested,
+    ...(rq.error ? { requestError: rq.error } : {}),
+    reviewDecision: view?.reviewDecision ?? null,
+    policy,
+    via,
+  });
+  console.error(`safe-merge: REFUSING — the base branch requires an approval from someone other than the pusher (${via}). ` +
+    (rq.requested.length ? `Review requested from ${rq.requested.join(', ')}. ` : `Could not request a reviewer (${rq.error}). `) +
+    `Approve here: ${reviewUrl}`);
+  process.exit(1);
 }
 
 function fetchCheckRunsWithProducers(repo, headSha) {
@@ -341,6 +869,122 @@ function fetchCheckRunsWithProducers(repo, headSha) {
   }));
 }
 
+/**
+ * True when no GitHub Actions check run exists on the head. "No checks ran"
+ * is NOT green: it looks like "all green" at a glance, and with no required
+ * checks GitHub's native auto-merge would merge it at once (PR #2302,
+ * 2026-10-22: pull_request never fired; only Vercel reported).
+ */
+export function noActionsChecksRan(checkRuns) {
+  return !(checkRuns ?? []).some(cr => cr?.appSlug === 'github-actions');
+}
+
+function refuseNoChecksRan(pr, head) {
+  result({ result: 'refused:no-checks-ran', pr: Number(pr), head });
+  console.error(`safe-merge: REFUSING — NO GitHub Actions checks ran on head ${String(head).slice(0, 12)}. This is NOT green. CI never started (a conflict with main can suppress pull_request); rebase or trigger the workflow, then retry.`);
+  process.exit(1);
+}
+
+/** Raw text of a gh call; null on failure. */
+function ghText(args) {
+  const r = gh(args, { allowFail: true });
+  return r.status === 0 ? r.stdout : null;
+}
+
+/**
+ * The agent home that owns THIS copy of safe-merge, derived from the script's
+ * own location, never from the environment:
+ *  - an installed copy (`<home>/.instar/shadow-install/node_modules/instar/scripts/`,
+ *    the one the green-PR watcher runs) resolves to `<home>` from the path itself,
+ *    when `<home>/.instar/config.json` exists (else the git rule below).
+ *    Before this, it resolved only by accident — through the git repo the agent
+ *    home happens to be — and to `…/node_modules/instar` on an agent home that
+ *    is not a git checkout;
+ *  - a source checkout resolves to the parent of the git common dir (a worktree
+ *    under `<home>/.worktrees/` resolves to `<home>`).
+ */
+export function installedAgentHome(scriptDir) {
+  const parts = path.resolve(scriptDir).split(path.sep);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    if (parts[i] === 'shadow-install' && parts[i - 1] === '.instar' && i >= 2) {
+      const home = parts.slice(0, i - 1).join(path.sep) || path.sep;
+      // Only an agent home carries .instar/config.json; a user-level
+      // ~/.instar/shadow-install must not resolve to ~ (falls through to git).
+      return fs.existsSync(path.join(home, '.instar', 'config.json')) ? home : null;
+    }
+  }
+  return null;
+}
+
+export function resolveAgentHome(scriptDir, run = spawnSync) {
+  const installed = installedAgentHome(scriptDir);
+  if (installed) return installed;
+  // Every GIT_* variable is dropped: an inherited GIT_DIR or GIT_COMMON_DIR would
+  // make git answer for another repository, and so point this at another agent's
+  // config file, server and token (second-pass finding).
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  const r = run('git', ['-C', scriptDir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf-8', env });
+  const common = r?.status === 0 ? String(r.stdout ?? '').trim() : '';
+  if (common && path.basename(common) === '.git') return path.dirname(common);
+  return path.dirname(scriptDir);
+}
+
+/** null when the agent has no config file (plain install); throws when it is unreadable. */
+function loadAgentConfig(home) {
+  const file = path.join(home, '.instar', 'config.json');
+  if (!fs.existsSync(file)) return null;
+  return parseAgentServerConfig(fs.readFileSync(file, 'utf-8'));
+}
+
+/** The vault-backed token, through the agent's own secret-get script (value on stdout only). */
+function resolveVaultToken(home) {
+  const script = path.join(home, '.instar', 'scripts', 'secret-get.mjs');
+  if (!fs.existsSync(script)) return null;
+  const r = spawnSync(process.execPath, [script, 'authToken'], { cwd: home, encoding: 'utf-8', timeout: 15_000 });
+  return r.status === 0 && r.stdout ? r.stdout : null;
+}
+
+/**
+ * GET against the agent's own server (loopback, port + token from the config
+ * file). Resolves `{status, body}`; rejects on a transport failure.
+ */
+export function makeServerPost({ port, token, timeoutMs = 15_000, fetchImpl = fetch }) {
+  return async (p, body) => {
+    if (!port || !token) throw new Error('agent server port/token not configured');
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(`http://127.0.0.1:${port}${p}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+      let out = null;
+      try { out = await res.json(); } catch { out = null; }
+      return { status: res.status, body: out };
+    } finally {
+      clearTimeout(t);
+    }
+  };
+}
+
+export function makeServerGet({ port, token, timeoutMs = 15_000, fetchImpl = fetch }) {
+  return async (p) => {
+    if (!port || !token) throw new Error('agent server port/token not configured');
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(`http://127.0.0.1:${port}${p}`, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal });
+      let body = null;
+      try { body = await res.json(); } catch { body = null; }
+      return { status: res.status, body };
+    } finally {
+      clearTimeout(t);
+    }
+  };
+}
+
 function result(obj) {
   console.log(`safe-merge-result: ${JSON.stringify(obj)}`);
 }
@@ -352,6 +996,97 @@ function sleep(ms) {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+
+/**
+ * The review prechecks both floors run (classic required reviews, when the
+ * admin view is readable; the ruleset review policy with the request-and-link
+ * refusal). Exits on refusal; returns the protection read for the caller.
+ * Throws on an unverifiable read (the caller maps it to contexts-unverifiable).
+ */
+function reviewPrecheck({ repo, pr, view, args }) {
+  const protection = fetchProtectionContexts(repo, view.baseRefName || 'main');
+  if (!reviewPrecheckPasses({ classicReviewsRequired: protection.reviewsRequired, reviewDecision: view.reviewDecision })) {
+    result({ result: 'refused:reviews-required', reviewDecision: view.reviewDecision ?? null });
+    console.error('safe-merge: REFUSING — required-review protection exists and is unsatisfied. --admin would bypass it un-re-imposed.');
+    process.exit(1);
+  }
+  // RULESET review policy (classic protection above is not the only source).
+  // Read it BEFORE attempting the merge so a required non-pusher approval is
+  // answered by REQUESTING the review + handing back the link — not by a
+  // failed `gh pr merge` and a reviewer-less PR (2026-08-22, PR #1963).
+  const reviewPolicy = fetchRulesetReviewPolicy(repo, view.baseRefName || 'main');
+  if (!reviewPrecheckPasses({ policy: reviewPolicy, reviewDecision: view.reviewDecision })) {
+    refuseApprovalRequired({ repo, pr, view, args, policy: reviewPolicy, via: 'ruleset-precheck' });
+  }
+  // require_code_owner_review: a PR touching a CODEOWNERS-owned path (the constitution)
+  // waits for the code owner — never try a merge GitHub will refuse.
+  if (reviewPolicy.codeOwnerReviewRequired === true && view.reviewDecision !== 'APPROVED') {
+    const owned = fetchCodeOwnedFiles(repo, pr, view.baseRefName || 'main');
+    if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })) {
+      refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10) }, via: 'code-owner-review' });
+    }
+  }
+  return protection;
+}
+
+/** Pure: the code-owner review GitHub requires is still outstanding for these owned files. */
+export function codeOwnerReviewPending({ policy, ownedFiles, reviewDecision }) {
+  return !reviewPrecheckPasses({ policy, reviewDecision, codeOwnedTouched: (ownedFiles ?? []).length > 0 });
+}
+
+/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns. Throws when unreadable. */
+function fetchCodeOwnedFiles(repo, pr, base) {
+  const co = gh(['api', `repos/${repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw'], { allowFail: true });
+  let rules;
+  if (co.status === 0) rules = parseCodeowners(co.stdout);
+  else if (/HTTP 404/.test(co.stderr || '')) rules = [];
+  if (!rules) throw new Error(`CODEOWNERS unverifiable: ${(co.stderr || '').slice(0, 200)}`);
+  const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
+  const files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => String(f?.filename ?? '')).filter(Boolean);
+  return codeOwnedFiles(files, rules);
+}
+
+/** The head-pinned merge plus the independent confirmation (B10). Always exits. */
+function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
+  console.log(`safe-merge: merging PR #${pr} (${args.method}${admin ? ' --admin' : ''}, head ${pinnedHead.slice(0, 12)})...`);
+  const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
+  if (admin) mergeArgs.push('--admin');
+  if (args.deleteBranch) mergeArgs.push('--delete-branch');
+  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
+  process.stdout.write(m.stdout ?? '');
+  process.stderr.write(m.stderr ?? '');
+
+  if (m.status !== 0 || m.signal) {
+    // Belt-and-braces: a ruleset that changed between the pre-check and the
+    // merge (or one the pre-check could not read) still gets the request-and-link
+    // treatment, never a bare merge-command-failed.
+    if (isNonPusherApprovalRequired(m.stderr)) {
+      refuseApprovalRequired({ repo, pr, view, args, policy: null, via: 'merge-refusal' });
+    }
+    const cls = classifyMergeFailure(m.stderr, m.status, m.signal);
+    result({ result: cls === 'already-merged' || cls === 'closed' ? cls : `refused-or-${cls}`, raw: cls });
+    if (cls === 'already-merged') process.exit(3);
+    if (cls === 'closed') process.exit(4);
+    console.error(`safe-merge: merge command did not succeed (${cls}).`);
+    process.exit(2);
+  }
+
+  // --- Independent confirmation (B10: never trust the exit code alone) ------
+  try {
+    const after = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt']);
+    if (after.state === 'MERGED' || after.mergedAt) {
+      result({ result: 'merged', pr: Number(pr), head: pinnedHead });
+      process.exit(0);
+    }
+    result({ result: 'error:merge-unconfirmed', state: after.state });
+    console.error('safe-merge: gh reported success but the PR is not MERGED on re-read. NOT claiming success.');
+    process.exit(2);
+  } catch (e) {
+    result({ result: 'error:confirm-unreadable', detail: String(e.message).slice(0, 300) });
+    console.error('safe-merge: could not independently confirm the merge. NOT claiming success.');
+    process.exit(2);
+  }
+}
 
 async function main() {
   let args;
@@ -378,7 +1113,7 @@ async function main() {
   // --- PR state + head pin -------------------------------------------------
   let view;
   try {
-    view = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,headRefOid,baseRefName,reviewDecision,isDraft']);
+    view = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,headRefOid,baseRefName,reviewDecision,isDraft,author,isCrossRepository']);
   } catch (e) {
     result({ result: 'error:pr-unreadable', detail: String(e.message).slice(0, 300) });
     process.exit(2);
@@ -412,6 +1147,17 @@ async function main() {
   // foreground/background poller does (the failure mode that wedged hot-branch
   // merges: the watcher is killed before slow CI finishes).
   if (args.auto) {
+    // Zero Actions checks is never green: refuse before arming (GitHub would
+    // otherwise merge at once when no check is required).
+    let headRuns;
+    try {
+      headRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
+    } catch (e) {
+      result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
+      console.error(`safe-merge: REFUSING — could not read the head's check runs: ${e.message}`);
+      process.exit(1);
+    }
+    if (noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     const autoArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--auto'];
     if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
     if (args.deleteBranch) autoArgs.push('--delete-branch');
@@ -459,13 +1205,57 @@ async function main() {
     }
   }
 
+  // --- Floor selection (local-verify-merge-authority §3) --------------------
+  // `--auto` (above) keeps today's behaviour. On the synchronous path, the
+  // `local` floor replaces the three Actions waits and the contexts floor with
+  // the §3 predicate; it never falls back to the Actions floor on its own.
+  {
+    const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
+    let agent = null;
+    let configError = null;
+    try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
+    const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
+    let token = agent?.inlineToken ?? null;
+    let tokenTried = false;
+    const serverGet = async (p) => {
+      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+      return makeServerGet({ port: agent?.port ?? null, token })(p);
+    };
+    const serverPost = async (p, body) => {
+      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+      return makeServerPost({ port: agent?.port ?? null, token })(p, body);
+    };
+    const sel = configError && !override
+      ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
+      : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+    if (sel.floor === 'local') {
+      const refuseLocal = (r) => {
+        result({ result: r.result, pr: Number(pr), floor: 'local', problems: (r.problems ?? []).slice(0, 20) });
+        console.error(`safe-merge: REFUSING (local floor) — ${r.result}:\n  ${(r.problems ?? []).join('\n  ')}`);
+        process.exit(1);
+      };
+      if (sel.refusal) refuseLocal(sel.refusal);
+      try {
+        reviewPrecheck({ repo, pr, view, args });
+      } catch (e) {
+        result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
+        console.error(`safe-merge: REFUSING — review precheck failed: ${e.message}`);
+        process.exit(1);
+      }
+      const verdict = await checkLocalFloor({ repo, pr, pinnedHead, status: sel.status, agent, serverGet, serverPost, ghJson, ghText });
+      if (!verdict.ok) refuseLocal(verdict);
+      console.log('safe-merge: local-verify record admitted (local floor).');
+      mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin: false });
+    }
+  }
+
   // --- Wait for checks to settle (bucket-based, never name-based) ----------
   console.log(`safe-merge: waiting for PR #${pr} checks to finish (deadline ${Math.round(args.deadlineMs / 1000)}s)...`);
   let checksState;
   for (;;) {
     let rows;
     try {
-      rows = fetchChecksRows(pr, repo);
+      rows = readChecksWithRetry(() => fetchChecksRows(pr, repo), sleep, CHECKS_READ_RETRY_BACKOFF_MS, deadline);
     } catch (e) {
       result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
       console.error(`safe-merge: REFUSING — ${e.message}`);
@@ -474,7 +1264,7 @@ async function main() {
     checksState = classifyChecks(rows);
     if (checksState.settled) break;
     if (Date.now() > deadline) {
-      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10) });
+      result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });
       console.error('safe-merge: timed out waiting for checks. NOT merging.');
       process.exit(1);
     }
@@ -487,6 +1277,10 @@ async function main() {
     process.exit(1);
   }
   if (!checksState.sawE2e || !checksState.e2ePassed) {
+    // Say which: nothing ran at all, or the e2e check specifically is missing/red.
+    let headRuns = null;
+    try { headRuns = fetchCheckRunsWithProducers(repo, pinnedHead); } catch { /* @silent-fallback-ok: refusing either way; this only picks the message */ }
+    if (headRuns && noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
     result({ result: 'refused:e2e-missing-or-red' });
     console.error('safe-merge: REFUSING — the e2e check is missing or did not pass. The e2e job is the one --admin bypasses; do not merge without it.');
     process.exit(1);
@@ -495,20 +1289,21 @@ async function main() {
   // --- Required-contexts cross-check with producer-bound floor --------------
   let evaluation;
   try {
-    const protection = fetchProtectionContexts(repo, view.baseRefName || 'main');
-    if (protection.reviewsRequired && view.reviewDecision !== 'APPROVED') {
-      result({ result: 'refused:reviews-required', reviewDecision: view.reviewDecision ?? null });
-      console.error('safe-merge: REFUSING — required-review protection exists and is unsatisfied. --admin would bypass it un-re-imposed.');
-      process.exit(1);
-    }
+    const protection = reviewPrecheck({ repo, pr, view, args });
     const rulesetContexts = fetchRulesetContexts(repo, view.baseRefName || 'main');
     const checkRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
+    // instar/local-verify is a commit status: read it from the combined-status
+    // API only when something requires it (never among check runs).
+    const needsStatuses = [...protection.contexts, ...rulesetContexts, ...args.extraFloor]
+      .includes(LOCAL_VERIFY_CONTEXT);
+    const commitStatuses = needsStatuses ? fetchCommitStatuses(repo, pinnedHead) : [];
     evaluation = evaluateRequiredContexts({
       protectionContexts: protection.contexts,
       rulesetContexts,
-      floor: REQUIRED_CONTEXTS_FLOOR,
+      floor: ACTIONS_FLOOR_CONTEXTS,
       extraFloor: args.extraFloor,
       checkRuns,
+      commitStatuses,
     });
   } catch (e) {
     result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
@@ -522,38 +1317,8 @@ async function main() {
   }
 
   // --- Merge (head-pinned) ---------------------------------------------------
-  console.log(`safe-merge: all checks green (e2e + producer-bound floor confirmed). Merging PR #${pr} (${args.method}${args.admin ? ' --admin' : ''}, head ${pinnedHead.slice(0, 12)})...`);
-  const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
-  if (args.admin) mergeArgs.push('--admin');
-  if (args.deleteBranch) mergeArgs.push('--delete-branch');
-  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
-  process.stdout.write(m.stdout ?? '');
-  process.stderr.write(m.stderr ?? '');
-
-  if (m.status !== 0 || m.signal) {
-    const cls = classifyMergeFailure(m.stderr, m.status, m.signal);
-    result({ result: cls === 'already-merged' || cls === 'closed' ? cls : `refused-or-${cls}`, raw: cls });
-    if (cls === 'already-merged') process.exit(3);
-    if (cls === 'closed') process.exit(4);
-    console.error(`safe-merge: merge command did not succeed (${cls}).`);
-    process.exit(2);
-  }
-
-  // --- Independent confirmation (B10: never trust the exit code alone) ------
-  try {
-    const after = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt']);
-    if (after.state === 'MERGED' || after.mergedAt) {
-      result({ result: 'merged', pr: Number(pr), head: pinnedHead });
-      process.exit(0);
-    }
-    result({ result: 'error:merge-unconfirmed', state: after.state });
-    console.error('safe-merge: gh reported success but the PR is not MERGED on re-read. NOT claiming success.');
-    process.exit(2);
-  } catch (e) {
-    result({ result: 'error:confirm-unreadable', detail: String(e.message).slice(0, 300) });
-    console.error('safe-merge: could not independently confirm the merge. NOT claiming success.');
-    process.exit(2);
-  }
+  console.log('safe-merge: all checks green (e2e + producer-bound floor confirmed).');
+  mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin: args.admin });
 }
 
 const isCliEntry = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());

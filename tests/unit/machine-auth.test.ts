@@ -243,6 +243,39 @@ describe('machineAuthMiddleware', () => {
     expect(res.body.error).toContain('Invalid signature');
   });
 
+  it('does not consume a huge sequence carried by an invalid signature', async () => {
+    const body = { data: 'poison-attempt' };
+    const poisoned = {
+      'X-Machine-Id': env.remoteId,
+      'X-Timestamp': Math.floor(Date.now() / 1000).toString(),
+      'X-Nonce': crypto.randomBytes(16).toString('hex'),
+      'X-Sequence': String(Number.MAX_SAFE_INTEGER),
+      'X-Signature': Buffer.alloc(64).toString('base64'),
+    };
+    await request(app).post('/test').set(poisoned).send(body).expect(403);
+
+    const legitimate = { data: 'legitimate-lower-sequence' };
+    await request(app).post('/test')
+      .set(signRequest(env.remoteId, env.remoteSigning.privateKey, legitimate))
+      .send(legitimate)
+      .expect(200);
+  });
+
+  it('emits typed identity-recovery evidence only for invalid signatures and fully verified requests', async () => {
+    const rejected: string[] = [];
+    const verified: string[] = [];
+    env.deps.onSignatureInvalid = (id) => rejected.push(id);
+    env.deps.onVerified = (id) => verified.push(id);
+
+    const body = { data: 'test' };
+    await request(app).post('/test').set(signRequest(env.remoteId, generateSigningKeyPair().privateKey, body)).send(body).expect(403);
+    expect(rejected).toEqual([env.remoteId]);
+    expect(verified).toEqual([]);
+
+    await request(app).post('/test').set(signRequest(env.remoteId, env.remoteSigning.privateKey, body)).send(body).expect(200);
+    expect(verified).toEqual([env.remoteId]);
+  });
+
   it('rejects request with tampered body', async () => {
     const body = { data: 'original' };
     const headers = signRequest(env.remoteId, env.remoteSigning.privateKey, body, 0);

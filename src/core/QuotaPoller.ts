@@ -47,6 +47,12 @@ import {
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
 import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
+import type {
+  SubscriptionLoginCauseClass,
+  SubscriptionLoginSettledOutcome,
+} from './SubscriptionLoginLedger.js';
+import type { CodexLiveRead } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import type { CliLoginVerdict } from './CliLoginStatus.js';
 import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
@@ -64,7 +70,9 @@ import {
 export type TokenResolution =
   | string
   | null
-  | { reauthNeeded: true; reason: 'unparseable-credential-blob' };
+  | { reauthNeeded: true; reason: 'unparseable-credential-blob' }
+  | { observationOnly: true; reason:
+      'credential-absent-or-unreadable' | 'credential-missing-oauth-block' | 'credential-token-shape-invalid' };
 
 export type TokenResolver = (
   account: SubscriptionAccount,
@@ -100,6 +108,29 @@ export interface QuotaPollerConfig {
   refresher?: AccountRefresher;
   /** Injected for tests; defaults to the rollout-backed Codex usage reader. */
   codexUsageReader?: CodexUsageReader;
+  /**
+   * The zero-spend LIVE codex reader (`codex app-server` →
+   * account/rateLimits/read). Tried FIRST for codex accounts; any failure
+   * falls back to `codexUsageReader` (the rollout tail), so the worst case is
+   * exactly the rollout-only behaviour. DELIBERATELY no real default: absent
+   * or null means rollout-only, and the production implementation is injected
+   * once at server composition via `buildCodexLiveUsageReader` — so a test
+   * that builds a poller without injecting one can never spawn a real
+   * `codex` subprocess. Config lever: `subscriptionPool.codexLiveQuota: false`.
+   */
+  codexLiveUsageReader?: CodexUsageReader | null;
+  /**
+   * The live codex read with its failure KIND kept (spec skill-driven-signin-repair). When
+   * present it REPLACES `codexLiveUsageReader`: an app-server "authentication required"
+   * refusal is then told apart from a transport failure, and only a live `codex-app-server`
+   * read counts as proof of login — the rollout-file fallback is usage history only.
+   */
+  codexLiveUsageReaderDetailed?: ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexLiveRead>) | null;
+  /**
+   * The Codex CLI's own login check for one config home (`codex login status`), proven able
+   * to fail by its canary. Required for the CLI-signed-out rule; absent ⇒ that rule never fires.
+   */
+  codexLoginStatus?: ((codexHome: string) => Promise<CliLoginVerdict>) | null;
   /** Clock injection for Codex reset-boundary normalization. */
   now?: () => number;
   /** Logger (defaults to console). */
@@ -123,7 +154,41 @@ export interface QuotaPollerConfig {
   /** One deduped attention item per drift episode (id is stable until self-close). */
   emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
   onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
+  /** Passive evidence sink. It cannot select accounts, mutate pool authority, or trigger repair. */
+  loginObservationSink?: (input: {
+    accountId: string;
+    at: string;
+    outcome: SubscriptionLoginSettledOutcome;
+    pollIntervalMs: number;
+  }) => void;
+  loginAdmission?: (cells: Array<{
+    accountId: string; supported: boolean; disabled: boolean; at: string;
+  }>) => Set<string>;
 }
+
+/**
+ * The login signal behind an account's pool status (spec skill-driven-signin-repair). `ok` = the
+ * latest poll made an authenticated read (for Codex, a LIVE app-server read); `signed-out` = the
+ * provider refused the read as unauthenticated; `unavailable` = no measurable signal this poll
+ * (transport failure, check not runnable, not yet polled). `unavailable` never counts as a fresh
+ * `active`; it is shown next to the status so the gap is visible.
+ */
+export type PoolLoginCheck = 'ok' | 'signed-out' | 'unavailable';
+
+/**
+ * Claude Code's own "Login expired" screen, seen in this many DISTINCT sessions launched under
+ * the same config home within {@link CLI_LOGIN_EXPIRED_WINDOW_MS}, corroborates an unreadable
+ * stored credential into needs-reauth (2026-10-22: a dead login sat "active" for 8h while the
+ * session monitor ended 40+ sessions at that screen and the repair never started).
+ */
+export const CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED = 2;
+export const CLI_LOGIN_EXPIRED_WINDOW_MS = 60 * 60_000;
+const CLI_LOGIN_EXPIRED_MAX_SIGHTINGS = 20;
+
+/** Two consecutive CLI-signed-out + auth-refused polls move a Codex account to needs-reauth. */
+const CLI_SIGNED_OUT_POLLS_REQUIRED = 2;
+/** The two agreeing polls must be at least this far apart (on-demand polls seconds apart don't count twice). */
+const CLI_SIGNED_OUT_MIN_GAP_MS = 5 * 60_000;
 
 /** Outcome of a single usage read (internal). */
 type UsageRead =
@@ -164,12 +229,18 @@ export async function defaultTokenResolver(
   // contention that was seconds, and across N accounts a burst (the residual freeze this fixes).
   const read = await readClaudeOauthAsyncDetailed(account.configHome);
   if (!read.ok) {
-    return read.reason === 'unparseable'
-      ? { reauthNeeded: true, reason: 'unparseable-credential-blob' }
-      : null;
+    if (read.reason === 'unparseable') return { reauthNeeded: true, reason: 'unparseable-credential-blob' };
+    return {
+      observationOnly: true,
+      reason: read.reason === 'missing-oauth-block'
+        ? 'credential-missing-oauth-block'
+        : 'credential-absent-or-unreadable',
+    };
   }
   const tok = read.oauth.accessToken;
-  return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
+  return typeof tok === 'string' && tok.startsWith('sk-ant-oat')
+    ? tok
+    : { observationOnly: true, reason: 'credential-token-shape-invalid' };
 }
 
 /**
@@ -348,6 +419,13 @@ export class QuotaPoller {
   private readonly tokenResolver: TokenResolver;
   private readonly refresher: AccountRefresher;
   private readonly codexUsageReader: CodexUsageReader;
+  private readonly codexLiveUsageReader: CodexUsageReader | null;
+  private readonly codexLiveUsageReaderDetailed: QuotaPollerConfig['codexLiveUsageReaderDetailed'];
+  private readonly codexLoginStatus: QuotaPollerConfig['codexLoginStatus'];
+  private readonly loginChecks = new Map<string, PoolLoginCheck>();
+  private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
+  /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
+  private readonly cliLoginExpiredSightings = new Map<string, Array<{ session: string; at: number }>>();
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
@@ -356,6 +434,8 @@ export class QuotaPoller {
   private readonly locationLedger?: CredentialLocationLedger;
   private readonly emitIdentityDriftAttention?: QuotaPollerConfig['emitIdentityDriftAttention'];
   private readonly onIdentityRestored?: QuotaPollerConfig['onIdentityRestored'];
+  private readonly loginObservationSink?: QuotaPollerConfig['loginObservationSink'];
+  private readonly loginAdmission?: QuotaPollerConfig['loginAdmission'];
   private readonly identityCache = new Map<string, { at: number; value: Awaited<ReturnType<NonNullable<QuotaPollerConfig['resolveSlotIdentity']>>> }>();
   private readonly attributionByExpected = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -374,6 +454,9 @@ export class QuotaPoller {
     this.refresher =
       config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
     this.codexUsageReader = config.codexUsageReader ?? readLatestCodexUsage;
+    this.codexLiveUsageReader = config.codexLiveUsageReader ?? null;
+    this.codexLiveUsageReaderDetailed = config.codexLiveUsageReaderDetailed ?? null;
+    this.codexLoginStatus = config.codexLoginStatus ?? null;
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
@@ -382,6 +465,8 @@ export class QuotaPoller {
     this.locationLedger = config.locationLedger;
     this.emitIdentityDriftAttention = config.emitIdentityDriftAttention;
     this.onIdentityRestored = config.onIdentityRestored;
+    this.loginObservationSink = config.loginObservationSink;
+    this.loginAdmission = config.loginAdmission;
   }
 
   private async identityForSlot(slot: string) {
@@ -396,7 +481,12 @@ export class QuotaPoller {
 
   /** Credential mutations must invalidate observations made before the write. */
   invalidateIdentityCache(slots: string[]): void {
-    for (const slot of slots) this.identityCache.delete(slot);
+    for (const slot of slots) {
+      this.identityCache.delete(slot);
+      // A credential swap re-points the slot: sightings of the OLD login's dead screen must not
+      // corroborate against whatever credential now sits there.
+      this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slot)));
+    }
   }
 
   /** Identity truth wins over a stale registry/ledger label. */
@@ -513,7 +603,21 @@ export class QuotaPoller {
     }
   }
 
-  private markNeedsReauth(account: SubscriptionAccount, reason: string): void {
+  private observe(accountId: string, outcome: SubscriptionLoginSettledOutcome): void {
+    try {
+      this.loginObservationSink?.({
+        accountId,
+        at: new Date(this.now()).toISOString(),
+        outcome,
+        pollIntervalMs: this.pollIntervalMs,
+      });
+    } catch (error) {
+      this.logger.warn(`[QuotaPoller] login observation refused for ${accountId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private markNeedsReauth(account: SubscriptionAccount, reason: SubscriptionLoginCauseClass): void {
+    this.loginChecks.set(account.id, 'signed-out');
     try {
       this.pool.update(account.id, { status: 'needs-reauth' });
     } catch {
@@ -546,7 +650,43 @@ export class QuotaPoller {
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
       const nowMs = this.now();
       const nowIso = new Date(nowMs).toISOString();
-      const usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
+      // Live-first: the app-server read is authoritative and current even for a
+      // WALLED account (which writes no rollout records at all — the dawn@ case,
+      // 2026-09-20) and costs zero quota. Any failure — binary missing, spawn
+      // error, timeout, protocol drift — degrades to the rollout tail, i.e. to
+      // exactly the previous behaviour. The live reader never throws, but the
+      // guard also catches an injected test reader that does.
+      let usage: CodexUsageSnapshot | null = null;
+      if (this.codexLiveUsageReaderDetailed) {
+        let live: CodexLiveRead;
+        try {
+          live = await this.codexLiveUsageReaderDetailed({ codexHome: slotAccount.configHome, nowMs });
+        } catch {
+          live = { kind: 'unavailable' }; // @silent-fallback-ok: a throwing reader is a transport failure
+        }
+        if (live.kind === 'ok') {
+          usage = live.snapshot;
+          this.loginChecks.set(slotAccount.id, 'ok');
+          this.cliSignedOutStreak.delete(slotAccount.id);
+        } else if (live.kind === 'auth-failed') {
+          await this.onCodexAuthRefused(slotAccount);
+          return null;
+        } else {
+          // Transport failure: no login signal this poll, and it breaks a signed-out streak.
+          this.loginChecks.set(slotAccount.id, 'unavailable');
+          this.cliSignedOutStreak.delete(slotAccount.id);
+        }
+      } else if (this.codexLiveUsageReader) {
+        try {
+          usage = await this.codexLiveUsageReader({ codexHome: slotAccount.configHome, nowMs });
+        } catch {
+          usage = null; // @silent-fallback-ok: rollout tail below is the designed fallback
+        }
+        this.loginChecks.set(slotAccount.id, usage?.source === 'codex-app-server' ? 'ok' : 'unavailable');
+      } else {
+        this.loginChecks.set(slotAccount.id, 'unavailable');
+      }
+      if (!usage) usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
       if (!usage) return null;
       const window = (value: CodexUsageSnapshot['primary']) => {
         if (!value) return undefined;
@@ -563,11 +703,15 @@ export class QuotaPoller {
       const fiveHour = window(shortWindow);
       const sevenDay = window(longWindow);
       const snap: AccountQuotaSnapshot = {
-        source: 'codex-rollout',
+        source: usage.source,
         measuredAt: usage.capturedAt ?? nowIso,
       };
       if (fiveHour) snap.fiveHour = fiveHour;
       if (sevenDay) snap.sevenDay = sevenDay;
+      // The account answered, but reported no usage window (entitlement/credits
+      // only). Carry that through so the dashboard can say so plainly rather
+      // than show "No quota reading yet", which reads as a pending poll.
+      if (!fiveHour && !sevenDay && usage.windowsUnavailable) snap.noQuotaWindow = true;
       const attributedId = slotAccount.id;
       const priorLast = this.lastByAccount.get(attributedId);
       if (priorLast) this.prevByAccount.set(attributedId, priorLast);
@@ -577,17 +721,50 @@ export class QuotaPoller {
 
     const tokenResolution = await this.tokenResolver(slotAccount);
     if (typeof tokenResolution !== 'string') {
-      if (tokenResolution?.reauthNeeded) {
+      if (tokenResolution && 'reauthNeeded' in tokenResolution && tokenResolution.reauthNeeded) {
         this.markNeedsReauth(slotAccount, tokenResolution.reason);
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass: tokenResolution.reason,
+          corroboration: 'status-preexisting',
+        });
         return null;
       }
+      if (tokenResolution && 'observationOnly' in tokenResolution && tokenResolution.observationOnly) {
+        // A malformed credential alone is only an observation. The CLI itself refusing to run
+        // under this home ("Login expired", in more than one session) is the corroboration.
+        // `credential-absent-or-unreadable` is deliberately EXCLUDED: a locked keychain (post-reboot,
+        // launchd context) makes both the read AND the CLI fail on a login that is actually fine,
+        // and a repair would write into the same locked keychain. Only a credential that READ but
+        // is malformed (token shape / missing oauth block) corroborates.
+        if (tokenResolution.reason !== 'credential-absent-or-unreadable'
+          && this.cliLoginExpiredCorroborated(slotAccount.configHome)) {
+          this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slotAccount.configHome)));
+          if (slotAccount.status !== 'needs-reauth') {
+            this.markNeedsReauth(slotAccount, 'cli-login-expired-observed');
+            this.observe(slotAccount.id, {
+              kind: 'transition-to-needs-reauth',
+              causeClass: 'cli-login-expired-observed',
+              corroboration: 'exchange-corroborated',
+            });
+          }
+          return null;
+        }
+        this.loginChecks.set(slotAccount.id, 'unavailable');
+        this.observe(slotAccount.id, { kind: 'observation-absence', causeClass: tokenResolution.reason });
+        return null;
+      }
+      this.loginChecks.set(slotAccount.id, 'unavailable');
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;
     }
     const token = tokenResolution;
 
     const read = await this.readUsage(token);
-    if (read === null) return null; // network failure
+    if (read === null) { // network failure: no login signal this poll
+      this.loginChecks.set(slotAccount.id, 'unavailable');
+      return null;
+    }
 
     let body: Record<string, unknown> | null;
     if (read.authFailed) {
@@ -600,17 +777,36 @@ export class QuotaPoller {
           this.logger.warn(
             `[QuotaPoller] account ${account.id} refresh-write skipped (slot busy) — no snapshot this cycle`,
           );
+          this.loginChecks.set(slotAccount.id, 'unavailable');
           return null;
         }
         // No refresh token, or the exchange was rejected — genuine re-auth.
-        this.markNeedsReauth(slotAccount, refreshed.reason);
+        const causeClass: SubscriptionLoginCauseClass = refreshed.reason === 'read-failed'
+          ? 'refresh-read-failed'
+          : refreshed.reason === 'unsupported-account'
+            ? 'unrecognized-reason'
+            : refreshed.reason;
+        this.markNeedsReauth(slotAccount, causeClass);
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass,
+          corroboration: 'exchange-corroborated',
+        });
         return null;
       }
       const retry = await this.readUsage(refreshed.accessToken);
-      if (retry === null) return null; // network blip on the retry → next cycle
+      if (retry === null) { // network blip on the retry → next cycle
+        this.loginChecks.set(slotAccount.id, 'unavailable');
+        return null;
+      }
       if (retry.authFailed) {
         // Fresh token still rejected — treat as genuinely failed.
-        this.markNeedsReauth(slotAccount, 'usage still auth-failed after refresh');
+        this.markNeedsReauth(slotAccount, 'still-authfailed-after-refresh');
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass: 'still-authfailed-after-refresh',
+          corroboration: 'exchange-corroborated',
+        });
         return null;
       }
       // Recovered silently — no operator action needed. Record for visibility.
@@ -627,8 +823,13 @@ export class QuotaPoller {
       body = read.body;
     }
 
-    if (!body) return null;
+    if (!body) { // a non-auth error status: no login signal this poll
+      this.loginChecks.set(slotAccount.id, 'unavailable');
+      return null;
+    }
 
+    // The OAuth usage endpoint answered with this account's token: an authenticated read.
+    this.loginChecks.set(slotAccount.id, 'ok');
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
     const attributedId = slotAccount.id;
@@ -646,12 +847,25 @@ export class QuotaPoller {
   async pollAll(): Promise<{ polled: number; failed: number }> {
     let polled = 0;
     let failed = 0;
-    for (const account of this.pool.list()) {
-      const supported =
-        (account.provider === 'anthropic' && account.framework === 'claude-code') ||
-        (account.provider === 'openai' && account.framework === 'codex-cli');
-      if (!supported) continue;
-      if (account.status === 'disabled') continue;
+    const scan = this.pool.scanAccountsBounded(4_096);
+    const nowIso = new Date(this.now()).toISOString();
+    const admitted = this.loginAdmission?.(scan.accounts.map((account) => ({
+      accountId: account.id,
+      supported: isQuotaPollSupportedAccount(account),
+      disabled: account.status === 'disabled',
+      at: nowIso,
+    }))) ?? new Set(scan.accounts.map((account) => account.id));
+    for (const account of scan.accounts) {
+      if (!admitted.has(account.id)) continue;
+      const supported = isQuotaPollSupportedAccount(account);
+      if (!supported) {
+        this.observe(account.id, { kind: 'skipped-unsupported-framework' });
+        continue;
+      }
+      if (account.status === 'disabled') {
+        this.observe(account.id, { kind: 'skipped-disabled' });
+        continue;
+      }
       const snap = await this.pollAccount(account);
       if (!snap) {
         failed++;
@@ -660,8 +874,11 @@ export class QuotaPoller {
       polled++;
       const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
-      // A clean read on an account previously flagged needs-reauth restores it.
-      if (account.status === 'needs-reauth') patch.status = 'active';
+      // A clean AUTHENTICATED read on an account previously flagged needs-reauth restores it. A
+      // Codex rollout-file snapshot is usage history, not proof of login (spec
+      // skill-driven-signin-repair), so it never restores `active`.
+      const restores = account.status === 'needs-reauth' && snap.source !== 'codex-rollout';
+      if (restores) patch.status = 'active';
       // Email is provider-attested identity, not quota metadata. Quota polling
       // must never mutate it; drift detection and the identity registrar own
       // that authority.
@@ -669,6 +886,9 @@ export class QuotaPoller {
         this.pool.update(attributedId, patch);
       } catch {
         // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
+      }
+      if (account.status !== 'needs-reauth' || restores) {
+        this.observe(attributedId, restores ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
       }
     }
     return { polled, failed };
@@ -700,8 +920,79 @@ export class QuotaPoller {
     };
   }
 
+  /**
+   * The login signal behind an account's pool status (see {@link PoolLoginCheck}). An account
+   * this process has not polled reads `unavailable`.
+   */
+  loginCheck(accountId: string): PoolLoginCheck {
+    return this.loginChecks.get(accountId) ?? 'unavailable';
+  }
+
+  /**
+   * The CLI-signed-out rule (spec skill-driven-signin-repair). The live app-server read was
+   * refused as unauthenticated; ask the CLI itself. Only when BOTH say signed out on two
+   * consecutive polls does the account move to needs-reauth, through the explicit
+   * `transition-to-needs-reauth` outcome. A CLI that disagrees, or cannot answer, leaves the
+   * status unchanged and records `unavailable`.
+   */
+  private async onCodexAuthRefused(account: SubscriptionAccount): Promise<void> {
+    let cli: CliLoginVerdict = 'unavailable';
+    if (this.codexLoginStatus) {
+      try { cli = await this.codexLoginStatus(account.configHome); }
+      catch { cli = 'unavailable'; } // @silent-fallback-ok — no signal; status kept
+    }
+    if (cli !== 'signed-out') {
+      this.loginChecks.set(account.id, 'unavailable');
+      this.cliSignedOutStreak.delete(account.id);
+      return;
+    }
+    this.loginChecks.set(account.id, 'signed-out');
+    const nowMs = this.now();
+    const prior = this.cliSignedOutStreak.get(account.id);
+    if (prior && nowMs - prior.lastAt < CLI_SIGNED_OUT_MIN_GAP_MS) return; // too soon to count again
+    const streak = (prior?.count ?? 0) + 1;
+    this.cliSignedOutStreak.set(account.id, { count: streak, lastAt: nowMs });
+    if (streak < CLI_SIGNED_OUT_POLLS_REQUIRED) return;
+    if (account.status === 'needs-reauth') return;
+    this.markNeedsReauth(account, 'cli-signed-out-auth-refused');
+    this.observe(account.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-signed-out-auth-refused',
+      corroboration: 'exchange-corroborated',
+    });
+  }
+
+  /**
+   * Record that a Claude Code session launched under `configHome` showed the CLI's own
+   * "Login expired" frame (SessionManager's live-tail classifier). A SIGNAL only: it changes no
+   * pool state by itself. The next poll of the account using that home consults it, and only
+   * when the stored credential is also unreadable does it corroborate needs-reauth.
+   */
+  noteCliLoginExpired(input: { configHome: string; session: string; at?: number }): void {
+    if (!input.configHome || !input.session) return;
+    const key = path.resolve(expandHome(input.configHome));
+    const at = input.at ?? this.now();
+    const kept = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => at - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS && s.session !== input.session);
+    kept.push({ session: input.session, at });
+    this.cliLoginExpiredSightings.set(key, kept.slice(-CLI_LOGIN_EXPIRED_MAX_SIGHTINGS));
+  }
+
+  private cliLoginExpiredCorroborated(configHome: string): boolean {
+    const key = path.resolve(expandHome(configHome));
+    const nowMs = this.now();
+    const recent = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => nowMs - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS);
+    return new Set(recent.map((s) => s.session)).size >= CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED;
+  }
+
   /** Expose the last in-memory snapshot for an account (test/diagnostic). */
   lastSnapshot(accountId: string): AccountQuotaSnapshot | null {
     return this.lastByAccount.get(accountId) ?? null;
   }
+}
+
+export function isQuotaPollSupportedAccount(account: SubscriptionAccount): boolean {
+  return (account.provider === 'anthropic' && account.framework === 'claude-code') ||
+    (account.provider === 'openai' && account.framework === 'codex-cli');
 }

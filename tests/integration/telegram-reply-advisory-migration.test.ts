@@ -12,8 +12,8 @@
  *   4. A live credential is the one thing that still cannot be sent — and it is
  *      refused even WITH an ack, because the wall is deterministic and sits in
  *      front of the LLM authority entirely.
- *   5. With the migration off, the same B2 verdict is a hard block again — the
- *      rollback is a flag, not a revert.
+ *   5. B2 remains advisory even with the broader migration off; ordinary path
+ *      usefulness is never an absolute wall.
  *
  * Only the IntelligenceProvider is mocked; route, gate, disposition resolver,
  * credential guard and the 422 plumbing are all real.
@@ -21,17 +21,21 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import express from 'express';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
+import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import {
   DecisionQualityRecorderImpl,
   installDecisionQualityRecorder,
 } from '../../src/core/DecisionQualityRecorderImpl.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * The advisory disposition is CONDITIONAL on the reaction being recordable
@@ -39,9 +43,13 @@ import type { IntelligenceProvider } from '../../src/core/types.js';
  * gate keeps its authority and returns a plain block. So an advisory test must
  * install a live recorder — and the un-installed case is itself worth asserting.
  */
+let ledger: FeatureMetricsLedger | null = null;
+const tmpDirs: string[] = [];
 function installLiveRecorder(): void {
+  ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
   installDecisionQualityRecorder(
     new DecisionQualityRecorderImpl({
+      ledger,
       config: {
         developmentAgent: true,
         provenance: { uniformSeam: { enabled: true, dryRun: false } },
@@ -113,6 +121,36 @@ function buildApp(opts: {
   return app;
 }
 
+function runReplyScript(opts: {
+  port: number;
+  args: string[];
+}): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-reply-client-int-'));
+  tmpDirs.push(dir);
+  fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, '.instar', 'config.json'),
+    JSON.stringify({ port: opts.port, projectName: 'client-int' }),
+  );
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [path.resolve('src/templates/scripts/telegram-reply.sh'), ...opts.args], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        INSTAR_SENDER_CLASS: 'script',
+        INSTAR_AUTH_TOKEN: '',
+        INSTAR_PORT: '',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
 /** The founding complaint: a message whose only sin is naming a directory. */
 const PATH_MESSAGE =
   'I put the convergence report in docs/audits/tone-gate-grading.md — it lists every scenario and the verdicts.';
@@ -127,7 +165,19 @@ const B2_VERDICT = {
 describe('advisory migration through POST /telegram/reply', () => {
   let server: TestServer;
   beforeEach(() => { installLiveRecorder(); });
-  afterEach(async () => { await server?.close(); installDecisionQualityRecorder(null); });
+  afterEach(async () => {
+    await server?.close();
+    installDecisionQualityRecorder(null);
+    ledger?.close();
+    ledger = null;
+    for (const dir of tmpDirs.splice(0)) {
+      SafeFsExecutor.safeRmSync(dir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/integration/telegram-reply-advisory-migration.test.ts',
+      });
+    }
+  });
 
   async function reply(topicId: number, text: string, metadata?: Record<string, unknown>) {
     const res = await fetch(`${server.url}/telegram/reply/${topicId}`, {
@@ -253,27 +303,27 @@ describe('advisory migration through POST /telegram/reply', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('keeps the SAME verdict a hard block when the migration is off (rollback is a flag)', async () => {
+  it('keeps B2 advisory when the broader migration is off', async () => {
     const sent: Array<{ topicId: number; text: string }> = [];
     const gate = new MessagingToneGate(makeProvider(B2_VERDICT), { advisoryMigration: false });
     server = await listen(buildApp({ toneGate: gate, sent }));
 
     const res = await reply(203, PATH_MESSAGE);
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe('tone-gate-blocked');
+    expect(res.body.error).toBe('tone-gate-advisory');
     expect(sent).toHaveLength(0);
 
-    // And the ack cannot reach it — an unmigrated rule is not acknowledgeable.
+    // The explicit override remains available because B2 is advisory by baseline.
     const acked = await reply(203, PATH_MESSAGE, {
       toneAdvisoryAck: 'B2_FILE_PATH',
       toneAdvisoryAckReason: 'the operator asked for the exact path',
       allowDuplicate: true,
     });
-    expect(acked.body.error).toBe('tone-gate-blocked');
-    expect(sent).toHaveLength(0);
+    expect(acked.status).toBe(200);
+    expect(sent).toHaveLength(1);
   });
 
-  it('DEMOTES the nudge back to a hard block when the reaction could not be recorded', async () => {
+  it('does NOT demote baseline-advisory B2 when reaction recording is unavailable', async () => {
     // The evidence-capturability invariant. The migration's justification IS
     // the recorded reaction; with no live recorder there is nothing to record,
     // so the gate must keep its authority rather than hand out a loosening for
@@ -287,10 +337,20 @@ describe('advisory migration through POST /telegram/reply', () => {
 
     const res = await reply(205, PATH_MESSAGE);
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe('tone-gate-blocked');
-    // Named, never silent — the operator can see WHY a nudge came back a wall.
-    expect(res.body.advisoryUnavailable).toBeTruthy();
+    expect(res.body.error).toBe('tone-gate-advisory');
+    expect(res.body.decisionRef).toMatch(/^d-testmach-/);
+    expect(res.body.howToProceed).toContain('recording is unavailable');
+    expect(res.body.howToProceed).not.toContain('Both are recorded');
+    expect(res.body.howToProceed).not.toContain('gets credit');
     expect(sent).toHaveLength(0);
+
+    const overridden = await reply(205, PATH_MESSAGE, {
+      toneAdvisoryAck: 'B2_FILE_PATH',
+      toneAdvisoryAckReason: 'the exact path is the artifact the operator asked to open',
+      allowDuplicate: true,
+    });
+    expect(overridden.status).toBe(200);
+    expect(sent).toEqual([{ topicId: 205, text: PATH_MESSAGE }]);
   });
 
   it('credits compliance SERVER-SIDE when a revised send follows a nudge — no agent metadata', async () => {
@@ -352,10 +412,54 @@ describe('advisory migration through POST /telegram/reply', () => {
 
     const res = await reply(204, 'The convergence report is ready — I can link it or paste the summary here.', {
       toneAdvisoryComplied: 'B2_FILE_PATH',
-      toneAdvisoryDecisionRef: 'd-testmachine-00000000-0000-4000-8000-000000000000',
+      // Production mesh ids contain an underscore (`m_<hex>`). This exact
+      // shape was rejected by the old route validator while test-only ids passed.
+      toneAdvisoryDecisionRef: 'd-m_03b30f-00000000-0000-4000-8000-000000000000',
     });
     expect(res.status).toBe(200);
     expect(sent).toHaveLength(1);
+  });
+
+  it('the documented reply client preserves a machine-prefixed decisionRef and settles the outcome', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const gate = new MessagingToneGate(
+      makeProvider({ pass: true, rule: '', issue: '', suggestion: '' }),
+      { advisoryMigration: true },
+    );
+    server = await listen(buildApp({ toneGate: gate, sent }));
+    const port = Number(new URL(server.url).port);
+    const correlationId = 'd-m_03b30f-00000000-0000-4000-8000-000000000111';
+    expect(ledger).not.toBeNull();
+    ledger!.recordDecision({
+      correlationId,
+      decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'messaging-tone-gate',
+      verdictClass: 'advisory',
+      mintedBy: 'router',
+      volumeClass: 'all',
+      contentClass: 'identity-only',
+      ts: Date.now() - 100,
+    });
+
+    const result = await runReplyScript({
+      port,
+      args: [
+        '--tone-complied', 'B2_FILE_PATH',
+        '--tone-decision-ref', correlationId,
+        '204',
+        'The revised answer avoids the raw path.',
+      ],
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(sent).toHaveLength(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    const point = ledger!.decisionQualityRollupDaily({ decisionPoint: DP_MESSAGING_TONE_GATE })[0];
+    expect(point).toMatchObject({
+      right: 1,
+      wrong: 0,
+      orphanOutcomes: 0,
+    });
   });
 });
 
@@ -416,6 +520,65 @@ describe('live-credential hard wall through POST /telegram/reply', () => {
     const res = await reply(303, LEAK);
     expect(res.status).toBe(422);
     expect(res.body.blockedBy).toBe('credential-exposure-guard');
+    expect(sent).toHaveLength(0);
+  });
+
+  // Modern key formats (spec: outbound-credential-wall-modern-key-formats).
+  // Keys generated at test time in the issued shape; nothing committed.
+  const modernKey = () => `sk-proj-${require('node:crypto').randomBytes(90).toString('base64url')}`;
+  const fineGrained = () => {
+    const c = require('node:crypto');
+    const an = (n: number) => c.randomBytes(n).toString('hex').slice(0, n);
+    return `github_pat_${an(22)}_${an(59)}`;
+  };
+
+  it('refuses a modern OpenAI project key and a GitHub fine-grained token', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    for (const [i, key] of [modernKey(), fineGrained()].entries()) {
+      const res = await reply(310 + i, `Here it is: ${key}`);
+      expect(res.status).toBe(422);
+      expect(res.body.blockedBy).toBe('credential-exposure-guard');
+      expect(JSON.stringify(res.body)).not.toContain(key.slice(0, 16));
+    }
+    expect(sent).toHaveLength(0);
+  });
+
+  it('refuses a key on a PROXY reply — the proxy skip bypasses tone judgment, not the wall', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await reply(312, `status ping ${modernKey()}`, { isProxy: true });
+    expect(res.status).toBe(422);
+    expect(res.body.blockedBy).toBe('credential-exposure-guard');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a clean PROXY reply still sends (the proxy path is otherwise unchanged)', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await reply(313, 'Still working on it — about two more minutes.', { isProxy: true });
+    expect(res.status).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('refuses a key in a LANED attention item — the lane bypasses tone, not the wall', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: null, sent }));
+    const res = await fetch(`${server.url}/attention`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'agent:cw-lane-test',
+        title: 'Health notice',
+        summary: `Recovered the integration using ${fineGrained()}`,
+        priority: 'medium',
+        source: 'agent',
+        lane: 'agent-health',
+      }),
+    });
+    const body = await res.json().catch(() => ({})) as any;
+    expect(res.status).toBe(422);
+    expect(body.blockedBy).toBe('credential-exposure-guard');
     expect(sent).toHaveLength(0);
   });
 

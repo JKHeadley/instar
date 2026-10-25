@@ -104,6 +104,20 @@ export const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Constrain the model\'s output with structure, never by matching its prose',
   'Distinct from Cross-Machine Coherence',
   'Distinct from Deferral = Deletion',
+  // Added 2026-08-22 with *Never Silently Cut the Data a Decision Depends On*. NARRATIVE, never
+  // ENFORCEMENT: it demarcates which of two sibling articles governs which side
+  // of the same verb (storing a bounded record vs. bounding a judgment's input).
+  // Scanning it for guards would let a boundary statement read as a live check.
+  'Distinct from Expected Capacity Enforcement',
+  // Added 2026-08-22 with *Never Silently Cut the Data a Decision Depends On*,
+  // on the operator's ruling that a standard must register whether it is ACTUALLY
+  // enforced rather than be inferred as enforced because a guard exists.
+  //
+  // NARRATIVE, never ENFORCEMENT — and the distinction is load-bearing here: this
+  // field states the LIMITS of the guards named in `Applied through`. Scanning it
+  // as enforcement would let a sentence about what is NOT covered be counted as
+  // coverage, which is the exact over-claim the field was created to prevent.
+  'Enforcement state — PARTIAL, and the number is the point',
   'Distinct from the OnboardingGate',
   // Added 2026-08-07 by operator ruling on external-review finding 4. A
   // `documented-only` article must carry a COUNTDOWN — a deadline plus a tracked

@@ -25,17 +25,16 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { PoolPollCache } from '../../src/server/PoolPollCache.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 const TOKEN = 'ws44f-e2e-token';
-const WIRED_PORT = 47271;
-const DARK_PORT = 47272;
 
 describe('E2E: WS4.4(f) /pool/poll-cache is ALIVE through the real AgentServer', () => {
   let dir: string;
   let wiredServer: AgentServer;
   let darkServer: AgentServer;
-  const wiredBase = `http://127.0.0.1:${WIRED_PORT}`;
-  const darkBase = `http://127.0.0.1:${DARK_PORT}`;
+  let wiredBase: string;
+  let darkBase: string;
   const auth = { Authorization: `Bearer ${TOKEN}` };
 
   beforeAll(async () => {
@@ -43,22 +42,24 @@ describe('E2E: WS4.4(f) /pool/poll-cache is ALIVE through the real AgentServer',
 
     // ── WIRED server (poolPollCache present) ──
     wiredServer = new AgentServer({
-      config: { projectName: 'ws44f-wired', projectDir: dir, stateDir: dir, port: WIRED_PORT, authToken: TOKEN } as unknown as InstarConfig,
-      sessionManager: new SessionManager({ projectDir: dir, port: WIRED_PORT }),
+      config: { projectName: 'ws44f-wired', projectDir: dir, stateDir: dir, port: 0, authToken: TOKEN } as unknown as InstarConfig,
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       poolPollCache: new PoolPollCache({ ttlMs: 3000 }),
       meshSelfId: 'm_wired',
     });
     await wiredServer.start();
+    wiredBase = boundAgentServerBase(wiredServer);
 
     // ── DARK server (ships-dark default — no poolPollCache) ──
     darkServer = new AgentServer({
-      config: { projectName: 'ws44f-dark', projectDir: dir, stateDir: dir, port: DARK_PORT, authToken: TOKEN } as unknown as InstarConfig,
-      sessionManager: new SessionManager({ projectDir: dir, port: DARK_PORT }),
+      config: { projectName: 'ws44f-dark', projectDir: dir, stateDir: dir, port: 0, authToken: TOKEN } as unknown as InstarConfig,
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       meshSelfId: 'm_dark',
     });
     await darkServer.start();
+    darkBase = boundAgentServerBase(darkServer);
   }, 30000);
 
   afterAll(async () => {

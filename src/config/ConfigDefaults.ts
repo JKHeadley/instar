@@ -76,6 +76,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // materializes the operator-tunable knobs. applyDefaults is add-missing-only,
   // so an operator's hand-tuned value is NEVER overwritten on migration.
   intelligence: {
+    // Jev live artefact signals (docs/specs/jev-signal-live.md) — dev-gated:
+    // `enabled` is DELIBERATELY OMITTED so developmentAgent decides (live on a dev
+    // agent, dark on the fleet). Reaches existing agents via applyDefaults add-missing.
+    jevSignalLive: {
+      timeoutMs: 1000,
+    },
+    // Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md) — log-only,
+    // dev-gated: `enabled` DELIBERATELY OMITTED (live on a dev agent, dark on the fleet).
+    jevCirclesShadow: {
+      timeoutMs: 1500,
+      maxChecksPerDay: 2000,
+    },
+    // Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md) — log-only,
+    // dev-gated: `enabled` DELIBERATELY OMITTED (live on a dev agent, dark on the fleet).
+    jevReviewFlagShadow: {
+      timeoutMs: 1500,
+      maxChecksPerDay: 3000,
+    },
     spawnCap: {
       maxConcurrent: 8,
       acquireMs: 5000,
@@ -110,6 +128,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
+    // W32 cadence executor consumes authoritative work receipts, persists one
+    // result per 30-minute interval, and independently sends 3-hour synthesis.
+    // Explicitly dark and dry-run-first; migration is add-missing-only.
+    windowRunLiveness: {
+      cadenceExecutor: {
+        enabled: false,
+        dryRun: true,
+        receiptIntervalMs: 30 * 60_000,
+        reportIntervalMs: 3 * 60 * 60_000,
+        checkpointLeadMs: 5 * 60_000,
+        receiptGraceMs: 5 * 60_000,
+        checkpointRetryMaxAttempts: 2,
+        checkpointRetryBackoffMs: 60_000,
+        reportRetryMaxAttempts: 3,
+        reportRetryBackoffMs: 60_000,
+      },
+    },
     // Boot health beacon — a minimal /health responder that answers from the start
     // of boot so the supervisor can't mistake a slow boot for a dead process (topic
     // 21816 root cause #1). DEV-GATED (CMT-1438): `enabled` is deliberately OMITTED
@@ -719,6 +754,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // A fully-calm week is silent by default (no "all healthy" heartbeat — the
       // exact noise burnDetection was killed for).
       digestSendOnCalmWeeks: false,
+      // Standard A/B. `enabled` is deliberately OMITTED so the dev-agent gate
+      // governs it (resolveDevAgentGate): LIVE on a development agent — where
+      // the durable owner/deadline/proof record starts accruing real evidence
+      // immediately — and DARK fleet-wide. `dryRun` ships true regardless, so
+      // even on a dev agent the record fills while R7 stays out of the digest
+      // until the dry-run canary is deliberately cleared.
+      darkFlagInventory: { dryRun: true },
       incubationWindows: { lowRisk: 3, standard: 7, highRisk: 7 },
       proofOfLifeMinActivations: 1,
       rules: {
@@ -819,6 +861,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       },
       dryRun: false,
     },
+  },
+  // a2a-single-agent-identity §1.2 — post-pairing adoption of the agent identity from a
+  // sibling. FLEET-LIVE (not dev-gated): a joined machine with no identity must never mint,
+  // and adoption is the path that fills the void. `enabled:false` is the kill switch (the
+  // machine then stays unprovisioned and loud, still yielding the lease to a live provisioned sibling). Backfilled on update by
+  // applyDefaults add-missing + an explicit existence check in migrateConfig.
+  agentIdentity: {
+    adoption: { enabled: true },
   },
   threadline: {
     relayEnabled: false,
@@ -936,6 +986,48 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       timeoutMs: 4000,
       contextWindowTurns: 6,
       modelTier: 'fast',
+    },
+    // A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md). The
+    // receiver durably remembers which A2A message ids it accepted and whether a
+    // listed hand-off happened; only a verified `no-reply` suppresses a resend
+    // today. `enabled` is OMITTED on purpose — the developmentAgent gate decides
+    // (registered in DEV_GATED_FEATURES as threadline.inboundIdLedger.enabled).
+    // applyDefaults deep-merges this under `threadline` on update (Migration Parity).
+    inboundIdLedger: {
+      retentionDays: 14,
+    },
+    // Honest sender-side reporting of a send that stays queued
+    // (docs/specs/a2a-single-agent-identity.md §3.4). `enabled` is OMITTED on
+    // purpose — the developmentAgent gate decides (registered in
+    // DEV_GATED_FEATURES as threadline.peerDarkNotice.enabled): LIVE on a dev
+    // agent, DARK on the fleet. Ships dry-run FIRST: would-raise and
+    // would-sentence rows land in logs/a2a-peer-dark.jsonl; no attention item
+    // and no deliveryOutcome sentence until a deliberate dryRun:false. The raw
+    // health fields are live from the first build (they are reads). applyDefaults
+    // deep-merges this under `threadline` on update (Migration Parity) — nested,
+    // so migrateConfig is not the carrier.
+    peerDarkNotice: {
+      dryRun: true,
+      queuedDarkAfterMs: 7200000,  // 2 h — below the 6 h `stale` window so the sender hears first
+      cooldownMs: 43200000,        // 12 h per peer
+    },
+    // Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9, rollout step 5).
+    // SHIPS ON for every agent (Justin, 2026-10-20: "why is encryption shipped off? Please
+    // change it such that it ships on."): ordinary chat to a peer paired by invite is always
+    // encrypted to its pinned key. `enabled: true` is written so /guards and the config file
+    // show the truth; `dryRun` is deliberately OMITTED (omitted = enforce, see
+    // resolveEncryptToPinnedMode) so the shipped posture lives in code, not in every agent's
+    // file. applyDefaults add-missing → existing agents with no value get it on update; an
+    // operator's explicit `enabled: false` (off) or `dryRun: true` (watch) is never overwritten.
+    encryptToPinned: {
+      enabled: true,
+    },
+    // Refuse-downgrade (same spec, D6, rollout step 6). ON at WATCH for every agent: marks are
+    // recorded and would-refuse plaintext is counted per peer on /health; refusing needs an
+    // explicit `dryRun: false`. `dryRun` is OMITTED (omitted = watch) so a later move to
+    // enforce is a code default, not a migration. Why watch: refuseDowngrade.ts header.
+    refuseDowngrade: {
+      enabled: true,
     },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
@@ -1109,6 +1201,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Machine identity recovery (machine-self-assertion). All three `enabled`
+    // fields are deliberately omitted: live on the development agent, dark on
+    // fleet. Dry-run prevents trust/routing mutation during the soak.
+    identityReannounce: { dryRun: true },
+    observedEndpoints: {
+      dryRun: true,
+      corroborationObservations: 3,
+      corroborationWindowMinutes: 30,
+      ttlDays: 7,
+      rotationQuarantineHours: 1,
+    },
+    recoveryKeyEscrow: { dryRun: true },
     // Mutual SSH-subsystem bootstrap + continuous directional proof.
     // `enabled` is deliberately OMITTED: DEV_GATED_FEATURES makes this live on
     // the development agent and dark on fleet. dryRun FIRST creates keys and
@@ -1852,6 +1956,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // and an operator's explicit value is never overwritten. The hook reads
   // `enabled` + `judgeTimeoutMs` at the chokepoint (no restart needed to toggle).
   autonomousSessions: {
+    // Bounded Codex continuation and its autonomous preparation carrier both
+    // ship dark. applyDefaults backfills these leaves without overriding an
+    // operator's explicit rollout choice.
+    codexTaskContinuation: {
+      enabled: false,
+      preparationCarrierEnabled: false,
+      maxDurationSeconds: 14400,
+      maxContinuations: 40,
+      auditRetentionDays: 14,
+      auditMaxRows: 5000,
+    },
     completionDiscipline: {
       // Operator-mandated behavior ("the completion bar is the FULL feature"),
       // not a dark-launch experiment (Open-Q2 → on). The flag exists for instant
@@ -2104,7 +2219,30 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    // Assisted re-login is authority-bearing browser + credential work. Ship
+    // fleet-dark and dry-run-first; a development install must still make an
+    // explicit local promotion to approval/live after its controlled canary.
+    assistedRelogin: {
+      enabled: false,
+      mode: 'approval',
+      dryRun: true,
+      tickMs: 30_000,
+      maxAttempts: 3,
+      retryBaseMs: 5_000,
+      allowedScopes: ['user:profile'],
+      unattendedPolicy: {
+        identities: [],
+        minimumSuccessfulRepairs: 10,
+        minimumEvidenceDays: 30,
+      },
+    },
     proactiveSwap: {
+      // Q3-safe default-login rescue — DEV-GATED: enabled deliberately omitted.
+      // A dev agent logs the exact default-slot flip but writes no credential
+      // until a deliberate dryRun:false promotion. Fleet remains dark.
+      defaultSlotRepoint: {
+        dryRun: true,
+      },
       // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
       // A dev agent evaluates the exact intent but performs no session kill
       // until a deliberate dryRun:false promotion. Fleet remains dark.
@@ -2142,6 +2280,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate
   // lint forbids for a dev-gated block). mintBreaker carries the §3.3 pinned
   // defaults (existence-checked add-missing on update — Migration Parity).
+  // Parallel-Work Awareness — action-derived activity notes (CMT-810). The code
+  // default is ON (absent = on); the explicit block surfaces the kill switch. The
+  // write only happens on the action-claim observe path, which the Stop hook posts
+  // to only when actionClaim.enabled is on — so a fleet agent with the action-claim
+  // sentinel dark sees no new behavior from this block alone.
+  parallelWork: {
+    actionNotes: { enabled: true, windowHours: 24 },
+  },
+
   conversationIdentity: {
     recording: {
       enabled: true,
@@ -2178,6 +2325,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     consumer: {
       dryRun: true,
       maxClaimsPerTick: 10,
+    },
+    // Feedback triage (docs/specs/feedback-triage-and-execution.md): dev-gated like the
+    // drain — `enabled` OMITTED so the developmentAgent gate decides (live on a dev agent,
+    // dark on the fleet). ignoreLive is deliberately absent: ignore goes live only through the
+    // PIN-bound plan/commit record; an explicit false is the kill switch.
+    triage: {
+      maxBatchChars: 24000,
+      reportsPerItem: 4,
+      charsPerReport: 1200,
+      maxCallsPerDay: 150,
+    },
+    // Feedback executor (§4): dev-gated (`enabled` OMITTED), and dry-run by default — it records
+    // the attempt it would start and spawns/pushes nothing until the operator flips dryRun:false.
+    execute: {
+      dryRun: true,
+      maxConcurrent: 2,
+      maxStartsPerDay: 6,
+      maxOpenPrs: 4,
     },
   },
 };

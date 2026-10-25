@@ -109,8 +109,10 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
     // launch, and (WS5.2 Step 8) the §2.10 credentialSource provenance derivation
     // sits between effectiveAccountId and the build. The invariant is "resolved
     // before, passed as launchModel", not literal proximity, so use a widened
-    // look-back window (3000 chars — bumped from 2500 for the Step 8 derivation).
-    const before = src.slice(Math.max(0, idx - 3000), idx);
+    // look-back window (3000 chars — bumped from 2500 for the Step 8 derivation;
+    // 6000 since Resume Follows the Account placed the conversation into the
+    // resolved login between account resolution and the build).
+    const before = src.slice(Math.max(0, idx - 6000), idx);
     expect(before).toContain('this.resolveCodexLaunchModel(framework');
     expect(src.slice(idx, idx + 250)).toContain('launchDefaultModel');
   });

@@ -72,6 +72,14 @@ export interface Session {
   maxDurationMinutes?: number;
   /** Claude Code's own session UUID (from hook events). Populated lazily on first hook event. */
   claudeSessionId?: string;
+  /** Confined (feedback executor) sessions only: the Claude config home the session writes its
+   *  transcript under (`<home>/projects/<key>/<--session-id>.jsonl`), so trusted code can judge the
+   *  sandbox canary by what actually reached the model. */
+  confinedConfigHome?: string;
+  /** Confined sessions on the rerouted interactive lane only: when the fixed prompt line was typed
+   *  (docs/specs/confined-spawn-subscription-reroute.md, Restart boundary). Absent on a surviving
+   *  confined rerouted session ⇒ its startup never completed, and boot reconciliation kills it. */
+  confinedDeliveredAt?: string;
   /** Subscription & Auth Standard P1.3: which subscription-pool account this
    *  session is running under (the account whose config home it launched/resumed
    *  with). Set at spawn + updated on a quota-aware account swap. Undefined on
@@ -88,6 +96,16 @@ export interface Session {
   /** The clamped work-evidence names behind endedMidWork (enum-clamped at the
    *  chokepoint — see src/core/WorkEvidence.ts). */
   endedWorkEvidence?: string[];
+  /** When this session was first observed idle at a prompt (ISO-8601), persisted
+   *  so the idle clock survives a server restart. `SessionManager.idlePromptSince`
+   *  is in-memory, so without this an agent that restarts more often than the
+   *  topic-bound idle threshold (240m) can never close an idle conversation and
+   *  fills its session slots (sagemind, 2026-10-22: 20/20, 17 sessions idle
+   *  17-64h). Cleared the moment the session is observed active. Absent on
+   *  legacy records and on sessions that have never been seen idle; seeding from
+   *  it is corroborated against the framework transcript — see
+   *  src/core/idleSincePersistence.ts. */
+  idleSince?: string;
   /** Working directory the session was spawned with (reap-notify R2.8/L13 —
    *  recorded so a resume-queue entry can revive the session in ITS tree).
    *  Absent on legacy records ⇒ the module project dir. */
@@ -180,6 +198,22 @@ export interface SessionManagerConfig {
    * stands) so genuine outages aren't masked. Future-spawn only.
    */
   claudeCodeMaxRetries?: number;
+  /**
+   * Resume Follows the Account (docs/specs/resume-follows-account.md §3.4).
+   * `enabled: false` turns off transcript placement at launch and the
+   * dead-pane checks, restoring the previous behaviour. Absent = on.
+   */
+  resumeFollowsAccount?: { enabled?: boolean };
+  /**
+   * Retained per-version Claude Code executable (CMT-798). claude-code
+   * sessions launch from `<dir>/<version>/claude` (a one-time copy per
+   * version) instead of the mutable npm path, so a Claude Code update can no
+   * longer unlink a live session's executable and leak kernel memory on
+   * macOS. Absent = ON. `dir` defaults to `<projectDir>/.instar/state/claude-bin`;
+   * `pruneGraceMs` (default 6 h) is how long an unused old version must sit
+   * idle before it is a prune candidate (prune never removes a mapped one).
+   */
+  retainedClaudeBinary?: { enabled?: boolean; dir?: string; pruneGraceMs?: number };
   /** Path to the framework CLI binary for the agent's primary framework.
    *  Misnamed for v0.x compat — actually holds whichever framework binary
    *  was selected (claude OR codex OR …). New code should consult
@@ -339,6 +373,18 @@ export interface SessionManagerConfig {
   maxSessions: number;
   /** Protected session names that should never be reaped */
   protectedSessions: string[];
+  /**
+   * Standing sessions: long-lived coordinators (e.g. a desk that drives a build
+   * pipeline) that must never be ended by an AUTONOMOUS lifecycle path — idle
+   * reaping, the age limit, completion-pattern / sentinel-complete detection —
+   * yet must stay RESTARTABLE. Unlike `protectedSessions` (never touch: it also
+   * refuses `killSession`, so a refresh/respawn fails), a standing session is
+   * still killable by an explicit kill-to-respawn (`/sessions/refresh`, inbound
+   * respawn, operator close), and a topic-moved closeout still closes it.
+   * Each entry is a tmux session name (`echo-desk`) or a Telegram topic
+   * (`topic:52075`). Optional; absent ⇒ none. Snapshotted at boot.
+   */
+  standingSessions?: string[];
   /**
    * Finished-session registry retention (session-listing hygiene, CMT-1936).
    * Bounds how long TERMINAL session records (completed / failed / killed)
@@ -518,6 +564,22 @@ export interface JobDefinition {
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
   supervision?: SupervisionTier;
+  /** Jev job-completion audit eligibility (spec: jev-job-supervision.md).
+   *  Deliberately SEPARATE from `supervision` — audit eligibility must not
+   *  overload the constitutional execution-tier field.
+   *  'excluded' = never audited · absent/'eligible' = auditable ·
+   *  'priority' = audited first from the reserved cap slice. */
+  completionAudit?: 'excluded' | 'eligible' | 'priority';
+  /** Repo-relative paths (jailed to the job's working directory) the job is
+   *  expected to produce — the audit's deterministic corroboration signal. */
+  declaredEffects?: string[];
+  /** Repo-relative paths (same jail) the job produces ONLY when it did work.
+   *  Verified by the audit only if the run CLAIMS them on stdout with an
+   *  `EFFECT: <path>` line — so a legitimate quiet run is never a false
+   *  failure, and a run that claims work it did not do is the strongest
+   *  false-success signal the audit can record. Spec:
+   *  docs/specs/jev-audit-claimed-effects.md */
+  conditionalEffects?: string[];
   /** MCP access for the spawned job session (claude-code spawns only).
    *  - 'none': spawn with `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`
    *    so the headless session starts with ZERO project MCP servers. Right for
@@ -1999,6 +2061,18 @@ export interface MachineIdentity {
   createdAt: string;
   /** What this machine can do */
   capabilities: MachineCapability[];
+  /** Monotonic signing-key generation. Legacy identities read as epoch 0. */
+  keyEpoch?: number;
+  /** Base64-encoded Ed25519 recovery public key. Absent means PIN/corroboration fallback. */
+  recoveryPublicKey?: string;
+  /** Monotonic recovery-key generation, independent from keyEpoch. */
+  recoveryEpoch?: number;
+  /** Whether this peer established the recovery key directly or learned a replicated copy. */
+  recoveryAnchorProvenance?: 'first-hand' | 'replicated';
+  /** ISO timestamp of a local signing-key rotation, when known. */
+  keysRotatedAt?: string;
+  /** Bounded machine-generated reason for the local signing-key rotation. */
+  keysRotatedReason?: string;
 }
 
 export type MachineCapability = 'telegram' | 'jobs' | 'tunnel' | 'sessions';
@@ -2023,6 +2097,10 @@ export interface MeshEndpoint {
   kind: 'tailscale' | 'lan' | 'cloudflare';
   /** http://100.x:PORT | http://192.168.x:PORT | https://<tunnel-host> */
   url: string;
+  /** Locally-observed endpoints are never accepted from peer advertisements. */
+  origin?: 'advertised' | 'observed';
+  /** Promotion time for a locally corroborated endpoint. */
+  observedAt?: string;
 }
 
 export interface MachineRegistryEntry {
@@ -2264,6 +2342,10 @@ export interface MachineCapacity {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
+    /** dashboard-new-session-machine-choice §3.4 — this machine can run the
+     *  owner-side dashboard-create start (pool not dark, Telegram configured,
+     *  topic-profile context wired). */
+    dashboardCreateReceive?: boolean;
     /** WS1.2: this machine can execute the owner-side `drain` verb (bounded
      *  turn-boundary drain + claim handoff for an active-topic transfer).
      *  ABSENT/false → the transfer sender degrades to today's pin-and-
@@ -2535,6 +2617,12 @@ export interface MultiMachineConfig {
   autoFailover: boolean;
   /** Minutes of silence before auto-failover (default: 15) */
   failoverTimeoutMinutes: number;
+  /** Live rollback switches for the lease-flap incident fix. Absent means on. */
+  leaseFlapFix?: {
+    liveness?: boolean;
+    mediumCheck?: boolean;
+    unconfirmedWriteAlert?: boolean;
+  };
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
   /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
@@ -2554,6 +2642,29 @@ export interface MultiMachineConfig {
     requiredForReadiness?: boolean;
     port?: number;
   };
+  /** Cryptographically-bound signing-key recovery. Dev-gated and dry-run first. */
+  identityReannounce?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Agent-wide recovery-route credential, minted once and conveyed only by
+     * the code-authenticated pairing response. Distinct from each machine's
+     * ordinary local API token. */
+    sharedBearerToken?: string;
+  };
+  /** Local-first direct endpoint observation. Dev-gated and dry-run first. */
+  observedEndpoints?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Optional operator-known stable address for a machine whose network
+     * namespace cannot see its externally reachable Tailscale/LAN address. */
+    advertisedAddress?: string;
+    corroborationObservations?: number;
+    corroborationWindowMinutes?: number;
+    ttlDays?: number;
+    rotationQuarantineHours?: number;
+  };
+  /** Keychain-only recovery private-key escrow. Dev-gated and dry-run first. */
+  recoveryKeyEscrow?: { enabled?: boolean; dryRun?: boolean };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)
@@ -3376,6 +3487,39 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /**
+   * Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md).
+   * `POST /internal/telegram-forward` and `/internal/telegram-callback` require
+   * a secret only the lifeline and the server hold; the Bearer token alone is
+   * not proof. `enforce` OMITTED (the shipped default) ⇒ enforce on a
+   * development agent; on the fleet, observe (accept + count would-refuse)
+   * until the observe exit rule is met, then enforce. Explicit `false` pins
+   * observe (the rollback lever); explicit `true` enforces. Read live.
+   * Enforce only ever refuses after the running lifeline has proven it sends
+   * the secret.
+   */
+  telegramIngress?: {
+    lifelineSecret?: {
+      enforce?: boolean;
+      /**
+       * Full rollback: `true` restores the pre-change handling of every
+       * request on the internal Telegram routes (accepted, sender trusted,
+       * taps accepted). The check still runs and counts, and each unverified
+       * request is reported. File edit only; read live.
+       */
+      bypass?: boolean;
+    };
+  };
+  /** Crash-safe inbound observer rollout. Absence is dark; explicit false is preserved by migration. */
+  codexSessionLifecycle?: {
+    ledgerObserverEnabled?: boolean;
+    /** Explicit pre-release dogfood only; ignored unless developmentAgent=true. */
+    candidateCanaryEnabled?: boolean;
+    /** Set only after a build-bound signed RC passes; activation occurs on restart. */
+    stageBPendingActivation?: boolean;
+    /** Independently dark Stage C: exhausted-delivery server refresh/replay. */
+    stageCRecoveryEnabled?: boolean;
+  };
   /** Unified work-intake registry rollout; omitted resolves live only on dev agents. */
   workQueue?: { enabled?: boolean };
   /** Capability registry read surface; omitted resolves via the dev-agent gate. */
@@ -3460,8 +3604,9 @@ export interface InstarConfig {
    * writes accepted reports to a durable Blob inbox; the InboxDrainer on THIS machine
    * ingests them into the durable canonical JsonlFeedbackStore. Ships DARK
    * (enabled !== true ⇒ no drainer, route 503s). The Blob token is read from the env
-   * var named by `blobTokenEnv` (default FEEDBACK_INBOX_BLOB_TOKEN) — never stored in
-   * config.json.
+   * var named by `blobTokenEnv` (default FEEDBACK_INBOX_BLOB_TOKEN), else from the
+   * encrypted vault key named by `blobTokenVaultKey` (default feedback_inbox_blob_token)
+   * — never stored in config.json.
    */
   feedbackFactory?: {
     /** Sole machine-registry owner of the canonical feedback drain. Nonowners
@@ -3472,6 +3617,8 @@ export interface InstarConfig {
       enabled?: boolean;
       /** Env var holding the Vercel Blob read-write token. Default FEEDBACK_INBOX_BLOB_TOKEN. */
       blobTokenEnv?: string;
+      /** Vault key holding the token when the env var is unset. Default feedback_inbox_blob_token. */
+      blobTokenVaultKey?: string;
       /** Override the Blob API base (tests / fake server). */
       blobApiBase?: string;
       /** Drain poll cadence (default 60000). */
@@ -3507,12 +3654,56 @@ export interface InstarConfig {
       maxReadyScansPerTick?: number;
       maxClaimsPerTick?: number;
       maxWallClockMs?: number;
+      /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
+      readinessChunkSize?: number;
     };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
       enabled?: boolean;
       dryRun?: boolean;
       maxClaimsPerTick?: number;
+    };
+    /**
+     * Feedback triage (docs/specs/feedback-triage-and-execution.md §1–§3, §5–§7): a registered
+     * frontier-model authority decides work/hold/ignore for each feedback Initiative within
+     * deterministic floors. DEV-GATED: `enabled` is OMITTED in defaults so resolveDevAgentGate
+     * decides (live on a development agent, dark on the fleet). Read live per tick.
+     */
+    triage?: {
+      enabled?: boolean;
+      /** Explicit kill switch over a PIN-approved live ignore; true alone never turns ignore live. */
+      ignoreLive?: boolean;
+      maxBatchChars?: number;
+      reportsPerItem?: number;
+      charsPerReport?: number;
+      maxCallsPerDay?: number;
+    };
+    /**
+     * Feedback executor (§4). DEV-GATED: `enabled` is OMITTED in defaults so resolveDevAgentGate
+     * decides. `dryRun` (default true) evaluates admission and records the attempt it would start
+     * without spawning, pushing or merging. `actionTopicId` is also the daily action list's
+     * destination (the Attention hub when unset). Read live per tick.
+     */
+    execute?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      actionTopicId?: number;
+      /** The source checkout the feedback is about (default: the agent home when it is an instar source checkout). */
+      sourceRepoPath?: string;
+      maxConcurrent?: number;
+      maxStartsPerDay?: number;
+      maxOpenPrs?: number;
+      /** The lint gate run confined in the attempt workspace (default `npm run lint`). */
+      lintCommand?: string;
+      /** A small unit smoke the base canary runs once per canary stamp. */
+      baseSmokeTests?: string[];
+      /** Build-session wall clock in minutes (≤ the 6 h lease; default 300). */
+      maxDurationMinutes?: number;
+      /**
+       * The fork (`owner/name`) attempt branches are pushed to; PRs are opened from it against the
+       * canonical repository. Unset, or equal to the canonical repository, publication is refused.
+       */
+      publishRepo?: string;
     };
   };
   /**
@@ -3690,6 +3881,21 @@ export interface InstarConfig {
    * resolveDevAgentGate decides — LIVE on a development agent, DARK on the
    * fleet — with `dryRun: true` FIRST (delivery is externally visible).
    */
+  /**
+   * Parallel-Work Awareness — action-derived activity notes (CMT-810; extends
+   * docs/specs/parallel-activity-coherence.md Phase A). When the action-claim observer
+   * classifies a concrete action claim or an operator-approval request for a topic, a
+   * durable note is written for that topic and the cross-topic activity index surfaces
+   * it immediately as the topic's focus/tags/lastAction. Signal-only; never gates.
+   */
+  parallelWork?: {
+    actionNotes?: {
+      /** Kill switch (default: true — absent means on). Read live. */
+      enabled?: boolean;
+      /** How long a note keeps shaping a topic's focus/tags, in hours (default 24). */
+      windowHours?: number;
+    };
+  };
   conversationIdentity?: {
     /** §3.1 fleet workspace pin (source 1 — authoritative when present): the ONE
      *  Slack teamId this fleet mints concrete-workspace ids for. */
@@ -3782,6 +3988,162 @@ export interface InstarConfig {
    * migration. See src/core/LlmCircuitBreaker.ts.
    */
   intelligence?: {
+    /**
+     * Jev signal-layer shadow (docs/specs/jev-signal-layer-shadow.md). DARK by
+     * default. Measure-only: compares Jev (TypeSafe AI) against the B1–B7
+     * deterministic detectors on real tone-gate candidates and decides nothing.
+     * Inert unless enabled AND soakEndsAt is a future ISO instant AND the vault
+     * holds `typesafe_api_key`. Read live per candidate (no restart).
+     */
+    jevSignalShadow?: {
+      enabled?: boolean;
+      /** 0..1 share of candidates shadowed (default 1). */
+      sampleRate?: number;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500). */
+      timeoutMs?: number;
+      /** The mechanical soak bound: inert at or after this instant, and when null. */
+      soakEndsAt?: string | null;
+      /** Retain scrubbed excerpts on disagreeing rows (default off). */
+      retainDisagreementExcerpts?: boolean;
+      /** Daily bound on retained excerpts. */
+      maxExcerptsPerDay?: number;
+      /**
+       * Jev→referee cascade (src/core/JevCascade.ts), measure-only. Unsure-band
+       * answers plus an audit share of confident ones go to the Codex `fast`
+       * tier (GPT-6 Luna) and its verdicts are logged beside Jev's.
+       */
+      referee?: {
+        enabled?: boolean;
+        band?: { lo: number; hi: number };
+        bands?: Record<string, { lo: number; hi: number }>;
+        auditRate?: number;
+        timeoutMs?: number;
+        maxPerDay?: number;
+      };
+    };
+    /**
+     * Jev as a LIVE advisory input to the tone gate's B1–B7 artefact signals
+     * (docs/specs/jev-signal-live.md). `enabled` is OMITTED by default so the
+     * development-agent gate decides (live on a dev agent, dark on the fleet);
+     * explicit false is the kill switch. Only takes effect where the tone gate's
+     * advisory migration is on, and needs the vault `typesafe_api_key`. Confident
+     * Jev answers decide a kind; unsure/missing answers and every failure fall
+     * back to the deterministic detectors. Read live per candidate.
+     */
+    jevSignalLive?: {
+      enabled?: boolean;
+      /** Fetch abort for the live call (default 1000; clamped to 100–3000). */
+      timeoutMs?: number;
+      /** Confident-vs-unsure band (default 0.30–0.70), optionally per rule. */
+      band?: { lo: number; hi: number };
+      bands?: Record<string, { lo: number; hi: number }>;
+    };
+    /**
+     * Jev correction-detector shadow (docs/specs/jev-correction-shadow.md).
+     * LOG-ONLY: asks Jev whether each inbound user message is a correction, a
+     * standing preference, neither, or cannot tell, and logs a content-free row
+     * beside the Layer-0 verdict the correction sentinel gates on. Changes
+     * nothing the sentinel records. `enabled` OMITTED by default ⇒ the
+     * development-agent gate decides; explicit false is the kill switch, read
+     * live. Needs the vault `typesafe_api_key`.
+     */
+    jevCorrectionShadow?: {
+      enabled?: boolean;
+      /**
+       * Live input to the Correction & Preference Learning Sentinel
+       * (jev-correction-live.md): a Jev flag Layer 0 missed is distilled as a
+       * learning signal. Omitted ⇒ dev gate; explicit false is the kill switch.
+       */
+      feedSentinel?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted calls (default 500). */
+      maxChecksPerDay?: number;
+    };
+    /**
+     * Jev "going in circles" shadow (docs/specs/jev-circles-shadow.md). LOG-ONLY:
+     * every 5 tool actions per session, asks Jev the measured five-label question
+     * over the last 15 actions and appends a content-free row (would-nudge or
+     * not, with 30-min cooldown accounting). Delivers nothing. `enabled` is
+     * OMITTED by default so the development-agent gate decides (live on a dev
+     * agent, dark on the fleet); explicit false is the kill switch, read live.
+     * Needs the vault `typesafe_api_key`.
+     */
+    jevCirclesShadow?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted calls (default 2000). */
+      maxChecksPerDay?: number;
+    };
+    /**
+     * Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md). LOG-ONLY:
+     * once a minute, judges each new agent reply in the Telegram history with
+     * Jev ("does this need the operator's review?") and appends a content-free
+     * row. Delivers nothing. `enabled` is OMITTED by default so the
+     * development-agent gate decides (live on a dev agent, dark on the fleet);
+     * explicit false is the kill switch, read live. Needs the vault
+     * `typesafe_api_key`.
+     */
+    jevReviewFlagShadow?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted calls (default 3000). */
+      maxChecksPerDay?: number;
+    };
+    /**
+     * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
+     * default. Observe-only: captures an evidence pack when a scheduled job
+     * completes, and a batch job asks Jev whether the evidence shows the
+     * promised work happened. Records only; acts on nothing. Inert unless
+     * enabled AND soakEndsAt is a future ISO instant AND the vault holds
+     * `typesafe_api_key`. Read live per candidate (no restart).
+     */
+    jevJobCompletionAudit?: {
+      enabled?: boolean;
+      /** Pinned model id — never an alias (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per call (default 2500). */
+      timeoutMs?: number;
+      /** The mechanical soak bound: inert at or after this instant, and when null. */
+      soakEndsAt?: string | null;
+      /** Daily budget over ATTEMPTED calls (default 1500). */
+      dailyCallCap?: number;
+      /** Batch cadence for the built-in job (default 6). */
+      batchIntervalHours?: number;
+    };
+    /**
+     * Jev memory picker (docs/specs/jev-memory-picker.md). Ranks the Claude Code
+     * memory index against a session's opening context at session start.
+     * `enabled` omitted ⇒ the developmentAgent gate decides (live on a dev
+     * agent, dark on the fleet); false is the kill switch. Read live.
+     */
+    jevMemoryPicker?: {
+      enabled?: boolean;
+      /** "shadow" (default) logs only; "inject" prints the ranked entries. */
+      mode?: 'shadow' | 'inject';
+      /** Pinned model id (default "jev-1.13.0"). */
+      model?: string;
+      /** Fetch abort (default 1500; clamped 100–3000). */
+      timeoutMs?: number;
+      /** Ranked entries added beyond the load cut (default 40). */
+      injectLines?: number;
+      /** Character cap on the added entries (default 10000). */
+      injectMaxChars?: number;
+      /** Up to 20 short notes on internal names, sent with the context. */
+      glossary?: string[];
+      /** Jev calls per UTC day, per process (default 300). */
+      dailyCallCap?: number;
+    };
     circuitBreaker?: {
       /** Master switch for the rate-limit circuit breaker (default: true). */
       enabled?: boolean;
@@ -4181,9 +4543,67 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
+     *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
+    assistedRelogin?: {
+      enabled?: boolean;
+      mode?: 'observe' | 'approval' | 'unattended';
+      dryRun?: boolean;
+      tickMs?: number;
+      maxAttempts?: number;
+      retryBaseMs?: number;
+      allowedScopes?: string[];
+      unattendedPolicy?: {
+        /** Exact subscription emails allowed to repair without a dashboard approval. */
+        identities?: string[];
+        /** Evidence floor per exact account/provider/machine path. Default 10. */
+        minimumSuccessfulRepairs?: number;
+        /** Age of the oldest successful repair required in days. Default 30. */
+        minimumEvidenceDays?: number;
+      };
+      /** Optional attention-routing topic. Omit to use the configured attention hub. */
+      approvalTopicId?: number;
+      /**
+       * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
+       * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
+       * short-lived agent session follows /subscription-signin section 3 like a person (spec
+       * skill-driven-signin-repair; macOS only — off macOS it resolves to the existing driver).
+       * Every path honors `mode` the same way: `unattended` skips the tap only for an opted-in,
+       * floor-clearing identity. Omitted ⇒ `agent-session` on a macOS development agent,
+       * otherwise the development-agent gate (agent on a development agent, closed on the fleet).
+       */
+      navigation?: 'agent' | 'closed' | 'agent-session';
+      /**
+       * Slow automatic retry of a FAILED repair while its sign-in incident stays open (spec
+       * relogin-unattended-agent-session-and-slow-retry). Absent ⇒ on: first retry 6 h after the
+       * failure, later ones 24 h apart, at most 3 per incident. Safety refusals and operator
+       * cancels are never retried. `enabled: false` turns it off.
+       */
+      slowRetry?: { enabled?: boolean; delaysMs?: number[]; maxRetries?: number;
+        /** Local hours in which an approval re-offer is never sent (default 23 → 8); `null` disables. */
+        quietHours?: { startHour: number; endHour: number } | null };
+      /**
+       * Last-resort model for the repair's own model calls (spec relogin-last-resort-model): a
+       * lightweight model over an Anthropic API key the operator placed in the vault under
+       * `keyName` (default `relogin_last_resort_anthropic_api_key`). Placing the key is the
+       * consent to spend; `ANTHROPIC_API_KEY` and `intelligenceProvider` are never read. Used only
+       * after the shared provider failed or is absent, and only for the repair. With it available,
+       * an agent-session repair with no other healthy account on the machine drives the server-side
+       * browser path instead of waiting on the operator. Absent ⇒ on when the key exists; off with
+       * `enabled: false`. `model` is a tier (`fast` = haiku, the default; `balanced`; `capable`);
+       * the call runs `claude -p` with the key in the child's environment only, in a dedicated
+       * empty config home under the state dir. Caps default to 60 calls per drive and 300 per day.
+       */
+      lastResort?: { enabled?: boolean; keyName?: string; model?: string; maxCallsPerDrive?: number; maxCallsPerDay?: number };
+    };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */
     swapSoftThresholdPct?: number;
+    /** Live codex quota reads via `codex app-server` (zero token/quota spend;
+     *  the same call the codex /status screen makes). ON by default — every
+     *  failure falls back to the rollout-tail reader, so `false` only forces
+     *  the old rollout-only behaviour. */
+    codexLiveQuota?: boolean;
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -4222,6 +4642,15 @@ export interface InstarConfig {
       cooldownMs?: number;
       /** Monitor tick cadence (ms). Default 180000 (3m). */
       tickMs?: number;
+      /** Q3-safe rescue for untagged/default sessions. Instead of mutating the
+       * live session binding, exchange the freshest eligible account into the
+       * default credential slot. DEV-GATED and dry-run-first. */
+      defaultSlotRepoint?: {
+        /** Deliberately omitted by default; resolved through resolveDevAgentGate. */
+        enabled?: boolean;
+        /** Exact would-flip audit/log only. Default true. */
+        dryRun?: boolean;
+      };
       /**
        * swap-continuity-antithrash §3/§7 — anti-thrash brakes on the proactive
        * swap. An ABSENT block resolves `enabled:true, dryRun:true` (dry-run
@@ -4297,7 +4726,9 @@ export interface InstarConfig {
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
       /** Per-framework login command override (defaults: claude-code →
-       *  `claude auth login`, codex-cli → `codex login`). */
+       *  `claude auth login`, codex-cli → `codex login --device-auth`). See
+       *  DEFAULT_ENROLL_LOGIN_COMMANDS in FrameworkLoginDriver.ts for the full map
+       *  and why device-code frameworks must pass `--device-auth`. */
       loginCommands?: Record<string, string>;
       /** Auto-reissue sweep cadence in ms (default 300000 = 5 min). */
       reissueSweepMs?: number;
@@ -4536,6 +4967,8 @@ export interface InstarConfig {
      */
     codexTaskContinuation?: {
       enabled?: boolean;
+      /** Separate dark gate for truthful pre-admission autonomous continuation. */
+      preparationCarrierEnabled?: boolean;
       maxDurationSeconds?: number;
       maxContinuations?: number;
       auditRetentionDays?: number;
@@ -4630,6 +5063,18 @@ export interface InstarConfig {
   inputGuard?: InputGuardConfig;
   /** Threadline relay — cloud relay connection for inter-agent communication */
   threadline?: ThreadlineConfig;
+  /**
+   * Agent identity (a2a-single-agent-identity). `adoption.enabled` is the FLEET-LIVE kill
+   * switch for post-pairing adoption (§1.2): off, a joined identity-less machine stays
+   * `identity-not-provisioned` and loud, and still yields the lease to a live sibling that holds
+   * the identity (observing continues under the switch) — strictly better than minting.
+   * The CLI (`instar identity adopt --from`) works regardless. Default true.
+   */
+  agentIdentity?: {
+    adoption?: {
+      enabled?: boolean;
+    };
+  };
   /** Dashboard configuration */
   dashboard?: DashboardConfig;
   /**
@@ -5115,6 +5560,83 @@ export interface ThreadlineConfig {
   warmSessionA2A?: ThreadlineWarmSessionConfig;
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
+  /**
+   * A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md). Read
+   * live. `enabled` omitted ⇒ the developmentAgent gate (live on a dev agent,
+   * dark on the fleet). `retentionDays` default 14, floor 2.
+   */
+  inboundIdLedger?: { enabled?: boolean; retentionDays?: number };
+  /**
+   * A2A backup routes (docs/specs/a2a-backup-routes.md). Read live per send.
+   * `enabled` omitted ⇒ the developmentAgent gate (live on a dev agent, dark on
+   * the fleet). `false` restores today's relay-send behaviour.
+   */
+  backupRoutes?: { enabled?: boolean };
+  /**
+   * A2A cross-machine route (docs/specs/a2a-cross-machine-route.md). Read live
+   * on every machine. `enabled` omitted ⇒ the developmentAgent gate (live on a
+   * dev agent, dark on the fleet). `false` restores today's 503 on a relay
+   * standby and today's topic linkage on the holder.
+   */
+  relayForward?: { enabled?: boolean };
+  /**
+   * Local-route trust (docs/specs/a2a-local-route-trust.md). Read live per
+   * request on `POST /messages/relay-agent`. `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-refuse verdicts are logged and counted, delivery is
+   * unchanged; only an explicit `false` refuses (pre-admission 403).
+   */
+  localRouteTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * A2A local-route signed envelope (docs/specs/a2a-local-route-signed-envelope.md):
+   * the same-machine route verifies the sender's Ed25519 signature against the
+   * key held for its name. `enabled` OMITTED ⇒ the developmentAgent gate decides
+   * (live on a dev agent, off on the fleet). `dryRun` defaults TRUE (verify,
+   * count, log; deliver as today); only an explicit `false` refuses.
+   */
+  localRouteSignature?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Honest sender-side reporting of a send that stays queued
+   * (docs/specs/a2a-single-agent-identity.md §3). `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-raise / would-sentence rows go to
+   * logs/a2a-peer-dark.jsonl, no item and no sentence; the raw health fields
+   * (`dark`, `darkSince`, `queuedCount`, `connectedNow`) are live regardless.
+   * `queuedDarkAfterMs` default 2 h (floor 5 min); `cooldownMs` default 12 h.
+   * `perPeer` sets the threshold for ONE peer by its full fingerprint, e.g.
+   * `{ "<fp>": { queuedDarkAfterMs: 1800000 } }` for a pair that answers in minutes.
+   */
+  peerDarkNotice?: {
+    enabled?: boolean; dryRun?: boolean; queuedDarkAfterMs?: number; cooldownMs?: number;
+    perPeer?: Record<string, { queuedDarkAfterMs?: number }>;
+  };
+  /**
+   * Relay unknown-sender trust (docs/specs/a2a-relay-unknown-sender-trust.md).
+   * Read live per unknown-sender relay message. `enabled` omitted ⇒ the
+   * developmentAgent gate (live on a dev agent, dark on the fleet). `dryRun`
+   * defaults TRUE: would-refuse verdicts are logged and counted, delivery is
+   * unchanged; only an explicit `false` refuses, emits the held trust level,
+   * and creates new fingerprint profiles at `untrusted`.
+   */
+  relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9, rollout step 5).
+   * Read live per send. `enabled` omitted ⇒ the developmentAgent gate (live on a dev
+   * agent, dark on the fleet). `dryRun` defaults TRUE (watch): sends are unchanged and each
+   * one that would have gone encrypted to an invite-paired peer's PINNED key is counted;
+   * only an explicit `false` (enforce) encrypts every ordinary message to such a peer with
+   * the pinned key, never falling back to plaintext, and labels plaintext arriving under
+   * its fingerprint as unverified.
+   */
+  encryptToPinned?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Refuse-downgrade (docs/specs/threadline-standalone-pairing.md D6/D11, rollout step 6). Read
+   * live per inbound message. `enabled` omitted ⇒ the developmentAgent gate. `dryRun` defaults
+   * TRUE (watch): the encryptedSeen mark is recorded when an invite-paired peer sends encrypted
+   * chat, and plaintext later arriving under its fingerprint is counted and delivered as today;
+   * only an explicit `false` (enforce) refuses that plaintext. Off records and refuses nothing.
+   */
+  refuseDowngrade?: { enabled?: boolean; dryRun?: boolean };
 }
 
 /**
@@ -5464,6 +5986,35 @@ export interface MonitoringConfig {
   /** Health check interval in ms */
   healthCheckIntervalMs: number;
   /**
+   * Authoritative autonomous-window liveness state. Omitted resolves through
+   * the development-agent gate (live on dev, dark on fleet); dryRun defaults
+   * true so the first rollout records at-risk/recovery verdicts without
+   * restarting an executor or notifying the operator.
+   */
+  windowRunLiveness?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    heartbeatMaxAgeMs?: number;
+    workEvidenceMaxAgeMs?: number;
+    /** Hard-clamped by the authority to no more than 15 minutes. */
+    recoveryCeilingMs?: number;
+    /** Admit an ordinary topic run (no window-ritual ledger) by its own open, unexpired server registration. Read live; default false. */
+    ordinaryRunLifecycle?: boolean;
+    /** Durable W32 receipt/report executor. Explicitly enabled; dry-run first. */
+    cadenceExecutor?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      receiptIntervalMs?: number;
+      reportIntervalMs?: number;
+      checkpointLeadMs?: number;
+      receiptGraceMs?: number;
+      checkpointRetryMaxAttempts?: number;
+      checkpointRetryBackoffMs?: number;
+      reportRetryMaxAttempts?: number;
+      reportRetryBackoffMs?: number;
+    };
+  };
+  /**
    * Boot health beacon — a minimal /health responder bound from the very start
    * of the server boot so the supervisor sees liveness during the heavy
    * memory/session load (which runs before AgentServer binds its port). Closed
@@ -5609,6 +6160,12 @@ export interface MonitoringConfig {
     enabled: boolean;
     /** Cadence between overlap scans, in minutes (default 15). */
     cadenceMinutes?: number;
+    /**
+     * Delay before the FIRST tick after construction, in seconds (default 30). Without
+     * it the guard-posture row reads on-stale for a whole cadence after every boot
+     * (CMT-810). 0 disables the early tick (first tick waits a full cadence).
+     */
+    initialTickDelaySeconds?: number;
   };
   /**
    * tmux Event-Loop Resilience, Increment 1 (docs/specs/tmux-event-loop-resilience-spec.md).
@@ -7109,6 +7666,23 @@ export interface MonitoringConfig {
      *  opt in for a steady heartbeat). Decoupled from `digestEvenWhenCalm`, which
      *  only governs whether the digest OBJECT/API renders a calm summary. */
     digestSendOnCalmWeeks?: boolean;
+    /**
+     * Standard A/B of maturation-followthrough-fix: read the real dark-flag
+     * inventory from the `/guards` posture surface instead of only the specs
+     * that registered a rollout stage, and give every dark flag a durable
+     * owner + deadline + proof-of-life record.
+     *
+     * Ships DARK (`enabled: false`) and dry-run-first. With `enabled: false`
+     * the analyst reverts to exactly the InitiativeTracker-only behavior and
+     * R3 keeps its old place in the headline, so rollback is a single flag.
+     * With `dryRun: true` the durable registry IS written (the soak accrues
+     * real evidence from day one, which an in-memory counter can never do)
+     * but no R7 finding reaches the digest.
+     */
+    darkFlagInventory?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+    };
     /** Incubation windows in DAYS per risk tier (defaults 3 / 7 / 7). */
     incubationWindows?: {
       lowRisk?: number;

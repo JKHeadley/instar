@@ -13,6 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { IdentityManager } from '../../src/threadline/client/IdentityManager.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -46,11 +47,13 @@ describe('Agent digital passport — (E2E over HTTP)', () => {
   afterEach(async () => { await server?.close(); SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/agent-passport-lifecycle.test.ts:45' }); });
 
   it('FEATURE IS ALIVE: GET /passport returns 200 with the passport', async () => {
+    const canonical = new IdentityManager(stateDir).getOrCreate();
     const res = await fetch(server.url + '/passport');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.agent).toBe('echo');
     expect(body.forbiddenActions).toContain('Never delete the production database.');
+    expect(body.fingerprint).toBe(canonical.fingerprint);
   });
 
   it('FEATURE IS ALIVE: POST /passport/verify denies a forbidden action end-to-end', async () => {

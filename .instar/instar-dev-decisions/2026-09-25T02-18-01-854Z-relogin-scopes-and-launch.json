@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-25T02:18:01.854Z",
+  "slug": "relogin-scopes-and-launch",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PlainChromeReloginBrowser.ts",
+      "src/core/SubscriptionReloginRuntime.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action"
+  },
+  "verdict": "pass"
+}

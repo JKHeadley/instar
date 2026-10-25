@@ -168,6 +168,20 @@ These tools are registered as an MCP server and called by Claude Code (or any MC
 | GET | `/messages/outbox` | Inter-agent outbox |
 | GET | `/messages/dead-letter` | Dead letter queue |
 | POST | `/messages/send` | Send a message (used internally by MCP tools) |
+| POST | `/threadline/pairing/invites` | Make a pairing invite (`ttlMinutes`, optional `bindFp`) |
+| GET | `/threadline/pairing/invites` | List own invites, pending accepts and known peers |
+| DELETE | `/threadline/pairing/invites/:iid` | Revoke an open invite |
+| POST | `/threadline/pairing/invites/inspect` | Recipient: check and hold a received invite |
+| POST | `/threadline/pairing/invites/:iid/approve` | Recipient approves (PIN) |
+| POST | `/threadline/pairing/invites/:iid/decline` | Recipient declines |
+| POST | `/threadline/pairing/invites/:iid/finish` | Inviter confirms the acceptor (PIN) |
+| POST | `/threadline/pairing/invites/:iid/not-them` | Inviter rejects the acceptor (PIN) |
+
+## Parallel-Work Awareness
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/parallel-work/sentinel` | Is the overlap sentinel ticking? Live counters, `tickAgeMs`, `cadenceMinutes`; 503 when dark |
 
 ## Serendipity Protocol
 
@@ -529,6 +543,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /internal/stop-gate/kill-switch`
 - `GET /internal/stop-gate/log`
 - `POST /internal/compaction-resume`
+- `POST /internal/lifeline-proof` — the lifeline proves to its own server that it sends the ingress secret (Bearer + `X-Instar-Lifeline-Secret`); carries no Telegram input.
 - `POST /internal/prompt-recall`
 - `POST /internal/slack-forward`
 - `POST /internal/stop-gate/annotations`
@@ -536,8 +551,8 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
 - `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
-- `POST /internal/telegram-callback`
-- `POST /internal/telegram-forward`
+- `POST /internal/telegram-callback` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
+- `POST /internal/telegram-forward` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
 
 ## /jobs
 - `GET /jobs`
@@ -1040,6 +1055,61 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
 | POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
 | POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
+| GET | `/subscription-relogin` | List bounded assisted re-login episodes and their current state. Add `?scope=pool` to merge machine-tagged episodes from reachable peers with typed peer failures. Returns disabled state while the dev-gated feature is dark. |
+| GET | `/subscription-relogin/:episodeId/events` | Read the bounded, redacted event history for one repair episode. |
+| POST | `/subscription-relogin/repair-cell` | Central-dashboard one-click repair. Recent operator-session proof authorizes one exact `accountId` + `machineId` + `episodeId`; Instar issues and delivers a signed re-mint mandate, then starts the target-local autonomous repair. |
+| POST | `/subscription-relogin/:episodeId/approve` | Approve the exact immutable repair plan shown in the dashboard. Approval cannot broaden identity, origin, or requested scope. |
+| POST | `/subscription-relogin/:episodeId/approve-with-mandate` | Target-local point-of-use route for a signed exact-bounds repair mandate. Intended for the fronting repair-cell orchestrator, not direct dashboard use. |
+| POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
+| POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
+| POST | `/subscription-relogin/:episodeId/code` | Loopback-only door for a skill-driven sign-in helper (macOS, `navigation: agent-session`). Authenticated by the per-episode `X-Relogin-Helper-Token` held in memory by `SubscriptionReloginHelper`, not the API bearer token. The body is exactly one of `{"code"}`, `{"notify":"phone-tap"}` or `{"notify":"macos-permission","permission"}`, capped at 1 KB, with no CORS. Answers 409 when no live helper holds the episode and 503 when the path is off. |
+
+### Window lifecycle obligation ledger (Echo-local)
+
+The enforcement plane behind governance windows (`core/WindowLifecycleObligationLedger`): duties compiled from source documents, evidence-gated admission/closure, per-duty executor-liveness, maturation-gated enforcement. Echo-local by design — every route refuses a foreign agent/scope before state access. See the [Window Lifecycle Obligation Ledger feature page](/features/window-lifecycle-ledger/).
+
+| Method | Route | Description |
+|---|---|---|
+| GET | `/window-lifecycle` | Ledger status: compiled obligations, per-instance statuses, lifecycle state, executor bindings. |
+| POST | `/window-lifecycle/compile` | Compile the obligation ledger from the current source-document bytes (SHA-recorded, source-spanned; uncompiled operative clauses fail). |
+| POST | `/window-lifecycle/evidence` | Submit instance-bound evidence for a duty (nonce-bound; wrong-window or replayed evidence rejected). |
+| POST | `/window-lifecycle/evaluate` | Evaluate duty predicates and executor-liveness without mutating state. |
+| POST | `/window-lifecycle/tick` | Run one lifecycle tick — re-query evidence and executors, surface `open-unexecuted` findings. |
+| POST | `/window-lifecycle/transition` | Request a lifecycle state transition; refused while any gating duty lacks evidence. |
+| POST | `/window-lifecycle/native-admission` | Run the shipped between-window admission gate through the versioned adapter; exact input/output persisted, structural verdict never promoted to semantic proof. |
+| POST | `/window-lifecycle/waiver` | Apply an operator waiver — exact payload digest approved post-creation by the locally auth-bound operator; core duties non-waivable. |
+| POST | `/window-lifecycle/rollback` | Audited Echo-local rollback: ledger preserved read-only, manual ritual resumes, enforcement reported disabled. |
+| POST | `/window-lifecycle/reenable` | Re-enable after rollback; requires repair evidence and a passing dry-run suite. |
+| GET | `/window-lifecycle/enforcement` | Enforcement mode (`off` / `dry-run` / `enforced`) + maturation state. |
+| POST | `/window-lifecycle/enforcement/record-shadow` | Server-derived graduation report from the stored ledger and adjudicated shadow audit (dry-run only; unadjudicated or hash-chain-broken rows refuse). |
+| POST | `/window-lifecycle/enforcement/graduate` | Graduate dry-run → enforced on valid dual-lifecycle evidence; forged, reused, or caller-written provenance refused. |
+| POST | `/window-lifecycle/enforcement/off` | Turn the enforcement plane off (neither ticks nor blocks). |
+
+### Dedicated browser profiles
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/playwright-profiles/provision` | Recent-dashboard-PIN route that creates a jailed, machine-local Chrome profile for one Google identity. The request accepts vault secret **names**, never secret values, and returns a phone-complete next step when password or MFA help is needed. |
+| GET | `/passkeys/grants` | Agent-held Google passkeys (⚗️ dark, dev-gated `passkeys.enabled`): this machine's per-account passkey **grants**, the non-secret copies of grants it issued to peers, its confirmed **issuers** (machines whose signed passkey instructions it accepts), the revoke high-water mark, and whether the first grant is still blocked on issuer bootstrap. |
+| POST | `/passkeys/grant` | Dashboard-PIN route (rate-limited like the mandate PIN routes). Body `{pin, email, googleCreatedAt?, targetMachineId?}`. Writes one grant for (account × THIS machine); with `targetMachineId` it signs a `passkey-cell` mandate with this machine's identity key and delivers it to the peer's `/passkeys/cell-action`. On a multi-machine agent the first grant answers `409 issuer-bootstrap-required` until a peer issuer is confirmed here. |
+| POST | `/passkeys/revoke` | Dashboard-PIN route. Body `{pin, email, revokesGrantSeq?, targetMachineId?}`. Revokes the cell's grant instances up to a sequence (a later re-grant survives an older revoke), raises the local revoke high-water mark, drops the profile's passkey binding and — if a credential store exists — the stored credential. Stops THIS agent's passkey path only; live sessions and stored passwords remain. |
+| POST | `/passkeys/issuer-add` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Confirms a paired, ACTIVE machine as a trusted issuer of passkey instructions on THIS machine (no trust-on-first-use; the peer is named from this machine's own registry). |
+| POST | `/passkeys/issuer-remove` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Removes a machine from this machine's trusted-issuer set. |
+| GET | `/passkeys/outbox` | This machine's durable **revoke outbox**: every peer revoke it issued with state (`pending` / `applied` / `escalated` / `closed`), attempt count, next attempt time and last result — never the signed bundle itself. |
+| POST | `/passkeys/outbox/tick` | Run one re-delivery pass now (the server timer does this every 10 minutes): due entries are re-sent UNCHANGED on 1h → 6h → daily backoff, a peer seen online is pulled forward (never below a 15-minute floor), entries 30 days past issue escalate to one aggregated attention item per machine and stop, apart from one attempt when that machine is next online. |
+| POST | `/passkeys/cell-action` | The signed-instruction receiver (Bearer transport; the Ed25519 signature, the expected-issuer set and the nonce ledger are the authority). Accepts a `passkey-cell` bundle only from a confirmed issuer, addressed to this machine, within 15 minutes (revokes never expire), once per nonce; refuses `account-follow-me` bundles. |
+| POST | `/passkeys/revert-method` | Dashboard-PIN route. Body `{pin, accounts?}`. Restores a browser-profile account to the login method its passkey enrollment replaced; accounts with none are listed as `noPriorMethod`, never guessed. |
+| GET | `/passkeys` | Per-cell view of THIS machine (granted, custody state, attempt rows, pauses, grant echoes, outbox rows, whether it is the secret-sync push authority) plus its peer exclusions. `?scope=pool` merges every peer through the pool reader's memo (marked with `ageMs`): each peer's condition — `observed`, `peer-offline` (rows still count), `excluded`, or `partitioned` (blocks enrollment and proofs) — its current-or-last-known rows, `degraded` + `degradedReasons`, and `singleMachine`. |
+| GET | `/passkeys/pool-state` | What a peer reads (Bearer transport): this machine's publishable passkey state — canonical emails only, never a credential, entry key or signed bundle. A caller naming itself with `X-Instar-Machine-Id` must be an ACTIVE paired machine in this machine's registry (revoked, pending, de-paired and unknown machines answer 403). |
+| POST | `/passkeys/pool-state/tick` | Run one pool read pass now (the server timer does this every 5 minutes): every peer queried once in parallel (5 s per peer, 5 s overall), classified with rope health, last-known rows persisted, one memo produced. |
+| GET | `/passkeys/admission` | Read-only: `?action=enroll|prove|canary|repair|revoke&email=…` evaluates the pool-wide table (partitioned peer ⇒ no enroll/prove; suspended ⇒ canary only; stopped/kill switch ⇒ repair by degraded override only), the enrollment rate limit (one per cell per 30 min, three per account per day pool-wide), the same-account proof gap (6 h across machines) and any active throttle/risk pause. Honest about its inputs: the suspension record and lease-holder state are not published on this build and are reported as such. |
+| POST | `/passkeys/exclude-peer` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Excludes a long-unobserved peer from THIS machine's pool checks (treated like `peer-offline`: its last-known rows still count); clears automatically when the peer is observed again. Also a `passkey-cell` mandate op for another machine. |
+| POST | `/passkeys/include-peer` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Re-includes an excluded peer. |
+| GET | `/passkeys/health` | This machine's per-cell **health** records (`healthy` / `degraded` / `breaker-open` / `unverified` / `unverified-stopped` / `rejected` / `security`, the next proof due time, the unknown backoff rung, the flapping flag, the Google-side removal state) plus the digest ledger (last buzz, last upsert, resolved). |
+| POST | `/passkeys/health/outcome` | Bearer. Body `{email, outcome, origin?, reenrolled?, pin?}`. Records one proof outcome (`ready` / `failed` / `unknown` / `credential-rejected` / `removed-on-google` / `security`) for a LOCAL cell with an active grant (404 otherwise) and moves it through the health table; the two permissive provenances — `origin: "operator"` and `reenrolled: true` — additionally require the dashboard PIN: a `failed` arms one confirming proof an hour later; three confirmed weekly failures open the breaker; three unknowns make the cell unverified with a 7 → 14 → 28-day backoff and three more at the cap stop it; `security` is terminal until re-enrollment. Every transition is audited as states only. |
+| POST | `/passkeys/health/digest/refresh` | Bearer. Run one digest pass now (the server timer does this every 5 minutes): advance the clocks (paused while the pool read path is degraded), build the ONE digest under `passkey-health:digest`, and upsert it when its ledger says so — a buzz at most once per 24 hours, security and suspension once per tick, peer-list changes silently; nothing left to report resolves the episode. Only the serving-lease holder narrates the pool; a non-holder narrates its own machine. |
+| POST | `/passkeys/attest-google-removed` | Dashboard-PIN route. Body `{pin, email, targetMachineId?}`. Records the operator's attestation that the passkey was removed on Google when the read-only list check cannot run — shown as **attested**, never as removed; applies only to a cell that has a health record on the target machine (`no-cell-record` otherwise). Also a `passkey-cell` mandate op. |
+| POST | `/passkeys/prove` | Dashboard-PIN route. Body `{pin, email}`. Runs the **cold proof** of THIS machine's cell for the account now: admission first (the pool-wide table, the 6 h same-account gap across machines, any active risk/throttle pause — a refusal is 409 `proof-refused` naming the reason; a peer that cannot be read refuses before any browser opens), then the host-wide browser seat (409 `seat-busy`), then the proof in the cell's own proof-only Chrome profile: cleared, confirmed signed out, the stored credential added to a virtual authenticator, the identifier filled, the passkey prompt's Continue pressed, the signed-in identity read, the credential removed and the profile signed out. `ready` needs all three: an observed assertion for the stored id, a single credential, the expected identity signed in; otherwise `failed` / `credential-rejected` (`removed-on-google` while a removal is pending/attested) / `security` (a different identity) / `unknown` (transport, risk page, throttled). The outcome is recorded into the cell's health with `origin: "operator"`; a risk page pauses the account for 7 days, a throttled prompt pauses the account for 24 h and the machine for 1 h. 404 without an active grant; 409 `no-credential` without a stored key (never creates a store); 501 for a `targetMachineId` other than this machine on this build; 503 without a proof browser. |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on

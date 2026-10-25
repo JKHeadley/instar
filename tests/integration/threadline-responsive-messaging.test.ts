@@ -213,6 +213,7 @@ describe('E2E-4: Trust-Gated Routing', () => {
       complexTaskThreshold: 500,
     });
     listener.setState('listening');
+    listener.markReaderAlive();
   });
 
   afterEach(() => temp.cleanup());
@@ -526,6 +527,7 @@ describe('E2E-9: Overflow Handling', () => {
       maxMessages: 100,
     });
     listener.setState('listening');
+    listener.markReaderAlive();
   });
 
   afterEach(() => temp.cleanup());
@@ -639,6 +641,7 @@ describe('E2E-11: Full Lifecycle', () => {
       overflowThreshold: 3,
     });
     listener.setState('listening');
+    listener.markReaderAlive();
   });
 
   afterEach(() => {

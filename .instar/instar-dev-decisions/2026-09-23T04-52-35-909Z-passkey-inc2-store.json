@@ -1,0 +1,32 @@
+{
+  "ts": "2026-09-23T04:52:35.909Z",
+  "slug": "passkey-inc2-store",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SecretStore.ts matches SecretDrop / never-on-disk invariant",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 478,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/core/GitStateManager.ts",
+      "src/core/PasskeyCredentialStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SecretStore.ts",
+      "src/core/WorkingSetManifest.ts"
+    ],
+    "addedLines": 473,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

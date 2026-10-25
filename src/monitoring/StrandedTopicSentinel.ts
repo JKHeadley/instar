@@ -37,6 +37,7 @@ import {
   type StrandedTopic,
   type StrandReason,
 } from './strandedTopicDecision.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface StrandedTopicSentinelConfig {
   enabled?: boolean;
@@ -113,7 +114,7 @@ export class StrandedTopicSentinel extends EventEmitter {
     cfg: StrandedTopicSentinelConfig = {},
   ) {
     super();
-    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_CONFIG, cfg);
   }
 
   start(): void {

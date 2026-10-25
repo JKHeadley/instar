@@ -243,6 +243,22 @@ describe('QuotaPoller', () => {
     );
   });
 
+  it('records credential absence without changing pool status or creating repair authority', async () => {
+    const observations: unknown[] = [];
+    const p = new QuotaPoller({
+      pool,
+      tokenResolver: () => ({ observationOnly: true, reason: 'credential-absent-or-unreadable' }),
+      loginObservationSink: (input) => observations.push(input),
+    });
+    pool.addFixture({ ...ACCT, status: 'active' });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('active');
+    expect(observations).toMatchObject([{
+      accountId: 'claude-1',
+      outcome: { kind: 'observation-absence', causeClass: 'credential-absent-or-unreadable' },
+    }]);
+  });
+
   it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
     // 401 AND the refresher reports no usable refresh token → genuine re-auth.
     const p = new QuotaPoller({
@@ -349,6 +365,117 @@ describe('QuotaPoller', () => {
     expect(q.fiveHour).toBeUndefined();
   });
 
+  // ── Live-first codex read (zero-spend app-server path) ──────────────────
+  const liveSnap = (used: number) => ({
+    source: 'codex-app-server' as const, rolloutPath: '', threadId: null,
+    capturedAt: '2026-09-20T18:00:00.000Z', model: null, planType: 'pro', rateLimitReachedType: null,
+    primary: { usedPercent: used, remainingPercent: 100 - used, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+    secondary: null,
+  });
+  const rolloutSnap = (used: number) => ({
+    source: 'codex-rollout' as const, rolloutPath: '/rollout.jsonl', threadId: 't',
+    capturedAt: '2026-09-14T15:00:00.000Z', model: null, planType: 'pro', rateLimitReachedType: null,
+    primary: { usedPercent: used, remainingPercent: 100 - used, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+    secondary: null,
+  });
+
+  it('prefers the live app-server read over the rollout tail, and records its provenance', async () => {
+    let rolloutCalls = 0;
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexLiveUsageReader: async () => liveSnap(100),
+      codexUsageReader: async () => { rolloutCalls++; return rolloutSnap(86); },
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-live', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-live')!.lastQuota!;
+    // The WALLED account's live 100% wins over the stale rollout 86% — the
+    // exact case the live path exists for (a walled account writes no rollout).
+    expect(q.sevenDay?.utilizationPct).toBe(100);
+    expect(q.source).toBe('codex-app-server');
+    expect(q.measuredAt).toBe('2026-09-20T18:00:00.000Z');
+    expect(rolloutCalls).toBe(0); // no wasted disk scan when live answers
+  });
+
+  it('falls back to the rollout tail when the live read returns null OR throws', async () => {
+    const cases: Array<[string, () => Promise<never>]> = [
+      ['codex-fallback-null', (async () => null) as never],
+      ['codex-fallback-throw', (async () => { throw new Error('spawn failed'); }) as never],
+    ];
+    for (const [id, liveReader] of cases) {
+      const p = new QuotaPoller({
+        pool,
+        now: () => Date.parse('2026-09-20T18:00:00Z'),
+        codexLiveUsageReader: liveReader,
+        codexUsageReader: async () => rolloutSnap(86),
+      });
+      pool.addFixture({ ...ACCT, id, provider: 'openai', framework: 'codex-cli' });
+      await p.pollAll();
+      const q = pool.get(id)!.lastQuota!;
+      expect(q.sevenDay?.utilizationPct).toBe(86);
+      expect(q.source).toBe('codex-rollout');
+    }
+  });
+
+  it('codexLiveUsageReader: null disables the live path entirely (rollout-only rollback lever)', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexLiveUsageReader: null,
+      codexUsageReader: async () => rolloutSnap(42),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-live-off', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    expect(pool.get('codex-live-off')!.lastQuota!.sevenDay?.utilizationPct).toBe(42);
+    expect(pool.get('codex-live-off')!.lastQuota!.source).toBe('codex-rollout');
+  });
+
+  // An entitlement/credits-only codex account answers the poll but reports no
+  // usage window at all. That must reach the dashboard as its OWN state — a
+  // blank card reading "No quota reading yet" implies a poll is still pending,
+  // when no future poll can ever produce a number for this account.
+  it('marks a windowless (entitlement-only) codex reading as noQuotaWindow', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-09-20T17:59:00.000Z', model: null, planType: null, rateLimitReachedType: null,
+        primary: null,
+        secondary: null,
+        windowsUnavailable: true,
+      }),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-entitlement', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-entitlement')!.lastQuota!;
+    expect(q.noQuotaWindow).toBe(true);
+    expect(q.fiveHour).toBeUndefined();
+    expect(q.sevenDay).toBeUndefined();
+    expect(q.measuredAt).toBe('2026-09-20T17:59:00.000Z');
+  });
+
+  // The other side of that boundary: a reader that simply found nothing carries
+  // no flag, so "nothing to read" never masquerades as "reports no window".
+  it('does NOT mark noQuotaWindow when a codex reading has windows', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-09-20T18:00:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-09-20T17:59:00.000Z', model: null, planType: 'prolite', rateLimitReachedType: null,
+        primary: { usedPercent: 86, remainingPercent: 14, windowMinutes: 10080, resetsAt: 1790000000, resetsAtIso: '2026-09-21T22:13:20.000Z', resetsInSeconds: 1 },
+        secondary: null,
+      }),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-windowed', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-windowed')!.lastQuota!;
+    expect(q.noQuotaWindow).toBeUndefined();
+    expect(q.sevenDay?.utilizationPct).toBe(86);
+  });
+
   it('normalizes a Codex window to fresh 0% after its known reset passes', async () => {
     const now = Date.parse('2026-06-08T00:00:00Z');
     const p = new QuotaPoller({
@@ -410,12 +537,12 @@ describe('QuotaPoller', () => {
     expect(await defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
   });
 
-  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', async () => {
+  it('defaultTokenResolver classifies a non-oauth token without returning the token (file path, non-darwin only)', async () => {
     if (process.platform === 'darwin') return; // keychain path not hermetically testable
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chome-'));
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'not-an-oauth-token' } }));
     const tok = await defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
-    expect(tok).toBeNull(); // rejected: doesn't start with sk-ant-oat
+    expect(tok).toEqual({ observationOnly: true, reason: 'credential-token-shape-invalid' });
     try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:home-cleanup' }); } catch { /* @silent-fallback-ok */ }
   });
 });

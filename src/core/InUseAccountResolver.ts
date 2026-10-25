@@ -99,26 +99,117 @@ export function defaultAuthStatusProbe(): Promise<string | null> {
   });
 }
 
+/** Structural minimum an account must expose to be matched by email. */
+export interface EmailMatchableAccount {
+  id: string;
+  email?: string;
+  framework?: string;
+}
+
+/**
+ * Pure: normalized email equality (trimmed, case-insensitive).
+ *
+ * An identity oracle returns whatever casing the provider stored; a pool row holds
+ * whatever casing the operator typed at enrollment. Comparing them with raw `===`
+ * makes the answer depend on that accident, and the failure is silent and total —
+ * a non-match is reported as "identity unavailable", which downstream reads as a
+ * missing login. Every email comparison against an oracle answer goes through here.
+ */
+export function emailEquals(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  return left.length > 0 && left === right;
+}
+
+/**
+ * Pure: EVERY pool account an Anthropic-issued email can legitimately denote.
+ *
+ * The Anthropic identity oracle probes Anthropic's OAuth profile endpoint, so the
+ * email it returns is an assertion about a CLAUDE login and says nothing about any
+ * other provider. Scoping the candidate set to claude-code accounts is therefore part
+ * of reading the oracle correctly, not an optimization: an operator who backs a Claude
+ * subscription AND a Codex subscription with the same Google account has two pool rows
+ * carrying one email, and an unscoped lookup sees a 2-way collision that does not exist
+ * at the provider.
+ *
+ * The scope is `framework === 'claude-code'` and DELIBERATELY NOT `provider === 'anthropic'`
+ * as well. `SubscriptionPool` validates `provider` and `framework` independently, with no
+ * cross-check, so `{ provider: 'openai', framework: 'claude-code' }` is an admissible row —
+ * and `buildCredentialRepairPlan` selects the accounts it plans over on `framework` ALONE.
+ * A candidate predicate NARROWER than the account-selection predicate one layer up would
+ * put such a row in the plan while making it unmatchable, manufacturing exactly the false
+ * `missing-local-login` this function exists to delete. The candidate set must equal the
+ * selection set; that invariant, not tidiness, fixes the scope.
+ *
+ * This is the shared definition because the rule previously lived only inside
+ * `matchAccountByEmail`, and the credential identity resolver in `commands/server.ts`
+ * re-implemented the lookup without it — so a dual-subscription account resolved as
+ * `ambiguous/unknown email (2 pool matches)` -> `unavailable` -> `missing-local-login`,
+ * telling the operator to re-authenticate a login that was present and valid. Callers with
+ * different collision policies share this candidate set rather than each restating the scope.
+ *
+ * NOT yet converged: `CredentialLocationLedger` keeps its own scope predicate, which also
+ * admits a framework-LESS legacy row. Widening this one to match would make such a row a
+ * candidate without putting it in the repair plan's account set — reintroducing the
+ * collision in a new shape. The two now share `emailEquals`; their scopes still differ, and
+ * that is stated rather than papered over.
+ */
+export function claudeAccountsMatchingEmail<T extends EmailMatchableAccount>(
+  accounts: readonly T[],
+  email: string | null | undefined,
+): T[] {
+  if (!email) return [];
+  return accounts.filter((a) => a.framework === 'claude-code' && emailEquals(a.email, email));
+}
+
+/** What an identity oracle can say about a slot, before the pool is consulted. */
+export type SlotOracleAnswer = { email?: string; unavailable?: boolean; reason?: string };
+/** What the credential identity resolver answers. */
+export type SlotIdentityResolution = { accountId: string } | { unavailable: true; reason: string };
+
+/**
+ * Pure: the POOL-MAPPING half of `credResolveIdentity` (`src/commands/server.ts`).
+ *
+ * Extracted so the mapping can be tested against the real code path rather than against a
+ * copy of it. A prior version of this fix was tested only through a hand-copied closure in
+ * the test file, and a reviewer demonstrated that reverting the production callsite left
+ * every test green — the suite pinned the helper and not the defect. This function is that
+ * callsite.
+ *
+ * Collision policy: STRICT. This answer authorizes credential MOVES between config homes
+ * (`CredentialSwapExecutor`), so anything other than exactly one candidate fails closed. A
+ * genuine collision between two claude-code accounts sharing an email is still refused.
+ */
+export function resolveClaudeSlotAccountId<T extends EmailMatchableAccount>(
+  accounts: readonly T[],
+  oracle: SlotOracleAnswer,
+): SlotIdentityResolution {
+  if (oracle.unavailable || !oracle.email) {
+    return { unavailable: true, reason: oracle.reason ?? 'oracle unavailable' };
+  }
+  const matches = claudeAccountsMatchingEmail(accounts, oracle.email);
+  if (matches.length !== 1) {
+    return { unavailable: true, reason: `ambiguous/unknown email (${matches.length} claude-code pool matches)` };
+  }
+  return { accountId: matches[0].id };
+}
+
 /**
  * Pure: match the active account email to a pool account (case-insensitive).
- * Only anthropic/claude-code accounts are considered — the active Claude login
- * cannot be a codex/gemini account. Returns the account id or null.
+ * Only claude-code accounts are considered — the active Claude login cannot be a
+ * codex/gemini account. Returns the account id or null.
+ *
+ * Collision policy: first match wins. This resolver only LABELS which account a live
+ * session is using, so a wrong label self-corrects at the next probe; it authorizes no
+ * write. Callers that gate a credential MUTATION must use `resolveClaudeSlotAccountId`,
+ * which fails closed on a collision.
  */
 export function matchAccountByEmail(
   accounts: SubscriptionAccount[],
   email: string | null,
 ): string | null {
-  if (!email) return null;
-  const target = email.trim().toLowerCase();
-  if (!target) return null;
-  const hit = accounts.find(
-    (a) =>
-      a.provider === 'anthropic' &&
-      a.framework === 'claude-code' &&
-      typeof a.email === 'string' &&
-      a.email.trim().toLowerCase() === target,
-  );
-  return hit ? hit.id : null;
+  return claudeAccountsMatchingEmail(accounts, email)[0]?.id ?? null;
 }
 
 export class InUseAccountResolver {

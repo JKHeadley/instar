@@ -219,6 +219,87 @@ function familyPopulation(articles) {
 }
 
 /**
+ * PATH B — an approving GitHub review from the repository owner.
+ *
+ * WHY THIS EXISTS (2026-08-22, topic 52222). Path A (an Ed25519 ratification)
+ * requires the operator to create, guard for years, and use a private key from
+ * a laptop. That key was never created, so NO registry change merged between
+ * this guard landing on 2026-08-17 and today. A guard nobody can satisfy stops
+ * the work it was meant to govern rather than the risk.
+ *
+ * WHAT MAKES THIS SOUND, AND WHAT DOES NOT. An adversarial review of the first
+ * draft established that no check the agent writes can constrain the agent: it
+ * authors this file and (before the ruleset changed) could push straight to
+ * main. So THIS FUNCTION IS NOT THE SECURITY BOUNDARY. The boundary is the
+ * repository ruleset — require-PR plus CODEOWNERS naming the operator on
+ * docs/STANDARDS-REGISTRY.md — which needs admin rights the agent does not
+ * hold. What this function adds is LEGIBILITY: it tells the pipeline, and the
+ * reader, which articles changed and whether the operator's approval is still
+ * attached to the bytes currently proposed. Removing it would not remove the
+ * protection; weakening it would not weaken the protection.
+ *
+ * Pure — the caller supplies the review list, so this stays testable and does
+ * no network I/O. Every uncertainty resolves to NOT approved.
+ */
+export function evaluateOperatorReviewApproval({
+  reviews = null,
+  ownerLogin = null,
+  ownerType = null,
+  headSha = null,
+  prAuthorLogin = null,
+} = {}) {
+  const no = (reason) => ({ approved: false, approvedBy: null, reason });
+
+  // An organization owner names no individual. Falling back to an in-repo
+  // allowlist here would reintroduce a trust root the agent can edit, which is
+  // the whole defect this design was rewritten around — so this is UNAVAILABLE,
+  // never a softer check.
+  if (ownerType !== 'User') return no(`owner is not an individual (type: ${ownerType ?? 'unknown'})`);
+  if (typeof ownerLogin !== 'string' || ownerLogin.length === 0) return no('owner login unavailable');
+  if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(headSha)) return no('head sha unavailable or malformed');
+  if (!Array.isArray(reviews)) return no('review list unavailable');
+
+  // The agent must not be able to approve its own change. GitHub already
+  // forbids this; checking it here too means the property does not depend on
+  // one platform behaviour staying the way it is today.
+  if (typeof prAuthorLogin === 'string' && prAuthorLogin.toLowerCase() === ownerLogin.toLowerCase()) {
+    return no('the pull request author is the owner — self-approval is not a different principal');
+  }
+
+  const ownerReviews = reviews
+    .filter((r) => r && typeof r === 'object' && typeof r.user?.login === 'string' &&
+      r.user.login.toLowerCase() === ownerLogin.toLowerCase())
+    .map((r) => ({
+      state: String(r.state || '').toUpperCase(),
+      commitId: typeof r.commit_id === 'string' ? r.commit_id : '',
+      at: typeof r.submitted_at === 'string' ? Date.parse(r.submitted_at) : NaN,
+    }))
+    // A review with no parseable timestamp cannot be ordered against a possible
+    // later withdrawal, so it is dropped rather than trusted.
+    .filter((r) => Number.isFinite(r.at))
+    .sort((a, b) => a.at - b.at);
+
+  if (ownerReviews.length === 0) return no(`no review from ${ownerLogin}`);
+
+  const onHead = ownerReviews.filter((r) => r.commitId.toLowerCase() === headSha.toLowerCase());
+  const approval = [...onHead].reverse().find((r) => r.state === 'APPROVED');
+  if (!approval) {
+    const stale = ownerReviews.some((r) => r.state === 'APPROVED');
+    return no(stale
+      ? `${ownerLogin} approved an earlier commit, not the current head — the proposed bytes changed after approval`
+      : `no APPROVED review from ${ownerLogin} on the current head`);
+  }
+
+  // A later withdrawal wins. DISMISSED is included because a dismissed approval
+  // is an approval the platform has already retracted.
+  const withdrawn = ownerReviews.find((r) => r.at >= approval.at &&
+    (r.state === 'CHANGES_REQUESTED' || r.state === 'DISMISSED'));
+  if (withdrawn) return no(`${ownerLogin} withdrew the approval (${withdrawn.state.toLowerCase()})`);
+
+  return { approved: true, approvedBy: ownerLogin, reason: `approved by ${ownerLogin} on the current head` };
+}
+
+/**
  * Evaluate candidate constitutional direction against a protected base.
  * This exact export is imported by the pipeline and its negative-control test.
  */
@@ -229,6 +310,12 @@ export function evaluateStandardsDirection({
   approverPublicKeyPem = '',
   candidateApproverPublicKeyPem = null,
   baseRevision = 'unknown-protected-base',
+  // PATH B (2026-08-22). The result of evaluateOperatorReviewApproval, or null
+  // when the caller could not obtain the review context (not a pull request, an
+  // API failure, a rate limit). NULL MEANS UNAVAILABLE, NOT APPROVED — an
+  // approval that cannot be verified is not an approval, so the article falls
+  // back to requiring path A.
+  reviewApproval = null,
 }) {
   const base = inventoryStandardsArticles(baseMarkdown);
   const candidate = inventoryStandardsArticles(candidateMarkdown);
@@ -280,8 +367,20 @@ export function evaluateStandardsDirection({
       payload.articleId === change.id);
     const displayName = change.after?.name ?? change.before?.name ?? change.id;
     if (matching.length === 0) {
+      // Path B before refusing: the operator's approving review on the exact
+      // head covers every article in the pull request, because a reviewer
+      // approves the diff in front of them. Per-article granularity was an
+      // artifact of the signing mechanism, not a requirement anyone stated.
+      if (reviewApproval?.approved === true) {
+        change.direction = change.kind === 'add' ? 'add' : change.kind === 'remove' ? 'remove' : 'unstated-review-approved';
+        change.approvedBy = reviewApproval.approvedBy;
+        change.approvedVia = 'github-review';
+        continue;
+      }
       errors.push(
-        `${directionLabel(null, change.kind)} "${displayName}" (${change.id}) requires an independently signed direction ratification`,
+        `${directionLabel(null, change.kind)} "${displayName}" (${change.id}) requires the operator's approving review on this commit, ` +
+        `or an independently signed direction ratification` +
+        (reviewApproval?.reason ? ` — review path unavailable: ${reviewApproval.reason}` : ''),
       );
       continue;
     }
@@ -328,6 +427,9 @@ export function evaluateStandardsDirection({
     baseRevision,
     baseRegistrySha256,
     candidateRegistrySha256,
+    reviewApproval: reviewApproval
+      ? { approved: reviewApproval.approved === true, approvedBy: reviewApproval.approvedBy ?? null, reason: reviewApproval.reason ?? null }
+      : { approved: false, approvedBy: null, reason: 'review context unavailable' },
     changes: changes.map((change) => ({
       articleId: change.id,
       name: change.after?.name ?? change.before?.name ?? change.id,
@@ -336,6 +438,7 @@ export function evaluateStandardsDirection({
       change: change.kind,
       direction: change.direction ?? null,
       approvedBy: change.approvedBy ?? null,
+      approvedVia: change.approvedVia ?? (change.approvedBy ? 'signed-ratification' : null),
     })),
     population: {
       protectedBase: base.articles.length,

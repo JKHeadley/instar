@@ -38,6 +38,16 @@ export interface ResolveTranscriptOptions {
    * `<home>/.codex/sessions`; for gemini-cli it replaces `<home>/.gemini`.
    */
   rootOverride?: string;
+  /**
+   * The session's LIVE Claude config home (`CLAUDE_CONFIG_DIR`). A
+   * subscription-pool-routed claude-code session writes its transcript under
+   * `<configHome>/projects/…`, not `<home>/.claude/projects/…` — a resolver
+   * that ignores this probes a file that never exists and every consumer
+   * (W32 heartbeat, age-kill liveness, drain probes) reads "no transcript"
+   * for a session that is alive. Only claude-code consults it; `rootOverride`
+   * still wins when both are given.
+   */
+  configHome?: string;
 }
 
 /**
@@ -48,7 +58,8 @@ export interface ResolveTranscriptOptions {
  */
 function claudeTranscriptPath(opts: ResolveTranscriptOptions): string {
   const home = opts.homeDir ?? os.homedir();
-  const root = opts.rootOverride ?? path.join(home, '.claude', 'projects');
+  const configHome = typeof opts.configHome === 'string' && opts.configHome.trim().length > 0 ? opts.configHome.trim() : null;
+  const root = opts.rootOverride ?? (configHome ? path.join(configHome, 'projects') : path.join(home, '.claude', 'projects'));
   const encoded = opts.projectDir.replace(/[\/.]/g, '-');
   return path.join(root, encoded, `${opts.sessionId}.jsonl`);
 }

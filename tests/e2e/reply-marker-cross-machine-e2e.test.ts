@@ -20,7 +20,9 @@ import { MessageProcessingLedger, computeReplyIdempotencyKey } from '../../src/m
 import { dedupeKeyFor } from '../../src/messaging/ingressDedup.js';
 import { signRequest } from '../../src/server/machineAuth.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 const AUTH = 'test-auth-marker-e2e';
@@ -52,18 +54,18 @@ function mkEnv(name: string, port: number, role: 'awake' | 'standby') {
 }
 
 describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () => {
-  const PORT = 19600 + Math.floor(Math.random() * 80);
   let recv: ReturnType<typeof mkEnv>;   // the standby/receiver (boots a server)
   let peer: ReturnType<typeof mkEnv>;   // the holder that signs the marker
   let server: AgentServer;
+  let base: string;
   let coord: MultiMachineCoordinator;
   let ledger: MessageProcessingLedger;
 
   beforeAll(async () => {
     ProcessIntegrity.reset();
     ProcessIntegrity.initialize('1.3.19', null);
-    recv = mkEnv('recv', PORT, 'standby');
-    peer = mkEnv('peer', PORT + 1, 'awake');
+    recv = mkEnv('recv', 0, 'standby');
+    peer = mkEnv('peer', 0, 'awake');
     // recv must know peer's identity so the signed marker verifies.
     recv.mgr.registerMachine(peer.identity as any, 'awake');
     recv.mgr.storeRemoteIdentity(peer.identity as any);
@@ -71,7 +73,7 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
     const state = new StateManager(recv.stateDir);
     coord = new MultiMachineCoordinator(state, { stateDir: recv.stateDir });
     coord.start();
-    const sess = new SessionManager({ stateDir: recv.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: recv.stateDir, port: PORT });
+    const sess = new SessionManager({ stateDir: recv.stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir: recv.stateDir, port: 0 });
 
     ledger = MessageProcessingLedger.openMemory();
     server = new AgentServer({
@@ -88,6 +90,7 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
       },
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {
@@ -111,7 +114,7 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
     };
     // Signed by the PEER (the holder that answered) — verified against recv's registry.
     const headers = signRequest(peer.machineId, peer.signingKeys.privateKey, body, 1);
-    const markerResp = await fetch(`http://127.0.0.1:${PORT}/api/message-marker`, {
+    const markerResp = await fetch(`${base}/api/message-marker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
@@ -122,9 +125,10 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
     expect(ledger.isActedOn(dedupeKey)).toBe(true);
 
     // A provider redelivery of the SAME inbound now hits this machine → deduped.
-    const fwd = await fetch(`http://127.0.0.1:${PORT}/internal/telegram-forward`, {
+    const fwd = await fetch(`${base}/internal/telegram-forward`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}` },
+      // The forward route requires the lifeline ingress secret; this request stands in for the lifeline.
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}`, [LIFELINE_SECRET_HEADER]: ensureLifelineIngressSecret(recv.stateDir) },
       body: JSON.stringify({ topicId: TOPIC, text: 'redelivered after handoff', fromUserId: 1, fromUsername: 't', fromFirstName: 'T', messageId: MSG_ID }),
     });
     expect(fwd.status).toBe(200);
@@ -134,7 +138,7 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
   });
 
   it('rejects an UNSIGNED marker (machine-auth)', async () => {
-    const resp = await fetch(`http://127.0.0.1:${PORT}/api/message-marker`, {
+    const resp = await fetch(`${base}/api/message-marker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ marker: { dedupeKey: 'x', platform: 'telegram', replyIdempotencyKey: 'y', epoch: 1 } }),

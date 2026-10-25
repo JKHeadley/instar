@@ -1,15 +1,18 @@
 /**
- * Verifies the Codex MCP registration path used by ThreadlineBootstrap
- * (portability audit Gap 2). Before this, a Codex agent that joined the
- * Threadline network had the relay running but no MCP tools advertised to
- * its runtime, because registration only wrote Claude Code's
- * ~/.claude.json / .mcp.json.
+ * Codex MCP registration for Threadline — the explicit path.
  *
- * ThreadlineBootstrap now also registers `[mcp_servers."threadline"]` into
- * ~/.codex/config.toml by reusing the existing OpenAiCodexMcpToolRegistry.
- * These tests exercise that exact registry against a CODEX_HOME override
- * (the empirically-verified Codex config location, Codex CLI 0.78.0) so the
- * TOML shape and idempotency are pinned.
+ * History: portability audit Gap 2 made ThreadlineBootstrap write
+ * `[mcp_servers."threadline"]` into ~/.codex/config.toml on every boot. That
+ * file is shared by every Codex on the machine, so the write was
+ * last-writer-wins across agents AND across tests (2026-10-20: an e2e boot
+ * rewrote the operator's real config). The boot-time write is GONE; the
+ * entry is written only on request by `instar codex connect <agent>`
+ * (src/commands/codex.ts), through the same OpenAiCodexMcpToolRegistry.
+ *
+ * These tests pin two things: (1) the registry writer's TOML shape +
+ * idempotency against a CODEX_HOME override (the empirically-verified Codex
+ * config location, Codex CLI 0.78.0), unchanged; (2) bootstrapThreadline()
+ * leaves $CODEX_HOME/config.toml alone — even when the Codex home exists.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -18,8 +21,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createMcpToolRegistry } from '../../src/providers/adapters/openai-codex/integration/mcpToolRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { bootstrapThreadline } from '../../src/threadline/ThreadlineBootstrap.js';
+import { useHermeticHome } from '../setup/hermetic-home.js';
 
-describe('Threadline Codex MCP registration (Gap 2)', () => {
+// HOME → temp: bootstrapThreadline() writes the user-scope ~/.claude.json.
+useHermeticHome();
+
+describe('Threadline Codex MCP registration (explicit path)', () => {
   let tmpHome: string;
   let prevCodexHome: string | undefined;
   let configFile: string;
@@ -87,5 +95,24 @@ describe('Threadline Codex MCP registration (Gap 2)', () => {
     expect(await reg.isRegistered('threadline')).toBe(false);
     await reg.register(threadlineSpec, { scope: 'user' });
     expect(await reg.isRegistered('threadline')).toBe(true);
+  });
+
+  it('bootstrapThreadline() does NOT write the shared Codex config, even when the Codex home exists', async () => {
+    // A pre-existing operator config with its own content: the old boot-time
+    // write would have appended (or replaced) a threadline table here.
+    fs.writeFileSync(configFile, 'model = "gpt-6-astra"\n');
+    const before = fs.readFileSync(configFile, 'utf-8');
+
+    const projectDir = path.join(tmpHome, 'project');
+    const stateDir = path.join(tmpHome, 'state');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    const result = await bootstrapThreadline({ agentName: 'boot-agent', stateDir, projectDir, port: 4040 });
+    await result.shutdown();
+
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(before);
+    expect(await createMcpToolRegistry().isRegistered('threadline')).toBe(false);
+    // The Claude-side registrations still happen (project .mcp.json).
+    expect(fs.existsSync(path.join(projectDir, '.mcp.json'))).toBe(true);
   });
 });

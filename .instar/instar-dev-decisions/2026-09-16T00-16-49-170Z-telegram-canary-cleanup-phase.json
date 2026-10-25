@@ -1,0 +1,26 @@
+{
+  "ts": "2026-09-16T00:16:49.170Z",
+  "slug": "telegram-canary-cleanup-phase",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 128,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-origin/OriginConfigReader.ts",
+      "src/messaging/telegram-origin/OriginNoticePolicyObserver.ts",
+      "src/messaging/telegram-origin/OriginSourcePoller.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 44
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

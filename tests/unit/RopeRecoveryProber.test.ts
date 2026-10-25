@@ -421,3 +421,37 @@ describe('RopeRecoveryProber — escalation bodies name machines by NICKNAME (20
     expect(esc.body).toContain(`peer ${PEER}`); // honest fallback
   });
 });
+
+describe('RopeRecoveryProber — auth-reject liveness evidence (2026-08-29 signature-mismatch incident)', () => {
+  it('records the freshest auth-layer refusal per peer; transport failures record nothing', async () => {
+    const h = boot();
+    killRope(h);
+    expect(h.prober.lastAuthRejectAtMs(PEER)).toBeNull();
+
+    // a transport failure is NOT liveness evidence
+    h.setProbeResult({ typedSuccess: false, detail: 'dial-failed: fetch failed' });
+    await h.run(20_000);
+    expect(h.prober.lastAuthRejectAtMs(PEER)).toBeNull();
+
+    // a typed auth refusal IS — the peer's server answered and said no
+    h.setProbeResult({ typedSuccess: false, detail: 'auth-rejected:signature-invalid' });
+    await h.run(60_000);
+    const first = h.prober.lastAuthRejectAtMs(PEER);
+    expect(first).not.toBeNull();
+
+    // freshest wins as more refusals arrive
+    await h.run(120_000);
+    expect(h.prober.lastAuthRejectAtMs(PEER)!).toBeGreaterThan(first!);
+
+    // scoped per peer
+    expect(h.prober.lastAuthRejectAtMs('m_other')).toBeNull();
+  });
+
+  it('a typed SUCCESS never records auth evidence', async () => {
+    const h = boot();
+    killRope(h);
+    h.setProbeResult({ typedSuccess: true, detail: 'refused-not-router:not-router' });
+    await h.run(60_000);
+    expect(h.prober.lastAuthRejectAtMs(PEER)).toBeNull();
+  });
+});

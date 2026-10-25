@@ -214,6 +214,8 @@ function buildCodexContinuationAppendix(): string {
     `When you accept a multi-step assignment, check the local continuation capability before beginning. If it is enabled, start a bounded per-topic checklist through the authenticated local continuation API. Keep the checklist honest as work completes. The existing Codex Stop hook will continue turns only while explicit unchecked tasks remain; an empty or fully checked list ends normally.`,
     ``,
     `Do not create filler tasks. Never restart a stopped ledger. An operator stop, the hard off-switch, the duration ceiling, and the continuation-count ceiling always win. The user should never be asked to run commands or maintain the checklist—you own this lifecycle as part of accepting the work.`,
+    ``,
+    `A pre-admission autonomous attempt may use the same bounded ledger in \`autonomous-preparation\` mode while its autonomous record remains truthfully \`active:false\` and \`preparation_state: preparing|recovering\`. This carrier is not an autonomous run and never consumes the active cap. Promote it only after the independent admission authority reports the run active; terminalize it when preparation fails. Native framework goals remain orthogonal and do not activate the run.`,
   ].join('\n');
 }
 

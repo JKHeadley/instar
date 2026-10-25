@@ -10,11 +10,13 @@
  * no ANTHROPIC_API_KEY, no external dependencies.
  */
 
+import { boundedTail } from '../../src/core/boundedInput.js';
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import {
   llmValidateResumeCoherence,
   RESUME_UUID_VALIDATE_PROMPT_ID,
+  COHERENCE_CONTEXT_MAX_CHARS,
 } from '../../src/core/ResumeValidator.js';
 import { DP_RESUME_UUID_VALIDATE } from '../../src/data/provenanceCoverage.js';
 
@@ -236,9 +238,11 @@ describe('ResumeValidator: LLM Coherence Gate', () => {
     expect(result).toBe(false);
   });
 
-  it('truncates very long content', async () => {
+  // ── *Never Silently Cut the Data a Decision Depends On* ──────────────────────────────────────
+
+  it('bounds very long content — the prompt cannot grow without limit', async () => {
     let capturedPrompt = '';
-    const longText = 'x'.repeat(5000);
+    const longText = 'x'.repeat(500_000);
 
     await llmValidateResumeCoherence(
       INTERACTIVE_UUID, TOPIC_ID, 'test-topic', '/tmp/test-project', null, null,
@@ -252,7 +256,54 @@ describe('ResumeValidator: LLM Coherence Gate', () => {
       },
     );
 
-    expect(capturedPrompt.length).toBeLessThan(5000);
+    // Two bounded blocks plus the fixed template — not half a megabyte.
+    expect(capturedPrompt.length).toBeLessThan(COHERENCE_CONTEXT_MAX_CHARS * 2 + 4000);
+  });
+
+  it('keeps the NEWEST topic messages, not the oldest — the evidence, not the preamble', async () => {
+    // The earned failure: `topicHistory` is assembled oldest-first, so the old
+    // `.slice(0, 1500)` discarded the most recent messages — exactly what says
+    // what the conversation is now about, and exactly what this gate compares.
+    let capturedPrompt = '';
+    const filler = Array.from({ length: 10 }, (_, i) => ({
+      sender: 'User',
+      text: `FILLER-${i} ` + 'y'.repeat(600),
+    }));
+
+    await llmValidateResumeCoherence(
+      INTERACTIVE_UUID, TOPIC_ID, 'test-topic', '/tmp/test-project', null, null,
+      {
+        getTopicHistory: async () => ({
+          topicName: 'test-topic',
+          messages: [
+            { sender: 'User', text: 'OLDEST-MESSAGE-MARKER' },
+            ...filler,
+            { sender: 'User', text: 'NEWEST-MESSAGE-MARKER' },
+          ],
+        }),
+        readSessionJsonl: () => 'session body',
+        evaluateFn: async (prompt: string) => { capturedPrompt = prompt; return 'MATCH'; },
+      },
+    );
+
+    expect(capturedPrompt).toContain('NEWEST-MESSAGE-MARKER');
+    expect(capturedPrompt).not.toContain('OLDEST-MESSAGE-MARKER');
+  });
+
+  it('DISCLOSES the cut to the model that is about to judge — its fail-safe is MISMATCH', () => {
+    // A silent cut biases this gate toward declaring a legitimate resume
+    // incoherent, and the model had no way to know it was reading a fragment.
+    const cut = boundedTail('z'.repeat(200_000), COHERENCE_CONTEXT_MAX_CHARS);
+    expect(cut).toContain('BOUNDED INPUT');
+    expect(cut).toContain('EARLIER content was omitted');
+  });
+
+  it('does NOT disclose on the ordinary case — the bound is above what the caller emits', () => {
+    // Ten messages, each already clamped to 200 chars, plus prefixes: the
+    // derivation behind COHERENCE_CONTEXT_MAX_CHARS. A marker here would be
+    // routine noise and would stop meaning anything.
+    const ordinary = Array.from({ length: 10 }, (_, i) => `  User: ${'m'.repeat(200)}${i}`).join('\n');
+    expect(boundedTail(ordinary, COHERENCE_CONTEXT_MAX_CHARS)).toBe(ordinary);
   });
 
   it('uses IntelligenceProvider.evaluate when evaluateFn not provided', async () => {

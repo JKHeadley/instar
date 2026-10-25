@@ -21,7 +21,16 @@
  * steady-state FREQUENCY under feedback).
  */
 
+import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
+import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
+import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
+import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
+import { MAIN_FAIR_SHARE_MS, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
+import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
+import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
+import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -285,6 +294,49 @@ const livenessHeartbeat: SelfActionController = {
     };
   },
 };
+
+/**
+ * promise-beacon-internal-cadence — a DECLARED Eternal Sentinel for the
+ * output-disabled bookkeeping heartbeat. The real controller persists
+ * `lastHeartbeatAt` and schedules from that durable anchor through the
+ * configured cadence clamped to a 60s minimum. Quiet hours and the user-output
+ * LLM budget do not govern this internal write; ownership still does.
+ */
+const promiseBeaconInternalCadence: SelfActionController = {
+  id: 'promise-beacon-internal-cadence',
+  actionVerb: 'heartbeat-refresh',
+  models: 'src/monitoring/PromiseBeacon.ts (output-disabled lastHeartbeatAt refresh + clampCadence minimum)',
+  modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+  },
+  delegatedGiveUp: 'the hard minCadenceMs floor (60s by default) — durable refreshes cannot exceed elapsed/minCadenceMs',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 20,
+  tickMs: 30_000,
+  eternalSentinel: { reason: 'constant-cost durable internal liveness refresh', rateFloorMs: 60_000 },
+  makeUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+};
+
+function makePromiseBeaconInternalCadenceLoop(
+  f: PressureFixture,
+  sink: ActionSink,
+): { tick(): void } {
+  const LAST_AT = 'promise-beacon-internal-cadence:last-at';
+  const RATE_FLOOR_MS = 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const lastAt = (f.durableState.get(LAST_AT) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - lastAt < RATE_FLOOR_MS) return;
+      sink.emit({ verb: 'heartbeat-refresh', target: 'commitment-liveness' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      f.durableState.set(LAST_AT, f.clock.nowMs());
+    },
+  };
+}
 
 /**
  * external-hog-kill-breaker — the External-Hog sentinel's respawn brake
@@ -803,6 +855,55 @@ const correctionClassReviewOutcomes: SelfActionController = {
   },
 };
 
+/**
+ * feedback-execute — the feedback executor's fix attempts (docs/specs/feedback-triage-and-execution.md §4).
+ *
+ * Convergence argument: under sustained pressure (a fixed backlog of work items, every attempt
+ * fails, the job firing every tick) each item gets at most one retry per failure episode
+ * (failed → retry → hold execution-failed) and after its second episode the executor no longer
+ * takes it automatically (durable per-item episode count in feedback-drain.db). So each item is
+ * attempted at most 4 times ever and the total equals 4 × the backlog — horizon-independent.
+ * The daily start cap (6) and the concurrency/open-PR caps only pace it further. Items only come
+ * back to `work` after new reports or an operator release, which this fixture never supplies.
+ */
+const feedbackExecute: SelfActionController = {
+  id: 'feedback-execute',
+  actionVerb: 'spawn-fix-attempt',
+  models: 'src/feedback-factory/execute/FeedbackExecutorService.ts (afterFailure episode cap + maxStartsPerDay/maxConcurrent/maxOpenPrs admission)',
+  modelsPath: 'src/feedback-factory/execute/FeedbackExecutorService.ts',
+  boundK: 20,
+  perTargetBoundK: 4,
+  ticks: 48 * 7,
+  tickMs: 30 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackExecute.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const DAY_MS = 24 * 60 * 60_000;
+    const backlog = Array.from({ length: 5 }, (_, i) => `work-item-${i}`);
+    return { tick() {
+      sink.considered += 1;
+      const day = Math.floor(f.clock.nowMs() / DAY_MS);
+      const startsKey = `feedback-execute-starts-${day}`;
+      const startsToday = Number(f.durableState.get(startsKey) ?? 0);
+      if (startsToday >= 6) return;
+      for (const item of backlog) {
+        const meta = (f.durableState.get(`feedback-execute-item-${item}`) as { episodes: number; failedSince: number } | undefined) ?? { episodes: 0, failedSince: 0 };
+        if (meta.episodes >= 2) continue;
+        // Every attempt fails (sustained pressure); two failures end an episode.
+        const failedSince = meta.failedSince + 1;
+        const next = failedSince >= 2 ? { episodes: meta.episodes + 1, failedSince: 0 } : { episodes: meta.episodes, failedSince };
+        f.durableState.set(`feedback-execute-item-${item}`, next);
+        f.durableState.set(startsKey, startsToday + 1);
+        sink.emit({ verb: 'spawn-fix-attempt', target: item });
+        sink.emitTimesMs.push(f.clock.nowMs());
+        return;
+      }
+    } };
+  },
+};
+
 const feedbackGeneratedDefaultsHeal: SelfActionController = {
   id: 'feedback-factory-generated-defaults-heal',
   actionVerb: 'retry-generated-defaults-repair',
@@ -823,6 +924,130 @@ const feedbackGeneratedDefaultsHeal: SelfActionController = {
       if (attempts >= 3) return;
       f.durableState.set('feedback-defaults-heal-attempts', attempts + 1);
       sink.emit({ verb: 'retry-generated-defaults-repair', target: 'generated-defaults' });
+    } };
+  },
+};
+
+/**
+ * feedback-triage-tick — the triage tick's model calls and re-queues
+ * (docs/specs/feedback-triage-and-execution.md §1 floors 9–10, "Spend").
+ *
+ * Convergence argument: under sustained pressure (new reports land on the same
+ * cluster every tick, quota readable, authority usable) an item is re-queued and
+ * re-triaged at most once per 24 h (floor 10's durable last_requeued_at), and
+ * every call is reserved against the authority's durable maxCallsPerDay row
+ * (re-triage sub-cap 50, second-opinion sub-cap 30). Re-triaging an item that
+ * keeps receiving genuinely new evidence is legitimately eternal, so this is a
+ * declared Eternal Sentinel floored at one call per item per 24 h; the daily
+ * call cap is the delegated give-up. The throttle stamp is durable (in
+ * feedback-drain.db), so reconstruction cannot buy a fresh re-queue.
+ */
+const feedbackTriageTick: SelfActionController = {
+  id: 'feedback-triage-tick',
+  actionVerb: 'retry-triage-call',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (24 h re-queue throttle + authority_daily_usage maxCallsPerDay and sub-caps)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  delegatedGiveUp: 'the durable 24 h per-item re-queue throttle and the authority_daily_usage maxCallsPerDay cap (re-triage sub-cap 50, second-opinion sub-cap 30)',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 96 * 3,
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'an item that keeps receiving new reports is re-triaged at most once per 24 h; total calls are capped per day', rateFloorMs: 24 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageTick.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const THROTTLE_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      // New reports arrived on the same cluster this tick (the pressure never clears).
+      const last = f.durableState.get('feedback-triage-last-requeued-at') as number | undefined;
+      if (last !== undefined && f.clock.nowMs() - last < THROTTLE_MS) return;
+      f.durableState.set('feedback-triage-last-requeued-at', f.clock.nowMs());
+      sink.emit({ verb: 'retry-triage-call', target: 'hot-cluster' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+    } };
+  },
+};
+
+/**
+ * feedback-triage-action-list — the operator action list (§5).
+ *
+ * Convergence argument: each item carries a durable notifiedAt stamp written
+ * only after delivery and never re-sent, a day gate (action_list:last_day) caps
+ * delivery at one message per day, and a message carries at most 10 items. Under
+ * sustained pressure (a fixed backlog of 12 serious holds, the job firing every
+ * tick) the total notifications equal the backlog size — horizon-independent —
+ * and no item is ever notified twice.
+ */
+const feedbackTriageActionList: SelfActionController = {
+  id: 'feedback-triage-action-list',
+  actionVerb: 'notify-action-list',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (sendActionList: notifiedAt once-only, once per day, ≤10 items, 23:00–07:30 quiet window)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  boundK: 12,
+  perTargetBoundK: 1,
+  ticks: 96 * 3,
+  tickMs: 15 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageActionList.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const DAY_MS = 24 * 60 * 60_000;
+    const backlog = Array.from({ length: 12 }, (_, i) => `needs-review-hold-${i}`);
+    return { tick() {
+      sink.considered += 1;
+      const day = Math.floor(f.clock.nowMs() / DAY_MS);
+      if (f.durableState.get('feedback-action-list-last-day') === day) return;
+      const notified = (f.durableState.get('feedback-action-list-notified') as string[] | undefined) ?? [];
+      const pending = backlog.filter((item) => !notified.includes(item)).slice(0, 10);
+      if (pending.length === 0) return;
+      for (const item of pending) sink.emit({ verb: 'notify-action-list', target: item });
+      f.durableState.set('feedback-action-list-notified', [...notified, ...pending]);
+      f.durableState.set('feedback-action-list-last-day', day);
+    } };
+  },
+};
+
+/**
+ * feedback-triage-self-heal-probe — the triage authority re-probe ladder (§6).
+ *
+ * Convergence argument: under a permanently failing authority, an episode
+ * probes at most three times (30 min, 1 h, 4 h; max wall clock 5.5 h), then
+ * settles to `exhausted` for that authority generation and raises one Attention
+ * item; nothing probes again until a fresh operator approval mints a new
+ * generation. Three episodes in seven days escalate at once as flapping. The
+ * episode state is durable (triage_meta), so a restart resumes the ladder
+ * instead of restarting it.
+ */
+const feedbackTriageSelfHealProbe: SelfActionController = {
+  id: 'feedback-triage-self-heal-probe',
+  actionVerb: 'retry-authority-probe',
+  models: 'src/feedback-factory/triage/FeedbackTriageService.ts (probe(): 3-attempt ladder per authority generation, then exhausted + one Attention item; 3 episodes / 7 days = flapping)',
+  modelsPath: 'src/feedback-factory/triage/FeedbackTriageService.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 4 * 24,
+  tickMs: 15 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return feedbackTriageSelfHealProbe.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const LADDER_MS = [30 * 60_000, 60 * 60_000, 4 * 60 * 60_000];
+    return { tick() {
+      sink.considered += 1;
+      // The authority never answers usably; the episode started at time 0.
+      const state = (f.durableState.get('feedback-triage-self-heal') as { attempts: number; nextProbeAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, nextProbeAt: LADDER_MS[0], exhausted: false };
+      if (state.exhausted || f.clock.nowMs() < state.nextProbeAt) { f.durableState.set('feedback-triage-self-heal', state); return; }
+      sink.emit({ verb: 'retry-authority-probe', target: 'triage-authority' });
+      const attempts = state.attempts + 1;
+      f.durableState.set('feedback-triage-self-heal', attempts >= LADDER_MS.length
+        ? { attempts, nextProbeAt: 0, exhausted: true }
+        : { attempts, nextProbeAt: f.clock.nowMs() + LADDER_MS[attempts], exhausted: false });
     } };
   },
 };
@@ -1148,7 +1373,1213 @@ function makeStandDownPressureLoop(d: Map<string, unknown>, sink: ActionSink): {
   };
 }
 
+/**
+ * subscription-relogin-redrive — models the repair service under a provider
+ * that rejects forever. Attempt count, wall-clock start and the slow-retry
+ * count are durable episode fields, so restart cannot refill any budget. Each
+ * run spends at most 3 attempts and settles `failed`; while the incident stays
+ * open a slow automatic retry (6 h, then 24 h apart) starts a fresh run, at most
+ * 3 times per incident (spec relogin-unattended-agent-session-and-slow-retry).
+ * So the total is 3 × (1 + 3) = 12 drives per incident, horizon-independent;
+ * after that the same failed episode emits nothing.
+ */
+const subscriptionReloginRedrive: SelfActionController = {
+  id: 'subscription-relogin-redrive',
+  actionVerb: 'relogin-redrive',
+  models: 'src/core/SubscriptionReloginService.ts + SubscriptionReloginOrchestrator.ts (durable maxAttempts/maxWallMs, durable slowRetryCount ≤ 3 with 6 h/24 h delays, terminal breaker)',
+  modelsPath: 'src/core/SubscriptionReloginService.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 200,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSubscriptionReloginPressureLoop(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeSubscriptionReloginPressureLoop(f, sink);
+  },
+};
+
+function makeSubscriptionReloginPressureLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const ATTEMPTS = 3;
+  const MAX_SLOW_RETRIES = 3;
+  const DELAYS_MS = [6 * 60 * 60_000, 24 * 60 * 60_000];
+  const attemptsKey = 'subscription-relogin:attempts';
+  const retriesKey = 'subscription-relogin:slow-retries';
+  const failedAtKey = 'subscription-relogin:failed-at';
+  if (!f.durableState.has(attemptsKey)) f.durableState.set(attemptsKey, 0);
+  if (!f.durableState.has(retriesKey)) f.durableState.set(retriesKey, 0);
+  return {
+    tick() {
+      sink.considered += 1;
+      const attempts = f.durableState.get(attemptsKey) as number;
+      if (attempts < ATTEMPTS) {
+        sink.emit({ verb: 'relogin-redrive', target: 'account-machine-cell' });
+        f.durableState.set(attemptsKey, attempts + 1);
+        if (attempts + 1 >= ATTEMPTS) f.durableState.set(failedAtKey, f.clock.nowMs()); // settles `failed`
+        return;
+      }
+      // Failed. A slow retry starts a fresh run only once due and only while the durable cap allows.
+      const retries = f.durableState.get(retriesKey) as number;
+      if (retries >= MAX_SLOW_RETRIES || !f.targetAlwaysRejects()) return;
+      const failedAt = f.durableState.get(failedAtKey) as number;
+      if (f.clock.nowMs() < failedAt + DELAYS_MS[Math.min(retries, DELAYS_MS.length - 1)]) return;
+      f.durableState.set(retriesKey, retries + 1);
+      f.durableState.set(attemptsKey, 0);
+    },
+  };
+}
+
+/**
+ * window-lifecycle-issue-escalation — the WindowLifecycleObligationLedger's
+ * owned 60-second controller tick. It persists each novel issue in
+ * `ledger.surfacedIssues` BEFORE dispatch, so periodic and mutation-route ticks
+ * share one durable brake; a fixed unresolved issue emits once across reconstruction.
+ */
+const windowLifecycleIssueEscalation: SelfActionController = {
+  id: 'window-lifecycle-issue-escalation',
+  actionVerb: 'window-lifecycle-notify',
+  models: 'src/server/routes.ts (WindowLifecycleObligationLedger owned tick — surfacedIssues dedupe-before-send brake)',
+  modelsPath: 'src/server/routes.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
+};
+
+/** W32 cadence delivery under permanently failing session/Telegram paths.
+ * Checkpoint, report, and failure-notice intents are persisted before their
+ * boundary calls; their independent 2/3/3 brakes survive restart. */
+const windowRunCadenceDeliveryRedrive: SelfActionController = {
+  id: 'window-run-cadence-delivery-redrive',
+  actionVerb: 'retry-cadence-delivery',
+  models: 'src/core/WindowRunCadenceExecutor.ts (durable checkpoint/report/notification counters + exponential backoff + 2/3/3 brakes)',
+  modelsPath: 'src/core/WindowRunCadenceExecutor.ts',
+  boundK: 8,
+  perTargetBoundK: 3,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeWindowRunCadenceDeliveryRedrive(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeWindowRunCadenceDeliveryRedrive(f, sink),
+};
+
+function makeWindowRunCadenceDeliveryRedrive(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const targets = [
+    { target: 'checkpoint-1', max: 2 },
+    { target: 'report-1', max: 3 },
+    { target: 'failure-notice-1', max: 3 },
+  ] as const;
+  return {
+    tick() {
+      sink.considered += 1;
+      const due = targets.find(item => ((f.durableState.get(`window-run-cadence:${item.target}`) as number | undefined) ?? 0) < item.max);
+      if (!due) return;
+      const key = `window-run-cadence:${due.target}`;
+      const attempts = (f.durableState.get(key) as number | undefined) ?? 0;
+      sink.emit({ verb: 'retry-cadence-delivery', target: due.target });
+      f.durableState.set(key, attempts + 1);
+    },
+  };
+}
+
+function makeWindowLifecycleIssueEscalation(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const DURABLE_KEY = 'window-lifecycle:surfaced-issues';
+  const ISSUE = 'cadence.report.3h@window:predicate-unsatisfied';
+  return {
+    tick() {
+      sink.considered += 1;
+      const surfaced = (f.durableState.get(DURABLE_KEY) as string[] | undefined) ?? [];
+      if (surfaced.includes(ISSUE)) return;
+      // Production saves before the async send, so failure or reconstruction
+      // cannot turn the same issue into an emit loop.
+      f.durableState.set(DURABLE_KEY, [...surfaced, ISSUE]);
+      sink.emit({ verb: 'window-lifecycle-notify', target: ISSUE });
+    },
+  };
+}
+
+/** Machine identity recovery claimant under permanent peer rejection. The
+ * durable per-keyEpoch episode caps at three and survives restart; the runtime
+ * governor further paces each peer to one attempt per 24 hours. */
+const identityReannounce: SelfActionController = {
+  id: 'identity-reannounce',
+  actionVerb: 'retry-identity-reannounce',
+  models: 'src/commands/server.ts (IdentityReannounceService claimant trigger + durable three-attempt episode cap)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 100,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeIdentityReannouncePressureLoop(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeIdentityReannouncePressureLoop(f, sink),
+};
+
+function makeIdentityReannouncePressureLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const countKey = 'identity-reannounce:epoch:attempts';
+  const lastKey = 'identity-reannounce:last-at';
+  return {
+    tick() {
+      sink.considered += 1;
+      const attempts = (f.durableState.get(countKey) as number | undefined) ?? 0;
+      const lastAt = (f.durableState.get(lastKey) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (attempts >= 3 || f.clock.nowMs() - lastAt < 24 * 60 * 60_000) return;
+      sink.emit({ verb: 'retry-identity-reannounce', target: 'destination-peer' });
+      f.durableState.set(countKey, attempts + 1);
+      f.durableState.set(lastKey, f.clock.nowMs());
+    },
+  };
+}
+
+const telegramBrowserCanaryRecovery: SelfActionController = {
+  id: 'telegram-browser-canary-recovery', actionVerb: 'retry-browser-canary',
+  models: 'OriginBrowserRecovery persists a 15-minute activation floor and FailureEpisodeLatch; OriginBrowserExecutor retains the original nine-attempt outbox budget.',
+  modelsPath: 'src/messaging/telegram-origin/OriginBrowserRecovery.ts',
+  boundK: 9, perTargetBoundK: 9, ticks: 400, tickMs: 30_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramBrowserCanaryPressure },
+  makeUnderPressure: makeTelegramBrowserCanaryPressure,
+};
+function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    const attempts = (f.durableState.get('telegram-canary:attempts') as number | undefined) ?? 0;
+    if (!f.targetAlwaysRejects() || attempts >= 9) return;
+    const fence = `attempt-${attempts}`;
+    const prior = f.durableState.get('telegram-canary:state') as BrowserRecoveryState | undefined;
+    const start = advanceBrowserRecovery(prior ?? null, { kind: 'begin', fence }, f.clock.nowMs());
+    if (!start.allowed) return;
+    let state = advanceBrowserRecovery(start.state, { kind: 'failure', fence, buildId: 'unsupported', final: false }, f.clock.nowMs()).state;
+    sink.emit({ verb: 'retry-browser-canary', target: 'managed-profile' });
+    state = advanceBrowserRecovery(state, { kind: 'failure', fence, buildId: 'unsupported', final: true }, f.clock.nowMs()).state;
+    f.durableState.set('telegram-canary:state', state);
+    f.durableState.set('telegram-canary:attempts', attempts + 1);
+  } };
+}
+
+/**
+ * origin-store-worker-restart — OriginStore replaces a failed worker generation
+ * (startup failure, crash, or a request stuck past the stall deadline) after an
+ * exponential backoff (1s doubling to 30s). The budget is consecutive failures,
+ * restored ONLY after a generation stays failure-free for a 5-minute healthy
+ * window (one served response between recurring stalls restores nothing);
+ * past the cap (6) the store stays down.
+ * The runtime's pre-existing 15-minute recovery reopen builds a replacement via
+ * openReplacement(), which inherits the spent count and outage episode, so a
+ * sustained outage never earns a fresh burst. Reconstruction here = that
+ * replacement (durable count carried). A process restart does reset the count;
+ * process restarts are the lifeline's own bounded controller.
+ */
+const originStoreWorkerRestart: SelfActionController = {
+  id: 'origin-store-worker-restart', actionVerb: 'restart-origin-store-worker',
+  models: 'OriginStore.fail(): bounded exponential-backoff restart of the origin worker, cap 6 consecutive failures, budget restored only after a 5-minute failure-free healthy window; openReplacement() carries the count across the runtime recovery reopen.',
+  modelsPath: 'src/messaging/telegram-origin/OriginStore.ts',
+  boundK: 6, perTargetBoundK: 6, ticks: 600, tickMs: 1_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginStoreRestartPressure },
+  makeUnderPressure: makeOriginStoreRestartPressure,
+};
+function makeOriginStoreRestartPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const failuresKey = 'origin-store:consecutive-failures', nextKey = 'origin-store:next-restart-at';
+  const backoff = (failures: number) => Math.min(1_000 * 2 ** (failures - 1), 30_000);
+  // The first generation has already failed when pressure begins.
+  if (!f.durableState.has(failuresKey)) {
+    f.durableState.set(failuresKey, 1);
+    f.durableState.set(nextKey, f.clock.nowMs() + backoff(1));
+  }
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const failures = f.durableState.get(failuresKey) as number;
+    if (failures > 6) return; // exhausted: only a failure-free healthy window restores the budget
+    if (f.clock.nowMs() < (f.durableState.get(nextKey) as number)) return;
+    sink.emit({ verb: 'restart-origin-store-worker', target: 'origin-store-worker' });
+    // Under sustained pressure the new generation fails as well.
+    f.durableState.set(failuresKey, failures + 1);
+    f.durableState.set(nextKey, f.clock.nowMs() + backoff(failures + 1));
+  } };
+}
+
+/** These entries count automatic diagnostic CYCLES, not their nested attempts.
+ * One owned cycle has at most two sequential worker attempts; one native cycle
+ * has at most one adapter invocation. The modeled zero-duration completion is
+ * the fastest possible recurring schedule within a surviving instance.
+ * Actual single-flight, cancellation and cleanup latches are separately tested
+ * against the production classes in telegram-origin-canary-scheduling.test.ts.
+ * This rate model does not prove those behaviors or native/provider execution.
+ * Each reconstruction waits 60s before starting automatic work. No durable
+ * count is needed: closing/restarting can only postpone the next automatic run.
+ * Explicit one-shot run() calls are outside this automatic-controller model.
+ */
+const telegramOriginOwnedDetectorCanary: SelfActionController = {
+  id: 'telegram-origin-owned-detector-canary', actionVerb: 'retry-owned-detector-canary-cycle',
+  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, 6s contract checks then 30s cleanup proof per attempt, ownership retained until termination and fixture removal settle, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  modelsPath: 'src/messaging/telegram-origin/OriginDetectorCanary.ts',
+  delegatedGiveUp: 'The instance closes or latches on unverified cleanup; each run has at most two timed worker attempts. Successful cleanup permits the next completion-relative cycle; restart resets this local state.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 240, tickMs: 1_000,
+  eternalSentinel: { reason: 'Fixed owned-fixture diagnostic work, without transport authority; every boot waits 60s before its first automatic cycle, then recurrence waits at least 60s after completion.', rateFloorMs: 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
+  makeUnderPressure: makeOriginCanaryCyclePressure,
+};
+const telegramOriginNativeModelCanary: SelfActionController = {
+  id: 'telegram-origin-native-model-canary', actionVerb: 'retry-native-model-canary-cycle',
+  models: 'OriginNativeCanaryLane automatic start cycle: <=1 isolated adapter/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  modelsPath: 'src/messaging/telegram-origin/OriginNativeCanaryLane.ts',
+  delegatedGiveUp: 'Close cancels the adapter and retains its slot until cleanup; cleanup failure latches this instance. One adapter invocation/run with a 30s cancellation deadline; restart resets local state.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 240, tickMs: 1_000,
+  eternalSentinel: { reason: 'Fixed two-turn native-format diagnostic with only a loopback fixture provider; a 60s startup wait plus completion-relative recurrence preserves the automatic floor across restarts; no real provider execution is certified.', rateFloorMs: 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
+  makeUnderPressure: makeOriginCanaryCyclePressure,
+};
+const telegramOriginSourcePoller: SelfActionController = {
+  id: 'telegram-origin-source-poller', actionVerb: 'refresh-origin-source-observation',
+  models: 'OriginSourcePoller fixed-rate exact-file metadata observation: one overlap-suppressed pass no sooner than every 250ms; close synchronously cancels recurrence and a closed fence suppresses any late callback.',
+  modelsPath: 'src/messaging/telegram-origin/OriginSourcePoller.ts',
+  delegatedGiveUp: 'The owning reader or observer calls close(), which cancels the sole interval immediately; in-flight stat completion cannot emit after the closed fence.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 40, tickMs: 250,
+  eternalSentinel: { reason: 'Constant-size metadata observation over a fixed exact-file set; one overlap-suppressed pass per 250ms floor and no source mutation or transport authority.', rateFloorMs: 250 },
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Reconstruction first captures a baseline and waits a full 250ms interval, so restart cannot create a callback burst.' },
+  makeUnderPressure(f, sink) {
+    let nextPollAt = f.clock.nowMs() + 250;
+    return { tick() {
+      sink.considered++;
+      if (f.clock.nowMs() < nextPollAt) return;
+      sink.emit({ verb: 'refresh-origin-source-observation', target: 'exact-authority-source-set' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      nextPollAt = f.clock.nowMs() + 250;
+    } };
+  },
+};
+function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // The production classes schedule this same startup delay on each start().
+  let nextCycleAt = f.clock.nowMs() + 60_000;
+  return { tick() {
+    sink.considered++;
+    if (f.clock.nowMs() < nextCycleAt) return;
+    sink.emit({ verb: 'retry-diagnostic-cycle', target: 'isolated-diagnostic-fixture' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    nextCycleAt = f.clock.nowMs() + 60_000;
+  } };
+}
+
+/**
+ * passkey-revoke-outbox — durable re-delivery of a signed passkey-cell revoke to a peer
+ * (agent-held-google-passkey §3.2 / FD15). Under the pinned fixture the peer ALWAYS rejects
+ * (unreachable). Convergence argument: attempts follow a fixed backoff (1h, 6h, then daily)
+ * clocked from the durable next-attempt time; at 30 days after issue the entry ESCALATES
+ * (one aggregated attention item per machine) and automatic re-delivery STOPS, apart from ONE
+ * post-breaker attempt when the peer is next observed online (recorded durably, so a flapping
+ * peer cannot re-trigger it). So the total emit count over ANY horizon is bounded by
+ * 3 + 29 + 1 = 33 per entry — horizon-independent, restart-independent (attempts/next-attempt
+ * live in the file). The peer-online forward pull is EDGE-triggered (one pull per offline→online
+ * transition, never below a 15-minute floor) — a peer that stays online-but-refusing gets the plain
+ * backoff, which is what the fixture below models: the peer is online on every tick and never
+ * transitions, so no pull ever fires and the count is the schedule's.
+ */
+const passkeyRevokeOutbox: SelfActionController = {
+  id: 'passkey-revoke-outbox',
+  actionVerb: 'retry-deliver-revoke',
+  models: 'src/core/PasskeyRevokeOutbox.ts (1h/6h/daily backoff, 30-day breaker + one post-breaker attempt when the peer is next online)',
+  modelsPath: 'src/core/PasskeyRevokeOutbox.ts',
+  boundK: 33,
+  perTargetBoundK: 33,
+  ticks: 45,
+  tickMs: 24 * 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return passkeyRevokeOutbox.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const BACKOFF = [60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000];
+    const BREAKER_MS = 30 * 24 * 60 * 60_000;
+    const issuedAt = Number(f.durableState.get('pk-outbox-issued') ?? f.clock.nowMs());
+    f.durableState.set('pk-outbox-issued', issuedAt);
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const state = String(f.durableState.get('pk-outbox-state') ?? 'pending');
+      if (state === 'escalated') {
+        // The single post-breaker attempt — the fixture's peer is "online" every tick, and it still rejects.
+        if (f.durableState.get('pk-outbox-post-breaker') === true) return;
+        f.durableState.set('pk-outbox-post-breaker', true);
+        sink.emit({ verb: 'retry-deliver-revoke', target: 'peer-machine' });
+        sink.emitTimesMs.push(now);
+        return;
+      }
+      if (now - issuedAt >= BREAKER_MS) { f.durableState.set('pk-outbox-state', 'escalated'); return; }
+      const nextAt = Number(f.durableState.get('pk-outbox-next') ?? now);
+      if (now < nextAt) return;
+      const attempts = Number(f.durableState.get('pk-outbox-attempts') ?? 0) + 1;
+      f.durableState.set('pk-outbox-attempts', attempts);
+      sink.emit({ verb: 'retry-deliver-revoke', target: 'peer-machine' });
+      sink.emitTimesMs.push(now);
+      if (f.targetAlwaysRejects()) f.durableState.set('pk-outbox-next', now + BACKOFF[Math.min(attempts - 1, BACKOFF.length - 1)]);
+    } };
+  },
+};
+
+
+// ── a2a-single-agent-identity (§1.2 adoption loop, §2.2 coherence detector) ──
+
+/**
+ * agent-identity-adoption — the §1.2 adoption loop, a DECLARED Eternal Sentinel
+ * (P19): a paired machine with no agent identity observes its siblings every
+ * round (constant cost: one signed read per active sibling) and sends at most
+ * ONE `agent-identity-request` per 10 min, one in flight, rotating on a typed
+ * refusal; it escalates ONCE (4 consecutive fleet refusals or 120 s → one `high`
+ * item, re-raised only when the refusal REASON changes) and keeps healing at the
+ * 5-min observe floor after 1 h. Under the pinned fixture (every sibling refuses
+ * forever — `targetAlwaysRejects`), the emits are the paced requests + the single
+ * escalation: never faster than the 10-min floor, never a second item.
+ */
+function makeAgentIdentityAdoptionLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const REQUEST_INTERVAL_MS = 10 * 60_000;
+  const ESCALATE_AFTER_MS = 120_000;
+  const ESCALATE_AFTER_REFUSALS = 4;
+  // The responder's per-requester share interval is SERVER-side state (durable across
+  // the requester's restarts): a restarted requester's first request is refused
+  // `rate-limited` with retryAfterMs and the requester paces off it.
+  const key = 'agent-identity-adoption:responder-last-share-at';
+  const startedAt = f.clock.nowMs();
+  let refusals = 0;
+  let escalated = false;
+  return {
+    tick() {
+      sink.considered += 1;
+      // Observe round (constant per-round cost; not an emit — a signed read).
+      const lastShare = (f.durableState.get(key) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - lastShare < REQUEST_INTERVAL_MS) {
+        // Paced (locally, or by the responder's retryAfterMs after a restart).
+      } else {
+        sink.emit({ verb: 'retry', target: 'sibling-request' });
+        sink.emitTimesMs.push(f.clock.nowMs());
+        f.durableState.set(key, f.clock.nowMs());
+        if (f.targetAlwaysRejects()) refusals += 1;
+      }
+      const byRefusals = refusals >= ESCALATE_AFTER_REFUSALS;
+      const byTime = f.clock.nowMs() - startedAt >= ESCALATE_AFTER_MS;
+      if (!escalated && (byRefusals || byTime)) {
+        // ONE item per machine; re-raised only when the refusal reason changes (never here).
+        escalated = true;
+        // Counted in the audit, not as a paced emit: a single constant-cost line.
+      }
+    },
+  };
+}
+
+const agentIdentityAdoption: SelfActionController = {
+  id: 'agent-identity-adoption',
+  actionVerb: 'adoption-retry',
+  models: 'src/core/AgentIdentityAdoption.ts (AgentIdentityAdoptionLoop — ≤1 request per 10 min, one in flight, ONE escalation per reason, 5-min observe floor)',
+  modelsPath: 'src/core/AgentIdentityAdoption.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeAgentIdentityAdoptionLoop(f, sink),
+  },
+  delegatedGiveUp: 'the responder-side share rate-limit (one share per requester per 10 min, carried as retryAfterMs) + the ONE-item escalation after 4 fleet refusals / 120 s — the heal continues at the 5-min floor, never a second item for the same reason',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the 10-min request floor, not a total count
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48,
+  tickMs: 5 * 60_000, // 5 min/tick (the observe floor) — 4 h of sustained refusal
+  eternalSentinel: { reason: 'declared Eternal Sentinel (spec §Watchers, P19): healer-only, constant per-round cost, escalates once', rateFloorMs: 10 * 60_000 },
+  makeUnderPressure(f, sink) {
+    return makeAgentIdentityAdoptionLoop(f, sink);
+  },
+};
+
+/**
+ * agent-identity-coherence-detector — the §2.2 continuous identity check. Under a
+ * split that NEVER repairs (the pinned fixture), it raises exactly ONE `high`
+ * item per sorted-fingerprint-set episode (after 2 consecutive `disagree`
+ * reads, lease holder only) and at most ONE `medium` cannot-tell item per
+ * online-but-unanswering peer; the attention store dedupes by id, so a restart
+ * re-raising the same episode id never posts a second message.
+ */
+function makeAgentIdentityCoherenceDetector(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const RAISE_AFTER = 2;
+  const key = 'agent-identity-coherence:raised-ids'; // the per-machine attention store (dedupe by id)
+  const raised = (f.durableState.get(key) as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set(key, raised);
+  let consecutiveDisagree = 0;
+  let cannotTellRounds = 0;
+  return {
+    tick() {
+      sink.considered += 1;
+      // The pressure: every round reads `disagree` on the SAME sorted set, and one online
+      // peer never answers /provenance.
+      consecutiveDisagree += 1;
+      const episodeId = 'agent-identity-split:echo:A+B';
+      if (consecutiveDisagree >= RAISE_AFTER && !raised.has(episodeId)) {
+        raised.add(episodeId);
+        sink.emit({ verb: 'escalate', target: episodeId });
+      }
+      cannotTellRounds += 1;
+      const ctId = 'agent-identity-cannot-tell:echo:m_slow';
+      if (cannotTellRounds >= 10 && !raised.has(ctId)) {
+        raised.add(ctId);
+        sink.emit({ verb: 'escalate', target: ctId });
+      }
+    },
+  };
+}
+
+const agentIdentityCoherenceDetector: SelfActionController = {
+  id: 'agent-identity-coherence-detector',
+  actionVerb: 'split-escalate',
+  models: 'src/core/AgentIdentityCoherence.ts (IdentityCoherenceDetector — one item per sorted-set episode after 2 consecutive disagree reads, holder-only; one cannot-tell item per peer after 10 online rounds)',
+  modelsPath: 'src/core/AgentIdentityCoherence.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeAgentIdentityCoherenceDetector(f, sink),
+  },
+  boundK: 2, // one split item + one cannot-tell item while the episode persists
+  perTargetBoundK: 1,
+  ticks: 60,
+  tickMs: 5 * 60_000, // 5 min/tick — 5 h of a split that never repairs
+  makeUnderPressure(f, sink) {
+    return makeAgentIdentityCoherenceDetector(f, sink);
+  },
+};
+
+/**
+ * telegram-origin-forward-ladder — a2a-single-agent-identity §4.2 (ACT-058).
+ * A reply from a machine that does not hold the serving lease is forwarded to
+ * the lease holder: ONE attempt inside the reply request, then a durable hold
+ * whose quick ladder retries from the 5 s boot tick at +10 s and +20 s (the
+ * ladder state lives in the held row's `holdDetail.ladder`, restart-surviving),
+ * then the EXISTING 15-minute `reserveRecoveryAttempt` schedule until the
+ * operation's 6 h deadline expires it (`expireOperation`, reported once). Under
+ * a holder that always refuses, one held reply therefore costs at most
+ * 1 + 2 + 24 = 27 forward attempts, horizon-independent: past the deadline the
+ * row is `expired` and nothing fires again. Real source:
+ * src/messaging/telegram-origin/OriginForwardToHolder.ts (nextLadderState,
+ * recoverForwardedHold) + TelegramOriginRuntime.runForwardLadder/recoverHeld.
+ */
+const telegramOriginForwardLadder: SelfActionController = {
+  id: 'telegram-origin-forward-ladder', actionVerb: 'retry-forward-to-holder',
+  models: 'OriginForwardToHolder.nextLadderState (two quick steps, +10 s/+20 s, persisted in holdDetail.ladder) then OriginStoreBackend.reserveRecoveryAttempt (15-min interval) until expireOperation at the 6 h deadline.',
+  modelsPath: 'src/messaging/telegram-origin/OriginForwardToHolder.ts',
+  boundK: 27, perTargetBoundK: 27, ticks: 6_000, tickMs: 5_000, // 8h20m horizon > the 6 h deadline
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramOriginForwardLadderPressure },
+  makeUnderPressure: makeTelegramOriginForwardLadderPressure,
+};
+function makeTelegramOriginForwardLadderPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const LADDER_DELAYS_MS = [10_000, 20_000], SCHEDULE_MS = 15 * 60_000, DEADLINE_MS = 6 * 60 * 60_000;
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const now = f.clock.nowMs();
+    // The held row (durable): prepared at the first pressured tick; `ladder` + `nextAttemptAt` persist across reconstruction.
+    let row = f.durableState.get('origin-forward:row') as { preparedAt: number; ladderAttempts: number; nextAt: number | null; state: 'held' | 'expired' } | undefined;
+    if (!row) {
+      sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' }); // the one in-request attempt
+      row = { preparedAt: now, ladderAttempts: 0, nextAt: now + LADDER_DELAYS_MS[0], state: 'held' };
+      f.durableState.set('origin-forward:row', row); return;
+    }
+    if (row.state === 'expired') return;
+    if (now - row.preparedAt >= DEADLINE_MS) { row.state = 'expired'; f.durableState.set('origin-forward:row', row); return; } // expireOperation
+    if (row.nextAt === null || now < row.nextAt) return;
+    sink.emit({ verb: 'retry-forward-to-holder', target: 'op-1' });
+    if (row.ladderAttempts < LADDER_DELAYS_MS.length) {
+      row.ladderAttempts += 1; // nextLadderState
+      row.nextAt = row.ladderAttempts < LADDER_DELAYS_MS.length ? now + LADDER_DELAYS_MS[row.ladderAttempts] : now + SCHEDULE_MS; // exhausted → the 15-min schedule
+    } else row.nextAt = now + SCHEDULE_MS; // reserveRecoveryAttempt
+    f.durableState.set('origin-forward:row', row);
+  } };
+}
+
+/**
+ * a2a-peer-dark-raise — the reworked A2ARedeliverySentinel's §3 dark pass
+ * (docs/specs/a2a-single-agent-identity.md §3.2–3.3). The pressure: two peers
+ * whose queued messages never get acknowledged (the relay queues forever, no
+ * inbound, no delivered verdict), while my own relay stays connected on the
+ * awake machine. Each 15-min tick re-reads the ledger, heals (reconnect is a
+ * no-op while connected; one presence refresh; self-check `ok`) and would raise
+ * the per-peer item. Convergence shape: ONE item per (peer, episode) — the open
+ * episode is the latch (deterministic id `a2a-peer-dark:<agent>:<peerFp>`), the
+ * per-peer 12 h cooldown brakes a re-raise after a resolve, and a restart
+ * REBUILDS the episode from the durable OPEN item (attentionState) instead of
+ * raising again. Sustained pressure converges to exactly one emit per peer; a
+ * longer horizon adds nothing while the episode persists.
+ */
+const a2aPeerDarkRaise: SelfActionController = {
+  id: 'a2a-peer-dark-raise',
+  actionVerb: 'escalate-dark-peer',
+  models: 'src/monitoring/A2ARedeliverySentinel.ts (darkPass — episode latch + inCooldown + episodeFor restart rebuild)',
+  modelsPath: 'src/monitoring/A2ARedeliverySentinel.ts',
+  boundK: 2, // 2 dark peers → at most one item each while the episode persists
+  perTargetBoundK: 1,
+  ticks: 96,
+  tickMs: 15 * 60_000, // 15-min sweep — 24 h of a peer that never answers
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeA2aPeerDarkRaise(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeA2aPeerDarkRaise(f, sink);
+  },
+};
+
+function makeA2aPeerDarkRaise(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const PEERS = ['peer-A', 'peer-B'];
+  const COOLDOWN_MS = 12 * 60 * 60_000;
+  // Durable per-peer item state (the attention store the real sentinel reads
+  // through `attentionState`): 'OPEN' while the episode persists, plus the last
+  // raise time for the cooldown. A fresh instance holds NO in-memory episodes.
+  const itemKey = (p: string) => `a2a-peer-dark:item:${p}`;
+  const raisedAtKey = (p: string) => `a2a-peer-dark:raisedAt:${p}`;
+  const episodes = new Set<string>();
+  return {
+    tick() {
+      sink.considered += 1;
+      // The relay stays connected: no aggregate, no reconnect; the heal's
+      // presence refresh and self-check are side-effect-free here.
+      for (const peer of PEERS) {
+        // The pressure: the peer is dark with queued rows every tick
+        // (targetAlwaysRejects — nothing ever acknowledges).
+        if (!f.targetAlwaysRejects()) continue;
+        if (episodes.has(peer)) continue; // open in-process episode — the latch
+        // Restart rebuild (episodeFor): a durable OPEN item re-arms the latch
+        // without a second raise.
+        if (f.durableState.get(itemKey(peer)) === 'OPEN') { episodes.add(peer); continue; }
+        // Cooldown (inCooldown): a resolved item's last update inside 12 h brakes a re-raise.
+        const lastRaisedAt = (f.durableState.get(raisedAtKey(peer)) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+        if (f.clock.nowMs() - lastRaisedAt < COOLDOWN_MS) continue;
+        sink.emit({ verb: 'escalate-dark-peer', target: peer });
+        episodes.add(peer);
+        f.durableState.set(itemKey(peer), 'OPEN');
+        f.durableState.set(raisedAtKey(peer), f.clock.nowMs());
+      }
+    },
+  };
+}
+
+/**
+ * Lifeline-ingress restart-signal writer (docs/specs/telegram-internal-route-lifeline-secret.md
+ * "The restart-signal budget"). An unverified request on the internal Telegram
+ * routes — which any Bearer holder can produce at any rate — makes the server
+ * write the lifeline-restart signal. Convergence shape: a PERSISTED gap between
+ * writes (`lastSignalAt` in the guard state: 12 h while unarmed, 24 h once
+ * armed), so the write rate is floored however fast requests arrive and
+ * however often the server restarts. The model drives the tighter 12 h floor.
+ */
+const lifelineIngressRestartSignal: SelfActionController = {
+  id: 'lifeline-ingress-restart-signal',
+  actionVerb: 'restart-signal-lifeline',
+  models: 'src/server/LifelineIngressGuard.ts (evaluate + bootNudge + spendSignalBudget — persisted lastSignalAt, SIGNAL_GAP_UNARMED_MS / SIGNAL_GAP_ARMED_MS)',
+  modelsPath: 'src/server/LifelineIngressGuard.ts',
+  delegatedGiveUp: 'the persisted 12 h signal gap, plus the lifeline ignoring a signal that targets its own version and its own shared daily restart cap of three',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor, not a total count
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 2880, // one unverified request a minute for 48 h
+  tickMs: 60_000,
+  eternalSentinel: {
+    reason: 'a lifeline that stays on older code must keep being asked to restart; the request rate is attacker-chosen, so only a persisted rate floor bounds it',
+    rateFloorMs: 12 * 60 * 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeLifelineIngressRestartSignal(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeLifelineIngressRestartSignal(f, sink),
+};
+
+function makeLifelineIngressRestartSignal(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const GAP_MS = 12 * 60 * 60_000;
+  const KEY = 'lifeline-ingress:lastSignalAt'; // the guard state file's lastSignalAt
+  return {
+    tick() {
+      sink.considered += 1;
+      // The pressure: an unverified request every tick, and a lifeline that
+      // never proves itself (the guard stays unarmed).
+      if (!f.targetAlwaysRejects()) return;
+      const last = (f.durableState.get(KEY) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - last < GAP_MS) return;
+      f.durableState.set(KEY, f.clock.nowMs());
+      sink.emitTimesMs.push(f.clock.nowMs());
+      sink.emit({ verb: 'restart-signal-lifeline', target: 'lifeline' });
+    },
+  };
+}
+
+/**
+ * Lifeline secret-refusal redrive (same spec, "If a refusal reaches a real
+ * lifeline, the message is held, not lost"). While the server refuses the
+ * lifeline's secret, queue replay keeps retrying the held message — it must
+ * never be dropped. Convergence shape: single-flight replay, the pass stops at
+ * the first refusal, and the gap between passes doubles from 1 minute to a
+ * 15-minute cap. Never faster than one pass a minute; the backoff state is
+ * in-memory, so a lifeline restart begins again at the 1-minute floor.
+ */
+const lifelineSecretRefusalRedrive: SelfActionController = {
+  id: 'lifeline-secret-refusal-redrive',
+  actionVerb: 'retry-held-forward',
+  models: 'src/lifeline/TelegramLifeline.ts (replayQueue — replayInFlight, secretRefusedLastAt, secretRefusalBackoffMs 1→15 min)',
+  modelsPath: 'src/lifeline/TelegramLifeline.ts',
+  delegatedGiveUp: 'none by design — a held operator message is never dropped; the brake is the 1-minute floor doubling to a 15-minute cap, plus one user notice per episode',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 5760, // the 15 s replay tick for 24 h
+  tickMs: 15_000,
+  eternalSentinel: {
+    reason: 'dropping a held operator message is the failure this path exists to prevent, so it retries for as long as the refusal lasts, at a floored and backing-off rate',
+    rateFloorMs: 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'A restarted lifeline starts a new refusal episode at the 1-minute floor; the floor itself is never undercut because the first replay pass after a restart is itself the first attempt.',
+  },
+  makeUnderPressure(f, sink) {
+    const FLOOR_MS = 60_000;
+    const CAP_MS = 15 * 60_000;
+    let lastPassAt = Number.NEGATIVE_INFINITY;
+    let passes = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!f.targetAlwaysRejects()) return; // the server refuses every forward
+        const backoff = Math.min(CAP_MS, FLOOR_MS * 2 ** Math.min(Math.max(0, passes - 1), 10));
+        if (f.clock.nowMs() - lastPassAt < backoff) return;
+        lastPassAt = f.clock.nowMs();
+        passes += 1;
+        sink.emitTimesMs.push(f.clock.nowMs());
+        sink.emit({ verb: 'retry-held-forward', target: 'server' });
+      },
+    };
+  },
+};
+
+/**
+ * Threadline connect-enable (upgrades/side-effects/threadline-enable-without-restart.md).
+ * POST /threadline/pairing/enable, and its own deferred retry, write the supervised-restart
+ * flag when pairing is off. The model drives the REAL `decideConnectEnable` under the worst
+ * case for this controller: the route is called every minute, pairing never comes up, no
+ * session is busy (busy only withholds), and the flag is consumed at once but the process
+ * keeps running (a wedged restart). Convergence shape: a PERSISTED request record (time +
+ * pid) gives a 10-minute floor between requests, whether or not the process restarts; a
+ * waiting flag adds no second request.
+ */
+const threadlineConnectEnableRestart: SelfActionController = {
+  id: 'threadline-connect-enable-restart',
+  actionVerb: 'restart-request-server',
+  models: 'src/threadline/connectEnable.ts (decideConnectEnable — persisted request record, CONNECT_ENABLE_RESTART_COOLDOWN_MS; ConnectEnableController deferred retry capped at CONNECT_ENABLE_DEFER_MAX_MS)',
+  modelsPath: 'src/threadline/connectEnable.ts',
+  delegatedGiveUp: 'the persisted 10-minute cooldown record; the deferred retry gives up after 5 minutes; every request is caller-driven (the agent, at its person\'s request)',
+  boundK: Number.POSITIVE_INFINITY, // exempt — bounded by the rate floor, not a total count
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 2880, // the route called every minute for 48 h
+  tickMs: 60_000,
+  eternalSentinel: {
+    reason: 'the route answers a caller who may keep asking while pairing never comes up; only the persisted cooldown floors how often that becomes a restart request',
+    rateFloorMs: CONNECT_ENABLE_RESTART_COOLDOWN_MS,
+  },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeThreadlineConnectEnableRestart(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeThreadlineConnectEnableRestart(f, sink),
+};
+
+function makeThreadlineConnectEnableRestart(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const RECORD = 'connect-enable:record';
+  const PENDING = 'connect-enable:flag-pending';
+  const PIDS = 'connect-enable:pid-counter';
+  // A new instance is a new process (restartUnderPressure): a new pid, the same durable record.
+  const pid = ((f.durableState.get(PIDS) as number | undefined) ?? 1000) + 1;
+  f.durableState.set(PIDS, pid);
+  return {
+    tick() {
+      sink.considered += 1;
+      // The supervisor consumes a waiting flag before the next call (worst case: no restart follows).
+      f.durableState.set(PENDING, false);
+      const now = f.clock.nowMs();
+      const d = decideConnectEnable({
+        ready: false, // pairing never comes up
+        bootRelayEnabled: false, bootPairingEnabled: false, ownsRelayAfterRestart: true,
+        restartAlreadyPending: f.durableState.get(PENDING) === true,
+        lastRequest: (f.durableState.get(RECORD) as ConnectEnableRequestRecord | undefined) ?? null,
+        pid, now, blockers: [], supervised: true,
+      });
+      if (!d.requestRestart) return;
+      f.durableState.set(RECORD, { requestedAt: new Date(now).toISOString(), pid });
+      f.durableState.set(PENDING, true);
+      sink.emitTimesMs.push(now);
+      sink.emit({ verb: 'restart-request-server', target: 'server' });
+    },
+  };
+}
+
+/**
+ * system-topic-adoption — a standby copies the lease holder's Updates /
+ * Attention / Agent Health topic ids (src/messaging/SystemTopicAdoption.ts,
+ * 30-min cadence). Convergence shape: adoption is idempotent (unchanged id ⇒
+ * no write) and the per-kind per-boot cap (withAdoptionBrake) is the brake —
+ * under the pinned worst case, a holder whose record FLAPS (a new id for every
+ * kind on every pass), the loop adopts at most MAX_ADOPTS_PER_KIND_PER_BOOT
+ * per kind and then holds, never following the flap.
+ */
+const systemTopicAdoption: SelfActionController = {
+  id: 'system-topic-adoption',
+  actionVerb: 'refresh-system-topic', // 'refresh' detector token: the local record is refreshed from the holder
+  models: 'src/messaging/SystemTopicAdoption.ts (adoptHolderSystemTopics + withAdoptionBrake; startSystemTopicAdoptionLoop 30-min cadence)',
+  modelsPath: 'src/messaging/SystemTopicAdoption.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-boot cap re-arms on restart; restarts are operator/updater-driven and themselves dampened (restart cascade dampener), so a flapping holder costs at most MAX_ADOPTS_PER_KIND_PER_BOOT adopts per kind per restart.' },
+  boundK: 3 * MAX_ADOPTS_PER_KIND_PER_BOOT, // three kinds × the per-kind cap
+  perTargetBoundK: MAX_ADOPTS_PER_KIND_PER_BOOT,
+  ticks: 50,
+  tickMs: SYSTEM_TOPIC_ADOPTION_INTERVAL_MS,
+  makeUnderPressure(f, sink) {
+    const local = new Map<string, number>();
+    const adopt = withAdoptionBrake((key, topicId) => { local.set(key, topicId); sink.emit({ verb: 'refresh-system-topic', target: key }); });
+    let pass = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        pass += 1;
+        // The pinned worst case: the holder answers, but with a NEW id for every kind on every pass.
+        const holder = f.targetAlwaysRejects()
+          ? { updates: 1000 + pass, attention: 2000 + pass, agentHealth: 3000 + pass }
+          : { updates: 1000, attention: 2000, agentHealth: 3000 };
+        // The same pure core the async loop runs (planAdoption → braked adopt).
+        for (const { kind, topicId } of planAdoption(readSystemTopicIds(k => local.get(k)), holder)) adopt(SYSTEM_TOPIC_STATE_KEYS[kind], topicId);
+      },
+    };
+  },
+};
+
+
+// ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
+// Every model below drives the SAME exported pure decision functions the real
+// LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
+// decideStart, decideMainHeadEnqueue, decideMainEnqueue, decideMainErrorRetry,
+// admitStatusPost, postRetryDue, nextPostRetry, orderSubmissions,
+// passBackoffDelay) — not re-implementations. Invariants the sink cannot express
+// (per-minute cap, once-per-entry signals) are asserted inside the model by
+// throwing, which fails the ratchet.
+
+const LV_HEAD = 'a'.repeat(40);
+
+/**
+ * local-verify-error-rerun — an `error` verify outcome re-runs automatically at
+ * most once per queue entry (per (pr, head)), then stops: the record stays
+ * `error` until the head moves or someone asks. Pinned worst case: EVERY verify
+ * errors (targetAlwaysRejects). Three queued PRs ⇒ exactly three automatic
+ * re-runs, then nothing, horizon-independent.
+ */
+const localVerifyErrorRerun: SelfActionController = {
+  id: 'local-verify-error-rerun',
+  actionVerb: 'retry-errored-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (handleErrorRetry → decideVerifyRetry; pump → decideStart)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The queue is in memory; after a restart an errored (pr, head) keeps its journaled error record, and a non-explicit request returns that record instead of re-running, so a restart adds no automatic re-run.' },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 30_000, // the service tick
+  makeUnderPressure(f, sink) {
+    const queue = [101, 102, 103].map((pr) => ({ pr, attempts: 0, errorRetries: 0, notBefore: undefined as number | undefined }));
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = decideStart({ foreignHolders: 0, queue, now: f.clock.nowMs() });
+        if (d.kind !== 'start') return;
+        const [entry] = queue.splice(d.index, 1);
+        entry.attempts += 1;
+        if (!f.targetAlwaysRejects()) return; // a non-error outcome ends the entry
+        const r = decideVerifyRetry(entry, 'error');
+        if (r.action !== 're-run') return; // stays `error` until the head moves or someone asks
+        entry.errorRetries = r.errorRetries;
+        sink.emit({ verb: 'retry-errored-verify', target: `${entry.pr}:${LV_HEAD}` });
+        queue.unshift(entry);
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-capacity-requeue — a run that finds a foreign full suite holding
+ * the slot waits in place 30 minutes, then re-queues at the front WITHOUT
+ * counting an attempt. Pinned worst case (everySessionBusy): the foreign suite
+ * starts right after the pre-start check, so every run waits the full 30 minutes
+ * and re-queues, forever. A declared rate-floored loop: re-starts are ≥ 30 min
+ * apart (one run at a time, each holding the slot for the full wait). Asserted in
+ * the model: attempts never exceed 1 (requeues are not attempts) and the starved
+ * signal fires at most once per entry — and does fire.
+ */
+const localVerifyCapacityRequeue: SelfActionController = {
+  id: 'local-verify-capacity-requeue',
+  actionVerb: 'retry-requeued-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (onExit requeue → decideVerifyRetry(…, "requeue"); checkStarved → decideStarved) + orchestrator.ts wait-in-place',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: re-starts are floored by the 30-minute wait-in-place (one run at a time); the starved signal (once per entry, after 3 h) tells the operator',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The queue is in memory; a restart drops it and entries are re-queued lazily by the next request, so a restart re-arms at most one starved signal per entry and cannot shorten the wait-in-place floor.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'a capacity-blocked verify re-queues (holders checked before every start; a busy suite slot at lane start re-queues); never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
+  makeUnderPressure(f, sink) {
+    const t0 = f.clock.nowMs();
+    const queue = [201, 202].map((pr) => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, notBefore: undefined as number | undefined }));
+    let running: { entry: (typeof queue)[number]; until: number } | null = null;
+    let restarted = false;
+    const starved = new Map<number, number>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (running && now >= running.until && f.everySessionBusy()) {
+          // The wait in place ran out with the suite still holding the slot: requeue, not an attempt.
+          const r = decideVerifyRetry(running.entry, 'requeue');
+          running.entry.attempts = r.attempts;
+          queue.unshift(running.entry);
+          running = null;
+          restarted = true;
+        }
+        if (queue.length > 0) {
+          const oldest = queue.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
+          const s = decideStarved(oldest, now);
+          if (s.raise) {
+            oldest.starvedRaised = true;
+            starved.set(oldest.pr, (starved.get(oldest.pr) ?? 0) + 1);
+            if (starved.get(oldest.pr)! > 1) throw new Error(`local-verify starved signal raised twice for pr ${oldest.pr}`);
+          }
+        }
+        if (running) return;
+        const d = decideStart({ foreignHolders: 0, queue, now }); // the suite starts right after this check
+        if (d.kind !== 'start') return;
+        const [entry] = queue.splice(d.index, 1);
+        entry.attempts += 1;
+        if (entry.attempts > 1) throw new Error(`local-verify capacity requeue counted as an attempt (pr ${entry.pr})`);
+        running = { entry, until: now + LOCAL_VERIFY_LIMITS.waitInPlaceMs };
+        if (restarted) {
+          sink.emit({ verb: 'retry-requeued-verify', target: String(entry.pr) });
+          sink.emitTimesMs.push(now);
+        }
+        if (now - t0 > LOCAL_VERIFY_LIMITS.starvedAfterMs + 30 * 60_000 && starved.size === 0) {
+          throw new Error('local-verify starved signal never fired under sustained capacity pressure');
+        }
+      },
+    };
+  },
+};
+
+/** The shared `main`-verify pass driver: one reconcile pass per tick observes `headAt(pass)`. */
+function makeMainVerifyPasses(
+  f: PressureFixture,
+  sink: ActionSink,
+  opts: { headAt: (pass: number) => string; verifyErrors: boolean; recordTimes: boolean },
+): { tick(): void } {
+  let obs: MainHeadObservation = { head: null, since: 0, firstUnverifiedAt: null, handled: null, immediate: true };
+  let pending: { headSha: string; notBefore?: number } | null = null;
+  const errorRetries = new Map<string, number>();
+  let pass = 0;
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const sha = opts.headAt(pass++);
+      const h = decideMainHeadEnqueue(obs, sha, now);
+      obs = h.next;
+      if (h.enqueue) {
+        const q = decideMainEnqueue({ sha, why: 'head-changed', inFlightMain: null, pendingMainHead: pending?.headSha ?? null });
+        if (q.action !== 'skip') pending = { headSha: sha }; // push, or replace the pending one: never two
+      }
+      if (!pending) return;
+      const d = decideStart({ foreignHolders: 0, queue: [pending], now });
+      if (d.kind !== 'start') return;
+      const run = pending;
+      pending = null;
+      sink.emit({ verb: 'retry-main-verify', target: run.headSha });
+      if (opts.recordTimes) sink.emitTimesMs.push(now);
+      if (!opts.verifyErrors) return;
+      const r = decideMainErrorRetry({ priorRetries: errorRetries.get(run.headSha) ?? 0, mainPending: pending !== null, now });
+      errorRetries.set(run.headSha, r.retries);
+      if (r.requeue) pending = { headSha: run.headSha, notBefore: r.notBefore };
+    },
+  };
+}
+
+/**
+ * local-verify-main-schedule — the post-merge `main` verify: at most one pending,
+ * one verify per head, and an `error` re-queues with backoff at most 3 times per
+ * head. Pinned worst case: `main` sits on one head and EVERY verify errors
+ * (targetAlwaysRejects) ⇒ 1 + 3 = 4 verifies, then nothing, horizon-independent.
+ */
+const localVerifyMainSchedule: SelfActionController = {
+  id: 'local-verify-main-schedule',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue; enqueueMain → decideMainEnqueue; completeMain → decideMainErrorRetry) + mainHealth.ts',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so a restart costs at most one main verify plus its bounded error re-runs; restarts are operator/updater-driven and dampened.' },
+  boundK: 1 + MAIN_VERIFY_LIMITS.errorRetries,
+  perTargetBoundK: 1 + MAIN_VERIFY_LIMITS.errorRetries,
+  ticks: 60,
+  tickMs: RECONCILER_LIMITS.intervalMs, // the reconcile pass feeds noteMainHead
+  makeUnderPressure(f, sink) {
+    return makeMainVerifyPasses(f, sink, { headAt: () => LV_HEAD, verifyErrors: f.targetAlwaysRejects(), recordTimes: false });
+  },
+};
+
+/**
+ * local-verify-main-debounce — the same scheduling under a `main` head that never
+ * settles (targetAlwaysRejects: every pass reads a new head). The debounce never
+ * matures, so the 30-minute cap paces it: at most one head-changed verify per
+ * debounce window (declared floor 10 min; the cap makes the real gap ≥ 30 min).
+ * Error re-runs are bounded per head by local-verify-main-schedule.
+ */
+const localVerifyMainDebounce: SelfActionController = {
+  id: 'local-verify-main-debounce',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (noteMainHead → decideMainHeadEnqueue debounce 10 min capped at 30; enqueueMain → decideMainEnqueue)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: the debounce cap (30 min) floors head-changed verifies; at most one is ever pending',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Boot skips the debounce once (immediate), so each restart adds at most one head-changed verify; restarts are operator/updater-driven and dampened.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 180,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'a never-settling main head gets at most one verify per debounce window', rateFloorMs: MAIN_VERIFY_LIMITS.debounceMs },
+  makeUnderPressure(f, sink) {
+    return makeMainVerifyPasses(f, sink, {
+      headAt: (pass) => (f.targetAlwaysRejects() ? pass.toString(16).padStart(40, '0') : LV_HEAD),
+      verifyErrors: false,
+      recordTimes: true,
+    });
+  },
+};
+
+/**
+ * local-verify-status-post — the reconciler's status posts. Pinned worst case:
+ * EVERY post answers 403 and GitHub's settings are unreadable
+ * (targetAlwaysRejects), with 40 open heads of which 10 must withdraw a
+ * `success`. A failed post is retried only by the 60-second pass, after its
+ * per-head backoff (30 s doubling, capped at 10 min) — so it is a rate-floored
+ * loop: at most one posting batch per pass. Asserted in the model: non-withdrawal
+ * posts never exceed 30 in a rolling minute, and withdrawals (exempt from the cap)
+ * never exceed the number of withdrawing heads in one pass.
+ */
+const localVerifyStatusPost: SelfActionController = {
+  id: 'local-verify-status-post',
+  actionVerb: 'retry-status-post',
+  models: 'src/localVerify/StatusReconciler.ts (passInner → postRetryDue + orderSubmissions; send → admitStatusPost, nextPostRetry)',
+  modelsPath: 'src/localVerify/StatusReconciler.ts',
+  delegatedGiveUp: 'none needed: posts ride only the 60-second pass, the 30/minute cap bounds non-withdrawals, and withdrawals are bounded by the heads that hold a success',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Retries, the post window and the observed cache are in memory and rebuilt from GitHub after a restart, never by blind re-posting; the first pass is still under the 30/minute cap with withdrawals bounded by heads.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 15,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'at most one posting batch per 60-second pass; the batch is capped (30/min, withdrawals bounded by heads)', rateFloorMs: RECONCILER_LIMITS.intervalMs },
+  makeUnderPressure(f, sink) {
+    const heads = Array.from({ length: 40 }, (_, k) => ({ head: k.toString(16).padStart(40, 'b'), withdraw: k < 10 }));
+    const withdrawing = heads.filter((h) => h.withdraw).length;
+    const retries = new Map<string, { attempts: number; nextAt: number }>();
+    const settled = new Set<string>();
+    let postTimes: number[] = [];
+    let ordinaryTimes: number[] = [];
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const due = heads.filter((h) => !settled.has(h.head) && postRetryDue(retries.get(h.head), now));
+        let posted = 0;
+        let withdrawals = 0;
+        for (const t of orderSubmissions(due)) {
+          const a = admitStatusPost({ withdrawal: t.withdraw, postTimes, now });
+          postTimes = a.postTimes;
+          if (!a.admit) continue; // deferred to the next pass
+          postTimes.push(now);
+          posted += 1;
+          if (t.withdraw) withdrawals += 1;
+          else ordinaryTimes.push(now);
+          if (f.targetAlwaysRejects()) retries.set(t.head, nextPostRetry(retries.get(t.head), now));
+          else settled.add(t.head);
+        }
+        ordinaryTimes = ordinaryTimes.filter((x) => now - x < 60_000);
+        if (ordinaryTimes.length > RECONCILER_LIMITS.postsPerMinute) throw new Error(`local-verify posted ${ordinaryTimes.length} non-withdrawal statuses in a minute (cap ${RECONCILER_LIMITS.postsPerMinute})`);
+        if (withdrawals > withdrawing) throw new Error(`local-verify posted ${withdrawals} withdrawals for ${withdrawing} withdrawing heads`);
+        if (posted === 0) return;
+        sink.emit({ verb: 'retry-status-post', target: 'status-post-pass' });
+        sink.emitTimesMs.push(now);
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-status-pass-backoff — a failed open-PR listing posts nothing and
+ * backs the whole pass off (2 min doubling, capped at 15). Pinned worst case:
+ * EVERY listing fails (targetAlwaysRejects). Listing attempts (and the settings
+ * read that precedes each) are ≥ 2 minutes apart.
+ */
+const localVerifyStatusPassBackoff: SelfActionController = {
+  id: 'local-verify-status-pass-backoff',
+  actionVerb: 'retry-pr-list',
+  models: 'src/localVerify/StatusReconciler.ts (passInner nextPassAt gate; backoffPass → passBackoffDelay)',
+  modelsPath: 'src/localVerify/StatusReconciler.ts',
+  delegatedGiveUp: 'none needed: the pass backoff floors listing attempts at 2 minutes (15 at steady state) and a failed listing posts nothing',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart begins with one immediate pass and then re-enters the same backoff after its first failure; restarts are operator/updater-driven and dampened.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 60,
+  tickMs: RECONCILER_LIMITS.intervalMs,
+  eternalSentinel: { reason: 'a failing PR listing is retried at most once per backoff interval (2 to 15 minutes)', rateFloorMs: RECONCILER_LIMITS.passBackoffBaseMs },
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextPassAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextPassAt) return;
+        sink.emit({ verb: 'retry-pr-list', target: 'open-pr-list' });
+        sink.emitTimesMs.push(now);
+        if (!f.targetAlwaysRejects()) { failures = 0; nextPassAt = 0; return; }
+        failures += 1;
+        nextPassAt = now + passBackoffDelay(failures);
+      },
+    };
+  },
+};
+
+
+/**
+ * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
+ * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
+ * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
+ * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
+ * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
+ * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
+ * controllers), so the bound is horizon-independent.
+ */
+const localVerifyFlakeRerun: SelfActionController = {
+  id: 'local-verify-flake-rerun',
+  actionVerb: 'retry-failed-test-file',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  modelsPath: 'src/localVerify/orchestrator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
+  perTargetBoundK: 1,
+  ticks: 3, // one tick per lane of a single verify
+  tickMs: 10 * 60_000,
+  makeUnderPressure(f, sink) {
+    let budget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
+    let lane = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
+        lane += 1;
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        budget -= d.rerun.length;
+        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-main-fair-share — the single verify slot shared between `main` and PRs.
+ * Pinned worst case (targetAlwaysRejects): `main` gets a new head before every start and
+ * PR verifies are always waiting; each verify holds the slot 45 minutes. With `main`
+ * healthy a `main` verify goes ahead of waiting PRs only once its oldest unverified merge
+ * is ≥ 90 min old; a green main verify clears that age. So `main` starts are ≥ 90 min
+ * apart and PRs keep starting. Asserted in the model: a PR starts between any two `main`
+ * starts, and the oldest unverified merge never waits past 3 hours.
+ */
+const localVerifyMainFairShare: SelfActionController = {
+  id: 'local-verify-main-fair-share',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (pump → decideStart with fairShare: oldestUnverifiedMainAt, lastStartWasMain, main health)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: with PRs waiting, a healthy main start is floored at 90 min of its oldest unverified merge (unhealthy: every other start); with no PR waiting the slot is otherwise idle',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The unverified-age clock restarts at boot (the boot main verify skips the debounce once), then the 90-minute rule applies again.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 96,
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'with PR verifies waiting and main healthy, main verifies start only once the oldest unverified merge is 90 min old', rateFloorMs: MAIN_FAIR_SHARE_MS },
+  makeUnderPressure(f, sink) {
+    let headN = 0;
+    let running: { kind?: 'main'; until: number } | null = null;
+    let oldestUnverifiedMainAt: number | null = null;
+    let lastStartWasMain = false;
+    let prSinceMain = true;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (oldestUnverifiedMainAt === null) oldestUnverifiedMainAt = now; // a new merge lands every pass
+        if (running && now >= running.until) {
+          if (running.kind === 'main') oldestUnverifiedMainAt = null; // its green verify covers the backlog
+          running = null;
+        }
+        if (oldestUnverifiedMainAt !== null && now - oldestUnverifiedMainAt > 3 * 60 * 60_000) {
+          throw new Error('local-verify let a healthy main wait past the 3 h unverified alarm');
+        }
+        if (running) return;
+        const queue: Array<{ kind?: 'main'; head?: string }> = [
+          { kind: 'main', head: (headN++).toString(16).padStart(40, '0') },
+          ...(f.targetAlwaysRejects() ? [{}, {}] : []),
+        ];
+        const d = decideStart({ foreignHolders: 0, queue, now, fairShare: { mainHealthy: true, oldestUnverifiedMainAt, lastStartWasMain } });
+        if (d.kind !== 'start') return;
+        const e = queue[d.index];
+        lastStartWasMain = e.kind === 'main';
+        running = { ...(e.kind ? { kind: e.kind } : {}), until: now + 45 * 60_000 };
+        if (e.kind === 'main') {
+          if (f.targetAlwaysRejects() && !prSinceMain) throw new Error('local-verify started two main verifies in a row while PRs waited');
+          prSinceMain = false;
+          sink.emit({ verb: 'retry-main-verify', target: e.head! });
+          sink.emitTimesMs.push(now);
+        } else {
+          prSinceMain = true;
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  localVerifyFlakeRerun,
+  localVerifyMainFairShare,
+  localVerifyErrorRerun,
+  localVerifyCapacityRequeue,
+  localVerifyMainSchedule,
+  localVerifyMainDebounce,
+  localVerifyStatusPost,
+  localVerifyStatusPassBackoff,
+  systemTopicAdoption,
+  lifelineIngressRestartSignal,
+  lifelineSecretRefusalRedrive,
+  feedbackTriageTick,
+  feedbackTriageActionList,
+  feedbackTriageSelfHealProbe,
+  passkeyRevokeOutbox,
+  telegramOriginSourcePoller,
+  originStoreWorkerRestart,
+  telegramOriginOwnedDetectorCanary,
+  telegramOriginNativeModelCanary,
+  telegramOriginForwardLadder,
+  telegramBrowserCanaryRecovery,
+  identityReannounce,
+  windowRunCadenceDeliveryRedrive,
+  windowLifecycleIssueEscalation,
+  subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -1159,6 +2590,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   ageKillBackoff,
   promiseBeaconNotify,
   livenessHeartbeat,
+  promiseBeaconInternalCadence,
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,
@@ -1171,6 +2603,11 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   stopGateAuthorityProbe,
   correctionClassReviewOutcomes,
   feedbackGeneratedDefaultsHeal,
+  feedbackExecute,
   mutualSshRepairSweep,
   followMeEnrollmentConsumer,
+  agentIdentityAdoption,
+  agentIdentityCoherenceDetector,
+  a2aPeerDarkRaise,
+  threadlineConnectEnableRestart,
 ];

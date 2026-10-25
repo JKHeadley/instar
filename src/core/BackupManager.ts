@@ -1,3 +1,5 @@
+import { ORIGIN_LOCAL_BACKUP_PREFIXES } from '../messaging/telegram-origin/OriginLocalPaths.js';
+import { KEY_MATERIAL_BACKUP_PREFIXES } from './keyMaterialPaths.js';
 /**
  * Backup Manager — snapshot and restore agent state files.
  *
@@ -16,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -28,7 +31,22 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // defense against that failure mode. Any entry under one of these prefixes is
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
+  ...ORIGIN_LOCAL_BACKUP_PREFIXES,
+  // Key material (a2a-single-agent-identity §5.3), in BOTH spellings the set
+  // uses: an operator adding `identity.json` to `backup.includeFiles` must not
+  // ship the agent's private key in a snapshot that git-sync replicates.
+  // Stated cost: a lone machine's only identity recovery is then
+  // `init --standalone` + peer re-pins. Same source list as the file routes'
+  // never-served deny, the gitignore entries and the sync classifier.
+  ...KEY_MATERIAL_BACKUP_PREFIXES,
   '.instar/secrets/',
+  // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
+  // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
+  // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or
+  // ['secrets/config.secrets.enc'] was copied into snapshots. The whole secrets tree —
+  // shared vault, agent-held passkey store, pending mint records, passkey browser
+  // profiles — is machine-local and never backed up (agent-held-google-passkey §3.1).
+  'secrets/',
   // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
   // quarantined copies are in-flight per-machine state — restoring them to a
   // new machine would claim custody the new machine never took. Unconditional
@@ -36,6 +54,9 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
   'state/pending-inbound.',
   'state/pending-inbound-quarantine/',
+  // A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md): per-
+  // machine in-flight dedup state, never copied between machines.
+  'state/a2a-inbound-ids.',
   // Parallel-Hand PR Lease (spec parallel-hand-pr-lease §8): the lease store is
   // ephemeral per-machine coordination state (TTL-bounded, self-healing). Restoring
   // it to another machine would resurrect a stale lease as "live" — a regression.
@@ -55,6 +76,21 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // per-machine-state posture as 'state/pr-hand-leases.json'. stateDir-relative
   // literal.
   'state/external-hog-decisions.json',
+  // Subscription authority is physical-credential-local machine state. The
+  // prefix covers the active directory, initialized witness, candidate,
+  // rollback, and atomic temp siblings. Keep both relative forms because
+  // callers may express paths relative to stateDir or projectDir.
+  'state/subscription-pool',
+  '.instar/state/subscription-pool',
+  // Login reliability evidence is physical-credential-local and may include
+  // machine identity, SQLite WAL/SHM, watermark, and refusal sidecar siblings.
+  'state/subscription-login-ledger',
+  '.instar/state/subscription-login-ledger',
+  // Assisted repair state is machine-bound and correlates local login/profile
+  // authority. Never restore it onto another machine or duplicate an in-flight
+  // repair through backup replication.
+  'state/subscription-relogin',
+  '.instar/state/subscription-relogin',
 ]);
 
 /**
@@ -114,8 +150,11 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
 function isDeniedForBackup(relPath: string): boolean {
   const normalized = path.normalize(relPath);
   if (BLOCKED_FILES.has(path.basename(normalized)) || BLOCKED_FILES.has(relPath)) return true;
+  // Case-folded: on a case-insensitive filesystem (macOS default) `Secrets/…` reaches
+  // the same files as `secrets/…`.
+  const folded = normalized.toLowerCase();
   for (const prefix of BLOCKED_PATH_PREFIXES) {
-    if (normalized.startsWith(prefix)) return true;
+    if (folded.startsWith(prefix.toLowerCase())) return true;
   }
   return normalized.split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg));
 }
@@ -207,8 +246,7 @@ export class BackupManager {
       new Set<string>([...DEFAULT_CONFIG.includeFiles, ...userIncludes]),
     );
     this.config = {
-      ...DEFAULT_CONFIG,
-      ...config,
+      ...mergeDefaults(DEFAULT_CONFIG, config),
       includeFiles: mergedIncludes,
     };
     this.isSessionActive = isSessionActive;
@@ -334,7 +372,7 @@ export class BackupManager {
       const normalized = path.normalize(entry);
       let prefixBlocked = false;
       for (const prefix of BLOCKED_PATH_PREFIXES) {
-        if (normalized.startsWith(prefix)) {
+        if (normalized.toLowerCase().startsWith(prefix.toLowerCase())) {
           prefixBlocked = true;
           break;
         }

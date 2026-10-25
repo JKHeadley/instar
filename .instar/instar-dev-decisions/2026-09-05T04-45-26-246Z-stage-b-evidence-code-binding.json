@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-05T04:45:26.246Z",
+  "slug": "stage-b-evidence-code-binding",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/codexStageBReleaseEvidence.ts",
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -229,7 +229,16 @@ export class PlacementExecutor {
           return {
             chosenMachine: pinned.machineId, score: this.score(pinned),
             reason: 'hard-pin', outcome: 'placed',
-            escalationReason: pinned.quotaState?.blocked === true ? 'pinned-machine-quota-blocked' : undefined,
+            // Name the real cause. `quotaState` is a placement-eligibility
+            // signal with several causes (account quota, open llm-circuit,
+            // sessions dying at startup), and telling an operator "quota
+            // blocked" about a machine whose logins cannot answer the
+            // folder-trust dialog sends them to look at the wrong thing.
+            escalationReason: pinned.quotaState?.blocked === true
+              ? (pinned.quotaState.reason === 'session-start-failing'
+                ? 'pinned-machine-cannot-start-sessions'
+                : 'pinned-machine-quota-blocked')
+              : undefined,
           };
         }
       } else if (step === 'pin') {

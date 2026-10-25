@@ -315,6 +315,22 @@ const AFFORDANCE_RADIO_SELECT_RE = /\b\d+\/\d+:select\b/i;
 const OPTION_PREFIX_RE = /^\s*\d+\.\s*/;
 const AFFORDANCE_ESC_RE = /Esc to cancel/i;
 const AFFORDANCE_PROCEED_RE = /Do you want to proceed/i;
+/**
+ * codex's blocking-menu footer, e.g. the startup update prompt's `Press enter to
+ * continue` sitting under `> 1. Update now / 2. Skip / 3. Skip until next version`.
+ *
+ * Added for the SAME reason grok's `1/3:select` footer was: this is Layer 3's
+ * "genuine bottom" test, and a menu whose LAST line is a footer this predicate does
+ * not recognise is declined — silently. Without it the 2026-08-22 codex fix would
+ * have traded a loud death for a quiet stall, because the readiness probe now
+ * (correctly) refuses to type into that menu and nothing else would report it.
+ *
+ * Layer 3 is observability only — it raises an Attention defect, it never presses a
+ * key. Layer 2 is deliberately NOT taught this shape: its answer is Enter, and on
+ * this menu the focused option runs `npm install -g @openai/codex` and exits codex,
+ * so an auto-Enter here IS the defect.
+ */
+const AFFORDANCE_PRESS_ENTER_RE = /Press enter to continue/i;
 const ANSI_SGR_RE = /\x1b\[[0-9;]*m/g;
 
 function sha256(input: string): string {
@@ -349,7 +365,8 @@ function isMenuStructureLine(l: PaneTailLine): boolean {
     isOptionLine(l.text) ||
     AFFORDANCE_ESC_RE.test(l.text) ||
     AFFORDANCE_PROCEED_RE.test(l.text) ||
-    AFFORDANCE_RADIO_SELECT_RE.test(l.text)
+    AFFORDANCE_RADIO_SELECT_RE.test(l.text) ||
+    AFFORDANCE_PRESS_ENTER_RE.test(l.text)
   );
 }
 
@@ -515,6 +532,8 @@ export function detectPersistingMenu(
     // grok-build's footer (`1/3:select`). Added with the radio-option shape so a
     // grok wedge reaches the SAME escalation the claude shapes get.
     AFFORDANCE_RADIO_SELECT_RE.test(joined) ||
+    // codex's blocking-menu footer — see AFFORDANCE_PRESS_ENTER_RE.
+    AFFORDANCE_PRESS_ENTER_RE.test(joined) ||
     numberedLines.length >= 2;
   if (!hasAffordance) return null;
 

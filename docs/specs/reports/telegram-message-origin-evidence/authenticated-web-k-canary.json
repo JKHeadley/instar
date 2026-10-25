@@ -1,0 +1,30 @@
+{
+  "attempts": [
+    {
+      "startedAt": "2026-09-06T23:21:03.205Z",
+      "completedAt": "2026-09-06T23:21:04.368Z",
+      "kind": "authenticated-read-only-enrollment-inspection",
+      "result": "unavailable",
+      "reason": "browser-protocol-error",
+      "messagesSent": 0
+    },
+    {
+      "startedAt": "2026-09-06T23:23:39.409Z",
+      "completedAt": "2026-09-06T23:23:43.374Z",
+      "kind": "authenticated-read-only-enrollment-inspection",
+      "accountNumber": 1,
+      "accountMatchesExpectedOperator": true,
+      "criticalAssets": [
+        "apiManagerProxy-DVXobuyu.js",
+        "app-BSCNxN1b.js",
+        "index-CBuWbkpt.js"
+      ],
+      "assetDigests": {
+        "apiManagerProxy-DVXobuyu.js": "dd0c085f588933412dac28f9cd05a4eac870c767873988681bb50ce74d66f23c",
+        "app-BSCNxN1b.js": "29cc14416104de928e50e7cf3e2f91948890f8b35025dfb9e3c28d167d984ed6",
+        "index-CBuWbkpt.js": "f96a8174e8a530c951809477124f8000a2463adfc7b215d3a97e17350fd12e93"
+      },
+      "messagesSent": 0
+    }
+  ]
+}

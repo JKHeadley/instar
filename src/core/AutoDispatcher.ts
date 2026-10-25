@@ -1,3 +1,4 @@
+import { sendUnknownProducerTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * Auto Dispatcher — built-in periodic dispatch polling and execution.
  *
@@ -747,7 +748,7 @@ export class AutoDispatcher {
       try {
         const topicId = this.config.notificationTopicId || this.getNotificationTopicId();
         if (topicId) {
-          await this.telegram.sendToTopic(topicId, formatted);
+          await sendUnknownProducerTelegramNotice(this.telegram, 'auto-dispatcher', topicId, formatted);
           return;
         }
       } catch (err) {

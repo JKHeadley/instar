@@ -23,6 +23,7 @@ import { StuckInputSentinel } from '../../src/core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../../src/core/SessionRecoveryChannel.js';
 import { SessionRecoveryConsumer } from '../../src/core/SessionRecoveryConsumer.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { RecoveryActuationAuthority } from '../../src/core/RecoveryActuationAuthority.js';
 
 const SESS = 'echo-codey-mentor';
 const MARKER = 'INJ_MARKER_int';
@@ -51,10 +52,15 @@ describe('codex wedge self-recovery — full sentinel↔channel↔consumer loop'
       listRunningSessions: vi.fn(() => [{ tmuxSession: SESS }]),
       tmuxSessionExists: vi.fn(() => true),
       captureOutput: vi.fn(() => paneState),
-      fireStuckInputRecovery: vi.fn(),
+      fireStuckInputRecovery: vi.fn().mockReturnValue({ status: 'attempted' }),
       getStrandedDraftMarker: vi.fn(() => (markerLive ? { marker: MARKER, framework: 'codex-cli', injectedAt: 0 } : undefined)),
       clearStrandedDraftMarker: vi.fn(() => { markerLive = false; }),
       strandedDraftMarkerSessions: vi.fn(() => (markerLive ? [SESS] : [])),
+      strandedDraftRecoverySnapshot: vi.fn(() => ({
+        conversationId: '59199', deliveryId: 'wedged-delivery', ownerEpoch: 7,
+        latestOrdinal: 1, deliveryOrdinal: 1, incarnation: SESS,
+        deliveryExhausted: true, breakerOpen: false,
+      })),
       isMarkerStuckAtPrompt: vi.fn((pane: string, marker: string) =>
         pane.split('\n').some(l => (l.includes('❯') || l.includes('›')) && l.includes(marker)),
       ),
@@ -66,6 +72,7 @@ describe('codex wedge self-recovery — full sentinel↔channel↔consumer loop'
     const sentinel = new StuckInputSentinel(mgr as any, {
       stateDir, noPersist: true, minTicksBeforeFire: 2, maxAttempts: 4,
       recoveryChannel: channel, escalationEnabled: true, escalationTimeoutTicks: 6,
+      recoveryAuthority: RecoveryActuationAuthority.open(stateDir), operatorStopEpoch: () => 1,
     });
 
     // The consumer's "restart" stands in for performGracefulRestart: when it
@@ -100,6 +107,7 @@ describe('codex wedge self-recovery — full sentinel↔channel↔consumer loop'
     const sentinel = new StuckInputSentinel(mgr as any, {
       stateDir, noPersist: true, minTicksBeforeFire: 2, maxAttempts: 4,
       recoveryChannel: channel, escalationEnabled: true,
+      recoveryAuthority: RecoveryActuationAuthority.open(stateDir), operatorStopEpoch: () => 1,
     });
     const restart = vi.fn(async () => true);
     const consumer = new SessionRecoveryConsumer({

@@ -88,6 +88,24 @@ describe('MachinePoolRegistry', () => {
     });
   }
 
+  it('records monotonic live receipts only for non-coarse heartbeats', () => {
+    let mono = 10;
+    const reg = new MachinePoolRegistry({
+      listMachines: () => machines,
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 60_000,
+      now: () => 1_000,
+      monoNow: () => mono,
+    });
+    reg.recordHeartbeat({ machineId: 'm_a', coarseHeartbeat: true });
+    expect(reg.lastLiveReceiptMono('m_a')).toBeUndefined();
+    reg.recordHeartbeat({ machineId: 'm_a' });
+    expect(reg.lastLiveReceiptMono('m_a')).toBe(10);
+    mono = 20;
+    reg.recordHeartbeat({ machineId: 'm_a', coarseHeartbeat: true });
+    expect(reg.lastLiveReceiptMono('m_a')).toBe(10);
+  });
+
   it('liveness uses routerReceivedAt (router clock), not self-reported time', () => {
     let now = 1_000_000;
     const reg = mk(() => now);

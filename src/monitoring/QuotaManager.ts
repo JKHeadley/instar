@@ -258,7 +258,7 @@ export class QuotaManager extends EventEmitter {
         this.enqueueNotification(
           `⚠️ [QUOTA ENFORCEMENT] PAUSE WARNING\n` +
           `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
-          `Sent graceful shutdown to ${ev.sessionsSignaled} session(s). Scheduler paused.\n` +
+          `Sent graceful shutdown to ${ev.sessionsSignaled} session(s). Scheduler paused until quota recovers.\n` +
           `If quota reaches 95%, all sessions will be killed.`
         );
       });
@@ -268,7 +268,14 @@ export class QuotaManager extends EventEmitter {
           `🚨 [QUOTA ENFORCEMENT] EMERGENCY STOP\n` +
           `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
           `Killed ${ev.sessionsKilled.length} session(s): ${ev.sessionsKilled.join(', ') || 'none'}.\n` +
-          `Scheduler paused. Manual intervention required.`
+          `Scheduler paused — it resumes on its own once quota recovers.`
+        );
+      });
+
+      this.migrator.on('enforced_resume', (ev) => {
+        this.enqueueNotification(
+          `✅ [QUOTA ENFORCEMENT] Scheduler resumed — quota recovered ` +
+          `(5-hour rate: ${ev.fiveHourPercent ?? 'unknown'}%, weekly: ${ev.weeklyPercent}%).`
         );
       });
     }
@@ -574,6 +581,22 @@ export class QuotaManager extends EventEmitter {
 
     // 2. Emit threshold events for subscribers
     this.emitThresholdEvents(state, dataSource as 'oauth' | 'jsonl-fallback');
+
+    // 3a. Lift a quota-enforcement scheduler pause once quota has recovered.
+    // Deliberately BEFORE the estimated-data early return below: a paused
+    // scheduler runs no jobs, so an account can stay on estimated readings
+    // indefinitely — gating the release on fresh data would re-create the
+    // permanent stall this exists to end. Per-job quota gating still applies.
+    if (this.migrator && !this.migrator.isMigrating()) {
+      try {
+        this.migrator.releaseEnforcementPauseIfRecovered({
+          percentUsed: state.usagePercent,
+          fiveHourPercent: state.fiveHourPercent ?? undefined,
+        });
+      } catch (err) {
+        console.error('[QuotaManager] Enforcement-pause release check failed:', err);
+      }
+    }
 
     // 3. Auto-migrate if enabled and thresholds warrant it
     if (this.config.autoMigrate && this.migrator && !this.migrator.isMigrating()) {

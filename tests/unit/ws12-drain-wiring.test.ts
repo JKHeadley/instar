@@ -26,8 +26,9 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
   it('the mesh drain handler is registered beside deliverMessage with the disabled fallback', () => {
     const idx = server.indexOf('deliverMessage: deliverMessageHandler');
     expect(idx).toBeGreaterThan(-1);
-    const block = server.slice(idx, idx + 1800);
-    expect(block).toContain('drain: async (cmd)');
+    const drainIdx = server.indexOf('drain: async (cmd)', idx);
+    expect(drainIdx).toBeGreaterThan(idx);
+    const block = server.slice(drainIdx, drainIdx + 1400);
     expect(block).toContain("'drain disabled'");
     expect(block).toContain('senderObservedEpoch: c.ownershipEpoch');
   });
@@ -58,7 +59,7 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
   it('the sender leg drains a LOCAL owner via the runner directly and BOUNDS the remote call', () => {
     const idx = server.indexOf('_sendDrain = async');
     expect(idx).toBeGreaterThan(-1);
-    const block = server.slice(idx, idx + 2200);
+    const block = server.slice(idx, idx + 3000);
     expect(block).toContain('ownerMachineId === meshSelfId');
     expect(block).toContain('_drainRunner.run');
     expect(block).toContain("type: 'drain'");
@@ -66,6 +67,9 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
     expect(block).toContain('timeoutMs: 50_000');
     // 501 no-handler (old peer) is reported, not thrown.
     expect(block).toContain('noHandler: res.status === 501');
+    // The mesh handler spreads the runner outcome whose reason field is
+    // `detail`: a remote close refusal must reach the route's 409 by name.
+    expect(block).toContain("typeof r.detail === 'string' ? r.detail");
     // A peer cannot smuggle claim proof on a refused/non-completion response.
     expect(block).toContain("const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted')");
     expect(block).toContain('claimLanded: completed && r.claimLanded === true');

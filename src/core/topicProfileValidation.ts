@@ -16,6 +16,7 @@
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { KNOWN_MODEL_IDS, MODEL_ID_RE, escapeIdForAudit } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 
 export const THINKING_MODES = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingMode = (typeof THINKING_MODES)[number];
@@ -55,8 +56,8 @@ export type ProfileFieldFailure =
  * (§10.3 — the cost gate's write-time arm).
  *
  * The table is a closed allow/deny classification per framework. TODAY every
- * member of the closed enums rides the subscription envelope (the codex enum
- * mirrors CODEX_MODELS_SUBSCRIPTION by construction; the claude enum is the
+ * member of the closed enums rides the subscription envelope (every id in the
+ * codex enum is a subscription model by construction; the claude enum is the
  * CLI's subscription-login surface), so the deny sets ship empty — the seam
  * exists so the moment a per-token id joins a known-ids enum it is named here
  * and refused, instead of slipping into a launch arg as billable API spend.
@@ -65,7 +66,7 @@ export type ProfileFieldFailure =
 export const PER_TOKEN_LANE_MODEL_IDS: Partial<Record<IntelligenceFramework, readonly string[]>> = {
   // All KNOWN_CLAUDE_MODEL_IDS launch via the subscription-authed CLI today.
   'claude-code': [],
-  // KNOWN_CODEX_MODEL_IDS mirrors the CODEX_MODELS_SUBSCRIPTION allowlist.
+  // Every KNOWN_CODEX_MODEL_IDS entry rides the codex subscription envelope.
   'codex-cli': [],
   // gemini-cli runs the OAuth (code-assist) lane, not an API key, today.
   'gemini-cli': [],
@@ -121,6 +122,7 @@ export interface ProfileValidationError {
 }
 
 export interface ProfilePatchInput {
+  messageOriginDisplay?: Partial<OriginDisplaySettings> | null;
   framework?: string | null;
   model?: string | null;
   modelTier?: string | null;
@@ -130,6 +132,7 @@ export interface ProfilePatchInput {
 }
 
 export interface ValidatedProfilePatch {
+  messageOriginDisplay?: Partial<OriginDisplaySettings> | null;
   framework?: IntelligenceFramework | null;
   model?: string | null;
   modelTier?: ProfileModelTier | null;
@@ -162,6 +165,16 @@ export function validateProfileFields(
   effectiveFramework: IntelligenceFramework,
 ): { ok: true; patch: ValidatedProfilePatch } | { ok: false; error: ProfileValidationError } {
   const out: ValidatedProfilePatch = {};
+  if (patch.messageOriginDisplay !== undefined) {
+    const display = patch.messageOriginDisplay;
+    if (display === null) out.messageOriginDisplay = null;
+    else if (typeof display !== 'object' || Array.isArray(display) ||
+      Object.keys(display).some(key => !['enabled', 'machine', 'harness', 'model'].includes(key)) ||
+      Object.values(display).some(value => typeof value !== 'boolean')) {
+      return { ok: false, error: { field: 'messageOriginDisplay', failure: 'off-enum',
+        reason: 'messageOriginDisplay accepts only enabled, machine, harness and model booleans' } };
+    } else out.messageOriginDisplay = { ...display };
+  }
 
   if (patch.framework !== undefined) {
     if (patch.framework === null) {

@@ -29,6 +29,7 @@
 import type { TokenLedger, AttributionKeyRow } from './TokenLedger.js';
 import type { DegradationReporter } from './DegradationReporter.js';
 import { PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** Backward-compatible for test doubles and older ledger adapters. */
 function burnTokens(row: AttributionKeyRow): number {
@@ -117,7 +118,7 @@ export class BurnDetector {
   constructor(deps: BurnDetectorDeps) {
     this.ledger = deps.ledger;
     this.reporter = deps.reporter;
-    this.config = { ...DEFAULT_BURN_DETECTION_CONFIG, ...(deps.config ?? {}) };
+    this.config = mergeDefaults(DEFAULT_BURN_DETECTION_CONFIG, (deps.config ?? {}));
     this.now = deps.now ?? (() => Date.now());
     this.ultraCapMonitor = deps.ultraCapMonitor;
   }

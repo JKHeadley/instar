@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-07T03:58:13.637Z",
+  "reviewers": [
+    "echo:codex-cli:gpt-6-astra",
+    "origin_security_review:codex-cli:gpt-6-astra"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 3
+  },
+  "convergenceReport": "docs/specs/reports/telegram-message-origin-interaction-family-review.md",
+  "convergenceSha256": "0e750247636a7ce94d0b3ef9b852ad39df720a85d0ae20bc3289c5255f29579f",
+  "areas": {
+    "Interaction": {
+      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
+      "verdict": "accepted"
+    }
+  }
+}

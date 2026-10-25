@@ -1,0 +1,26 @@
+{
+  "ts": "2026-09-24T22:52:43.518Z",
+  "slug": "relogin-backup-codes",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AnthropicReloginBrowserDriver.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; one more floor-gated fill inside the bounded repair, one code per drive"
+  },
+  "verdict": "pass"
+}

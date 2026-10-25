@@ -203,6 +203,68 @@ describe('ResumeQueue — resurrection ledger (R2.9)', () => {
     q.stop();
   });
 
+  // 2026-09-30, topic 52075: idle reaps at 10:57 and 12:51 were both revived;
+  // the revived coordinator then worked for five hours, went quiet, and was
+  // age-killed at 18:14 with uncommitted work — and the cap refused it.
+  const reviveTwice = (q: ResumeQueue, advance: (ms: number) => void) => {
+    for (const [i, gapMs] of [[1, 0], [2, 114 * 60_000]] as const) {
+      advance(gapMs);
+      const d = q.considerEnqueue(candidate({ tmuxSession: `echo-coord-${i}`, reason: 'reaped-idle', workEvidence: ['uncommitted-worktree-work'] }));
+      expect(d.enqueued).toBe(true);
+      q.transition(d.entry!.id, 'respawned');
+      q.recordResumeSuccess('topic:42');
+    }
+    advance(323 * 60_000);
+  };
+
+  it('REPRO 52075: an age-limit kill of a session seen working past its age limit is queued, and the ledger restarts', () => {
+    const { q, audits, advance } = makeQueue({ cfg: { maxResurrections: 2 } });
+    q.start();
+    reviveTwice(q, advance);
+    const d = q.considerEnqueue(candidate({
+      tmuxSession: 'echo-coord-3', reason: 'age-limit',
+      workEvidence: ['uncommitted-worktree-work'], seenWorkingPastAgeLimit: true,
+    }));
+    expect(d.enqueued).toBe(true);
+    expect(audits.some((a) => a.event === 'resurrection-ledger-reset')).toBe(true);
+    expect(q.resurrectionCountForTopic(42)).toBe(0);
+    q.stop();
+  });
+
+  it('an age-limit kill NOT seen working past its age limit still counts toward the cap', () => {
+    const { q, advance } = makeQueue({ cfg: { maxResurrections: 2 } });
+    q.start();
+    reviveTwice(q, advance);
+    const d = q.considerEnqueue(candidate({ tmuxSession: 'echo-coord-3', reason: 'age-limit', workEvidence: ['uncommitted-worktree-work'] }));
+    expect(d.why).toBe('resurrection-cap');
+    q.stop();
+  });
+
+  it('after a ledger restart, quick re-reaps are capped again (the loop brake stays)', () => {
+    const { q, advance } = makeQueue({ cfg: { maxResurrections: 2 } });
+    q.start();
+    reviveTwice(q, advance);
+    const aged = q.considerEnqueue(candidate({ tmuxSession: 'g3', reason: 'age-limit', workEvidence: ['uncommitted-worktree-work'], seenWorkingPastAgeLimit: true }));
+    expect(aged.enqueued).toBe(true);
+    for (const t of ['g4', 'g5']) {
+      q.transition(q.snapshot().entries.find((e) => e.status === 'queued')!.id, 'respawned');
+      q.recordResumeSuccess('topic:42');
+      advance(10 * 60_000);
+      const d = q.considerEnqueue(candidate({ tmuxSession: t, reason: 'reaped-idle', workEvidence: ['uncommitted-worktree-work'] }));
+      if (t === 'g4') expect(d.enqueued).toBe(true);
+      else expect(d.why).toBe('resurrection-cap');
+    }
+    q.stop();
+  });
+
+  it('a stale age-limit kill with no work evidence is not queued, whatever the flag', () => {
+    const { q } = makeQueue();
+    q.start();
+    const d = q.considerEnqueue(candidate({ reason: 'age-limit', workEvidence: [], seenWorkingPastAgeLimit: true }));
+    expect(d).toEqual({ enqueued: false, why: 'insufficient-evidence' });
+    q.stop();
+  });
+
   it('requeue of a gave-up:resurrection-cap entry grants exactly ONE audited override', () => {
     const { q } = makeQueue({ cfg: { maxResurrections: 0 } });
     q.start();

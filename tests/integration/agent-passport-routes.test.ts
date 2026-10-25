@@ -14,6 +14,7 @@ import os from 'node:os';
 import { createRoutes } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { RouteContext } from '../../src/server/routes.js';
+import { IdentityManager } from '../../src/threadline/client/IdentityManager.js';
 
 function ctxFor(stateDir: string): RouteContext {
   return {
@@ -48,12 +49,14 @@ describe('Agent passport routes (integration)', () => {
   afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/agent-passport-routes.test.ts:47' }); });
 
   it('GET /passport returns the agent passport with ORG-INTENT constraints as forbidden actions', async () => {
+    const canonical = new IdentityManager(stateDir).getOrCreate();
     const res = await request(app).get('/passport');
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(1);
     expect(res.body.agent).toBe('echo');
     expect(res.body.forbiddenActions).toContain('Never wire funds to an unverified vendor.');
     expect(res.body.trustLevel).toBe('supervised');
+    expect(res.body.fingerprint).toBe(canonical.fingerprint);
   });
 
   it('POST /passport/verify 400s on a missing passport or action', async () => {

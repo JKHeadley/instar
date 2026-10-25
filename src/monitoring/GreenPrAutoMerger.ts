@@ -38,12 +38,46 @@ import {
   validateTimeoutInvariant,
 } from './greenPrLogic.js';
 import type { GuardLatchStore } from './GuardLatchStore.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
+import { selectMergeFloor, reviewPrecheckPasses, reviewRequired, type RulesetReviewPolicy } from '../../scripts/local-verify-floor.mjs';
+
+/** A namespace candidate's head must be unchanged this long before a verify is requested (§2). */
+export const VERIFY_HEAD_STABLE_MS = 5 * 60_000;
+
+/** The one attention line while an unresolved merge-attempt orphan blocks new merges. */
+export const ORPHAN_UNRESOLVED_LINE = 'Auto-merge is paused: an earlier merge attempt\'s process is still running and I could not confirm it is mine, so I will not start another or kill it. It resumes by itself once that process exits.';
+
+/**
+ * The local-verify view the watcher reads (local-verify-merge-authority §2/§3),
+ * late-bound because the service is built after the watcher. Every read that
+ * throws or answers null is treated as unmeasurable: the floor reads as
+ * `actions` for candidacy, and no verify is requested.
+ */
+export interface LocalVerifyHook {
+  effectiveFloor(): 'local' | 'actions' | null;
+  mainHealth(): 'healthy' | 'main-suspect' | 'main-red' | null;
+  hasRecord(pr: number, headSha: string, baseRefName: string): boolean;
+  requestVerify(pr: number): Promise<unknown>;
+  /**
+   * `monitoring.localVerify.postStatuses`, read live. When it reads false the
+   * local-verify side is in dry-run, so the actions→local disarm is only logged
+   * (`would-disarm`) and the floor transition is not recorded — the real disarm
+   * happens once posting is live. Absent ⇒ live (today's behaviour).
+   */
+  postStatuses?(): boolean;
+}
 
 /** The arguments a merge attempt is launched with. */
 export interface MergeAttempt {
   pr: number;
   headRefOid: string;
   repo: string;
+  /**
+   * Per-attempt strategy override (local-verify-merge-authority §2): the local
+   * floor always merges with `sync` (neither --auto nor --admin), whatever the
+   * configured mergeStrategy.
+   */
+  strategy?: 'sync';
 }
 
 /** The classified result of a merge attempt (from the MergeRunner). */
@@ -55,6 +89,12 @@ export interface MergeRunResult {
    * owns the merge — confirmed later by the reconciliation tick, NOT here.
    */
   outcome: string;
+  /**
+   * How a surviving in-flight record from an EARLIER attempt was resolved at
+   * the start of this run (e.g. reaped-open, merged-by-other,
+   * orphan-presumed-foreign, orphan-reap-incomplete). Absent when there was none.
+   */
+  priorRecord?: string;
   /**
    * True only when an INDEPENDENT gh pr view confirmed MERGED (B10). ALWAYS
    * false for `armed` BY DESIGN — the merge has not landed at arm time, so an
@@ -88,9 +128,33 @@ export interface MergeRunner {
   reapOrphan(): Promise<{ reaped: boolean; outcome?: string }>;
 }
 
-export interface ProtectedPathsVerdict {
+/**
+ * Which changed files a CODEOWNERS rule owns (read at runtime from the base branch).
+ * Those PRs wait for GitHub's code-owner review: the operator's approval surface is
+ * the constitution, and only CODEOWNERS names it (directive 2026-10-22).
+ */
+/** safe-merge's local-floor refusal for a flagged record with no independent review. */
+export const NEEDS_INDEPENDENT_REVIEW = 'refused:needs-independent-review';
+
+export interface CodeOwnedPathsVerdict {
   touches: boolean;
+  /** The code-owned files the PR changes (empty when none). */
+  files: string[];
+  /**
+   * The changed files on the verifier's protected list (absent = not computed).
+   * On the actions floor there is no local-verify record to carry the independent
+   * review, so the watcher checks it itself for these (same judge, same rule).
+   */
+  protectedFiles?: string[];
   unverifiable: boolean;
+}
+
+/** An independent second-pass review of a PR head, read from the head on GitHub. */
+export interface IndependentReviewVerdict {
+  ok: boolean;
+  unverifiable: boolean;
+  /** Why not (the shared judge's reason), when !ok. */
+  problem?: string;
 }
 
 export interface GreenPrAutoMergerDeps {
@@ -98,8 +162,14 @@ export interface GreenPrAutoMergerDeps {
   leaseEpoch(): number;
   /** The single oldest-first GraphQL list call. Throws → tick-failed canary. */
   listOpenPrs(): Promise<PrSummary[]>;
-  /** Did this PR's diff touch protected paths? Enumerated to exhaustion. */
-  protectedPaths(pr: PrSummary): Promise<ProtectedPathsVerdict>;
+  /** Which code-owned files this PR's diff touches (enumerated to exhaustion). */
+  codeOwnedPaths(pr: PrSummary): Promise<CodeOwnedPathsVerdict>;
+  /**
+   * Actions floor only: does the PR head carry a concurring instar-dev trace covering
+   * `flaggedPaths` (scripts/lib/instar-dev-trace.mjs, the judge the verifier uses)?
+   * Absent ⇒ a protected-path PR on the actions floor waits (never merges unreviewed).
+   */
+  independentReviewAtHead?(pr: PrSummary, flaggedPaths: string[]): Promise<IndependentReviewVerdict>;
   /**
    * Re-fetch hold-relevant + state fields immediately before acting AND for the
    * armed-episode reconciliation read. null → vanished. Widened
@@ -133,6 +203,11 @@ export interface GreenPrAutoMergerDeps {
   applyHoldMarker(pr: number, reason: string): Promise<boolean>;
   /** Re-fetch a PR's head namespace + open state for the /hold route's guard. */
   holdEligible(pr: number): Promise<{ ok: boolean; status?: number; detail?: string }>;
+  /**
+   * The base branch's ruleset review policy (the read safe-merge's review
+   * precheck uses). Optional: absent or throwing ⇒ no verify is requested.
+   */
+  rulesetReviewPolicy?(): Promise<RulesetReviewPolicy>;
   runner: MergeRunner;
   latches: Pick<GuardLatchStore, 'isMergeAllowed'>;
   /** Raise/refresh the ONE aggregated attention item (machine-stable id). */
@@ -148,8 +223,8 @@ export interface GreenPrSnapshotEntry {
   pr: number;
   headRefName: string;
   headRefOid: string;
-  /** 'mergeable' | 'protected-paths' — Layer 2 routes protected to the operator. */
-  kind: 'mergeable' | 'protected-paths';
+  /** 'mergeable' | 'code-owner-review' — a code-owned PR waits for GitHub's code-owner review. */
+  kind: 'mergeable' | 'code-owner-review';
 }
 
 export interface GreenPrState {
@@ -186,6 +261,12 @@ export interface GreenPrState {
    * list (merged/closed).
    */
   redPrRaised?: Record<number, { at: number; firstFailAt: number; hours: number; checks: string[] }>;
+  /** The merge floor seen on the last acting tick (local-verify; absent ⇒ never observed ⇒ treated as 'actions'). */
+  lastFloor?: 'local' | 'actions';
+  /** First time each PR's current head was seen (local-verify "head unchanged for 5 minutes"). */
+  headSeen?: Record<number, { head: string; firstSeenAt: number }>;
+  /** When each PR's review precheck started passing (cleared when it stops). */
+  reviewReadySince?: Record<number, number>;
 }
 
 export interface GreenPrAutoMergerConfig {
@@ -215,6 +296,12 @@ export interface GreenPrAutoMergerConfig {
    * repo without native auto-merge.
    */
   mergeStrategy?: 'auto' | 'admin';
+  /**
+   * local-verify-merge-authority: the configured merge floor
+   * (`monitoring.greenPrAutoMerge.floor`). Read at boot for the timeout
+   * invariant only; the live floor comes from the attached local-verify view.
+   */
+  floor?: 'local' | 'actions';
   /** ms an armed episode may stay OPEN before transitioning to armed-overdue (24h). */
   armedConfirmCeilingMs?: number;
   /** deduped re-raise cadence for an armed-overdue episode (24h). */
@@ -253,6 +340,7 @@ const DEFAULTS = {
   staleHoldDays: 7,
   backoffBaseMs: 30_000,
   mergeStrategy: 'auto' as 'auto' | 'admin',
+  floor: 'actions' as 'local' | 'actions',
   armedConfirmCeilingMs: 86_400_000,
   armedOverdueReraiseMs: 86_400_000,
   armTimeoutMs: 60_000,
@@ -276,6 +364,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
   private tickCount = 0;
+  private localVerify: LocalVerifyHook | null = null;
   /** Resolved at boot: does the timeout invariant hold? */
   readonly invariantOk: boolean;
   readonly invariantReason?: string;
@@ -288,8 +377,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   ) {
     super();
     this.cfg = {
-      ...DEFAULTS,
-      ...cfg,
+      ...mergeDefaults(DEFAULTS, cfg as Partial<typeof DEFAULTS>),
       agentNamespace: cfg.agentNamespace,
       repo: cfg.repo,
       expectedGhLogin: cfg.expectedGhLogin ?? '',
@@ -304,7 +392,11 @@ export class GreenPrAutoMerger extends EventEmitter {
     // auto path the busy-skip budget is checked against the SHORT armTimeoutMs
     // (a hung arm trips in minutes, not ~26 min); the admin path keeps the
     // 25-min mergeTimeoutMs invariant verbatim.
-    const invTimeoutMs = this.cfg.mergeStrategy === 'admin' ? this.cfg.mergeTimeoutMs : this.cfg.armTimeoutMs;
+    // local-verify: under a configured `local` floor every watcher merge runs
+    // `sync` with the 25-min mergeTimeoutMs deadline, whatever mergeStrategy
+    // says, so the busy-skip budget must outlast that, not the 60s arm.
+    const syncPossible = this.cfg.mergeStrategy === 'admin' || this.cfg.floor === 'local';
+    const invTimeoutMs = syncPossible ? Math.max(this.cfg.mergeTimeoutMs, this.cfg.armTimeoutMs) : this.cfg.armTimeoutMs;
     const inv = validateTimeoutInvariant(
       this.cfg.busySkipBreakerThreshold,
       this.cfg.tickIntervalMs,
@@ -317,6 +409,26 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (!this.cfg.agentNamespace.trim()) this.configurationIssues.push('agentNamespace is empty');
     if (!this.cfg.expectedGhLogin.trim()) this.configurationIssues.push('expectedGhLogin is empty');
     this.configurationOk = this.configurationIssues.length === 0;
+  }
+
+  /** Late-bind the local-verify view (the service is constructed after the watcher). */
+  private wouldDisarmLogged = false;
+
+  attachLocalVerify(lv: LocalVerifyHook | null): void {
+    this.localVerify = lv;
+  }
+
+  /** The one floor function (scripts/local-verify-floor.mjs); any unreadable input ⇒ 'actions'. */
+  currentFloor(): 'local' | 'actions' {
+    let effective: string | null = null;
+    try { effective = this.localVerify?.effectiveFloor() ?? null; } catch { /* @silent-fallback-ok: local-verify fail-safe — an unreadable floor is the actions floor, never permission */ effective = null; }
+    // The list is `--author @me` (the agent's own login), same-repo namespace branches.
+    return selectMergeFloor({ effectiveFloor: effective, configRepo: this.cfg.repo, repo: this.cfg.repo, eligible: true });
+  }
+
+  private recordFor(pr: PrSummary): boolean {
+    if (!this.localVerify || !pr.baseRefName) return false;
+    try { return this.localVerify.hasRecord(pr.number, pr.headRefOid, pr.baseRefName) === true; } catch { /* @silent-fallback-ok: local-verify fail-safe — an unreadable index is "no record", so nothing merges on it */ return false; }
   }
 
   start(): void {
@@ -402,7 +514,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   /** The cron / manual-trigger entry point. Lease-gated; single-flight; warm-up. */
   async tick(opts: { manual?: boolean } = {}): Promise<{ acted: boolean; reason: string }> {
     this.tickCount += 1;
-    const state = this.deps.loadState();
+    let state = this.deps.loadState();
     state.lastTickAt = this.deps.now();
 
     // Lease gate (R10): ticks run only on the holder.
@@ -440,6 +552,32 @@ export class GreenPrAutoMerger extends EventEmitter {
     // the disabled: early-return (so it never runs under a live disarm latch —
     // which is exactly why the disarm reach lives in the route, not here), above
     // gather(). Fail-open on any read error; never feeds the breaker.
+    // Floor transition (local-verify-merge-authority Rollback): the `local` floor
+    // arms nothing, so on actions → local every PR armed under the old floor is
+    // disarmed ONCE, so none waits on GitHub. disarmAllArmed loads and saves its
+    // own state, so persist the new floor first and reload afterwards.
+    const floor = this.currentFloor();
+    const prevFloor = state.lastFloor ?? 'actions';
+    let lvDryRun = false;
+    try { lvDryRun = this.localVerify?.postStatuses ? this.localVerify.postStatuses() === false : false; } catch { /* @silent-fallback-ok: unreadable ⇒ dry-run (the write is suppressed, the safe side) */ lvDryRun = true; }
+    if (prevFloor === 'actions' && floor === 'local' && lvDryRun) {
+      if (!this.wouldDisarmLogged) {
+        this.wouldDisarmLogged = true;
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'would-disarm', reason: 'floor-local', from: prevFloor, note: 'monitoring.localVerify.postStatuses is false' });
+      }
+    } else if (state.lastFloor !== floor) {
+      this.wouldDisarmLogged = false;
+      state.lastFloor = floor;
+      this.deps.saveState(state);
+      if (prevFloor === 'actions' && floor === 'local') {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'floor-local', from: prevFloor });
+        await this.disarmAllArmed('floor-local');
+        state = this.deps.loadState();
+      } else {
+        this.deps.audit({ kind: 'green-pr-automerge', event: `floor-${floor}`, from: prevFloor });
+      }
+    }
+
     await this.reconcileArmed(state);
 
     // Warm-up (R10): the first tick of a new lease tenure is OBSERVE-ONLY.
@@ -460,7 +598,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     }
 
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
-    const { eligible, snapshotEntries } = await this.gather(candidates, state);
+    const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);
     state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
     const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
 
@@ -488,6 +626,11 @@ export class GreenPrAutoMerger extends EventEmitter {
     state.lastActingEpoch = epoch;
     state.consecutiveWarmupOnlyTenures = 0;
 
+    // Verify requests (local-verify §2 "Who starts a verify"): under either floor,
+    // so records accumulate before the flip. They authorize nothing, so they run
+    // in dryRun too.
+    await this.requestVerifies(candidates, state);
+
     const target = selectOldest(eligible);
     if (!target) {
       this.deps.saveState(state);
@@ -501,14 +644,14 @@ export class GreenPrAutoMerger extends EventEmitter {
       return { acted: false, reason: 'dry-run' };
     }
 
-    const acted = await this.act(target, state);
+    const acted = await this.act(target, state, floor);
     this.deps.saveState(state);
     return { acted, reason: acted ? 'acted' : 'skipped' };
   }
 
   // ---- candidate gathering -----------------------------------------------
 
-  private async gather(prs: PrSummary[], state: GreenPrState): Promise<{ eligible: PrSummary[]; snapshotEntries: GreenPrSnapshotEntry[] }> {
+  private async gather(prs: PrSummary[], state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<{ eligible: PrSummary[]; snapshotEntries: GreenPrSnapshotEntry[] }> {
     const eligible: PrSummary[] = [];
     const snapshotEntries: GreenPrSnapshotEntry[] = [];
     const nowMs = this.deps.now();
@@ -527,7 +670,8 @@ export class GreenPrAutoMerger extends EventEmitter {
         snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
         continue;
       }
-      const verdict = classifyCandidate(pr, this.cfg.agentNamespace);
+      const verdict = classifyCandidate(pr, this.cfg.agentNamespace,
+        floor === 'local' ? { floor, hasRecord: this.recordFor(pr) } : { floor });
       // Hold-release debounce (R3): a PR that WAS held resumes only after the
       // marker is absent for holdReleaseTicks AND tickIntervalMs elapsed.
       const heldNow = holdReasonOf(pr) !== null;
@@ -538,28 +682,61 @@ export class GreenPrAutoMerger extends EventEmitter {
         if (verdict.skip === 'held' && deb.transition === 'released') {
           this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-released', pr: pr.number });
         }
+        if (verdict.skip === 'no-checks-ran') {
+          // Say so: zero GitHub Actions checks on this head is NOT green.
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
+        }
         continue;
       }
       // verdict.eligible but the hold debounce may still hold it back this tick.
       if (heldNow || !deb.resumeEligible) continue;
+      // This head was refused for want of an independent review: nothing changes until a
+      // new head (the committed trace) arrives, so do not spawn safe-merge again for it.
+      const prior = state.episodes[pr.number];
+      if (prior?.lastOutcome === NEEDS_INDEPENDENT_REVIEW && prior.headRefOid === pr.headRefOid) {
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
+        continue;
+      }
 
-      // Protected-paths gate (enumerated to exhaustion).
-      let pp: ProtectedPathsVerdict;
+      // Code-owner gate (enumerated to exhaustion). The ONLY PRs the watcher routes to the
+      // operator are those touching a CODEOWNERS-owned file (the constitution): they wait
+      // for GitHub's code-owner review. Protected-path and harness-changing PRs are no longer
+      // routed to the operator; the local floor admits them only with an independent second
+      // pass recorded by the verifier (directive 2026-10-22; spec local-verify-merge-authority).
+      let co: CodeOwnedPathsVerdict;
       try {
-        pp = await this.deps.protectedPaths(pr);
+        co = await this.deps.codeOwnedPaths(pr);
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
-        pp = { touches: false, unverifiable: true };
+        co = { touches: false, files: [], unverifiable: true };
       }
-      if (pp.unverifiable) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'protected-paths-unverifiable', pr: pr.number });
+      if (co.unverifiable) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
         continue;
       }
-      if (pp.touches) {
-        // Excluded from auto-merge; surfaced to the operator + included in the
-        // Layer-2 snapshot as the operator-routed variant (round-5/6).
-        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'protected-paths' });
-        await this.refreshAggregate(state, [`PR #${pr.number} is green but touches protected paths — it needs your manual review and merge`]);
+      if (co.touches && pr.reviewDecision !== 'APPROVED') {
+        // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
+        await this.refreshAggregate(state, [`PR #${pr.number} changes ${co.files.slice(0, 3).join(', ')} — it waits for your code-owner review on GitHub`]);
         continue;
+      }
+      // The watcher's own-source protection, kept only as the SAME independent-review
+      // requirement: on the local floor the verifier's record carries it (safe-merge
+      // refuses without it); on the actions floor there is no record, so the watcher
+      // checks the head itself. Never routed to the operator.
+      if (floor === 'actions' && (co.protectedFiles?.length ?? 0) > 0) {
+        let rv: IndependentReviewVerdict;
+        try {
+          rv = this.deps.independentReviewAtHead
+            ? await this.deps.independentReviewAtHead(pr, co.protectedFiles!)
+            : { ok: false, unverifiable: true, problem: 'review-reader-unwired' };
+        } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge */
+          rv = { ok: false, unverifiable: true, problem: 'review-read-failed' };
+        }
+        if (!rv.ok) {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'needs-independent-review', pr: pr.number, head: pr.headRefOid, problem: rv.problem ?? null });
+          continue;
+        }
       }
       eligible.push(pr);
       snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
@@ -619,7 +796,65 @@ export class GreenPrAutoMerger extends EventEmitter {
 
   // ---- act ----------------------------------------------------------------
 
-  private async act(target: PrSummary, state: GreenPrState): Promise<boolean> {
+  /**
+   * Request a verify for each namespace candidate (not held, not draft,
+   * mergeable) with no record for its current (pr, head, base) whose head has
+   * been unchanged for VERIFY_HEAD_STABLE_MS — oldest-ready first. None while
+   * `main` is not healthy (an unreadable health is not healthy). The service
+   * dedupes and caps the queue.
+   */
+  private async requestVerifies(prs: PrSummary[], state: GreenPrState): Promise<void> {
+    const lv = this.localVerify;
+    if (!lv) return;
+    const nowMs = this.deps.now();
+    const seen = state.headSeen ?? {};
+    const next: Record<number, { head: string; firstSeenAt: number }> = {};
+    for (const pr of prs) {
+      const prior = seen[pr.number];
+      next[pr.number] = prior && prior.head === pr.headRefOid ? prior : { head: pr.headRefOid, firstSeenAt: nowMs };
+    }
+    state.headSeen = next;
+    let health: string | null = null;
+    try { health = lv.mainHealth(); } catch { /* @silent-fallback-ok: local-verify fail-safe — unreadable main health requests nothing */ health = null; }
+    if (health !== 'healthy') return;
+    // Review precheck (the one safe-merge runs): a verify is requested only for a
+    // PR that could merge once verified. Unreadable policy ⇒ request nothing.
+    let policy: RulesetReviewPolicy | null = null;
+    try { policy = this.deps.rulesetReviewPolicy ? await this.deps.rulesetReviewPolicy() : null; } catch { /* @silent-fallback-ok: local-verify fail-safe — an unreadable review policy requests nothing */ policy = null; }
+    if (!policy) return;
+    const needsReview = reviewRequired({ policy });
+    const readySince = state.reviewReadySince ?? {};
+    const nextReady: Record<number, number> = {};
+    for (const pr of prs) {
+      if (!reviewPrecheckPasses({ policy, reviewDecision: pr.reviewDecision ?? null })) continue;
+      nextReady[pr.number] = readySince[pr.number] ?? nowMs;
+    }
+    state.reviewReadySince = nextReady;
+    // Ready = when the precheck started passing, or the PR's open time when no review is required.
+    const readyAt = (pr: PrSummary): number => {
+      if (!needsReview) {
+        const opened = pr.createdAt ? Date.parse(pr.createdAt) : NaN;
+        if (Number.isFinite(opened)) return opened;
+      }
+      return nextReady[pr.number];
+    };
+    const ready = prs
+      .filter((pr) => nextReady[pr.number] !== undefined)
+      .filter((pr) => classifyCandidate(pr, this.cfg.agentNamespace, { floor: 'local', hasRecord: false }).skip === 'no-verify-record')
+      .filter((pr) => !this.recordFor(pr))
+      .filter((pr) => nowMs - next[pr.number].firstSeenAt >= VERIFY_HEAD_STABLE_MS)
+      .sort((a, b) => (readyAt(a) - readyAt(b)) || (a.number - b.number));
+    for (const pr of ready) {
+      try {
+        const r = await lv.requestVerify(pr.number);
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'verify-requested', pr: pr.number, head: pr.headRefOid, result: summarize(r) });
+      } catch (e) { /* @silent-fallback-ok: local-verify fail-safe — a failed request is retried next tick */
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'verify-request-failed', pr: pr.number, detail: String((e as Error)?.message).slice(0, 200) });
+      }
+    }
+  }
+
+  private async act(target: PrSummary, state: GreenPrState, floor: 'local' | 'actions' = 'actions'): Promise<boolean> {
     // Identity contract (R4): verify gh login matches expectedGhLogin (TTL cached).
     const idOk = await this.identityOk(state);
     if (idOk !== 'ok') {
@@ -678,11 +913,20 @@ export class GreenPrAutoMerger extends EventEmitter {
     let result: MergeRunResult;
     try {
       this.deps.audit({ kind: 'green-pr-automerge', event: 'merge-attempted', pr: target.number, head: target.headRefOid });
-      result = await this.deps.runner.run({ pr: target.number, headRefOid: target.headRefOid, repo: this.cfg.repo });
+      // The local floor always merges synchronously (neither --auto nor --admin),
+      // whatever mergeStrategy says (local-verify-merge-authority §2/§3).
+      result = await this.deps.runner.run({
+        pr: target.number, headRefOid: target.headRefOid, repo: this.cfg.repo,
+        ...(floor === 'local' ? { strategy: 'sync' as const } : {}),
+      });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       result = { outcome: `error:runner-${String((e as Error)?.message).slice(0, 40)}`, confirmedMerged: false };
     } finally {
       this.inFlight = false;
+    }
+
+    if (result.priorRecord && result.priorRecord !== 'orphan-reap-incomplete') {
+      this.deps.audit({ kind: 'green-pr-automerge', event: result.priorRecord === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: result.priorRecord, viaRun: true });
     }
 
     if (result.deadlineKilled) {
@@ -708,6 +952,21 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {
+    // An earlier attempt's safe-merge may still be alive and its identity could
+    // not be confirmed, so the runner refused to start a second one. Not this
+    // PR's failure: no ladder attempt, no breaker feed. ONE attention line
+    // (posted only when new), cleared when the runner can attempt again.
+    if (outcome === 'skipped:orphan-unresolved') {
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      if (!(state.attentionLines ?? []).includes(ORPHAN_UNRESOLVED_LINE)) {
+        void this.refreshAggregate(state, [ORPHAN_UNRESOLVED_LINE]);
+      }
+      return;
+    }
+    this.clearOrphanUnresolvedLine(state);
     // auto-merge-unavailable (repo setting OFF) — terminal-non-ladder. A
     // PERMANENT condition; do NOT burn maxAttempts over three pointless ticks
     // and do NOT silently flip to --admin (signal, not authority). Record the
@@ -719,6 +978,36 @@ export class GreenPrAutoMerger extends EventEmitter {
       state.episodes[target.number] = ep;
       this.deps.audit({ kind: 'green-pr-automerge', event: 'auto-merge-unavailable', pr: target.number });
       void this.refreshAggregate(state, [`PR #${target.number} is green but I could not arm auto-merge — "Allow auto-merge" is disabled on the repo. Enable it, or set mergeStrategy:'admin'.`]);
+      return;
+    }
+
+    if (outcome === NEEDS_INDEPENDENT_REVIEW) {
+      // A flagged record (harness-changing / protected-path / skips / tests removed)
+      // without the independent second pass. That is the AGENT's work — run the second
+      // pass and commit its trace (a new head) — never an operator approval
+      // (directive 2026-10-22). Terminal for THIS head, no ladder, no attention item;
+      // gather() skips the head until it moves.
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.headRefOid = target.headRefOid;
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'needs-independent-review', pr: target.number, head: target.headRefOid });
+      return;
+    }
+
+    if (outcome === 'refused:approval-required') {
+      // The base branch demands a HUMAN approval (ruleset require_last_push_approval
+      // or a required review) that --admin cannot and must not bypass. safe-merge
+      // has already REQUESTED the review; the only thing left is to hand the
+      // operator the link. Terminal-non-ladder: retrying cannot produce an
+      // approval, so this must not burn ladder attempts (2026-08-22, PR #1963).
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'approval-required', pr: target.number });
+      void this.refreshAggregate(state, [`PR #${target.number} is green and waiting on YOUR approval — the main-branch rule needs a reviewer other than the pusher, and I have already requested you. One click: https://github.com/${this.cfg.repo}/pull/${target.number}/files → Review changes → Approve. I merge the moment it lands.`]);
       return;
     }
 
@@ -922,10 +1211,21 @@ export class GreenPrAutoMerger extends EventEmitter {
   private async warmupReap(state: GreenPrState): Promise<void> {
     try {
       const r = await this.deps.runner.reapOrphan();
-      if (r.reaped) this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reaped', outcome: r.outcome });
+      if (r.reaped) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: r.outcome === 'orphan-presumed-foreign' ? 'orphan-presumed-foreign' : 'orphan-reaped', outcome: r.outcome });
+        this.clearOrphanUnresolvedLine(state);
+      }
+      else if (r.outcome === 'orphan-reap-incomplete') this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: 'recorded safe-merge pid alive, identity unconfirmed — record kept, new attempts blocked until it exits' });
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
       this.deps.audit({ kind: 'green-pr-automerge', event: 'orphan-reap-incomplete', detail: String((e as Error)?.message).slice(0, 120) });
     }
+  }
+
+  /** Drop the "auto-merge is paused" line and RE-POST the aggregate so the operator stops seeing it. */
+  private clearOrphanUnresolvedLine(state: GreenPrState): void {
+    if (!state.attentionLines?.includes(ORPHAN_UNRESOLVED_LINE)) return;
+    state.attentionLines = state.attentionLines.filter((l) => l !== ORPHAN_UNRESOLVED_LINE);
+    void this.refreshAggregate(state, []);
   }
 
   // ---- aggregated attention (P17) ----------------------------------------
@@ -1041,6 +1341,13 @@ export class GreenPrAutoMerger extends EventEmitter {
   private ladderCfg() {
     return { maxAttempts: this.cfg.maxAttempts, maxRearmEpisodes: this.cfg.maxRearmEpisodes, backoffBaseMs: this.cfg.backoffBaseMs };
   }
+}
+
+/** A short, content-free audit summary of a verify request result. */
+function summarize(r: unknown): string {
+  if (!r || typeof r !== 'object') return 'unknown';
+  const o = r as { ok?: unknown; status?: unknown; code?: unknown };
+  return o.ok === true ? String(o.status ?? 'ok') : String(o.code ?? 'refused');
 }
 
 function safeBool(fn: () => boolean): boolean {

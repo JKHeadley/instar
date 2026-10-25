@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-08T15:09:59.809Z",
+  "reviewers": [
+    "echo:codex-cli:gpt-6-astra",
+    "review_canary_repair:codex-cli:gpt-6-astra"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/telegram-origin-deadline-family-review-2026-09-08.md",
+  "convergenceSha256": "de4ed5749d5bcfa7c8c58950f0106b48e4719d95d6744016a3141862c495781e",
+  "areas": {
+    "Building": {
+      "areaSha256": "16a13b300e851807fc8943e18caa421cb635ee46ef657fbbd4594390f4acb08c",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "e6cb695f7f5de652f6a36cb40e8d70ae955e42704902f31efbeb4633d0aeb588",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "7d42dc13c242f17b8cb01ddd82ca252a7193f0745401d3100d76a875cbbe91e8",
+      "verdict": "accepted"
+    }
+  }
+}

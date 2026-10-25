@@ -1,0 +1,24 @@
+{
+  "ts": "2026-09-06T18:55:07.483Z",
+  "slug": "claude-5-family-model-ids",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/ModelSwapService.ts",
+      "src/core/ModelTierEscalation.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

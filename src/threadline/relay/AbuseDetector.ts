@@ -13,6 +13,7 @@
  */
 
 import type { AgentFingerprint } from './types.js';
+import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -123,7 +124,7 @@ export class AbuseDetector {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: Partial<AbuseDetectorConfig>, nowFn?: () => number) {
-    this.config = { ...DEFAULTS, ...config };
+    this.config = mergeDefaults(DEFAULTS, config);
     this.nowFn = nowFn ?? (() => Date.now());
 
     // Periodic cleanup every 5 minutes

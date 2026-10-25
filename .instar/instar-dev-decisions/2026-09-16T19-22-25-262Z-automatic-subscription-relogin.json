@@ -1,0 +1,45 @@
+{
+  "ts": "2026-09-16T19:22:25.262Z",
+  "slug": "automatic-subscription-relogin",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 335,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginPolicy.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginService.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 271,
+    "deletedLines": 64
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registered subscription-relogin-redrive model proves that one live cell owner plus fixed attempt, reissue, and wall-clock budgets, non-retryable security terminals, a durable breaker, and source-incident closure reach a no-action steady state under sustained provider failure."
+    }
+  },
+  "verdict": "pass"
+}

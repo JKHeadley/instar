@@ -162,7 +162,7 @@ export interface PlacementData {
   // target's applier materializes it (today only `active` crosses, so T never learns to
   // claim → the stuck-move bug). All OPTIONAL + back-compat: an absent `status` is `active`
   // (today's behavior), so an older peer that omits them is unaffected.
-  status?: 'active' | 'transferring';
+  status?: 'active' | 'transferring' | 'released';
   /** During `transferring`: the target machine the session is moving to. */
   transferTo?: string;
   /** The PRODUCER record's `timestamp` (the field the drain-grace + convergence deadline
@@ -1022,7 +1022,7 @@ export class CoherenceJournal {
       // an absent `status` is `active` (today's behavior). A present-but-malformed
       // field schema-rejects the whole record (never a silent partial accept).
       if (raw.status !== undefined) {
-        if (raw.status !== 'active' && raw.status !== 'transferring') return null;
+        if (raw.status !== 'active' && raw.status !== 'transferring' && raw.status !== 'released') return null;
         out.status = raw.status;
       }
       if (raw.transferTo !== undefined) {

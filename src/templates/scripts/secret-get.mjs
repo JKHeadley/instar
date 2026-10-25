@@ -134,6 +134,23 @@ if (!hit) {
 }
 const value = typeof hit[1] === 'string' ? hit[1] : JSON.stringify(hit[1]);
 
+// Prototype agent-held Google passkeys (spec agent-held-google-passkey §6,
+// Increment 1): reads stay allowed so the operator-run prototype scripts keep
+// working, but every read is recorded — key name and time only, never the value
+// — until the operator adopts or deletes that key.
+if (keyPath.split('.')[0].startsWith('google_passkey_')) {
+  try {
+    const logDir = path.join(stateDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(logDir, 'passkey-legacy-reads.jsonl'),
+      JSON.stringify({ ts: new Date().toISOString(), key: keyPath, pid: process.pid, mode: runCmd ? 'run' : 'stdout' }) + '\n',
+    );
+  } catch {
+    // Audit is best-effort: a logging failure must never block or leak the read.
+  }
+}
+
 if (runCmd) {
   const r = spawnSync(runCmd[0], runCmd.slice(1), { input: value, stdio: ['pipe', 'inherit', 'inherit'] });
   process.exit(r.status ?? 1);

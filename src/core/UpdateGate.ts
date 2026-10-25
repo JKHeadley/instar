@@ -51,6 +51,13 @@ export interface GateResult {
   hardBlockingSessions?: string[];
 }
 
+/** In-flight work a restart would lose, held until `until` (epoch ms) at the latest. */
+export interface RestartHold {
+  name: string;
+  until: number;
+  reason: string;
+}
+
 export interface UpdateGateConfig {
   /** Maximum hours to defer a restart for active sessions. Default: 4 */
   maxDeferralHours?: number;
@@ -403,6 +410,42 @@ export class UpdateGate {
       return true;
     }
     return false;
+  }
+
+  // ── Restart holds (in-flight work that is not a session) ─────────────
+  //
+  // Some work in flight lives only in this process's memory and is LOST by a restart, not
+  // resumed: the first one is a pairing invite waiting for the operator's approval, whose secret
+  // is deliberately never written to disk (docs/specs/a2a-pairing-invite-link.md §8). A hold
+  // names that work and the time it ends by itself (the invite's expiry). The AutoUpdater's
+  // existing deferral path (recordRestartDeferral + scheduleDeferredRestartRetry) consults
+  // getActiveHolds() and waits while any is active; a hold past its `until` is ignored, so every
+  // hold is bounded by construction. A provider that throws holds nothing (fail open: a broken
+  // reminder must not strand an update).
+  private readonly holdProviders = new Map<string, () => RestartHold[]>();
+
+  /** Register (or replace) a hold provider under `key`. */
+  setRestartHoldProvider(key: string, provider: () => RestartHold[]): void {
+    this.holdProviders.set(key, provider);
+  }
+
+  /** Holds whose `until` is still in the future, soonest-ending first. Pure. */
+  getActiveHolds(now: number = Date.now()): RestartHold[] {
+    const out: RestartHold[] = [];
+    for (const [key, provider] of this.holdProviders) {
+      let holds: RestartHold[] = [];
+      try {
+        holds = provider() ?? [];
+      } catch (err) {
+        // @silent-fallback-ok — a faulty hold provider holds nothing; logged, never strands an update.
+        console.warn(`[UpdateGate] restart hold provider "${key}" failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      for (const h of holds) {
+        if (h && typeof h.name === 'string' && Number.isFinite(h.until) && h.until > now) out.push(h);
+      }
+    }
+    return out.sort((a, b) => a.until - b.until);
   }
 
   /**

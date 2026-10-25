@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-22T03:32:23.216Z",
+  "slug": "local-verify-service",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "gap",
+    "gapItem": "ACT-147"
+  },
+  "verdict": "pass"
+}

@@ -89,8 +89,21 @@ describe('Benchmark-Divergence E2E lifecycle (feature is alive)', () => {
     // pin was `present:false` while no baseline existed; the first capture ships
     // inside the package and is found via the installed-package fallback, so a
     // real install now reports a live mirror rather than an honest absence).
-    expect(res.body.mirror).toMatchObject({ present: true, stale: false });
+    expect(res.body.mirror).toMatchObject({ present: true });
     expect(res.body.mirror.capturedAt).toBeTruthy();
+    // 2026-08-24: `stale: false` USED to be asserted here and it was a time bomb.
+    // The shipped baseline's `capturedAt` is 2026-07-24T01:20Z and the default
+    // threshold is 30 days, so this line passed for thirty days and then turned red
+    // at 2026-08-24T01:20Z on EVERY branch at once, main included, with no commit
+    // involved. An aliveness test asserted a fact about the calendar.
+    //
+    // What this test legitimately owns is that the envelope is WIRED: the mirror
+    // resolves on the production init path, carries a capture time, and reports a
+    // staleness verdict CONSISTENT with the age it computed. Whether that verdict is
+    // currently false is a question about release cadence, and it is pinned on an
+    // injected clock in tests/unit/BenchmarkDivergenceAnalyzer.test.ts instead.
+    expect(typeof res.body.mirror.staleDays).toBe('number');
+    expect(res.body.mirror.stale).toBe(res.body.mirror.staleDays > 30);
     expect(Array.isArray(res.body.findings)).toBe(true);
     expect(res.body.summary.unanalyzedLoss).toEqual({ byMachine: {} });
   });

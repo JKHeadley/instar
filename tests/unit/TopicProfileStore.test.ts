@@ -548,3 +548,26 @@ describe('TopicProfileStore — corrupt state tolerance', () => {
     expect(store.resolve(1)).toBeNull();
   });
 });
+
+
+describe('cosmetic display changes preserve model recovery state', () => {
+  it('retains parked profile, breaker, shadow intent and model undo history after reload', async () => {
+    const store = newStore({ isDryRun: () => true });
+    await store.mutate(42, { model: 'opus', updatedBy: 'operator' }, { shiftPrevious: true });
+    await store.mutate(42, { model: 'sonnet', updatedBy: 'operator' }, { shiftPrevious: true });
+    await store.parkAndRevert(42, 'spawn-failures', { model: 'opus', updatedAt: new Date().toISOString(), updatedBy: 'operator' });
+    await store.incrementBreaker(42); await store.incrementBreaker(42);
+    await store.setShadow(42, { model: 'haiku' }, 'operator');
+    const before = structuredClone(store.get(42)!);
+    const result = await store.mutate(42, { messageOriginDisplay: { enabled: false, model: false }, updatedBy: 'api-token' }, { shiftPrevious: true });
+    expect(result.supersededParked).toBe(false);
+    const after = newStore({ isDryRun: () => true }).get(42)!;
+    expect(after.current?.messageOriginDisplay).toEqual({ enabled: false, model: false });
+    for (const field of ['parked', 'breakerCount', 'intendedProfile', 'previous'] as const) expect(after[field]).toEqual(before[field]);
+    expect(after.current?.model).toBe(before.current?.model);
+    // A deliberate model pin retains its existing supersession behavior.
+    const modelChange = await store.mutate(42, { model: 'haiku', updatedBy: 'api-token' }, { shiftPrevious: true });
+    expect(modelChange.supersededParked).toBe(true); expect(store.get(42)?.parked).toBeNull();
+    expect(store.get(42)?.breakerCount).toBe(0); expect(store.get(42)?.intendedProfile).toBeNull();
+  });
+});

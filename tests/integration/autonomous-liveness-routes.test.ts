@@ -72,6 +72,44 @@ function mkTmp(): { tmpDir: string; stateDir: string } {
 }
 
 describe('GET /autonomous/liveness (integration)', () => {
+  it('surfaces completed-turn recovery through the real HTTP status route', async () => {
+    const t = mkTmp();
+    const recovered: number[] = [];
+    const idle = new Map<number, string>([[700, 'echo-topic-700']]);
+    const deps: AutonomousLivenessReconcilerDeps = {
+      now: () => 1_000_000,
+      listActiveRuns: () => [{ topicId: 700, remainingSeconds: 3600, paused: false, movedTo: null, moveSuspended: false, startedAtMs: 900_000 }],
+      liveTopicSnapshot: () => new Set([700]),
+      idleTopicSnapshot: () => idle,
+      queuePaused: () => false, topicInResumeQueue: () => false, operatorStoppedSince: () => false,
+      topicOwnerElsewhere: () => false, holdsLease: () => true, currentGenerationMs: () => null,
+      quotaOk: () => true, sessionCountOk: () => true, migrationInFlight: () => false,
+      pressureTier: () => 'normal', inflightSpawnStatus: () => ({ state: 'none' }),
+      resolveResumeUuid: () => 'uuid', resolveCwd: () => t.tmpDir, bindingUnambiguous: () => true,
+      respawn: async () => {},
+      recoverIdle: async ({ topicId }) => { recovered.push(topicId); idle.delete(topicId); return true; },
+      claimInflight: () => true, releaseClaim: () => {}, settleKill: async () => {}, notifyTopic: async () => {},
+      raiseAggregated: () => {}, audit: () => {},
+    };
+    const reconciler = new AutonomousLivenessReconciler(deps, { enabled: true, dryRun: false, debounceTicks: 1, debounceWindowSec: 0 });
+    const server = new AgentServer({
+      config: baseConfig(t.tmpDir, t.stateDir),
+      sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
+      state: new StateManager(t.stateDir), autonomousLivenessReconciler: reconciler,
+    });
+    try {
+      await server.start();
+      await reconciler.tick();
+      const res = await request(server.getApp()).get('/autonomous/liveness').set({ Authorization: `Bearer ${AUTH}` });
+      expect(res.status).toBe(200);
+      expect(recovered).toEqual([700]);
+      expect(res.body.conditions).toContainEqual(expect.objectContaining({ topicId: 700, state: 'turn-revived' }));
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(t.tmpDir, { recursive: true, force: true, operation: 'tests/integration/autonomous-liveness-routes.test.ts' });
+    }
+  });
+
   describe('DARK — reconciler not wired', () => {
     let tmpDir: string; let server: AgentServer;
     let app: ReturnType<AgentServer['getApp']>;

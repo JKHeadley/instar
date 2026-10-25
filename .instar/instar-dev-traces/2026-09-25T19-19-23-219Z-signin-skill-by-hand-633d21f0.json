@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "signin-skill-by-hand",
+  "sessionId": "c0099817-18ba-4d8c-bb6e-edb9901228c9",
+  "timestamp": "2026-09-25T19:19:23.219Z",
+  "artifactPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "artifactSha256": "8cd74ee03a98c9bd0cbbad7c091d564c1e9bd46f5f9944fe310d0b270cf52f8e",
+  "coveredFiles": [
+    "src/data/builtinSkillContent.ts",
+    "upgrades/next/signin-skill-by-hand.md",
+    "upgrades/side-effects/signin-skill-by-hand.md",
+    "upgrades/signin-skill-by-hand.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "skill wording: verification by real call, not claude auth status",
+  "eli16Path": "upgrades/signin-skill-by-hand.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

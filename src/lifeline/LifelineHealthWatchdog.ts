@@ -1,3 +1,4 @@
+import { mergeDefaults } from '../core/mergeDefaults.js';
 /**
  * LifelineHealthWatchdog — detects stuck-loop conditions and requests
  * self-restart via the RestartOrchestrator. Signal-vs-authority: the
@@ -132,7 +133,7 @@ export class LifelineHealthWatchdog {
   private latched = new Set<SignalName>();
 
   constructor(private readonly opts: WatchdogOptions) {
-    this.thresholds = { ...DEFAULT_WATCHDOG_THRESHOLDS, ...(opts.thresholds ?? {}) };
+    this.thresholds = mergeDefaults(DEFAULT_WATCHDOG_THRESHOLDS, (opts.thresholds ?? {}));
     if (opts.autoStart !== false) this.start();
   }
 

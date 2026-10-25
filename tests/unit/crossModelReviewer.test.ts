@@ -20,6 +20,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+// Resolve the capable tier rather than hardcoding an id: OpenAI has retired the
+// codex capable model three times, and a literal here re-breaks on each move.
+import { resolveCliModelFlag } from '../../src/providers/adapters/openai-codex/models.js';
+const CAPABLE_ID = resolveCliModelFlag('capable');
 import {
   detectCodexReviewer,
   detectCrossModelReviewer,
@@ -86,8 +90,8 @@ describe('detectCodexReviewer', () => {
     });
     expect(r.available).toBe(true);
     expect(r.framework).toBe('codex-cli');
-    // capable tier → gpt-5.5 per models.ts (the concrete id stays owned there).
-    expect(r.model).toBe('gpt-5.5');
+    // capable tier → resolved from models.ts (the concrete id stays owned there).
+    expect(r.model).toBe(CAPABLE_ID);
   });
 
   it('returns codex-not-authed when auth.json is missing', () => {
@@ -206,7 +210,7 @@ describe('buildCrossModelFlag (fallback states)', () => {
 describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   // crossFamily: true — these builders represent codex (a cross-model family);
   // aggregateRoundOutcomes counts only crossFamily:true successes (§5.2).
-  const ok = (model = 'gpt-5.5'): ReviewerResult => ({
+  const ok = (model = CAPABLE_ID): ReviewerResult => ({
     status: 'ok',
     framework: 'codex-cli',
     model,
@@ -216,9 +220,9 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   const degraded = (reason: string): ReviewerResult => ({
     status: 'degraded',
     framework: 'codex-cli',
-    model: 'gpt-5.5',
+    model: CAPABLE_ID,
     reason,
-    flag: `cross-model-review: codex-cli:gpt-5.5 (degraded: ${reason})`,
+    flag: `cross-model-review: codex-cli:${CAPABLE_ID} (degraded: ${reason})`,
     crossFamily: true,
   });
   const unavailable = (reason = 'codex-not-installed'): ReviewerResult => ({
@@ -231,12 +235,12 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
   it('any successful round → the clean codex-cli flag (one real opinion is enough)', () => {
     const f = aggregateRoundOutcomes([degraded('timeout'), ok(), degraded('rate-limited')]);
     expect(f.status).toBe('available');
-    expect(f.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(f.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('uses the LAST successful round flag when multiple rounds succeed', () => {
-    const f = aggregateRoundOutcomes([ok('gpt-5.4'), ok('gpt-5.5')]);
-    expect(f.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    const f = aggregateRoundOutcomes([ok('gpt-5.4'), ok(CAPABLE_ID)]);
+    expect(f.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('framework present every round but ZERO succeeded → degraded-all-rounds (as loud as unavailable)', () => {
@@ -315,11 +319,11 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('ok');
     expect(r.framework).toBe('codex-cli');
-    expect(r.model).toBe('gpt-5.5');
+    expect(r.model).toBe(CAPABLE_ID);
     expect(r.verdict).toBe('SERIOUS ISSUES');
     expect(r.findings).toHaveLength(1);
-    expect(r.findings![0].reviewer).toBe('cross-model:codex-cli:gpt-5.5');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(r.findings![0].reviewer).toBe(`cross-model:codex-cli:${CAPABLE_ID}`);
+    expect(r.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID}`);
   });
 
   it('degraded: available but the provider throws → status degraded, does NOT collapse to unavailable', async () => {
@@ -331,7 +335,7 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('degraded');
     expect(r.reason).toBe('timeout');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5 (degraded: timeout)');
+    expect(r.flag).toBe(`cross-model-review: codex-cli:${CAPABLE_ID} (degraded: timeout)`);
   });
 
   it('degraded: rate-limited provider error classifies as rate-limited', async () => {
@@ -353,7 +357,7 @@ describe('runCrossModelReview — the three outcome states', () => {
 // ── Driver parse ────────────────────────────────────────────────────────
 
 describe('parseReviewerReply', () => {
-  const tag = 'cross-model:codex-cli:gpt-5.5';
+  const tag = `cross-model:codex-cli:${CAPABLE_ID}`;
 
   it('parses a well-formed reply into a structured finding', () => {
     const f = parseReviewerReply(
@@ -456,8 +460,103 @@ describe('assembleReviewerPrompt', () => {
     expect(a.truncated).toBe(true);
   });
 
-  it('defaults to the 60KB context budget', () => {
-    expect(CONTEXT_BUDGET_BYTES).toBe(60 * 1024);
+  // ── *Never Silently Cut the Data a Decision Depends On* — the budget is DERIVED ─────────────
+
+  it('defaults to a transport-derived context budget, not the old undocumented 60KB', () => {
+    // The number itself is a reading (does it match the derivation in the
+    // header?), but two properties are checkable and both were false before:
+    //   - it is no longer the frozen 60KB that no one had re-derived;
+    //   - it is larger than an ordinary spec, so referenced context is not
+    //     structurally guaranteed to be dropped in full on every review.
+    expect(CONTEXT_BUDGET_BYTES).toBe(256 * 1024);
+    expect(CONTEXT_BUDGET_BYTES).not.toBe(60 * 1024);
+    // An ordinary spec in this repo runs 100-200KB; the old budget could not
+    // hold one, which is why context never once fitted alongside it.
+    expect(CONTEXT_BUDGET_BYTES).toBeGreaterThan(200_000);
+  });
+
+  it('reports NO omitted load-bearing context when everything fits', () => {
+    const a = assembleReviewerPrompt({
+      reviewerTemplate: template,
+      specMarkdown,
+      specPath: 'docs/specs/foo.md',
+      context: [{ path: 'docs/STANDARDS-REGISTRY.md', content: 'the rules' }],
+    });
+    // Always an array, never undefined — an absent field must not be
+    // mistakable for "nothing was lost".
+    expect(a.omittedLoadBearing).toEqual([]);
+  });
+
+  it('names a FULLY DROPPED load-bearing doc in omittedLoadBearing', () => {
+    const big = 'Z'.repeat(4000);
+    const a = assembleReviewerPrompt({
+      reviewerTemplate: template,
+      specMarkdown,
+      specPath: 'docs/specs/foo.md',
+      context: [
+        { path: 'docs/signal-vs-authority.md', content: big },
+        { path: 'docs/STANDARDS-REGISTRY.md', content: big },
+      ],
+      budgetBytes: 900, // holds neither
+    });
+    expect(a.omittedLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
+  });
+
+  it('counts a PARTIAL load-bearing doc as omitted — half a constitution is not the constitution', () => {
+    const big = 'Z'.repeat(4000);
+    const a = assembleReviewerPrompt({
+      reviewerTemplate: template,
+      specMarkdown,
+      specPath: 'docs/specs/foo.md',
+      // The load-bearing doc sorts first, so it is the one cut mid-document.
+      context: [{ path: 'docs/STANDARDS-REGISTRY.md', content: big }],
+      budgetBytes: 900,
+    });
+    // It IS partially present in the prompt...
+    expect(a.promptText).toContain('--- CONTEXT: docs/STANDARDS-REGISTRY.md ---');
+    // ...and that is NOT good enough: the reviewer cannot know whether the
+    // clause governing this spec was in the half it received.
+    expect(a.omittedLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
+  });
+
+  it('does NOT report an ordinary dropped doc as load-bearing', () => {
+    const big = 'Z'.repeat(4000);
+    const a = assembleReviewerPrompt({
+      reviewerTemplate: template,
+      specMarkdown,
+      specPath: 'docs/specs/foo.md',
+      context: [
+        { path: 'docs/ordinary-a.md', content: big },
+        { path: 'docs/ordinary-b.md', content: big },
+      ],
+      budgetBytes: 900,
+    });
+    expect(a.truncated).toBe(true);
+    expect(a.omittedLoadBearing).toEqual([]);
+  });
+
+  it('REPRODUCES the earned failure: a real-sized spec under the old budget lost ALL context', () => {
+    // The exact 2026-08-22 case. A 150KB spec (the CUT placement spec) with the
+    // parent design + the registry attached, under the old 60KB budget: the
+    // spec alone exceeds the whole allowance, so every referenced doc is
+    // dropped in full on every round. Regression-locks the shape of the bug.
+    const spec = 'S'.repeat(150_000);
+    const old = assembleReviewerPrompt({
+      reviewerTemplate: template,
+      specMarkdown: spec,
+      specPath: 'docs/specs/placement.md',
+      context: [
+        { path: 'docs/STANDARDS-REGISTRY.md', content: 'R'.repeat(130_000) },
+        { path: 'docs/parent-design.md', content: 'P'.repeat(4000) },
+      ],
+      budgetBytes: 60 * 1024,
+    });
+    expect(old.truncated).toBe(true);
+    // Total loss, not partial — and the note calls it "truncated" either way,
+    // which is precisely why disclosure alone did not save us.
+    expect(old.promptText).not.toContain('RRRR');
+    expect(old.promptText).not.toContain('PPPP');
+    expect(old.omittedLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
   });
 
   // ── F4 — deterministic truncation: priority order + NAMED dropped docs ──

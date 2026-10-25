@@ -22,10 +22,11 @@ import lockfile from 'proper-lockfile';
 import type { AgentRegistry, AgentRegistryEntry, AgentType, AgentStatus } from './types.js';
 import { getInstarVersion } from './Config.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { agentRegistryDir, agentRegistryPath } from './AgentRegistryPaths.js';
 
-// Paths are computed lazily from os.homedir() so they pick up mocks in tests
-function registryDir(): string { return path.join(os.homedir(), '.instar'); }
-function registryPath(): string { return path.join(registryDir(), 'registry.json'); }
+// Resolve lazily so explicit trial isolation is inherited by each process.
+const registryDir = agentRegistryDir;
+const registryPath = agentRegistryPath;
 function legacyRegistryPath(): string { return path.join(registryDir(), 'port-registry.json'); }
 
 const DEFAULT_PORT_RANGE_START = 4040;

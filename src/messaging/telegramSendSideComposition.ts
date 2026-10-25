@@ -1,6 +1,8 @@
+import { bindOriginAutomationTransport } from './telegram-origin/OriginDeterministicSend.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
+import type { TelegramOriginService } from './telegram-origin/TelegramOriginService.js';
 
 export type TelegramStartupMode = 'send-only' | 'server-polling';
 
@@ -37,6 +39,7 @@ export interface TelegramSendSideDeps {
   telegram: TelegramAdapter;
   scheduler?: JobScheduler;
   notificationBatcher: NotificationBatcher;
+  originService?: TelegramOriginService;
 }
 
 export interface TelegramSendSideResult {
@@ -52,15 +55,23 @@ export interface TelegramSendSideResult {
  * structurally difficult instead of relying on duplicated branch discipline.
  */
 export function wireTelegramSendSide(deps: TelegramSendSideDeps): TelegramSendSideResult {
+  if (deps.originService) bindOriginAutomationTransport(deps.telegram, deps.originService);
   if (deps.scheduler) {
     deps.scheduler.setMessenger(deps.telegram);
     deps.scheduler.setTelegram(deps.telegram);
   }
 
-  deps.notificationBatcher.setSendFunction(async (topicId, text) => {
-    await deps.telegram.sendToTopic(topicId, text);
+  deps.originService?.registerAutomationProducer('notification-batcher');
+  deps.notificationBatcher.setSendFunction(async (topicId, text, logicalSendId, origin) => {
+    if ((logicalSendId || origin) && deps.originService) {
+      const body = { text };
+      const producerId = origin?.producerId ?? 'notification-batcher';
+      deps.originService.registerAutomationProducer(producerId);
+      const credential = deps.originService.issueAutomationReply(producerId, topicId, body, origin?.author, logicalSendId);
+      await deps.originService.runWithAutomationReply(credential, topicId, body, () => deps.telegram.sendToTopic(topicId, text));
+    } else await deps.telegram.sendToTopic(topicId, text);
     return { messageId: 0 };
-  });
+  }, { supportsLogicalIds: !!deps.originService });
   deps.notificationBatcher.start();
 
   return {

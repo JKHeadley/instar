@@ -96,6 +96,11 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'supervision',
   'mcpAccess',
   'perMachineIndependent',
+  // Jev job-completion audit (spec: jev-job-supervision.md) — both wired
+  // through PerSlugManifest + manifestToJobDefinition, never dead vocabulary:
+  'completionAudit',
+  'declaredEffects',
+  'conditionalEffects',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -154,6 +159,12 @@ export interface PerSlugManifest {
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
+  /** Jev job-completion audit eligibility (spec: jev-job-supervision.md). */
+  completionAudit?: 'excluded' | 'eligible' | 'priority';
+  /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */
+  declaredEffects?: string[];
+  /** Same jail; verified only when the run claims the path (`EFFECT: <path>`). */
+  conditionalEffects?: string[];
 }
 
 // ── Load-problems surface ──────────────────────────────────────────────────
@@ -183,6 +194,25 @@ export interface LoadProblem {
 export interface AgentMdLoadResult {
   jobs: JobDefinition[];
   problems: LoadProblem[];
+  /**
+   * Enabled agentmd manifests that VALIDATED but whose markdown body could
+   * not be loaded this pass (missing, unreadable, malformed frontmatter,
+   * oversize, symlinked). Each entry's `problem` is also present in
+   * `problems`. The live scheduler uses this list at the trigger-boundary
+   * reload to keep running the LAST VALIDATED body for a job whose manifest
+   * is still present and enabled, instead of silently dropping the job —
+   * the manifest (existence, enabled, schedule) stays disk-authoritative;
+   * only the body falls back. A manifest that was never hydrated has nothing
+   * to fall back to and stays dropped.
+   */
+  bodyFailures: Array<{
+    manifest: PerSlugManifest;
+    problem: LoadProblem;
+    /** The path the CURRENT manifest resolves its body to
+     *  (`<jobsRoot>/<origin>/<slug>.md`). A fallback is only valid when the
+     *  previously validated body came from exactly this path. */
+    expectedPath: string;
+  }>;
 }
 
 // ── Bounded-concurrency helper (kept for Phase 1b sync→async migration) ───
@@ -245,7 +275,7 @@ export function loadAgentMdJobs(
   jobsRootDir: string,
 ): AgentMdLoadResult {
   if (!fs.existsSync(scheduleDir)) {
-    return { jobs: [], problems: [] };
+    return { jobs: [], problems: [], bodyFailures: [] };
   }
 
   let entries: string[];
@@ -259,6 +289,7 @@ export function loadAgentMdJobs(
         path: scheduleDir,
         message: `Failed to enumerate ${scheduleDir}: ${err instanceof Error ? err.message : String(err)}`,
       }],
+      bodyFailures: [],
     };
   }
 
@@ -306,6 +337,7 @@ export function loadAgentMdJobs(
   // the entry is NOT added to jobs[]; the problem surfaces in the Dashboard
   // Issues card.
   const jobs: JobDefinition[] = [];
+  const bodyFailures: AgentMdLoadResult['bodyFailures'] = [];
   for (const { manifest } of survivors) {
     // A disabled/retired per-slug manifest must load as a disabled JobDefinition
     // WITHOUT requiring its markdown body — the body may have been deleted when
@@ -322,6 +354,11 @@ export function loadAgentMdJobs(
       const loaded = loadAgentMdBody(manifest, jobsRootDir);
       if (loaded.problem) {
         problems.push(loaded.problem);
+        bodyFailures.push({
+          manifest,
+          problem: loaded.problem,
+          expectedPath: path.join(jobsRootDir, manifest.origin, `${manifest.slug}.md`),
+        });
         continue;
       }
       const job = loaded.job!;
@@ -346,7 +383,50 @@ export function loadAgentMdJobs(
     }
   }
 
-  return { jobs, problems };
+  return { jobs, problems, bodyFailures };
+}
+
+/**
+ * Rebuild an agentmd JobDefinition from the CURRENT on-disk manifest plus the
+ * LAST VALIDATED body that a previous load hydrated.
+ *
+ * Used by the scheduler's trigger-boundary reload when an enabled manifest is
+ * still present but its markdown body cannot be loaded right now (deleted,
+ * unreadable, malformed frontmatter, oversize, symlinked). The manifest stays
+ * disk-authoritative — `enabled`, `schedule`, `priority`, `machines`, … are
+ * taken from disk as of THIS pass — while `body`/`frontmatter`/`resolvedPath`
+ * (and the lock-file trust already established for that body) carry over from
+ * the previously validated load. Returns null when the previous definition
+ * has no validated body to fall back to, OR when that body was validated from
+ * a DIFFERENT path than the current manifest resolves to (`expectedPath`,
+ * i.e. `<jobsRoot>/<origin>/<slug>.md`) — an origin change on the same slug
+ * must never keep reading (and running) the old origin's file.
+ */
+export function rehydrateAgentMdJobFromLastValidatedBody(
+  manifest: PerSlugManifest,
+  previous: JobDefinition,
+  expectedPath: string,
+): JobDefinition | null {
+  if (
+    manifest.execute.type !== 'agentmd' ||
+    previous.execute.type !== 'agentmd' ||
+    typeof previous.body !== 'string' ||
+    typeof previous.resolvedPath !== 'string' ||
+    previous.resolvedPath !== expectedPath
+  ) {
+    // No validated body, no path to re-check it against, or a body validated
+    // from another path → nothing to fall back to; the caller leaves the job
+    // dropped, exactly as the loader did.
+    return null;
+  }
+  const job = manifestToJobDefinition(
+    manifest,
+    previous.frontmatter,
+    previous.body,
+    previous.resolvedPath,
+  );
+  if (previous.lockTrust !== undefined) job.lockTrust = previous.lockTrust;
+  return job;
 }
 
 /**
@@ -586,6 +666,34 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional mcpAccess
   if (j.mcpAccess !== undefined && j.mcpAccess !== 'project' && j.mcpAccess !== 'none') {
     throw new Error(`${prefix}: "mcpAccess" must be "project" or "none" if provided, got "${j.mcpAccess}"`);
+  }
+
+  // Optional Jev job-completion audit fields (spec: jev-job-supervision.md).
+  if (
+    j.completionAudit !== undefined &&
+    j.completionAudit !== 'excluded' &&
+    j.completionAudit !== 'eligible' &&
+    j.completionAudit !== 'priority'
+  ) {
+    throw new Error(`${prefix}: "completionAudit" must be "excluded", "eligible" or "priority" if provided, got "${j.completionAudit}"`);
+  }
+  // Both effect lists share one jail and one shape; the only difference is
+  // WHEN the audit verifies them (always vs. only-when-claimed).
+  for (const key of ['declaredEffects', 'conditionalEffects'] as const) {
+    const list = j[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || list.some((e) => typeof e !== 'string')) {
+      throw new Error(`${prefix}: "${key}" must be an array of strings if provided`);
+    }
+    if (list.length > 8) {
+      throw new Error(`${prefix}: "${key}" allows at most 8 entries`);
+    }
+    // Load-time jail: repo-relative only — no absolute paths, no traversal.
+    for (const e of list as string[]) {
+      if (e.startsWith('/') || e.startsWith('\\') || /^[A-Za-z]:/.test(e) || e.split('/').includes('..')) {
+        throw new Error(`${prefix}: "${key}" entry "${e}" is refused — repo-relative paths only (no absolute, no "..")`);
+      }
+    }
   }
 
   return j as unknown as PerSlugManifest;
@@ -1150,6 +1258,9 @@ function manifestToJobDefinition(
     manifestVersion: manifest.manifestVersion,
     mcpAccess: manifest.mcpAccess,
     perMachineIndependent: manifest.perMachineIndependent,
+    completionAudit: manifest.completionAudit,
+    declaredEffects: manifest.declaredEffects,
+    conditionalEffects: manifest.conditionalEffects,
   };
 
   if (manifest.execute.type === 'agentmd') {

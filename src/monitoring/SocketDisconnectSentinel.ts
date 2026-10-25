@@ -21,6 +21,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type SocketDisconnectStatus =
   | 'detected'
@@ -113,7 +114,7 @@ export class SocketDisconnectSentinel extends EventEmitter {
 
   constructor(private readonly deps: SocketDisconnectSentinelDeps, cfg: SocketDisconnectSentinelConfig = {}) {
     super();
-    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    this.cfg = mergeDefaults(DEFAULT_CONFIG, cfg);
   }
 
   /**

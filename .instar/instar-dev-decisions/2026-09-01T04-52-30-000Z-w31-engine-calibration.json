@@ -1,0 +1,30 @@
+{
+  "ts": "2026-09-01T04:52:30.000Z",
+  "slug": "w31-engine-calibration",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: window-lifecycle engine evaluates required operational duties",
+    "route behavior: src/server/routes.ts changes production HTTP compile/runtime-registry behavior"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 92,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowLifecycleObligationLedger.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 27
+  },
+  "causalAutopsy": {
+    "origin": "W30 live verification found four window-lifecycle calibration defects that rejected honest evidence or let comparison compiles clobber the live ledger.",
+    "missedBecause": "The previous engine matched compiler-shaped vocabulary and strict timing fields rather than the approved charter language and actual duty-keyed commitment shape.",
+    "preventedBy": "Focused unit, integration, e2e, lint, and approved-charter dist proof now cover backup/preview compile, nextUpdateDueAt trigger state, recurring grace, and W31 charter matching."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

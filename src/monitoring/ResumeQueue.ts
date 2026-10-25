@@ -41,6 +41,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { evidenceEligible, clampWorkEvidence, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export type ResumePriorityClass = 'interactive' | 'job' | 'other';
 
@@ -200,6 +201,14 @@ export interface ResumeCandidateInput {
   disposition: 'terminal' | 'recovery-bounce';
   origin: 'operator' | 'autonomous';
   workEvidence: string[];
+  /**
+   * Age-limit kill only: the session was seen working after it passed its age
+   * limit. It lived and worked a full lifetime since any earlier resume, so this
+   * re-reap is not a kill-resume-kill loop: the resurrection ledger restarts
+   * instead of counting it (2026-09-30 18:14Z, topic 52075: a coordinator that
+   * worked five hours after its last revival was refused by the cap).
+   */
+  seenWorkingPastAgeLimit?: boolean;
 }
 
 export interface ResumeQueueDeps {
@@ -257,7 +266,7 @@ export class ResumeQueue {
 
   constructor(deps: ResumeQueueDeps, cfg?: Partial<ResumeQueueConfig>) {
     this.deps = deps;
-    this.cfg = { ...DEFAULT_RESUME_QUEUE_CONFIG, ...(cfg ?? {}) };
+    this.cfg = mergeDefaults(DEFAULT_RESUME_QUEUE_CONFIG, (cfg ?? {}));
     this.now = deps.now ?? (() => Date.now());
     const stateRoot = path.join(deps.stateDir, 'state');
     this.statePath = path.join(stateRoot, 'resume-queue.json');
@@ -671,7 +680,13 @@ export class ResumeQueue {
     const tombstone = this.tombstoneFor(stableKey);
     if (tombstone?.lastResumeAt) {
       const windowFresh = this.now() - Date.parse(tombstone.windowStartAt) < RESURRECTION_WINDOW_MS;
-      if (!windowFresh) {
+      if (input.seenWorkingPastAgeLimit) {
+        // The revived session worked past its whole age limit — not a loop.
+        // Restart the ledger; later re-reaps are counted from here.
+        tombstone.resurrections = 0;
+        tombstone.windowStartAt = new Date(this.now()).toISOString();
+        this.audit({ event: 'resurrection-ledger-reset', why: 'worked-past-age-limit', stableKey, source: opts?.source });
+      } else if (!windowFresh) {
         // The prior resume is outside the 24h window — stale history, not a
         // kill-resume-kill loop. Reset the ledger; this re-reap starts fresh.
         tombstone.resurrections = 0;

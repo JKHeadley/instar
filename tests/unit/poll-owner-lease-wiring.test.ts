@@ -22,7 +22,7 @@ describe('poll-ownership lease — wiring integrity', () => {
     const src = read('src/lifeline/TelegramLifeline.ts');
     // import + call after the successful-poll reset block
     expect(src).toMatch(/import \{ writeLease as writePollOwnerLease \} from '\.\/TelegramPollOwnerLease\.js'/);
-    expect(src).toMatch(/writePollOwnerLease\(this\.projectConfig\.stateDir, this\.config\.token, process\.pid\)/);
+    expect(src).toMatch(/writePollOwnerLease\(this\.projectConfig\.stateDir, this\.config\.token, process\.pid, Date\.now\(\),/);
     // it lives in the successful-poll branch (after backoff counter resets)
     const idx = src.indexOf('writePollOwnerLease(');
     const window = src.slice(Math.max(0, idx - 1500), idx + 100);
@@ -51,6 +51,13 @@ describe('poll-ownership lease — wiring integrity', () => {
     const src = read('src/commands/server.ts');
     expect(src).not.toMatch(/writeLease\s*\(/);
     expect(src).not.toMatch(/writePollOwnerLease/);
+  });
+
+  it('feeds the fresh token-matched lifeline lease into the W32 delivery predicate', () => {
+    const src = read('src/server/AgentServer.ts');
+    expect(src).toMatch(/import \{ lifelinePollIsReachable as telegramLifelinePollIsReachable \} from '\.\.\/lifeline\/TelegramPollOwnerLease\.js'/);
+    expect(src).toMatch(/const lifelineDeliveryReachable = telegramBotToken !== null\s*&& Number\.isFinite\(sampledAtMs\)\s*&& telegramLifelinePollIsReachable\(options\.config\.stateDir, telegramBotToken, sampledAtMs\)/);
+    expect(src).toContain('deliveryReachable: adapterDeliveryReachable || lifelineDeliveryReachable');
   });
 
   it('the lease lives under stateDir at a stable path', () => {

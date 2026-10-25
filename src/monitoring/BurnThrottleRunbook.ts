@@ -21,6 +21,7 @@
 
 import { LlmRateGate, type InstalledThrottle } from './LlmRateGate.js';
 import type { DegradationEvent } from './DegradationReporter.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 export interface BurnThrottleConfig {
   /** Whether to auto-throttle (true) or alert-only (false). Default true. */
@@ -101,7 +102,7 @@ export class BurnThrottleRunbook {
 
   constructor(deps: BurnThrottleRunbookDeps) {
     this.gate = deps.gate;
-    this.config = { ...DEFAULT_BURN_THROTTLE_CONFIG, ...(deps.config ?? {}) };
+    this.config = mergeDefaults(DEFAULT_BURN_THROTTLE_CONFIG, (deps.config ?? {}));
     this.sendTelegram = deps.sendTelegram;
     this.alertTopicId = deps.alertTopicId ?? 8615;
     this.now = deps.now ?? (() => Date.now());

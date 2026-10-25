@@ -1,0 +1,38 @@
+{
+  "ts": "2026-09-30T09:35:26.925Z",
+  "slug": "feedback-inbox-vault-token",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/feedback-factory/inbox/resolveInboxBlobToken.ts matches token handling",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 304,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/types.ts",
+      "src/feedback-factory/inbox/inboxAwareness.ts",
+      "src/feedback-factory/inbox/resolveInboxBlobToken.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/feedback-factory-process.md",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/jobDeclaredFailure.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 283,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

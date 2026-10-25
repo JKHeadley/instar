@@ -1,0 +1,58 @@
+{
+  "ts": "2026-08-29T04:32:08.344Z",
+  "slug": "codex-session-lifecycle-reliability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: scripts/verify-codex-stage-b-release-evidence.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 26,
+  "loc": 4772,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/verify-codex-stage-b-release-evidence.mjs",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/CodexComposerAdapter.ts",
+      "src/core/CodexDeliveryObserver.ts",
+      "src/core/CodexLifecycleProductionComposition.ts",
+      "src/core/InboundDeliveryStore.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/PendingInjectStore.ts",
+      "src/core/PhysicalEffectLock.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RecoveryActuationAuthority.ts",
+      "src/core/SessionDrainRunner.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StageBActivationGate.ts",
+      "src/core/StageBStartupReadiness.ts",
+      "src/core/StuckInputSentinel.ts",
+      "src/core/TrackedPhysicalEffectDispatcher.ts",
+      "src/core/UpdateChecker.ts",
+      "src/core/types.ts",
+      "src/data/codexStageBReleaseEvidence.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/monitoring/FrameworkProcessProvenance.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 4577,
+    "deletedLines": 195
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "RecoveryActuationAuthority is a caller-invoked one-shot authority with a single-use delivery-scoped capability; Stage C actuation remains dark, and the periodic Stage-B observer cannot restart, replay, respawn, or otherwise actuate recovery."
+  },
+  "verdict": "pass"
+}

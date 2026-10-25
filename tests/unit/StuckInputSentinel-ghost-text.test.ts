@@ -82,7 +82,7 @@ function buildStubManager(
       const a = ansiPanes[name];
       return typeof a === 'function' ? a() : a;
     }),
-    fireStuckInputRecovery: vi.fn(),
+    fireStuckInputRecovery: vi.fn().mockReturnValue({ status: 'attempted' }),
     getStrandedDraftMarker: vi.fn((name: string) => liveMarkers.get(name)),
     clearStrandedDraftMarker: vi.fn((name: string) => { liveMarkers.delete(name); }),
     strandedDraftMarkerSessions: vi.fn(() => [...liveMarkers.keys()]),

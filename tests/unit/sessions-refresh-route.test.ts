@@ -12,6 +12,7 @@ import { createRoutes } from '../../src/server/routes.js';
 
 interface MockSessionRefresh {
   refreshSession: ReturnType<typeof vi.fn>;
+  precheckRefusal: ReturnType<typeof vi.fn>;
 }
 
 interface Server { url: string; close: () => Promise<void>; }
@@ -50,6 +51,7 @@ describe('POST /sessions/refresh', () => {
   beforeEach(async () => {
     sessionRefresh = {
       refreshSession: vi.fn().mockResolvedValue({ ok: true, newSessionName: 'new', topicId: 9235 }),
+      precheckRefusal: vi.fn().mockReturnValue(null),
     };
     server = await listen(buildApp(sessionRefresh));
   });
@@ -127,6 +129,30 @@ describe('POST /sessions/refresh', () => {
       fresh: undefined,
       force: false,
     });
+  });
+
+  // EVO-025: refusals are answered synchronously, never as a 202 that is
+  // later refused only in server.log.
+  it('returns 409 not_telegram_bound (not 202) for a name the resolver cannot bind', async () => {
+    sessionRefresh.precheckRefusal.mockReturnValue({
+      ok: false,
+      code: 'not_telegram_bound',
+      message: 'Session "Jev" is not bound to a Telegram topic; cannot self-refresh. "Jev" looks like a display name — pass the tmux session name instead ("echo-jev"; see tmuxSession in GET /sessions).',
+    });
+    const r = await api('/sessions/refresh', { sessionName: 'Jev' });
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('not_telegram_bound');
+    expect(r.body.error).toContain('echo-jev');
+
+    await new Promise(resolve => setTimeout(resolve, 600));
+    expect(sessionRefresh.refreshSession).not.toHaveBeenCalled();
+  });
+
+  it('returns 429 when the rate guard would refuse', async () => {
+    sessionRefresh.precheckRefusal.mockReturnValue({ ok: false, code: 'rate_limited', message: 'Refresh rate limit exceeded' });
+    const r = await api('/sessions/refresh', { sessionName: 'echo-qalatra' });
+    expect(r.status).toBe(429);
+    expect(r.body.code).toBe('rate_limited');
   });
 
   it('returns 503 when sessionRefresh is not wired', async () => {

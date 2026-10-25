@@ -50,6 +50,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { mergeDefaults, resolveTimerMs } from '../core/mergeDefaults.js';
 
 export type ContextWedgeStatus =
   | 'detected'
@@ -107,6 +108,15 @@ const DEFAULT_CONFIG: Required<ContextWedgeSentinelConfig> = {
   tickIntervalMs: 20_000,
   confirmWindowMs: 45_000,
 };
+
+/**
+ * Floor for the scan period. The tick captures every live session's pane, so a
+ * period near zero is not "more responsive" — it is a busy loop that starves the
+ * server's event loop (the 2026-09-21 incident ran this loop every ~1ms). A wedge
+ * is a permanent state, so nothing is gained by scanning faster than once a
+ * second.
+ */
+export const MIN_TICK_INTERVAL_MS = 1_000;
 
 /**
  * Patterns for the thinking-block 400. Intentionally anchored on the unusual,
@@ -197,7 +207,24 @@ export class ContextWedgeSentinel extends EventEmitter {
 
   constructor(private readonly deps: ContextWedgeSentinelDeps, cfg: ContextWedgeSentinelConfig = {}) {
     super();
-    this.cfg = { ...DEFAULT_CONFIG, ...cfg };
+    // mergeDefaults, NOT `{ ...DEFAULT_CONFIG, ...cfg }`: server.ts builds this
+    // cfg as `{ tickIntervalMs: wedgeCfg.tickIntervalMs, ... }`, so an operator
+    // config that omits the field arrives as an explicit `undefined` — which a
+    // spread would copy over the default, handing setInterval an undefined period.
+    const merged = mergeDefaults(DEFAULT_CONFIG, cfg);
+    this.cfg = {
+      ...merged,
+      tickIntervalMs: resolveTimerMs(merged.tickIntervalMs, DEFAULT_CONFIG.tickIntervalMs, MIN_TICK_INTERVAL_MS),
+      // One-shot delay: a non-number falls back to the default (an undefined
+      // delay would confirm IMMEDIATELY, skipping the false-positive defence),
+      // but small finite values stay — tests legitimately use a 20ms window.
+      confirmWindowMs: resolveTimerMs(merged.confirmWindowMs, DEFAULT_CONFIG.confirmWindowMs),
+    };
+  }
+
+  /** Effective (resolved) timing — for tests and diagnostics. */
+  get effectiveTiming(): { tickIntervalMs: number; confirmWindowMs: number } {
+    return { tickIntervalMs: this.cfg.tickIntervalMs, confirmWindowMs: this.cfg.confirmWindowMs };
   }
 
   /** Begin the self-driving scan loop. No-op without listSessionNames. */

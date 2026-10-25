@@ -31,6 +31,7 @@ import os from 'node:os';
 // Reuse the EXACT boot-block sanitizer (control-char/ANSI strip + angle-bracket escape
 // + backtick neutralize) so the two boot surfaces can never drift (D16).
 import { sanitizeForBlock } from './BootSelfKnowledge.js';
+import { validWebKBuildEnrollment } from '../messaging/telegram-origin/TelegramWebKDriver.js';
 
 // ── Types (D-model) ──────────────────────────────────────────────────────────
 
@@ -41,7 +42,18 @@ export type PlaywrightLoginMethod =
   | 'password+totp'
   | 'password+phone-2fa'
   | 'oauth-token'
+  | 'google-passkey'
   | 'unknown';
+
+/**
+ * Role bindings. `password` / `totp` are VAULT secret names (must appear in vaultRefs).
+ * `passkey` is the entry KEY in the machine-local PasskeyCredentialStore (spec
+ * agent-held-google-passkey §3.4) — never a vault name, never material; it is validated
+ * against the store through the injected `passkeyEntryExists`.
+ */
+export interface PlaywrightVaultBindings { password?: string; totp?: string; passkey?: string;
+  /** Vault entry holding this account's unused Google backup codes (single-use; the repair removes each one it spends). */
+  backupCode?: string }
 
 /** Who owns the account — Know Your Principal (D12). Advisory self-assertion, audited. */
 export type PlaywrightAccountOwner = 'agent' | 'operator';
@@ -56,8 +68,17 @@ export interface PlaywrightAccount {
   owner: PlaywrightAccountOwner;
   /** Vault secret NAMES only — NEVER values (D3). */
   vaultRefs: string[];
+  /** Secret-name role bindings for deterministic browser automation. Values are
+   * names from vaultRefs, never secret values. Optional for registry v1 rows. */
+  vaultBindings?: PlaywrightVaultBindings;
   /** Login method enum. */
   loginMethod: PlaywrightLoginMethod;
+  /**
+   * The method `google-passkey` REPLACED when it was assigned (spec §3.4). Only ever set
+   * by the registry itself, only while loginMethod is `google-passkey`; consumed by
+   * `revertLoginMethod`. Absent on every other account.
+   */
+  priorLoginMethod?: PlaywrightLoginMethod;
   /** Last-KNOWN session state — advisory, NOT a guarantee (D11). */
   lastAsserted: boolean;
   /** ISO timestamp or null; the block renders its AGE, never a bare "logged-in" (D11). */
@@ -77,6 +98,16 @@ export interface PlaywrightProfile {
   isDefault: boolean;
   createdAt: string;
   accounts: PlaywrightAccount[];
+  /** Server-owned Telegram submission profile; never a generic writable MCP profile. */
+  executionOwner?: 'telegram-origin-broker';
+  /** Machine-local enrollment; no transport/session keys or cookies. */
+  telegramBroker?: {
+    accountId: string;
+    accountNumber: number;
+    executablePath: string;
+    supportedBuilds: import('../messaging/telegram-origin/TelegramWebKDriver.js').WebKBuildEnrollment[];
+    exclusiveEnrollment?: { version: 1; checkedAt: number; retiredPids: number[]; proofDigest: string };
+  };
 }
 
 interface RegistryFile {
@@ -144,9 +175,22 @@ export interface PlaywrightProfileRegistryOptions {
    * Injected so this module NEVER touches a secret value (D3) and tests stay hermetic.
    */
   listVaultNames: () => string[] | null;
+  /**
+   * Whether a passkey store entry KEY exists on this machine (spec §3.4: the `passkey`
+   * binding is validated by `PasskeyCredentialStore.has()`). Returns null when the store is
+   * unreadable so validation fails CLOSED. When NOT injected, a `passkey` binding is refused
+   * outright — no caller can assign `google-passkey` without the store wired in.
+   */
+  passkeyEntryExists?: (key: string) => boolean | null;
   /** Optional override for os.hostname() in the block header (tests). */
   hostname?: string;
 }
+
+export type PlaywrightRevertLoginMethodResult =
+  | { profileId: string; service: string; identity: string; reverted: true; from: 'google-passkey'; to: PlaywrightLoginMethod;
+      /** True when the restored method needs a password/TOTP binding the enrollment overwrote — re-bind before relying on it. */
+      bindingMissing: boolean }
+  | { profileId: string; service: string; identity: string; reverted: false; reason: 'not-passkey' | 'no-prior-method' };
 
 /** Thrown when the registry file exists but is unparseable — writes fail CLOSED (D15). */
 export class PlaywrightRegistryCorruptError extends Error {
@@ -183,6 +227,7 @@ const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'password+totp',
   'password+phone-2fa',
   'oauth-token',
+  'google-passkey',
   'unknown',
 ];
 
@@ -190,12 +235,14 @@ export class PlaywrightProfileRegistry {
   private readonly stateDir: string;
   private readonly projectDir: string;
   private readonly listVaultNames: () => string[] | null;
+  private readonly passkeyEntryExists: ((key: string) => boolean | null) | null;
   private readonly hostname: string;
 
   constructor(opts: PlaywrightProfileRegistryOptions) {
     this.stateDir = opts.stateDir;
     this.projectDir = path.resolve(opts.projectDir);
     this.listVaultNames = opts.listVaultNames;
+    this.passkeyEntryExists = opts.passkeyEntryExists ?? null;
     this.hostname = opts.hostname ?? os.hostname();
   }
 
@@ -423,6 +470,7 @@ export class PlaywrightProfileRegistry {
       if (store.profiles.some((p) => p.id === id)) {
         throw new PlaywrightRegistryError(`profile '${id}' already exists`, 409);
       }
+      this.assertDirectoryNotManaged(store, userDataDir);
       if (store.profiles.length >= MAX_PROFILES) {
         throw new PlaywrightRegistryError(`maxProfiles=${MAX_PROFILES} reached`, 422);
       }
@@ -439,6 +487,35 @@ export class PlaywrightProfileRegistry {
     });
   }
 
+  /**
+   * Materialize one registered custom profile on this machine. This is deliberately
+   * separate from createProfile(): existing callers keep their metadata-only
+   * semantics, while remote/dashboard provisioning can make the profile immediately
+   * admissible to browser automation without anyone touching the host machine.
+   *
+   * The persisted path is re-jailed at point of use. mkdir is idempotent and never
+   * removes or overwrites profile contents.
+   */
+  materializeProfileDirectory(profileId: string): { profileId: string; userDataDir: string; created: boolean } {
+    const profile = this.ensureSeeded().profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (profile.userDataDir === null) {
+      throw new PlaywrightRegistryError('the default profile has no dedicated directory', 409);
+    }
+    const userDataDir = this.jailUserDataDir(profile.userDataDir);
+    const created = !this.dirExists(userDataDir);
+    try {
+      fs.mkdirSync(userDataDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(userDataDir, 0o700);
+    } catch (err) {
+      throw new PlaywrightRegistryError(
+        `could not create the dedicated profile directory: ${err instanceof Error ? err.message : String(err)}`,
+        500,
+      );
+    }
+    return { profileId, userDataDir, created };
+  }
+
   assignAccount(
     profileId: string,
     input: {
@@ -446,6 +523,7 @@ export class PlaywrightProfileRegistry {
       identity: string;
       owner: PlaywrightAccountOwner;
       vaultRefs?: string[];
+      vaultBindings?: PlaywrightVaultBindings;
       loginMethod?: PlaywrightLoginMethod;
       note?: string;
     },
@@ -462,6 +540,38 @@ export class PlaywrightProfileRegistry {
       : 'unknown';
     const note = sanitizeStored(input.note ?? '', MAX_NOTE_CHARS);
     const vaultRefs = Array.isArray(input.vaultRefs) ? input.vaultRefs.map((r) => String(r)) : [];
+    let vaultBindings: PlaywrightVaultBindings | undefined;
+    if (input.vaultBindings !== undefined) {
+      if (!input.vaultBindings || typeof input.vaultBindings !== 'object' || Array.isArray(input.vaultBindings)) {
+        throw new PlaywrightRegistryError('vaultBindings must be an object', 400);
+      }
+      const entries = Object.entries(input.vaultBindings);
+      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp' && role !== 'passkey' && role !== 'backupCode')
+        || typeof ref !== 'string' || ref.length === 0)) {
+        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp/backupCode vault names or a passkey entry key', 400);
+      }
+      vaultBindings = Object.fromEntries(entries);
+    }
+    // The passkey method and the passkey binding are one thing (spec §3.4): neither without the other.
+    if (loginMethod === 'google-passkey' && !vaultBindings?.passkey) {
+      throw new PlaywrightRegistryError("loginMethod 'google-passkey' requires vaultBindings.passkey", 400);
+    }
+    if (loginMethod !== 'google-passkey' && vaultBindings?.passkey) {
+      throw new PlaywrightRegistryError("vaultBindings.passkey is only valid with loginMethod 'google-passkey'", 400);
+    }
+    if (vaultBindings?.passkey) {
+      if (typeof vaultBindings.passkey !== 'string' || vaultBindings.passkey.length > MAX_IDENTITY_CHARS) {
+        throw new PlaywrightRegistryError('vaultBindings.passkey must be a passkey store entry key', 400);
+      }
+      if (!this.passkeyEntryExists) {
+        throw new PlaywrightRegistryError('passkey store not available on this machine — refusing to assign a passkey binding', 409);
+      }
+      const present = this.passkeyEntryExists(vaultBindings.passkey);
+      if (present === null) {
+        throw new PlaywrightRegistryError('passkey store unreadable — refusing to assign a passkey binding', 409);
+      }
+      if (!present) throw new PlaywrightRegistryError('unknown passkey entry key', 409);
+    }
 
     // Ref-validation FAILS CLOSED if vault names are unreadable (D17).
     const liveNames = this.listVaultNames();
@@ -475,18 +585,32 @@ export class PlaywrightProfileRegistry {
     if (unknown.length > 0) {
       throw new PlaywrightRegistryError(`unknown vault ref(s): ${unknown.join(', ')}`, 409);
     }
+    const { passkey: _passkeyBinding, ...secretBindings } = vaultBindings ?? {};
+    const unlistedBindings = Object.values(secretBindings).filter((ref) => !vaultRefs.includes(ref));
+    if (unlistedBindings.length > 0) {
+      throw new PlaywrightRegistryError('vaultBindings must reference names present in vaultRefs', 409);
+    }
 
     return this.mutate<PlaywrightAccount>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
 
       const existing = profile.accounts.find((a) => a.service === service && a.identity === identity);
+      // Record the method the passkey REPLACED so `revertLoginMethod` has a target (spec §3.4).
+      // Derived only — never caller-supplied. Kept across a passkey→passkey re-assign; an
+      // 'unknown' prior is not worth restoring.
+      const priorLoginMethod: PlaywrightLoginMethod | undefined = loginMethod !== 'google-passkey' ? undefined
+        : existing?.loginMethod === 'google-passkey' ? existing.priorLoginMethod
+        : existing && existing.loginMethod !== 'unknown' ? existing.loginMethod
+        : undefined;
       const account: PlaywrightAccount = {
         service,
         identity,
         owner: input.owner,
         vaultRefs,
+        ...(vaultBindings && Object.keys(vaultBindings).length > 0 ? { vaultBindings } : {}),
         loginMethod,
+        ...(priorLoginMethod ? { priorLoginMethod } : {}),
         lastAsserted: existing?.lastAsserted ?? false,
         lastVerifiedAt: existing?.lastVerifiedAt ?? null,
         note,
@@ -503,6 +627,56 @@ export class PlaywrightProfileRegistry {
       }
       return { next: store, result: account };
     });
+  }
+
+  /**
+   * Restore the method a `google-passkey` assignment replaced (spec §3.4 rollback lever;
+   * `POST /passkeys/revert-method`). Drops the passkey binding and `priorLoginMethod`. An
+   * account that is not on the passkey method, or has no recorded prior, is left UNCHANGED
+   * and named in the result — never guessed into a method.
+   */
+  revertLoginMethod(profileId: string, service: string, identity: string): PlaywrightRevertLoginMethodResult {
+    return this.mutate<PlaywrightRevertLoginMethodResult>((store) => {
+      const profile = store.profiles.find((p) => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      const account = profile.accounts.find((a) => a.service === service && a.identity === identity);
+      if (!account) throw new PlaywrightRegistryError(`account (${service}, ${identity}) not found`, 404);
+      const ref = { profileId, service: account.service, identity: account.identity };
+      if (account.loginMethod !== 'google-passkey') return { next: store, result: { ...ref, reverted: false, reason: 'not-passkey' } };
+      const prior = account.priorLoginMethod;
+      if (!prior || prior === 'google-passkey' || !LOGIN_METHODS.includes(prior)) {
+        return { next: store, result: { ...ref, reverted: false, reason: 'no-prior-method' } };
+      }
+      account.loginMethod = prior;
+      delete account.priorLoginMethod;
+      if (account.vaultBindings) {
+        delete account.vaultBindings.passkey;
+        if (Object.keys(account.vaultBindings).length === 0) delete account.vaultBindings;
+      }
+      // The enrollment replaced the old bindings; nothing is invented back. Say so.
+      const bindingMissing = (prior === 'password' || prior === 'password+totp') && !account.vaultBindings?.password
+        || prior === 'password+totp' && !account.vaultBindings?.totp;
+      return { next: store, result: { ...ref, reverted: true, from: 'google-passkey', to: prior, bindingMissing } };
+    });
+  }
+
+  /** Whether an account row exists (read-only) — lets a batch caller validate every target before mutating any. */
+  hasAccount(profileId: string, service: string, identity: string): boolean {
+    const profile = this.ensureSeeded().profiles.find((p) => p.id === profileId);
+    return !!profile?.accounts.some((a) => a.service === service && a.identity === identity);
+  }
+
+  /** Every (profile, account) currently on the `google-passkey` method — the revert route's default set. */
+  listPasskeyAccounts(): Array<{ profileId: string; service: string; identity: string; priorLoginMethod: PlaywrightLoginMethod | null }> {
+    const out: Array<{ profileId: string; service: string; identity: string; priorLoginMethod: PlaywrightLoginMethod | null }> = [];
+    for (const p of this.ensureSeeded().profiles) {
+      for (const a of p.accounts) {
+        if (a.loginMethod === 'google-passkey') {
+          out.push({ profileId: p.id, service: a.service, identity: a.identity, priorLoginMethod: a.priorLoginMethod ?? null });
+        }
+      }
+    }
+    return out;
   }
 
   patchAccount(
@@ -531,6 +705,7 @@ export class PlaywrightProfileRegistry {
     this.mutate<void>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile belongs to its submission broker', 409);
       if (profile.isDefault) throw new PlaywrightRegistryError('cannot delete the default profile', 409);
       store.profiles = store.profiles.filter((p) => p.id !== profileId);
       return { next: store, result: undefined };
@@ -541,6 +716,7 @@ export class PlaywrightProfileRegistry {
     this.mutate<void>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram account enrollment cannot be removed through generic browser tools', 409);
       const before = profile.accounts.length;
       profile.accounts = profile.accounts.filter(
         (a) => !(a.service === service && a.identity === identity),
@@ -554,6 +730,57 @@ export class PlaywrightProfileRegistry {
 
   // ── Activation (compute + optional write) — D10 ─────────────────────────────────
 
+  /** Trusted enrollment/migration entrypoint, deliberately absent from generic HTTP/MCP actions.
+   * Existing writable processes must be revoked separately before broker activation. */
+  claimTelegramBrokerProfile(profileId: string, enrollment?: PlaywrightProfile['telegramBroker']): PlaywrightProfile {
+    return this.mutate<PlaywrightProfile>((store) => {
+      const profile = store.profiles.find(p => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError('Telegram profile not found', 404);
+      if (!profile.userDataDir || profile.isDefault) throw new PlaywrightRegistryError('Telegram broker requires a dedicated non-default profile', 409);
+      if (!profile.accounts.some(a => a.service.toLowerCase() === 'telegram' && a.owner === 'operator')) throw new PlaywrightRegistryError('operator Telegram account enrollment required', 409);
+      const canonical = canonicalProfileDirectory;
+      if (store.profiles.some(p => p.id !== profileId && p.userDataDir && canonical(p.userDataDir) === canonical(profile.userDataDir!))) {
+        throw new PlaywrightRegistryError('Telegram profile directory is shared with another profile', 409);
+      }
+      if (enrollment) {
+        if (!/^[1-9][0-9]*$/.test(enrollment.accountId) || !Number.isSafeInteger(enrollment.accountNumber) ||
+          enrollment.accountNumber < 1 || enrollment.accountNumber > 4 || !path.isAbsolute(enrollment.executablePath) ||
+          !Array.isArray(enrollment.supportedBuilds) || !enrollment.supportedBuilds.length || enrollment.supportedBuilds.length > 2 ||
+          enrollment.supportedBuilds.some(build => !validWebKBuildEnrollment(build))) throw new PlaywrightRegistryError('invalid Telegram broker enrollment', 400);
+        const exclusive = enrollment.exclusiveEnrollment;
+        if (exclusive && (exclusive.version !== 1 || !Number.isSafeInteger(exclusive.checkedAt) || exclusive.checkedAt <= 0 ||
+          !Array.isArray(exclusive.retiredPids) || exclusive.retiredPids.length > 64 || exclusive.retiredPids.some(pid => !Number.isSafeInteger(pid) || pid <= 0) ||
+          !/^[0-9a-f]{64}$/.test(exclusive.proofDigest))) throw new PlaywrightRegistryError('invalid exclusive browser enrollment proof', 400);
+        profile.telegramBroker = structuredClone(enrollment);
+      }
+      profile.executionOwner = 'telegram-origin-broker';
+      return { next: store, result: profile };
+    });
+  }
+
+  /** Security callers must propagate read/corruption failures; never turn them into an empty guard. */
+  managedTelegramUserDataDirs(): string[] {
+    return this.ensureSeeded().profiles.filter(p => p.executionOwner === 'telegram-origin-broker').map(p => {
+      if (!p.userDataDir || !path.isAbsolute(p.userDataDir)) throw new PlaywrightRegistryError('invalid managed Telegram profile directory', 409);
+      return p.userDataDir;
+    });
+  }
+
+  requireTelegramBrokerProfile(profileId: string): PlaywrightProfile {
+    const store = this.ensureSeeded();
+    const profile = store.profiles.find(p => p.id === profileId);
+    if (!profile || profile.executionOwner !== 'telegram-origin-broker' || !profile.userDataDir || profile.isDefault || !path.isAbsolute(profile.userDataDir)) {
+      throw new PlaywrightRegistryError('Telegram profile has not been enrolled for exclusive broker execution', 409);
+    }
+    // Recheck at use time: a new registry entry or a newly materialized symlink
+    // can alias this directory after the original exclusive enrollment.
+    const directory = canonicalProfileDirectory(profile.userDataDir);
+    if (store.profiles.some(other => other.id !== profileId && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === directory)) {
+      throw new PlaywrightRegistryError('Telegram profile directory is shared with another profile', 409);
+    }
+    return profile;
+  }
+
   /**
    * Compute the intended .mcp.json/.settings.json args mutation WITHOUT writing.
    * INSERT `--user-data-dir <dir>` as two array elements when absent; REPLACE the value
@@ -564,6 +791,8 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
+    if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 
     const resolved = this.resolvePlaywrightMcpConfig();
     if (!resolved) {
@@ -595,6 +824,11 @@ export class PlaywrightProfileRegistry {
    * Returns the file written.
    */
   writeActivation(plan: PlaywrightActivationPlan): { file: string } {
+    // Recheck ownership at mutation time, including plans computed before enrollment.
+    const livePlan = this.computeActivation(plan.profileId);
+    if (plan.file !== livePlan.file || plan.userDataDir !== livePlan.userDataDir || JSON.stringify(plan.nextArgs) !== JSON.stringify(livePlan.nextArgs)) {
+      throw new PlaywrightRegistryError('browser activation plan changed; recompute it', 409);
+    }
     let parsed: { mcpServers?: Record<string, unknown> };
     try {
       parsed = JSON.parse(fs.readFileSync(plan.file, 'utf8')) as { mcpServers?: Record<string, unknown> };
@@ -728,6 +962,14 @@ export class PlaywrightProfileRegistry {
    * Path-jail a caller-supplied userDataDir (D9): path.resolve'd, absolute, confined under
    * projectDir (agent home), not flag-shaped (`-` prefix), no NUL. Else throw 400.
    */
+  private assertDirectoryNotManaged(store: RegistryFile, directory: string): void {
+    const target = canonicalProfileDirectory(directory);
+    if (store.profiles.some(profile => profile.executionOwner === 'telegram-origin-broker' && profile.userDataDir &&
+      canonicalProfileDirectory(profile.userDataDir) === target)) {
+      throw new PlaywrightRegistryError('managed Telegram directory is available through typed broker operations only', 409);
+    }
+  }
+
   private jailUserDataDir(input: string): string {
     const raw = String(input);
     if (raw.includes('\u0000')) {
@@ -746,6 +988,16 @@ export class PlaywrightProfileRegistry {
     }
     return resolved;
   }
+}
+
+/** Resolve existing parent symlinks too, before the profile directory is materialized. */
+function canonicalProfileDirectory(directory: string): string {
+  let parent = path.resolve(directory);
+  const missing: string[] = [];
+  while (!fs.existsSync(parent) && path.dirname(parent) !== parent) {
+    missing.unshift(path.basename(parent)); parent = path.dirname(parent);
+  }
+  return path.resolve(fs.realpathSync(parent), ...missing);
 }
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────

@@ -35,14 +35,20 @@ describe('server-boot wiring: PeerPresencePuller (HTTP presence transport)', () 
   });
 
   it('actually STARTS it: an immediate pullOnce() + a recurring unref-ed timer', () => {
-    expect(src).toContain('void peerPresencePuller.pullOnce()');
+    // Identity-mutating modes gate the presence pull through authenticated
+    // pool coherence before any recovery runtime can go live. The wrapper
+    // still calls pullOnce() and is awaited once during boot.
+    expect(src).toContain('await reconcileIdentityActivation()');
+    const reconcileIdx = src.indexOf('const reconcileIdentityActivation = ()');
+    expect(reconcileIdx).toBeGreaterThan(0);
+    expect(src.slice(reconcileIdx, reconcileIdx + 900)).toContain('await peerPresencePuller.pullOnce()');
     // The recurring tick is a named callback (peerPresenceTick) — see mesh-coherence-live-
     // state-honesty Fix (b), which appends the live-coherence recheck to it — so the timer
     // is registered with the named fn and the pull lives inside that fn.
     const tickIdx = src.indexOf('const peerPresenceTick = ()');
     expect(tickIdx).toBeGreaterThan(0);
     const tickBlock = src.slice(tickIdx, tickIdx + 200);
-    expect(tickBlock).toContain('peerPresencePuller.pullOnce()');
+    expect(tickBlock).toContain('reconcileIdentityActivation()');
     const timerIdx = src.indexOf('const peerPresenceTimer = setInterval(peerPresenceTick');
     expect(timerIdx).toBeGreaterThan(0);
     const block = src.slice(timerIdx, timerIdx + 200);
@@ -60,7 +66,13 @@ describe('server-boot wiring: PeerPresencePuller (HTTP presence transport)', () 
     const resolverIdx = src.indexOf('_resolvePeerUrls = () =>');
     expect(resolverIdx).toBeGreaterThan(0);
     const block = src.slice(resolverIdx, resolverIdx + 600);
-    expect(block).toContain('peerUrl(m.machineId)');
+    // Names the shared resolver itself, not the `peerUrl` wrapper it used to go
+    // through: the wrapper collapsed every admissible rope to one URL, which is
+    // the defect the selection-aware resolver fixes. Asserting the resolver by
+    // name is strictly stronger — a regression back to the lossy wrapper fails
+    // here instead of passing.
+    expect(block).toContain('resolveMeshPeerPreferredSelection(');
+    expect(block).toContain('meshResolver');
     expect(block).not.toContain('!!m.entry.lastKnownUrl');
     expect(block).not.toContain('url: m.entry.lastKnownUrl');
   });

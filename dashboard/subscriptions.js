@@ -79,6 +79,31 @@ export function effectiveAccountStatus(account) {
   return account && account.status;
 }
 
+const KNOWN_REPAIR_STATES = new Set([
+  'suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
+  'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only',
+  'succeeded', 'refused', 'cancelled', 'failed',
+]);
+
+/** A suggested/failed repair is actionable only while current pool truth still says
+ *  the account cell needs authentication. Terminal repair rows remain durable audit
+ *  history, but must never shadow a newer Active observation or offer a retry that
+ *  the server's admission policy is required to refuse. In-flight states remain
+ *  visible because pool activation can precede the controller's final ledger close. */
+export function repairAppliesToCurrentState(repair, currentState) {
+  if (!repair || !KNOWN_REPAIR_STATES.has(repair.state)) return false;
+  if (repair.state === 'suggested' || repair.state === 'failed') {
+    return currentState === 'needs-reauth';
+  }
+  return true;
+}
+
+export function repairConflictMessage(error) {
+  return /^(?:retry|approval)-revalidation-refused:account-not-needs-reauth$/.test(
+    typeof error === 'string' ? error : '',
+  ) ? 'This account is already active. Refreshing its status…' : null;
+}
+
 const PROVIDER_WORDS = { anthropic: 'Claude', openai: 'Codex', 'github-copilot': 'Copilot', google: 'Gemini' };
 export function friendlyProvider(provider) {
   return PROVIDER_WORDS[typeof provider === 'string' ? provider : ''] || sanitizeForDisplay(provider, 'label');
@@ -169,6 +194,42 @@ export function relativeAge(iso, now = Date.now()) {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
+/**
+ * Plain text for when a failed sign-in repair will try again on its own (spec
+ * relogin-unattended-agent-session-and-slow-retry), else ''. Only a `failed` repair carrying a
+ * future-or-due `nextAttemptAt` has one.
+ */
+export function slowRetryLabel(repair, now = Date.now()) {
+  if (!repair || repair.state !== 'failed' || typeof repair.nextAttemptAt !== 'string') return '';
+  const t = Date.parse(repair.nextAttemptAt);
+  if (Number.isNaN(t)) return '';
+  const min = Math.ceil((t - now) / 60_000);
+  // An approval-mode repair is only RE-OFFERED for a tap; it never starts on its own.
+  const lead = repair.mode === 'approval' ? 'Will offer to try again' : 'Trying again on its own';
+  if (min <= 1) return `${lead} shortly.`;
+  if (min < 60) return `${lead} in ${min} min.`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${lead} in about ${hr} h.`;
+  return `${lead} in about ${Math.round(hr / 24)} days.`;
+}
+
+/**
+ * Age text for a quota reading that is old enough to mislead, else ''.
+ *
+ * Codex quota is read from the account's own session log, so it only advances
+ * when something actually runs on that account. An idle account keeps serving
+ * its last number indefinitely. Below the threshold the age is noise; above it,
+ * showing the bar without the age asserts a freshness we do not have.
+ */
+export const STALE_READING_MS = 6 * 60 * 60 * 1000;
+
+export function staleReadingAge(iso, now = Date.now()) {
+  const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t)) return '';
+  if (now - t < STALE_READING_MS) return '';
+  return relativeAge(iso, now);
+}
+
 // ── DOM helpers (textContent ONLY — never innerHTML) ────────────────────────
 function el(doc, tag, cls, text) {
   const node = doc.createElement(tag);
@@ -177,18 +238,45 @@ function el(doc, tag, cls, text) {
   return node;
 }
 
+// Quota-bar severity thresholds. A single green bar made a 92%-consumed account
+// read the same as a 4%-consumed one at a glance, so the bar communicated width
+// only. These bands give it colour as well: comfortable / getting tight / about
+// to wall. PRESENTATION ONLY — nothing routes, sheds, or swaps on this class;
+// placement and load-shedding keep reading the numeric quota they always read.
+export const QUOTA_WARN_PCT = 75;
+export const QUOTA_CRITICAL_PCT = 90;
+
+/** Severity band for an already-clamped 0–100 integer. */
+export function quotaSeverity(usedPct) {
+  const used = clampPct(usedPct);
+  if (used >= QUOTA_CRITICAL_PCT) return 'critical';
+  if (used >= QUOTA_WARN_PCT) return 'warn';
+  return 'ok';
+}
+
+// Severity → STATIC class literal. The map is the reason the class attribute stays
+// a fixed literal (the file's safety contract): the severity is chosen from a
+// closed set of three, never interpolated from data.
+const QUOTA_FILL_CLASS = Object.freeze({
+  ok: 'sub-quota-fill sub-quota-ok',
+  warn: 'sub-quota-fill sub-quota-warn',
+  critical: 'sub-quota-fill sub-quota-critical',
+});
+
 /** A labelled quota bar. `pct` is clamped to a 0–100 NUMBER before it reaches the
- *  only dynamic attribute (style width); the percent text is also from that number. */
+ *  only dynamic attribute (style width); the percent text is also from that number.
+ *  The fill also carries a severity class derived from that same clamped number. */
 export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
   const wrap = el(doc, 'div', 'sub-quota');
   const used = clampPct(pct);
+  const severity = quotaSeverity(used);
   const head = el(doc, 'div', 'sub-quota-head');
   head.appendChild(el(doc, 'span', 'sub-quota-label', sanitizeForDisplay(label, 'label')));
   const resetTxt = resetIso ? countdown(resetIso, now, { expiredWord: 'resetting' }) : '';
   head.appendChild(el(doc, 'span', 'sub-quota-pct', `${used}% used${resetTxt ? ` · resets in ${resetTxt}` : ''}`));
   wrap.appendChild(head);
   const track = el(doc, 'div', 'sub-quota-track');
-  const fill = el(doc, 'div', 'sub-quota-fill');
+  const fill = el(doc, 'div', QUOTA_FILL_CLASS[severity]); // static literal from a closed set
   fill.style.width = `${used}%`; // safe: `used` is a clamped integer
   track.appendChild(fill);
   wrap.appendChild(track);
@@ -213,6 +301,15 @@ export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
  *   pinned by a test, because "we grouped everything" would quietly add a redundant
  *   heading to the common case.
  */
+/** CSS class that colors a provider's group at a glance (operator request 2026-09-25:
+ *  Claude and Codex must be distinguishable without reading). Closed mapping, so a
+ *  provider string never reaches a class name raw. */
+export function providerClass(provider) {
+  if (provider === 'anthropic') return 'sub-prov-claude';
+  if (provider === 'openai') return 'sub-prov-codex';
+  return 'sub-prov-other';
+}
+
 export function groupAccountsByProvider(accounts) {
   if (!Array.isArray(accounts)) return [];
   const groups = new Map(); // provider key (raw) → accounts, in first-appearance order
@@ -229,7 +326,7 @@ export function groupAccountsByProvider(accounts) {
       // else, so an unrecognised or hostile provider string cannot reach the DOM raw.
       // An absent provider has no honest name, so say so rather than invent one.
       const label = friendlyProvider(key) || 'Other';
-      out.push({ __providerHeading: label });
+      out.push({ __providerHeading: label, __providerKey: key });
     }
     for (const m of members) out.push(m);
   }
@@ -240,7 +337,7 @@ export function groupAccountsByProvider(accounts) {
  *  `inUseAccountId` (optional) is the account the agent is CURRENTLY running on —
  *  that card gets an "In use" marker so "active" (healthy) reads distinct from
  *  "actually running right now". */
-export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAccountId = null) {
+export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAccountId = null, reloginEpisodes = []) {
   if (!target) return;
   target.replaceChildren();
   if (!Array.isArray(accounts) || accounts.length === 0) {
@@ -253,11 +350,11 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     // accounts mixed together with only a small per-card meta line to tell them
     // apart. The heading is what makes the split scannable.)
     if (a && a.__providerHeading) {
-      target.appendChild(el(doc, 'div', 'sub-provider-heading', a.__providerHeading));
+      target.appendChild(el(doc, 'div', `sub-provider-heading ${providerClass(a.__providerKey)}`, a.__providerHeading));
       continue;
     }
     const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
-    const card = el(doc, 'div', inUse ? 'sub-account sub-account-inuse' : 'sub-account');
+    const card = el(doc, 'div', `${inUse ? 'sub-account sub-account-inuse' : 'sub-account'} ${providerClass(a && a.provider)}`);
     const head = el(doc, 'div', 'sub-account-head');
     head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
@@ -273,6 +370,16 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       if (q.fiveHour) card.appendChild(quotaBar(doc, '5-hour', q.fiveHour.utilizationPct, q.fiveHour.resetsAt, now));
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
       if (q.fable) card.appendChild(quotaBar(doc, 'Fable 5', q.fable.utilizationPct, q.fable.resetsAt, now));
+      // A codex reading is only as fresh as the account's last completed turn —
+      // an idle account can sit on a days-old number. Name the age once it is
+      // old enough to mislead, so a stale bar never reads as "right now".
+      const age = staleReadingAge(q.measuredAt, now);
+      if (age) card.appendChild(el(doc, 'div', 'sub-account-quota-age', `Reading from ${age}`));
+    } else if (q && q.noQuotaWindow) {
+      // The account answered and reported no usage window at all (an
+      // entitlement/credits-only codex account). "yet" would promise a reading
+      // that no future poll can produce — name the condition instead.
+      card.appendChild(el(doc, 'div', 'sub-account-noquota', 'This account reports no usage window.'));
     } else {
       // Round-11 (security, grok-build spec §6.1): "yet" reads as PENDING, but
       // for a framework with no usage surface at all (grok-build) unknown is
@@ -293,6 +400,46 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const refAge = a && a.lastRefreshAt ? relativeAge(a.lastRefreshAt, now) : null;
     if (refAge) {
       card.appendChild(el(doc, 'div', 'sub-account-refresh', `Token auto-refreshed ${refAge}`));
+    }
+    const repairCandidate = Array.isArray(reloginEpisodes)
+      ? reloginEpisodes.find((episode) => episode && a && episode.accountId === a.id)
+      : null;
+    const repair = repairAppliesToCurrentState(repairCandidate, effectiveAccountStatus(a))
+      ? repairCandidate
+      : null;
+    if (repair) {
+      const repairBox = el(doc, 'div', 'sub-account-repair');
+      const terminal = ['succeeded', 'refused', 'cancelled', 'failed'].includes(repair.state);
+      const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
+        : repair.state === 'succeeded' ? 'Sign-in repaired.'
+          : repair.state === 'waiting-operator-only' ? 'Sign-in needs your help.'
+            : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
+              : repair.state === 'refused' ? 'Sign-in repair was refused for safety.'
+                : repair.state === 'cancelled' ? 'Sign-in repair cancelled.'
+                  : 'Repairing sign-in…';
+      repairBox.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+      const retryText = slowRetryLabel(repair, now);
+      if (retryText) repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', retryText));
+      else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+        repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', 'Won’t try again on its own. Try repair again any time.'));
+      }
+      const action = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
+        : repair.state === 'failed' ? ['retry', 'Try repair again']
+          : (!terminal ? ['cancel', 'Cancel repair'] : null);
+      if (action) {
+        const button = el(doc, 'button', `sub-account-repair-${action[0]}`, action[1]);
+        button.setAttribute('data-relogin-action', action[0]);
+        button.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
+        repairBox.appendChild(button);
+      }
+      if (retryText) {
+        // "Cancel" on a failed repair holds its automatic retries (the failure itself is kept).
+        const hold = el(doc, 'button', 'sub-account-repair-hold', 'Don’t retry on its own');
+        hold.setAttribute('data-relogin-action', 'cancel');
+        hold.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
+        repairBox.appendChild(hold);
+      }
+      card.appendChild(repairBox);
     }
     target.appendChild(card);
   }
@@ -786,7 +933,7 @@ export function groupMatrixRowsByProvider(rows) {
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
  *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
-export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}) {
+export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = []) {
   if (!target) return;
   target.replaceChildren();
   const model = buildMatrixModel(poolScope, pendingScope, transient);
@@ -817,7 +964,7 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
   for (const entry of groupMatrixRowsByProvider(model.rows)) {
     if (entry && entry.__providerHeading) {
       const gtr = doc.createElement('tr');
-      const gth = el(doc, 'th', 'sub-matrix-group', entry.__providerHeading);
+      const gth = el(doc, 'th', `sub-matrix-group ${providerClass(entry.__providerKey)}`, entry.__providerHeading);
       // Span the account column + every machine column so the heading reads as a band
       // across the grid rather than a stray cell.
       gth.setAttribute('colspan', String(model.machines.length + 1));
@@ -827,15 +974,69 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       continue;
     }
     const row = entry.__row;
-    const tr = doc.createElement('tr');
+    const tr = el(doc, 'tr', providerClass(row && row.account && row.account.provider));
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
+      const repairCandidate = Array.isArray(reloginEpisodes)
+        ? reloginEpisodes.find((episode) => episode && episode.accountId === c.accountId && episode.machineId === c.machineId)
+        : null;
+      const repair = repairAppliesToCurrentState(repairCandidate, c.state)
+        ? repairCandidate
+        : null;
+      const repairUnavailable = Array.isArray(reloginFailures)
+        && reloginFailures.some((failure) => failure && failure.machineId === c.machineId);
       // just-verified rides a transient highlight on an otherwise-active cell (D4 ceremony).
       const justVerified = c.state === 'just-verified' || (c.state === 'active' && c.detail && c.detail.state === 'just-verified');
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
       // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
       td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
-      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
+      if (repairUnavailable && ['needs-reauth', 'held', 'cant-resolve', 'expired', 'broken'].includes(c.state)) {
+        td.appendChild(el(doc, 'div', 'sub-account-repair-status', 'Repair status is unavailable for this machine.'));
+        td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'Wait for the machine connection to recover, then try again.'));
+      } else if (repair && ['suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving', 'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only', 'failed'].includes(repair.state)) {
+        const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
+          : repair.state === 'waiting-operator-only' ? 'Sign-in needs your help.'
+            : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
+              : 'Repairing sign-in…';
+        td.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+        const retryText = slowRetryLabel(repair);
+        if (retryText) td.appendChild(el(doc, 'div', 'sub-matrix-next-try', retryText));
+        else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-next-try', 'Won’t try again on its own. Try repair again any time.'));
+        }
+        const repairAction = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
+          : repair.state === 'failed' ? ['retry', 'Try repair again']
+            : ['cancel', 'Cancel repair'];
+        if (repairAction) {
+          const button = el(doc, 'button', `sub-matrix-repair sub-matrix-repair-${repairAction[0]}`, repairAction[1]);
+          button.setAttribute('data-matrix-relogin', '1');
+          button.setAttribute('data-repair-action', repairAction[0]);
+          button.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          button.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          button.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
+          td.appendChild(button);
+        }
+        if (retryText) {
+          // Quieter secondary action: hold this failed repair's automatic retries (relayed to its machine).
+          const hold = el(doc, 'button', 'sub-matrix-repair sub-matrix-repair-hold', 'Don’t retry on its own');
+          hold.setAttribute('data-matrix-relogin', '1');
+          hold.setAttribute('data-repair-action', 'cancel');
+          hold.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          hold.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          hold.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
+          td.appendChild(hold);
+        }
+        // While a repair waits on the operator (a phone tap, a macOS Allow, no helper account), the
+        // operator can also finish the sign-in themselves from here — the same one-tap Sign in flow
+        // as a needs-reauth cell (spec skill-driven-signin-repair, operator contact).
+        if (repair.state === 'waiting-operator-only') {
+          const signIn = el(doc, 'button', 'sub-matrix-setup', 'Sign in');
+          signIn.setAttribute('data-matrix-setup', '1');
+          signIn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          signIn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          td.appendChild(signIn);
+        }
+      } else if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
         // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →
         // "Sign in"; held/cant-resolve/expired/broken → "Retry". A needs-reauth account already
@@ -934,6 +1135,9 @@ const URLS = {
   accountsPool: '/subscription-pool?scope=pool',
   startCell: '/subscription-pool/matrix/start-cell', // POST (PIN-gated) — start a cell's sign-in
   cancel: '/subscription-pool/follow-me/cancel', // POST (Bearer, no PIN) — cancel an in-flight cell (relay → self/peer)
+  relogin: '/subscription-relogin?scope=pool',
+  reloginAction: '/subscription-relogin',
+  repairCell: '/subscription-relogin/repair-cell',
 };
 
 export function createController(opts) {
@@ -945,6 +1149,8 @@ export function createController(opts) {
     cadenceMs = 30_000,
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (id) => clearTimeout(id),
+    getOperatorSessionToken = () => '',
+    requestUnlock = () => {},
   } = opts;
 
   // matrixTransient: client-side last-attempt state per `${accountId}::${machineId}` cell (FD6 —
@@ -955,6 +1161,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
+    reloginWired: false, reloginEpisodes: [], reloginFailures: [],
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -988,17 +1195,18 @@ export function createController(opts) {
     if (state.inFlight) { try { state.inFlight.abort(); } catch { /* superseded */ } }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : { signal: undefined, abort() {} };
     state.inFlight = controller;
-    let accountsBody, pendingBody, inUseBody, scanBody, poolBody;
+    let accountsBody, pendingBody, inUseBody, scanBody, poolBody, reloginBody;
     try {
       // in-use AND the follow-me scan are best-effort — their failure must not blank the
       // accounts list, so each is caught independently (in-use → "unknown"; scan → no card).
       // poolBody (scope=pool) feeds the account×machine matrix; best-effort (matrix is hidden if absent).
-      [accountsBody, pendingBody, inUseBody, scanBody, poolBody] = await Promise.all([
+      [accountsBody, pendingBody, inUseBody, scanBody, poolBody, reloginBody] = await Promise.all([
         fetchJson(URLS.accounts, controller),
         fetchJson(URLS.pending, controller),
         fetchJson(URLS.inUse, controller).catch(() => null),
         postJson(URLS.scan, {}, controller).then((r) => (r.ok ? r.json : null)).catch(() => null),
         fetchJson(URLS.accountsPool, controller).catch(() => null),
+        fetchJson(URLS.relogin, controller).catch(() => null),
       ]);
     } catch {
       if (controller.signal && controller.signal.aborted) return;
@@ -1015,6 +1223,9 @@ export function createController(opts) {
       return;
     }
     state.offers = scanBody && Array.isArray(scanBody.offered) ? scanBody.offered : [];
+    state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
+    state.reloginFailures = reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.failed)
+      ? reloginBody.pool.failed : [];
     render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
   }
@@ -1121,14 +1332,19 @@ export function createController(opts) {
   function rerenderMatrixFromCache() {
     if (!els.matrix || !state.lastPoolBody) return;
     if (hasOpenInteraction(doc, els.matrix)) return;
-    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient);
+    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
   }
 
   function render(accountsBody, pendingBody, inUseBody, poolBody) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
-    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
+    // The account-card pane is machine-local. Do not attach a remote machine's
+    // episode to a same-account local card; remote repairs belong to the exact
+    // account×machine matrix cell below.
+    const localReloginEpisodes = state.reloginEpisodes.filter((episode) => episode && episode.remote !== true);
+    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId, localReloginEpisodes);
+    wireReloginActions();
     purgeTransients();
     // Episode reconciliation runs FIRST so a terminal transition it derives (expired /
     // landed) is visible to BOTH surfaces on this same tick (the panel card + the cell).
@@ -1151,7 +1367,7 @@ export function createController(opts) {
     // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
     if (els.matrix) {
       if (!hasOpenInteraction(doc, els.matrix)) {
-        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient);
+        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
       } else {
         updateCountdowns(doc, els.matrix, now());
       }
@@ -1166,6 +1382,50 @@ export function createController(opts) {
         renderFollowMeOffers(doc, els.followMe, state.offers);
       }
       wireApprove();
+    }
+  }
+
+  function wireReloginActions() {
+    if (!els.accounts || state.reloginWired) return;
+    state.reloginWired = true;
+    els.accounts.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('[data-relogin-action]') : null;
+      if (!button) return;
+      const action = button.getAttribute('data-relogin-action');
+      const episodeId = button.getAttribute('data-relogin-id');
+      if (!['approve', 'cancel', 'retry'].includes(action) || !episodeId) return;
+      const proof = getOperatorSessionToken();
+      if (!proof) {
+        requestUnlock();
+        button.textContent = 'Enter PIN, then try again';
+        return;
+      }
+      button.setAttribute('disabled', 'disabled');
+      void postReloginAction(episodeId, action, proof, button);
+    });
+  }
+
+  async function postReloginAction(episodeId, action, proof, button) {
+    try {
+      const response = await fetchImpl(`${URLS.reloginAction}/${encodeURIComponent(episodeId)}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
+        body: '{}',
+      });
+      if (!response.ok) {
+        if (response.status === 401) requestUnlock();
+        const body = await response.json().catch(() => ({}));
+        const resolvedConflict = repairConflictMessage(body.error);
+        button.textContent = response.status === 401 ? 'Enter PIN, then try again'
+          : resolvedConflict || 'Couldn’t start — try again';
+        button.removeAttribute('disabled');
+        if (resolvedConflict) await tick();
+        return;
+      }
+      await tick();
+    } catch {
+      button.textContent = 'Couldn’t reach the server — try again';
+      button.removeAttribute('disabled');
     }
   }
 
@@ -1306,6 +1566,8 @@ export function createController(opts) {
     els.matrix.addEventListener('click', (ev) => {
       const t = ev.target;
       if (!t || typeof t.closest !== 'function') return;
+      const repairBtn = t.closest('[data-matrix-relogin]');
+      if (repairBtn && els.matrix.contains(repairBtn)) { onRepairTap(repairBtn); return; }
       const setupBtn = t.closest('[data-matrix-setup]');
       if (setupBtn && els.matrix.contains(setupBtn)) { onSetupTap(setupBtn); return; }
       const confirmBtn = t.closest('[data-matrix-confirm]');
@@ -1326,6 +1588,59 @@ export function createController(opts) {
     let s = cell.querySelector('.sub-matrix-status');
     if (!s) { s = el(doc, 'div', 'sub-matrix-status', ''); cell.appendChild(s); }
     s.textContent = text;
+  }
+
+  // One click after dashboard unlock authorizes exactly one account×machine
+  // repair. The short-lived operator proof stays on the fronting machine; the
+  // server converts it into an exact, signed mandate for the target machine.
+  function onRepairTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    const accountId = btn.getAttribute('data-account-id');
+    const machineId = btn.getAttribute('data-machine-id');
+    const episodeId = btn.getAttribute('data-episode-id');
+    const action = btn.getAttribute('data-repair-action') || 'approve';
+    const proof = getOperatorSessionToken();
+    if (!accountId || !machineId || !episodeId) {
+      setCellStatus(cell, 'Couldn’t prepare this repair — refresh and try again.');
+      return;
+    }
+    if (!proof) {
+      requestUnlock();
+      setCellStatus(cell, 'Enter your dashboard PIN, then tap Repair sign-in once.');
+      return;
+    }
+    btn.setAttribute('disabled', 'disabled');
+    const holding = action === 'cancel' && btn.classList && btn.classList.contains('sub-matrix-repair-hold');
+    setCellStatus(cell, holding ? 'Stopping automatic retries…' : 'Starting autonomous sign-in repair…');
+    void (async () => {
+      try {
+        const response = await fetchImpl(URLS.repairCell, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
+          body: JSON.stringify({ accountId, machineId, episodeId, action }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 401) requestUnlock();
+          const resolvedConflict = repairConflictMessage(body.error);
+          setCellStatus(cell, response.status === 401
+            ? 'Enter your dashboard PIN, then tap Repair sign-in once.'
+            : resolvedConflict || body.error || 'Couldn’t start the repair — try again.');
+          btn.removeAttribute('disabled');
+          if (resolvedConflict) await tick();
+          return;
+        }
+        const reoffered = body && body.episode && body.episode.state === 'suggested';
+        setCellStatus(cell, holding ? 'Automatic retries stopped. Try repair again any time.'
+          : reoffered ? 'Things changed since the last try — tap Repair sign-in once more.'
+            : 'Repair started — Instar is handling the sign-in.');
+        await tick();
+      } catch {
+        setCellStatus(cell, 'Couldn’t reach the target machine — try again.');
+        btn.removeAttribute('disabled');
+      }
+    })();
   }
 
   // Expand the cell into a PIN input + Confirm (replacing the "Set up"/"Retry" button).

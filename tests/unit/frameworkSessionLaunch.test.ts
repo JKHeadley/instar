@@ -153,29 +153,42 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
 
   describe('codex-cli', () => {
     it('reports the same concrete default model the interactive builder launches', () => {
-      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
-      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-6-sol');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-6-sol');
       expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
     });
 
-    it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
-      const spec = buildInteractiveLaunch('codex-cli', {
-        binaryPath: '/usr/local/bin/codex',
-      });
+    it('passes --model gpt-6-sol + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
+      // The binary is a FAKE whose --help advertises no hook-trust flag, so this
+      // asserts the DEFAULT argv deterministically. It previously passed the real
+      // '/usr/local/bin/codex' path, which made the assertion depend on whichever
+      // codex happens to be installed: `codexSupportsHookTrustBypass` shells out to
+      // `<binary> --help`, so on a host with codex >=0.133 the builder appended
+      // `--dangerously-bypass-hook-trust` and this exact-array comparison failed —
+      // green in CI (no codex on the runner), red on a maintainer's machine. The
+      // sibling tests below already use this helper; this one just hadn't adopted it.
+      const bin = fakeCodexBinary(false);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
       // The explicit `--model` flag avoids Codex CLI's own historical
       // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
-      // 2026-04-14). The session default is gpt-5.5 as of 2026-05-23
+      // 2026-04-14). The session default is gpt-6-sol as of 2026-09-23
       // (Justin's call) — newest generalist + Codex CLI's own default,
       // confirmed working on the subscription. See models.ts comment block.
       // The bypass flag is the single-flag parity for Claude's
       // `--dangerously-skip-permissions` — removes approval prompts AND
       // drops the sandbox (which would otherwise block the agent from
       // reaching localhost where instar's server lives).
+      // `-c check_for_update_on_startup=false` suppresses codex's blocking
+      // startup update menu, which killed interactive sessions ~18s after spawn
+      // on 2026-08-22 (its focused default runs `npm install -g @openai/codex`,
+      // which exits codex). See CODEX_NO_UPDATE_PROMPT_FLAGS.
       expect(spec.argv).toEqual([
-        '/usr/local/bin/codex',
+        bin,
         '--model',
-        'gpt-5.5',
+        'gpt-6-sol',
         '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'check_for_update_on_startup=false',
       ]);
     });
 
@@ -349,10 +362,25 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       // Jobs keep the sandbox (they ingest external content + don't use MCP).
       expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).toContain('sandbox_workspace_write.network_access=true');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
-      expect(spec.argv).toContain('gpt-5.5');
+      expect(spec.argv).toContain('gpt-6-sol');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
+    });
+
+    it('pins workspace-write network access per launch after the sandbox selection', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'probe local API',
+      });
+      const sandbox = spec.argv.indexOf('-s');
+      const override = spec.argv.indexOf('-c');
+      expect(spec.argv.slice(sandbox, sandbox + 2)).toEqual(['-s', 'workspace-write']);
+      expect(spec.argv.slice(override, override + 2)).toEqual([
+        '-c', 'sandbox_workspace_write.network_access=true',
+      ]);
+      expect(spec.argv).not.toContain('danger-full-access');
     });
 
     it('appends --dangerously-bypass-hook-trust before the prompt when the codex binary supports it', () => {
@@ -381,6 +409,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       // sandbox, so the reply path uses full bypass. Jobs (above) do not.
       expect(spec.argv).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
+      expect(spec.argv).not.toContain('sandbox_workspace_write.network_access=true');
     });
 
     it('explicit codexSandboxMode wins over codexAllowMcpTools', () => {
@@ -396,6 +425,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('never');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
+      expect(spec.argv).not.toContain('sandbox_workspace_write.network_access=true');
     });
 
     it('honors model override', () => {
@@ -457,17 +487,16 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
-      // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
-      // Codex on 2026-06-03 (now 400s), so `fast`/`haiku` moved to gpt-5.4-mini —
-      // the cheapest still-accepted model (== balanced). See models.ts.
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
+      // light/medium/heavy mapping — the GPT-6 family since 2026-09-23
+      // (luna / sol / astra). See models.ts for the live-probe record.
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-6-luna');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-6-sol');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-6-astra');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-6-luna');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-6-sol');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-6-astra');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
@@ -512,7 +541,7 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   it('codex headless builder rewrites generic tier to gpt-5.x', () => {
     const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
-    expect(balanced.argv).toContain('gpt-5.4-mini'); // medium tier
+    expect(balanced.argv).toContain('gpt-6-sol'); // medium tier
     expect(balanced.argv).not.toContain('balanced');
   });
 });
@@ -643,5 +672,39 @@ describe('frameworkSessionLaunch — per-agent codex threadline MCP override', (
     const jsonPart = argsFlag!.slice('mcp_servers.threadline.args='.length);
     expect(() => JSON.parse(jsonPart)).not.toThrow();
     expect(JSON.parse(jsonPart)).toEqual(mcp.args);
+  });
+});
+
+describe("codex-cli interactive — the startup update prompt is suppressed", () => {
+  /**
+   * 2026-08-22: codex 0.147 opened every fresh interactive session on a blocking
+   * `Update available!` menu whose focused default runs `npm install -g
+   * @openai/codex` — which makes codex EXIT. Instar's readiness probe misread that
+   * menu as a ready prompt and injected the first user message plus Enter into it,
+   * killing the pane ~18s after spawn (verified: the injected Enter really did
+   * upgrade the local codex 0.147.0 → 0.149.0).
+   *
+   * The probe fix stops instar typing into a menu. This flag stops the menu being
+   * drawn, so the session is USABLE rather than merely visibly stuck.
+   */
+  it('passes check_for_update_on_startup=false', () => {
+    const spec = buildInteractiveLaunch('codex-cli', { binaryPath: '/usr/local/bin/codex' });
+    const i = spec.argv.indexOf('check_for_update_on_startup=false');
+    expect(i).toBeGreaterThan(-1);
+    // codex takes overrides as `-c key=value`, so the flag must precede the value.
+    expect(spec.argv[i - 1]).toBe('-c');
+  });
+
+  it('still suppresses it on a resume launch — a resumed pane draws the same menu', () => {
+    const spec = buildInteractiveLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      resumeSessionId: 'abc-123',
+    });
+    expect(spec.argv).toContain('check_for_update_on_startup=false');
+  });
+
+  it('is codex-only — no other framework carries a codex config key', () => {
+    const claude = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+    expect(claude.argv.join(' ')).not.toContain('check_for_update_on_startup');
   });
 });

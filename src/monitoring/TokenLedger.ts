@@ -18,8 +18,10 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { parseCodexRollout, type ParsedCodexSession } from './CodexRolloutParser.js';
+import type { ScanInput, ScanOutput } from './CodexRolloutScan.worker.js';
 import { resolveAttribution, PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
 
 /** ledger_meta marker key — set exactly once when the attribution backfill is complete. */
@@ -30,6 +32,7 @@ const ATTRIBUTION_BACKFILL_CHUNK = 2000;
 const ATTRIBUTION_BACKFILL_TICK_MS = 200;
 /** Give up the background backfill after this many consecutive chunk failures (rows stay on the sentinel). */
 const ATTRIBUTION_BACKFILL_MAX_FAILURES = 20;
+const CODEX_SCAN_TIMEOUT_MS = 120_000;
 
 /**
  * Compute a small content fingerprint for a JSONL file. Used to detect
@@ -254,7 +257,7 @@ export interface TokenLedgerOptions {
   maxFileAgeMs?: number;
   /**
    * Per-tick scan cap. After this many files have been processed in a single
-   * scanAll call, the scan returns and resumes on the next poll. Prevents a
+   * Claude scanAll call, the scan returns and resumes on the next poll. Prevents a
    * single tick from monopolising the event loop. Default 500.
    */
   maxFilesPerScan?: number;
@@ -278,6 +281,8 @@ export interface TokenLedgerOptions {
    * Test seam for scanAllAsync's event-loop yield. Production uses setImmediate.
    */
   asyncYieldFn?: () => Promise<void>;
+  /** Test seam for the Codex rollout worker timeout. Default 120 seconds. */
+  codexScanTimeoutMs?: number;
   /**
    * Test seam for constructor-time native open recovery. Production uses
    * better-sqlite3's Database constructor directly.
@@ -330,6 +335,7 @@ export class TokenLedger {
   private retentionMaxAgeMs: number;
   private yieldEveryNFiles: number;
   private asyncYieldFn: () => Promise<void>;
+  private codexScanTimeoutMs: number;
   /** Background attribution-backfill timer (async strategy); cleared on close(). */
   private attributionBackfillTimer: ReturnType<typeof setTimeout> | null = null;
   /** Consecutive failed backfill chunks; bounded by ATTRIBUTION_BACKFILL_MAX_FAILURES. */
@@ -339,6 +345,8 @@ export class TokenLedger {
   // Cursor between scan calls — when a tick stops at the per-scan cap,
   // the next tick resumes from here instead of restarting the whole tree.
   private scanCursor: { dirIdx: number; fileIdx: number } = { dirIdx: 0, fileIdx: 0 };
+  private codexScanRunning = false;
+  private codexWorker: Worker | null = null;
   private stmts!: {
     insertEvent: ReturnType<BetterSqliteDatabase['prepare']>;
     getOffset: ReturnType<BetterSqliteDatabase['prepare']>;
@@ -357,6 +365,9 @@ export class TokenLedger {
         : 30 * 24 * 60 * 60 * 1000; // 30d default (registry derived-token-ledger maxAgeMs)
     this.yieldEveryNFiles = opts.yieldEveryNFiles && opts.yieldEveryNFiles > 0 ? opts.yieldEveryNFiles : 25;
     this.asyncYieldFn = opts.asyncYieldFn ?? (() => new Promise<void>(resolve => setImmediate(resolve)));
+    this.codexScanTimeoutMs = opts.codexScanTimeoutMs && opts.codexScanTimeoutMs > 0
+      ? opts.codexScanTimeoutMs
+      : CODEX_SCAN_TIMEOUT_MS;
     if (opts.dbPath !== ':memory:') {
       fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
     }
@@ -897,6 +908,10 @@ export class TokenLedger {
    * directory is `projectDir` (or a subdirectory) are counted as ours. Without
    * a projectDir filter, all rollouts are ingested (project_path preserved for
    * downstream filtering). Cumulative-total semantics make this idempotent.
+   *
+   * Reading and parsing run on a worker thread (instar#2121): a large Codex
+   * store took 8-12 s per scan on the event loop. Only the SQLite upserts run
+   * here, in the worker's discovery order.
    */
   async scanCodexRolloutsAsync(opts: {
     projectDir?: string;
@@ -904,43 +919,67 @@ export class TokenLedger {
     limit?: number;
     maxFileAgeMs?: number;
   } = {}): Promise<{ filesScanned: number; ingested: number }> {
-    let listAllRollouts: (codexHome?: string, limit?: number) => Promise<ReadonlyArray<{ path: string; mtime: number }>>;
+    if (this.closed || this.codexScanRunning) return { filesScanned: 0, ingested: 0 };
+    this.codexScanRunning = true;
     try {
-      ({ listAllRollouts } = await import('../providers/adapters/openai-codex/observability/sessionPaths.js'));
-    } catch {
-      return { filesScanned: 0, ingested: 0 };
+      const input: ScanInput = {
+        projectDir: opts.projectDir,
+        codexHome: opts.codexHome,
+        limit: opts.limit && opts.limit > 0 ? opts.limit : 500,
+        maxFileAgeMs: opts.maxFileAgeMs,
+      };
+      const result = await this.runCodexScanWorker(input);
+      if (this.closed) return { filesScanned: 0, ingested: 0 };
+      let ingested = 0;
+      // Preserve the legacy per-file upserts and their discovery order exactly.
+      for (const update of result.updates) {
+        if (this.ingestCodexSession(update.parsed, update.lastTs).ingested) ingested++;
+      }
+      return { filesScanned: result.filesScanned, ingested };
+    } finally {
+      this.codexScanRunning = false;
     }
-    const limit = opts.limit && opts.limit > 0 ? opts.limit : 500;
-    const ageCutoff = opts.maxFileAgeMs && opts.maxFileAgeMs > 0 ? Date.now() - opts.maxFileAgeMs : 0;
-    const targetDir = opts.projectDir ? path.resolve(opts.projectDir) : null;
-    let rollouts: ReadonlyArray<{ path: string; mtime: number }>;
-    try {
-      rollouts = await listAllRollouts(opts.codexHome, limit);
-    } catch {
-      return { filesScanned: 0, ingested: 0 };
-    }
-    let filesScanned = 0;
-    let ingested = 0;
-    for (const { path: rolloutPath, mtime } of rollouts) {
-      if (ageCutoff && mtime < ageCutoff) continue;
-      filesScanned += 1;
-      let content: string;
+  }
+
+  private runCodexScanWorker(input: ScanInput): Promise<ScanOutput> {
+    return new Promise((resolve, reject) => {
+      let worker: Worker;
       try {
-        content = fs.readFileSync(rolloutPath, 'utf-8');
-      } catch {
-        continue;
+        const compiled = new URL('./CodexRolloutScan.worker.js', import.meta.url);
+        const workerUrl = fs.existsSync(compiled)
+          ? compiled
+          : new URL('../../dist/monitoring/CodexRolloutScan.worker.js', import.meta.url);
+        worker = new Worker(workerUrl, {
+          workerData: input,
+          // No heap cap: the in-process scan had the main heap, and one large
+          // rollout must not fail every file in the scan.
+          execArgv: [],
+        });
+      } catch (error) {
+        // @silent-fallback-ok — not silent: the launch failure rejects the scan,
+        // which the poller logs through its onError path.
+        reject(error); return;
       }
-      const parsed = parseCodexRollout(content);
-      if (!parsed) continue;
-      if (targetDir) {
-        const cwd = parsed.cwd ? path.resolve(parsed.cwd) : null;
-        if (!cwd || (cwd !== targetDir && !cwd.startsWith(targetDir + path.sep))) continue;
-      }
-      // mtime is the last-write time → use as last activity (token_count events
-      // carry no per-event timestamp).
-      if (this.ingestCodexSession(parsed, mtime).ingested) ingested += 1;
-    }
-    return { filesScanned, ingested };
+      this.codexWorker = worker;
+      let settled = false;
+      const finish = (error?: Error, output?: ScanOutput) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (this.codexWorker === worker) this.codexWorker = null;
+        void worker.terminate();
+        if (error) reject(error);
+        else resolve(output!);
+      };
+      const timer = setTimeout(() => finish(new Error('Codex rollout scan worker timed out')), this.codexScanTimeoutMs);
+      timer.unref();
+      worker.once('message', (message: { ok: boolean; result?: ScanOutput; error?: string }) => {
+        if (message.ok && message.result) finish(undefined, message.result);
+        else finish(new Error(message.error ?? 'Codex rollout scan worker failed'));
+      });
+      worker.once('error', (error) => finish(error));
+      worker.once('exit', (code) => finish(new Error(`Codex rollout scan worker exited (${code})`)));
+    });
   }
 
   private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult;
@@ -1443,6 +1482,8 @@ export class TokenLedger {
 
   close(): void {
     this.closed = true;
+    void this.codexWorker?.terminate();
+    this.codexWorker = null;
     if (this.attributionBackfillTimer) {
       clearTimeout(this.attributionBackfillTimer);
       this.attributionBackfillTimer = null;

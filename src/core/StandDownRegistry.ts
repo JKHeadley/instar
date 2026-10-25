@@ -39,6 +39,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { mergeDefaults } from './mergeDefaults.js';
 
 /** Lifecycle states. `closed`/`released` are pruned from the live map on
  *  transition (history lives in the JSONL); `expired` is NOT — both enforcement
@@ -234,7 +235,7 @@ export class StandDownRegistry {
   constructor(deps: StandDownRegistryDeps, cfg: Partial<StandDownRegistryConfig> = {}) {
     this.#deps = deps;
     this.#now = deps.now ?? (() => Date.now());
-    this.#cfg = { ...DEFAULT_STANDDOWN_CONFIG, ...cfg };
+    this.#cfg = mergeDefaults(DEFAULT_STANDDOWN_CONFIG, cfg);
     this.#load();
     // Regenerate the marker from the (possibly empty) registry at EVERY boot,
     // including the corrupt-file boot — a stale marker left behind by a crashed

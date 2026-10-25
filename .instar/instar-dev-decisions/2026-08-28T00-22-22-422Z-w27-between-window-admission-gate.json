@@ -1,0 +1,45 @@
+{
+  "ts": "2026-08-28T00:22:22.422Z",
+  "slug": "w27-between-window-admission-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/TelegramRelay.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1372,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/gate.ts",
+      "src/commands/server.ts",
+      "src/core/BetweenWindowAdmissionGate.ts",
+      "src/core/CartographerTree.ts",
+      "src/core/TelegramRelay.ts",
+      "src/remediation/audit/AuditProjection.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobLoader.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/server/sessionSpawnTopicBinding.ts"
+    ],
+    "addedLines": 1262,
+    "deletedLines": 110
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/scheduler/JobScheduler.body-drift.test.ts",
+      "howCaught": "The change adds no new self-triggered controller. The only repeated self-emission it introduces — loader-diagnostic reporting on quiet per-admission reloads — settles by construction: fingerprint (level|line) transition dedup reports each diagnostic once on appearance, is silent while it stands, and reports once again only on clear-then-recur; steady-state emission per standing diagnostic is O(1), proven by the appear/clear/recur test. Spawn topic binding and relay destination confirmation are subtractive authorities (they refuse spawns / refuse false 'sent'), and retries remain owned by the existing bounded DeliveryRetryManager."
+    }
+  },
+  "verdict": "blocked"
+}

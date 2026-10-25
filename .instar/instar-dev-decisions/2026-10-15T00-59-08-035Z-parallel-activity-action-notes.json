@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-15T00:59:08.035Z",
+  "slug": "parallel-activity-action-notes",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ParallelActivityIndex.ts",
+      "src/core/TopicActionNoteStore.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Comment-only change: in-brace @silent-fallback-ok justifications on existing fail-safe catches; no self-triggered action added (see the parent commit's declaration)."
+  },
+  "verdict": "blocked"
+}

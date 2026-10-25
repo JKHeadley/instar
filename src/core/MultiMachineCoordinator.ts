@@ -59,6 +59,12 @@ export interface MultiMachineSyncStatus {
   awakeMachineCount: number | null;
   /** Which basis produced `awakeMachineCount` (machine-coherence-guard §5b, D5). */
   awakeMachineCountSource: 'lease-live' | 'registry-roles' | 'unavailable';
+  /** Once-per-process lease backing-store decision made during server boot. */
+  leaseMedium?: {
+    medium: 'git' | 'local' | 'unchecked';
+    reason: string;
+    store: 'GitLeaseStore' | 'LocalLeaseStore';
+  };
   /**
    * multi-machine-lease-self-heal observability (Agent Awareness). F1 tick-watchdog
    * health — answers "did the watchdog fire?" / "is it disarmed?". `lastTickAgeMs`
@@ -112,6 +118,15 @@ const DEFAULT_LEASE_PULL_INTERVAL_MS = 5_000;
 const RENEW_SAFETY_FACTOR = 0.5;
 const MIN_RENEW_INTERVAL_MS = 5_000;
 const MAX_RENEW_INTERVAL_MS = 60_000;
+/**
+ * ACT-1308 — after an UNCONFIRMED renewal, retry after this fraction of the renew
+ * interval instead of waiting a full interval. renew() keeps the old expiry when a
+ * broadcast goes unconfirmed, so with TTL = 2 × interval the next regular tick
+ * lands exactly on that expiry (plus timer drift) and finds the lease already
+ * lapsed. A retry at interval/4 (7.5s at the default 30s) lands well inside it.
+ */
+const RENEW_RETRY_FRACTION = 0.25;
+const MIN_RENEW_RETRY_MS = 1_000;
 /**
  * B1 — how often an UNCHANGED lease-derived poll intent is rewritten so its `ts`
  * stays inside the consumer's staleness bound (TelegramLifeline reads it with
@@ -190,7 +205,13 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   private leaseRenewing: boolean = false;
+  /** ACT-1308 — one-shot retry armed after an unconfirmed renewal. */
+  private leaseRenewRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ACT-1308 — logged once per episode when the renew tick skips while we are still the named holder. */
+  private leaseRenewSkipLogged = false;
   private leaseRenewStartLogged: boolean = false;
+  private readonly originLeaseRenewalOwners = new Set<symbol>();
+  private leaseRenewStopped = false;
   /**
    * B2 (multimachine-lease-poll-robustness, Decision 8) — the lease flap
    * circuit-breaker. Lazily built when the churnDetector gate resolves on.
@@ -277,6 +298,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * not wired (dev-gate dark) → the field is simply absent.
    */
   private ropeHealthProvider: (() => NonNullable<MultiMachineSyncStatus['ropeHealth']>) | null = null;
+  private leaseMediumProvider: (() => NonNullable<MultiMachineSyncStatus['leaseMedium']>) | null = null;
   /**
    * U4.3 — lease-pull tick listeners (the probe CARRIER: "no new scheduler, no
    * new loop" — the prober attaches here and rides the existing ~5s pull tick).
@@ -385,6 +407,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * Returns the determined role for this machine.
    */
   start(): MachineRole {
+    this.leaseRenewStopped = false;
     // Check if multi-machine is set up
     if (!this.identityManager.hasIdentity()) {
       this._enabled = false;
@@ -513,6 +536,8 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   stop(): void {
+    this.leaseRenewStopped = true;
+    this.originLeaseRenewalOwners.clear();
     if (this.heartbeatWriteTimer) {
       clearInterval(this.heartbeatWriteTimer);
       this.heartbeatWriteTimer = null;
@@ -534,6 +559,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.leaseRenewTimer);
       this.leaseRenewTimer = null;
     }
+    this.clearLeaseRenewRetry();
     this.nonceStore.destroy();
   }
 
@@ -653,6 +679,21 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   attachLeaseCoordinator(lc: LeaseCoordinator): void {
     this.leaseCoordinator = lc;
+  }
+
+  /** Origin egress requires a current fenced lease throughout its lifetime.
+   * Enroll before initializeLease: the existing holder-only timer supplies that
+   * dependency when its flag is omitted. Explicit false remains authoritative;
+   * this never grants a lease or enables the other B3 rollout mechanisms. */
+  enrollOriginWriterLeaseRenewal(): () => void {
+    if (this.leaseRenewStopped) throw new Error('origin-lease-renewal-coordinator-stopped');
+    const owner = Symbol('telegram-origin-writer');
+    this.originLeaseRenewalOwners.add(owner);
+    if (!this.leaseRenewTimer) this.startLeaseRenewTimer();
+    return () => {
+      if (!this.originLeaseRenewalOwners.delete(owner) || this.leaseRenewStopped) return;
+      if (!this.resilientRenewEnabled()) this.startLeaseRenewTimer();
+    };
   }
 
   /**
@@ -924,13 +965,13 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
-   * B3 — resolve the resilientRenew gate. OMITTED `enabled` ⇒ developmentAgent
-   * gate (live-on-dev / dark-on-fleet); an explicit boolean wins. Read live so a
-   * config flip applies on the next renew tick without a restart.
+   * B3 keeps its standalone dev gate. An enrolled origin writer requires this
+   * existing renewal carrier when the flag is omitted; explicit booleans win.
+   * Read live so disabling it takes effect on the next renew tick.
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return resolveDevAgentGate(explicit, this.config);
+    return explicit ?? (this.originLeaseRenewalOwners.size > 0 || resolveDevAgentGate(undefined, this.config));
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
@@ -951,7 +992,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.leaseRenewTimer);
       this.leaseRenewTimer = null;
     }
-    if (!this.leaseCoordinator || !this.resilientRenewEnabled()) return;
+    if (this.leaseRenewStopped || !this.leaseCoordinator || !this.resilientRenewEnabled()) return;
     const interval = this.renewIntervalMs();
     if (!this.leaseRenewStartLogged) {
       console.log(`[MultiMachine] lease renew timer armed (every ${interval}ms; TTL ${this.leaseCoordinator.ttlMs}ms) — B3 resilient renew`);
@@ -968,7 +1009,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * can't wedge the timer.
    */
   private async leaseRenewTick(): Promise<void> {
-    if (this.leaseRenewing || !this.leaseCoordinator) return;
+    if (this.leaseRenewStopped || !this.resilientRenewEnabled() || this.leaseRenewing || !this.leaseCoordinator) return;
     // A muted/observe-only machine NEVER renews — same rule tickLease's
     // observe-only branch enforces. Without this, a machine that booted
     // observe-only while still NAMED in a persisted prior lease (the F3
@@ -976,7 +1017,18 @@ export class MultiMachineCoordinator extends EventEmitter {
     // up to ~TTL, fighting the silent-standby-relinquish self-heal. (2nd-pass.)
     if (this.isLeaseObserveOnly) return;
     // Only a current holder renews. A lapsed/non-holder is acquireIfEligible's job.
-    if (!this.leaseCoordinator.holdsLease()) return;
+    if (!this.leaseCoordinator.holdsLease()) {
+      // ACT-1308 — this skip used to be silent. When the lease still names us,
+      // skipping means our own lease lapsed between renewals: say so once.
+      const lease = this.leaseCoordinator.currentLease();
+      if (!this.leaseRenewSkipLogged && lease && !lease.released && lease.holder === this._identity?.machineId) {
+        this.leaseRenewSkipLogged = true;
+        console.log(`[MultiMachine] lease renew skipped: still the named holder at epoch ${lease.epoch}, but the lease lapsed (last confirmed renewal ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
+      }
+      return;
+    }
+    this.leaseRenewSkipLogged = false;
+    this.clearLeaseRenewRetry();
     this.leaseRenewing = true;
     try {
       await this.withTickTimeout('lease-renew', () => this.leaseCoordinator!.renew());
@@ -984,6 +1036,35 @@ export class MultiMachineCoordinator extends EventEmitter {
       console.log(`[MultiMachine] lease renew tick error (non-fatal): ${(err as Error).message}`);
     } finally {
       this.leaseRenewing = false;
+    }
+    this.armLeaseRenewRetryIfUnconfirmed();
+  }
+
+  /**
+   * ACT-1308 — renew() returns true inside the grace window even when the
+   * broadcast went unconfirmed, keeping the OLD expiry. If this attempt was not
+   * confirmed and we still hold the lease, try again shortly rather than at the
+   * next regular tick, which would land on that expiry and find it lapsed.
+   */
+  private armLeaseRenewRetryIfUnconfirmed(): void {
+    if (this.leaseRenewStopped || !this.leaseCoordinator || this.leaseRenewRetryTimer) return;
+    if (!this.leaseCoordinator.holdsLease()) return;
+    const interval = this.renewIntervalMs();
+    // A confirmation from this attempt is newer than any part of the interval.
+    if (this.leaseCoordinator.msSinceConfirmedRenewal() < interval / 2) return;
+    const delay = Math.max(MIN_RENEW_RETRY_MS, Math.round(interval * RENEW_RETRY_FRACTION));
+    console.log(`[MultiMachine] lease renewal unconfirmed; retrying in ${delay}ms (last confirmed ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
+    this.leaseRenewRetryTimer = setTimeout(() => {
+      this.leaseRenewRetryTimer = null;
+      void this.leaseRenewTick();
+    }, delay);
+    if (this.leaseRenewRetryTimer.unref) this.leaseRenewRetryTimer.unref();
+  }
+
+  private clearLeaseRenewRetry(): void {
+    if (this.leaseRenewRetryTimer) {
+      clearTimeout(this.leaseRenewRetryTimer);
+      this.leaseRenewRetryTimer = null;
     }
   }
 
@@ -1093,6 +1174,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
       awakeMachineCount,
       awakeMachineCountSource,
+      ...(this.leaseMediumProvider ? { leaseMedium: this.leaseMediumSafe() } : {}),
       leaseTickWatchdog: this.leaseCoordinator
         ? {
             lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,
@@ -1104,6 +1186,19 @@ export class MultiMachineCoordinator extends EventEmitter {
       meshEndpoints: this.selfMeshEndpointKinds(),
       ...(this.ropeHealthProvider ? { ropeHealth: this.ropeHealthSafe() } : {}),
     };
+  }
+
+  attachLeaseMediumProvider(provider: () => NonNullable<MultiMachineSyncStatus['leaseMedium']>): void {
+    this.leaseMediumProvider = provider;
+  }
+
+  private leaseMediumSafe(): NonNullable<MultiMachineSyncStatus['leaseMedium']> {
+    try {
+      return this.leaseMediumProvider?.() ?? { medium: 'local', reason: 'no-git-sync-manager', store: 'LocalLeaseStore' };
+    } catch {
+      // @silent-fallback-ok — passive health metadata must never break /health.
+      return { medium: 'local', reason: 'no-git-sync-manager', store: 'LocalLeaseStore' };
+    }
   }
 
   /**
@@ -1158,6 +1253,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+    this.leaseCoordinator.sampleLiveness?.();
       // Prime from the durable medium FIRST so this boot's failover-eligibility check sees the
       // holder's CURRENT heartbeat — not a stale seed `lastSeen` that a freshly-joined standby
       // would misread as "holder dead" and use to grab a live holder's lease (verified live on a
@@ -1243,6 +1339,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     // after a calm window (no-op when the churnDetector gate is off).
     this.getChurnBreaker()?.tick();
     try {
+      this.leaseCoordinator.sampleLiveness?.();
       if (this.isLeaseObserveOnly) {
         // F3 (silentStandbyRelinquish, DARK) — LEVEL-TRIGGERED: a silent standby
         // that is STILL the named holder (the 2026-06-19 zombie: muted while

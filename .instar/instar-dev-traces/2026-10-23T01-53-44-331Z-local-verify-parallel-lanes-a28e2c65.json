@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "local-verify-parallel-lanes",
+  "sessionId": "36f94642-3e87-48a2-999c-c5ac3d8e9a2d",
+  "timestamp": "2026-10-23T01:53:44.331Z",
+  "artifactPath": "upgrades/side-effects/local-verify-parallel-lanes.md",
+  "artifactSha256": "36fc2c1c3eaa647a7ddd9ad101ba5f6010e52dfe50f83a0119ea83893b7d1902",
+  "specPath": "docs/specs/local-verify-merge-authority.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/policy.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/suiteSlotSeam.test.ts",
+    "upgrades/side-effects/local-verify-parallel-lanes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes how the merge verifier runs its test lanes (concurrency, slot holding, shard merge); verdict-relevant code on the merge authority path.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "none",
+    "closure": "n/a",
+    "reason": "Throughput change (verifier lanes run at once), not a self-triggered loop or defect fix; the slot re-queue path is bounded by the existing queue cap and starved signal."
+  }
+}

@@ -66,8 +66,12 @@ export interface LeaseStore {
 
 /** Optional low-latency tunnel transport for the lease. */
 export interface LeaseTransport {
-  /** Broadcast our lease to peers. Resolves false if unreachable. */
-  broadcast(lease: LeaseRecord): Promise<boolean>;
+  /**
+   * Broadcast our lease to peers. Resolves false if unreachable. `onLateConfirm`
+   * (optional) fires once if a peer confirms this lease after the call already
+   * resolved false on its deadline.
+   */
+  broadcast(lease: LeaseRecord, onLateConfirm?: () => void): Promise<boolean>;
   /** The most-recent lease observed over the tunnel (and its source nonce map). */
   observed(): { lease: LeaseRecord | null; lastNonceByHolder: Record<string, number> };
   /** Whether the tunnel medium is currently reachable. */
@@ -87,6 +91,12 @@ export interface LeaseTransport {
    * (L4/SEC-4): feeds the awakeMachineCount counting rule, never demotion.
    */
   observedByPeer?(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }>;
+  /**
+   * Highest epoch a peer reported in a VERIFIED broadcast ack above the epoch we
+   * sent (0/absent = none). A monotonic high-water mark; any epoch below it is
+   * superseded and fenced (holdsLease, renew and solo hold all refuse it).
+   */
+  higherEpochEvidence?(): number;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -94,7 +104,22 @@ export interface LeaseCoordinatorDeps {
   store: LeaseStore;
   tunnel?: LeaseTransport;
   /** Machines presumed dead (lastSeen older than failoverThresholdMs). */
-  presumedDeadHolders: () => ReadonlySet<string>;
+  presumedDeadHolders: (opts?: { liveness?: boolean }) => ReadonlySet<string>;
+  /**
+   * a2a-single-agent-identity §1.1 — lease ELIGIBILITY, read live on every acquire tick. A
+   * machine in `identity-not-provisioned` posture answers false: it declines to acquire the
+   * serving lease and RELINQUISHES one it holds (an unprovisioned lease holder would take the
+   * whole fleet off the agent network — it holds the one relay connection and cannot use it).
+   * Absent ⇒ eligible (single-machine installs and every pre-existing caller are unchanged).
+   */
+  isLeaseEligible?: () => boolean;
+  /** Live switch getters; absent means enabled. */
+  getLivenessEnabled?: () => boolean;
+  getUnconfirmedWriteAlertEnabled?: () => boolean;
+  /** Samples liveness feeder health before each lease decision cycle. */
+  sampleLiveness?: () => void;
+  /** Reporting-only sink for sustained unconfirmed acquisition writes. */
+  reportDegradation?: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string; internalOnly?: boolean }) => void;
   /**
    * Wall clock (injectable for tests). Used ONLY to stamp human-readable
    * `acquiredAt`/`expiresAt` ISO fields on lease records (display + the
@@ -170,6 +195,13 @@ export class LeaseCoordinator {
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
+   * The renewal whose own early broadcast deadline caused the current suspension
+   * (null otherwise). That deadline is provisional — the dials are still in flight —
+   * so a late verified confirmation of EXACTLY this renewal may still finish it
+   * (adoptLateRenewal). Any other suspension stays terminal until re-acquire.
+   */
+  private suspendedByRenewal: LeaseRecord | null = null;
+  /**
    * Epoch acquired from a PEER through the normal fenced takeover authority.
    * When this machine is the preferred captain, this is positive evidence that
    * it may keep that exact epoch alive while the peer remains unreachable:
@@ -187,6 +219,13 @@ export class LeaseCoordinator {
    */
   private selfIssued: LeaseRecord | null = null;
   /**
+   * Bumped by relinquish(). A renewal whose broadcast was in flight when this
+   * machine gave the lease up must never re-install it (on time or late):
+   * relinquish only force-expires the local lease, so holder/epoch/released alone
+   * cannot tell a relinquished lease from a live one.
+   */
+  private relinquishGeneration = 0;
+  /**
    * F2 (staleHolderTakeover) — per-holder freshness on the OBSERVER's own
    * monotonic clock: the time we last saw that holder's signed nonce watermark
    * ADVANCE (a renewing holder bumps its nonce each renew). Stamped only when a
@@ -197,6 +236,9 @@ export class LeaseCoordinator {
    */
   private freshObservedMonoMs = new Map<string, number>();
   private lastObservedNonce = new Map<string, number>();
+  private lastObservedNonceEpoch = new Map<string, number>();
+  private unconfirmedWriteCount = 0;
+  private unconfirmedWriteReported = false;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -224,11 +266,43 @@ export class LeaseCoordinator {
   private markRenewOk(): void {
     this.lastRenewOkMonoMs = this.monotonicNow();
   }
+  /**
+   * ACT-1308 — milliseconds since the last CONFIRMED renewal/acquisition on the
+   * monotonic self-fence clock. renew() returns true inside the grace window even
+   * when the broadcast went unconfirmed, so a caller that wants to retry an
+   * unconfirmed renewal before the fence lapses reads this instead.
+   */
+  msSinceConfirmedRenewal(): number {
+    return this.monotonicNow() - this.lastRenewOkMonoMs;
+  }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
   }
+  private static readonly NONCE_SEED_MAX_AHEAD_MS = 365 * 24 * 3600 * 1000;
+  private nonceFloorPrimed = false;
+  /** Strictly increasing, at least the wall-clock milliseconds, and above this
+   * machine's own durable lease nonce. The floor is read once, only from a
+   * signature-verified own lease with a safe-integer nonce: a network
+   * observation can never seed it, so a forged lease cannot poison the counter. */
   private nextNonce(): number {
-    return ++this.nonceCounter;
+    if (!this.nonceFloorPrimed) {
+      this.nonceFloorPrimed = true;
+      try {
+        const durable = this.d.store.read().lease;
+        // The seed must also sit within a year of the wall clock: a verified but
+        // absurd nonce near MAX_SAFE_INTEGER would otherwise exhaust the counter.
+        if (durable && durable.holder === this.selfMachineId && Number.isSafeInteger(durable.nonce)
+            && durable.nonce <= Math.floor(this.now()) + LeaseCoordinator.NONCE_SEED_MAX_AHEAD_MS
+            && this.fl.verifyLease(durable)) {
+          this.nonceCounter = Math.max(this.nonceCounter, durable.nonce);
+        }
+      } catch {
+        // @silent-fallback-ok — the wall-clock seed below still applies; a
+        // failed read only loses the extra floor, never monotonicity.
+      }
+    }
+    this.nonceCounter = Math.max(this.nonceCounter + 1, Math.floor(this.now()));
+    return this.nonceCounter;
   }
 
   get selfMachineId(): string {
@@ -236,6 +310,71 @@ export class LeaseCoordinator {
   }
   get isSuspended(): boolean {
     return this.suspended;
+  }
+
+  freshRenewalWithin(machineId: string, ms: number): boolean {
+    const observed = this.freshObservedMonoMs.get(machineId);
+    return observed !== undefined && this.monotonicNow() - observed <= ms;
+  }
+
+  lastRenewalObservedMono(machineId: string): number | undefined {
+    return this.freshObservedMonoMs.get(machineId);
+  }
+
+  sampleLiveness(): void {
+    this.syncUnconfirmedWriteAlertState();
+    try {
+      this.d.sampleLiveness?.();
+    } catch (err) {
+      // @silent-fallback-ok — sampling is diagnostic-only and must never stop lease work.
+      this.log(`liveness sampling failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private syncUnconfirmedWriteAlertState(): boolean {
+    const enabled = this.d.getUnconfirmedWriteAlertEnabled?.() ?? true;
+    if (!enabled) {
+      this.unconfirmedWriteCount = 0;
+      this.unconfirmedWriteReported = false;
+    }
+    return enabled;
+  }
+
+  private recordCasWrite(candidate: LeaseRecord, result: ReturnType<LeaseStore['casWrite']>): void {
+    if (!this.syncUnconfirmedWriteAlertState()) return;
+    const observed = result.observed.lease;
+    const ownCandidateFailure = !result.ok && !!observed &&
+      observed.holder === this.selfMachineId &&
+      observed.epoch === candidate.epoch &&
+      observed.nonce === candidate.nonce;
+    if (!ownCandidateFailure) {
+      this.unconfirmedWriteCount = 0;
+      this.unconfirmedWriteReported = false;
+      return;
+    }
+    this.unconfirmedWriteCount++;
+    if (this.unconfirmedWriteCount === 5 && !this.unconfirmedWriteReported) {
+      this.unconfirmedWriteReported = true;
+      try {
+        this.d.reportDegradation?.({
+          feature: 'lease.unconfirmed-acquisition-write',
+          primary: 'Lease acquisition writes confirmed by the shared medium',
+          fallback: 'Continue fenced lease reconciliation with the observed read-back',
+          reason: 'lease writes remain unconfirmed by the medium',
+          impact: 'Repeated acquisition candidates may not be reaching the shared lease medium.',
+          internalOnly: true,
+        });
+      } catch (err) {
+        // @silent-fallback-ok — reporting is diagnostic-only and cannot abort lease authority.
+        this.log(`unconfirmed-write reporting failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  private casWrite(candidate: LeaseRecord): ReturnType<LeaseStore['casWrite']> {
+    const result = this.d.store.casWrite(candidate);
+    this.recordCasWrite(candidate, result);
+    return result;
   }
 
   /**
@@ -268,7 +407,10 @@ export class LeaseCoordinator {
           // advances; a non-renewing holder's stops. Stamp the OBSERVER's own
           // monotonic time when a peer holder's nonce watermark strictly advances.
           const prevNonce = this.lastObservedNonce.get(obs.lease.holder) ?? -1;
-          if (obs.lease.holder !== this.selfMachineId && obs.lease.nonce > prevNonce) {
+          const prevEpoch = this.lastObservedNonceEpoch.get(obs.lease.holder) ?? -1;
+          if (obs.lease.holder !== this.selfMachineId &&
+              (obs.lease.epoch > prevEpoch || (obs.lease.epoch === prevEpoch && obs.lease.nonce > prevNonce))) {
+            this.lastObservedNonceEpoch.set(obs.lease.holder, obs.lease.epoch);
             this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
             this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
           }
@@ -309,7 +451,14 @@ export class LeaseCoordinator {
     // wall-clock `isExpired` check above is retained as a conservative second
     // gate (either gate may fence; both must pass to hold).
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return false;
+    // A peer's verified ack reported a higher epoch than ours: we are superseded,
+    // even before its signed holder lease reaches our observed view.
+    if (this.higherEpochEvidence() > view.epoch) return false;
     return true;
+  }
+
+  private higherEpochEvidence(): number {
+    return this.d.tunnel?.higherEpochEvidence?.() ?? 0;
   }
 
   /** The current effective epoch (for stamping writes/sends). */
@@ -368,6 +517,7 @@ export class LeaseCoordinator {
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
+    if (this.higherEpochEvidence() > ourEpoch) return false;
     return true;
   }
 
@@ -400,10 +550,11 @@ export class LeaseCoordinator {
    * (forceLocalExpiry keeps the committed epoch) so a replayed stale lease can't
    * win after we relinquish.
    */
-  relinquish(): void {
+  relinquish(why = 'contested tie-break loser — winner may now advance to N+1'): void {
+    this.relinquishGeneration++;
     this.selfIssued = null;
     this.d.store.forceLocalExpiry?.();
-    this.log('relinquished self-lease (contested tie-break loser) — winner may now advance to N+1');
+    this.log(`relinquished self-lease (${why})`);
   }
 
   /**
@@ -433,11 +584,11 @@ export class LeaseCoordinator {
    * higher-epoch normal takeover always strictly dominates it. Idempotent: a no-op
    * (just local relinquish) when we are not the named holder.
    */
-  async relinquishAndBroadcast(): Promise<void> {
+  async relinquishAndBroadcast(why = 'silent-standby release'): Promise<void> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) {
       // Not the live holder (or already a tombstone) → just clear local state.
-      this.relinquish();
+      this.relinquish(why);
       return;
     }
     const tombstone = this.fl.signLease(
@@ -447,9 +598,9 @@ export class LeaseCoordinator {
       this.nextNonce(),                   // strictly > our last renewal nonce
       true,                               // released
     );
-    this.relinquish(); // clear our own self-hold first (forceLocalExpiry preserves the epoch floor)
+    this.relinquish(why); // clear our own self-hold first (forceLocalExpiry preserves the epoch floor)
     await this.broadcast(tombstone);
-    this.log(`relinquished + broadcast tombstone for epoch ${view.lease.epoch} (silent-standby release)`);
+    this.log(`relinquished + broadcast tombstone for epoch ${view.lease.epoch} (${why})`);
   }
 
   /**
@@ -468,7 +619,7 @@ export class LeaseCoordinator {
     const view = this.effectiveView();
     // buildAcquisition writes currentEpoch+1; currentEpoch is max(self@N, peer@N)=N.
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
@@ -636,16 +787,37 @@ export class LeaseCoordinator {
     }
   }
 
+  private identityIneligibleLogged = false;
+
   async acquireIfEligible(): Promise<boolean> {
+    // §1.1 lease rule: an unprovisioned machine that can see a live provisioned sibling does
+    // not acquire, and releases what it holds at this (the next) tick. Read live so adoption lifting the posture needs no restart.
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
+      const view = this.effectiveView();
+      if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
+        // Signed tombstone, not the bare local relinquish: peers stop deferring to this
+        // machine now instead of waiting out the lease TTL.
+        await this.relinquishAndBroadcast('identity-not-provisioned: a live sibling holds the agent identity');
+      } else if (!this.identityIneligibleLogged) {
+        // Once per ineligible stretch, not once per tick.
+        this.log('acquire skipped: identity-not-provisioned and a live sibling holds the agent identity');
+      }
+      this.identityIneligibleLogged = true;
+      return false;
+    }
+    this.identityIneligibleLogged = false;
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
+      this.suspendedByRenewal = null;
     }
-    const dead = this.d.presumedDeadHolders();
+    const liveness = this.d.getLivenessEnabled?.() ?? true;
+    const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
+      const dead = legacyDead ?? this.d.presumedDeadHolders({ liveness });
       // Already hold it at the current epoch → just renew.
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
         return this.renew();
@@ -656,7 +828,7 @@ export class LeaseCoordinator {
         return false;
       }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-      const res = this.d.store.casWrite(candidate);
+      const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
         if (
@@ -716,7 +888,7 @@ export class LeaseCoordinator {
       return false;
     }
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
@@ -785,7 +957,7 @@ export class LeaseCoordinator {
       return { ok: false, reason: decision.can ? `non-consent-grant-refused (${decision.reason})` : decision.reason };
     }
     const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
-    const res = this.d.store.casWrite(candidate);
+    const res = this.casWrite(candidate);
     if (res.ok) {
       this.selfIssued = candidate;
       await this.broadcast(candidate);
@@ -808,6 +980,8 @@ export class LeaseCoordinator {
   async renew(): Promise<boolean> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
+    // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
+    if (this.higherEpochEvidence() > view.epoch) return false;
 
     // Re-sign with a fresh expiry (same epoch — renewal never advances it).
     const renewed = this.fl.signLease(
@@ -824,7 +998,12 @@ export class LeaseCoordinator {
     // forever (which is exactly the partitioned-old-awake split-brain).
     let confirmed: boolean;
     if (this.d.tunnel) {
-      confirmed = await this.d.tunnel.broadcast(renewed).catch(() => false);
+      const generation = this.relinquishGeneration;
+      confirmed = await this.d.tunnel
+        .broadcast(renewed, () => this.adoptLateRenewal(renewed, generation))
+        .catch(() => false); // @silent-fallback-ok: a throw is an UNCONFIRMED renewal (fail-closed; hold/grace/suspend below)
+      // Relinquished while the broadcast was in flight: never re-install the lease.
+      if (generation !== this.relinquishGeneration) return false;
     } else {
       confirmed = this.d.store.refresh(renewed);
     }
@@ -853,6 +1032,8 @@ export class LeaseCoordinator {
 
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
       this.suspended = true;
+      // Only the tunnel's early deadline is provisional; a git refresh result is final.
+      this.suspendedByRenewal = this.d.tunnel ? renewed : null;
       this.d.onSelfSuspend?.(
         `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms, monotonic) — lease lapsed`,
       );
@@ -862,6 +1043,38 @@ export class LeaseCoordinator {
     // Within grace: keep serving on the EXISTING (soon-to-expire) lease — do
     // NOT extend selfIssued's expiry, so it lapses if we never reconfirm.
     return true;
+  }
+
+  /**
+   * A peer confirmed `renewed` after renew() had already returned on the broadcast
+   * deadline (a slow-but-valid peer). Adopt it exactly as an on-time confirmation
+   * would have — but only while it is still current: not suspended, not relinquished
+   * since the renewal was sent, still our lease at the same epoch, not released, not
+   * superseded by a higher epoch (observed or verified-ack evidence), not expired,
+   * and not older than a renewal we already installed.
+   *
+   * Suspension: if THIS renewal's own early deadline is what suspended us (a
+   * renewal started near the end of grace), that timeout was provisional, so the
+   * exact renewal may still finish and lift that suspension. Any other suspension
+   * (a different renewal, or none since re-acquire) still discards the ack. The
+   * monotonic fence stays armed until the confirmation actually arrives.
+   */
+  private adoptLateRenewal(renewed: LeaseRecord, generation: number): void {
+    if (this.suspended && this.suspendedByRenewal !== renewed) return;
+    if (generation !== this.relinquishGeneration) return;
+    if (this.fl.isExpired(renewed, this.now())) return;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) return;
+    if (view.epoch !== renewed.epoch || this.higherEpochEvidence() > renewed.epoch) return;
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce >= renewed.nonce) return;
+    if (this.suspended) {
+      this.suspended = false;
+      this.suspendedByRenewal = null;
+      this.log(`late confirmation of the renewal that timed out lifts its provisional suspension (epoch ${renewed.epoch})`);
+    }
+    this.selfIssued = renewed;
+    this.markRenewOk();
+    this.log(`late renewal confirmation adopted (epoch ${renewed.epoch}, nonce ${renewed.nonce})`);
   }
 
   private async broadcast(lease: LeaseRecord): Promise<void> {

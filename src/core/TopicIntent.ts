@@ -26,6 +26,7 @@ import {
   type AwarenessUpdateResult,
   type TopicAwarenessState,
 } from './TopicAwareness.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -502,8 +503,7 @@ export class TopicIntentStore {
         if (parsed.schemaVersion === undefined) parsed.schemaVersion = 1;
         if (parsed.turn === undefined) parsed.turn = 0;
         parsed.telemetry.capture = {
-          ...defaultCaptureCounters(),
-          ...(parsed.telemetry.capture ?? {}),
+          ...mergeDefaults(defaultCaptureCounters(), parsed.telemetry.capture),
           refkind_created: parsed.telemetry.capture?.refkind_created ?? {},
         };
         return parsed;

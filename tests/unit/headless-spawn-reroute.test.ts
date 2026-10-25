@@ -28,6 +28,8 @@ import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const mockTmuxSessions = new Set<string>();
+/** What `tmux show-environment -t … CLAUDE_CONFIG_DIR` answers ('' = unparseable). */
+let mockShowEnvironment = '';
 /** Every `new-session` argv captured, in call order (for argv-pin assertions). */
 const newSessionArgvs: string[][] = [];
 /** Every send-keys `-l` literal payload captured (for the sanitizer assertion). */
@@ -66,6 +68,7 @@ vi.mock('node:child_process', () => {
       // pane_current_command — report a live claude so isSessionAlive passes.
       return 'claude||claude';
     }
+    if (args[0] === 'show-environment') return mockShowEnvironment;
     return '';
   };
   return {
@@ -554,6 +557,179 @@ describe('monitorTick rerouted-interactive branch', () => {
 
     await maintenanceTick();
     expect(state.getSession('rr-3')!.status).toBe('running');
+  });
+});
+
+describe('monitorTick rerouted-interactive branch — expired login', () => {
+  let tmpDir: string;
+  const DEAD_LOGIN_PANE = 'Reviews all maintenance jobs.\n\n\u23FA Login expired \u00B7 Please run /login\n\n\u273B Worked for 0s\n\u276F \n';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-reroute-login-'));
+    mockTmuxSessions.clear();
+    newSessionArgvs.length = 0;
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/headless-spawn-reroute.test.ts' });
+  });
+
+  function seed(id: string, capture: string) {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id, name: id, status: 'running', jobSlug: `job-${id}`, tmuxSession: `proj-${id}`,
+      startedAt: new Date(Date.now() - 5 * 60_000).toISOString(), framework: 'claude-code',
+      launchLane: 'rerouted-interactive', completionMode: 'pattern',
+      completionPatterns: ['INSTAR_JOB_COMPLETE_never'], maxLifetimeMinutes: 480,
+    });
+    mockTmuxSessions.add(`proj-${id}`);
+    (manager as unknown as { isSessionAliveAsync: () => Promise<boolean> }).isSessionAliveAsync = async () => true;
+    (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => capture;
+    const firstSeen = (manager as unknown as { loginExpiredFirstSeen: Map<string, number> }).loginExpiredFirstSeen;
+    return { manager, state, maintenanceTick, firstSeen };
+  }
+
+  it('expired-login frame still showing after the dwell → killed with its own reason + degradation', async () => {
+    const { DegradationReporter } = await import('../../src/monitoring/DegradationReporter.js');
+    const reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report');
+    const { state, maintenanceTick, firstSeen } = seed('le-1', DEAD_LOGIN_PANE);
+
+    await maintenanceTick();
+    expect(state.getSession('le-1')!.status).toBe('running'); // first sighting only records
+    expect(firstSeen.has('proj-le-1')).toBe(true);
+
+    firstSeen.set('proj-le-1', Date.now() - 61_000); // dwell elapsed
+    await maintenanceTick();
+
+    const saved = state.getSession('le-1')!;
+    expect(saved.status).toBe('killed'); // job reruns on its next trigger
+    expect(saved.endedReason).toBe('rerouted-login-expired');
+    expect(reportSpy.mock.calls.some(([r]) => (r as { feature: string }).feature === 'SessionManager.monitorTick.reroutedLoginExpired')).toBe(true);
+    expect(firstSeen.has('proj-le-1')).toBe(false);
+    expect(saved.endedWorkEvidence).toBeUndefined(); // proved idle → never queued for revival
+    reportSpy.mockRestore();
+  });
+
+  it('ending a session at the frame reports its live config home to the login-expired sink', async () => {
+    const env = seed('le-9', DEAD_LOGIN_PANE);
+    (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+    const sightings: Array<{ configHome: string; session: string }> = [];
+    env.manager.setLoginExpiredSink((input) => sightings.push(input));
+    await env.maintenanceTick();
+    expect(sightings).toEqual([]); // first sighting only records the dwell
+    env.firstSeen.set('proj-le-9', Date.now() - 61_000);
+    await env.maintenanceTick();
+    expect(env.state.getSession('le-9')!.status).toBe('killed');
+    expect(sightings).toEqual([{ configHome: '/home/x/.claude-followme-a', session: 'proj-le-9' }]);
+  });
+
+  it('data flow: two sessions ended at the frame + an unreadable credential → the real poller flips needs-reauth', async () => {
+    const { SubscriptionPool } = await import('../../src/core/SubscriptionPool.js');
+    const { QuotaPoller } = await import('../../src/core/QuotaPoller.js');
+    const pool = new SubscriptionPool({ stateDir: tmpDir });
+    pool.addFixture({ id: 'jg', nickname: 'jg', email: 'jg@example.test', provider: 'anthropic',
+      framework: 'claude-code', configHome: '/home/x/.claude-followme-a' });
+    const poller = new QuotaPoller({
+      pool,
+      tokenResolver: () => ({ observationOnly: true, reason: 'credential-token-shape-invalid' }),
+      fetchImpl: async () => { throw new Error('no usage read expected'); },
+    });
+    for (const id of ['le-11', 'le-12']) {
+      const env = seed(id, DEAD_LOGIN_PANE);
+      (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+      env.manager.setLoginExpiredSink((input) => poller.noteCliLoginExpired(input));
+      await env.maintenanceTick();
+      env.firstSeen.set(`proj-${id}`, Date.now() - 61_000);
+      await env.maintenanceTick();
+      expect(env.state.getSession(id)!.status).toBe('killed');
+    }
+    await poller.pollAll();
+    expect(pool.get('jg')!.status).toBe('needs-reauth');
+  });
+
+  it('a session with CLAUDE_CONFIG_DIR explicitly unset reports the DEFAULT home; an unparseable tmux answer reports nothing', async () => {
+    const os = await import('node:os');
+    const prev = process.env.CLAUDE_CONFIG_DIR; delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      // Unparseable answer (the mock default) → no guessed slot, no sighting.
+      mockShowEnvironment = '';
+      const a = seed('le-13', DEAD_LOGIN_PANE);
+      const sightingsA: Array<{ configHome: string; session: string }> = [];
+      a.manager.setLoginExpiredSink((input) => sightingsA.push(input));
+      await a.maintenanceTick();
+      a.firstSeen.set('proj-le-13', Date.now() - 61_000);
+      await a.maintenanceTick();
+      expect(a.state.getSession('le-13')!.status).toBe('killed');
+      expect(sightingsA).toEqual([]);
+      // Explicitly unset (tmux prints `-CLAUDE_CONFIG_DIR`) → the default home.
+      mockShowEnvironment = '-CLAUDE_CONFIG_DIR';
+      const b = seed('le-14', DEAD_LOGIN_PANE);
+      const sightingsB: Array<{ configHome: string; session: string }> = [];
+      b.manager.setLoginExpiredSink((input) => sightingsB.push(input));
+      await b.maintenanceTick();
+      b.firstSeen.set('proj-le-14', Date.now() - 61_000);
+      await b.maintenanceTick();
+      expect(sightingsB).toEqual([{ configHome: path.join(os.homedir(), '.claude'), session: 'proj-le-14' }]);
+      // The plain resolver (no opts) still reports nothing for an unset var.
+      expect(b.manager.configHomeForSession('proj-le-14')).toBeUndefined();
+    } finally {
+      mockShowEnvironment = '';
+      if (prev !== undefined) process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
+  it('a throwing login-expired sink never stops the session being ended', async () => {
+    const env = seed('le-10', DEAD_LOGIN_PANE);
+    (env.manager as unknown as { configHomeForSession: () => string }).configHomeForSession = () => '/home/x/.claude-followme-a';
+    env.manager.setLoginExpiredSink(() => { throw new Error('sink down'); });
+    await env.maintenanceTick();
+    env.firstSeen.set('proj-le-10', Date.now() - 61_000);
+    await env.maintenanceTick();
+    expect(env.state.getSession('le-10')!.status).toBe('killed');
+  });
+
+  it('a protected session showing the frame is left running', async () => {
+    const env = seed('le-5', DEAD_LOGIN_PANE);
+    (env.manager as unknown as { config: { protectedSessions: string[] } }).config.protectedSessions.push('proj-le-5');
+    await env.maintenanceTick();
+    env.firstSeen.set('proj-le-5', Date.now() - 120_000);
+    await env.maintenanceTick();
+    expect(env.state.getSession('le-5')!.status).toBe('running');
+  });
+
+  it('a sighting for a session that is no longer running is evicted', async () => {
+    const env = seed('le-6', DEAD_LOGIN_PANE);
+    env.firstSeen.set('proj-gone', Date.now());
+    await env.maintenanceTick();
+    expect(env.firstSeen.has('proj-gone')).toBe(false);
+    expect(env.firstSeen.has('proj-le-6')).toBe(true);
+  });
+
+  it('inside the dwell → left running', async () => {
+    const { state, maintenanceTick, firstSeen } = seed('le-2', DEAD_LOGIN_PANE);
+    await maintenanceTick();
+    firstSeen.set('proj-le-2', Date.now() - 30_000);
+    await maintenanceTick();
+    expect(state.getSession('le-2')!.status).toBe('running');
+  });
+
+  it('frame gone from the live tail → sighting cleared, session keeps running', async () => {
+    const env = seed('le-3', DEAD_LOGIN_PANE);
+    await env.maintenanceTick();
+    expect(env.firstSeen.has('proj-le-3')).toBe(true);
+    (env.manager as unknown as { captureOutput: () => string }).captureOutput = () => '\u23FA Working on the audit now\n';
+    await env.maintenanceTick();
+    expect(env.firstSeen.has('proj-le-3')).toBe(false);
+    expect(env.state.getSession('le-3')!.status).toBe('running');
+  });
+
+  it('a session merely DISCUSSING an expired login is never ended', async () => {
+    const { state, maintenanceTick, firstSeen } = seed('le-4',
+      '\u23FA Root cause: the job hit "Login expired \u00B7 Please run /login" and sat idle.\n\u276F \n');
+    await maintenanceTick();
+    firstSeen.set('proj-le-4', Date.now() - 120_000);
+    await maintenanceTick();
+    expect(state.getSession('le-4')!.status).toBe('running');
   });
 });
 

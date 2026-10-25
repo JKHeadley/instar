@@ -33,17 +33,21 @@
  */
 
 import { createHash, createPrivateKey, type KeyObject } from 'node:crypto';
-import {
-  readFileSync as nodeReadFileSync,
-  writeFileSync as nodeWriteFileSync,
-  renameSync as nodeRenameSync,
-  mkdirSync as nodeMkdirSync,
-} from 'node:fs';
-import { join as nodeJoin, dirname as nodeDirname } from 'node:path';
+import { readFileSync as nodeReadFileSync } from 'node:fs';
+import { join as nodeJoin } from 'node:path';
+import { writeFileAtomicOwnerOnly } from '../identity/IdentityKeyFile.js';
 import { encryptForSync, decryptFromSync, type EncryptedSecretPayload } from './SecretStore.js';
 
 /** How an identity came to exist on a machine. Spec §3 — lineage, not "who did I join". */
-export type IdentityOrigin = 'minted-standalone' | 'received-on-join';
+export type IdentityOrigin =
+  | 'minted-standalone'
+  | 'received-on-join'
+  // a2a-single-agent-identity §1.2 / §1.4 — adopted from a sibling after pairing (automatic
+  // void-fill), adopted onto this machine by the operator's `instar identity adopt --from`,
+  // or minted by the operator's `instar identity init --standalone` recovery.
+  | 'adopted-from-sibling'
+  | 'adopted-by-operator'
+  | 'minted-by-operator-recovery';
 
 /**
  * Provenance travelling with an identity.
@@ -170,8 +174,17 @@ export function openHandoverEnvelope(input: {
 
   // Pin BEFORE decrypting: a hostile listener cannot produce a keypair matching a fingerprint
   // whose private key it does not hold, so this is what stops a fabricated identity.
+  // Transition (§2.1): the envelope's advertised fingerprint and the operator's pin may be in
+  // DIFFERENT formulas during a rolling update (an old sealer writes sha256; a new joiner pins
+  // the routing form). A mismatch here is therefore not final — the sealed key itself is
+  // checked against the pin under either formula after decryption, which is the check that
+  // carries the security property. A plain-equal pin still short-circuits as before.
+  let pinDeferredToSealedKey = false;
   if (envelope.identityFingerprint !== input.pinnedFingerprint) {
-    return { ok: false, rejection: 'fingerprint-not-pinned' };
+    if (typeof envelope.identityFingerprint !== 'string' || typeof input.pinnedFingerprint !== 'string') {
+      return { ok: false, rejection: 'fingerprint-not-pinned' };
+    }
+    pinDeferredToSealedKey = true;
   }
 
   const decrypt = input.decrypt ?? ((p, priv) => decryptFromSync(p, priv));
@@ -179,6 +192,7 @@ export function openHandoverEnvelope(input: {
   try {
     opened = decrypt(envelope.sealed, createPrivateKey(input.joinerEncryptionPrivateKeyPem));
   } catch {
+    // @silent-fallback-ok — the typed `undecryptable` rejection below is the caller's loud outcome (audited, named in the item); this is never a fallback to minting.
     // Covers a malformed key, a wrong key, and a tampered ciphertext alike. All three are
     // "this joiner cannot open this envelope", and none may fall back to minting.
     return { ok: false, rejection: 'undecryptable' };
@@ -190,17 +204,56 @@ export function openHandoverEnvelope(input: {
   }
 
   // The sealed contents must match the fingerprint that was pinned — otherwise a valid-looking
-  // envelope could carry a different key than the one advertised.
-  if (fingerprintOf(payload.identity.publicKey) !== input.pinnedFingerprint) {
+  // envelope could carry a different key than the one advertised. Transition rule
+  // (a2a-single-agent-identity §2.1): an OLD awake machine still writes the sha256 form, so
+  // the sealed key is accepted when it hashes to the pin under EITHER formula.
+  if (!fingerprintMatchesEitherFormula(payload.identity.publicKey, input.pinnedFingerprint)) {
+    // The pin was never matched: the envelope advertised something else AND the sealed key does
+    // not hash to the pin either. That is the hostile-listener case — named as such.
+    return { ok: false, rejection: pinDeferredToSealedKey ? 'fingerprint-not-pinned' : 'fingerprint-mismatch' };
+  }
+  // The sealed key must also agree with what the envelope ADVERTISED (either formula) — a
+  // valid-looking envelope must not carry a different key than the one it names.
+  if (!fingerprintMatchesEitherFormula(payload.identity.publicKey, envelope.identityFingerprint)) {
     return { ok: false, rejection: 'fingerprint-mismatch' };
   }
 
   return { ok: true, payload };
 }
 
-/** The routing fingerprint of an Ed25519 public key: first 16 bytes of its SHA-256, hex. */
+/**
+ * The ROUTING fingerprint of an Ed25519 public key — the first 16 bytes of the raw key, hex
+ * (`computeFingerprint`): the ONE value compared across machines or against a peer's pin
+ * (a2a-single-agent-identity §2.1 — one formula everywhere). It is what the relay registers,
+ * `/threadline/health` and `/provenance` publish, and every pinned peer uses.
+ *
+ * Until §2.1 this returned `sha256(pub).slice(0,32)`, a value nothing on the routing path
+ * reads — so the divergence detector compared two different formulas and could never report
+ * agreement. That form survives only as `legacyHandoverFingerprintOf`, accepted on a join
+ * envelope during the rolling-update transition.
+ */
 export function fingerprintOf(publicKeyBase64: string): string {
+  return Buffer.from(publicKeyBase64, 'base64').subarray(0, 16).toString('hex');
+}
+
+/** The pre-§2.1 handover form (sha256 prefix). Accepted on inbound envelopes only. */
+export function legacyHandoverFingerprintOf(publicKeyBase64: string): string {
   return createHash('sha256').update(Buffer.from(publicKeyBase64, 'base64')).digest('hex').slice(0, 32);
+}
+
+/**
+ * A provenance `rootFingerprint` that is the LEGACY form of `publicKeyBase64` is rewritten in
+ * the routing form; anything else is returned unchanged (presence-only field, §2.1).
+ */
+export function normalizeRootFingerprint(root: unknown, publicKeyBase64: string): string {
+  if (typeof root !== 'string' || root.length === 0) return fingerprintOf(publicKeyBase64);
+  return root === legacyHandoverFingerprintOf(publicKeyBase64) ? fingerprintOf(publicKeyBase64) : root;
+}
+
+/** True when `publicKeyBase64` hashes to `fingerprint` under the routing OR the legacy formula. */
+export function fingerprintMatchesEitherFormula(publicKeyBase64: string, fingerprint: string): boolean {
+  if (typeof fingerprint !== 'string' || fingerprint.length === 0) return false;
+  return fingerprintOf(publicKeyBase64) === fingerprint || legacyHandoverFingerprintOf(publicKeyBase64) === fingerprint;
 }
 
 /**
@@ -313,6 +366,10 @@ export function installAgentIdentityFromPairing(input: {
           createdAt: opened.payload.identity.createdAt,
           provenance: {
             ...opened.payload.provenance,
+            // §2.1 transition: a provenance root written in the legacy sha256 form for THIS
+            // key is rewritten in the routing form; any other value is carried as-is (it is
+            // compared for presence only, never placed in a routing comparison).
+            rootFingerprint: normalizeRootFingerprint(opened.payload.provenance?.rootFingerprint, opened.payload.identity.publicKey),
             origin: 'received-on-join' as const,
             machineId: input.expected.joinerMachineId,
           },
@@ -333,9 +390,7 @@ export function installAgentIdentityFromPairing(input: {
  * A half-written identity is worse than none — it is an agent that starts with a corrupt key.
  */
 function defaultAtomicWrite(target: string, data: string): void {
-  const dir = nodeDirname(target);
-  nodeMkdirSync(dir, { recursive: true });
-  const tmp = nodeJoin(dir, `.identity.${process.pid}.${Date.now()}.tmp`);
-  nodeWriteFileSync(tmp, data, { mode: 0o600 });
-  nodeRenameSync(tmp, target);
+  // The one raw identity-file write lives in IdentityKeyFile (spec:
+  // threadline-identity-single-writer): temp file created 0600 → rename.
+  writeFileAtomicOwnerOnly(target, data);
 }

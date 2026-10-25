@@ -402,11 +402,13 @@ describe('Phase 5 second-pass findings — a failed send is not a delivery', () 
     });
     let failing = true;
     const delivered: string[] = [];
-    batcher.setSendFunction(async (_t, text) => {
+    const logicalIds: Array<string | undefined> = [];
+    batcher.setSendFunction(async (_t, text, logicalId) => {
+      logicalIds.push(logicalId);
       if (failing) throw new Error('telegram down');
       delivered.push(text);
       return { messageId: delivered.length };
-    });
+    }, { supportsLogicalIds: true });
 
     await batcher.enqueue(note(61, 'important-ish notice'));
     await batcher.flush('SUMMARY');
@@ -419,6 +421,7 @@ describe('Phase 5 second-pass findings — a failed send is not a delivery', () 
     failing = false;
     await batcher.flush('SUMMARY');
     expect(delivered).toHaveLength(1);
+    expect(logicalIds[0]).toBeTruthy(); expect(logicalIds[1]).toBe(logicalIds[0]);
   });
 
   it('CONTROL: a SUCCEEDING send does dequeue, suppress, and consume the slot', async () => {

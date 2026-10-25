@@ -143,10 +143,16 @@ describe('Layer A — notify_terminal_stop functional delivery (real extracted f
 describe('Layer A — existing agents receive the notify-enabled hook (migration)', () => {
   let projectDir: string;
 
-  // Immediately-prior stock hook: it already carries terminal notification,
-  // but lacks the STATE_PARSE_LOUD additions. The current migration patches
-  // this exact structure in place rather than replacing a stock-looking file.
-  const priorStateParseHook = (): string => fs.readFileSync(HOOK_PATH, 'utf8')
+  // Synthetic anchor-compatible layout: keep the newer preparation behavior
+  // while removing its marker and STATE_PARSE_LOUD. This proves the surgical
+  // state-parse patch preserves terminal notification and unrelated later bytes.
+  const anchorCompatibleStateParsePredecessor = (): string => fs.readFileSync(HOOK_PATH, 'utf8')
+    .replace(
+      `# hook-capability: PREPARATION_CARRIER — a truthful inactive autonomous record in
+# preparing/recovering state falls through to the bounded continuation authority.
+`,
+      '',
+    )
     .replace(
       `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
 # frontmatter is a visible hook failure, distinct from the clean no-state exit.
@@ -174,10 +180,10 @@ fi
     rmrf(projectDir);
   });
 
-  it('keeps notify_terminal_stop while surgically upgrading the prior stock hook', () => {
+  it('keeps notify_terminal_stop while surgically upgrading an anchor-compatible predecessor', () => {
     const dst = path.join(projectDir, HOOK_REL);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.writeFileSync(dst, priorStateParseHook());
+    fs.writeFileSync(dst, anchorCompatibleStateParsePredecessor());
     expect(fs.readFileSync(dst, 'utf8')).toContain('notify_terminal_stop');
     expect(fs.readFileSync(dst, 'utf8')).not.toContain('STATE_PARSE_LOUD');
 

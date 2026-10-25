@@ -123,12 +123,41 @@ interface RunResult {
  * the same loop. Synchronous `execFileSync` would deadlock against
  * curl waiting on the server.
  */
+/**
+ * A genuinely hermetic environment for the spawned script.
+ *
+ * The script resolves its owning agent home from `INSTAR_AGENT_HOME` FIRST, so
+ * running this suite from inside a LIVE instar session made it resolve to the
+ * REAL agent home: it read the real config and wrote into the real outbound
+ * relay queue (`.instar/state/pending-relay.<agent>.sqlite`). Test fixture text
+ * was queued to real Telegram topics, and at least one — "Your weekly check
+ * finished — all clear." — was actually DELIVERED by the drainer on 2026-08-21.
+ * The tests also failed, because `queueRowCount()` looked in the tmp project
+ * while the rows landed elsewhere.
+ *
+ * An earlier version neutralised `INSTAR_PORT` and `INSTAR_AUTH_TOKEN` by name
+ * and was labelled "hermetic vs live-session env" — enumeration is exactly what
+ * failed here, because the harmful variable was not on the list. So: strip EVERY
+ * `INSTAR_*` variable rather than naming the ones we know about, then PIN
+ * `INSTAR_AGENT_HOME` to the tmp project so the resolution is explicit and does
+ * not depend on the child's cwd either.
+ */
+function hermeticEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith('INSTAR_')) continue;
+    env[k] = v;
+  }
+  env.INSTAR_AGENT_HOME = projectDir;
+  return env;
+}
+
 function runScript(topicId: number, message: string): Promise<RunResult> {
   const scriptPath = path.join(projectDir, '.claude', 'scripts', 'telegram-reply.sh');
   return new Promise((resolve) => {
     const child = spawn('bash', [scriptPath, String(topicId), message], {
       cwd: projectDir,
-      env: { ...process.env, INSTAR_PORT: '', INSTAR_AUTH_TOKEN: '' }, // hermetic vs live-session env
+      env: hermeticEnv(),
     });
     let stdout = '';
     let stderr = '';

@@ -177,7 +177,9 @@ export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
  * claude-code: concrete ids the Claude CLI accepts via `--model`, plus the
  * CLI tier aliases it documents (haiku/sonnet/opus). Includes the ultra
  * model `claude-fable-5` — the first populated escalation target.
- * codex-cli: mirror of CODEX_MODELS_SUBSCRIPTION (routes.ts spawn allowlist).
+ * codex-cli: THE codex list. The spawn route reads it through
+ * spawnModelAllowlist() (routes.ts) rather than restating it — it used to
+ * carry a hand-typed duplicate, and nothing enforced the agreement.
  * gemini-cli: re-exported from the adapter's own closed list.
  * pi-cli: CLOSED-EMPTY by design — pi model ids are `provider/id` patterns
  * whose provider half is per-agent config; there is no universal closed
@@ -189,6 +191,19 @@ import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js'
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 export const KNOWN_CLAUDE_MODEL_IDS = [
+  // Claude 5 family — live on the claude-code subscription CLI (verified
+  // against `claude --model <id> -p` on CLI 2.1.263, 2026-09-06). Their
+  // absence was not a policy choice: the enum simply lagged a generation, so
+  // `frameworkDefaultModels['claude-code'] = 'claude-opus-5'` was silently
+  // dropped at the resolution clamp and a topic pin to Fable 5.1 was refused
+  // `off-enum` — a stale allowlist reads exactly like a deliberate refusal.
+  'claude-fable-5-1',
+  // Opus 5.5 — live-verified against `claude --model claude-opus-5-5 -p` on
+  // CLI 2.1.281, 2026-09-24. Added so a topic can be pinned to it by exact id
+  // (the operator moved every Fable 5.1 pin to Opus 5.5 that day).
+  'claude-opus-5-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
@@ -196,6 +211,9 @@ export const KNOWN_CLAUDE_MODEL_IDS = [
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
   'claude-haiku-4-5-20251001',
+  // CLI tier aliases. 'fable' was missing while its three siblings were
+  // present — the same lag, one layer down.
+  'fable',
   'opus',
   'sonnet',
   'haiku',
@@ -210,10 +228,19 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // GPT-5.6 family — GA on the codex subscription 2026-07-09, live-verified on
   // codex CLI >= 0.144.0 (older CLIs 400 with "requires a newer version"). The
   // -pro variants are deliberately EXCLUDED (plan-gated + pricier — future
-  // follow-up). Keep in lockstep with CODEX_MODELS_SUBSCRIPTION (routes.ts).
+  // follow-up).
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  // GPT-6 family — live-verified 2026-09-05 on codex CLI 0.153.4; CLI 0.149.0
+  // 400s with "The 'gpt-6-astra' model requires a newer version of Codex."
+  // Only ids OBSERVED working are listed — sibling gpt-6 names are added when
+  // each is live-verified, never guessed. This is the SINGLE codex list:
+  // adding an id here reaches the spawn route and the pin validator both.
+  'gpt-6-astra',
+  // Live-verified 2026-09-23 on codex CLI 0.156.1 (0.153.4 refuses both).
+  'gpt-6-sol',
+  'gpt-6-luna',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

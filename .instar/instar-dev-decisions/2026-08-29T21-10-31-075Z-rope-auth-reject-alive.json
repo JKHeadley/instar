@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-29T21:10:31.075Z",
+  "slug": "rope-auth-reject-alive",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 129,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/RopeRecoveryProber.ts",
+      "src/monitoring/RopeHealthMonitor.ts"
+    ],
+    "addedLines": 126,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "U4.5's peer-offline classification keys on registry-online + heartbeat — both signals an auth fault suppresses (a peer that cannot authenticate stops reporting in), so the fault's own symptoms read as the benign explanation. Latent since U4.5 shipped; surfaced by the first real key rotation (2026-08-27 lost identity files) which produced the exact all-down + no-heartbeat + actively-refusing shape for two days."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

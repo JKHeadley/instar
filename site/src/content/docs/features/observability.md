@@ -117,9 +117,11 @@ This is what lets your agent keep working when you rotate your Anthropic API key
 
 ## Token ledger
 
-Components: `TokenLedger`, `TokenLedgerPoller`.
+Components: `TokenLedger`, `TokenLedgerPoller`, `CodexRolloutParser`, `CodexRolloutScan.worker`.
 
 Read-only token-usage observability. The ledger scans Claude Code's JSONL session transcripts, extracts per-message token counts, and exposes the data via `/tokens/summary` and `/tokens/sessions` HTTP routes. The poller runs in the background, tracks byte offsets per file so re-scans are idempotent, and updates the ledger as new turns get written.
+
+Codex sessions are counted too: `CodexRolloutParser` reads the token counts Codex writes into its rollout files, and the scan over those files runs in `CodexRolloutScan.worker`, a background worker thread, so a large rollout history never stalls the server while it is read.
 
 The ledger never mutates source files — it only reads. The poller is the only writer (to its own SQLite index), and even that is restartable from any state.
 

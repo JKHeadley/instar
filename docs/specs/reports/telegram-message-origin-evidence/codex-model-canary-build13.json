@@ -1,0 +1,52 @@
+{
+  "harness": "codex-cli",
+  "scope": "native-cli-format-with-loopback-provider",
+  "providerExecutionVerified": false,
+  "state": "passed",
+  "reason": "native-model-canary-two-native-turns-matched",
+  "sampledAt": 1788757307578,
+  "cliVersion": "0.153.4",
+  "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "parserDigest": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+  "twoTurnChecks": [
+    {
+      "expectedModel": "instar-canary-model-a",
+      "nativeId": "01a07a3e-7071-7641-808e-cfcf2d7467f8",
+      "turnId": "01a07a3e-7079-7d00-a152-b36300b67f35",
+      "observedMatch": true
+    },
+    {
+      "expectedModel": "instar-canary-model-b",
+      "nativeId": "01a07a3e-7071-7641-808e-cfcf2d7467f8",
+      "turnId": "01a07a3e-7096-7ab2-9120-4b1b16d57f48",
+      "observedMatch": true
+    }
+  ],
+  "isolationControls": [
+    {
+      "name": "no-fork-same-allowed-node",
+      "passed": true
+    },
+    {
+      "name": "operator-auth-file-read-denied",
+      "passed": true
+    },
+    {
+      "name": "outside-root-write-denied",
+      "passed": true
+    },
+    {
+      "name": "external-network-denied",
+      "passed": true
+    },
+    {
+      "name": "production-local-api-denied",
+      "passed": true
+    },
+    {
+      "name": "owned-loopback-permitted",
+      "passed": true
+    }
+  ],
+  "cleanupVerified": true
+}

@@ -60,11 +60,13 @@ function ctxFor(projectDir: string, opts: { developmentAgent?: boolean } = {}): 
   } as unknown as RouteContext;
 }
 
-function appWith(projectDir: string, opts: { developmentAgent?: boolean; seatFile?: string } = {}): express.Express {
+function appWith(projectDir: string, opts: { developmentAgent?: boolean; seatFile?: string; operatorProof?: string; runningSessions?: Array<{ name: string; tmuxSession: string; triggeredBy?: string }> } = {}): express.Express {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware(AUTH_TOKEN));
   const ctx = ctxFor(projectDir, opts);
+  if (opts.runningSessions) ctx.sessionManager = { listRunningSessions: () => opts.runningSessions } as any;
+  ctx.verifyDashboardOperatorSession = (proof) => proof === opts.operatorProof;
   if (opts.seatFile) ctx.playwrightSeatLease = () => new PlaywrightSeatLease({ filePath: opts.seatFile, ttlMs: 10_000 });
   app.use('/', createRoutes(ctx));
   return app;
@@ -206,6 +208,33 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(dup.status).toBe(409);
   });
 
+  it('PIN-scoped provisioning materializes an idempotent dedicated Google profile without secret values', async () => {
+    seedVault({ google_password_echo: 'NEVER_RETURN_THIS' });
+    const app = appWith(projectDir, { developmentAgent: true, operatorProof: 'recent-pin-proof' });
+    const denied = await request(app).post('/playwright-profiles/provision').set(auth()).send({
+      profileId: 'echo-google', identity: 'echo@example.test', loginMethod: 'password',
+    });
+    expect(denied.status).toBe(401);
+
+    const payload = {
+      profileId: 'echo-google', identity: 'echo@example.test', loginMethod: 'password',
+      passwordVaultName: 'google_password_echo',
+    };
+    const first = await request(app).post('/playwright-profiles/provision').set(auth())
+      .set('X-Instar-Operator-Session', 'recent-pin-proof').send(payload);
+    expect(first.status).toBe(201);
+    expect(first.body.readyForAutomation).toBe(true);
+    expect(first.body.profile.dirExists).toBe(true);
+    expect(first.body.account.vaultBindings).toEqual({ password: 'google_password_echo' });
+    expect(fs.statSync(first.body.profile.userDataDir).mode & 0o777).toBe(0o700);
+    expect(JSON.stringify(first.body)).not.toContain('NEVER_RETURN_THIS');
+
+    const replay = await request(app).post('/playwright-profiles/provision').set(auth())
+      .set('X-Instar-Operator-Session', 'recent-pin-proof').send(payload);
+    expect(replay.status).toBe(200);
+    expect(replay.body.profile.accounts).toHaveLength(1);
+  });
+
   it('create → 400 on a flag-shaped (rejected) userDataDir', async () => {
     const res = await request(appWith(projectDir, { developmentAgent: true }))
       .post('/playwright-profiles').set(auth()).send({ id: 'bad', userDataDir: '--evil' });
@@ -230,6 +259,24 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(ok.body.account.owner).toBe('agent');
     // Vault VALUES never appear in the response (D3).
     expect(JSON.stringify(ok.body)).not.toContain('ghp_INTEGRATIONSECRET');
+  });
+
+  it('assigns only strict vault-name role bindings and never returns secret values', async () => {
+    seedVault({ google_password_justin: 'TOP_SECRET_VALUE' });
+    const app = appWith(projectDir, { developmentAgent: true });
+    const ok = await request(app).post('/playwright-profiles/default/accounts').set(auth()).send({
+      service: 'google', identity: 'person@example.test', owner: 'operator',
+      vaultRefs: ['google_password_justin'], vaultBindings: { password: 'google_password_justin' },
+      loginMethod: 'password',
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body.account.vaultBindings).toEqual({ password: 'google_password_justin' });
+    expect(JSON.stringify(ok.body)).not.toContain('TOP_SECRET_VALUE');
+    const malformed = await request(app).post('/playwright-profiles/default/accounts').set(auth()).send({
+      service: 'google', identity: 'bad@example.test', owner: 'operator',
+      vaultRefs: ['google_password_justin'], vaultBindings: { recovery: 'google_password_justin' },
+    });
+    expect(malformed.status).toBe(400);
   });
 
   it('resolve → exact match, ambiguous multi-profile, and no-match', async () => {
@@ -319,6 +366,26 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     // A repeat activate is now already-active → no further write, no refresh.
     const again = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'sess-1' });
     expect(again.body.alreadyActive).toBe(true);
+  });
+
+  it('refuses to activate a profile for a session the feedback executor started (it could hold the approver account), before any write', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ playwrightRegistry: { enabled: true, dryRun: false } }, null, 2) + '\n');
+    seedPlaywrightSettings(['@playwright/mcp@latest']);
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    const app = appWith(projectDir, { developmentAgent: true, runningSessions: [
+      { name: 'feedback-specconverge-x', tmuxSession: 'proj-feedback-specconverge-x', triggeredBy: 'feedback-executor' },
+      { name: 'ordinary', tmuxSession: 'proj-ordinary', triggeredBy: 'telegram' },
+    ] });
+    await request(app).post('/playwright-profiles').set(auth()).send({ id: 'custom' });
+    const refused = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'proj-feedback-specconverge-x' });
+    expect(refused.status).toBe(403);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before);
+    // Addressed by its logical name too.
+    expect((await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'feedback-specconverge-x' })).status).toBe(403);
+    // Any other session is unaffected.
+    const ok = await request(app).post('/playwright-profiles/custom/activate').set(auth()).send({ sessionName: 'proj-ordinary' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.activated).toBe(true);
   });
 
   it('writes an audit line per write to logs/playwright-profiles.jsonl (NAMES only)', async () => {

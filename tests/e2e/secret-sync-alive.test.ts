@@ -24,15 +24,15 @@ import { SecretProvisioner, secretKeyPaths, type SecretSyncHandle } from '../../
 import { generateEncryptionKeyPair } from '../../src/core/MachineIdentity.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 
 describe('E2E: secret-sync routes are ALIVE through the real AgentServer', () => {
-  const PORT = 47221;
   const TOKEN = 'e2e-secret-token';
   const SECRET = 'bot-LIVE-SECRET-7c21';
   let dir: string;
   let server: AgentServer;
   let peerStore: SecretStore;
-  const base = `http://127.0.0.1:${PORT}`;
+  let base: string;
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-sync-e2e-'));
@@ -69,17 +69,18 @@ describe('E2E: secret-sync routes are ALIVE through the real AgentServer', () =>
       projectName: 'secret-sync-e2e',
       projectDir: dir,
       stateDir: dir,
-      port: PORT,
+      port: 0,
       authToken: TOKEN,
     } as unknown as InstarConfig;
 
     server = new AgentServer({
       config,
-      sessionManager: new SessionManager({ projectDir: dir, port: PORT }),
+      sessionManager: new SessionManager({ projectDir: dir, port: 0 }),
       state: new StateManager(dir),
       secretSync: handle,
     });
     await server.start();
+    base = boundAgentServerBase(server);
   }, 20000);
 
   afterAll(async () => {

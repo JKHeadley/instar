@@ -85,6 +85,9 @@ export class AuditProjection {
           this.reloadIfChanged();
         }
       });
+      this.watcher.on('error', () => {
+        this.close();
+      });
     } catch {
       // inotify exhausted or platform-unsupported — read-path stat is the
       // source of truth, watcher is supplementary (A46/A47).

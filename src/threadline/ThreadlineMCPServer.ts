@@ -114,6 +114,23 @@ export interface ThreadlineMCPDeps {
    * locally-cached known-agents file and marks the response source=cache.
    */
   relayClient?: RelayDiscoverer | null;
+  /**
+   * Verified pairing v2: start (or re-check) a pending static-key pairing on the agent
+   * server (POST /threadline/pairing/:peerFp/start). Optional; absent on transports
+   * that cannot reach the local server, in which case `threadline_pair start` reports so.
+   */
+  startPairing?: (peerFp: string) => Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }>;
+  /**
+   * Pairing by invite: make an invite on the agent server (POST /threadline/pairing/invites).
+   * Optional, like startPairing.
+   */
+  createInvite?: (opts: { ttlMinutes?: number; bindFp?: string }) => Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }>;
+  /**
+   * True in the stdio MCP process, whose trust manager is a separate in-memory copy loaded
+   * at startup: pairing reads reload it from disk first so a pairing the server just started
+   * is visible (spec §3.6). Never set in-process, where a reload could drop debounced writes.
+   */
+  reloadTrustBeforePairingRead?: boolean;
 }
 
 export interface SendMessageParams {
@@ -145,12 +162,31 @@ export interface SendMessageResult {
   accepted?: boolean;
   /** Whether processing is proven, rather than merely transport-accepted. */
   delivered?: boolean;
+  /** Honest delivery (spec §4): what the RELAY said — delivered | queued | rejected | unconfirmed. */
+  relayStatus?: string;
+  /** Fixed reason code (never relay prose). */
+  relayReasonCode?: string;
+  /** true = a LATER resend may succeed; false = it will not; null = unknown. Never "retry now". */
+  retryLater?: boolean | null;
+  /** A ban frame was seen and no later send has been acked — a hint, not a verdict. */
+  banSuspected?: boolean;
   /** True when the single-negotiator lease withheld this content send (G1 holding). */
   held?: boolean;
   /** Human-readable note (e.g. why content was withheld by the lease). */
   note?: string;
   /** Signal-only advisory nudge (e.g. commitment-class prose → anchor via mandate). */
   advisory?: string;
+  /** A2A relay forward: the machine of mine that carried a `deliveryPath: 'forwarded'` send. */
+  forwardedTo?: string;
+  /** A2A relay forward: where the reply will arrive — `topic-session` | `holder-hub`. */
+  replyArrivesIn?: string;
+  /**
+   * Dark peer (a2a-single-agent-identity §3.2): present only when my ledger shows
+   * messages to this peer queued/unconfirmed/expired for hours with nothing back.
+   * `connectedNow` is the presence map's answer (null = unknown). A proxy — it
+   * cannot tell offline from wrong-address.
+   */
+  peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
 }
 
 export interface RequestSecretParams {
@@ -670,6 +706,18 @@ export class ThreadlineMCPServer {
             threadId: result.threadId,
             messageId: result.messageId,
           };
+          if (result.relayStatus !== undefined) response.relayStatus = result.relayStatus;
+          if (result.relayReasonCode !== undefined) response.relayReasonCode = result.relayReasonCode;
+          if (result.retryLater !== undefined) response.retryLater = result.retryLater;
+          if (result.banSuspected) response.banSuspected = true;
+          // §3.2: a send to a dark peer carries the evidence object (additive).
+          if (result.peerDark) response.peerDark = result.peerDark;
+          // A2A relay forward: which machine of mine carried the send and where
+          // its reply will arrive. `reply` is null — a forwarded send never waits.
+          if (result.deliveryPath === 'forwarded') {
+            if (result.forwardedTo !== undefined) response.forwardedTo = result.forwardedTo;
+            if (result.replyArrivesIn !== undefined) response.replyArrivesIn = result.replyArrivesIn;
+          }
           // Surface the negotiator lease's holding note + the commitment-class
           // advisory nudge so the sending session learns it is not the voice /
           // is pointed at the anchored binding path (Robustness Phase 1).
@@ -680,6 +728,22 @@ export class ThreadlineMCPServer {
           if (args.waitForReply && result.reply) {
             response.reply = result.reply;
             response.replyFrom = result.replyFrom;
+          } else if (result.deliveryPath === 'forwarded') {
+            response.reply = null;
+            if (args.waitForReply) {
+              const machine = result.forwardedTo ?? 'unknown';
+              // An unconfirmed forward is NOT "sent": the holder never answered.
+              const lead = result.relayStatus === 'unconfirmed'
+                ? `Handed to my machine "${machine}"; delivery is unknown — do not resend. `
+                : `Sent through my machine "${machine}". `;
+              const forwardNote = lead + 'waitForReply is not honoured across machines. '
+                + (result.replyArrivesIn === 'topic-session'
+                  ? 'A reply arrives in the session of the topic this send was made from.'
+                  : `A reply arrives in the Threadline hub on "${machine}".`);
+              response.note = typeof response.note === 'string' && response.note
+                ? `${response.note} ${forwardNote}`
+                : forwardNote;
+            }
           } else if (args.waitForReply && !result.reply) {
             response.reply = null;
             response.note = 'No reply received within timeout';
@@ -1167,16 +1231,17 @@ export class ThreadlineMCPServer {
   private registerPairTool(): void {
     this.mcpServer.tool(
       'threadline_pair',
-      'Inspect and drive Secure A2A verified pairings (mutual SAS identity verification). ' +
-      'status: list pairings and show the local SAS words for a pending peer so the operator can ' +
-      'compare them out-of-band against the peer\'s SAS. verify/deny: the actual confirmation is ' +
-      'PIN-gated — these return the dashboard path the operator must use (the agent cannot self-confirm a pairing).',
+      'Inspect and drive verified pairings with other agents. ' +
+      'invite (the way to pair): make a one-time invite for your operator to send privately to the other ' +
+      'agent\'s operator; their operator approves it and yours taps Finish (you cannot approve or finish). ' +
+      'status: list pairings. start/verify/deny: the older 12-word check, kept for pairings already started that way.',
       {
-        action: z.enum(['status', 'verify', 'deny']).describe(
-          'status: list pairings (+ SAS for a pending peer). verify/deny: guidance to the PIN-gated dashboard flip.'
+        action: z.enum(['invite', 'start', 'status', 'verify', 'deny']).describe(
+          'invite: make a pairing invite for your operator to send. status: list pairings. start/verify/deny: the older 12-word check.'
         ),
+        ttlMinutes: z.number().int().min(1).max(1440).optional().describe('invite only: how long it stays valid (default 60, max 1440).'),
         fingerprint: z.string().optional().describe(
-          'Peer fingerprint — required for verify/deny; for status, scopes to one pairing (+ its SAS words if pending).'
+          'Peer fingerprint — invite: optional, binds the invite to that one agent (use it when you already know the peer); required for start/verify/deny; for status, scopes to one pairing.'
         ),
       },
       async (args) => {
@@ -1189,7 +1254,40 @@ export class ThreadlineMCPServer {
         const { trustManager } = this.deps;
 
         switch (args.action) {
+          case 'invite': {
+            if (!this.deps.createInvite) {
+              return errorResult('making an invite needs the local agent server, which this transport cannot reach');
+            }
+            const r = await this.deps.createInvite({ ttlMinutes: args.ttlMinutes, bindFp: args.fingerprint?.toLowerCase() });
+            if (!r.success) return errorResult(`Could not make the invite: ${r.error ?? 'unknown error'}`);
+            return jsonResult({
+              ...r.body,
+              instruction:
+                'Give the message to your operator to send PRIVATELY to the other agent\'s operator, in any app they ' +
+                'already use. Never post it publicly or send it over Threadline: it works once, and whoever uses it ' +
+                'first is the one offered to your operator. Their operator approves it; then your operator taps Finish ' +
+                '(Telegram or the dashboard). You cannot approve or finish a pairing yourself.',
+            });
+          }
+
+          case 'start': {
+            if (!args.fingerprint) return errorResult('fingerprint is required for start');
+            if (!this.deps.startPairing) {
+              return errorResult('starting a pairing needs the local agent server, which this transport cannot reach');
+            }
+            const r = await this.deps.startPairing(args.fingerprint);
+            if (!r.success) return errorResult(`Could not start the pairing: ${r.error ?? 'unknown error'}`);
+            return jsonResult({
+              ...r.body,
+              instruction:
+                'The pairing is pending. Ask the peer to start it from their side too, then have each operator ' +
+                'compare their 12 words IN ORDER over a channel the relay cannot touch. Confirm on the dashboard ' +
+                '(PIN-gated) only if every word matches.',
+            });
+          }
+
           case 'status': {
+            if (this.deps.reloadTrustBeforePairingRead) trustManager.reload();
             if (args.fingerprint) {
               const profile = trustManager.getProfileByFingerprint(args.fingerprint);
               if (!profile || profile.pairingState === undefined) {
@@ -1212,7 +1310,7 @@ export class ThreadlineMCPServer {
                 if (pending) {
                   detail.sasWords = pending.sasWords;
                   detail.instruction =
-                    'Compare these 6 SAS words IN ORDER with the peer\'s locally-rendered SAS over an ' +
+                    'Compare these 12 SAS words IN ORDER with the peer\'s locally-rendered SAS over an ' +
                     'out-of-band channel. If they match exactly, confirm via the dashboard Threadline ' +
                     'pairing panel (PIN-gated). If they differ, deny — that is a MITM signal.';
                 }
@@ -1381,7 +1479,7 @@ export class ThreadlineMCPServer {
               action: 'enabled',
               visibility,
               relayUrl: config.threadline.relayUrl ?? DEFAULT_RELAY_URL,
-              note: 'Relay enabled in config. Restart the server to connect.',
+              note: 'Relay enabled in config. It takes effect when the server restarts. To pair with another agent, use POST /threadline/pairing/enable instead: it also switches pairing on and restarts the server by itself, so never ask the operator to restart.',
               userMessage: `I've enabled the Threadline relay. Your agent will connect to the network on next restart. ` +
                 `Visibility is set to "${visibility}" — ` +
                 (visibility === 'public'

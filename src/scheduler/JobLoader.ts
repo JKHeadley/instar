@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Cron } from 'croner';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
-import { loadAgentMdJobs, type LoadProblem } from './AgentMdJobLoader.js';
+import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
 const VALID_MODELS: ModelTier[] = ['opus', 'sonnet', 'haiku'];
@@ -79,7 +79,71 @@ const GROUNDING_EXEMPT_SLUGS: ReadonlySet<string> = new Set([
  * handles an empty list correctly.
  */
 export function loadJobs(jobsFile: string): JobDefinition[] {
-  const legacyJobs = loadLegacyJobsJson(jobsFile);
+  return loadJobsDetailed(jobsFile).jobs;
+}
+
+/** One line the loader would print: the level it would print at and the
+ *  exact text. EVERY diagnostic class goes through here — missing jobs file,
+ *  invalid/skipped legacy entries, legacy-shadowing, grounding audit,
+ *  deprecation audit, agentmd problems — so a quiet caller receives the
+ *  complete list and can decide what to surface (the scheduler reports each
+ *  one once per transition, not once per trigger). */
+export interface LoadDiagnostic {
+  level: 'warn' | 'error';
+  message: string;
+}
+
+/** Where the loader's diagnostics go. Always RECORDS; prints only when loud. */
+interface LoadEmit {
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+function makeEmit(quiet: boolean, sink: LoadDiagnostic[]): LoadEmit {
+  return {
+    warn: (message) => {
+      sink.push({ level: 'warn', message });
+      if (!quiet) console.warn(message);
+    },
+    error: (message) => {
+      sink.push({ level: 'error', message });
+      if (!quiet) console.error(message);
+    },
+  };
+}
+
+/** Default for the helpers below when called without an explicit emit: loud,
+ *  and the recorded lines are simply discarded. */
+const LOUD_EMIT: LoadEmit = makeEmit(false, []);
+
+export interface LoadJobsOptions {
+  /** Suppress every console line the loader would print. The returned
+   *  `diagnostics` still carry every one of them, and `problems` the
+   *  structured agentmd subset. */
+  quiet?: boolean;
+}
+
+export interface LoadJobsResult {
+  jobs: JobDefinition[];
+  /** Per-entry agentmd load problems (structured; also in `diagnostics`). */
+  problems: LoadProblem[];
+  /** Enabled agentmd manifests that validated but whose body failed to load
+   *  this pass — see {@link AgentMdLoadResult.bodyFailures}. */
+  bodyFailures: AgentMdLoadResult['bodyFailures'];
+  /** Every line the loader printed (or, when quiet, WOULD have printed), in
+   *  order — the complete diagnostic surface of this load. */
+  diagnostics: LoadDiagnostic[];
+}
+
+/**
+ * Same load as {@link loadJobs}, but returns the problem list, the
+ * body-failed manifests and the complete diagnostic list alongside the jobs,
+ * and can run silently.
+ */
+export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): LoadJobsResult {
+  const diagnostics: LoadDiagnostic[] = [];
+  const emit = makeEmit(opts.quiet === true, diagnostics);
+  const legacyJobs = loadLegacyJobsJson(jobsFile, emit);
 
   // Phase 1a: also load per-slug manifests at .instar/jobs/schedule/.
   // The schedule directory lives next to jobs.json (typically .instar/);
@@ -90,31 +154,42 @@ export function loadJobs(jobsFile: string): JobDefinition[] {
   const agentMdResult = loadAgentMdJobs(scheduleDir, jobsRootDir);
 
   for (const p of agentMdResult.problems) {
-    console.warn(
-      `[JobLoader] agentmd problem (${p.kind})` +
-      (p.slug ? ` slug="${p.slug}"` : '') +
-      (p.origin ? ` origin=${p.origin}` : '') +
-      `: ${p.message}`,
-    );
+    emit.warn(formatLoadProblem(p));
   }
 
   // Mixed-state precedence: when both jobs.json and schedule/<slug>.json
   // describe the same slug, the per-slug manifest wins. The legacy entry is
   // skipped and surfaced as a problem. Spec §"Backwards Compatibility" pins
   // this behavior; once migration completes, jobs.json is deleted.
-  const merged = mergeLegacyWithAgentMd(legacyJobs, agentMdResult.jobs);
+  const merged = mergeLegacyWithAgentMd(legacyJobs, agentMdResult.jobs, emit);
 
   // Grounding-by-default audit — warn about jobs missing grounding config
-  auditGrounding(merged);
+  auditGrounding(merged, emit);
 
   // Phase 6 deprecation audit — warn about legacy execute.type: 'prompt'
   // entries for slugs that have a shipped agentmd default. These are
   // structurally inert (the agentmd entry shadows them) but their presence
   // means the operator hasn't confirmed migration. Two-release removal
   // cycle per INSTAR-JOBS-AS-AGENTMD spec §Rollout step 6.
-  auditLegacyPromptDeprecation(legacyJobs, agentMdResult.jobs, jobsRootDir);
+  auditLegacyPromptDeprecation(legacyJobs, agentMdResult.jobs, jobsRootDir, emit);
 
-  return merged;
+  return {
+    jobs: merged,
+    problems: agentMdResult.problems,
+    bodyFailures: agentMdResult.bodyFailures,
+    diagnostics,
+  };
+}
+
+/** One-line rendering of an agentmd load problem (shared by the boot-time
+ *  loader output and the scheduler's new-problem reporting). */
+export function formatLoadProblem(p: LoadProblem): string {
+  return (
+    `[JobLoader] agentmd problem (${p.kind})` +
+    (p.slug ? ` slug="${p.slug}"` : '') +
+    (p.origin ? ` origin=${p.origin}` : '') +
+    `: ${p.message}`
+  );
 }
 
 /**
@@ -139,6 +214,7 @@ function auditLegacyPromptDeprecation(
   legacy: JobDefinition[],
   agentMd: JobDefinition[],
   jobsRootDir: string,
+  emit: LoadEmit = LOUD_EMIT,
 ): void {
   if (legacy.length === 0 || agentMd.length === 0) return;
   const completedMarker = path.join(jobsRootDir, '.migration-complete.json');
@@ -156,7 +232,7 @@ function auditLegacyPromptDeprecation(
 
   if (deprecated.length === 0) return;
 
-  console.warn(
+  emit.warn(
     `[JobLoader] DEPRECATION: ${deprecated.length} legacy jobs.json ` +
     `entry(ies) with execute.type:"prompt" shadow agentmd defaults: ` +
     `${deprecated.join(', ')}. These will be removed two releases after ` +
@@ -171,9 +247,9 @@ function auditLegacyPromptDeprecation(
  * agentmd path additive — this function is byte-equivalent to the
  * pre-spec implementation modulo the explicit naming.
  */
-function loadLegacyJobsJson(jobsFile: string): JobDefinition[] {
+function loadLegacyJobsJson(jobsFile: string, emit: LoadEmit = LOUD_EMIT): JobDefinition[] {
   if (!fs.existsSync(jobsFile)) {
-    console.warn(
+    emit.warn(
       `[JobLoader] Jobs file not found: ${jobsFile} — treating as empty job list. ` +
       `Create the file to configure recurring jobs.`
     );
@@ -202,7 +278,7 @@ function loadLegacyJobsJson(jobsFile: string): JobDefinition[] {
       const message = err instanceof Error ? err.message : String(err);
       const slug = job && typeof job === 'object' ? (job as Record<string, unknown>).slug : undefined;
       skipped.push({ index, slug: typeof slug === 'string' ? slug : undefined, error: message });
-      console.error(
+      emit.error(
         `[JobLoader] Skipping invalid job at index ${index}` +
         (typeof slug === 'string' ? ` (slug="${slug}")` : '') +
         `: ${message}`
@@ -211,7 +287,7 @@ function loadLegacyJobsJson(jobsFile: string): JobDefinition[] {
   }
 
   if (skipped.length > 0) {
-    console.warn(
+    emit.warn(
       `[JobLoader] Loaded ${jobs.length} valid job(s) from legacy jobs.json; skipped ${skipped.length} invalid entry(ies). ` +
       `Fix the skipped entries to restore full scheduler coverage.`
     );
@@ -231,6 +307,7 @@ function loadLegacyJobsJson(jobsFile: string): JobDefinition[] {
 function mergeLegacyWithAgentMd(
   legacy: JobDefinition[],
   agentMd: JobDefinition[],
+  emit: LoadEmit = LOUD_EMIT,
 ): JobDefinition[] {
   const agentMdSlugs = new Set(agentMd.map((j) => j.slug));
   const result: JobDefinition[] = [];
@@ -245,7 +322,7 @@ function mergeLegacyWithAgentMd(
   }
 
   if (shadowed.length > 0) {
-    console.warn(
+    emit.warn(
       `[JobLoader] ${shadowed.length} legacy jobs.json entry(ies) shadowed by per-slug manifests in ` +
       `.instar/jobs/schedule/: ${shadowed.join(', ')}. The per-slug entries win per spec.`,
     );
@@ -502,7 +579,7 @@ export function validateCommonBlockers(blockers: unknown, prefix: string): void 
  * Emits warnings for jobs missing grounding — the "nudge" layer.
  * Exempt jobs (health-check, dispatch-check, etc.) are skipped silently.
  */
-function auditGrounding(jobs: JobDefinition[]): void {
+function auditGrounding(jobs: JobDefinition[], emit: LoadEmit = LOUD_EMIT): void {
   const ungrounded: string[] = [];
 
   for (const job of jobs) {
@@ -514,7 +591,7 @@ function auditGrounding(jobs: JobDefinition[]): void {
   }
 
   if (ungrounded.length > 0) {
-    console.warn(
+    emit.warn(
       `[JobLoader] Grounding audit: ${ungrounded.length} enabled job(s) lack grounding config: ${ungrounded.join(', ')}. ` +
       `Add a "grounding" field to declare identity and security requirements.`
     );

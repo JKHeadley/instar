@@ -1,0 +1,26 @@
+{
+  "ts": "2026-09-24T20:29:16.344Z",
+  "slug": "subscription-signin-skill",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/builtinSkillContent.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "documentation-only skill; no self-triggered action"
+  },
+  "verdict": "blocked"
+}

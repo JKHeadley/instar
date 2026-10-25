@@ -19,6 +19,7 @@ import {
   setFeatureMetricsRecorder,
 } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
 import { LlmCircuitBreaker } from '../../src/core/LlmCircuitBreaker.js';
+import { CODEX_CHATGPT_FALLBACK_MODEL } from '../../src/providers/adapters/openai-codex/models.js';
 
 let fixtureDir: string;
 let prevEnv: string | undefined;
@@ -101,7 +102,7 @@ for a in "$@"; do
 done
 cat > /dev/null
 echo "$MODEL" >> "${calls}"
-if [ "$MODEL" != "gpt-5.4-mini" ]; then
+if [ "$MODEL" != "${CODEX_CHATGPT_FALLBACK_MODEL}" ]; then
   echo "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account." >&2
   exit 1
 fi
@@ -111,9 +112,12 @@ exit 0
     const provider = new CodexCliIntelligenceProvider({ codexPath: script });
 
     await expect(provider.evaluate('p', { model: 'gpt-5.5' })).resolves.toBe('RECOVERED-JSON');
+    // Asserted against the CONSTANT, not a literal: the floor moves every time
+    // OpenAI retires a model (three times so far), and a hardcoded name here
+    // silently re-breaks this mechanism test on each move.
     expect(fs.readFileSync(calls, 'utf-8').trim().split('\n')).toEqual([
       'gpt-5.5',
-      'gpt-5.4-mini',
+      CODEX_CHATGPT_FALLBACK_MODEL,
     ]);
   });
 
@@ -200,6 +204,32 @@ exit 0
     await expect(provider.evaluate(bigPrompt)).rejects.toThrow(
       /intelligence\.codexExecJson.*INSTAR_CODEX_EXEC_JSON=0|INSTAR_CODEX_EXEC_JSON=0.*intelligence\.codexExecJson/s,
     );
+  });
+
+  // Live 2026-10-14: eight feedback-readiness calls failed as "Codex CLI error (exec --json,
+  // exit 1)" and nothing else — in --json mode codex reports the cause on STDOUT (an `error`
+  // event or `turn.failed`), and stderr is empty. The cause was only recoverable four days
+  // later from the rollout files. The thrown Error now carries the LAST such message, bounded.
+  it('carries the last error/turn.failed message from the event stream into the thrown Error, bounded', async () => {
+    const script = path.join(fixtureDir, 'ratelimited.sh');
+    const filler = 'x'.repeat(1_000);
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+cat > /dev/null
+echo '{"type":"error","message":"Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings."}'
+echo '{"type":"turn.started"}'
+echo '{"type":"turn.failed","error":{"message":"exceeded retry limit, last status: 429 Too Many Requests ${filler}"}}'
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+    const err = await provider.evaluate('p').then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/^Codex CLI error \(exec --json, exit 1\) — last event: exceeded retry limit, last status: 429 Too Many Requests/);
+    expect(err!.message).not.toContain('unrecognized configuration'); // the LAST event, not the first warning
+    expect(err!.message.length).toBeLessThan(400); // bounded: the 1000-char tail is cut
   });
 
   it('cleans up the per-call out-dir on success', async () => {

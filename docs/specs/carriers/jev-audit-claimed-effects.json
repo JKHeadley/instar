@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-09-24T01:17:21.593Z",
+  "slug": "jev-audit-claimed-effects",
+  "carriers": {
+    "CMT-565": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Build the CONDITIONAL declaredEffects form for the Jev job-completion audit: a declared file is only expected to have changed when the job itself reports it did work, so quiet legitimate runs are not false failures. Declare real effects on qualifying built-in jobs. Ship via instar-dev, then restart the job soak on a fresh window. Rationale: the naive unconditional form would manufacture evidence a"
+    }
+  }
+}

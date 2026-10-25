@@ -381,6 +381,25 @@ export class TreeGenerator {
       description: 'Secure secret collection — generate one-time, time-limited URLs for users to submit passwords, API keys, or tokens without exposing them in chat. Use POST /secrets/request to create a link, then share the tunnelUrl with the user. Never ask users to paste secrets in Telegram or chat.',
     });
 
+    // Connecting to another agent — the pairing-by-invite flow, read from the CLAUDE.md
+    // section of the same name (docs/specs/a2a-pairing-invite-link.md §3). Managed, so
+    // migrateSelfKnowledgeTree adds it to existing agents' trees on update.
+    children.push({
+      id: 'capabilities.agent_connect',
+      name: 'Connecting to another agent',
+      alwaysInclude: false,
+      managed: true,
+      depth: 'medium',
+      // The whole procedure must arrive (the Finish step is near the end); 900 cut it off
+      // once step 1 learned to switch pairing on without a restart.
+      maxTokens: 1400,
+      sensitivity: 'public',
+      sources: [
+        { type: 'file_section', path: 'CLAUDE.md', section: 'Connecting to another agent' },
+      ],
+      description: 'When my person says "connect / talk / pair with <agent>": OFFER AN INVITE (threadline_pair action "invite"), give my person the message with one sentence on where to send it (privately to the other person, or to the other agent\'s Telegram chat if they own both). A person carries it, never Threadline. Their person taps Approve, mine taps Finish; GET /threadline/pairing shows mutual-verified. Never ask for a fingerprint, address or settings; never offer a bundle.',
+    });
+
     // Discovery framework — feature surfacing guidance
     children.push({
       id: 'capabilities.discovery',

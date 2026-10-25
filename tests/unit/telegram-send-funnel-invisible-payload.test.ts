@@ -580,6 +580,9 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       // reopens that bypass, so it fails here first.
       expect(READER_VISIBLE_TELEGRAM_PARAMS).toEqual({
         sendMessage: 'text',
+        sendPhoto: 'caption', sendVideo: 'caption', sendAudio: 'caption', sendDocument: 'caption',
+        sendAnimation: 'caption', sendVoice: 'caption', sendVideoNote: 'video_note', sendSticker: 'sticker',
+        sendMediaGroup: 'media', editMessageMedia: 'media', editMessageCaption: 'caption', copyMessage: 'caption',
         editMessageText: ['rich_message', 'text'],
         // `rich_message` ONLY — pass 47: mapping `text` here was a PHANTOM field these methods do not
         // accept, and the egress waives its unreadable-body refusal when any mapped field arrives in

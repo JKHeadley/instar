@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-10T07:43:36.976Z",
+  "slug": "codex-model-retirement-2026-09-09",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 111,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/providers/adapters/openai-codex/models.ts",
+      "src/providers/adapters/openai-codex/observability/eventNormalizer.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

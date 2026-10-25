@@ -73,8 +73,8 @@ describe('parseTailscaleStatus (registered parser — captured fixtures)', () =>
     }));
     expect(parse.parsed).toBe(true);
     expect(parse.entries).toEqual([
-      { role: 'self', keyExpiryIso: null },
-      { role: 'peer', keyExpiryIso: null },
+      { role: 'self', keyExpiryIso: null, backsMeshRope: true },
+      { role: 'peer', keyExpiryIso: null, backsMeshRope: true },
     ]);
   });
 });
@@ -92,6 +92,78 @@ describe('soonestKeyExpiry', () => {
   });
 
   it('returns null when nothing carries an expiry', () => {
-    expect(soonestKeyExpiry({ parsed: true, entries: [{ role: 'self', keyExpiryIso: null }] }, 0)).toBeNull();
+    expect(soonestKeyExpiry({ parsed: true, entries: [{ role: 'self', keyExpiryIso: null, backsMeshRope: true }] }, 0)).toBeNull();
+  });
+});
+
+/**
+ * Mesh-scoping (2026-08-29): a tailnet holds every device the operator owns, but only a
+ * handful back a mesh rope. Scanning the whole tailnet for the soonest key expiry made a
+ * long-dead unrelated node the permanent global minimum, so the digest warned forever
+ * while every real mesh machine's key was months from expiry.
+ */
+describe('tailscaleStatusParser — mesh scoping', () => {
+  const MESH_IP = '100.64.165.27';
+  const DEAD_IP = '100.89.225.62';
+  const SELF_IP = '100.124.55.70';
+  const NOW = Date.parse('2026-08-29T19:00:00.000Z');
+
+  const raw = JSON.stringify({
+    BackendState: 'Running',
+    Self: { TailscaleIPs: [SELF_IP], KeyExpiry: '2027-02-15T03:47:45Z' },
+    Peer: {
+      'k:mesh': { TailscaleIPs: [MESH_IP], KeyExpiry: '2026-12-11T18:50:57Z' },
+      'k:dead': { TailscaleIPs: [DEAD_IP], KeyExpiry: '2026-08-13T05:48:14Z' },
+    },
+  });
+
+  it('flags only the nodes that back a mesh rope (self always counts)', () => {
+    const parse = parseTailscaleStatus(raw, new Set([MESH_IP]));
+    expect(parse.parsed).toBe(true);
+    expect(parse.entries.map((e) => [e.role, e.backsMeshRope])).toEqual([
+      ['self', true],
+      ['peer', true],
+      ['peer', false],
+    ]);
+  });
+
+  it('mesh-scoped: the long-dead unrelated node no longer sets the soonest expiry', () => {
+    const parse = parseTailscaleStatus(raw, new Set([MESH_IP]));
+    const soonest = soonestKeyExpiry(parse, NOW, { meshScopedOnly: true });
+    expect(soonest?.expiresAtIso).toBe('2026-12-11T18:50:57.000Z');
+    expect(soonest!.inDays).toBeGreaterThan(90);
+  });
+
+  it('un-scoped: the same input still reports the dead node (the pre-fix behaviour)', () => {
+    const soonest = soonestKeyExpiry(parseTailscaleStatus(raw), NOW);
+    expect(soonest?.expiresAtIso).toBe('2026-08-13T05:48:14.000Z');
+    expect(soonest!.inDays).toBeLessThan(0);
+  });
+
+  it('no address set ⇒ every node backs a rope (back-compatible)', () => {
+    expect(parseTailscaleStatus(raw).entries.every((e) => e.backsMeshRope)).toBe(true);
+    expect(parseTailscaleStatus(raw, new Set()).entries.every((e) => e.backsMeshRope)).toBe(true);
+  });
+
+  it('SELF still warns when scoped, even though its own address is not a mesh peer address', () => {
+    const selfSoon = JSON.stringify({
+      BackendState: 'Running',
+      Self: { TailscaleIPs: [SELF_IP], KeyExpiry: '2026-08-30T00:00:00Z' },
+      Peer: { 'k:mesh': { TailscaleIPs: [MESH_IP], KeyExpiry: '2027-02-15T03:47:45Z' } },
+    });
+    const soonest = soonestKeyExpiry(parseTailscaleStatus(selfSoon, new Set([MESH_IP])), NOW, {
+      meshScopedOnly: true,
+    });
+    expect(soonest?.role).toBe('self');
+  });
+
+  it('a node with no TailscaleIPs array is not treated as mesh-backing', () => {
+    const odd = JSON.stringify({
+      BackendState: 'Running',
+      Peer: { 'k:x': { KeyExpiry: '2026-08-13T05:48:14Z' } },
+    });
+    const parse = parseTailscaleStatus(odd, new Set([MESH_IP]));
+    expect(parse.entries[0].backsMeshRope).toBe(false);
+    expect(soonestKeyExpiry(parse, NOW, { meshScopedOnly: true })).toBeNull();
   });
 });

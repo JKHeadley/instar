@@ -24,6 +24,7 @@ import { ProxyCoordinator } from '../../src/monitoring/ProxyCoordinator.js';
 import { PromiseBeacon, type BeaconSendResult } from '../../src/monitoring/PromiseBeacon.js';
 import type { DeliveryOutcome } from '../../src/core/deliverToConversation.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
 
 function commitment(over: Partial<Commitment>): Commitment {
   return {
@@ -50,6 +51,7 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
   let attention: Array<{ id: string; detail: string }>;
   let nextOutcome: DeliveryOutcome;
   let ownsResult: boolean;
+  let originConfirmed: boolean;
   let beacon: PromiseBeacon;
 
   const readHot = (id: string): { sendSeq?: number; standDownAt?: string } => {
@@ -78,6 +80,7 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
       },
       retireSend: (conversationId, logicalSendId) => { retireCalls.push({ conversationId, logicalSendId }); },
       ownsConversation: () => ownsResult,
+      resolveOriginDelivery: async () => originConfirmed,
     });
 
   const emit = (c: Commitment, kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal' = 'heartbeat'): Promise<BeaconSendResult> =>
@@ -94,6 +97,7 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
     attention = [];
     nextOutcome = { delivered: true, outcome: 'delivered' };
     ownsResult = true;
+    originConfirmed = false;
     beacon = makeBeacon();
   });
   afterEach(() => {
@@ -110,6 +114,95 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
     expect(deliverCalls).toHaveLength(1);
     expect(deliverCalls[0].logicalSendId).toBe('CMT-001:0');
     expect(legacySends).toHaveLength(0); // NOT the legacy path
+  });
+
+  it('retains an origin-held operation across retries and restart until its receipt confirms delivery', async () => {
+    const c = commitment({ topicId: 42 });
+    nextOutcome = { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+      originHold: { operationId: 'operation-1', outcome: 'outcome-unknown', reason: 'transport-acceptance-unknown' } };
+    expect(await emit(c)).toBe('held-origin');
+    expect(await emit(c)).toBe('held-origin');
+    expect(deliverCalls).toHaveLength(1);
+    beacon = makeBeacon();
+    expect(await emit(c)).toBe('held-origin');
+    expect(deliverCalls).toHaveLength(1);
+    expect(readHot(c.id).sendSeq ?? 0).toBe(0);
+    originConfirmed = true;
+    expect(await emit(c)).toBe('sent');
+    expect(deliverCalls).toHaveLength(1);
+    expect(readHot(c.id).sendSeq).toBe(1);
+    nextOutcome = { delivered: true, outcome: 'delivered' };
+    expect(await emit(c)).toBe('sent');
+    expect(deliverCalls[1].logicalSendId).toBe(`${c.id}:1`);
+    expect(attention).toHaveLength(0);
+  });
+
+  it('replays a trusted response-loss hold after restart using the same logical identity', async () => {
+    const c = commitment({ topicId: 42 });
+    nextOutcome = { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+      originHold: { operationId: null, outcome: 'outcome-unknown', reason: 'automation-response-unavailable', logicalReplaySafe: true } };
+    expect(await emit(c)).toBe('held-origin');
+    beacon = makeBeacon();
+    nextOutcome = { delivered: true, outcome: 'delivered' };
+    expect(await emit(c)).toBe('sent');
+    expect(deliverCalls.map(call => call.logicalSendId)).toEqual([`${c.id}:0`, `${c.id}:0`]);
+    expect(readHot(c.id).sendSeq).toBe(1);
+  });
+
+  it('does not replay an unknown operation without trusted logical replay authority', async () => {
+    const c = commitment({ topicId: 42 });
+    nextOutcome = { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+      originHold: { operationId: null, outcome: 'outcome-unknown', reason: 'logical-send-content-conflict' } };
+    expect(await emit(c)).toBe('held-origin');
+    beacon = makeBeacon();
+    expect(await emit(c)).toBe('held-origin');
+    expect(deliverCalls).toHaveLength(1);
+  });
+
+  it.each([false, true])('settles the old heartbeat then delivers a distinct close-out (response lost: %s)', async responseLost => {
+    const c = commitment({ topicId: 42 });
+    nextOutcome = { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+      originHold: { operationId: responseLost ? null : 'heartbeat-operation', outcome: 'outcome-unknown',
+        reason: 'response-lost', logicalReplaySafe: responseLost } };
+    expect(await emit(c)).toBe('held-origin');
+    beacon = makeBeacon();
+    originConfirmed = !responseLost;
+    nextOutcome = { delivered: true, outcome: 'delivered' };
+    const result = await (beacon as unknown as { emitUserSend: (c: Commitment, text: string, kind: string) => Promise<BeaconSendResult> })
+      .emitUserSend(c, 'The requested work is complete.', 'closeOut');
+    expect(result).toBe('sent');
+    expect(deliverCalls.at(-1)).toEqual({ topicId: 42, text: 'The requested work is complete.', logicalSendId: `${c.id}:1` });
+    expect(deliverCalls).toHaveLength(responseLost ? 3 : 2);
+    if (responseLost) expect(deliverCalls[1]).toEqual(deliverCalls[0]);
+    expect(readHot(c.id).sendSeq).toBe(2);
+  });
+
+  it('serializes overlapping heartbeat and close-out sequence allocation', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const config = (beacon as unknown as { config: { deliverMessage: (...args: any[]) => Promise<DeliveryOutcome> } }).config;
+    const original = config.deliverMessage;
+    config.deliverMessage = async (...args) => { const result = await original(...args); await blocked; return result; };
+    const c = commitment({ topicId: 42 });
+    const heartbeat = emit(c);
+    const closeOut = emit(c, 'closeOut');
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(deliverCalls).toHaveLength(1);
+    release();
+    expect(await Promise.all([heartbeat, closeOut])).toEqual(['sent', 'sent']);
+    expect(deliverCalls.map(call => call.logicalSendId)).toEqual([`${c.id}:0`, `${c.id}:1`]);
+    expect(readHot(c.id).sendSeq).toBe(2);
+  });
+
+  it('also preserves origin custody through the legacy direct-send dependency', async () => {
+    const config = (beacon as unknown as { config: { deliverMessage?: unknown; sendMessage: () => Promise<void> } }).config;
+    delete config.deliverMessage;
+    let sends = 0;
+    config.sendMessage = async () => { sends++; throw new TelegramOriginHoldError('response-lost', 'legacy-operation', 'outcome-unknown'); };
+    expect(await emit(commitment({ topicId: 42 }))).toBe('held-origin');
+    expect(await emit(commitment({ topicId: 42 }))).toBe('held-origin');
+    expect(sends).toBe(1);
+    expect(readHot('CMT-001').sendSeq ?? 0).toBe(0);
   });
 
   it('a delivered outcome advances + persists sendSeq and retires the logical send (R5-M3 order)', async () => {

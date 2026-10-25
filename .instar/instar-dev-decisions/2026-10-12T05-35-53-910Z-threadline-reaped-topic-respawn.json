@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-12T05:35:53.910Z",
+  "slug": "threadline-reaped-topic-respawn",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 380,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SpawningTopicsRegistry.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/autoAck.ts",
+      "src/threadline/topicRespawnHook.ts"
+    ],
+    "addedLines": 278,
+    "deletedLines": 102
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

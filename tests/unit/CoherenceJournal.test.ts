@@ -98,6 +98,22 @@ describe('CoherenceJournal — paths & sanitization (§3.1)', () => {
     j.close();
   });
 
+  it("accepts a status: 'released' placement at the SOURCE — a release replicates as a release (2026-10-21)", () => {
+    // The emit funnel (server.ts emitPlacement) now carries the record's released
+    // status; before this the validator only knew active/transferring, so the
+    // field would have schema-rejected the whole row and the release could travel
+    // only as a bare reason — which peers materialized as live ownership.
+    const j = makeJournal();
+    const before = j.getDegradation().schemaRejects;
+    j.emitPlacement(127648, { owner: 'm_a', epoch: 3, reason: 'released', status: 'released', prevOwner: 'm_a' });
+    j.flush();
+    expect(j.getDegradation().schemaRejects).toBe(before); // NOT rejected
+    const lines = fs.readFileSync(streamFile('topic-placement'), 'utf-8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.data).toMatchObject({ reason: 'released', status: 'released', epoch: 3 });
+    j.close();
+  });
+
   it('sanitizes machine ids that contain path-unsafe characters (mirrors MachineHeartbeat)', () => {
     expect(sanitizeMachineId('a/b')).toBe('a%2fb'); // slash encoded
     expect(sanitizeMachineId('../x')).toBe('%2e%2e%2fx'); // dots + slash all encoded (traversal-safe)

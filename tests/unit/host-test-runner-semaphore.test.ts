@@ -1292,16 +1292,43 @@ describe('§2.9 resolution order (env → tuning file → code-default) for EVER
     });
   });
 
-  it('acquire budgets resolve per lane + run class: targeted env, background env, interactive = env || 5× background', () => {
+  it('acquire budgets resolve per lane + run class: env > tuning file > 45 min default; interactive defaults to the background budget', () => {
     expect(resolveAcquireBudgetMs('targeted', 'background', {})).toBe(60_000);
     expect(resolveAcquireBudgetMs('targeted', 'interactive', { INSTAR_HOST_TEST_TARGETED_ACQUIRE_MS: '5000' })).toBe(5000);
-    expect(resolveAcquireBudgetMs('suite', 'background', {})).toBe(120_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {})).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {})).toBe(2_700_000);
     expect(resolveAcquireBudgetMs('suite', 'background', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(30_000);
-    expect(resolveAcquireBudgetMs('suite', 'interactive', {})).toBe(600_000);
-    expect(resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(150_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(30_000);
     expect(
       resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE: '99000' }),
     ).toBe(99_000);
+  });
+
+  it('acquire budgets: the host tuning file sets the suite-lane wait (CMT-908); env still wins; out-of-range values are ignored', () => {
+    const tuning = { v: 1 as const, acquireMs: 3_000_000, acquireMsInteractive: 3_600_000 };
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, tuning)).toBe(3_000_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {}, tuning)).toBe(3_600_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {}, { v: 1, acquireMs: 3_000_000 })).toBe(3_000_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' }, tuning)).toBe(30_000);
+    // Targeted lane is unaffected by the suite-lane fields.
+    expect(resolveAcquireBudgetMs('targeted', 'background', {}, tuning)).toBe(60_000);
+    // Out of range (below 10 s, above 4 h, non-number) → code default.
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: 5 })).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: 99_000_000 })).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: '3000000' })).toBe(2_700_000);
+  });
+
+  it('acquire() reads the suite-lane wait budget from the tuning file when the caller passes none', async () => {
+    const paths = mkPaths();
+    fs.mkdirSync(paths.baseDir, { recursive: true });
+    fs.writeFileSync(paths.tuning, JSON.stringify({ v: 1, enforcing: true, acquireMs: 3_000_000 }));
+    const { sem, now } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background' });
+    expect(first.kind).toBe('acquired');
+    const started = now();
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background' })).rejects.toThrow(/3000000ms, suite lane/);
+    // Waited the tuned 50 min, not the 45 min default.
+    expect(now() - started).toBeGreaterThanOrEqual(3_000_000);
   });
 
   it('tuning-file corruption: quarantine ONLY after a confirming re-read; confirmed-corrupt resolves to code-defaults, never silent', () => {
@@ -2145,6 +2172,27 @@ describe('globalSetup chokepoint (§2.2/§2.5/§2.6 — skip reasons, lane routi
     expect(acq[0].lane).toBe('targeted');
     expect(acq[0].fileCount).toBe(2);
     await (t as () => Promise<void>)();
+  });
+
+  it('the one-worker push config acquires the TARGETED lane (a git push must not queue behind full suites); pool-shaping argv or a wider pool routes it to the suite lane', async () => {
+    process.env.__INSTAR_TRB_CONFIG = 'push';
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts', '--changed', 'origin/main'];
+    const t = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, fileParallelism: false }));
+    expect(typeof t).toBe('function');
+    expect(readRows(paths)[0].lane).toBe('targeted');
+    await (t as () => Promise<void>)();
+
+    delete (globalThis as Record<string, unknown>).__instarTestRunnerHeld;
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts', '--maxWorkers=16'];
+    const t2 = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, fileParallelism: false }));
+    expect(readRows(paths)[0].lane).toBe('suite');
+    await (t2 as () => Promise<void>)();
+
+    delete (globalThis as Record<string, unknown>).__instarTestRunnerHeld;
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts'];
+    const t3 = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, maxWorkers: 8 }));
+    expect(readRows(paths)[0].lane).toBe('suite');
+    await (t3 as () => Promise<void>)();
   });
 
   it('BIDIRECTIONAL posture-divergence WARN: ENFORCE=0 against an enforcing authority AND ENFORCE=1 against a dry-run authority (§2.9 round 8)', async () => {

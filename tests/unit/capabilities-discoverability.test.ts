@@ -94,8 +94,19 @@ describe('Capabilities Discoverability', () => {
       },
       scripts: [],
       secretDrop: {},
-    } as never) as { enabled: boolean };
+    } as never) as { enabled: boolean; endpoints: string[] };
     expect(result.enabled).toBe(true);
+    expect(result.endpoints).toContain('POST /autonomous/preparation/start — begin a bounded inactive preparation carrier');
+  });
+
+  it('keeps the window-lifecycle capability endpoint inventory exact', () => {
+    const registered = [...routesSource.matchAll(/router\.(get|post|put|delete|patch)\s*\(\s*['"](\/window-lifecycle(?:\/[^'"]*)?)['"]/g)]
+      .map((match) => `${match[1].toUpperCase()} ${match[2]}`)
+      .sort();
+    const entry = CAPABILITY_INDEX.find((candidate) => candidate.key === 'windowLifecycle');
+    expect(entry).toBeDefined();
+    const block = entry!.build({ ctx: { config: { projectName: 'echo' } }, scripts: [], secretDrop: {} } as never) as { endpoints: string[] };
+    expect([...block.endpoints].sort()).toEqual(registered);
   });
 
   it('no prefix is both claimed by CAPABILITY_INDEX and listed in INTERNAL_PREFIXES', () => {

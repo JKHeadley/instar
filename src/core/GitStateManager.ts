@@ -1,3 +1,4 @@
+import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 /**
  * Git State Manager — optional git tracking of agent state files.
  *
@@ -16,6 +17,7 @@ import { SafeGitExecutor } from './SafeGitExecutor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { GitStateConfig, GitLogEntry, GitStatus } from './types.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 const ALLOWED_REMOTE_SCHEMES = [
   /^https:\/\//,
@@ -46,7 +48,10 @@ remediation/cross-process-attempts-*.jsonl
 remediation/llm-raw-*.jsonl
 `;
 
-export const DEFAULT_GITIGNORE = `# Runtime state -- NOT tracked
+export const DEFAULT_GITIGNORE = `# Telegram origin custody -- machine-local
+${ORIGIN_LOCAL_GITIGNORE.join('\n')}
+
+# Runtime state -- NOT tracked
 state/
 logs/
 *.tmp
@@ -54,6 +59,7 @@ logs/
 
 # Secrets -- NEVER tracked
 config.json
+secrets/
 
 # Derived data -- reconstructable
 memory.db
@@ -100,7 +106,7 @@ export class GitStateManager {
 
   constructor(stateDir: string, config?: Partial<GitStateConfig>) {
     this.stateDir = path.resolve(stateDir);
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**

@@ -203,10 +203,14 @@
     .session-meta {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
       font-size: 11px;
       color: var(--text-dim);
     }
+
+    /* A badge wraps as a whole to the next line, never mid-word. */
+    .model-badge, .machine-badge { white-space: nowrap; }
 
     .session-meta .model-badge {
       padding: 1px 6px;
@@ -216,7 +220,7 @@
       text-transform: uppercase;
     }
 
-    .model-badge.opus { background: #2d1b4e; color: #c084fc; }
+    .model-badge.opus, .model-badge.fable { background: #2d1b4e; color: #c084fc; }
     .model-badge.sonnet { background: #1b2e4e; color: #60a5fa; }
     .model-badge.haiku { background: #1b3e3e; color: #5eead4; }
 
@@ -275,6 +279,30 @@
       font-size: 12px;
       cursor: default;
     }
+
+    .legend-btn {
+      background: none;
+      border: 1px solid var(--border, #333);
+      color: var(--text-dim, #999);
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+    .session-legend {
+      margin: 0 12px 10px;
+      padding: 8px 10px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      background: #141414;
+      font-size: 12px;
+      color: var(--text-dim, #999);
+    }
+    .session-legend .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .session-legend .legend-row > :first-child { flex: 0 0 auto; }
 
     .session-telemetry {
       display: flex;
@@ -1038,6 +1066,32 @@
     .mnd-reason-cell { color: var(--text-dim); }
     .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .mnd-dim { font-size: 13px; color: var(--text-dim); }
+    .pair-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px; }
+    .pair-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+    .pair-state { font-size: 13px; color: var(--text-dim); }
+    .pair-state-verification-failed { color: #f85149; }
+    .pair-state-mutual-verified, .pair-state-identity-verified { color: #3fb950; }
+    .pair-step { margin-top: 10px; }
+    .pair-step-title { font-size: 13px; margin-bottom: 6px; }
+    .pair-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+    .pair-own-words { columns: 3; font-family: ui-monospace, monospace; font-size: 15px; margin: 6px 0; }
+    .pair-words { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .pair-word { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); }
+    .pair-word input { flex: 1; min-width: 0; padding: 6px; font-family: ui-monospace, monospace; font-size: 15px; }
+    .pair-meta { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+    .pair-waiting { border-color: #1f6feb; }
+    #pairNotice:empty { display: none; }
+    .pair-pin { width: 160px; padding: 8px; font-size: 16px; }
+    .pair-nav-badge { margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: #1f6feb; color: #fff; font-size: 12px; font-weight: 600; }
+    /* On a phone the header has no room left: the badge floats on the menu button's corner and takes no width. */
+    @media (max-width: 640px) { .pair-nav-badge-word { display: none; } #navToggle { position: relative; } .pair-nav-badge { position: absolute; top: -7px; right: -7px; margin: 0; padding: 1px 6px; } }
+    .pair-alarm { border-color: #f85149; background: rgba(248, 81, 73, 0.08); }
+    .pair-invite-text { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 13px; padding: 8px; }
+    @media (max-width: 640px) {
+      .pair-own-words { columns: 2; }
+      .pair-words { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pair-row .mnd-pin, .pair-row .mnd-btn { flex: 1 1 100%; width: 100%; }
+    }
     /* Mobile-first (item 5): at phone width the 5-column audit table stacks into
        labelled rows so the reason — the useful column — is never truncated. */
     @media (max-width: 640px) {
@@ -1089,6 +1143,14 @@
     /* Page intro — one-sentence grounding right under the title so terms like
        "it" / "the system" later in the page have a clear referent. */
     .ph-intro { font-size: 17px; color: var(--text); line-height: 1.55; margin: 0; max-width: 720px; }
+    /* Feedback tab decision headline (ACT-003): one sentence + at most one button. */
+    .fd-decision { border: 1px solid var(--border, #2a2a2a); border-left-width: 4px; border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .fd-decision-action { border-left-color: #eab308; }
+    .fd-decision-calm { border-left-color: #16a34a; }
+    .fd-decision .ph-headline { font-size: 22px; }
+    .fd-decision .ph-subline { margin-top: 0; }
+    .fd-decision-btn { align-self: flex-start; flex: 0 0 auto; text-decoration: none; text-align: center; }
+    #fdControls[open] > .ph-section:first-of-type { margin-top: 12px; }
     /* ── Machines tab (Multi-Machine Session Pool §L2) — reuses .ph-root calm type ── */
     .machine-card { border: 1px solid var(--border, #2a2a2a); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; max-width: 720px; background: var(--panel-bg, transparent); }
     .machine-head { display: flex; align-items: center; gap: 10px; }
@@ -1101,6 +1163,13 @@
     .machine-nick:focus { border-color: var(--accent); outline: none; background: rgba(255,255,255,0.03); }
     .machine-badge { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 2px 9px; }
     .machine-meta { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin-top: 6px; }
+    .identity-recovery-grid { display: grid; gap: 10px; }
+    .identity-recovery-row { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; }
+    .identity-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    @media (max-width: 640px) {
+      .identity-recovery-row { display: grid; grid-template-columns: 1fr; }
+      .identity-recovery-actions button { flex: 1 1 auto; min-height: 42px; }
+    }
     /* Status color tokens — calm, never alarming. The dot is a scan-aid:
        glance the collapsed list, see which problems are still being worked
        on (amber), cause known (blue), or worked out (green). */
@@ -1723,6 +1792,66 @@
       font-size: 13px;
       color: var(--text);
     }
+
+    /* Door + model controls (dashboard-door-model-controls §3.6) — native
+       selects, full width at phone width, no horizontal scroll. */
+    .modal-field select {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      padding: 8px 12px;
+      background: var(--bg-panel);
+      color: var(--text-bright);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .modal-field select:disabled { opacity: 0.5; }
+    .modal-note {
+      font-size: 12px;
+      color: var(--text);
+      margin: 6px 0 0;
+      overflow-wrap: anywhere;
+    }
+    .modal-note.warn { color: var(--yellow, #e5c07b); }
+    .modal-note.err { color: var(--red, #e06c75); }
+    .ntd-row {
+      margin: 0 12px 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+    .ntd-row:hover { background: var(--bg-hover); }
+    .ntd-row .ntd-note { color: var(--text-dim); font-size: 11px; }
+    .door-model-btn {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .terminal-header .session-info .model-badge,
+    .terminal-header .session-info .type-badge { flex-shrink: 0; }
+    .terminal-header .session-info .model-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .terminal-header .session-info .model-badge.opus,
+    .terminal-header .session-info .model-badge.fable { color: #c084fc; }
+    .terminal-header .session-info .model-badge.sonnet { color: #60a5fa; }
+    .terminal-header .session-info .model-badge.haiku { color: #5eead4; }
 
     .modal-hint {
       font-size: 11px;
@@ -2454,6 +2583,21 @@
     .feat-reversibility { font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
 
     /* ── Systems Tab ──────────────────────────────────────────── */
+    /* Origin controls reuse shared action buttons and theme colors. */
+    #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
+    #originsTab .glance-drill-back { min-height: 44px; }
+    #originsTab .origin-settings { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); display: flex; flex-direction: column; gap: 8px; }
+    #originsTab .origin-bit { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+    #originsTab .origin-bit[hidden] { display: none; }
+    #originsTab input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+    #originsTab .origin-scope { display: flex; flex-direction: column; gap: 6px; }
+    #originsTab select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+    #originsTab .origin-save { border-color: var(--accent); color: var(--accent); }
+    #originsTab [role=status]:empty { display: none; }
+    #originsTab p { line-height: 1.45; }
+    #originsTab summary { cursor: pointer; min-height: 44px; padding: 10px 0; line-height: 1.4; }
+    #originsTab .origin-status-details { border-bottom: 1px solid var(--border); padding: 4px 0; }
     .systems-container { grid-column: 1 / -1; min-width: 0; overflow-y: auto; background: var(--bg); padding: 20px; }
     .systems-main { max-width: 960px; margin: 0 auto; }
     .systems-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
@@ -2652,8 +2796,13 @@
         min-width: 0;
       }
 
+      /* Phone width: the topic name matters more than the session-type tag. */
+      .terminal-header .session-info .type-badge { display: none !important; }
+
       .terminal-header .session-info h3 {
         font-size: 13px;
+        flex: 1;
+        min-width: 0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2914,6 +3063,10 @@
   </div>
 
   <!-- Main app -->
+  <div id="dashVersionBar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:10000;gap:10px;align-items:center;justify-content:center;padding:8px 12px;background:#1f6feb;color:#fff;font-size:14px">
+    The agent was updated to <span data-new-version></span>. Reload to get the new dashboard.
+    <button onclick="location.reload()" style="padding:4px 12px">Reload</button>
+  </div>
   <div class="app" id="app" style="display:none">
     <header class="header">
       <div class="header-left">
@@ -2927,6 +3080,7 @@
             <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           </div>
           <div class="tab-group" role="group" aria-label="Work & Delivery">
@@ -3000,10 +3154,20 @@
         <h2>Sessions</h2>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="session-count" id="sessionCount">0</span>
+          <button class="legend-btn" id="sessionLegendBtn" onclick="toggleSessionLegend()" title="What do the badges mean?" aria-expanded="false" aria-controls="sessionLegend">?</button>
           <button class="new-session-btn" onclick="openNewSessionModal()" title="New session">+</button>
         </div>
       </div>
       <div class="tab-purpose" style="padding:0 12px 8px">Your agent's live sessions — pick one to watch its terminal in real time.</div>
+      <div class="session-legend" id="sessionLegend" style="display:none">
+        <div class="legend-row"><span class="type-badge interactive">interactive</span><span>A conversation session. <span class="type-badge job">job</span> is a scheduled job run.</span></div>
+        <div class="legend-row"><span class="model-badge">MODEL</span><span>The model the session started on. A bare "OPUS" means it started on the default name, so the exact version isn't recorded.</span></div>
+        <div class="legend-row"><span class="platform-badge">✈️</span><span>Linked to a Telegram topic (💬 Slack, 📱 WhatsApp).</span></div>
+        <div class="legend-row"><span class="platform-badge">🖥️</span><span>No messaging app attached (headless, e.g. a background builder).</span></div>
+        <div class="legend-row"><span class="machine-badge">Machine</span><span>The machine the session runs on.</span></div>
+        <div class="legend-row"><span>3h 30m</span><span>How long the session has been running.</span></div>
+      </div>
+      <div class="ntd-row" id="newTopicDefaultRow" style="display:none" onclick="openNewTopicDefaultSheet()" role="button" tabindex="0"></div>
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
           <div class="icon">&#x1F4AD;</div>
@@ -3025,6 +3189,7 @@
             <h3 id="termSessionName">—</h3>
             <span class="type-badge" id="termTypeBadge" style="display:none"></span>
             <span class="model-badge" id="termModelBadge" style="display:none"></span>
+            <button class="door-model-btn" id="termDoorModelBtn" style="display:none" onclick="openDoorModelSheet()" title="Switch this topic's door and model">Door + model</button>
           </div>
           <div class="terminal-actions">
             <button class="action-btn" onclick="sendKey('Enter')" title="Send Enter">Enter</button>
@@ -3103,7 +3268,7 @@
       </div>
       <div class="modal-field">
         <label for="newSessionPlatform">Platform</label>
-        <select id="newSessionPlatform" style="width:100%;padding:8px 12px;background:var(--bg-panel);color:var(--text-bright);border:1px solid var(--border);border-radius:6px;font-size:14px;">
+        <select id="newSessionPlatform" onchange="onNewSessionPlatformChange()" style="width:100%;padding:8px 12px;background:var(--bg-panel);color:var(--text-bright);border:1px solid var(--border);border-radius:6px;font-size:14px;">
           <option value="auto">Auto (best available)</option>
           <option value="telegram">✈️ Telegram</option>
           <option value="slack">💬 Slack</option>
@@ -3111,11 +3276,77 @@
         </select>
         <div class="modal-hint">Choose which messaging platform to link this session to.</div>
       </div>
+      <div class="modal-field">
+        <label for="newSessionDoor">Door</label>
+        <select id="newSessionDoor" onchange="onNewSessionDoorChange()"></select>
+      </div>
+      <div class="modal-field">
+        <label for="newSessionModel">Model</label>
+        <select id="newSessionModel" onchange="updateCreateButtonLabel()"></select>
+        <div class="modal-hint" id="newSessionDoorHint">You can change this again after the topic's first message.</div>
+        <div class="modal-note warn" id="newSessionRegimeNote" style="display:none"></div>
+      </div>
+      <div class="modal-field" id="newSessionMachineField" style="display:none">
+        <label for="newSessionMachine">Machine</label>
+        <select id="newSessionMachine" onchange="onNewSessionMachineChange()"></select>
+        <div class="modal-hint" id="newSessionMachineHint">Automatic lets the agent pick. Choose a machine to run this topic there.</div>
+      </div>
+      <div class="modal-field">
+        <div class="modal-note err" id="newSessionError" style="display:none"></div>
+      </div>
       <!-- Keep hidden checkbox for backward compat -->
       <input type="hidden" id="newSessionHeadless">
       <div class="modal-actions">
         <button class="modal-btn-cancel" onclick="closeNewSessionModal()">Cancel</button>
         <button class="modal-btn-create" id="createSessionBtn" onclick="createNewSession()">Create Session</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Default for dashboard-created topics (dashboard-door-model-controls §3.2/§3.6) -->
+  <div class="modal-backdrop" id="newTopicDefaultSheet" style="display:none" onclick="closeSheet(event, 'newTopicDefaultSheet')">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <h3>Default for dashboard-created topics</h3>
+      <div class="modal-note">Applies to topics you create from this dashboard. Topics you start in Telegram and topics that already exist are not changed.</div>
+      <div class="modal-field" style="margin-top:12px">
+        <label for="ntdDoor">Door</label>
+        <select id="ntdDoor" onchange="onSheetDoorChange('ntdDoor','ntdModel')"></select>
+      </div>
+      <div class="modal-field">
+        <label for="ntdModel">Model</label>
+        <select id="ntdModel"></select>
+      </div>
+      <div class="modal-note" id="ntdCount"></div>
+      <div class="modal-note warn" id="ntdRegimeNote" style="display:none"></div>
+      <div class="modal-note" id="ntdCaveat"></div>
+      <div class="modal-note" id="ntdStatus" style="display:none"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" onclick="clearNewTopicDefault()">Clear</button>
+        <button class="modal-btn-cancel" onclick="closeSheet(null, 'newTopicDefaultSheet')">Close</button>
+        <button class="modal-btn-create" id="ntdSaveBtn" onclick="saveNewTopicDefault()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Switch an existing topic's door + model (dashboard-door-model-controls §3.4/§3.6) -->
+  <div class="modal-backdrop" id="doorModelSheet" style="display:none" onclick="closeSheet(event, 'doorModelSheet')">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <h3>Door + model</h3>
+      <div class="modal-note" id="dmCurrent">Loading…</div>
+      <div class="modal-field" style="margin-top:12px">
+        <label for="dmDoor">Door</label>
+        <select id="dmDoor" onchange="onSheetDoorChange('dmDoor','dmModel')"></select>
+      </div>
+      <div class="modal-field">
+        <label for="dmModel">Model</label>
+        <select id="dmModel"></select>
+      </div>
+      <div class="modal-note">Switching the door restarts this topic's session; the conversation is kept.</div>
+      <div class="modal-note warn" id="dmRegimeNote" style="display:none"></div>
+      <div class="modal-note" id="dmStatus" style="display:none"></div>
+      <div class="modal-actions">
+        <button class="modal-btn-cancel" onclick="closeSheet(null, 'doorModelSheet')">Close</button>
+        <button class="modal-btn-create" id="dmSwitchBtn" onclick="switchDoorModel()">Switch</button>
       </div>
     </div>
   </div>
@@ -3642,11 +3873,22 @@
         <h2 class="ph-title">Feedback Drain</h2>
         <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
-      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
-      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
-      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
+      <p class="ph-intro">Reports from people using Instar come in here and are turned into fixes on their own. This page only needs you when it says so below.</p>
+      <div id="fdHeadline" class="ph-headline-wrap" aria-live="polite"><div class="fd-decision fd-decision-calm"><div class="ph-headline">Checking whether anything here needs you…</div></div></div>
+      <details id="fdControls" class="ph-detail">
+        <summary class="ph-detail-summary">Approvals and settings</summary>
+        <section id="fdAuthority" class="ph-section spend-arm-root"></section>
+        <section id="fdTriage" class="ph-section spend-arm-root"></section>
+      </details>
+      <details id="fdMore" class="ph-detail">
+        <summary class="ph-detail-summary">More detail</summary>
+        <div class="ph-detail-body">
+          <div class="ph-detail-row">State: <span id="fdPosture"></span></div>
+          <div class="ph-detail-row">Backlog: <span id="fdBacklog"></span></div>
+          <div class="ph-detail-row">Progress: <span id="fdProgress"></span></div>
+          <div class="ph-detail-row">Source integrity: <span id="fdSource"></span></div>
+        </div>
+      </details>
     </div>
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
@@ -3697,6 +3939,20 @@
       .sub-provider-heading { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
         opacity:.6; margin:14px 0 8px; padding-bottom:6px; border-bottom:1px solid var(--border,#2a2a2a); }
       .sub-provider-heading:first-child { margin-top:0; }
+      /* Provider colors (operator request 2026-09-25): Claude and Codex are told apart
+         at a glance — a colored band on each group heading and a colored edge on every
+         account card and grid row. Claude = clay orange, Codex = blue. */
+      .sub-prov-claude { --prov:#e07a4f; --prov-tint:rgba(224,122,79,.12); }
+      .sub-prov-codex { --prov:#4f8ff0; --prov-tint:rgba(79,143,240,.12); }
+      .sub-prov-other { --prov:#9ca3af; --prov-tint:rgba(156,163,175,.10); }
+      .sub-provider-heading.sub-prov-claude, .sub-provider-heading.sub-prov-codex, .sub-provider-heading.sub-prov-other {
+        opacity:1; color:var(--prov); font-size:15px; background:var(--prov-tint); border-bottom:none;
+        border-left:6px solid var(--prov); border-radius:6px; padding:8px 12px; margin:20px 0 10px; }
+      .sub-account.sub-prov-claude, .sub-account.sub-prov-codex, .sub-account.sub-prov-other { border-left:6px solid var(--prov); }
+      .sub-matrix-group.sub-prov-claude, .sub-matrix-group.sub-prov-codex, .sub-matrix-group.sub-prov-other {
+        color:var(--prov); background:var(--prov-tint); font-size:14px; opacity:1; border-left:6px solid var(--prov); padding:10px 12px; }
+      .sub-matrix tr.sub-prov-claude > .sub-matrix-acct, .sub-matrix tr.sub-prov-codex > .sub-matrix-acct, .sub-matrix tr.sub-prov-other > .sub-matrix-acct {
+        border-left:6px solid var(--prov); background:var(--prov-tint); }
       .sub-account { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
       .sub-account-inuse { border-color:#16a34a; box-shadow:0 0 0 1px #16a34a44; }
       .sub-account-inuse-badge { font-size:11px; font-weight:600; color:#22c55e; margin-right:auto; }
@@ -3706,12 +3962,18 @@
       .sub-account-meta { font-size:12px; opacity:.6; margin:2px 0 2px; }
       .sub-account-email { font-size:12px; opacity:.5; margin:0 0 10px; }
       .sub-account-noquota { font-size:12px; opacity:.6; }
+      .sub-account-quota-age { font-size:11px; opacity:.5; margin-top:4px; }
       .sub-quota { margin:8px 0; }
       .sub-quota-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
       .sub-quota-label { opacity:.8; }
       .sub-quota-pct { opacity:.65; }
       .sub-quota-track { height:8px; border-radius:4px; background:var(--border,#2a2a2a); overflow:hidden; }
       .sub-quota-fill { height:100%; background:linear-gradient(90deg,#4caf80,#3a9); }
+      /* Severity bands (dashboard/subscriptions.js quotaSeverity): <75% ok, 75-89% warn, >=90% critical.
+         Colour is redundant with the always-present "N% used" text, never the only signal. */
+      .sub-quota-fill.sub-quota-ok { background:linear-gradient(90deg,#4caf80,#3a9); }
+      .sub-quota-fill.sub-quota-warn { background:linear-gradient(90deg,#f59e0b,#e0900a); }
+      .sub-quota-fill.sub-quota-critical { background:linear-gradient(90deg,#f87171,#ef4444); }
       .sub-pending { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:12px 16px; margin-bottom:10px; }
       .sub-pending-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
       .sub-pending-label { font-weight:600; }
@@ -3745,6 +4007,9 @@
       .sub-matrix-ttl { font-size:11px; opacity:.7; margin-top:4px; }
       .sub-matrix-cancel, .sub-matrix-collapse { margin-top:4px; margin-left:4px; padding:2px 8px; cursor:pointer; font-size:11px; opacity:.85; }
       .sub-matrix-held-detail { font-size:11px; color:#f87171; margin-top:4px; }
+      /* slow retry of a failed sign-in repair: a quiet next-try line and a quieter hold action */
+      .sub-matrix-next-try, .sub-account-repair-next { font-size:11px; opacity:.8; margin-top:4px; }
+      .sub-matrix-repair-hold, .sub-account-repair-hold { display:block; margin:4px auto 0; padding:2px 8px; font-size:11px; opacity:.75; cursor:pointer; }
       .sub-matrix-done-detail { font-size:11px; margin-top:4px; }
       .sub-matrix-outcome { margin-top:6px; padding:7px 8px; border-radius:7px; text-align:left; font-size:12px; line-height:1.4; }
       .sub-matrix-outcome-done { color:#22c55e; background:rgba(22,163,74,.10); border:1px solid rgba(22,163,74,.35); }
@@ -3895,6 +4160,11 @@
            headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
            Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
       <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="identityRecoveryTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="identityRecoveryTitle" style="margin:0 0 8px">Machine identity recovery</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Recovery-key availability, signing-key changes awaiting acknowledgement, and quarantined identity claims. Approve only a change you recognize.</p>
+        <div id="identityRecoveryStatus" class="identity-recovery-grid" aria-live="polite">Loading identity status…</div>
+      </section>
       <section aria-labelledby="mutualSshTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 id="mutualSshTitle" style="margin:0 0 8px">Machine-to-machine SSH</h3>
         <p style="margin:0 0 10px;color:var(--text-dim)">Restricted Instar subsystem connectivity. This does not enable Remote Login or change personal SSH files.</p>
@@ -3975,6 +4245,30 @@
         Threadline is your agent's secure channel to other AI agents. The Telegram bridge mirrors those conversations into per-thread Telegram topics so you can watch every exchange. Quiet by default — flip the master switch below to opt in.
       </div>
 
+      <!-- Pair with another agent — by invite (docs/specs/a2a-pairing-invite-link.md §8). First on the
+           tab: decisions waiting for the operator sit at the top of this card. -->
+      <div id="pairCard" class="mnd-card" style="border:1px solid var(--border);border-radius:8px;padding:16px">
+        <strong>Pair with another agent</strong>
+        <div class="mnd-hint">Pairing proves another agent is really who it says it is, before it can be sent anything secret.</div>
+        <div id="pairNotice" class="mnd-notice"></div>
+        <div id="pairPinRow" class="pair-row" style="display:none"><label for="pairPin" class="pair-step-title" style="margin:0">Your PIN, to approve (asked once):</label><input type="password" id="pairPin" class="mnd-pin pair-pin" inputmode="numeric" autocomplete="off" /></div>
+        <div id="pairPending"></div>
+        <div class="pair-step">
+          <div class="pair-step-title">Invite an agent</div>
+          <div class="pair-row"><label for="pairFor" class="mnd-dim">Who is it for?</label><select id="pairFor"><option value="">Someone new</option></select></div>
+          <div class="pair-row"><select id="pairTtl"><option value="60">Valid for 1 hour</option><option value="1440">Valid for 24 hours</option></select>
+          <button class="mnd-btn mnd-btn-primary" data-make-invite>Make an invite</button></div>
+          <div id="pairInviteOut"></div>
+          <div id="pairOpen"></div>
+        </div>
+        <div class="pair-step">
+          <div class="pair-step-title">Got an invite? Paste it here</div>
+          <textarea id="pairInviteIn" class="pair-invite-text" rows="3" placeholder="Paste the whole message you were sent" autocomplete="off" spellcheck="false"></textarea>
+          <div class="pair-row"><button class="mnd-btn mnd-btn-primary" data-inspect-invite>Check it</button></div>
+        </div>
+        <div id="pairList"></div>
+      </div>
+
       <!-- Bridge settings card -->
       <div id="tlBridgeCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:14px">
         <div style="font-weight:600">Telegram bridge settings</div>
@@ -4004,7 +4298,7 @@
           </span>
         </label>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
           <div>
             <div style="font-weight:600;font-size:13px;margin-bottom:6px">Allow-list</div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Always auto-create topics for these remote agents (overrides "auto-create off").</div>
@@ -4031,7 +4325,7 @@
       <!-- Conversation observability — threads list + message stream + search -->
       <div style="border:1px solid var(--border);border-radius:8px;padding:0;display:flex;flex-direction:column;min-height:480px">
         <!-- Toolbar -->
-        <div style="display:flex;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
           <div style="font-weight:600">Conversations</div>
           <div style="flex:1"></div>
           <input type="search" id="tlObsSearchInput" placeholder="search messages…" style="padding:6px 8px;font-size:12px;width:220px" oninput="tlObsSearchDebounced(this.value)" />
@@ -4063,6 +4357,7 @@
          The old ~390-word subsystem prose became a plain headline + tiles; each
          subsystem's full description / processes / metrics live one drill down.
          The shared component renders the headline + tiles + drill-down here. -->
+    <section class="systems-container" id="originsTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Inspect message authorship and choose which origin details appear.</p></section>
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
         <div class="systems-header">
@@ -4146,7 +4441,15 @@
     // ── State ────────────────────────────────────────────────
     let ws = null;
     let token = '';
+    // Short-lived proof of a recent PIN unlock. Kept in memory only: the durable
+    // API token is intentionally insufficient for operator-only actions.
+    let operatorSessionToken = '';
     let sessions = [];
+    // Door + model controls (dashboard-door-model-controls §3.6).
+    let topicProfileOptions = null;
+    const switchingModel = new Set(); // tmux sessions whose topic is mid-switch
+    let pendingDoorSwitch = null;     // { topicId, model, since, tmuxSession }
+    let doorModelSheetTopic = null;   // { topicId, tmuxSession }
     // Sessions running on OTHER machines in the pool (GET /sessions?scope=pool).
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
@@ -4193,6 +4496,8 @@
         .then(data => {
           if (data && data.token) {
             token = data.token;
+            operatorSessionToken = typeof data.operatorSessionToken === 'string'
+              ? data.operatorSessionToken : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -4206,9 +4511,12 @@
             document.getElementById('authOverlay').style.display = 'none';
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
+            if (currentTab === 'origins') originPanel?.refresh();
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            if (typeof startPairingPanel === 'function') startPairingPanel();
+            loadTopicProfileOptions();
           } else {
             showAuthError('Incorrect PIN');
           }
@@ -4235,6 +4543,8 @@
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
+            if (typeof startPairingPanel === 'function') startPairingPanel();
+            loadTopicProfileOptions();
           }
         })
         .catch(() => {});
@@ -4502,7 +4812,6 @@
 
         const platform = session.platform || 'headless';
         const platformIcon = platform === 'telegram' ? '✈️' : platform === 'slack' ? '💬' : platform === 'whatsapp' ? '📱' : '🖥️';
-        const platformLabel = platform.charAt(0).toUpperCase() + platform.slice(1);
 
         el.innerHTML = `
           <div class="session-name-row">
@@ -4510,12 +4819,12 @@
             <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}"${session.remote ? ` data-remote="1" data-uuid="${escapeHtml(session.id || '')}" data-machine-id="${escapeHtml(session.machineId || '')}" data-machine-nickname="${escapeHtml(session.machineNickname || '')}"` : ''} data-protected="${session.protected === true ? '1' : session.protected === false ? '0' : ''}"${closesInFlight.has(closeKey(session.remote ? session.machineId : null, session.tmuxSession)) ? ' disabled' : ''} onclick="event.stopPropagation();closeSessionFromBtn(this)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">
-            <span class="type-badge ${sType}">${sType}</span>
-            <span class="model-badge ${model}">${model}</span>
-            <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
+            <span class="type-badge ${sType}" title="${sType === 'job' ? 'Job: a scheduled job run' : 'Interactive: a conversation session'}">${sType}</span>
+            <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(modelBadgeTitle(model))}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
+            <span class="platform-badge ${platform}" title="${escapeHtml(platformBadgeTitle(platform))}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
             ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
-            <span>${elapsed}</span>
+            <span title="Running for ${elapsed}">${elapsed}</span>
           </div>
           ${telemetryHtml}
         `;
@@ -4590,12 +4899,16 @@
 
       const badge = document.getElementById('termModelBadge');
       if (session.model) {
-        badge.textContent = session.model;
-        badge.className = `model-badge ${session.model}`;
+        badge.textContent = friendlyModelName(session.model);
+        badge.title = session.model;
+        badge.className = `model-badge ${modelFamilyClass(session.model)}`;
         badge.style.display = 'inline-block';
       } else {
         badge.style.display = 'none';
       }
+
+      if (switchingModel.has(tmuxSession) && !session.remote) badge.textContent = 'switching…';
+      refreshDoorModelButton(session);
 
       // Show session type badge
       const sType = session.type || (session.jobSlug ? 'job' : 'interactive');
@@ -4892,12 +5205,111 @@
       const nameInput = document.getElementById('newSessionName');
       nameInput.value = '';
       document.getElementById('newSessionHeadless').checked = false;
+      showNote('newSessionError', '');
       setTimeout(() => nameInput.focus(), 50);
+      // Door/Model preselect from the default (§3.6) — refreshed on every open.
+      loadTopicProfileOptions().then(() => {
+        const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+        fillDoorSelect('newSessionDoor', def && def.framework ? def.framework : '', true);
+        fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value,
+          def && def.framework ? def.model : null);
+        showRegimeNote('newSessionRegimeNote');
+        onNewSessionPlatformChange();
+      });
+      loadNewSessionMachines();
+    }
+
+    // ── Machine choice (docs/specs/dashboard-new-session-machine-choice.md §3.5) ──
+    // Every server-supplied string is set with textContent / option.text.
+    let newSessionMachinesReq = 0;
+    let newSessionSelfMachineId = null;
+    // True while the shared door/model options hold ANOTHER machine's list; every
+    // way out of the box (close, create, a non-Telegram platform, Automatic)
+    // restores this machine's own list so other screens never see the peer's.
+    let newSessionRemoteOptions = false;
+    function restoreLocalTopicProfileOptions() {
+      if (!newSessionRemoteOptions) return;
+      newSessionRemoteOptions = false;
+      loadTopicProfileOptions();
+    }
+
+    async function loadNewSessionMachines() {
+      const field = document.getElementById('newSessionMachineField');
+      const sel = document.getElementById('newSessionMachine');
+      const reqId = ++newSessionMachinesReq;
+      sel.innerHTML = '';
+      const auto = document.createElement('option');
+      auto.value = '';
+      auto.text = 'Automatic';
+      sel.appendChild(auto);
+      sel.value = '';
+      field.style.display = 'none';
+      let data = null;
+      try {
+        const r = await fetch('/pool', { headers: { 'Authorization': `Bearer ${token}` } });
+        data = r.ok ? await r.json() : null;
+      } catch { data = null; }
+      // A late answer for a closed or re-opened box is ignored.
+      if (reqId !== newSessionMachinesReq || document.getElementById('newSessionModal').style.display === 'none') return;
+      const machines = (data && Array.isArray(data.machines)) ? data.machines : [];
+      if (machines.length < 2) return;
+      newSessionSelfMachineId = data.selfMachineId || null;
+      for (const m of machines) {
+        if (!m || typeof m.machineId !== 'string') continue;
+        const opt = document.createElement('option');
+        opt.value = m.machineId;
+        let label = (typeof m.nickname === 'string' && m.nickname) ? m.nickname : m.machineId;
+        const offline = m.online !== true;
+        // Only the status placement itself removes; a once-seen divergence is still placeable.
+        const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
+        if (m.machineId === newSessionSelfMachineId) label += ' (this machine)';
+        if (offline) label += ' (offline)';
+        else if (clockOff) label += ' (clock out of step)';
+        else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
+        opt.text = label;
+        opt.disabled = offline || !!clockOff;
+        sel.appendChild(opt);
+      }
+      onNewSessionPlatformChange();
+    }
+
+    function newSessionMachineIsRemote() {
+      const v = document.getElementById('newSessionMachine').value;
+      return !!v && v !== newSessionSelfMachineId;
+    }
+
+    // A remote pick lists THAT machine's doors and models (§3.4 step 0).
+    async function onNewSessionMachineChange() {
+      const v = document.getElementById('newSessionMachine').value;
+      showNote('newSessionError', '');
+      if (newSessionMachineIsRemote()) {
+        try {
+          const r = await fetch('/topic-profile/options?machine=' + encodeURIComponent(v), { headers: { 'Authorization': `Bearer ${token}` } });
+          if (r.ok) {
+            topicProfileOptions = await r.json();
+            newSessionRemoteOptions = true;
+          } else {
+            const d = await r.json().catch(() => ({}));
+            showNote('newSessionError', d.error || 'Could not read that machine\'s doors and models.');
+          }
+        } catch {
+          showNote('newSessionError', 'Could not reach that machine to read its doors and models.');
+        }
+      } else {
+        newSessionRemoteOptions = false;
+        await loadTopicProfileOptions();
+      }
+      if (document.getElementById('newSessionMachine').value !== v) return;
+      const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+      fillDoorSelect('newSessionDoor', def && def.framework ? def.framework : '', true);
+      fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value, def && def.framework ? def.model : null);
+      onNewSessionPlatformChange();
     }
 
     function closeNewSessionModal(e) {
       if (e && e.target !== e.currentTarget) return;
       document.getElementById('newSessionModal').style.display = 'none';
+      restoreLocalTopicProfileOptions();
     }
 
     async function createNewSession() {
@@ -4917,6 +5329,20 @@
 
       btn.disabled = true;
       btn.textContent = 'Creating...';
+      showNote('newSessionError', '');
+
+      // A pick that differs from the dashboard default is sent explicitly; an
+      // unchanged pick sends nothing and the server seeds the default (§3.2).
+      const pick = newSessionPick();
+      const payload = { name, headless, platform: platform === 'auto' ? undefined : platform };
+      if (pick && pickDiffersFromDefault(pick)) {
+        payload.framework = pick.framework;
+        payload.model = pick.model;
+      }
+      const machineSel = document.getElementById('newSessionMachine');
+      if (machineSel && machineSel.value && document.getElementById('newSessionMachineField').style.display !== 'none') {
+        payload.machine = machineSel.value;
+      }
 
       try {
         const resp = await fetch('/sessions/create', {
@@ -4924,23 +5350,428 @@
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
+            // Required for a door/model pick (403 without it) — §3.6.
+            'X-Instar-Request': '1',
           },
-          body: JSON.stringify({ name, headless, platform: platform === 'auto' ? undefined : platform }),
+          body: JSON.stringify(payload),
         });
         const data = await resp.json();
 
         if (!resp.ok) {
+          // Server copy verbatim, rendered as text (§3.6).
+          showNote('newSessionError', data.error || data.message || 'Failed to create session');
           showToast(data.error || 'Failed to create session', 'error');
           return;
         }
 
-        showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' : ' (headless)'}`, 'success');
+        const where = data.profile ? ` on ${data.profile.label}${data.profile.model ? ' · ' + data.profile.model : ''}` : '';
+        if (data.ownership === 'superseded' || data.ownership === 'not-confirmed') {
+          // §3.5 — ownership unsettled: the server's own sentence, as a warning.
+          showToast(data.error || `"${name}" was created, but which machine owns it is not settled yet. Send it a message.`, 'warning');
+        } else if (data.started === 'unknown') {
+          showToast(data.error || `"${name}" may still be starting on ${data.machine ? data.machine.nickname : 'the chosen machine'}.`, 'warning');
+        } else if (data.started === 'requested' && data.machine) {
+          showToast(`Starting "${name}" on ${data.machine.nickname}.`, 'success');
+        } else {
+          showToast(`Session "${name}" created${data.topicId ? ' with Telegram topic' + where : ' (headless)'}${data.machine ? ' on ' + data.machine.nickname : ''}`, 'success');
+        }
         document.getElementById('newSessionModal').style.display = 'none';
+        if (newSessionRemoteOptions) restoreLocalTopicProfileOptions();
+        else if (data.seed && data.seed.outcome === 'seeded') loadTopicProfileOptions();
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Create Session';
+        updateCreateButtonLabel();
+      }
+    }
+
+    // ── Door + model controls (docs/specs/dashboard-door-model-controls.md) ──
+    // Every server-supplied string is rendered with textContent / option.text.
+
+    function showNote(id, text) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.display = text ? 'block' : 'none';
+    }
+
+    async function loadTopicProfileOptions() {
+      try {
+        const r = await fetch('/topic-profile/options', { headers: { 'Authorization': `Bearer ${token}` } });
+        topicProfileOptions = r.ok ? await r.json() : null;
+      } catch {
+        topicProfileOptions = null;
+      }
+      renderNewTopicDefaultRow();
+      return topicProfileOptions;
+    }
+
+    function doorOf(fw) {
+      return ((topicProfileOptions && topicProfileOptions.doors) || []).find(d => d.framework === fw) || null;
+    }
+
+    function doorModelLabel(fw, model) {
+      const d = doorOf(fw);
+      return (d ? d.label : fw) + ' · ' + (model ? friendlyModelName(model) : 'Account default');
+    }
+
+    // withDefaultOption: the modal offers "Agent default" (no pick) when no
+    // dashboard default is set, so an untouched create stays exactly as today.
+    function fillDoorSelect(id, selected, withDefaultOption) {
+      const sel = document.getElementById(id);
+      sel.textContent = '';
+      const hasDefault = topicProfileOptions && topicProfileOptions.newTopicDefault && topicProfileOptions.newTopicDefault.framework;
+      if (withDefaultOption && !hasDefault) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.text = 'Agent default';
+        sel.appendChild(o);
+      }
+      for (const d of ((topicProfileOptions && topicProfileOptions.doors) || [])) {
+        const o = document.createElement('option');
+        o.value = d.framework;
+        let text = d.label;
+        if (d.availability === 'assumed') text += ' (not verified)';
+        if (!d.selectable) {
+          text += ' — ' + (d.reason || 'unavailable');
+          if (d.chatOnly) text += ' (you can still pin this in chat)';
+          o.disabled = true;
+        }
+        o.text = text;
+        sel.appendChild(o);
+      }
+      const canSelect = [...sel.options].some(o => o.value === selected && !o.disabled);
+      sel.value = canSelect ? selected : (sel.options[0] && !sel.options[0].disabled ? sel.options[0].value : '');
+    }
+
+    // Friendly display name for a model id ("claude-opus-5-5" → "Opus 5.5").
+    // Display only — option VALUES and every request keep the raw id. An id
+    // this does not recognize is shown unchanged.
+    // Badge tooltips + the "?" legend (topic 112490: the operator could not tell
+    // what the row icons meant from the badges alone).
+    function modelBadgeTitle(model) {
+      const bare = /^(opus|sonnet|haiku|fable)$/i.test(String(model || ''));
+      return bare
+        ? `Model: started on the default name "${model}", so the exact version isn't recorded`
+        : `Model: ${model}`;
+    }
+    function platformBadgeTitle(platform) {
+      if (platform === 'telegram') return 'Telegram: linked to a Telegram topic';
+      if (platform === 'slack') return 'Slack: linked to a Slack conversation';
+      if (platform === 'whatsapp') return 'WhatsApp: linked to a WhatsApp chat';
+      return 'Headless: no messaging app attached';
+    }
+    function toggleSessionLegend() {
+      const el = document.getElementById('sessionLegend');
+      const btn = document.getElementById('sessionLegendBtn');
+      if (!el) return;
+      const open = el.style.display === 'none';
+      el.style.display = open ? 'block' : 'none';
+      if (btn) btn.setAttribute('aria-expanded', String(open));
+    }
+
+    function friendlyModelName(id) {
+      if (!id) return '';
+      const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+      let m = /^(fable|opus|sonnet|haiku)$/.exec(id);
+      if (m) return cap(m[1]);
+      m = /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-(\d{8}))?$/.exec(id);
+      if (m) return cap(m[1]) + ' ' + m[2] + (m[3] ? '.' + m[3] : '');
+      m = /^gpt-(\d+(?:\.\d+)?)(?:-([a-z]+))?$/.exec(id);
+      if (m) return 'GPT-' + m[1] + (m[2] ? ' ' + cap(m[2]) : '');
+      return id;
+    }
+
+    // Colour class for a model badge: the family, never the raw id.
+    function modelFamilyClass(id) {
+      const m = /(fable|opus|sonnet|haiku)/.exec(id || '');
+      return m ? m[1] : '';
+    }
+
+    // A dated id ("claude-haiku-4-5-20251001") is hidden when its undated twin
+    // is listed too — same model, one row. A currently-selected id always stays.
+    function visibleModels(models, selected) {
+      const set = new Set(models);
+      return models.filter(m => {
+        if (m === selected) return true;
+        const dated = /^(.*)-\d{8}$/.exec(m);
+        return !(dated && set.has(dated[1]));
+      });
+    }
+
+    function fillModelSelect(id, fw, selected) {
+      const sel = document.getElementById(id);
+      sel.textContent = '';
+      const d = doorOf(fw);
+      if (!d) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.text = '—';
+        sel.appendChild(o);
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
+      const acct = document.createElement('option');
+      acct.value = '';
+      acct.text = 'Account default';
+      sel.appendChild(acct);
+      for (const m of visibleModels(d.models, selected)) {
+        const o = document.createElement('option');
+        o.value = m;
+        // A bare alias ("opus") follows whatever is newest — say so in the list.
+        o.text = friendlyModelName(m) + (/^(fable|opus|sonnet|haiku)$/.test(m) ? ' (latest)' : '');
+        sel.appendChild(o);
+      }
+      const want = selected !== undefined && selected !== null ? selected : (d.defaultModel || '');
+      sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+    }
+
+    function showRegimeNote(id) {
+      const regime = topicProfileOptions && topicProfileOptions.regime;
+      showNote(id, regime === 'dry-run'
+        ? 'On this agent a chosen model is recorded as intent, not applied — the door still switches.'
+        : regime === 'disabled'
+          ? 'On this agent the door switch works, but model choice is turned off — the model will be refused.'
+          : '');
+    }
+
+    function onSheetDoorChange(doorId, modelId) {
+      fillModelSelect(modelId, document.getElementById(doorId).value, null);
+    }
+
+    function newSessionPick() {
+      const fw = document.getElementById('newSessionDoor').value;
+      if (!fw) return null;
+      const m = document.getElementById('newSessionModel').value;
+      return { framework: fw, model: m || null };
+    }
+
+    function pickDiffersFromDefault(pick) {
+      const def = topicProfileOptions && topicProfileOptions.newTopicDefault;
+      if (!def || !def.framework) return true;
+      return def.framework !== pick.framework || (def.model || null) !== pick.model;
+    }
+
+    function updateCreateButtonLabel() {
+      const btn = document.getElementById('createSessionBtn');
+      const doorSel = document.getElementById('newSessionDoor');
+      const pick = doorSel && !doorSel.disabled ? newSessionPick() : null;
+      btn.textContent = pick && pickDiffersFromDefault(pick)
+        ? 'Create on ' + doorModelLabel(pick.framework, pick.model)
+        : 'Create Session';
+    }
+
+    function onNewSessionDoorChange() {
+      fillModelSelect('newSessionModel', document.getElementById('newSessionDoor').value, null);
+      updateCreateButtonLabel();
+    }
+
+    // Door/Model apply only to Telegram topics in v1 — disabled for Headless/Slack.
+    function onNewSessionPlatformChange() {
+      const p = document.getElementById('newSessionPlatform').value;
+      const off = p === 'headless' || p === 'slack' || !topicProfileOptions;
+      document.getElementById('newSessionDoor').disabled = off;
+      document.getElementById('newSessionModel').disabled = off || !document.getElementById('newSessionDoor').value;
+      document.getElementById('newSessionDoorHint').textContent = off && topicProfileOptions
+        ? 'Door and model apply to Telegram topics only.'
+        : 'You can change this again after the topic\'s first message.';
+      const machineSel = document.getElementById('newSessionMachine');
+      const showMachine = p !== 'headless' && p !== 'slack' && machineSel && machineSel.options.length > 2;
+      document.getElementById('newSessionMachineField').style.display = showMachine ? 'block' : 'none';
+      if (!showMachine && machineSel && machineSel.value) {
+        machineSel.value = '';
+        if (newSessionRemoteOptions) { onNewSessionMachineChange(); return; }
+      }
+      updateCreateButtonLabel();
+    }
+
+    function closeSheet(e, id) {
+      if (e && e.target !== e.currentTarget) return;
+      document.getElementById(id).style.display = 'none';
+    }
+
+    // Sessions list header row — "Default for dashboard-created topics".
+    function renderNewTopicDefaultRow() {
+      const row = document.getElementById('newTopicDefaultRow');
+      if (!row) return;
+      if (!topicProfileOptions) { row.style.display = 'none'; return; }
+      const def = topicProfileOptions.newTopicDefault || {};
+      row.textContent = '';
+      const main = document.createElement('div');
+      main.textContent = 'Default for dashboard-created topics: '
+        + (def.framework ? doorModelLabel(def.framework, def.model) : 'not set') + ' ▸';
+      const note = document.createElement('div');
+      note.className = 'ntd-note';
+      note.textContent = def.replication === 'local-only' ? 'this machine only' : (def.replication || '');
+      row.appendChild(main);
+      row.appendChild(note);
+      row.style.display = 'block';
+    }
+
+    function openNewTopicDefaultSheet() {
+      document.getElementById('newTopicDefaultSheet').style.display = 'flex';
+      showNote('ntdStatus', '');
+      loadTopicProfileOptions().then(() => {
+        const def = (topicProfileOptions && topicProfileOptions.newTopicDefault) || {};
+        fillDoorSelect('ntdDoor', def.framework || '', false);
+        fillModelSelect('ntdModel', document.getElementById('ntdDoor').value, def.framework ? def.model : null);
+        showRegimeNote('ntdRegimeNote');
+        const n = def.seedsSinceBoot || 0;
+        document.getElementById('ntdCount').textContent =
+          `${n} dashboard topic${n === 1 ? '' : 's'} started on this default since the server started.`;
+        document.getElementById('ntdCaveat').textContent =
+          `Applies to new topics created on ${selfMachineNickname || 'this machine'}. Your other machines keep their own default until replication lands. `
+          + 'Topics you start in Telegram are not covered yet (coming with the cross-machine work).';
+      });
+    }
+
+    async function postNewTopicDefault(body) {
+      const headers = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-Instar-Request': '1',
+      };
+      // Attribution only (never a refusal): lets the audit tell a dashboard human
+      // from an agent session holding the same Bearer.
+      if (operatorSessionToken) headers['X-Instar-Operator-Session'] = operatorSessionToken;
+      const r = await fetch('/topic-profile/new-topic-default', { method: 'POST', headers, body: JSON.stringify(body) });
+      let data = {};
+      try { data = await r.json(); } catch { /* non-JSON error body */ }
+      return { ok: r.ok, data };
+    }
+
+    async function saveNewTopicDefault() {
+      const fw = document.getElementById('ntdDoor').value;
+      if (!fw) return;
+      const model = document.getElementById('ntdModel').value || null;
+      const { ok, data } = await postNewTopicDefault({ framework: fw, model });
+      if (!ok) { showNote('ntdStatus', data.error || 'Could not save the default'); return; }
+      await loadTopicProfileOptions();
+      const saved = data.newTopicDefault;
+      showNote('ntdStatus', 'Saved: ' + doorModelLabel(saved.framework, saved.model));
+    }
+
+    async function clearNewTopicDefault() {
+      const { ok, data } = await postNewTopicDefault({ clear: true });
+      if (!ok) { showNote('ntdStatus', data.error || 'Could not clear the default'); return; }
+      await loadTopicProfileOptions();
+      fillDoorSelect('ntdDoor', '', false);
+      fillModelSelect('ntdModel', document.getElementById('ntdDoor').value, null);
+      showNote('ntdStatus', 'Cleared — dashboard-created topics start on the agent defaults.');
+    }
+
+    // The session view's "Door + model" button — local Telegram tiles only
+    // (remote and Slack tiles keep the read-only badge, §6).
+    async function refreshDoorModelButton(session) {
+      const btn = document.getElementById('termDoorModelBtn');
+      btn.style.display = 'none';
+      doorModelSheetTopic = null;
+      if (!session || session.remote) return;
+      try {
+        const r = await fetch('/sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const list = await r.json();
+        const arr = Array.isArray(list) ? list : (list.sessions || []);
+        const s = arr.find(x => x.tmuxSession === session.tmuxSession);
+        if (!s || s.platform !== 'telegram' || s.platformId == null) return;
+        if (activeSession !== session.tmuxSession) return;
+        doorModelSheetTopic = { topicId: String(s.platformId), tmuxSession: s.tmuxSession };
+        btn.style.display = 'inline-block';
+      } catch { /* read-only badge stays */ }
+    }
+
+    function describeSource(profile) {
+      const src = profile.resolved && profile.resolved.sources ? profile.resolved.sources.framework : '';
+      const by = profile.pin && profile.pin.updatedBy ? profile.pin.updatedBy : '';
+      if (src === 'profile-pin' && (by === 'system:dashboard-create' || by === 'system:new-topic-default')) return 'seeded at creation';
+      if (src === 'profile-pin') return 'pinned by you';
+      return 'default';
+    }
+
+    async function openDoorModelSheet() {
+      if (!doorModelSheetTopic) return;
+      document.getElementById('doorModelSheet').style.display = 'flex';
+      showNote('dmStatus', '');
+      document.getElementById('dmCurrent').textContent = 'Loading…';
+      await loadTopicProfileOptions();
+      try {
+        const r = await fetch('/topic-profile/' + encodeURIComponent(doorModelSheetTopic.topicId), { headers: { 'Authorization': `Bearer ${token}` } });
+        const p = await r.json();
+        if (!r.ok) { document.getElementById('dmCurrent').textContent = p.error || 'Could not read this topic\'s profile'; return; }
+        document.getElementById('dmCurrent').textContent = 'Now: ' + doorModelLabel(p.resolved.framework, p.resolved.model) + ' (' + describeSource(p) + ')';
+        fillDoorSelect('dmDoor', p.resolved.framework, false);
+        fillModelSelect('dmModel', document.getElementById('dmDoor').value, p.resolved.model);
+        showRegimeNote('dmRegimeNote');
+      } catch (err) {
+        document.getElementById('dmCurrent').textContent = 'Network error: ' + (err.message || 'Cannot reach server');
+      }
+    }
+
+    async function switchDoorModel() {
+      if (!doorModelSheetTopic) return;
+      const fw = document.getElementById('dmDoor').value;
+      const model = document.getElementById('dmModel').value || null;
+      const btn = document.getElementById('dmSwitchBtn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/topic-profile/' + encodeURIComponent(doorModelSheetTopic.topicId), {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+          body: JSON.stringify({ framework: fw, model }),
+        });
+        let data = {};
+        try { data = await r.json(); } catch { /* non-JSON error body */ }
+        // The server's reply verbatim — including no-bound-operator (§3.4).
+        showNote('dmStatus', data.message || data.error || (r.ok ? 'Done.' : 'Refused.'));
+        if (r.ok && !data.noop) {
+          pendingDoorSwitch = { topicId: doorModelSheetTopic.topicId, model, since: Date.now(), tmuxSession: doorModelSheetTopic.tmuxSession };
+          switchingModel.add(doorModelSheetTopic.tmuxSession);
+          renderSessionList();
+          watchDoorSwitch();
+        }
+      } catch (err) {
+        showNote('dmStatus', 'Network error: ' + (err.message || 'Cannot reach server'));
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // "switching…" until GET /sessions reports the LAUNCHED model for the topic —
+    // never an echo of the selection (§3.6 / P20 badge declaration).
+    async function watchDoorSwitch() {
+      const job = pendingDoorSwitch;
+      if (!job) return;
+      const badge = document.getElementById('termModelBadge');
+      if (activeSession === job.tmuxSession) { badge.textContent = 'switching…'; badge.style.display = 'inline-block'; }
+      for (let i = 0; i < 60 && pendingDoorSwitch === job; i++) {
+        await new Promise(res => setTimeout(res, 3000));
+        try {
+          const r = await fetch('/sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+          if (!r.ok) continue;
+          const list = await r.json();
+          const arr = Array.isArray(list) ? list : (list.sessions || []);
+          const s = arr.find(x => String(x.platformId) === job.topicId
+            && new Date(x.startedAt).getTime() >= job.since - 1000
+            && (job.model === null || x.model === job.model));
+          if (s) {
+            switchingModel.delete(job.tmuxSession);
+            pendingDoorSwitch = null;
+            if (activeSession === job.tmuxSession || activeSession === s.tmuxSession) {
+              badge.textContent = friendlyModelName(s.model);
+              badge.title = s.model || '';
+              badge.className = 'model-badge ' + modelFamilyClass(s.model);
+            }
+            renderSessionList();
+            return;
+          }
+        } catch { /* retry */ }
+      }
+      if (pendingDoorSwitch === job) {
+        switchingModel.delete(job.tmuxSession);
+        pendingDoorSwitch = null;
+        renderSessionList();
       }
     }
 
@@ -5330,6 +6161,9 @@
         onActivate: () => { if (!featuresLoaded) loadFeatures(); },
       },
       {
+        id: 'origins',
+        panels: ['originsTab'], display: ['flex'], onActivate: () => startOrigins(), onDeactivate: () => originPanel?.stop() },
+      {
         id: 'systems',
         panels: ['systemsTab'],
         display: ['flex'],
@@ -5404,6 +6238,7 @@
         onActivate: () => {
           if (typeof loadThreadlineBridgeConfig === 'function') loadThreadlineBridgeConfig();
           if (typeof tlObsLoadThreads === 'function') tlObsLoadThreads();
+          if (typeof startPairingPanel === 'function') startPairingPanel();
         },
       },
       {
@@ -5665,6 +6500,7 @@
       if (stamp) stamp.textContent = new Date().toLocaleTimeString();
       await loadMutualSshStatus();
       await loadThroughputFloor();
+      await loadIdentityRecoveryStatus();
 
       if (!pool.enabled) {
         glanceRoot.textContent = '';
@@ -5685,6 +6521,117 @@
         onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
       });
       glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function identityRecoveryAction(url, body) {
+      return apiFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Instar-Operator-Session': operatorSessionToken,
+        },
+        body: JSON.stringify(body || {}),
+      });
+    }
+
+    async function loadIdentityRecoveryStatus() {
+      const root = document.getElementById('identityRecoveryStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/identity-recovery'); }
+      catch { root.textContent = 'Identity recovery is not enabled on this agent.'; return; }
+
+      const summary = document.createElement('div');
+      summary.className = 'identity-recovery-row';
+      const escrow = document.createElement('span');
+      escrow.textContent = status.recoveryPrivateKeyAvailable
+        ? 'Recovery key: available in this machine’s keychain'
+        : 'Recovery key: unavailable';
+      const anchor = document.createElement('span');
+      anchor.textContent = status.hasRecoveryPublicKey ? 'Recovery root: established' : 'Recovery root: not established';
+      summary.append(escrow, anchor);
+      if (status.recoveryPrivateKeyAvailable && !status.hasRecoveryPublicKey) {
+        const pairingRequired = document.createElement('span');
+        pairingRequired.textContent = 'Run machine pairing to establish this first root at peers.';
+        summary.appendChild(pairingRequired);
+      }
+      if (status.recoveryPrivateKeyAvailable && status.hasRecoveryPublicKey) {
+        const rotate = document.createElement('button');
+        rotate.type = 'button';
+        rotate.textContent = 'Rotate recovery root';
+        rotate.addEventListener('click', async () => {
+          try {
+            const result = await identityRecoveryAction('/identity-recovery/rotate');
+            rotate.textContent = 'Rotated to epoch ' + String(result.recoveryEpoch);
+            await loadIdentityRecoveryStatus();
+          } catch (e) { rotate.textContent = (e && e.message) ? e.message : 'Action failed'; }
+        });
+        summary.appendChild(rotate);
+      }
+      root.appendChild(summary);
+
+      if (status.recoveryEstablishment) {
+        const propagation = document.createElement('div');
+        propagation.className = 'identity-recovery-row';
+        const jobs = status.recoveryEstablishment.version === 2
+          ? Object.values(status.recoveryEstablishment.jobs || {}) : [status.recoveryEstablishment];
+        const latest = jobs.sort((a, b) => String(b.updatedAt || b.at || '').localeCompare(String(a.updatedAt || a.at || '')))[0];
+        if (latest && latest.peers) {
+          propagation.textContent = 'Recovery-root peer status: ' + Object.entries(latest.peers)
+            .map(([peer, state]) => String(peer) + ': ' + String(state && state.status ? state.status : state)).join(', ');
+          root.appendChild(propagation);
+        }
+      }
+
+      const rotations = Array.isArray(status.unacknowledgedRotations) ? status.unacknowledgedRotations : [];
+      for (const row of rotations) {
+        const el = document.createElement('div');
+        el.className = 'identity-recovery-row';
+        const text = document.createElement('span');
+        text.textContent = 'Signing key changed on ' + String(row.machineId) + ' (epoch ' + String(row.keyEpoch) + ')';
+        const actions = document.createElement('span'); actions.className = 'identity-recovery-actions';
+        const ack = document.createElement('button'); ack.type = 'button'; ack.textContent = 'Acknowledge';
+        ack.addEventListener('click', async () => {
+          try { await identityRecoveryAction('/identity-recovery/rotations/' + encodeURIComponent(row.machineId) + '/' + encodeURIComponent(row.keyEpoch) + '/ack'); await loadIdentityRecoveryStatus(); }
+          catch (e) { ack.textContent = (e && e.message) ? e.message : 'Action failed'; }
+        });
+        actions.appendChild(ack); el.append(text, actions); root.appendChild(el);
+      }
+
+      const pending = Array.isArray(status.quarantines && status.quarantines.pending) ? status.quarantines.pending : [];
+      for (const claim of pending) {
+        const el = document.createElement('div'); el.className = 'identity-recovery-row';
+        const text = document.createElement('span');
+        const currentFingerprint = String(claim.currentSigningFingerprint || 'unknown');
+        const proposedFingerprint = String(claim.newSigningFingerprint || 'unknown');
+        const claimHash = String(claim.claimHash || '');
+        text.textContent = 'Quarantined identity claim for ' + String(claim.machineId)
+          + ' — epoch ' + String(claim.keyEpoch)
+          + '; current key ' + currentFingerprint
+          + '; proposed key ' + proposedFingerprint
+          + '; claim ' + claimHash.slice(0, 16)
+          + '; reasons: ' + (Array.isArray(claim.reasons) ? claim.reasons.join(', ') : 'review required');
+        const actions = document.createElement('span'); actions.className = 'identity-recovery-actions';
+        for (const decision of ['approve', 'deny']) {
+          const button = document.createElement('button'); button.type = 'button'; button.textContent = decision === 'approve' ? 'Approve' : 'Deny';
+          button.addEventListener('click', async () => {
+            try {
+              const base = '/identity-recovery/quarantines/' + encodeURIComponent(claim.id);
+              const proof = await identityRecoveryAction(base + '/approval-token', { claimHash: claim.claimHash });
+              await identityRecoveryAction(base + '/' + decision, { claimHash: claim.claimHash, approvalToken: proof.approvalToken });
+              await loadIdentityRecoveryStatus();
+            }
+            catch (e) { button.textContent = (e && e.message) ? e.message : 'Action failed'; }
+          });
+          actions.appendChild(button);
+        }
+        el.append(text, actions); root.appendChild(el);
+      }
+
+      if (rotations.length === 0 && pending.length === 0) {
+        const calm = document.createElement('div'); calm.className = 'glance-empty'; calm.textContent = 'No identity changes need review.'; root.appendChild(calm);
+      }
     }
 
     async function loadMutualSshStatus() {
@@ -7280,6 +8227,18 @@
         const resp = await fetch('/health', { headers: { 'Authorization': 'Bearer ' + token } });
         if (!resp.ok) return;
         const h = await resp.json();
+        // a2a-pairing-invite-link §8.4: an updated server means this page may be stale. Offer a
+        // reload instead of silently showing an old dashboard.
+        if (h.version) {
+          if (!window.__dashServerVersion) window.__dashServerVersion = h.version;
+          else if (h.version !== window.__dashServerVersion) {
+            const bar = document.getElementById('dashVersionBar');
+            if (bar && bar.style.display === 'none') {
+              bar.querySelector('[data-new-version]').textContent = h.version;
+              bar.style.display = 'flex';
+            }
+          }
+        }
 
         // Server status
         const serverDot = document.getElementById('vitalServerDot');
@@ -9622,6 +10581,18 @@
       }
     }
 
+    let originPanel = null;
+    async function startOrigins() {
+      try {
+        const { mountOriginPanel } = await import('/dashboard/origin.js');
+        originPanel ??= mountOriginPanel(document.getElementById('originsTab'), {
+          request: (url, options = {}) => fetch(url, { ...options, headers: { Authorization: `Bearer ${token}`, 'X-Instar-Operator-Session': operatorSessionToken, ...(options.headers || {}) } }),
+          unlock: () => { document.getElementById('authOverlay').style.display = 'flex'; document.getElementById('pinInput').focus(); },
+        });
+        originPanel.start();
+      } catch { document.getElementById('originsTab').textContent = 'Message origins are unavailable. Refresh to try again.'; }
+    }
+
     // ── Process Health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC) ──
     // Lazy dynamic-import keeps the controller in this (classic) scope so it can
     // read `token`; the module ships the pure renderers + the polling controller.
@@ -9677,7 +10648,14 @@
           ...opts,
           headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
         });
-        __subController = __subModule.createController({ doc: document, els, fetchImpl });
+        __subController = __subModule.createController({
+          doc: document, els, fetchImpl,
+          getOperatorSessionToken: () => operatorSessionToken,
+          requestUnlock: () => {
+            document.getElementById('authOverlay').style.display = 'flex';
+            document.getElementById('pinInput').focus();
+          },
+        });
       }
       __subController.start();
     }
@@ -9694,6 +10672,33 @@
         const metrics = [['merges','Merges'],['medianLatencyH','Median latency (h)'],['reworkLoops','Rework loops'],['reverts','Reverts'],['medianPushIters','Median push iterations'],['medianLoc','Changed lines'],['index','Composite index']];
         host.innerHTML = metrics.map(([key,label]) => { const vals = data.rows.map(x => Number((key === 'index' ? x.team : author === 'team' ? x.team : (x.authors[author] || {}))[key] || 0)); const max = Math.max(1,...vals); const bars = vals.map((v,i) => '<div title="'+data.rows[i].day+': '+v+'" style="height:'+Math.max(3,Math.round(v/max*100))+'%;flex:1;background:'+(key==='index'?'#7c9cff':'#4bbf9f')+';border-radius:3px 3px 0 0"></div>').join(''); return '<section style="border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:14px;'+(key==='index'?'grid-column:1/-1;':'')+'"><div style="font-weight:600;margin-bottom:10px">'+label+'</div><div style="height:'+(key==='index'?'180':'130')+'px;display:flex;align-items:end;gap:3px">'+bars+'</div><div style="opacity:.55;font-size:11px;margin-top:7px">latest: '+(vals.at(-1) ?? 0)+'</div></section>'; }).join('');
       } catch { host.innerHTML = '<div style="opacity:.7">Throughput data is temporarily unavailable.</div>'; }
+    }
+
+    // ── Pairing by invite (Threadline tab; a2a-pairing-invite-link §8) ──
+    // Started at login (not only on the tab) so the tab can show waiting decisions.
+    // The PIN is held in the module's memory after one accepted use; never stored.
+    let __pairController = null;
+    let __pairModule = null;
+    async function startPairingPanel() {
+      if (!__pairModule) {
+        try { __pairModule = await import('/dashboard/pairing.js'); }
+        catch (e) { console.error('[pairing] module load failed', e); return; }
+      }
+      if (!__pairController) {
+        const $ = (id) => document.getElementById(id);
+        const els = {
+          root: $('pairCard'), notice: $('pairNotice'), pending: $('pairPending'), open: $('pairOpen'), list: $('pairList'),
+          pin: $('pairPin'), pinRow: $('pairPinRow'), ttl: $('pairTtl'), forPeer: $('pairFor'), inviteOut: $('pairInviteOut'), inviteIn: $('pairInviteIn'),
+          tabButton: document.querySelector('.tab[data-tab="threadline"]'),
+          navToggle: $('navToggle'),
+        };
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+        });
+        __pairController = __pairModule.createController({ doc: document, els, fetchImpl });
+      }
+      __pairController.start();
     }
 
     // ── Mandates tab (coordination-mandate spec, decision 2A) ──
@@ -9796,10 +10801,128 @@
         fdText('fdStamp', '');
       }
     }
+    // Readiness authority approve/revoke card. Rendered on tab open and after each
+    // action — NOT on the 15s poll, which would wipe a PIN mid-entry.
+    let __fraModule = null;
+    async function loadFeedbackAuthority() {
+      const root = document.getElementById('fdAuthority');
+      if (!root) return;
+      if (!__fraModule) {
+        try { __fraModule = await import('/dashboard/feedback-readiness-authority.js'); }
+        catch (e) { console.error('[feedback-readiness-authority] module load failed', e); root.textContent = 'Loading the approval card failed — refresh to retry.'; return; }
+      }
+      const M = __fraModule;
+      const readProposal = async (envelope) => {
+        const qs = envelope ? '?' + new URLSearchParams(envelope).toString() : '';
+        try { return await apiFetch('/feedback-factory/readiness-authorities/proposal' + qs); } catch { return null; }
+      };
+      const proposal = await readProposal();
+      if (!proposal) { root.textContent = 'The readiness approval is unavailable while the drain is not live on this machine.'; return; }
+      M.renderAuthorityCard(document, root, proposal, {
+        preview: readProposal,
+        submit: async (action, envelope, pin) => {
+          const response = await fetch('/feedback-factory/readiness-authorities', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef())),
+          });
+          const data = await response.json().catch(() => ({}));
+          const note = M.resultNote(response.ok, data);
+          if (response.ok) { await loadFeedbackAuthority(); void loadFeedbackHeadline(); const n = document.getElementById('fraNote'); if (n) n.textContent = note; }
+          return note;
+        },
+      });
+    }
+    // Triage section (feedback-triage-and-execution): queue, summary, authority card, PIN buttons.
+    // Rendered on tab open and after each action — not on the poll, which would wipe a PIN.
+    let __ftModule = null;
+    async function loadFeedbackTriage(noteText) {
+      const root = document.getElementById('fdTriage');
+      if (!root) return;
+      if (!__ftModule) {
+        try { __ftModule = await import('/dashboard/feedback-triage.js'); }
+        catch (e) { console.error('[feedback-triage] module load failed', e); root.textContent = 'Loading the triage section failed — refresh to retry.'; return; }
+      }
+      const M = __ftModule;
+      const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
+      const [summary, queue, proposal, execute] = await Promise.all([
+        get('/feedback-factory/triage/summary'), get('/feedback-factory/triage/queue'), get('/feedback-factory/triage/authority/proposal'),
+        get('/feedback-factory/execute/status'),
+      ]);
+      const post = async (url, body) => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
+          body: JSON.stringify(body),
+        });
+        return { ok: response.ok, data: await response.json().catch(() => ({})) };
+      };
+      M.renderTriageSection(document, root, { summary, queue, proposal, execute }, {
+        submitAuthority: async (action, pin) => {
+          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
+          const note = M.triageResultNote(r.ok, r.data);
+          if (r.ok) await loadFeedbackTriage(note);
+          return note;
+        },
+        planIgnoreLive: async (enabled) => {
+          const r = await post('/feedback-factory/triage/plan', { action: 'ignore-live', enabled });
+          return r.ok ? r.data : null;
+        },
+        planExecutorAction: async (request) => {
+          const r = await post('/feedback-factory/triage/plan', request);
+          return r.ok ? r.data : null;
+        },
+        commitPlan: async (plan, pin) => {
+          const r = await post('/feedback-factory/triage/commit', { pin, planId: plan.planId, nonce: plan.nonce });
+          const note = !r.ok ? M.triageResultNote(false, r.data)
+            : r.data.action === 'accept-approver-dependence' ? 'Done: the fix worker may run. Every fix still needs your GitHub approval to merge.'
+            : r.data.action === 'publish-secret-shape' ? `Done: published as pull request #${r.data.prNumber}.`
+            : (r.data.ignoreLive ? 'Done: ignores are live.' : 'Done: ignores are back in practice mode.');
+          if (r.ok) await loadFeedbackTriage(note);
+          return note;
+        },
+      });
+      if (noteText) { const n = document.getElementById('ftNote'); if (n) n.textContent = noteText; void loadFeedbackHeadline(); }
+    }
+    // Decision headline (ACT-003): one sentence naming what needs the operator and one
+    // button that brings the matching approval card into view. It has no PIN field, so it
+    // is safe to refresh on the poll. Reads the same GET routes the cards read.
+    let __fdhModule = null;
+    async function loadFeedbackHeadline() {
+      const root = document.getElementById('fdHeadline');
+      if (!root) return;
+      if (!__fdhModule) {
+        try { __fdhModule = await import('/dashboard/feedback-drain-headline.js'); }
+        catch (e) { console.error('[feedback-drain-headline] module load failed', e); return; }
+      }
+      const get = async (url) => { try { return await apiFetch(url); } catch { return null; } };
+      const [readiness, triageSummary, triageProposal, execute, queue] = await Promise.all([
+        get('/feedback-factory/readiness-authorities/proposal'), get('/feedback-factory/triage/summary'),
+        get('/feedback-factory/triage/authority/proposal'), get('/feedback-factory/execute/status'), get('/feedback-factory/triage/queue'),
+      ]);
+      const M = __fdhModule;
+      M.renderHeadline(document, root, M.decideHeadline({ readiness, triageSummary, triageProposal, execute, queue }), {
+        reveal: (todo) => {
+          const drawer = document.getElementById('fdControls');
+          if (drawer) drawer.open = true;
+          const card = document.getElementById(todo.target);
+          if (todo.press && card) {
+            const b = card.querySelector(`[data-ft-action="${todo.press}"]`);
+            if (b) b.click();
+          }
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          const field = todo.focus && document.getElementById(todo.focus);
+          if (field) setTimeout(() => field.focus({ preventScroll: true }), 300);
+        },
+      });
+    }
     function startFeedbackDrain() {
       stopFeedbackDrain();
+      void loadFeedbackHeadline();
+      void loadFeedbackAuthority();
+      void loadFeedbackTriage();
       void loadFeedbackDrain();
-      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); void loadFeedbackHeadline(); }, 15000);
     }
     function stopFeedbackDrain() {
       if (__fdTimer) clearInterval(__fdTimer);

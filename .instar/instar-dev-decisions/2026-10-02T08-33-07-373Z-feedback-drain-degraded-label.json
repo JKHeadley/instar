@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-02T08:33:07.373Z",
+  "slug": "feedback-drain-degraded-label",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/scaffold/templates/jobs/instar/feedback-factory-process.md"
+    ],
+    "addedLines": 36,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -28,6 +28,9 @@ import { LocalLeaseStore } from '../../src/core/LocalLeaseStore.js';
 import { HttpLeaseTransport } from '../../src/core/HttpLeaseTransport.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { selectLeaseMedium } from '../../src/core/leaseMediumSelection.js';
+import { GitLeaseStore } from '../../src/core/GitLeaseStore.js';
 
 function genKey() {
   return crypto.generateKeyPairSync('ed25519', {
@@ -170,5 +173,50 @@ describe('Multi-Machine E2E — split-brain detection + pull-based convergence',
     // B holds (1); A now re-serves B's epoch-2 lease, so B's pull of A is
     // hearsay-about-B (holder !== the dialed peer id) and adds nothing.
     expect(bLc.deriveLiveAwakeCount(STALE)).toBe(1);
+  });
+
+  it('incident medium matrix selects GitLeaseStore on rollback and LocalLeaseStore for an ignored registry', () => {
+    const project = tmp();
+    SafeGitExecutor.execSync(['init', '-q'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:init-rollback-repo' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'lease-e2e@example.invalid'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:config-rollback-email' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Lease E2E'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:config-rollback-name' });
+    fs.writeFileSync(path.join(project, '.gitignore'), '.instar/machines/\n');
+    fs.mkdirSync(path.join(project, '.instar/machines'), { recursive: true });
+    const registryPath = path.join(project, '.instar/machines/registry.json');
+    fs.writeFileSync(registryPath, JSON.stringify({ machines: { A: {}, B: {} } }));
+    const ignored = SafeGitExecutor.readSync(['ls-files', '--others', '--ignored', '--exclude-standard', '--', registryPath], { cwd: project, operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:check-ignored' });
+    expect(ignored.trim()).toBe('.instar/machines/registry.json');
+
+    const rollback = selectLeaseMedium({ projectDir: project, registryAbsPath: registryPath,
+      hasGitSyncManager: true, mediumCheckEnabled: false });
+    const fixed = selectLeaseMedium({ projectDir: project, registryAbsPath: registryPath, hasGitSyncManager: true });
+    expect(rollback).toEqual({ medium: 'unchecked', reason: 'switch-off' });
+    expect(fixed).toEqual({ medium: 'local', reason: 'ignored' });
+
+    const registry = { machines: { A: {} as any, B: {} as any } } as any;
+    const rollbackStore = new GitLeaseStore({ machineId: 'B', loadRegistry: () => registry,
+      saveRegistry: () => {}, registryAbsPath: registryPath, pullRebase: () => true, commitAndPush: () => false });
+    const fixedStore = new LocalLeaseStore({ filePath: path.join(project, 'lease-local.json') });
+    expect(rollbackStore).toBeInstanceOf(GitLeaseStore);
+    expect(fixedStore).toBeInstanceOf(LocalLeaseStore);
+  });
+
+  it('untracked but addable registry remains on GitLeaseStore and becomes tracked on the first lease write', () => {
+    const project = tmp();
+    SafeGitExecutor.execSync(['init', '-q'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:init-addable-repo' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'lease-e2e@example.invalid'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:config-addable-email' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Lease E2E'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:config-addable-name' });
+    fs.mkdirSync(path.join(project, '.instar/machines'), { recursive: true });
+    const registryPath = path.join(project, '.instar/machines/registry.json');
+    let registry: any = { machines: { B: {} } };
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    expect(selectLeaseMedium({ projectDir: project, registryAbsPath: registryPath, hasGitSyncManager: true }))
+      .toEqual({ medium: 'git', reason: 'untracked-addable' });
+    const store = new GitLeaseStore({ machineId: 'B', loadRegistry: () => registry,
+      saveRegistry: (next) => { registry = next; fs.writeFileSync(registryPath, JSON.stringify(next)); }, registryAbsPath: registryPath,
+      pullRebase: () => true, commitAndPush: () => { SafeGitExecutor.execSync(['add', registryPath], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:add-registry' }); SafeGitExecutor.execSync(['commit', '-qm', 'lease'], { cwd: project, stdio: 'ignore', operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:commit-registry' }); return true; } });
+    const lease = new FencedLease(crypt('B'), { leaseTtlMs: TTL, failoverThresholdMs: FAILOVER }).buildAcquisition(undefined, NOW, 1);
+    expect(store.casWrite(lease).ok).toBe(true);
+    expect(SafeGitExecutor.readSync(['ls-files', '--error-unmatch', '--', registryPath], { cwd: project, operation: 'tests/e2e/multi-machine-lease-split-brain.test.ts:verify-tracked' }).trim()).toBe('.instar/machines/registry.json');
   });
 });

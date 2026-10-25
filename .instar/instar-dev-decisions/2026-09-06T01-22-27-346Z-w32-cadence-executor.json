@@ -1,0 +1,37 @@
+{
+  "ts": "2026-09-06T01:22:27.346Z",
+  "slug": "w32-cadence-executor",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 221,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowRunCadenceExecutor.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 183,
+    "deletedLines": 38
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registered W32 cadence delivery control-loop edges persist checkpoint, report, and failure-notice attempts before actuation; hard ceilings 2/3/3 give a steady-state total bound of eight across restart and settle independently of the test horizon."
+    },
+    "component": "WindowRunCadenceExecutor"
+  },
+  "verdict": "pass"
+}

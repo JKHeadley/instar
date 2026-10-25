@@ -19,7 +19,8 @@
  *  - Session-epoch check: if the Claude Code session UUID at declaration
  *    no longer matches the live session, transition to `violated` with
  *    reason `session-lost`.
- *  - Quiet hours + daily spend cap → `beaconSuppressed` (non-terminal).
+ *  - Quiet hours + daily spend cap suppress opted-in human output; internal
+ *    output-disabled follow-through remains owner-gated and cadence-bounded.
  *  - Shares the LlmQueue and ProxyCoordinator with PresenceProxy so the
  *    two monitors can't double-post.
  *
@@ -28,10 +29,13 @@
  *  - `sendMessage(topicId, text, { source: 'promise-beacon', isProxy: true })`
  *    is what PresenceProxy's `isSystemOrProxyMessage` filters out.
  */
+import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'node:events';
+import { OriginAuthorCall, composeAutomationAuthors, deterministicAutomationAuthor, unknownAutomationAuthor,
+  type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import type { CommitmentTracker, Commitment } from './CommitmentTracker.js';
 import type { LlmQueue } from './LlmQueue.js';
 import { LlmAbortedError } from './LlmQueue.js';
@@ -44,6 +48,7 @@ import { DegradationReporter } from './DegradationReporter.js';
 
 /* @self-action-controller: promise-beacon-notify */
 /* @self-action-controller: liveness-heartbeat */
+/* @self-action-controller: promise-beacon-internal-cadence */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): this file
 // hosts TWO controllers (the registry's multi-marker precedent) — the progress
 // heartbeat (promise-beacon-notify) and the sparse liveness line
@@ -83,7 +88,7 @@ export interface PromiseBeaconConfig {
   sendMessage: (
     topicId: number,
     text: string,
-    metadata?: { source: 'promise-beacon'; isProxy: true; tier?: number },
+    metadata?: { source: 'promise-beacon'; isProxy: true; tier?: number; originAuthor?: OriginAutomationAuthor },
   ) => Promise<void>;
   /**
    * durable-conversation-identity §6.1 step 2 — the funnel swap. When wired,
@@ -100,12 +105,15 @@ export interface PromiseBeaconConfig {
       isProxy: true;
       tier?: number;
       logicalSendId: string;
+      originAuthor?: OriginAutomationAuthor;
       boundTuple?: { platform: 'slack'; channelId: string; threadTs: string | null };
     },
   ) => Promise<import('../core/deliverToConversation.js').DeliveryOutcome>;
   /** §5.0(a): journal `op:"send-retire"` for a delivered/delivered-equivalent
    *  logical send — called AFTER the sendSeq persist (the R5-M3 pinned order). */
   retireSend?: (conversationId: number, logicalSendId: string) => void;
+  /** Read receipts for the original operation; this callback never sends. */
+  resolveOriginDelivery?: (operationId: string) => Promise<boolean>;
   /** §5.0 ownership predicate (`ownsConversation(id)`) — drives the R3-M16
    *  stand-down recheck riding the external-block sweep. */
   ownsConversation?: (conversationId: number) => boolean;
@@ -118,6 +126,7 @@ export interface PromiseBeaconConfig {
     promiseText: string,
     tmuxOutput: string,
     signal: AbortSignal,
+    authorCall?: OriginAuthorCall,
   ) => Promise<string>;
   /**
    * Haiku-class classifier — returns a `concern` verdict used as a signal-only
@@ -290,6 +299,7 @@ export type BeaconSendResult =
   | 'sent'
   | 'suppressed-delivered-equivalent'
   | 'failed-transient'
+  | 'held-origin'
   | 'failed-standdown'
   | 'failed-permanent'
   | 'suppressed-aoft'
@@ -339,6 +349,9 @@ interface HotState {
    * write (R4-minor-1).
    */
   sendSeq?: number;
+  /** An origin-held send remains owned by its original outbox operation. */
+  originHold?: { operationId: string | null; outcome: string; reason: string; logicalSendId: string; recordedAt: number;
+    logicalReplaySafe?: boolean; content?: { text: string; kind: string; originAuthor: OriginAutomationAuthor } };
   /** §5.1: consecutive typed `not-delivered` results (owning-machine real
    *  failures ONLY — never a stand-down refusal, I1 scoping). */
   consecutiveDeliveryFailures?: number;
@@ -366,6 +379,7 @@ interface PendingAggregateItem {
   qualifiedAt: string;
   cadenceMs: number;
   occurrences: number;
+  originAuthor?: OriginAutomationAuthor;
 }
 
 interface TopicAggregateState {
@@ -475,7 +489,7 @@ function humanizeMs(ms: number): string {
  */
 function redactSecrets(excerpt: string): string {
   if (!excerpt) return '';
-  const SECRET = /\b(sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
+  const SECRET = /\b(sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
   return SECRET.test(excerpt) ? '' : excerpt;
 }
 
@@ -760,7 +774,11 @@ export class PromiseBeacon extends EventEmitter {
     }
 
     // ── Quiet hours ──
-    if (this.inQuietHours()) {
+    // Quiet hours govern human-facing output, not the internal follow-through
+    // heartbeat. When output is disabled the bookkeeping branch below must
+    // still advance `lastHeartbeatAt`; otherwise every runtime consumer sees a
+    // fabricated stale executor for the entire quiet-hours window.
+    if (this.userOutputEnabled() && this.inQuietHours()) {
       await this.suppress(c, 'quiet-hours');
       return;
     }
@@ -768,7 +786,7 @@ export class PromiseBeacon extends EventEmitter {
     // ── Daily spend cap (hard, via LlmQueue) ──
     // LlmQueue enforces this on enqueue; we additionally short-circuit here
     // so we emit beaconSuppressed (non-terminal) rather than fail-open.
-    if (this.config.llmQueue.getDailySpendCents() >= (this.config.maxDailyLlmSpendCents ?? 100)) {
+    if (this.userOutputEnabled() && this.config.llmQueue.getDailySpendCents() >= (this.config.maxDailyLlmSpendCents ?? 100)) {
       await this.suppress(c, 'daily-spend-cap');
       return;
     }
@@ -883,6 +901,7 @@ export class PromiseBeacon extends EventEmitter {
       }
 
       let text: string | null = null;
+      let originAuthor = deterministicAutomationAuthor();
       let atRiskSignal = false;
       let livenessFired = false;
 
@@ -890,11 +909,12 @@ export class PromiseBeacon extends EventEmitter {
         // ── Genuine new output → real LLM-summarized progress line ──
         hot.consecutiveUnchanged = 0;
         try {
+          const authorCall = new OriginAuthorCall();
           const line = await this.config.llmQueue.enqueue(
             'background',
             (signal) => {
               if (this.config.generateStatusLine) {
-                return this.config.generateStatusLine(c.agentResponse || c.userRequest, snapshot, signal);
+                return this.config.generateStatusLine(c.agentResponse || c.userRequest, snapshot, signal, authorCall);
               }
               // No generator wired → templated.
               return Promise.resolve('working on it — recent output observed');
@@ -904,6 +924,7 @@ export class PromiseBeacon extends EventEmitter {
           );
           const guard = guardProxyOutput(line);
           let safeLine = guard.safe ? line : 'working on it';
+          if (guard.safe && this.config.generateStatusLine) originAuthor = authorCall.snapshot();
 
           // ── atRisk classifier (signal-only) ──
           // If a classifier is wired, ask it whether the snapshot reads as
@@ -921,6 +942,7 @@ export class PromiseBeacon extends EventEmitter {
                 atRiskSignal = true;
                 const softPhrase = AT_RISK_VARIANTS[hot.templatedVariantCursor % AT_RISK_VARIANTS.length];
                 safeLine = softPhrase;
+                originAuthor = deterministicAutomationAuthor();
               }
             } catch {
               // Classifier failure is non-fatal — fall through with original line.
@@ -984,7 +1006,7 @@ export class PromiseBeacon extends EventEmitter {
               : consumeAdmissionToken(notifyAdmission.token, 'promise-beacon-notify', { targetKey: notifyTarget.key })
             : null;
         if (notifyAdmission.outcome === 'allow' && notifySink?.proceed) {
-          sendResult = await this.emitBeaconMessage(c, text!, 'heartbeat', livenessFired);
+          sendResult = await this.emitBeaconMessage(c, text!, 'heartbeat', livenessFired, originAuthor);
           if (livenessFired && sendResult === 'sent') hot.lastLivenessAt = nowIso;
           if (sendResult === 'sent') hot.heartbeatCount += 1;
         } else {
@@ -1462,14 +1484,15 @@ export class PromiseBeacon extends EventEmitter {
     text: string,
     kind: AggregateMessageKind,
     liveness = false,
+    originAuthor: OriginAutomationAuthor = deterministicAutomationAuthor(),
   ): Promise<BeaconSendResult> {
     // Do not create durable aggregate work while the fleet-wide output boundary
     // is closed. emitUserSend owns the canonical suppression/audit result.
     if (!this.userOutputEnabled()) {
-      return this.emitUserSend(c, text, kind);
+      return this.emitUserSend(c, text, kind, false, originAuthor);
     }
     if (c.topicId == null || this.config.aggregateByTopic === false) {
-      return this.emitUserSend(c, text, kind);
+      return this.emitUserSend(c, text, kind, false, originAuthor);
     }
     const topicId = c.topicId;
 
@@ -1479,7 +1502,7 @@ export class PromiseBeacon extends EventEmitter {
     // sibling happens to be the aggregate's delivery representative.
     const aoft = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
     if (aoft.enabled && !aoft.dryRun && c.owner === 'agent') {
-      return this.emitUserSend(c, text, kind);
+      return this.emitUserSend(c, text, kind, false, originAuthor);
     }
 
     return this.withAggregateLock(topicId, async () => {
@@ -1495,6 +1518,7 @@ export class PromiseBeacon extends EventEmitter {
         // the latest truthful wording and carry the occurrence count so no
         // qualifying event disappears from the aggregate.
         existing.text = text;
+        existing.originAuthor = structuredClone(originAuthor);
         existing.liveness ||= liveness;
         existing.qualifiedAt = new Date(this.now()).toISOString();
         existing.cadenceMs = Math.min(existing.cadenceMs, itemCadence);
@@ -1508,6 +1532,7 @@ export class PromiseBeacon extends EventEmitter {
           qualifiedAt: new Date(this.now()).toISOString(),
           cadenceMs: itemCadence,
           occurrences: 1,
+          originAuthor: structuredClone(originAuthor),
         });
       }
       state.cadenceMs = this.topicAggregateCadenceMs(topicId, state.pending, c);
@@ -1562,7 +1587,8 @@ export class PromiseBeacon extends EventEmitter {
       for (const item of state.pending) {
         const commitment = this.config.commitmentTracker.get(item.commitmentId);
         if (commitment && this.isLiveAgentOwned(commitment)) {
-          alternateOutcome = await this.emitUserSend(commitment, item.text, item.kind);
+          alternateOutcome = await this.emitUserSend(commitment, item.text, item.kind, false,
+            item.originAuthor ?? unknownAutomationAuthor('legacy-aggregate-author-unknown'));
         } else {
           visible.push(item);
         }
@@ -1606,6 +1632,7 @@ export class PromiseBeacon extends EventEmitter {
         aggregateText,
         representative.id === triggeringHeartbeatId ? 'heartbeat' : batch[0].kind,
         state.retryingCount != null,
+        composeAutomationAuthors(batch.map(item => item.originAuthor ?? unknownAutomationAuthor('legacy-aggregate-author-unknown'))),
       );
     } catch (err) {
       state.retryingCount = attemptedCount;
@@ -1922,11 +1949,31 @@ export class PromiseBeacon extends EventEmitter {
    * explicit opt-in mode, so a failure is not swallowed there (C2 /
    * "never nag ≠ swallow a failure"). owner:'user' always sends normally.
    */
+  private readonly userSendTails = new Map<string, Promise<void>>();
+
   private async emitUserSend(
     c: Commitment,
     text: string,
     kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
     authorityAlreadyAdmitted = false,
+    originAuthor: OriginAutomationAuthor = deterministicAutomationAuthor(),
+  ): Promise<BeaconSendResult> {
+    // A heartbeat and a close-out can overlap. Sequence reads, delivery and
+    // settlement form one commitment-local operation, including held receipts.
+    const prior = this.userSendTails.get(c.id) ?? Promise.resolve();
+    const work = prior.then(() => this.emitUserSendSerial(c, text, kind, authorityAlreadyAdmitted, originAuthor));
+    const tail = work.then(() => undefined, () => undefined);
+    this.userSendTails.set(c.id, tail);
+    try { return await work; }
+    finally { if (this.userSendTails.get(c.id) === tail) this.userSendTails.delete(c.id); }
+  }
+
+  private async emitUserSendSerial(
+    c: Commitment,
+    text: string,
+    kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
+    authorityAlreadyAdmitted: boolean,
+    originAuthor: OriginAutomationAuthor,
   ): Promise<BeaconSendResult> {
     // Absolute outer gate: no PromiseBeacon-originated message or Attention
     // item reaches a human unless output was explicitly opted back in. This is
@@ -1955,23 +2002,55 @@ export class PromiseBeacon extends EventEmitter {
       // When deliverToConversation is wired, EVERY beacon send rides it (the
       // id>0 arm is today's Telegram path unchanged; the id<0 arm delivers
       // into the exact Slack thread with the E1 guard + §5.1 typed outcomes).
+      let hot = this.loadHotState(c.id);
+      const content = { text, kind, originAuthor };
+      if (hot.originHold) {
+        const held = hot.originHold;
+        let delivered = false;
+        try { delivered = !!held.operationId &&
+          await this.config.resolveOriginDelivery?.(held.operationId) === true; }
+        catch { /* Missing receipt authority cannot authorize a new send. */ }
+        let settled: BeaconSendResult;
+        if (delivered) {
+          settled = await this.applyDeliveryOutcome(c, { delivered: true, outcome: 'delivered' }, hot.sendSeq ?? 0, held.logicalSendId);
+        } else if (!held.operationId && held.logicalReplaySafe === true && held.content && this.config.deliverMessage) {
+          // Only the trusted local transport can attest that this logical ID is
+          // replay-safe. Replay the frozen body, never a newly generated update.
+          const replay = await this.config.deliverMessage(c.topicId, held.content.text, {
+            source: 'promise-beacon', isProxy: true, tier: 1, logicalSendId: held.logicalSendId,
+            originAuthor: held.content.originAuthor,
+            ...(c.boundTuple ? { boundTuple: c.boundTuple } : {}),
+          });
+          settled = await this.applyDeliveryOutcome(c, replay, hot.sendSeq ?? 0, held.logicalSendId, held.content);
+          if (settled !== 'sent' && settled !== 'suppressed-delivered-equivalent') return settled;
+        } else return 'held-origin';
+        // An earlier heartbeat receipt cannot satisfy a later close-out. Legacy
+        // holds without content evidence also cannot claim that equivalence.
+        if (held.content?.text === text && held.content.kind === kind) return settled;
+        hot = this.loadHotState(c.id);
+      }
+      const seq = hot.sendSeq ?? 0;
+      const logicalSendId = `${c.id}:${seq}`; // the §3.4 pinned encoding
       if (this.config.deliverMessage) {
-        const seq = this.loadHotState(c.id).sendSeq ?? 0;
-        const logicalSendId = `${c.id}:${seq}`; // the §3.4 pinned encoding
         const outcome = await this.config.deliverMessage(c.topicId, text, {
           source: 'promise-beacon',
           isProxy: true,
           tier: 1,
           logicalSendId,
+          originAuthor,
           ...(c.boundTuple ? { boundTuple: c.boundTuple } : {}),
         });
-        return await this.applyDeliveryOutcome(c, outcome, seq, logicalSendId);
+        return await this.applyDeliveryOutcome(c, outcome, seq, logicalSendId, content);
       }
-      await this.config.sendMessage(c.topicId, text, {
-        source: 'promise-beacon',
-        isProxy: true,
-        tier: 1,
-      });
+      try {
+        await this.config.sendMessage(c.topicId, text, {
+          source: 'promise-beacon', isProxy: true, tier: 1, originAuthor,
+        });
+      } catch (error) {
+        if (!(error instanceof TelegramOriginHoldError)) throw error;
+        return this.applyDeliveryOutcome(c, { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+          originHold: { operationId: error.operationId, outcome: error.outcome, reason: error.reason } }, seq, logicalSendId, content);
+      }
       return 'sent';
     };
     // An ambiguous retry may already have reached the user. Its exact bytes and
@@ -2029,12 +2108,19 @@ export class PromiseBeacon extends EventEmitter {
     outcome: import('../core/deliverToConversation.js').DeliveryOutcome,
     seq: number,
     logicalSendId: string,
+    content?: { text: string; kind: string; originAuthor: OriginAutomationAuthor },
   ): Promise<BeaconSendResult> {
+    if (!outcome.delivered && outcome.outcome === 'not-delivered' && outcome.originHold) {
+      this.updateHotState(c.id, h => { h.originHold = { ...outcome.originHold!, logicalSendId, recordedAt: this.now(), content }; });
+      this.emit('delivery.origin-held', { id: c.id, topicId: c.topicId, ...outcome.originHold });
+      return 'held-origin';
+    }
     if (outcome.delivered || outcome.outcome === 'already-delivered-recently') {
       // Seq persist BEFORE send-retire (R5-M3 — the reverse order re-opens the
       // exact double-post E1 exists to prevent).
       this.updateHotState(c.id, (h) => {
         h.sendSeq = seq + 1;
+        delete h.originHold;
         h.consecutiveDeliveryFailures = 0;
         delete h.deliveryDeadLetteredAt;
       });

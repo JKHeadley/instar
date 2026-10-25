@@ -40,6 +40,7 @@ interface Harness {
   flags: {
     runs: ReconcilerActiveRun[];
     liveTopics: Set<number>;
+    idleTopics: Map<number, string>;
     queuedTopics: Set<number>;
     queuePaused: boolean;
     ownerElsewhere: Set<number>;
@@ -73,6 +74,7 @@ function build(config: AutonomousLivenessReconcilerConfig = {}): Harness {
   const flags: Harness['flags'] = {
     runs: [makeRun()],
     liveTopics: new Set<number>(),
+    idleTopics: new Map<number, string>(),
     queuedTopics: new Set<number>(),
     queuePaused: false,
     ownerElsewhere: new Set<number>(),
@@ -97,6 +99,7 @@ function build(config: AutonomousLivenessReconcilerConfig = {}): Harness {
     now: () => nowMs.v,
     listActiveRuns: () => flags.runs,
     liveTopicSnapshot: () => flags.liveTopics,
+    idleTopicSnapshot: () => flags.idleTopics,
     queuePaused: () => flags.queuePaused,
     topicInResumeQueue: (t) => flags.queuedTopics.has(t),
     operatorStoppedSince: (t) => {
@@ -117,6 +120,11 @@ function build(config: AutonomousLivenessReconcilerConfig = {}): Harness {
     respawn: async (input) => {
       if (flags.respawnThrows) throw new Error('spawn failed');
       respawned.push(input);
+    },
+    recoverIdle: async ({ topicId }) => {
+      respawned.push({ topicId, resumeUuid: 'idle-refresh', cwd: '' });
+      flags.idleTopics.delete(topicId);
+      return true;
     },
     claimInflight: (t) => {
       if (flags.claimHeld.has(t)) return false;
@@ -163,6 +171,51 @@ async function tickPastDebounce(h: Harness): Promise<void> {
 const topicsRespawned = (h: Harness): number[] => h.respawned.map((r) => r.topicId);
 
 describe('AutonomousLivenessReconciler', () => {
+  it('structurally refreshes an active run whose Codex turn is complete', async () => {
+    const h = build({ debounceTicks: 1, debounceWindowSec: 0 });
+    h.flags.liveTopics.add(100);
+    h.flags.idleTopics.set(100, 'echo-topic-100');
+    await h.reconciler.tick();
+    expect(topicsRespawned(h)).toEqual([100]);
+    expect(h.audit).toContainEqual(expect.objectContaining({ event: 'idle-turn-revived', topicId: 100 }));
+    expect(h.reconciler.status().conditions).toContainEqual(expect.objectContaining({ topicId: 100, state: 'turn-revived' }));
+  });
+
+  it('escalates when canonical completed-turn refresh fails', async () => {
+    const h = build({ debounceTicks: 1, debounceWindowSec: 0 });
+    h.flags.liveTopics.add(100);
+    h.flags.idleTopics.set(100, 'echo-topic-100');
+    const deps = (h.reconciler as unknown as { deps: AutonomousLivenessReconcilerDeps }).deps;
+    deps.recoverIdle = async () => false;
+    await h.reconciler.tick();
+    expect(h.aggregated).toContainEqual(expect.objectContaining({ kind: 'liveness-idle-recovery-failed' }));
+    expect(h.audit).toContainEqual(expect.objectContaining({ event: 'idle-recovery-failed', topicId: 100 }));
+  });
+
+  it('aborts completed-turn refresh when ownership moves after the claim', async () => {
+    const h = build({ debounceTicks: 1, debounceWindowSec: 0 });
+    h.flags.liveTopics.add(100);
+    h.flags.idleTopics.set(100, 'echo-topic-100');
+    const deps = (h.reconciler as unknown as { deps: AutonomousLivenessReconcilerDeps }).deps;
+    deps.claimInflight = (topicId) => {
+      h.flags.claimHeld.add(topicId);
+      h.flags.ownerElsewhere.add(topicId);
+      h.flags.runs = [makeRun({ movedTo: 'machine-b', moveSuspended: true })];
+      return true;
+    };
+
+    await h.reconciler.tick();
+
+    expect(h.respawned).toHaveLength(0);
+    expect(h.audit).toContainEqual(expect.objectContaining({
+      event: 'idle-recheck-aborted',
+      topicId: 100,
+      ownerElsewhere: true,
+      runEligible: false,
+    }));
+    expect(h.flags.claimHeld.has(100)).toBe(false);
+  });
+
   it('detects dead-active runs while paused but leaves live sessions alone', async () => {
     const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
     h.flags.queuePaused = true;

@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 /**
  * Persisted shape of the topic-frameworks state file. Stored at
@@ -109,7 +110,7 @@ export class TopicFrameworksStore {
 
   /** Snapshot of every topic with a known framework (override or default). */
   snapshot(): Record<string, IntelligenceFramework> {
-    return { ...this.configDefaults, ...this.overrides };
+    return mergeDefaults(this.configDefaults, this.overrides);
   }
 
   private load(): void {

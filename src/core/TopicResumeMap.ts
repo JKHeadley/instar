@@ -17,6 +17,8 @@ import { spawnSync } from 'node:child_process';
 import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { claudeConfigHomes } from './claudeResumeTranscript.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 /** §8 provenance tag — gates the none-loss claim (TOPIC-PROFILE-SPEC §7/§8). */
 export type ResumeProvenance = 'hook' | 'mtime-fallback';
@@ -216,6 +218,10 @@ export class TopicResumeMap {
 
     // §8 — parked entries are ignored by resolution (recoverable via unpark).
     if (entry.parked) return null;
+    // Resume Follows the Account §3.3: a pointer saved by the removed
+    // newest-file guess was never trustworthy (it resumed internal one-shot
+    // transcripts on sagemind 2026-09-16). Ignore it; it expires on its own.
+    if (entry.provenance === 'mtime-fallback') return null;
 
     // Check age
     if (Date.now() - new Date(entry.savedAt).getTime() > MAX_AGE_MS) {
@@ -314,9 +320,10 @@ export class TopicResumeMap {
    * Proactive resume heartbeat: update the topic→UUID mapping for all active
    * topic-linked sessions. Called periodically (e.g., every 60s).
    *
-   * Uses authoritative Claude session IDs from hook events when available.
-   * Only falls back to mtime-based JSONL scanning when there's exactly one
-   * active session (no cross-topic contamination risk).
+   * Records only the authoritative Claude session ID reported through hooks.
+   * The former single-session "newest JSONL by mtime" guess is removed: on a
+   * busy agent the newest transcript is an internal one-shot classifier call,
+   * which poisoned resume pointers (Resume Follows the Account §3.3).
    *
    * @param topicSessions - Map of topicId → { sessionName, claudeSessionId? }
    */
@@ -330,9 +337,18 @@ export class TopicResumeMap {
       // Count how many sessions have known UUIDs vs unknown
       const activeSessions: Array<{ topicId: number; sessionName: string; claudeSessionId?: string }> = [];
       for (const [topicId, info] of topicSessions) {
-        // Verify the tmux session is actually alive
-        const hasSession = spawnSync(this.tmuxPath, ['has-session', '-t', `=${info.sessionName}`]);
-        if (hasSession.status !== 0) continue;
+        // Verify Claude is actually running in the pane. A crashed Claude keeps
+        // its tmux session (remain-on-exit failed), so `has-session` alone
+        // counted dead panes as live. One display-message call reads both.
+        // Measured on tmux 3.6a: a MISSING session exits 0 with empty fields,
+        // so an empty pane id means gone; pane_dead `1` means the process exited.
+        const probe = withSyncOp(() => spawnSync(this.tmuxPath, ['display-message', '-t', `=${info.sessionName}:`, '-p', '#{pane_id}||#{pane_dead}'], {
+          encoding: 'utf-8',
+          timeout: 5000,
+        }));
+        if (probe.status !== 0) continue;
+        const [paneId, paneDead] = String(probe.stdout ?? '').trim().split('||');
+        if (!paneId || paneDead === '1') continue;
         activeSessions.push({ topicId, sessionName: info.sessionName, claudeSessionId: info.claudeSessionId });
       }
 
@@ -346,20 +362,11 @@ export class TopicResumeMap {
         // of a switch).
         if (!this.gateAllows(topicId)) continue;
 
-        let uuid: string | null = null;
-        let provenance: ResumeProvenance = 'hook';
-
-        if (claudeSessionId && this.jsonlExists(claudeSessionId)) {
-          // Authoritative: Claude Code reported its own session ID via hooks
-          uuid = claudeSessionId;
-        } else if (activeSessions.length === 1) {
-          // Single session fallback: mtime-based is safe when there's no ambiguity
-          uuid = this.findClaudeSessionUuid();
-          provenance = 'mtime-fallback';
-        }
-        // With multiple sessions and no authoritative UUID, skip — don't guess
-
-        if (!uuid) continue;
+        // Authoritative only: Claude Code reported its own session ID via hooks
+        // and its transcript exists. No guess when it is missing.
+        if (!claudeSessionId || !this.jsonlExists(claudeSessionId)) continue;
+        const uuid: string = claudeSessionId;
+        const provenance: ResumeProvenance = 'hook';
 
         const topicKey = String(topicId);
         const existingEntry = map[topicKey];
@@ -428,6 +435,17 @@ export class TopicResumeMap {
       if (fs.existsSync(jsonlPath)) return true;
     } catch {
       // Can't check the Claude layout — fall through to the codex layout.
+    }
+    // Claude, pooled logins: a session launched under a subscription-pool account
+    // writes under ~/.claude-*/projects/<slug>/ (Resume Follows the Account §3.3).
+    // Checking only ~/.claude made every pooled session look missing and sent
+    // its id into the Codex archive walk below.
+    try {
+      for (const home of claudeConfigHomes()) {
+        if (fs.existsSync(path.join(home, 'projects', this.claudeProjectDirName(), `${uuid}.jsonl`))) return true;
+      }
+    } catch {
+      // Can't enumerate login folders — fall through to the codex layout.
     }
     // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
     // Without this every codex session looks expired/missing and resume breaks

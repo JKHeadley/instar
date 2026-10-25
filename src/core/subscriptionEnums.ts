@@ -48,6 +48,11 @@ export const SUBSCRIPTION_QUOTA_SOURCES = [
   'claude-code-usage-screen',
   'oauth-usage-endpoint-fallback',
   'codex-rollout',
+  // Live `codex app-server` account/rateLimits/read — the zero-spend codex
+  // path (codexLiveRateLimitReader.ts). Mixed-version note: a peer still on a
+  // release without this value rejects a replicated projection carrying it
+  // until that peer updates (stale view, never a wrong value).
+  'codex-app-server',
 ] as const;
 
 export type SubscriptionProviderValue = (typeof SUBSCRIPTION_PROVIDERS)[number];

@@ -34,6 +34,21 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('ships the pre-admission carrier dark and backfills it without clobbering overrides', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const continuation = (getInitDefaults(t).autonomousSessions as any).codexTaskContinuation;
+        expect(continuation.enabled).toBe(false);
+        expect(continuation.preparationCarrierEnabled).toBe(false);
+      }
+      const existing: any = {
+        autonomousSessions: { codexTaskContinuation: { enabled: true, preparationCarrierEnabled: true } },
+      };
+      applyDefaults(existing, getMigrationDefaults('managed-project'));
+      expect(existing.autonomousSessions.codexTaskContinuation.enabled).toBe(true);
+      expect(existing.autonomousSessions.codexTaskContinuation.preparationCarrierEnabled).toBe(true);
+      expect(existing.autonomousSessions.codexTaskContinuation.maxDurationSeconds).toBe(14400);
+    });
+
     it('seeds the non-gating swap timeout default on init and migration without overwriting overrides', () => {
       for (const t of ['managed-project', 'standalone'] as const) {
         expect((getInitDefaults(t).intelligence as any).nonGatingSwapTimeoutMs).toBe(15000);

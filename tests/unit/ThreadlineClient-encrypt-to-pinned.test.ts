@@ -1,0 +1,117 @@
+/**
+ * Ordinary chat to a peer paired by invite is always encrypted to the PINNED key
+ * (spec threadline-standalone-pairing D6, step 9). The bootstrap decides which peers qualify;
+ * the client only trusts a resolver key that belongs to the recipient. The bootstrap returns a
+ * key only when `threadline.encryptToPinned` is enforcing (see tests/unit/threadline/
+ * encrypt-to-pinned-switch.test.ts); here the resolver stands for that enforcing bootstrap.
+ */
+import { describe, it, expect, beforeEach } from 'vitest';
+import crypto from 'node:crypto';
+import { ThreadlineClient, EncryptToPinnedSendError } from '../../src/threadline/client/ThreadlineClient.js';
+import { edPublicToX25519 } from '../../src/threadline/ThreadlineCrypto.js';
+
+interface Enc { pk: Buffer; xk: Buffer; threadId: string; message: Record<string, unknown>; messageId?: string }
+
+function keyFor(): { key: Buffer; fp: string } {
+  const key = crypto.randomBytes(32);
+  return { key, fp: key.subarray(0, 16).toString('hex') };
+}
+
+describe('ThreadlineClient: encrypt ordinary chat to the pinned key', () => {
+  let client: ThreadlineClient;
+  let encrypted: Enc[];
+  let sent: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    encrypted = []; sent = [];
+    client = new ThreadlineClient({ name: 'T', stateDir: '/tmp/encrypt-to-pinned-test' }, () => 1_791_144_650_402);
+    const internals = client as unknown as Record<string, unknown>;
+    internals.relayClient = { sendMessage: (e: Record<string, unknown>) => { sent.push(e); } };
+    internals.identity = { fingerprint: 'self-fp' };
+    internals.encryptor = {
+      encrypt: (pk: Buffer, xk: Buffer, threadId: string, message: Record<string, unknown>, messageId?: string) => {
+        encrypted.push({ pk, xk, threadId, message, messageId });
+        return { threadId, messageId: messageId ?? `msg-${encrypted.length}`, ephemeralPubKey: 'e' };
+      },
+    };
+  });
+
+  it('a resolver key for the recipient: encrypted to it (and its derived X25519) with no cached keys', () => {
+    const peer = keyFor();
+    client.setEncryptToResolver((fp) => (fp === peer.fp ? peer.key : null));
+    const id = client.sendAuto(peer.fp, 'hello', undefined, 'msg-given', true);
+    expect(id).toBe('msg-given');
+    expect(encrypted).toHaveLength(1);
+    expect(encrypted[0].pk.equals(peer.key)).toBe(true);
+    expect(encrypted[0].xk.equals(edPublicToX25519(peer.key))).toBe(true);
+    expect(encrypted[0].message).toEqual({ content: 'hello', resend: true });
+    expect(client.hasEncryptedSendPath(peer.fp)).toBe(true);
+  });
+
+  it('it takes precedence over keys the relay supplied', () => {
+    const peer = keyFor();
+    (client as unknown as { knownAgents: Map<string, unknown> }).knownAgents.set(peer.fp, { publicKey: Buffer.alloc(32, 7), x25519PublicKey: Buffer.alloc(32, 8) });
+    client.setEncryptToResolver(() => peer.key);
+    client.sendAuto(peer.fp, 'x');
+    expect(encrypted[0].pk.equals(peer.key)).toBe(true);
+  });
+
+  it('enforce fails CLOSED: a key that does not belong to the recipient, or a resolver that throws, refuses the send', () => {
+    const peer = keyFor(), other = keyFor();
+    client.setEncryptToResolver(() => other.key);
+    expect(() => client.sendAuto(peer.fp, 'not to the wrong key')).toThrow(EncryptToPinnedSendError);
+    expect(encrypted).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+    expect(client.hasEncryptedSendPath(peer.fp)).toBe(false);
+    client.setEncryptToResolver(() => { throw new Error('store unavailable'); });
+    expect(() => client.sendAuto(peer.fp, 'again')).toThrow(/resolver-error/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('watch/off (failClosed false): a wrong key or a throwing resolver keeps the previous rule, and is reported', () => {
+    const peer = keyFor(), other = keyFor();
+    const failures: string[] = [];
+    client.setEncryptToResolver(() => other.key, { failClosed: () => false, onFailure: (k, use) => failures.push(`${k}:${use}`) });
+    client.sendAuto(peer.fp, 'plain as before');
+    expect(encrypted).toHaveLength(0);
+    expect(sent).toHaveLength(1);
+    client.setEncryptToResolver(() => { throw new Error('boom'); }, { failClosed: () => false, onFailure: (k, use) => failures.push(`${k}:${use}`) });
+    client.sendAuto(peer.fp, 'again');
+    expect(sent).toHaveLength(2);
+    expect(failures).toEqual(['malformed-pinned-key:send', 'resolver-error:send']);
+  });
+
+  it('a send the resolver routes to the pinned key that then fails is refused, never sent in plaintext', () => {
+    const peer = keyFor();
+    const internals = client as unknown as Record<string, unknown>;
+    internals.encryptor = { encrypt: () => { throw new Error('boom'); } };
+    client.setEncryptToResolver(() => peer.key);
+    expect(() => client.sendAuto(peer.fp, 'secret-ish')).toThrow(/no plaintext fallback.*boom/);
+    expect(sent).toHaveLength(0);
+    // Even with relay-supplied keys cached, it does not fall through to them either.
+    (client as unknown as { knownAgents: Map<string, unknown> }).knownAgents.set(peer.fp, { publicKey: Buffer.alloc(32, 7), x25519PublicKey: Buffer.alloc(32, 8) });
+    expect(() => client.sendAuto(peer.fp, 'again')).toThrow(/no plaintext fallback/);
+    internals.relayClient = { sendMessage: () => { throw new Error('socket closed'); } };
+    internals.encryptor = { encrypt: (_pk: Buffer, _xk: Buffer, threadId: string) => ({ threadId, messageId: 'm', ephemeralPubKey: 'e' }) };
+    expect(() => client.sendAuto(peer.fp, 'x')).toThrow(/no plaintext fallback.*socket closed/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the resolver is told whether it is consulted for a send or a capability check', () => {
+    const peer = keyFor();
+    const uses: Array<string | undefined> = [];
+    client.setEncryptToResolver((_fp, use) => { uses.push(use); return null; });
+    client.sendAuto(peer.fp, 'a');
+    client.hasEncryptedSendPath(peer.fp);
+    expect(uses).toEqual(['send', 'check']);
+  });
+
+  it('no resolver, or one returning null: unchanged behaviour', () => {
+    const peer = keyFor();
+    client.sendAuto(peer.fp, 'a');
+    client.setEncryptToResolver(() => null);
+    client.sendAuto(peer.fp, 'b');
+    expect(encrypted).toHaveLength(0);
+    expect(sent).toHaveLength(2);
+  });
+});

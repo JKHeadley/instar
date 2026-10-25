@@ -130,9 +130,11 @@ describe('TelegramAdapter messaging', () => {
       expect(entry.topicId).toBe(42);
       expect(entry.text).toBe('Logged message');
       expect(entry.fromUser).toBe(false);
+      expect(entry.forwarded).toBe(false);
       expect(entry.provenance).toBe('automation');
       expect(entry.messageId).toBe(1);
       expect(entry.timestamp).toBeTruthy();
+      expect(adapter.getTopicHistory(42)).toMatchObject([{ messageId: 1, forwarded: false, provenance: 'automation', authorship: 'agent-outbound' }]);
     });
 
     it('records an explicit conversational reply as agent-authored', async () => {

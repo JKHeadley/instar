@@ -664,6 +664,21 @@ export class CommitmentTracker extends EventEmitter {
     beaconEnabled?: boolean;
     cadenceMs?: number;
     nextUpdateDueAt?: string;
+    /**
+     * A SPECIFIC promised moment ("I'll check in on this by Friday") — the field
+     * `CheckInReminderReconciler` reads to post exactly one dated reminder.
+     *
+     * EARNED (2026-10-21): the `Commitment` interface has carried this field, with
+     * a long comment explaining why it is deliberately NOT `nextUpdateDueAt`, since
+     * ACT-724. Four places READ it — the beacon's trigger resolution, the dated
+     * backlog filter, and both arms of `GET /commitments/check-in-reminder`. It was
+     * accepted from a caller in NONE of them: `record()` did not declare it, so a
+     * creator passing `checkInAt` got HTTP 200 and a stored record without the
+     * field. `GET /commitments/check-in-reminder` honestly answered
+     * `datedCount: 0` across 883 commitments, because no commitment could ever
+     * have a date. A documented capability with four readers and no writer.
+     */
+    checkInAt?: string;
     softDeadlineAt?: string;
     hardDeadlineAt?: string;
     sessionEpoch?: string;
@@ -781,6 +796,7 @@ export class CommitmentTracker extends EventEmitter {
       beaconEnabled: autoBeaconEnabled,
       cadenceMs: autoCadenceMs,
       nextUpdateDueAt: input.nextUpdateDueAt,
+      checkInAt: input.checkInAt,
       softDeadlineAt: input.softDeadlineAt,
       hardDeadlineAt: autoHardDeadlineAt,
       sessionEpoch: input.sessionEpoch,

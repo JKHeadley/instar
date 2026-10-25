@@ -24,6 +24,7 @@ import type {
   JobDefinition,
   DecisionJournalEntry,
 } from './types.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export interface ContextSnapshotConfig {
   /** Max chars for identity.intent field (default: 800 ≈ 200 tokens) */
@@ -68,7 +69,7 @@ export class ContextSnapshotBuilder {
 
   constructor(sources: SnapshotSources, config?: ContextSnapshotConfig) {
     this.sources = sources;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDefaults(DEFAULT_CONFIG, config);
   }
 
   /**

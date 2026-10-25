@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
 import request from 'supertest';
+import { IdentityManager } from '../../../src/threadline/client/IdentityManager.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import {
   createThreadlineRoutes,
@@ -51,6 +52,22 @@ describe('resolveRelayHealth', () => {
     expect(r.status).toBe('ok');
     expect(r.report.state).toBe('connected');
     expect(r.report.recoverable).toBe(true);
+  });
+
+  it('reports standby (ok) when the machine released the relay to the lease holder, even with a stale loss event', () => {
+    const r = resolveRelayHealth((() => ({
+      connectionState: 'disconnected',
+      lastEvent: lossEvent(false),
+      standby: true,
+    })) as RelayStatus);
+    expect(r.status).toBe('ok');
+    expect(r.report.state).toBe('standby');
+    expect(r.report.recoverable).toBe(true);
+  });
+
+  it('a connected relay is never reported as standby', () => {
+    const r = resolveRelayHealth((() => ({ connectionState: 'connected', lastEvent: null, standby: true })) as RelayStatus);
+    expect(r.report.state).toBe('connected');
   });
 
   it('reports disconnected as DEGRADED and recoverable — backoff will retry', () => {
@@ -171,6 +188,7 @@ describe('GET /threadline/health — relay reporting', () => {
     // NEVER on `status`. If a degraded relay changed those, peers would silently
     // drop this agent from their registries — a far worse failure than the one
     // being fixed. This test pins the contract.
+    new IdentityManager(stateDir).getOrCreate(); // health reports an identity, never mints one
     const res = await request(appWith((() => ({
       connectionState: 'disconnected',
       lastEvent: lossEvent(true),

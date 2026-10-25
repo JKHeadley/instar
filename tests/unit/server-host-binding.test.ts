@@ -81,6 +81,10 @@ describe('Route ordering — literal before parameterized', () => {
 
   beforeEach(() => {
     project = createTempProject();
+    project.state.saveSession({
+      id: 'my-output-session', name: 'my-session', tmuxSession: 'test-my-session',
+      status: 'running', startedAt: new Date().toISOString(),
+    });
     const sessionManager = createMockSessionManager();
     server = new AgentServer({
       config: makeFakeConfig({ authToken }),

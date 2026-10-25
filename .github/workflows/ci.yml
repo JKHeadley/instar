@@ -5,7 +5,55 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # An approving review is INPUT to a check, not just metadata about it
+  # (2026-08-22). The constitutional direction guard accepts the operator's
+  # approval as proof that a registry change was authorised — but CI fired on
+  # push, long before that approval existed, so the guard ran, found no
+  # approval, and failed. Approving then changed nothing visible: the red check
+  # sat there, already finished, with no reason to run again.
+  #
+  # Found the first time the path was used for real. It only did not bite
+  # because someone was watching and re-ran the job by hand. An approval flow
+  # whose result requires a human to remember to re-run is not a flow.
+  #
+  # `submitted` covers the approval; `dismissed` matters just as much, because
+  # withdrawing an approval must re-run the guard and turn the check RED again
+  # — a gate that only re-evaluates in the direction of passing is not a gate.
+  pull_request_review:
+    types: [submitted, dismissed]
   workflow_dispatch:
+
+# Account-wide Actions concurrency is shared across EVERY repo this owner has, and
+# measurement on 2026-10-20 showed what that costs: instar-2 held 10 jobs running
+# and 25 queued while instar held 0 running and 21 queued, so this repo's CI crawled
+# at ~3 concurrent jobs against a 20-job allowance. A single PR here needs 8 unit
+# shards, so one PR took hours and a heavy run took 17-19h end to end.
+#
+# The avoidable half of that is supersession. Without this block every push to a
+# branch started a NEW 13-job run while the previous one kept consuming shared
+# slots — 126 stale runs had to be cancelled BY HAND in one night to let a
+# single-line test-config fix through. A superseded run is waste by definition:
+# nobody is waiting on its result.
+#
+# Keyed on the PR number AND the event name. The event name is load-bearing, not
+# decoration: `pull_request_review` is one of this workflow's triggers, so if a
+# review event shared a group with the push run, APPROVING a pull request would
+# CANCEL its in-flight required checks and restart them from zero. That trades
+# avoidable waste for a footgun. Scoping by event means push runs supersede push
+# runs (the 126-stale-run problem) while a review run can never cancel them.
+#
+# KNOWN AND DELIBERATELY NOT FIXED HERE: a review event therefore still starts its
+# own run, so approving a pull request costs a duplicate 13-job run. Narrowing that
+# needs job-level `if:` on the heavy jobs, and a job skipped by `if:` reports as
+# SUCCESS to required status checks — which would let a review-triggered run paint a
+# pull request green without the tests having run on that commit. That is a safety
+# hole, so it is a separate, carefully-designed change rather than a line slipped in
+# alongside a capacity fix.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # NEVER cancel main's post-merge run: that is the release gate and its record is
+  # the evidence a merge was sound. Only branch/PR runs supersede.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   invariants:
@@ -64,6 +112,15 @@ jobs:
   standards-coverage:
     name: Standards Enforcement Coverage
     runs-on: ubuntu-latest
+    # Least privilege, made EXPLICIT rather than inherited (second-pass finding 2):
+    # path B calls GET /commits/{sha}/pulls, which needs pull-requests:read. With no
+    # permissions block the job runs on the repository's DEFAULT workflow permission
+    # — so an org policy tightening that default to contents-only would 403 the
+    # association call and silently return the guard to refusing on every push, the
+    # exact state this fix exists to end. Pinned by the Root self-wiring contract.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,8 +152,124 @@ jobs:
           fi
           git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"
           git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"
+      # PATH B context for the direction guard (2026-08-22, topic 52222).
+      #
+      # The operator's approving review is an alternative to an Ed25519
+      # ratification. The evidence is an API fact held by GitHub — "did the
+      # owner submit an APPROVED review on this exact commit?" — which is why
+      # it is fetched HERE rather than derived from anything in the repository.
+      #
+      # This step must never fail the job: an unavailable review context means
+      # the guard falls back to requiring a signature, which is the safe
+      # direction. `|| true` plus an explicit empty file keeps a rate limit or
+      # an API outage from turning "cannot verify" into a hard error, while the
+      # guard still refuses to treat it as an approval.
+      #
+      # RUNS ON PUSH TOO (2026-08-23). The first version carried
+      # `if: github.event_name == 'pull_request'`, so on a push to main the
+      # context file was never written at all and the guard read ENOENT as
+      # "review unavailable" and refused. That is the safe direction taken at
+      # the wrong moment: the operator HAD approved — on the pull request that
+      # produced this very commit — so every registry change ratified by review
+      # turned canonical main red the instant it merged, and main stayed red
+      # across three merges on 2026-08-23. The evidence is still reachable on a
+      # push; it just has to be reached through the commit. The pull request is
+      # resolved by matching `merge_commit_sha` to this commit rather than
+      # taking the first associated pull request, because a commit can be
+      # associated with several and only the one GitHub actually merged carries
+      # the approval that ratified it. A commit with no such pull request (a
+      # direct push to main) resolves nothing, writes an empty context, and the
+      # guard refuses exactly as it did before — the bypass stays closed.
+      # PATH B resolution, then the review fetch.
+      #
+      # A FAILED FETCH MUST NOT LOOK LIKE AN EMPTY ONE.
+      #
+      # The first version of this step did `gh api ... || echo '[]'`, so an
+      # API error, a rate limit or a network fault produced an empty review
+      # list — byte-identical to "the operator genuinely has not approved
+      # yet". Both are not-approved, so the SAFE direction held; but the
+      # REASON the operator is shown would have been a lie. They would read
+      # "no review from <login>", approve, watch it fail again, and have no
+      # way to know the check never reached GitHub.
+      #
+      # A dead query and a true absence printed the same word. Caught by a
+      # peer session's diagnosis the same night this shipped: an instrument
+      # whose failure is unreachable has not measured anything.
+      #
+      # So on a failed call the `reviews` key is OMITTED entirely and a
+      # `fetchError` is written instead. The grader's `Array.isArray`
+      # check then reports "review list unavailable" — a distinct, named,
+      # already-tested state. The SAME distinction now covers the
+      # commit -> pull-request association call on the push path, which had
+      # the identical `|| echo '[]'` shape: a failed association is
+      # "cannot verify", never "this commit has no pull request".
+      # A `pull_request_review` event carries the SAME `pull_request`
+      # payload as a `pull_request` event, so it takes the PR path. It is
+      # named explicitly rather than folded into a `!= push` test: this
+      # step now has three callers, and the one added to make approval
+      # re-run the checks is precisely the one that must not fall through
+      # to the push branch. On a review event `github.sha` is the merge
+      # REF, which matches no `merge_commit_sha`, so the push branch would
+      # resolve no pull request, write an empty context, and refuse —
+      # turning the trigger that exists to honour an approval into one
+      # that reliably rejects it.
+      - name: Fetch operator review context (direction guard path B)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PUSH_SHA: ${{ github.sha }}
+          OWNER_LOGIN: ${{ github.event.repository.owner.login }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          OUT: ${{ runner.temp }}/standards-direction-review.json
+        run: |
+          set -u
+          assoc_failed=0
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then
+            if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then
+              match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "${associated:-[]}" 2>/dev/null || echo '')
+            else
+              associated='[]'
+              match=''
+              assoc_failed=1
+            fi
+            PR=''
+            HEAD_SHA=''
+            PR_AUTHOR=''
+            if [ -n "$match" ]; then
+              PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')
+              HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')
+              PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')
+            fi
+            echo "path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< "${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=${PR:-none} assoc-failed=${assoc_failed}"
+          fi
+          echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"
+          if [ "$assoc_failed" = "1" ]; then
+            printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"
+          elif [ -z "$PR" ]; then
+            jq -n --arg headSha "$HEAD_SHA" \
+                  --arg ownerLogin "$OWNER_LOGIN" \
+                  --arg ownerType "$OWNER_TYPE" \
+                  --arg prAuthorLogin "$PR_AUTHOR" \
+               '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
+               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
+          elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then
+            echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"
+            jq -n --argjson reviews "$reviews" \
+                  --arg headSha "$HEAD_SHA" \
+                  --arg ownerLogin "$OWNER_LOGIN" \
+                  --arg ownerType "$OWNER_TYPE" \
+                  --arg prAuthorLogin "$PR_AUTHOR" \
+               '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
+               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
+          else
+            printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"
+          fi
       - run: node scripts/standards-coverage.mjs --check
         env:
+          STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json
           STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
           STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
           STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md
@@ -165,9 +338,12 @@ jobs:
       # fileParallelism stays off within each shard to preserve isolation.
       - run: npm run test:push -- --shard=${{ matrix.shard }}/4
         env:
-          AUDIT_CHANGE_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
-          AUDIT_CHANGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
-          AUDIT_CHANGE_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
+          # A review event is PR-shaped here too: its payload carries the
+          # same base/head, and leaving it out would hand the audit an
+          # EMPTY change kind — an unscoped run reporting clean.
+          AUDIT_CHANGE_KIND: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
+          AUDIT_CHANGE_BASE_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
+          AUDIT_CHANGE_HEAD_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
       - name: Working-tree integrity check
         run: |
           if [ -n "$(git status --porcelain)" ]; then
@@ -206,6 +382,10 @@ jobs:
     needs: unit
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The compiled preflight E2E runs lint, whose deferral-carrier ratchet
+          # needs origin/main and its merge base to inspect the actual PR diff.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -213,6 +393,9 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
+      # E2E subprocesses exercise the compiled CLI and registry in this checkout.
+      # The separate build job has its own filesystem and cannot supply dist/.
+      - run: npm run build
       - run: npm run test:e2e
       - name: Working-tree integrity check
         run: |

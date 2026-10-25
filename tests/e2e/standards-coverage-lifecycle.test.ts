@@ -125,9 +125,10 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
    * conformance finding that prompted it was right: the fixture path was the harness default,
    * so "the production path is covered" was an assumption nothing could falsify.
    *
-   * WHY IT IS GONE. The e2e config deliberately builds no `dist` (a compiled `dist/cli.js`
-   * wakes dormant tests that spawn `pnpm`, absent on the CI e2e runner), so this block needed
-   * its own asset bootstrap. That bootstrap produced a DESIGN defect in each of four
+   * WHY IT IS GONE. At the time, E2E ran without `dist`: a compiled `dist/cli.js`
+   * woke a preflight test that required pnpm, absent on that runner. Preflight now
+   * prefers npm and the E2E CI job builds before testing; that prerequisite is resolved.
+   * The removed block's separate asset bootstrap produced a DESIGN defect in each of four
    * consecutive review rounds:
    *
    *   r7  the asset call sat below a freshness return keyed on an unrelated artifact

@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { JobPriority } from './types.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Default concurrent autonomous-job cap when config doesn't specify one. */
@@ -31,6 +32,8 @@ export interface AutonomousJobSummary {
   /** duration_seconds front-matter field; null when absent/unparseable (unbounded run). */
   durationSeconds: number | null;
   reportChannel: string | null;
+  /** Non-active admission carrier state. Never contributes to `active`. */
+  preparationState: 'preparing' | 'recovering' | 'promoted' | 'terminal' | null;
 }
 
 function autonomousDir(stateDir: string): string {
@@ -55,6 +58,10 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
   }
   const iterRaw = readField(content, 'iteration');
   const durRaw = readField(content, 'duration_seconds');
+  const preparationRaw = readField(content, 'preparation_state');
+  const preparationState = preparationRaw && ['preparing', 'recovering', 'promoted', 'terminal'].includes(preparationRaw)
+    ? preparationRaw as AutonomousJobSummary['preparationState']
+    : null;
   return {
     topic: readField(content, 'report_topic') || topicFromName,
     file,
@@ -65,7 +72,50 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
     startedAt: readField(content, 'started_at'),
     durationSeconds: durRaw && /^\d+$/.test(durRaw) ? parseInt(durRaw, 10) : null,
     reportChannel: readField(content, 'report_channel'),
+    preparationState,
   };
+}
+
+/**
+ * Persist a truthful non-active preparation marker on an existing autonomous
+ * record. Preparing/recovering is refused while `active:true`; promotion is a
+ * handoff marker and may only be written after another authority activated the
+ * run. The marker itself never changes `active`.
+ */
+export function setAutonomousPreparationState(
+  stateDir: string,
+  topic: string,
+  target: 'preparing' | 'recovering' | 'promoted' | 'terminal',
+): boolean {
+  const file = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try { content = fs.readFileSync(file, 'utf8'); } catch {
+    // @silent-fallback-ok — false is the explicit refusal result for a missing or unreadable carrier.
+    return false;
+  }
+  const active = readField(content, 'active') === 'true';
+  if ((target === 'preparing' || target === 'recovering' || target === 'terminal') && active) return false;
+  if (target === 'promoted' && !active) return false;
+  const line = `preparation_state: "${target}"`;
+  const next = /^preparation_state:/m.test(content)
+    ? content.replace(/^preparation_state:.*$/m, line)
+    : content.replace(/^active:.*$/m, (match) => `${match}\n${line}`);
+  if (next === content) return readField(content, 'preparation_state') === target;
+  const tmp = `${file}.${process.pid}.preparation.tmp`;
+  try {
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try { fs.writeSync(fd, next, null, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    // @silent-fallback-ok — the caller receives false; no preparation transition is claimed.
+    try {
+      if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'AutonomousSessions.setPreparationState.cleanup' });
+    } catch {
+      // @silent-fallback-ok — a stale temp file is non-authoritative and never becomes the carrier.
+    }
+    return false;
+  }
 }
 
 /** All autonomous jobs (per-topic files + a legacy single file if present). */
@@ -123,6 +173,37 @@ export function autonomousRunRemainingForTopic(
   // copy should stand for it.
   if (remainingSeconds <= 0) return null;
   return { active: true, remainingSeconds };
+}
+
+/**
+ * The ReapGuard's structural-long-work signal (`ReapGuardDeps.buildOrAutonomousActive`).
+ * A topic's autonomous / native-goal run counts only while it is ACTIVE and still
+ * inside its window — read through `autonomousRunRemainingForTopic`, never from the
+ * state file's mtime. A run's file is written once per iteration, so a run waiting
+ * at its prompt for more than 30 minutes used to lose KEEP while still active
+ * (age-limit kill, 2026-09-30 review). Inactive, paused, expired or absent ⇒ false.
+ * A /build run has no window of its own, so its state file keeps the 30-minute
+ * freshness rule. Unreadable ⇒ false (the other guards still apply).
+ */
+export function structuralLongWorkActive(
+  stateDir: string,
+  topicId: number | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (topicId != null) {
+    try {
+      if (autonomousRunRemainingForTopic(stateDir, topicId, nowMs) != null) return true;
+    } catch {
+      // @silent-fallback-ok — run state unreadable ⇒ no autonomous KEEP; the build check and other guards still run.
+    }
+  }
+  try {
+    const buildState = path.join(stateDir, 'state', 'build', 'build-state.json');
+    return fs.existsSync(buildState) && (nowMs - fs.statSync(buildState).mtimeMs) < 30 * 60_000;
+  } catch {
+    // @silent-fallback-ok — build state unreadable ⇒ no build KEEP (unchanged pre-fix behaviour).
+    return false;
+  }
 }
 
 /**
@@ -359,25 +440,58 @@ export function markAutonomousInterruptedMidTask(stateDir: string, topic: string
   return true;
 }
 
+function markStoppedPreservingRecord(file: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'AutonomousSessions.stop.preserve.read',
+      primary: 'Read autonomous run state before preserving a stopped record',
+      fallback: 'Report that the stop record could not be updated and return false to the caller',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'The session stop may still proceed through the caller, but continuity evidence for this run was not marked inactive.',
+    });
+    return false;
+  }
+  const stamp = new Date().toISOString();
+  let next = /^active:/m.test(content)
+    ? content.replace(/^active:.*$/m, 'active: false')
+    : `active: false\n${content}`;
+  const stoppedAt = `stopped_at: "${stamp}"`;
+  next = /^stopped_at:/m.test(next)
+    ? next.replace(/^stopped_at:.*$/m, stoppedAt)
+    : next.replace(/^active:.*$/m, (m) => `${m}\n${stoppedAt}`);
+  if (next === content) return true;
+  const tmp = `${file}.tmp-stop`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+  return true;
+}
+
 export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {
     emitStopped(journal, stateDir, topic, f);
-    SafeFsExecutor.safeRmSync(f, { force: true, operation: 'AutonomousSessions.stopAutonomousTopic' });
-    return true;
+    return markStoppedPreservingRecord(f);
   }
   return false;
 }
-
 export interface StopAllResult {
   stoppedTopics: string[];
   stoppedLegacy: boolean;
 }
 
 /**
- * Stop every autonomous job. Removes all per-topic files + the legacy file and
- * writes the emergency-stop flag so any session whose hook fires before its file
- * is gone also stands down. The flag is the belt; removing files is the suspenders.
+ * Stop every autonomous job. Preserves per-topic and legacy state files while
+ * marking them inactive, and writes the emergency-stop flag so any session whose
+ * hook fires before seeing the inactive marker also stands down.
  */
 export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJournalSeam): StopAllResult {
   const stoppedTopics: string[] = [];
@@ -386,9 +500,9 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.local.md')) continue;
       const topic = name.replace(/\.local\.md$/, '');
-      emitStopped(journal, stateDir, topic, path.join(dir, name));
-      SafeFsExecutor.safeRmSync(path.join(dir, name), { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs' });
-      stoppedTopics.push(topic);
+      const file = path.join(dir, name);
+      emitStopped(journal, stateDir, topic, file);
+      if (markStoppedPreservingRecord(file)) stoppedTopics.push(topic);
     }
   } catch {
     /* dir absent */
@@ -396,13 +510,18 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
   let stoppedLegacy = false;
   const legacy = legacyFile(stateDir);
   if (fs.existsSync(legacy)) {
-    SafeFsExecutor.safeRmSync(legacy, { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs(legacy)' });
-    stoppedLegacy = true;
+    stoppedLegacy = markStoppedPreservingRecord(legacy);
   }
   try {
     fs.writeFileSync(path.join(stateDir, 'autonomous-emergency-stop'), `stopped-all ${new Date().toISOString()}\n`);
-  } catch {
-    /* best-effort flag */
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'AutonomousSessions.stopAll.emergencyFlag',
+      primary: 'Write autonomous emergency-stop flag after stopping all recorded runs',
+      fallback: 'Continue with preserved inactive run records but without the belt-and-suspenders stop flag',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'Already recorded runs are inactive, but a concurrently exiting session may miss the emergency-stop flag backstop.',
+    });
   }
   return { stoppedTopics, stoppedLegacy };
 }

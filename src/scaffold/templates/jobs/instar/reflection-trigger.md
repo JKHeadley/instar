@@ -11,6 +11,8 @@ tags:
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+conditionalEffects:
+  - .instar/MEMORY.md
 ---
 AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
 
@@ -37,6 +39,7 @@ echo "- Process improvements or capability gaps"
 echo ""
 echo "If you find genuine learnings:"
 echo "1. Update .instar/MEMORY.md with the insight (append to the file)"
+echo "   After writing it, print this exact line on its own so the completion audit can verify the write actually landed: EFFECT: .instar/MEMORY.md"
 echo "2. Be specific: include what was learned, why it matters, and how it should guide future work"
 echo "3. Signal completion: curl -s -X POST -H \"Authorization: Bearer \$INSTAR_AUTH_TOKEN\" -H \"X-Instar-AgentId: \$INSTAR_AGENT_ID\" http://localhost:${INSTAR_PORT:-4042}/reflection/record -H 'Content-Type: application/json' -d '{\"type\":\"quick\"}'"
 echo ""

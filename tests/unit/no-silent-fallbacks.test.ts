@@ -418,7 +418,15 @@ describe('No Silent Fallbacks', () => {
     // Neither swallows. The first drafts of both DID, and this ratchet is what
     // pushed back — which is the gate working, so the bump records that rather
     // than papering over it. Zero unjustified silent swallows added.
-    const BASELINE = 496;
+    // 496 -> 495: origin reservation DB failures now report degradation;
+    // enrollment/custody failures and the serialization tail have specific
+    // observable/control-flow exemptions. Verified with this exact scanner.
+    // 496 -> 494 (jev-circles-shadow rebase, 2026-09-30): #2102 left main at 496
+    // over a 495 baseline — its two `run.catch(() => null)` guards on
+    // /memory-picker/session-context were counted because the 20-line window
+    // reached `?? 'fallback'`. pick() never rejects, so both now carry an
+    // in-window @silent-fallback-ok; the scanner reports exactly 494.
+    const BASELINE = 494;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

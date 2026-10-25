@@ -271,4 +271,43 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect(resumedTick.status).toBe(202);
     expect((await request(app).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
   });
+
+  it('the dashboard proposal is alive on the production path and tracks the live owner binding', async () => {
+    const app = server.getApp();
+    const res = await request(app).get('/feedback-factory/readiness-authorities/proposal').set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    // The failover above moved the owner epoch to 2 and rebound the authority to it.
+    expect(res.body).toMatchObject({ status: 'active', current: { agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 2 } });
+    // This fixture's intelligence is a bare provider, not the router, so there is no
+    // routed model to bind — the card must say so and offer no Approve rather than guess.
+    expect(res.body.proposal).toBeNull();
+    expect(res.body.blockers.join(' ')).toMatch(/No model is currently available/);
+    expect(res.body.approveAction).toBeNull();
+    // The new approve path is PIN-gated like every other authority mutation.
+    expect((await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, operatorDecisionRef: 'agent-self-attempt' })).status).toBe(403);
+    const refused = await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, pin: PIN, operatorDecisionRef: 'operator-no-route' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/not approvable/);
+  });
+
+  it('a restart after the restore bump resumes at the recorded owner epoch, so backup checkpoints keep working', async () => {
+    await server.stop();
+    tracker = new InitiativeTracker(stateDir);
+    server = new AgentServer({ config, state: new StateManager(stateDir), initiativeTracker: tracker, intelligence,
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never });
+    await server.start();
+    const drain = (server as unknown as { feedbackDrain: { authorityBinding(): { ownerEpoch: number }; checkpointBackup(trigger: 'promotion' | 'failover'): void;
+      store: { ownerAuthorityEpoch(): number | null } } }).feedbackDrain;
+    // Before this fix a single-machine restart presented epoch 1 against the recorded 2.
+    expect(drain.store.ownerAuthorityEpoch()).toBe(2);
+    expect(drain.authorityBinding().ownerEpoch).toBe(2);
+    expect(() => drain.checkpointBackup('failover')).not.toThrow();
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'feedback-factory', 'store', 'feedback-drain-checkpoint.json'), 'utf8'));
+    expect(manifest.ownerAuthorityEpoch).toBe(2);
+    expect((await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
+  });
 });

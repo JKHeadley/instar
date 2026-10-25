@@ -237,6 +237,9 @@ export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
 /** Feedback cluster evidence → owned-work readiness judgment. */
 export const DP_FEEDBACK_READINESS = 'feedback-readiness';
 
+/** Feedback work item scrubbed evidence → work/hold/ignore triage disposition. */
+export const DP_FEEDBACK_TRIAGE = 'feedback-triage';
+
 /** Verified operator message → durable goal-priority classification. */
 export const DP_GOAL_PRIORITY_EXTRACT = 'goal-priority-extract';
 
@@ -251,6 +254,9 @@ export const DP_TOPIC_INTENT_EXTRACT = 'topic-intent-extract';
 
 /** Committed source/directory node → bounded Cartographer code-map summary. */
 export const DP_CARTOGRAPHER_SUMMARY_AUTHOR = 'cartographer-summary-author';
+
+/** Uncertain Telegram delivery → read-only diagnosis, never replay authority. */
+export const DP_TELEGRAM_ORIGIN_RECOVERY = 'telegram-origin-recovery';
 
 /** Project spec + referenced committed files → drift signal. */
 export const DP_PROJECT_DRIFT_CHECK = 'project-drift-check';
@@ -332,6 +338,9 @@ export const DP_RESUME_SANITY_CHECK = 'resume-sanity-check';
 
 /** Bounded mentor signals → zero or more forensic issue classifications. */
 export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
+
+/** Redacted closed browser snapshot → one action from the deterministic allowlist. */
+export const DP_SUBSCRIPTION_RELOGIN_ACTION = 'subscription-relogin-action';
 
 // ───────────────────────────────────────────────────────────────────────────
 // The census
@@ -425,6 +434,23 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
   },
   {
+    decisionPoint: DP_FEEDBACK_TRIAGE,
+    component: 'FeedbackTriageArbiter',
+    status: 'wired',
+    volumeClass: 'budget:250',
+    contentClass: 'content-bearing',
+    reason:
+      'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
+  },
+  {
+    decisionPoint: 'feedback-triage-second-opinion',
+    component: 'FeedbackTriageSecondOpinion',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Cross-family second opinion for the triage never-ignore floor; it runs on a dedicated per-framework provider outside the shared router (so the seam cannot mint its row yet). Its verdicts are recorded triage-side as floor outcomes and medium-strength grades; router enrollment is queued in the uniform-provenance backlog.',
+  },
+  {
     decisionPoint: DP_GOAL_PRIORITY_EXTRACT,
     component: 'GoalPriorityExtractor',
     status: 'wired',
@@ -447,6 +473,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     gradingPosture: 'measurement-only',
     gradingReason:
       'Phase 1 is signal-only and has no actuation outcome; verdict quality is collected for later benchmark and operator-label calibration.',
+  },
+  {
+    decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
+    component: 'subscription-relogin-supervisor',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'metadata',
+    reason:
+      'A low-frequency action validator selects only from a deterministic browser allowlist; provenance stores the closed redacted snapshot and action labels, never DOM text or secrets.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic driver rejects out-of-set output and records typed outcomes; longitudinal action-quality grading begins with the disposable canary corpus.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not
@@ -855,6 +893,16 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   },
 
   // — Jobs —
+  {
+    decisionPoint: DP_TELEGRAM_ORIGIN_RECOVERY,
+    component: 'telegram-origin-recovery',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason: 'A read-only diagnosis has no independently labeled correctness outcome and cannot authorize dispatch or retries.',
+    reason: 'Bounded delivery diagnosis records only input identities and shape; no message body or diagnostic text enters provenance context.',
+  },
   {
     decisionPoint: 'pipe-session-spawn',
     component: 'PipeSessionSpawner',
@@ -1303,6 +1351,11 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   },
   'completion-claim-window-unknown-v1': {
     ruleId: 'completion-claim-window-unknown-v1', decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
+  },
+  'feedback-triage-window-unknown-v1': {
+    ruleId: 'feedback-triage-window-unknown-v1', decisionPoint: DP_FEEDBACK_TRIAGE,
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
     owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
   },

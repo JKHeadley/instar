@@ -64,6 +64,7 @@ function makeApp(tmpDir: string) {
     authDeps,
     localMachineId: awake.machineId,
     localSigningKeyPem: '',
+    stateDir: tmpDir,
   });
   const app = express();
   app.use(express.json());
@@ -147,6 +148,23 @@ describe('non-interactive code-authenticated pool join (POST /api/pair)', () => 
     expect(res.status).toBe(403);
   });
 
+  it('refuses a joiner presenting the awake machine\'s own id (409) without spending a code attempt (ACT-1302)', async () => {
+    // A copied/cloned agent home carries the inviter's identity.json; the
+    // sagemind Studio booted as the laptop this way.
+    const { app, identityManager, awake, pairingStore } = makeApp(dir);
+    pairingStore.save(createPairingSession({ code: 'CLONE-CHECK-0001', expiryMs: 600000 }));
+    const before = identityManager.loadRegistry().machines[awake.machineId];
+    const res = await request(app).post('/api/pair').send({
+      pairingCode: 'CLONE-CHECK-0001', machineIdentity: awake, ephemeralPublicKey: awake.encryptionPublicKey,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('joiner-identity-is-inviter');
+    const session = pairingStore.load()!;
+    expect(session.failedAttempts ?? 0).toBe(0);
+    expect(session.consumed).toBeFalsy();
+    expect(identityManager.loadRegistry().machines[awake.machineId]).toEqual(before);
+  });
+
   it('rejects a malformed machineIdentity (400) before persisting anything', async () => {
     const { app, pairingStore } = makeApp(dir);
     pairingStore.save(createPairingSession({ code: 'GOOD-CODE-0001', expiryMs: 600000 }));
@@ -154,5 +172,50 @@ describe('non-interactive code-authenticated pool join (POST /api/pair)', () => 
       pairingCode: 'GOOD-CODE-0001', machineIdentity: { machineId: 'm_x' }, ephemeralPublicKey: 'x',
     });
     expect(res.status).toBe(400);
+  });
+
+  it('requires fresh keys for a revoked same-principal re-pair and derives exact next epochs server-side', async () => {
+    const { app, identityManager, awake, pairingStore } = makeApp(dir);
+    const original = {
+      ...makeIdentity('returning-machine'),
+      keyEpoch: 0,
+      recoveryPublicKey: pemToBase64(generateSigningKeyPair().publicKey),
+      recoveryEpoch: 1,
+      recoveryAnchorProvenance: 'first-hand' as const,
+    };
+    pairingStore.save(createPairingSession({ code: 'FIRST-PAIR-0001', expiryMs: 600000 }));
+    await request(app).post('/api/pair').send({
+      pairingCode: 'FIRST-PAIR-0001', machineIdentity: original, ephemeralPublicKey: original.encryptionPublicKey,
+    }).expect(200);
+    identityManager.revokeMachine(original.machineId, awake.machineId, 'operator test revoke');
+
+    pairingStore.save(createPairingSession({ code: 'FRESH-PAIR-0002', expiryMs: 600000 }));
+    const stale = await request(app).post('/api/pair').send({
+      pairingCode: 'FRESH-PAIR-0002', machineIdentity: original, ephemeralPublicKey: original.encryptionPublicKey,
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toBe('fresh-pairing-identity-required');
+    expect(pairingStore.load()!.consumed).toBe(false);
+
+    const fresh = {
+      ...original,
+      signingPublicKey: pemToBase64(generateSigningKeyPair().publicKey),
+      encryptionPublicKey: pemToBase64(generateEncryptionKeyPair().publicKey),
+      recoveryPublicKey: pemToBase64(generateSigningKeyPair().publicKey),
+      // Deliberately hostile claimant epochs: receiver derives its own +1.
+      keyEpoch: 999,
+      recoveryEpoch: 999,
+    };
+    await request(app).post('/api/pair').send({
+      pairingCode: 'FRESH-PAIR-0002', machineIdentity: fresh, ephemeralPublicKey: fresh.encryptionPublicKey,
+    }).expect(200);
+    expect(identityManager.loadRemoteIdentity(original.machineId)).toMatchObject({
+      signingPublicKey: fresh.signingPublicKey,
+      recoveryPublicKey: fresh.recoveryPublicKey,
+      keyEpoch: 1,
+      recoveryEpoch: 2,
+    });
+    expect(identityManager.loadRegistry().machines[original.machineId]).toMatchObject({ status: 'active' });
+    expect(pairingStore.load()!.consumed).toBe(true);
   });
 });

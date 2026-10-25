@@ -30,6 +30,7 @@ export type BenchCoverage =
   | { exempt: string };
 
 export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
+  'telegram-origin-recovery': { exempt: 'Produces an advisory diagnostic string only, with no parsed verdict, write capability, or influence on dispatch/retry authority. As with DashboardInsightEngine, model quality is not safety-load-bearing; it remains on the shared fast tier without a benchmark-derived routing-nature claim.' },
   // ── Covered by the critical set (Wave 1 — authored 2026-07-02) ──
   MessageSentinel: { task: 'sentinel-classify' },
   // The zombie-classify benchmark IS this classifier's bench task (operator-approved; it is the
@@ -49,6 +50,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'correction-learning': { task: 'correction-distiller' },
   CoherenceReviewer: { task: 'gate-triage' },
   FeedbackReadinessArbiter: { task: 'feedback-readiness' },
+  FeedbackTriageArbiter: { pending: 'wave-3' },
+  FeedbackTriageSecondOpinion: { pending: 'wave-3' },
   GoalPriorityExtractor: { pending: 'wave-3' },
   AlignmentReviewer: { pending: 'wave-3' },
 
@@ -143,6 +146,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'mentor-stage-b': { pending: 'wave-3' },
   'correction-class-review': { pending: 'wave-3' },
   'completion-claim-verify': { pending: 'wave-3' },
+  // Closed action selection over adversarial provider-page state. The task
+  // measures valid-action precision plus fail-closed behavior for injection,
+  // unknown state, identity ambiguity, and permission-expansion cases.
+  'subscription-relogin-supervisor': { task: 'subscription-relogin-action-validator' },
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -174,6 +181,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
 export type UntrustedInputFlag = true | { false: string };
 
 export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> = {
+  'telegram-origin-recovery': true, // delivery identifiers/reasons may originate across a signed mesh boundary
   // The external-hog classifier judges a process's attacker-controllable name + full argv
   // (wrapped as untrusted data in ExternalHogClassifierPrompt) → judges untrusted content.
   ExternalHogClassifier: true,
@@ -195,8 +203,11 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   SessionSummarySentinel: true,
   TelegramAdapter: true,
   FeedbackReadinessArbiter: true,
+  FeedbackTriageArbiter: true,
+  FeedbackTriageSecondOpinion: true,
   GoalPriorityExtractor: true,
   AlignmentReviewer: true,
+  'subscription-relogin-supervisor': true, // provider DOM classification is untrusted even after deterministic clamping
 
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
@@ -334,6 +345,8 @@ export const CLAIM_KINDS: ReadonlyArray<ClaimKind> = [
 export type JudgesClaimsFlag = { claimKind: ClaimKind } | false | { false: string };
 
 export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
+  'telegram-origin-recovery': false, // advisory explanation, never a completion/authorship/receipt verdict
+  'subscription-relogin-supervisor': false, // selects a permitted browser action; does not credit a completion/health claim
   // The dashboard insight engine summarizes a page's own data into awareness-only
   // observations; it never credits or refuses a completion/progress/health claim
   // asserted by an agent or session → does not judge claims.
@@ -390,6 +403,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
   FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
+  FeedbackTriageArbiter: false, // judges whether a feedback work item is worth work, not a completion/health claim
+  FeedbackTriageSecondOpinion: false, // re-judges an ignore decision, not a completion/health claim
   GoalPriorityExtractor: false, // extracts durable operator priorities; it does not credit a completion/progress/health claim
   AlignmentReviewer: { claimKind: 'healthClaim' }, // judges whether the active run remains healthy relative to durable operator priorities
 
@@ -469,6 +484,10 @@ export type ParserContractFlag =
   | { false: string };
 
 export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> = {
+  'telegram-origin-recovery': { false: 'The result is an opaque advisory string written to diagnostics; no output parser, closed verdict vocabulary, retry grant, or receipt claim consumes it.' },
+  'subscription-relogin-supervisor': {
+    contractTest: 'tests/unit/anthropic-relogin-browser-driver.test.ts',
+  },
   DashboardInsightEngine: {
     false:
       'output is free-text insight lines (parseInsightResponse extracts/clamps 1-3 plain-English lines, degrade-to-deterministic-floor on unparseable) — no closed verdict vocabulary is parsed',
@@ -507,6 +526,8 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
   FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
+  FeedbackTriageArbiter: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
+  FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
@@ -800,6 +821,7 @@ const exposed = (inputShape: InjectionInputShape): InjectionExposure => ({ expos
 const notExposed = (reason: string): InjectionExposure => ({ exposed: false, inputShape: NOT_EXPOSED, reason });
 
 export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionExposure>> = {
+  'telegram-origin-recovery': exposed(EXPOSED_TOOL),
   // ── Sentinels ──
   ExternalHogClassifier: exposed(EXPOSED_TOOL), // attacker-controllable process name + argv
   InputGuard: exposed(EXPOSED_USER),
@@ -833,8 +855,11 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
   FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
+  FeedbackTriageArbiter: exposed(EXPOSED_USER_TOOL), // scrubbed feedback report text + cluster metadata
+  FeedbackTriageSecondOpinion: exposed(EXPOSED_USER_TOOL), // the same scrubbed triage packet
   GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context
   AlignmentReviewer: exposed(EXPOSED_ALL), // operator priorities + model/tool-authored run focus
+  'subscription-relogin-supervisor': exposed(EXPOSED_TOOL), // clamped provider-page state originates in browser DOM
 
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),

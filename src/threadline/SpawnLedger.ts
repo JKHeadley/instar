@@ -25,6 +25,7 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ export class SpawnLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
-    this.opts = { ...DEFAULTS, ...opts };
+    this.opts = mergeDefaults<Required<SpawnLedgerOptions>>(DEFAULTS, opts);
     this.applySchema();
     // Close-on-exit registry (SqliteRegistry.ts). Registered after the db is open.
     this._unregisterSqlite = registerSqliteHandle(() => {

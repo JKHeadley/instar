@@ -1,0 +1,38 @@
+{
+  "ts": "2026-09-22T15:47:26.982Z",
+  "slug": "jev-job-completion-audit",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 946,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/jev-completion-audit.md",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JevJobCompletionAudit.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 946,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

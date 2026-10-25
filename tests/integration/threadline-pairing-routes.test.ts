@@ -23,6 +23,9 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
 import { createThreadlineRoutes } from '../../src/threadline/ThreadlineEndpoints.js';
 import { HandshakeManager } from '../../src/threadline/HandshakeManager.js';
+import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
+/** A real Ed25519 key: pinning refuses small-order and off-curve keys (SEC-16), so fixtures must be real. */
+const PEER_KEY = generateIdentityKeyPair().publicKey.toString('hex');
 
 const PEER_FP = '8c7928aa9f04fbda947172a2f9b2d81a';
 const OWN_FP = '1111111111111111111111111111aaaa';
@@ -71,7 +74,7 @@ function appWith(opts: {
 function seedPending(tm: AgentTrustManager): void {
   tm.recordPendingVerification(PEER_FP, {
     pairingId: PAIRING_ID,
-    peerIdentityPub: 'deadbeef'.repeat(8),
+    peerIdentityPub: PEER_KEY,
     sasWords: SAS_WORDS,
     sasFingerprint: 'a1b2c3d4e5f60718',
     ownFp: OWN_FP,
@@ -107,7 +110,7 @@ describe('Secure A2A Verified Pairing routes (integration)', () => {
     it('503s the verify route when the flag is off', async () => {
       const res = await request(app)
         .post(`/threadline/pairing/${PEER_FP}/verify`)
-        .send({ match: true, pin: DASHBOARD_PIN });
+        .send({ words: SAS_WORDS, pin: DASHBOARD_PIN });
       expect(res.status).toBe(503);
     });
   });
@@ -149,12 +152,20 @@ describe('Secure A2A Verified Pairing routes (integration)', () => {
       expect(res.body.pairing.sasWords).toEqual(SAS_WORDS);
     });
 
-    it('detail with an INCORRECT PIN still omits the SAS words', async () => {
+    it('detail with an INCORRECT PIN is refused and never shows the SAS words', async () => {
       const res = await request(app)
         .get(`/threadline/pairing/${PEER_FP}`)
         .send({ pin: '000000' });
-      expect(res.status).toBe(200);
-      expect(res.body.pairing.sasWords).toBeUndefined();
+      expect(res.status).toBe(403);
+      expect(res.body.pairing).toBeUndefined();
+    });
+
+    it('wrong PINs on the detail route count toward the same lockout as every PIN route', async () => {
+      const statuses: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        statuses.push((await request(app).get(`/threadline/pairing/${PEER_FP}`).set('X-Forwarded-For', '203.0.113.9').send({ pin: '999999' })).status);
+      }
+      expect(statuses).toContain(429);
     });
 
     it('detail 404s for an unknown fingerprint', async () => {
@@ -179,10 +190,10 @@ describe('Secure A2A Verified Pairing routes (integration)', () => {
       expect(tm.getProfileByFingerprint(PEER_FP)?.pairingState).toBe('pending-verification');
     });
 
-    it('verify with a valid PIN + match:true flips to mutual-verified', async () => {
+    it('verify with a valid PIN + the other side\'s 12 typed words flips to mutual-verified', async () => {
       const res = await request(app)
         .post(`/threadline/pairing/${PEER_FP}/verify`)
-        .send({ match: true, pin: DASHBOARD_PIN });
+        .send({ words: SAS_WORDS, pin: DASHBOARD_PIN });
       expect(res.status).toBe(200);
       expect(res.body.state).toBe('mutual-verified');
       const profile = tm.getProfileByFingerprint(PEER_FP);
@@ -225,7 +236,7 @@ describe('Secure A2A Verified Pairing routes (integration)', () => {
       const app = appWith({ enabled: true, trustManager: tm, dashboardPin: DASHBOARD_PIN });
       await request(app)
         .post(`/threadline/pairing/${PEER_FP}/verify`)
-        .send({ match: true, pin: DASHBOARD_PIN });
+        .send({ words: SAS_WORDS, pin: DASHBOARD_PIN });
       expect(tm.listProfiles().filter((p) => p.pairingState === 'mutual-verified').length).toBe(1);
     });
 

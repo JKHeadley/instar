@@ -84,9 +84,16 @@ export async function sendMessageViaHttp(
       deliveryPath?: string;
       accepted?: boolean;
       delivered?: boolean;
+      relayStatus?: string;
+      relayReasonCode?: string;
+      retryLater?: boolean | null;
+      banSuspected?: boolean;
       held?: boolean;
       note?: string;
       advisory?: string;
+      forwardedTo?: string;
+      replyArrivesIn?: string;
+      peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
     } = {};
     if (raw) {
       try {
@@ -109,9 +116,17 @@ export async function sendMessageViaHttp(
         // Negotiator lease (Robustness Phase 1): surface withheld/held + the
         // holding note + the commitment-class advisory back to the session.
         delivered: parsed.delivered,
+        relayStatus: parsed.relayStatus,
+        relayReasonCode: parsed.relayReasonCode,
+        retryLater: parsed.retryLater,
+        banSuspected: parsed.banSuspected,
         held: parsed.held,
         note: parsed.note,
         advisory: parsed.advisory,
+        ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
+        ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
+        // §3.2: a send to a dark peer carries the evidence object, additively.
+        ...(parsed.peerDark && typeof parsed.peerDark === 'object' ? { peerDark: parsed.peerDark } : {}),
       };
     }
 
@@ -119,11 +134,20 @@ export async function sendMessageViaHttp(
     const errMsg =
       parsed.error ||
       (raw ? raw.slice(0, 300) : `relay-send returned HTTP ${response.status}`);
+    // A refused send (502 WITH a JSON body) keeps its ids + contract fields so
+    // the caller can track it; a bodyless 502 (proxy/tunnel) carries none and
+    // is therefore reported as unconfirmed by absence, never as rejected.
     return {
       success: false,
-      threadId: params.threadId ?? '',
-      messageId: '',
+      threadId: parsed.threadId ?? params.threadId ?? '',
+      messageId: parsed.messageId ?? '',
       error: errMsg,
+      ...(parsed.relayStatus ? { relayStatus: parsed.relayStatus } : {}),
+      ...(parsed.relayReasonCode ? { relayReasonCode: parsed.relayReasonCode } : {}),
+      ...(parsed.retryLater !== undefined ? { retryLater: parsed.retryLater } : {}),
+      // A forwarded refusal keeps the machine that carried it.
+      ...(parsed.deliveryPath === 'forwarded' ? { deliveryPath: parsed.deliveryPath } : {}),
+      ...(parsed.forwardedTo !== undefined ? { forwardedTo: parsed.forwardedTo } : {}),
     };
   } catch (err) {
     // The agent server itself is unreachable (not running / wrong port).
@@ -258,6 +282,73 @@ export async function requestSecretViaHttp(
       tunnelUrl: parsed.tunnelUrl ?? null,
       expiresIn: parsed.expiresIn,
     };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Start (or re-check) a v2 static-key verified pairing via the agent server's
+ * `/threadline/pairing/:peerFp/start` route (spec §3.2, FD4 v2). Records a PENDING
+ * pairing only; the words are shown to a PIN-authed operator and confirming needs the PIN.
+ */
+export async function startPairingViaHttp(
+  peerFp: string,
+  serverPort: number,
+  agentToken: string,
+): Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }> {
+  try {
+    const response = await fetch(
+      `http://localhost:${serverPort}/threadline/pairing/${encodeURIComponent(peerFp)}/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+        body: JSON.stringify({}),
+      },
+    );
+    const raw = await response.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      /* tolerate a non-JSON body */
+    }
+    if (!response.ok) {
+      return { success: false, status: response.status, error: (parsed.error as string) || `HTTP ${response.status}` };
+    }
+    return { success: true, status: response.status, body: parsed };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Make a pairing invite via the agent server's `POST /threadline/pairing/invites`
+ * (docs/specs/a2a-pairing-invite-link.md). Grants nothing: the other side's operator approves,
+ * then this side's operator finishes (PIN or a lifeline-verified Telegram tap).
+ */
+export async function createPairingInviteViaHttp(
+  opts: { ttlMinutes?: number; bindFp?: string },
+  serverPort: number,
+  agentToken: string,
+): Promise<{ success: boolean; status?: number; body?: Record<string, unknown>; error?: string }> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/pairing/invites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ ...(opts.ttlMinutes !== undefined ? { ttlMinutes: opts.ttlMinutes } : {}), ...(opts.bindFp ? { bindFp: opts.bindFp } : {}) }),
+    });
+    const raw = await response.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      /* tolerate a non-JSON body */
+    }
+    if (!response.ok) {
+      return { success: false, status: response.status, error: (parsed.error as string) || `HTTP ${response.status}` };
+    }
+    return { success: true, status: response.status, body: parsed };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

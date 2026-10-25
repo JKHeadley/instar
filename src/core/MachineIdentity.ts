@@ -14,9 +14,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { KEY_MATERIAL_GITIGNORE_PROJECT } from './keyMaterialPaths.js';
 import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability, MachineHardware } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { assignNickname, isValidNickname } from './NicknameAssigner.js';
+import { IdentityStore, type IdentityMutationActor, type IdentityMutationPath } from './IdentityStore.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -137,6 +139,16 @@ export function verify(data: Buffer | string, signature: string, publicKeyPem: s
 
 // ── Identity Manager ─────────────────────────────────────────────────
 
+/**
+ * An entry is active only when it is marked active AND carries no revocation
+ * stamp. A hand-copied or partially merged registry can hold `revokedAt` with
+ * `status: 'active'`; trusting `status` alone kept a removed identity in the
+ * peer list, and its endpoints pointed back at this machine (instar#2122).
+ */
+export function isRegistryEntryActive(entry: { status?: string; revokedAt?: string | null }): boolean {
+  return entry.status === 'active' && !entry.revokedAt;
+}
+
 export class MachineIdentityManager {
   private instarDir: string;
 
@@ -219,20 +231,205 @@ export class MachineIdentityManager {
       platform: detectPlatform(),
       createdAt: new Date().toISOString(),
       capabilities: detectCapabilities(),
+      keyEpoch: 0,
+      recoveryEpoch: 0,
     };
 
     // Write private keys with restricted permissions
     this.writeSecureFile(this.signingKeyPath, signing.privateKey);
     this.writeSecureFile(this.encryptionKeyPath, encryption.privateKey);
 
-    // Write identity (public data — committed to git)
-    fs.writeFileSync(this.identityPath, JSON.stringify(identity, null, 2));
+    // Write identity through the same serialized authority as every peer-key
+    // mutation. Bootstrap is the only local genesis path; later rotations must
+    // exact-increment through IdentityStore.
+    new IdentityStore({ stateDir: this.instarDir }).apply({
+      identity,
+      scope: 'local',
+      actor: 'self-bootstrap',
+      path: 'bootstrap',
+    });
 
     // Self-register in the machine registry
     const role = options?.role ?? 'awake';
     this.registerMachine(identity, role);
 
     return identity;
+  }
+
+  /** Attach the first recovery trust root to this existing local principal.
+   * Pairing is an explicit operator ceremony, so it is permitted to establish
+   * (but never replace) the root. Replacement remains operator-only. */
+  establishLocalRecoveryKey(material: { recoveryPublicKey: string; recoveryEpoch: number }): MachineIdentity {
+    const current = this.loadIdentity();
+    if (current.recoveryPublicKey) {
+      if (current.recoveryPublicKey !== material.recoveryPublicKey || current.recoveryEpoch !== material.recoveryEpoch) {
+        throw new Error('A different machine recovery root is already established');
+      }
+      return current;
+    }
+    const next: MachineIdentity = {
+      ...current,
+      recoveryPublicKey: material.recoveryPublicKey,
+      recoveryEpoch: material.recoveryEpoch,
+      recoveryAnchorProvenance: 'first-hand',
+    };
+    return new IdentityStore({ stateDir: this.instarDir }).apply({
+      identity: next,
+      scope: 'local',
+      actor: 'pairing-trust',
+      path: 'recovery-establishment',
+      acceptedBy: current.machineId,
+      corroboration: ['local-keychain', 'operator-pairing'],
+    });
+  }
+
+  rotateLocalRecoveryKey(material: { recoveryPublicKey: string; recoveryEpoch: number }): MachineIdentity {
+    const current = this.loadIdentity();
+    if (!current.recoveryPublicKey) throw new Error('Cannot rotate a recovery root before first establishment');
+    if (material.recoveryEpoch !== (current.recoveryEpoch ?? 0) + 1) {
+      throw new Error('Recovery-key rotation must advance recoveryEpoch exactly once');
+    }
+    const next: MachineIdentity = {
+      ...current,
+      recoveryPublicKey: material.recoveryPublicKey,
+      recoveryEpoch: material.recoveryEpoch,
+      recoveryAnchorProvenance: 'first-hand',
+    };
+    return new IdentityStore({ stateDir: this.instarDir }).apply({
+      identity: next,
+      scope: 'local',
+      actor: 'operator',
+      path: 'recovery-rotation',
+      acceptedBy: current.machineId,
+      corroboration: ['dashboard-pin', 'local-keychain'],
+    });
+  }
+
+  /** Replace local signing/encryption keys while preserving the machine
+   * principal and recovery root. Used only after escrow proves continuity. */
+  rotateLocalKeys(reason: string): MachineIdentity {
+    const current = this.loadIdentity();
+    const signing = generateSigningKeyPair();
+    const encryption = generateEncryptionKeyPair();
+    const next: MachineIdentity = {
+      ...current,
+      signingPublicKey: pemToBase64(signing.publicKey),
+      encryptionPublicKey: pemToBase64(encryption.publicKey),
+      keyEpoch: (current.keyEpoch ?? 0) + 1,
+      keysRotatedAt: new Date().toISOString(),
+      keysRotatedReason: reason.slice(0, 160),
+    };
+    return this.commitLocalKeyRotation(next, signing.privateKey, encryption.privateKey, current.machineId);
+  }
+
+  /** Pairing-code-authorized repair for a revoked same-principal join. The
+   * machineId and descriptive metadata stay fixed while all three key roots
+   * advance exactly one generation, so peers can reject tombstoned material
+   * without forcing the operator to invent a new machine. */
+  prepareFreshPairingIdentity(material: { recoveryPublicKey: string; recoveryEpoch: number }): MachineIdentity {
+    const current = this.loadIdentity();
+    if (material.recoveryEpoch !== (current.recoveryEpoch ?? 0) + 1) {
+      throw new Error('Fresh pairing recovery key must advance recoveryEpoch exactly once');
+    }
+    const signing = generateSigningKeyPair();
+    const encryption = generateEncryptionKeyPair();
+    const next: MachineIdentity = {
+      ...current,
+      signingPublicKey: pemToBase64(signing.publicKey),
+      encryptionPublicKey: pemToBase64(encryption.publicKey),
+      keyEpoch: (current.keyEpoch ?? 0) + 1,
+      recoveryPublicKey: material.recoveryPublicKey,
+      recoveryEpoch: material.recoveryEpoch,
+      recoveryAnchorProvenance: 'first-hand',
+      keysRotatedAt: new Date().toISOString(),
+      keysRotatedReason: 'operator pairing: revoked principal fresh-key repair',
+    };
+    return this.commitLocalKeyRotation(next, signing.privateKey, encryption.privateKey, current.machineId, undefined, 'fresh-pair');
+  }
+
+  /** Rebuild `.instar/machine/**` from an escrowed public snapshot after that
+   * entire directory was lost. The durable epoch store supplies stored+1. */
+  recoverLocalIdentity(snapshot: Partial<MachineIdentity>, reason: string): MachineIdentity {
+    if (!snapshot.machineId || !snapshot.name || !snapshot.platform || !snapshot.createdAt || !snapshot.capabilities) {
+      throw new Error('Recovery identity snapshot is incomplete');
+    }
+    const epochs = new IdentityStore({ stateDir: this.instarDir }).getEpoch(snapshot.machineId);
+    const signing = generateSigningKeyPair();
+    const encryption = generateEncryptionKeyPair();
+    const next: MachineIdentity = {
+      machineId: snapshot.machineId,
+      signingPublicKey: pemToBase64(signing.publicKey),
+      encryptionPublicKey: pemToBase64(encryption.publicKey),
+      name: snapshot.name,
+      platform: snapshot.platform,
+      createdAt: snapshot.createdAt,
+      capabilities: snapshot.capabilities,
+      keyEpoch: epochs.keyEpoch + 1,
+      recoveryPublicKey: snapshot.recoveryPublicKey,
+      recoveryEpoch: snapshot.recoveryEpoch ?? epochs.recoveryEpoch,
+      recoveryAnchorProvenance: snapshot.recoveryAnchorProvenance,
+      keysRotatedAt: new Date().toISOString(),
+      keysRotatedReason: reason.slice(0, 160),
+    };
+    const accepted = this.commitLocalKeyRotation(
+      next,
+      signing.privateKey,
+      encryption.privateKey,
+      snapshot.machineId,
+      snapshot.signingPublicKey,
+    );
+    this.ensureSelfRegistered(accepted, 'standby');
+    return accepted;
+  }
+
+  private commitLocalKeyRotation(
+    next: MachineIdentity,
+    signingPrivateKey: string,
+    encryptionPrivateKey: string,
+    acceptedBy: string,
+    previousSigningPublicKey?: string,
+    mode: 'recovery' | 'fresh-pair' = 'recovery',
+  ): MachineIdentity {
+    fs.mkdirSync(this.machineDir, { recursive: true });
+    const transactionId = crypto.randomUUID();
+    const replacements = [
+      { targetPath: this.signingKeyPath, content: signingPrivateKey },
+      { targetPath: this.encryptionKeyPath, content: encryptionPrivateKey },
+    ].map(({ targetPath, content }) => {
+      const stagedPath = `${targetPath}.stage.${transactionId}`;
+      const backupPath = fs.existsSync(targetPath) ? `${targetPath}.backup.${transactionId}` : undefined;
+      this.writeSecureFile(stagedPath, content);
+      if (backupPath) this.writeSecureFile(backupPath, fs.readFileSync(targetPath, 'utf8'));
+      return { targetPath, stagedPath, backupPath };
+    });
+    const store = new IdentityStore({ stateDir: this.instarDir });
+    try {
+      return store.apply({
+        identity: next,
+        scope: 'local',
+        actor: mode === 'fresh-pair' ? 'pairing-trust' : 'self-bootstrap',
+        path: mode === 'fresh-pair' ? 'pair' : 'signing-rotation',
+        acceptedBy,
+        corroboration: mode === 'fresh-pair'
+          ? ['local-keychain', 'operator-pairing', 'fresh-revoked-principal']
+          : ['local-recovery-escrow'],
+        previousSigningPublicKey,
+        privateKeyReplacements: replacements,
+        freshPairingReplacement: mode === 'fresh-pair',
+      });
+    } catch (err) {
+      // Once the authority journal exists these stage files are its durable
+      // recovery inputs. Before that point they are safe scratch and must not
+      // accumulate after a validation refusal.
+      if (!fs.existsSync(store.transactionPath)) {
+        for (const replacement of replacements) {
+          for (const candidate of [replacement.stagedPath, replacement.backupPath].filter(Boolean) as string[]) {
+            if (fs.existsSync(candidate)) SafeFsExecutor.safeUnlinkSync(candidate, { operation: 'MachineIdentity.localKeyStageCleanup' });
+          }
+        }
+      }
+      throw err;
+    }
   }
 
   /**
@@ -425,7 +622,7 @@ export class MachineIdentityManager {
     if (!target) return null;
     const registry = this.loadRegistry();
     for (const [machineId, entry] of Object.entries(registry.machines)) {
-      if (entry.status === 'active' && (entry.nickname || '').trim().toLowerCase() === target) {
+      if (isRegistryEntryActive(entry) && (entry.nickname || '').trim().toLowerCase() === target) {
         return machineId;
       }
     }
@@ -557,23 +754,17 @@ export class MachineIdentityManager {
    * Does NOT handle external secret rotation — caller must do that.
    */
   revokeMachine(machineId: string, revokedBy: string, reason: string): void {
-    const registry = this.loadRegistry();
-    const entry = registry.machines[machineId];
-    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
-    if (entry.status === 'revoked') throw new Error(ERRORS.MACHINE_ALREADY_REVOKED(entry.name));
-
-    entry.status = 'revoked';
-    entry.role = 'standby';
-    entry.revokedAt = new Date().toISOString();
-    entry.revokedBy = revokedBy;
-    entry.revokeReason = reason;
-    this.saveRegistry(registry);
+    new IdentityStore({ stateDir: this.instarDir }).revoke(machineId, revokedBy, reason);
   }
 
   /**
    * Remove this machine's identity and keys (for `instar leave`).
    */
   removeLocalIdentity(): void {
+    if (this.hasIdentity()) {
+      const identity = this.loadIdentity();
+      new IdentityStore({ stateDir: this.instarDir }).retainCurrentSigningKeyHistory(identity.machineId);
+    }
     for (const file of [this.identityPath, this.signingKeyPath, this.encryptionKeyPath]) {
       if (fs.existsSync(file)) {
         SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/core/MachineIdentity.ts:389' });
@@ -588,7 +779,7 @@ export class MachineIdentityManager {
   getAwakeMachine(): { machineId: string; entry: MachineRegistryEntry } | null {
     const registry = this.loadRegistry();
     for (const [machineId, entry] of Object.entries(registry.machines)) {
-      if (entry.status === 'active' && entry.role === 'awake') {
+      if (isRegistryEntryActive(entry) && entry.role === 'awake') {
         return { machineId, entry };
       }
     }
@@ -601,7 +792,7 @@ export class MachineIdentityManager {
   getActiveMachines(): Array<{ machineId: string; entry: MachineRegistryEntry }> {
     const registry = this.loadRegistry();
     return Object.entries(registry.machines)
-      .filter(([, entry]) => entry.status === 'active')
+      .filter(([, entry]) => isRegistryEntryActive(entry))
       .map(([machineId, entry]) => ({ machineId, entry }));
   }
 
@@ -611,7 +802,7 @@ export class MachineIdentityManager {
   isMachineActive(machineId: string): boolean {
     const registry = this.loadRegistry();
     const entry = registry.machines[machineId];
-    return (entry?.status === 'active') || false;
+    return entry ? isRegistryEntryActive(entry) : false;
   }
 
   // ── Remote Machine Identity ─────────────────────────────────────
@@ -620,13 +811,25 @@ export class MachineIdentityManager {
    * Store a remote machine's public identity (received during pairing).
    * This lets us verify their signatures and encrypt data for them.
    */
-  storeRemoteIdentity(identity: MachineIdentity): void {
-    const dir = path.join(this.machinesDir, identity.machineId);
-    fs.mkdirSync(dir, { recursive: true });
-    this.atomicWrite(
-      path.join(dir, IDENTITY_FILE),
-      JSON.stringify(identity, null, 2),
-    );
+  storeRemoteIdentity(
+    identity: MachineIdentity,
+    mutation: {
+      actor?: IdentityMutationActor;
+      path?: IdentityMutationPath;
+      acceptedBy?: string;
+      corroboration?: string[];
+      clearRevocation?: boolean;
+    } = {},
+  ): void {
+    new IdentityStore({ stateDir: this.instarDir }).apply({
+      identity,
+      scope: 'remote',
+      actor: mutation.actor ?? 'pairing-trust',
+      path: mutation.path ?? 'pair',
+      acceptedBy: mutation.acceptedBy,
+      corroboration: mutation.corroboration,
+      clearRevocation: mutation.clearRevocation,
+    });
   }
 
   /**
@@ -714,10 +917,14 @@ const GITIGNORE_ENTRIES = [
   '.instar/machine/encryption-key.pem',
   '.instar/secrets/',
   '.instar/pairing/',
+  '# Agent key material (a2a-single-agent-identity §5.3 — NEVER commit)',
+  ...KEY_MATERIAL_GITIGNORE_PROJECT,
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
   '# Judgment-call provenance rows (machine-local decision context — never commit)',
   'state/judgment-provenance/',
+  '# Subscription pool login locations (machine-local — never commit)',
+  '.instar/subscription-pool.json',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

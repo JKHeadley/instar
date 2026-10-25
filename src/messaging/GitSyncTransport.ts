@@ -23,6 +23,7 @@ import path from 'node:path';
 import type { MessageEnvelope } from './types.js';
 import type { MessageStore } from './MessageStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -325,7 +326,7 @@ export interface HeartbeatAgentExtension {
  * Reads from the machine-wide agent registry.
  */
 export function buildAgentList(): AgentInfo[] {
-  const registryPath = path.join(os.homedir(), '.instar', 'registry.json');
+  const registryPath = agentRegistryPath();
 
   try {
     if (!fs.existsSync(registryPath)) return [];

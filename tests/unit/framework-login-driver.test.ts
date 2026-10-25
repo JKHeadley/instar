@@ -12,7 +12,9 @@ import {
   enrollmentBrowserEnv,
   enrollmentIsolationEnv,
   enrollmentCredentialPath,
+  DEFAULT_ENROLL_LOGIN_COMMANDS,
 } from '../../src/core/FrameworkLoginDriver.js';
+import { EnrollmentWizard } from '../../src/core/EnrollmentWizard.js';
 import { loadCapturedFixture } from '../helpers/loadCapturedFixture.js';
 
 describe('enrollPaneSessionName (shared pane-name source of truth — ws52-code-paste-back / codex #1)', () => {
@@ -264,5 +266,30 @@ describe('enrollmentCredentialPath — mirrors where the isolation env points', 
     // old re-ask loop while looking supported.
     expect(enrollmentCredentialPath('claude-code', '/slot/claude', ENV, '/home/u')).toBeNull();
     expect(enrollmentCredentialPath('gemini-cli', '/slot/g', ENV, '/home/u')).toBeNull();
+  });
+});
+
+describe('DEFAULT_ENROLL_LOGIN_COMMANDS (device-code enrollment command invariant)', () => {
+  // Regression guard for the fleet-wide Codex "Set up" bug: plain `codex login`
+  // opens a localhost-callback browser that cannot complete on a headless follow-me
+  // target, so the wizard scrapes no code and enrollment dies `login-did-not-start`.
+  // The COMMAND must match the flow-KIND, or there is no code to scrape.
+  it('codex-cli enrolls with --device-auth (the exact bug)', () => {
+    expect(DEFAULT_ENROLL_LOGIN_COMMANDS['codex-cli']).toBe('codex login --device-auth');
+  });
+
+  it('every device-code-kind framework carries --device-auth (command matches kind)', () => {
+    // Codex→openai, grok→xai; remoteKind proves those providers resolve to
+    // device-code, so the command MUST supply the flag that makes a code appear.
+    expect(EnrollmentWizard.remoteKind('openai')).toBe('device-code');
+    expect(EnrollmentWizard.remoteKind('xai')).toBe('device-code');
+    for (const fw of ['codex-cli', 'grok-build'] as const) {
+      expect(DEFAULT_ENROLL_LOGIN_COMMANDS[fw]).toContain('--device-auth');
+    }
+  });
+
+  it('url-code-paste frameworks keep their two-code flow (no forced --device-auth)', () => {
+    expect(EnrollmentWizard.remoteKind('anthropic')).toBe('url-code-paste');
+    expect(DEFAULT_ENROLL_LOGIN_COMMANDS['claude-code']).not.toContain('--device-auth');
   });
 });

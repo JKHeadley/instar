@@ -9,6 +9,7 @@
  */
 
 import type { OrgRole, SensitivityTier, FloorAction } from './types.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 
 /** Default ceiling tier per role — the highest tier a role may authorize on its own. */
 const DEFAULT_ROLE_CEILING: Record<OrgRole, SensitivityTier> = {
@@ -53,7 +54,7 @@ export class RolePolicy {
   private readonly floorRoles: ReadonlySet<OrgRole>;
 
   constructor(config: RolePolicyConfig = {}) {
-    this.ceilings = { ...DEFAULT_ROLE_CEILING, ...(config.roleCeilings ?? {}) };
+    this.ceilings = mergeDefaults(DEFAULT_ROLE_CEILING, (config.roleCeilings ?? {}));
     this.floorRoles = new Set(config.floorAuthorizedRoles ?? DEFAULT_FLOOR_AUTHORIZED_ROLES);
   }
 

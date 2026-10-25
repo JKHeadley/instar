@@ -69,6 +69,7 @@ function buildCtx(dir: string, opts: {
   const enrollmentWizard = new EnrollmentWizard({
     store,
     driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 }),
+    authRevisionWitness: () => 'opaque-fresh-baseline',
     ensureReady: () => ({ patched: false, reason: 'already interactive-ready' }),
     oracle: { resolveSlotTenant: async () => ({ email: opts.oracleEmail ?? 'approved@x.com' }) },
   });
@@ -83,6 +84,11 @@ function buildCtx(dir: string, opts: {
     startTime: new Date(),
     meshSelfId: 'this-machine',
     subscriptionPool: pool,
+    subscriptionIdentityOracle: {
+      resolveSlotTenant: async () => opts.credentialPresent
+        ? { email: opts.oracleEmail ?? 'approved@x.com' }
+        : { unavailable: true, reason: 'no credential' },
+    },
     enrollmentWizard,
     // sendInput records the code reached a pane; default returns true (delivered).
     // captureOutput feeds the readiness check — default is a ready paste-code prompt frame.
@@ -197,6 +203,8 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     expect(r.body.code).toBe('login-expired-fresh-ready');
     expect(r.body.error).toMatch(/fresh sign-in is ready/i);
     expect(r.body.freshLogin).toMatchObject({ id: 'fm-1', status: 'pending' });
+    expect(r.body.freshLogin.authRevisionBaseline).toBeUndefined();
+    expect(JSON.stringify(r.body)).not.toContain('opaque-fresh-baseline');
   });
 
   it('TARGET — enabled + pending login + credential present → code typed into pane → 201 validated + account added', async () => {
@@ -257,6 +265,8 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     expect(r.status).toBe(409);
     expect(r.body.code).toBe('login-expired-fresh-ready');
     expect(r.body.freshLogin).toMatchObject({ id: 'fm-1', status: 'pending', reissueCount: 1 });
+    expect(r.body.freshLogin.authRevisionBaseline).toBeUndefined();
+    expect(JSON.stringify(r.body)).not.toContain('opaque-fresh-baseline');
     expect(sendInput).not.toHaveBeenCalled();
   });
 

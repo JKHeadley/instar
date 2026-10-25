@@ -53,22 +53,28 @@ describe('detectJoinedMesh — the discriminator is an on-disk fact', () => {
     if (!v.joined) expect(v.reason).toBe('self-only');
   });
 
-  it('fails toward MINTING when the registry is unreadable — never bricks a real agent', () => {
+  it('fails toward REFUSING when the registry is unreadable — a registry file is pairing evidence (a2a-single-agent-identity §1.1)', () => {
+    // The parent spec let this fall toward minting; a2a-single-agent-identity §1.1 reverses it:
+    // a registry file's EXISTENCE means pairing happened, and minting over it is exactly how a
+    // rebuilt sibling recreated the 2026-10-08 split. The one case this costs (a standalone
+    // agent with a corrupt registry) boots loud and names `instar identity init --standalone`.
     const d = stateDir({ selfId: 'm_self' });
     fs.mkdirSync(path.join(d, 'machines'), { recursive: true });
     fs.writeFileSync(path.join(d, 'machines', 'registry.json'), '{ not json');
     const v = detectJoinedMesh(d);
     expect(v.joined).toBe(false);
-    if (!v.joined) expect(v.reason).toBe('registry-unreadable');
+    expect(v.mintAllowed).toBe(false);
+    if (!v.joined && !v.mintAllowed) expect(v.reason).toBe('unreadable');
   });
 
-  it('refuses to CONCLUDE joined when the self id is missing — cannot tell self from peer', () => {
+  it('refuses to CONCLUDE joined when the self id is missing — and refuses the MINT (rows present = paired)', () => {
     // Without a self id, "the registry lists one machine" is ambiguous: it could be this one.
-    // Guessing "joined" there would deny a standalone agent its identity, so it resolves the
-    // other way and the divergence detector covers the residual risk.
+    // The parent guessed "not joined" and minted; §1.1 refuses: rows are present, so this home
+    // has been through pairing, and a guess here is the split.
     const v = detectJoinedMesh(stateDir({ registryIds: ['m_unknown'] }));
     expect(v.joined).toBe(false);
-    if (!v.joined) expect(v.reason).toBe('no-machine-id');
+    expect(v.mintAllowed).toBe(false);
+    if (!v.joined && !v.mintAllowed) expect(v.reason).toBe('no-machine-id');
   });
 
   it('an empty registry object is not a mesh', () => {
@@ -102,7 +108,8 @@ describe('IdentityManager.getOrCreate — refuses to mint on a joined machine', 
       const e = err as IdentityNotProvisionedError;
       expect(e.code).toBe('identity-not-provisioned');
       expect(e.peerMachineCount).toBe(1);
-      expect(e.message).toMatch(/re-pair/i);
+      // Since a2a-single-agent-identity §1.2 the remedy is ADOPTION (automatic, or the CLI).
+      expect(e.message).toMatch(/adopted from a sibling|instar identity adopt/i);
     }
   });
 

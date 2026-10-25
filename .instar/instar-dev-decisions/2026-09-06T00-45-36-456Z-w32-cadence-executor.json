@@ -1,0 +1,45 @@
+{
+  "ts": "2026-09-06T00:45:36.456Z",
+  "slug": "w32-cadence-executor",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 770,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WindowRunCadenceExecutor.ts",
+      "src/core/WindowRunLivenessAuthority.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 739,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registered window-run cadence delivery control-loop edge has a durable per-target attempt counter, a steady-state bound of three report sends across restart, and settles independently of the test horizon."
+    },
+    "component": "WindowRunCadenceExecutor"
+  },
+  "verdict": "pass"
+}

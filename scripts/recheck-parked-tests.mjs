@@ -49,6 +49,7 @@
  * problem from the other side — a red build for a test somebody parked on purpose.
  */
 
+import { vitestConfigForTestPath } from './lib/vitest-lane.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,7 +111,7 @@ function rotatingSlice(items, size, dayKey) {
 function runOnce(file) {
   const res = spawnSync(
     process.execPath,
-    ['./node_modules/.bin/vitest', 'run', file, '--reporter=basic'],
+    ['./node_modules/.bin/vitest', 'run', '--config', vitestConfigForTestPath(file), file, '--reporter=basic'],
     { cwd: ROOT, encoding: 'utf-8', timeout: 300_000, env: { ...process.env } },
   );
   const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;

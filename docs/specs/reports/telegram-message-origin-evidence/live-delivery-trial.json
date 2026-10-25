@@ -1,0 +1,89 @@
+{
+  "checkedAt": "2026-09-06T23:39:32.982Z",
+  "scope": "Isolated development outbox with real Mac Studio identity, live bot and operator Web K account",
+  "productionActivated": false,
+  "crossMachineTrial": "required",
+  "signedBrowserInboundObserved": true,
+  "phases": [
+    {
+      "phase": "text",
+      "originId": "4961e289-dcf3-4f8a-9dcd-3e2477244568",
+      "state": "accepted",
+      "durableBeforeTransport": true,
+      "retainedAfterWorkerRestart": true,
+      "machineName": "Mac Studio",
+      "harness": {
+        "value": "codex-cli",
+        "status": "observed"
+      },
+      "model": {
+        "value": "gpt-6-astra",
+        "status": "configured"
+      },
+      "displayEnabled": true,
+      "messageIds": [
+        "70944"
+      ]
+    },
+    {
+      "phase": "hidden",
+      "originId": "b97523af-54f1-4e43-b7e4-d7ba080b89d7",
+      "state": "accepted",
+      "durableBeforeTransport": true,
+      "retainedAfterWorkerRestart": true,
+      "machineName": "Mac Studio",
+      "harness": {
+        "value": "codex-cli",
+        "status": "observed"
+      },
+      "model": {
+        "value": "gpt-6-astra",
+        "status": "configured"
+      },
+      "displayEnabled": false,
+      "messageIds": [
+        "70945"
+      ]
+    },
+    {
+      "phase": "attachment",
+      "originId": "f379ccb0-e929-4a85-9e30-d9b77942d68d",
+      "state": "accepted",
+      "durableBeforeTransport": true,
+      "retainedAfterWorkerRestart": true,
+      "machineName": "Mac Studio",
+      "harness": {
+        "value": "codex-cli",
+        "status": "observed"
+      },
+      "model": {
+        "value": "gpt-6-astra",
+        "status": "configured"
+      },
+      "displayEnabled": true,
+      "messageIds": [
+        "70946"
+      ]
+    },
+    {
+      "phase": "browser",
+      "originId": "a10c02ba-ecaa-4fd2-835b-c43b3b4a1660",
+      "state": "accepted",
+      "durableBeforeTransport": true,
+      "retainedAfterWorkerRestart": true,
+      "machineName": "Mac Studio",
+      "harness": {
+        "value": "codex-cli",
+        "status": "observed"
+      },
+      "model": {
+        "value": "gpt-6-astra",
+        "status": "configured"
+      },
+      "displayEnabled": true,
+      "messageIds": [
+        70947
+      ]
+    }
+  ]
+}

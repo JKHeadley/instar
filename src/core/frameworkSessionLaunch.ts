@@ -64,15 +64,18 @@ export function resolveModelForFramework(
     // sensible Codex equivalent (haiku→fast, sonnet→balanced,
     // opus→capable) so an unported call site doesn't immediately
     // crash for a Codex agent.
-    // Light/medium/heavy mapping. NOTE (2026-06-03): OpenAI retired gpt-5.2 from
-    // the ChatGPT-account Codex surface (it now 400s "not supported … with a
-    // ChatGPT account"), so the `fast` tier moved off it onto the cheapest model
-    // still accepted — gpt-5.4-mini (== balanced). Keep this in lockstep with
+    // Light/medium/heavy mapping. NOTE (2026-09-09): OpenAI retired the whole
+    // gpt-5.4/5.5 generation from the ChatGPT-account Codex surface — including
+    // gpt-5.4-mini, which the 2026-06-03 gpt-5.2 retirement had moved `fast`
+    // onto. 2026-09-23: moved to the GPT-6 family — gpt-6-luna (light),
+    // gpt-6-sol (medium), gpt-6-astra (heavy). Keep this in lockstep with
     // src/providers/adapters/openai-codex/models.ts (the single source of the
-    // full rationale + the drift-resilience follow-up).
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.4-mini';   // light tier — gpt-5.2 retired 2026-06-03
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.4-mini'; // medium — cheapest reasoning
-    if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
+    // full rationale + the live-probe record).
+    // 2026-09-23: light → gpt-6-luna, medium → gpt-6-sol (live-probed on codex
+    // CLI 0.156.1; older CLIs refuse both — see models.ts header).
+    if (key === 'fast' || key === 'haiku') return 'gpt-6-luna';      // light tier
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-6-sol';  // medium
+    if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
     return modelOrTier;
   }
   if (framework === 'gemini-cli') {
@@ -133,7 +136,9 @@ export function resolveInteractiveLaunchModel(
 ): string | undefined {
   if (framework === 'codex-cli') {
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
-    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.5';
+    // No configured model → the `balanced` tier, looked up rather than
+    // hardcoded so the default can never drift from the tier map.
+    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -149,6 +154,42 @@ export function resolveInteractiveLaunchModel(
  * registration clobbered everyone else's. Empty when no override is requested
  * (e.g. claude-code launches, or codex agents without threadline configured).
  */
+/**
+ * Suppress codex's blocking startup update prompt.
+ *
+ * Codex 0.147 (and every release since it shipped the prompt) opens an interactive
+ * session with a menu it will not proceed past:
+ *
+ *     Update available! 0.147.0 -> 0.149.0
+ *     > 1. Update now (runs `npm install -g @openai/codex`)
+ *       2. Skip
+ *       3. Skip until next version
+ *     Press enter to continue
+ *
+ * Nothing on instar's side can safely answer it. The focused default RUNS
+ * `npm install -g @openai/codex`, which makes codex exit — so an Enter (from the
+ * inject path, or from any watcher that presses the focused option) KILLS the
+ * session rather than clearing the prompt. That is exactly what happened on
+ * 2026-08-22: readiness misread the menu as a ready prompt, the first user message
+ * was injected with a trailing Enter, and the pane died ~18s after spawn.
+ *
+ * The readiness-probe fix (`claudeReadinessProbe.SELECTOR_GLYPHS`) stops instar
+ * TYPING into the menu, which converts the death into a visible stall. This flag is
+ * the other half: it stops the menu from being drawn at all, so a codex session is
+ * usable rather than merely visibly stuck. Both halves are wanted — the probe fix
+ * covers menus we have not seen, this covers the one we have.
+ *
+ * `check_for_update_on_startup` is codex's own config key (verified against codex
+ * 0.149: a session launched with it boots straight to the input box). Passed via
+ * `-c` rather than written into the SHARED `~/.codex/config.toml`, so instar never
+ * mutates a file every codex agent on the machine reads.
+ *
+ * Interactive launches only. `codex exec` has no TUI to draw a menu in, so the
+ * headless builder is deliberately left alone rather than carrying an unverified
+ * flag.
+ */
+const CODEX_NO_UPDATE_PROMPT_FLAGS = ['-c', 'check_for_update_on_startup=false'];
+
 function codexThreadlineMcpFlags(mcp?: { command: string; args: string[] }): string[] {
   if (!mcp) return [];
   return [
@@ -419,6 +460,7 @@ const codexCliBuilder: Builder = (options) => {
   if (codexSupportsHookTrustBypass(options.binaryPath)) {
     argv.push('--dangerously-bypass-hook-trust');
   }
+  argv.push(...CODEX_NO_UPDATE_PROMPT_FLAGS);
   argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
   // Topic Profile §6 — thinking mode → codex reasoning effort. `max` → xhigh;
   // `off` → low (codex reasoning models have no off level; the profile write
@@ -978,7 +1020,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.5');
+    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',
@@ -1006,6 +1048,15 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
   } else {
     argv.push('-s', 'workspace-write');
+    // Codex's workspace-write policy defaults network access OFF. Instar's
+    // headless workers must be able to reach their own agent API for capability
+    // discovery and grounded verification, so opt in at the invocation (not in
+    // the operator's machine-local ~/.codex/config.toml). This preserves the
+    // filesystem sandbox and wins deterministically over either value in the
+    // user config. CODEX_SANDBOX_NETWORK_DISABLED remains Codex's diagnostic
+    // control: if a host/policy removes this grant, commands inside the worker
+    // see it set rather than having to infer sandbox denial from curl's 000.
+    argv.push('-c', 'sandbox_workspace_write.network_access=true');
   }
   // Run instar's own safety hooks without a persisted-trust requirement (same
   // rationale as the interactive builder; capability-gated for codex <0.133).
@@ -1304,9 +1355,15 @@ export function claudeHeadlessExtraFlags(opts: {
   framework: IntelligenceFramework | string;
   allowedTools?: string[];
   disableProjectMcp?: boolean;
+  /** Feedback executor confinement adapter: the policy `--settings` file, loaded with only the
+   *  `local` setting source so no user or project hooks run in the confined session. */
+  confinementSettingsPath?: string;
 }): string[] {
   if (opts.framework !== 'claude-code') return [];
   const flags: string[] = [];
+  if (opts.confinementSettingsPath) {
+    flags.push('--settings', opts.confinementSettingsPath, '--setting-sources', 'local');
+  }
   if (opts.allowedTools && opts.allowedTools.length > 0) {
     flags.push('--allowedTools', opts.allowedTools.join(','));
   }

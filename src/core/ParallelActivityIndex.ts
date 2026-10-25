@@ -13,6 +13,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { TopicIntentStore, type EstablishedRef } from './TopicIntent.js';
+import { describeActionNote, type ActionNote, type TopicActionNoteStore } from './TopicActionNoteStore.js';
+
+/** Action notes older than this no longer shape a topic's focus/tags (default 24h). */
+export const ACTION_NOTE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** A topic's current parallel-work snapshot, derived from its intent refs. */
 export interface TopicActivity {
@@ -23,8 +27,15 @@ export interface TopicActivity {
   tags: string[];
   /** Count of established refs at/above the 'tentative' tier (how "settled" the topic is). */
   refCount: number;
-  /** Most recent reinforcement across the topic's refs (freshness; null if unknown). */
+  /** Most recent reinforcement across the topic's refs OR action note (freshness; null if unknown). */
   updatedAt: number | null;
+  /**
+   * The latest ACTION-derived note for the topic (CMT-810): what this topic last
+   * claimed it would do, or asked the operator to approve — written automatically
+   * by the action-claim observer, so it is current even while the conversational
+   * intent refs lag. Null when no note is within the window.
+   */
+  lastAction: { kind: ActionNote['kind']; verb: string; excerpt: string; at: number } | null;
 }
 
 /** Generic instar/domain boilerplate that must NOT count as overlap specificity. */
@@ -108,6 +119,14 @@ export interface ParallelActivityIndexOptions {
    * sets this; tests inject controlled refs without fighting projectConfidence.
    */
   getRefs?: (topicId: number, nowMs: number) => EstablishedRef[];
+  /**
+   * Action-derived notes (CMT-810). When provided, the index unions note-bearing
+   * topics into its topic list, lets a note newer than the latest goal/decision
+   * ref become the topic's focus, and folds the note's words into the tag set.
+   */
+  actionNotes?: Pick<TopicActionNoteStore, 'latest' | 'listTopicIds'> | null;
+  /** How long an action note keeps shaping focus/tags (default ACTION_NOTE_WINDOW_MS). */
+  actionNoteWindowMs?: number;
 }
 
 export class ParallelActivityIndex {
@@ -119,33 +138,43 @@ export class ParallelActivityIndex {
     this.intentDir = path.join(opts.stateDir, 'topic-intent');
   }
 
-  /** Enumerate every topic that has an intent file. */
+  /** Enumerate every topic that has an intent file OR an action note. */
   listTopicIds(): number[] {
-    let names: string[] = [];
+    const ids = new Set<number>();
     try {
-      names = fs.readdirSync(this.intentDir);
+      for (const n of fs.readdirSync(this.intentDir)) {
+        const m = n.match(/^(\d+)\.json$/);
+        if (m) ids.add(Number(m[1]));
+      }
     } catch {
-      return []; // no intent dir yet ⇒ no activities
+      /* no intent dir yet — action notes may still name topics */
     }
-    const ids: number[] = [];
-    for (const n of names) {
-      const m = n.match(/^(\d+)\.json$/);
-      if (m) ids.push(Number(m[1]));
+    try {
+      for (const id of this.opts.actionNotes?.listTopicIds() ?? []) ids.add(id);
+    } catch {
+      /* a broken notes dir must not blind the intent-backed topics */
     }
-    return ids.sort((a, b) => a - b);
+    return [...ids].sort((a, b) => a - b);
   }
 
   /** Build the cross-topic snapshot. nowMs lets tests pin time; defaults to live. */
   activities(nowMs: number = Date.now()): Array<TopicActivity & { nickname: string | null; running: boolean }> {
     return this.listTopicIds().map((topicId) => {
       const refs = this.safeRefs(topicId, nowMs);
-      const focus = this.deriveFocus(refs, topicId);
-      const updatedAt = refs.reduce<number | null>((acc, r) => {
+      const note = this.safeLatestNote(topicId, nowMs);
+      const refsUpdatedAt = refs.reduce<number | null>((acc, r) => {
         const ms = tsOf(r);
         return ms !== null && (acc === null || ms > acc) ? ms : acc;
       }, null);
+      const focus = this.deriveFocus(refs, topicId, note);
+      const updatedAt =
+        note && (refsUpdatedAt === null || note.atMs > refsUpdatedAt) ? note.atMs : refsUpdatedAt;
       const tagSet = new Set<string>();
       for (const r of refs) for (const t of extractTags(r.text)) tagSet.add(t);
+      if (note) {
+        tagSet.add(note.verb);
+        for (const t of extractTags(note.excerpt)) tagSet.add(t);
+      }
       const purpose = this.opts.purposeFor?.(topicId);
       if (purpose) for (const t of extractTags(purpose)) tagSet.add(t);
       return {
@@ -154,6 +183,7 @@ export class ParallelActivityIndex {
         tags: [...tagSet],
         refCount: refs.length,
         updatedAt,
+        lastAction: note ? { kind: note.kind, verb: note.verb, excerpt: note.excerpt, at: note.atMs } : null,
         nickname: this.opts.nicknameFor?.(topicId) ?? null,
         running: this.opts.isRunning?.(topicId) ?? false,
       };
@@ -169,15 +199,33 @@ export class ParallelActivityIndex {
     }
   }
 
-  /** Focus = most-recently-reinforced goal text, else the latest decision, else purpose, else null. */
-  private deriveFocus(refs: EstablishedRef[], topicId: number): string | null {
-    const latestByKind = (kind: EstablishedRef['kind']): string | null => {
+  private safeLatestNote(topicId: number, nowMs: number): ActionNote | null {
+    try {
+      return this.opts.actionNotes?.latest(topicId, nowMs, this.opts.actionNoteWindowMs ?? ACTION_NOTE_WINDOW_MS) ?? null;
+    } catch {
+      // @silent-fallback-ok: a broken notes provider must not blind the intent-backed
+      // row (same contract as safeRefs); the row is served without its action note.
+      return null;
+    }
+  }
+
+  /**
+   * Focus = the action note when it is NEWER than every goal/decision ref (what the
+   * topic is doing right now beats what it said it wanted earlier — the 14:34 restart
+   * request must outrank the 14:13 goal), else the most-recently-reinforced goal, else
+   * the latest decision, else purpose, else null.
+   */
+  private deriveFocus(refs: EstablishedRef[], topicId: number, note: ActionNote | null): string | null {
+    const latestOfKind = (kind: EstablishedRef['kind']): EstablishedRef | null => {
       const matching = refs.filter((r) => r.kind === kind && r.text);
       if (!matching.length) return null;
-      const latest = matching.reduce((a, b) => ((tsOf(b) ?? 0) > (tsOf(a) ?? 0) ? b : a));
-      return latest.text;
+      return matching.reduce((a, b) => ((tsOf(b) ?? 0) > (tsOf(a) ?? 0) ? b : a));
     };
-    return latestByKind('goal') ?? latestByKind('decision') ?? this.opts.purposeFor?.(topicId) ?? null;
+    const goal = latestOfKind('goal');
+    const decision = latestOfKind('decision');
+    const newestRefMs = Math.max(goal ? tsOf(goal) ?? 0 : 0, decision ? tsOf(decision) ?? 0 : 0);
+    if (note && note.atMs > newestRefMs) return describeActionNote(note);
+    return goal?.text ?? decision?.text ?? this.opts.purposeFor?.(topicId) ?? null;
   }
 }
 

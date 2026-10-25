@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-21T03:32:08.658Z",
+  "slug": "stuck-input-undelivered-alarm",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 235,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StuckInputSentinel.ts"
+    ],
+    "addedLines": 227,
+    "deletedLines": 8
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Stage B durable-delivery rollout fenced the stuck-input recovery keypress behind a delivery row; rows are prepared for codex-cli only, so the fence became unsatisfiable on every other framework. It stayed invisible because a refusal consumed no rung: the ladder never exhausted, so the escalation and give-up paths that would have raised something were unreachable. Measured 75,001 consecutive refusals, all at attempt 0. The second half — every terminal path ending in one JSONL row and nothing else — is older still and independent of the fence. I did not identify the Stage B PR number, so origin is recorded as latent rather than naming a PR I had not verified."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/stuck-input-undelivered-alarm.test.ts",
+      "howCaught": "Steady-state bound: at most maxAttempts (4) keypresses per stuck prompt text, asserted over 40 consecutive ticks. Settling brake: a refusal now consumes the same budget (consecutiveRefusals), so the previously unbounded refusal loop (75,001 consecutive refusals measured, all at attempt 0) terminates; undeliverableRaised makes the terminal alarm one-shot per wedge; record.exhausted stops all further firing until the prompt text changes."
+    }
+  },
+  "verdict": "pass"
+}

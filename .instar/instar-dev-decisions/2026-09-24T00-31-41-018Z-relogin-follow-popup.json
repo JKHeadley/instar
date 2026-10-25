@@ -1,0 +1,22 @@
+{
+  "ts": "2026-09-24T00:31:41.018Z",
+  "slug": "relogin-follow-popup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 124,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ChromeCdpReloginBrowser.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

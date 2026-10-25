@@ -1,0 +1,28 @@
+{
+  "scope": "native-cli-format-with-loopback-provider",
+  "providerExecutionVerified": false,
+  "state": "passed",
+  "reason": "native-model-canary-two-native-turns-matched",
+  "sampledAt": 1788756319427,
+  "cliVersion": "0.153.4",
+  "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "parserDigest": "949e0790f9c0e1b6ea5f6b68cc56f926c98709e2690cff154b6d81a0ff73bd7c",
+  "twoTurnChecks": [
+    {
+      "expectedModel": "instar-canary-model-a",
+      "nativeId": "01a07a2f-5c48-7d93-9a22-44ad090bd164",
+      "turnId": "01a07a2f-5c50-7f02-934d-2531758eede2",
+      "observedMatch": true
+    },
+    {
+      "expectedModel": "instar-canary-model-b",
+      "nativeId": "01a07a2f-5c48-7d93-9a22-44ad090bd164",
+      "turnId": "01a07a2f-5c89-7dd3-9582-982df1ddc2b1",
+      "observedMatch": true
+    }
+  ],
+  "cleanupVerified": true,
+  "sourceResultSha256": "995d96ca9ac06b25748271406bde6812915e17ffe3518bb076e3b381822b2e0d",
+  "evidenceBoundary": "Actual isolated Codex CLI with loopback provider; original return aggregated six control outcomes and retained no individual control rows. This does not prove actual model-provider execution.",
+  "productionActivated": false
+}

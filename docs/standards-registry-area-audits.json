@@ -2,30 +2,30 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "58f1bf9ba210af353cad2fe8a8fe8f7a7114ae3735829cf82e8b16a5da38d34d",
+      "lastAuditedAt": "2026-10-22T22:52:28.000Z",
+      "auditRef": "docs/audits/standards-building-8020-triage-2026-10-22.json",
+      "auditSha256": "386b674267623eda02e813efe46df4a201ba38ef9a1d3cb7d7f47c8c2d40daae",
+      "areaSha256": "be51d9c29b466d195839613ef45e7d0edbdf6f7e3599658f9f8606c83c699890",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "0a3d627010b43d88a23fca5e00ccc016a643e6a14c814e87c8ad10660124d099",
+      "lastAuditedAt": "2026-09-07T03:58:13.637Z",
+      "auditRef": "docs/audits/telegram-message-origin-interaction-family.json",
+      "auditSha256": "0e3f891eb8f329d68cc50202f825579ef718c2087197ecc9d3cea04ae898d735",
+      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "c06cffa5e7be20cf9364b6faa51d99503e375a763ab71fb7b7ba1998c04a4f22",
+      "lastAuditedAt": "2026-09-22T15:45:22.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22.json",
+      "auditSha256": "0c89b560d696465f0a2275dec6904a32e421d92d25740db67224c172729a14d8",
+      "areaSha256": "4691ffb2f80681d3d29078cde9752576aa58a6a7034c80e9e2435a0b5b81149c",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "dc1b536bd334124bf15a12f30339ed1a54c2d44c6797a7dd5210b8e2373e934b",
+      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
+      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
+      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
+      "areaSha256": "9b36c471fe967bcd2b07c03c875343b91cfeaba836abcaffb63b5f0a9e7a7e9b",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

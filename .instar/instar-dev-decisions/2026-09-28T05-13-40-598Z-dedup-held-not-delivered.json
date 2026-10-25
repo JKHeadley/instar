@@ -1,0 +1,29 @@
+{
+  "ts": "2026-09-28T05:13:40.598Z",
+  "slug": "dedup-held-not-delivered",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 170,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/OutboundContentDedup.ts",
+      "src/messaging/OutboundDedupStore.ts",
+      "src/messaging/telegram-origin/OriginBrowserExecutor.ts",
+      "src/messaging/telegram-origin/OriginContentDedup.ts",
+      "src/messaging/telegram-origin/OriginSendPolicy.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 55
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-29T19:47:36.789Z",
+  "slug": "mesh-endpoint-degradation-retention",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 78,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PeerEndpointRecorder.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

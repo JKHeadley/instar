@@ -1,3 +1,5 @@
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
+import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
  *
@@ -19,6 +21,7 @@ import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js'
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
 import { SHARED_INFRA_FLAGS } from './shared/FeatureFlags.js';
+import { emergencyStopUserMessage } from './shared/emergencyStopUserMessage.js';
 import { MessageLogger, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
 import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
@@ -42,14 +45,31 @@ import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/Autonom
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionContext.js';
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
+import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
+import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
+import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
+const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
+/** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
+export interface PollingPairingHandler {
+  onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void>;
+  onCallback(c: { callbackQueryId: string; data: string; fromUserId: number; chatId?: string; verified: boolean }): Promise<boolean>;
+}
 
 export const TELEGRAM_STALL_CONFIRM_PROMPT_ID = 'telegram-stall-confirm-v1';
 
 export interface TelegramConfig {
+  /** Presentation only. These settings never disable mandatory origin recording. */
+  messageOrigin?: import('./telegram-origin/types.js').OriginConfig;
   /** Bot token from @BotFather */
   token: string;
   /** Forum chat ID (the supergroup where topics live) */
   chatId: string;
+  /**
+   * Optional second forum chat for issue topics ("<agent> Bugs"). Its topics get
+   * internal ids in a disjoint range (see telegramTopicSpace.ts). Absent = off.
+   */
+  issuesChatId?: string;
   /** Polling interval in ms */
   pollIntervalMs?: number;
   /** Authorized Telegram user IDs (only these users' messages are processed) */
@@ -156,6 +176,15 @@ export interface TelegramConfig {
     mode?: 'single-topic' | 'per-item';
   };
   /**
+   * Which attention items reach the user's "🔔 Attention" topic
+   * (src/messaging/attentionHubPolicy.ts). 'signal' — the DEFAULT — posts only
+   * items that need the user (urgent, agent-raised, or from a source that asks
+   * for a decision or tap); routine automated status stays in the attention
+   * store and `logs/attention-hub-held.jsonl`. 'all' restores the old
+   * post-everything behavior.
+   */
+  attentionHubFilter?: 'signal' | 'all';
+  /**
    * Hot-reloadable accessor for the durable Attention hub topic id created at
    * boot (StateManager key 'agent-attention-topic'). server.ts injects
    * `() => state.get('agent-attention-topic') ?? null`; when absent or null,
@@ -163,12 +192,28 @@ export interface TelegramConfig {
    * topic.
    */
   getAttentionHubTopicId?: () => number | null | undefined;
+  /**
+   * The agent-wide system topic record (src/messaging/SystemTopicAdoption.ts).
+   * `canCreate` is false on a machine that does not hold the serving lease: it
+   * then uses the ids it adopted from the holder and NEVER mints a system topic
+   * of its own (a standby that could not save its id minted a new topic on every
+   * boot). Absent ⇒ single-machine behavior: create when needed.
+   */
+  systemTopics?: {
+    canCreate?: () => boolean;
+    getAgentHealthTopicId?: () => number | null | undefined;
+    recordAgentHealthTopicId?: (topicId: number) => void;
+    /** The holder's lazily created hub is recorded too, so standbys can adopt it. */
+    recordAttentionHubTopicId?: (topicId: number) => void;
+  };
 }
 
 /** Tracks a pending text reply for a Prompt Gate relay (no-button prompts) */
 interface PendingPromptReply {
   prompt: DetectedPrompt;
   relayMessageId: number;
+  /** Chat the relay prompt was sent to (the issues group for an issues topic). */
+  relayChatId?: number | string;
   createdAt: number;
   reminderSent?: boolean;
 }
@@ -263,6 +308,10 @@ interface LogEntry {
   forwarded?: boolean;
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
+  /** Joined at read time from the ASP classification authority. */
+  authorship?: MessageAuthorship;
+  /** The signing agent's id — present only when `authorship` is `agent-verified`. */
+  authorshipAgentId?: string | null;
 }
 
 /**
@@ -332,6 +381,12 @@ export interface AttentionItem {
    * otherwise identical. Absent ⇒ today's notifying behavior.
    */
   silent?: boolean;
+  /** The item asks the user to decide or act, so it always reaches the
+   *  Attention topic (attentionHubPolicy). Absent ⇒ the source rules decide. */
+  needsUser?: boolean;
+  /** True when the hub filter withheld this item's Telegram post; follow-up
+   *  lines about it (append/resolve notes) are withheld too. */
+  hubHeld?: boolean;
   /** WS4.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): the machine this item
    *  belongs to. Stamped at read time in GET /attention (the store stays
    *  machine-agnostic); absent on a single-machine install. */
@@ -501,6 +556,16 @@ export class TelegramAdapter implements MessagingAdapter {
    *  (voice/photo/document) cannot carry the [a2a:…] marker and bypass the hook.
    *  See installAgentMessageHook for the production binding. */
   private agentMessageHook?: AgentMessageHook;
+  /**
+   * Pairing by invite on the DIRECT-POLLING path (no lifeline). Updates this adapter reads with
+   * getUpdates come from Telegram itself, so a forwarded invite or a pairing tap read here is as
+   * authentic as one the lifeline forwards with its secret. When set (routes.ts), both go to the
+   * same handler, which still checks owner, chat and the one-time token (spec §6.1 r7). Before
+   * this, a polling agent (PP, 2026-10-21) could only say "use the dashboard".
+   */
+  private pairingHandler: PollingPairingHandler | null = null;
+  setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
+  hasPairingHandler(): boolean { return this.pairingHandler !== null; }
   /** Optional coherence-journal seam (COHERENCE-JOURNAL-SPEC §3.3). The adapter
    *  holds no StateManager, so the emergency-stop path's stopAutonomousTopic call
    *  cannot reach the wired journal on its own. server.ts injects this seam so the
@@ -536,6 +601,9 @@ export class TelegramAdapter implements MessagingAdapter {
   // ── Single-alerts-topic routing (2026-07-09 directive) ─────────────────────
   /** Resolved routing mode ('single-topic' unless config opts into legacy). */
   private attentionRoutingMode!: 'single-topic' | 'per-item';
+  private attentionHubFilterMode!: AttentionHubFilterMode;
+  /** Last hub post time per item id — an upserted item is reposted at most every 6 h. */
+  private attentionHubLastPost: Map<string, { at: number; priority: AttentionItem['priority'] }> = new Map();
   /** Self-healed hub topic id (used when no injected boot-hub id resolves). */
   private attentionHubTopicId: number | null = null;
   /** In-flight single hub creation guard (no double-create race). */
@@ -651,8 +719,25 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   willRelay(): boolean {
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
-    return !hasUsableBotToken && this.outboundRelay !== null;
+    if (this.outboundRelay === null) return false;
+    if (!hasUsableBotToken) return true;
+    // a2a-single-agent-identity §4.1 — a token-holding machine that does NOT
+    // hold the serving lease forwards too. Only a DEFINITE forward (a healthy
+    // peer holds the lease) skips the local tone gate; a still-settling lease
+    // keeps the local gate (the holder gates again — a rare double gate beats
+    // an ungated local send if the window settles to self).
+    return this.holderForwardPolicy?.decide() === 'forward';
   }
+  /**
+   * a2a-single-agent-identity §4.1 (ACT-058). When wired by the server, the
+   * send decision becomes "no usable bot token OR (session pool enabled AND
+   * this machine does not hold the serving lease)". `decide()` is the cheap
+   * synchronous read of the lease: 'forward' (a healthy peer holds it),
+   * 'local' (we hold it, the pool is off, or the switch is off) or 'settling'
+   * (no answer yet — the relay path runs the bounded settling window and may
+   * throw OriginForwardSettledLocallyError, after which the send is local).
+   */
+  public holderForwardPolicy: { decide(): 'forward' | 'local' | 'settling' } | null = null;
 
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
@@ -776,6 +861,39 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * Pairing by invite (docs/specs/a2a-pairing-invite-link.md §6.1): a prompt in a topic with one
+   * row of buttons. callback_data is `pi:<24 hex>` (27 bytes, under Telegram's 64). The tap is
+   * judged by PairingInviteTelegram in the callback route, never here.
+   */
+  async sendPairingPrompt(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
+    try {
+      const result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] },
+      }) as { message_id: number };
+      return result.message_id;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: returns null, and the caller (PairingInviteTelegram.send) throws on null
+      console.warn(`[telegram] sendPairingPrompt failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** The small toast answering a button tap. Best-effort. */
+  async answerCallback(callbackQueryId: string | number, text: string): Promise<void> {
+    await this.apiCall('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: text.length > 60 }).catch(() => {
+      // @silent-fallback-ok — the toast is best-effort; the decision it reports was already recorded
+    });
+  }
+
+  /** The forum chat this agent lives in. */
+  getChatId(): string {
+    return this.config.chatId;
+  }
+
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
@@ -816,6 +934,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private sharedCommandRouter: CommandRouter | null = null;
   private sharedAuthGate: AuthGate | null = null;
   private eventBus: MessagingEventBus | null = null;
+  private readonly authorshipJoin: AspAuthorshipJoin;
 
   /** Get the event bus for external subscribers (Phase 1e). Returns null if flag is off. */
   getEventBus(): MessagingEventBus | null {
@@ -831,6 +950,11 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error(
         `Invalid Telegram chatId "${config.chatId}". Chat IDs must be numeric (e.g., -1001234567890). ` +
         `Update messaging.config.chatId in your instar.config.json with a valid numeric ID.`,
+      );
+    }
+    if (config.issuesChatId && !/^-?\d+$/.test(String(config.issuesChatId))) {
+      throw new Error(
+        `Invalid Telegram issuesChatId "${config.issuesChatId}". Chat IDs must be numeric (e.g., -1001234567890).`,
       );
     }
     // HARDENED (v1.3.270 boot-crash incident): when the secrets merge fails, the
@@ -854,6 +978,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // collision that makes poll()'s cross-token detection fire continuously). The PRIMARY
     // bot passes no subDir → botStateDir === stateDir → paths are byte-for-byte unchanged.
     this.botStateDir = opts?.subDir ? path.join(stateDir, opts.subDir) : stateDir;
+    this.authorshipJoin = new AspAuthorshipJoin(path.join(this.botStateDir, 'asp-classifications.jsonl'));
     if (opts?.subDir) {
       fs.mkdirSync(this.botStateDir, { recursive: true });
     }
@@ -880,6 +1005,7 @@ export class TelegramAdapter implements MessagingAdapter {
       dedupWindowMs: Number.isFinite(alc.dedupWindowMs) && (alc.dedupWindowMs as number) > 0 ? (alc.dedupWindowMs as number) : 30 * 60 * 1000,
     };
     this.attentionRoutingMode = config.attentionRouting?.mode === 'per-item' ? 'per-item' : 'single-topic';
+    this.attentionHubFilterMode = resolveHubFilterMode(config.attentionHubFilter);
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
@@ -1331,6 +1457,13 @@ export class TelegramAdapter implements MessagingAdapter {
       kindMetadata?: Record<string, unknown>;
       /** Conversational agent reply vs server-generated outbound traffic. */
       provenance?: Exclude<MessageProvenance, 'user'>;
+      /** a2a-single-agent-identity §4.1 — the caller SKIPPED its local outbound
+       *  gate because `willRelay()` said the lease holder would gate instead.
+       *  If the send would now proceed LOCALLY (the lease settled here, or the
+       *  decision changed between the two reads), this method throws
+       *  OriginForwardSettledLocallyError instead of sending ungated; the
+       *  caller gates and re-sends. A message is never gated zero times. */
+      gateSkippedForRelay?: boolean;
       /** 'html' = the caller already produced ESCAPED Telegram HTML (e.g. the
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
@@ -1377,7 +1510,14 @@ export class TelegramAdapter implements MessagingAdapter {
     // usable token is a non-empty string; anything else (placeholder/null/empty) means
     // "no usable token" → relay through the Telegram-owning router (bug #7).
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
-    if (!hasUsableBotToken && this.outboundRelay) {
+    // a2a-single-agent-identity §4.1 — a token-holding machine that does not hold the
+    // serving lease ALSO relays (to the lease holder). 'settling' goes down the relay path
+    // too: the relay runs the bounded lease-settling window and, if it settles to THIS
+    // machine, throws OriginForwardSettledLocallyError so the send proceeds locally below.
+    const forwardRoute = hasUsableBotToken && this.outboundRelay ? (this.holderForwardPolicy?.decide() ?? 'local') : 'local';
+    if (hasUsableBotToken && options?.gateSkippedForRelay && forwardRoute === 'local') throw new OriginForwardSettledLocallyError();
+    let relayed: SendResult | null | undefined;
+    if ((!hasUsableBotToken || forwardRoute !== 'local') && this.outboundRelay) {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
@@ -1399,14 +1539,22 @@ export class TelegramAdapter implements MessagingAdapter {
       // reach — seven of eight calls deleted — and this one stays, deliberately and named, rather than
       // deleted to make a checklist come out even.
       assertTelegramPayloadVisible('sendMessage', { text });
-      const relayed = await this.outboundRelay(topicId, text, {
-        silent: options?.silent,
-        kindMetadata: options?.kindMetadata,
-        provenance: options?.provenance ?? 'automation',
-      });
-      if (!relayed) {
+      try {
+        relayed = await this.outboundRelay(topicId, text, {
+          silent: options?.silent,
+          kindMetadata: options?.kindMetadata,
+          provenance: options?.provenance ?? 'automation',
+        });
+      } catch (err) {
+        if (!(hasUsableBotToken && err instanceof OriginForwardSettledLocallyError)) throw err;
+        if (options?.gateSkippedForRelay) throw err; // the caller skipped its gate: it gates, then re-sends
+        relayed = undefined; // the lease settled HERE: send locally below
+      }
+      if (relayed === null) {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
       }
+    }
+    if (relayed) {
       result = { message_id: relayed.messageId };
     } else if (options?.formatMode === 'html') {
       // Caller-authored, already-escaped Telegram HTML: one deterministic send.
@@ -1437,7 +1585,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
@@ -1466,7 +1614,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }
@@ -1477,6 +1625,10 @@ export class TelegramAdapter implements MessagingAdapter {
       topicId,
       text,
       fromUser: false,
+      // This adapter created the outbound row itself. Preserve an explicit
+      // negative so provenance-sensitive authorities do not have to treat an
+      // omitted legacy field as proof that content was not forwarded.
+      forwarded: false,
       timestamp: new Date().toISOString(),
       sessionName: this.topicToSession.get(topicId) ?? null,
       provenance: options?.provenance ?? 'automation',
@@ -1573,9 +1725,10 @@ export class TelegramAdapter implements MessagingAdapter {
   async createForumTopic(
     name: string,
     iconColor?: number,
-    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean },
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean; space?: 'main' | 'issues' },
   ): Promise<{ topicId: number; name: string }> {
-    if (this.notAForum) {
+    const inIssues = opts?.space === 'issues' && !!this.config.issuesChatId;
+    if (this.notAForum && !inIssues) {
       throw new Error('Chat is not a forum — topic creation skipped');
     }
 
@@ -1610,7 +1763,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     const params: Record<string, unknown> = {
-      chat_id: this.config.chatId,
+      chat_id: inIssues ? this.config.issuesChatId : this.config.chatId,
       name,
     };
     if (iconColor !== undefined) {
@@ -1622,15 +1775,17 @@ export class TelegramAdapter implements MessagingAdapter {
         message_thread_id: number;
         name: string;
       };
+      // Issues-group topics live in their own id range (telegramTopicSpace.ts).
+      const topicId = inIssues ? ISSUES_TOPIC_OFFSET + result.message_thread_id : result.message_thread_id;
 
-      this.topicToName.set(result.message_thread_id, name);
+      this.topicToName.set(topicId, name);
       this.saveRegistry();
 
-      console.log(`[telegram] Created forum topic: "${name}" (ID: ${result.message_thread_id})`);
-      return { topicId: result.message_thread_id, name: result.name };
+      console.log(`[telegram] Created forum topic: "${name}" (ID: ${topicId}${inIssues ? ', issues group' : ''})`);
+      return { topicId, name: result.name };
     } catch (err) {
       const errStr = String(err);
-      if (errStr.includes('not a forum') || errStr.includes('FORUM_REQUIRED')) {
+      if (!inIssues && (errStr.includes('not a forum') || errStr.includes('FORUM_REQUIRED'))) {
         this.notAForum = true;
         if (!this.notAForumWarned) {
           this.notAForumWarned = true;
@@ -1674,10 +1829,12 @@ export class TelegramAdapter implements MessagingAdapter {
   async findOrCreateForumTopic(
     name: string,
     iconColor?: number,
-    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean },
+    opts?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean; space?: 'main' | 'issues' },
   ): Promise<{ topicId: number; name: string; reused: boolean }> {
     const normalizedName = name.toLowerCase().trim();
+    const wantIssues = opts?.space === 'issues' && !!this.config.issuesChatId;
     for (const [topicId, existingName] of this.topicToName) {
+      if (isIssuesTopicId(topicId) !== wantIssues) continue; // a name only matches inside its own group
       if (existingName.toLowerCase().trim() === normalizedName) {
         console.log(`[telegram] Reusing existing topic ${topicId} for "${name}"`);
         return { topicId, name: existingName, reused: true };
@@ -1685,6 +1842,19 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     const result = await this.createForumTopic(name, iconColor, opts);
     return { ...result, reused: false };
+  }
+
+  /**
+   * Find a main-group topic id by exact (case-insensitive) name, WITHOUT creating one.
+   * Returns undefined when none is known.
+   */
+  findTopicIdByName(name: string): number | undefined {
+    const normalizedName = name.toLowerCase().trim();
+    for (const [topicId, existingName] of this.topicToName) {
+      if (isIssuesTopicId(topicId)) continue;
+      if (existingName.toLowerCase().trim() === normalizedName) return topicId;
+    }
+    return undefined;
   }
 
   /**
@@ -2005,14 +2175,18 @@ export class TelegramAdapter implements MessagingAdapter {
         console.log(`[telegram] Edited dashboard message ${existingMessageId} in-place`);
         return { edited: true, messageId: existingMessageId, warnings }; // Success — no new message, no unread badge
       } catch (err) {
-        // Edit failed — message was deleted, or content unchanged. Fall through to send new.
-        const errStr = String(err);
-        if (errStr.includes('message is not modified')) {
+        const rejection = takeTelegramEditRejection(err, { method: 'editMessageText',
+          accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '',
+          params: { chat_id: this.config.chatId, message_id: existingMessageId } });
+        if (rejection === 'not-modified') {
           console.log(`[telegram] Dashboard message unchanged — skipping`);
           return { edited: true, messageId: existingMessageId, warnings };
         }
-        console.log(`[telegram] Dashboard message ${existingMessageId} edit failed, sending new: ${errStr}`);
-        warnings.push(`existing pinned message edit failed: ${errStr}`);
+        // A hold or uncertain edit cannot authorize another operation. Retain
+        // the original error and saved ID; only concrete deletion permits send.
+        if (rejection !== 'message-missing') throw err;
+        console.log(`[telegram] Dashboard message ${existingMessageId} no longer exists; replacing it`);
+        warnings.push('existing pinned message no longer exists');
       }
     }
 
@@ -2048,7 +2222,7 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.error(`[telegram] Failed to broadcast dashboard URL: ${detail}`);
-      throw new Error(`Telegram dashboard broadcast failed: ${detail}`);
+      throw err;
     }
   }
 
@@ -2538,6 +2712,11 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveTopicName(topicId: number): Promise<string | null> {
     if (this.notAForum) return null;
+    // The probe is a real message. A machine that would not send locally (it
+    // forwards to the lease holder) cannot probe: a direct send is held and its
+    // "." replayed into the topic later. Fall back to the stored/default name.
+    if (typeof this.config.token === 'string' && this.config.token.length > 0 && this.outboundRelay
+      && (this.holderForwardPolicy?.decide() ?? 'local') !== 'local') return null;
     try {
       // Send a temp message replying to the topic creation service message
       const result = await this.apiCall('sendMessage', {
@@ -2545,15 +2724,16 @@ export class TelegramAdapter implements MessagingAdapter {
         text: '.', // minimal probe message — deleted immediately after
         message_thread_id: topicId,
         reply_to_message_id: topicId,
-      }) as { message_id: number; reply_to_message?: { forum_topic_created?: { name: string } } };
+      }) as { message_id: number; chat?: { id: number }; reply_to_message?: { forum_topic_created?: { name: string } } };
 
       // Extract topic name from the reply target
       const name = result.reply_to_message?.forum_topic_created?.name;
 
-      // Delete the probe message immediately
+      // Delete the probe message immediately (in the chat it landed in — the issues
+      // group for an issues topic)
       try {
         await this.apiCall('deleteMessage', {
-          chat_id: this.config.chatId,
+          chat_id: result.chat?.id ?? this.config.chatId,
           message_id: result.message_id,
         });
       } catch {
@@ -3731,7 +3911,7 @@ export class TelegramAdapter implements MessagingAdapter {
       } catch { /* skip malformed */ }
     }
 
-    return matches;
+    return this.authorshipJoin.join(matches);
   }
 
   /**
@@ -3760,7 +3940,7 @@ export class TelegramAdapter implements MessagingAdapter {
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
-      if (cached) return cached.slice(-limit);
+      if (cached) return this.authorshipJoin.join(cached.slice(-limit));
       // First miss: batch-seed every LIVE topic (topicToSession) in ONE file
       // pass — the live-tail streamer enumerates exactly that set, so without
       // this its first tick would trigger one full-file scan PER topic.
@@ -3768,17 +3948,17 @@ export class TelegramAdapter implements MessagingAdapter {
         this.seedTailCacheFromLog();
         this.tailCacheSeeded = true;
         const justSeeded = this.topicTailCache.get(topicId);
-        if (justSeeded) return justSeeded.slice(-limit);
+        if (justSeeded) return this.authorshipJoin.join(justSeeded.slice(-limit));
       }
       // Not a live topic (e.g. respawn history for an unregistered topic) —
       // per-topic scan once, then cache it.
       const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT);
       this.topicTailCache.set(topicId, seeded);
-      return seeded.slice(-limit);
+      return this.authorshipJoin.join(seeded.slice(-limit));
     }
     // Oversized request (no production caller) — direct scan, leave the cache's
     // "most recent TAIL_CACHE_LIMIT entries" invariant untouched.
-    return this.scanLogForTopic(topicId, limit);
+    return this.authorshipJoin.join(this.scanLogForTopic(topicId, limit));
   }
 
   /**
@@ -4022,7 +4202,7 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>): Promise<AttentionItem> {
+  async createAttentionItem(item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>, routing?: { hubOnly: true }): Promise<AttentionItem> {
     // Check for existing
     if (this.attentionItems.has(item.id)) {
       return this.attentionItems.get(item.id)!;
@@ -4049,7 +4229,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
     // entirely, so a stale-session/peer-unreachable feature can never flood
     // topic-after-topic. Only items that explicitly opt in are affected.
-    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+    if (!routing?.hubOnly && this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
@@ -4063,7 +4243,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // below is the opt-out. Deliberately NOT registered in the per-item topic
     // maps (many items share the hub — see the coalesce-path comment below);
     // hub items are managed via /attention (PATCH / dashboard), not /ack.
-    if (this.attentionRoutingMode === 'single-topic') {
+    if (routing?.hubOnly || this.attentionRoutingMode === 'single-topic') {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
@@ -4173,6 +4353,32 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Create an attention item, or REFRESH + REOPEN the same durable id when it already exists
+   * (updated body/title, status back to OPEN, re-posted to the Attention hub). `createAttentionItem`
+   * deliberately dedupes on id and returns the existing row unchanged — right for retries inside one
+   * episode, wrong for an aggregating item whose body must grow (a second cell escalates on the same
+   * machine) or for a later episode after the operator resolved the first. Hub-routed only: a
+   * per-item topic is never re-spawned by an upsert.
+   */
+  async upsertAttentionItem(
+    item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>,
+  ): Promise<AttentionItem> {
+    const existing = this.attentionItems.get(item.id);
+    if (!existing) return this.createAttentionItem(item, { hubOnly: true });
+    const unchanged = existing.status === 'OPEN' && existing.title === item.title && existing.description === item.description;
+    // A reopened item is a new episode: the repost throttle must not hide it.
+    if (existing.status !== 'OPEN') this.attentionHubLastPost.delete(item.id);
+    Object.assign(existing, item, { status: 'OPEN' as const, updatedAt: new Date().toISOString() });
+    this.saveAttentionItems();
+    if (!unchanged) {
+      const hubTopicId = await this.routeToAttentionHub(existing);
+      existing.coalesced = true;
+      if (hubTopicId !== null) existing.topicId = hubTopicId;
+    }
+    return existing;
+  }
+
+  /**
    * Create the first Agent-Health item for an entity, or refresh and visibly
    * reopen the same durable item when the condition returns after recovery.
    *
@@ -4207,7 +4413,16 @@ export class TelegramAdapter implements MessagingAdapter {
       this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
       '<i>This condition returned after recovery; the existing item was reopened.</i>',
     ].join('\n');
-    await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    try {
+      await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    } catch (err) {
+      // A duplicate-content hold means this exact notice was already accepted
+      // in this topic within the dedup window: the operator has it. Treating
+      // that as a failure made callers retry the same notice every 30 s for
+      // as long as the window lasted (sagemind log, 2026-10-04). Other holds
+      // are still failures the caller retries.
+      if (!(err instanceof TelegramOriginHoldError && err.reason === 'duplicate-content')) throw err;
+    }
     existing.coalesced = true;
     existing.topicId = topicId;
     this.saveAttentionItems();
@@ -4299,10 +4514,27 @@ export class TelegramAdapter implements MessagingAdapter {
     return topicId;
   }
 
+  /** False on a machine that does not hold the serving lease (see config.systemTopics). */
+  private canCreateSystemTopics(): boolean {
+    try { return this.config.systemTopics?.canCreate?.() ?? true; }
+    catch { return false; } // @silent-fallback-ok — an unreadable lease never mints a topic
+  }
+
   /** Lazily create (once) and return the reused "🩺 Agent Health" lane topic id. */
   private async ensureAgentHealthLaneTopic(): Promise<number | null> {
     if (this.agentHealthTopicId !== null) return this.agentHealthTopicId;
     if (this.agentHealthPending) return this.agentHealthPending;
+    // The agent-wide record first (persisted on the holder, adopted on a standby).
+    let recorded: number | null | undefined;
+    try { recorded = this.config.systemTopics?.getAgentHealthTopicId?.(); } catch { recorded = null; } // @silent-fallback-ok — an unreadable record falls through to find-or-create below
+    if (typeof recorded === 'number' && Number.isSafeInteger(recorded) && recorded > 1) {
+      this.agentHealthTopicId = recorded;
+      return recorded;
+    }
+    if (!this.canCreateSystemTopics()) {
+      console.log('[telegram] agent-health lane: no adopted lane topic yet and this machine does not hold the lease — not creating one');
+      return null;
+    }
 
     this.agentHealthPending = (async (): Promise<number | null> => {
       const name = this.agentHealthLaneCfg.topicName;
@@ -4311,6 +4543,9 @@ export class TelegramAdapter implements MessagingAdapter {
       // refuse (it exists to ABSORB the flood).
       const topic = await this.findOrCreateForumTopic(name, TOPIC_STYLE.SYSTEM.color, { origin: 'system', bounded: true, label: 'agent-health-lane' });
       this.agentHealthTopicId = topic.topicId;
+      // Persist so a restart reuses it and other machines can adopt it.
+      try { this.config.systemTopics?.recordAgentHealthTopicId?.(topic.topicId); }
+      catch (err) { console.warn(`[telegram] agent-health lane: could not record topic ${topic.topicId}: ${err}`); }
       if (!topic.reused) {
         const intro = [
           `This is your <b>calm agent-health lane</b>. When I notice something about my OWN sessions — one that looks stuck, a peer I can't reach — the routine heads-up lands HERE instead of spawning a new topic each time.`,
@@ -4451,13 +4686,35 @@ export class TelegramAdapter implements MessagingAdapter {
    * unavailable (the item is still recorded in the store).
    */
   private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
+    const decision = admitItemToHub(item, this.attentionHubFilterMode);
+    if (!decision.admit) {
+      item.hubHeld = true;
+      this.saveAttentionItems();
+      recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+        kind: 'item', reason: decision.reason, id: item.id, category: item.category, priority: item.priority, title: item.title,
+      });
+      return null;
+    }
+    if (item.hubHeld) { item.hubHeld = false; this.saveAttentionItems(); }
+    // An upserted item whose body keeps changing (timestamps, counts) would
+    // otherwise repost on every refresh: at most once per 6 h unless it got
+    // more urgent.
+    const last = this.attentionHubLastPost.get(item.id);
+    const nowMs = Date.now();
+    if (last && nowMs - last.at < 6 * 60 * 60 * 1000 && attentionPriorityRank(item.priority) <= attentionPriorityRank(last.priority)) {
+      recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+        kind: 'item', reason: 'repost-throttled', id: item.id, category: item.category, priority: item.priority, title: item.title,
+      });
+      return item.topicId ?? null;
+    }
+    const markPosted = () => this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+    // Easy to read on a phone: what it is, then what to do. Category, priority
+    // labels and internal source names live in the store / dashboard.
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
     const detail = [
       `${emoji} <b>${this.escapeHtml(item.title)}</b>`,
-      `${this.escapeHtml(item.category)} | Priority: ${item.priority}`,
       ``,
       ...attentionBodyBlocks(item.summary, item.description, 500).map((b) => this.escapeHtml(b)),
-      item.sourceContext ? `\n<i>Source: ${this.escapeHtml(item.sourceContext)}</i>` : '',
     ].filter(Boolean).join('\n');
 
     let injected: number | null | undefined;
@@ -4471,6 +4728,7 @@ export class TelegramAdapter implements MessagingAdapter {
     if (typeof injected === 'number' && injected > 0) {
       try {
         await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true });
+        markPosted();
         return injected;
       } catch (err) {
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
@@ -4497,8 +4755,21 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true })
+      .then(markPosted)
+      .catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
+  }
+
+  /**
+   * Whether the Attention hub filter lets this item's posts reach the user.
+   * Recomputed from the item (not a stored flag) so items created before the
+   * filter existed stop posting follow-up lines too. Unknown id ⇒ true.
+   */
+  attentionHubAdmits(itemId: string): boolean {
+    const item = this.attentionItems.get(itemId);
+    if (!item) return true;
+    return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }
 
   /** Lazily find-or-create (once) and return the reused Attention hub topic id. */
@@ -4507,6 +4778,12 @@ export class TelegramAdapter implements MessagingAdapter {
     if (this.attentionHubPending) return this.attentionHubPending;
 
     this.attentionHubPending = (async (): Promise<number | null> => {
+      // Only the lease holder may mint the hub; a standby waits for the id it
+      // adopts from the holder (routeToAttentionHub tries that injected id first).
+      if (!this.canCreateSystemTopics()) {
+        console.log('[telegram] attention hub: no adopted hub id yet and this machine does not hold the lease — not creating one');
+        return null;
+      }
       // 'system' + bounded: the single hub topic, create-once-then-reuse by
       // design — an exempt overflow surface the flood ceiling must never
       // refuse. Same name + label as the boot-created hub
@@ -4515,6 +4792,8 @@ export class TelegramAdapter implements MessagingAdapter {
       const topic = await this.findOrCreateForumTopic(`${TOPIC_STYLE.ALERT.emoji} Attention`, TOPIC_STYLE.ALERT.color, { origin: 'system', bounded: true, label: 'boot-attention' });
       this.attentionHubTopicId = topic.topicId;
       this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
+      try { this.config.systemTopics?.recordAttentionHubTopicId?.(topic.topicId); }
+      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); }
       return this.attentionHubTopicId;
     })();
 
@@ -4826,6 +5105,16 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process a single Telegram update (text, voice, photo, or callback query).
    */
+  /** True when an issues group ("<agent> Bugs") is configured for issue topics. */
+  hasIssuesGroup(): boolean {
+    return !!this.config.issuesChatId;
+  }
+
+  /** This adapter's Telegram chats, for the issues-group topic mapping. */
+  private topicSpace(): { mainChatId: string; issuesChatId?: string } {
+    return { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId };
+  }
+
   private async processUpdate(update: TelegramUpdate): Promise<void> {
     // Handle callback queries from inline keyboard buttons (Prompt Gate)
     if (update.callback_query) {
@@ -4835,6 +5124,30 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const msg = update.message;
     if (!msg) return;
+    // Issues-group messages get their internal topic id before anything reads it.
+    normalizeInboundThread(msg, this.topicSpace());
+
+    // A pairing invite carries a one-time secret: it never reaches a session, the message log
+    // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). With a pairing handler
+    // wired, an invite read here (getUpdates) is authentic and goes to it; without one, the owner
+    // is pointed at the dashboard. Unauthorized senders get nothing.
+    if (typeof msg.text === 'string' && msg.text.includes(INVITE_PREFIX)) {
+      if (this.isAuthorized(msg.from.id) && this.pairingHandler) {
+        await this.pairingHandler.onForwardedInvite({
+          text: msg.text, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, fromUserId: msg.from.id,
+          chatId: String(msg.chat.id), verified: true, // read from Telegram's own getUpdates
+        }).catch((err: unknown) => {
+          // Never leave a forwarded invite unanswered (Echo's review): fall back to the dashboard line.
+          console.warn(`[telegram] pairing invite handler failed: ${err instanceof Error ? err.message : String(err)}`);
+          void this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK).catch(() => {});
+        });
+        return;
+      }
+      if (this.isAuthorized(msg.from.id)) {
+        void this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK).catch(() => {});
+      }
+      return;
+    }
 
     // Auth gating — handle messages from unauthorized/unknown users
     if (!this.isAuthorized(msg.from.id)) {
@@ -4982,8 +5295,22 @@ export class TelegramAdapter implements MessagingAdapter {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {
             console.log(`[sentinel] Emergency stop for session "${sessionName}" in topic ${numericTopicId}`);
+            // W26 lane 1 — the conversational stop path must not swallow a
+            // failed kill either. Default false: no kill has happened yet, and
+            // an unset outcome must never read as success (a missing kill
+            // handler means nothing was killed).
+            let killed = false;
             if (this.onSentinelKillSession) {
-              this.onSentinelKillSession(sessionName);
+              killed = this.onSentinelKillSession(sessionName) === true;
+            }
+            if (!killed) {
+              // The record below is preserved regardless, but a kill that did
+              // not land is logged as a failure, never as silence that reads
+              // like success.
+              console.error(
+                `[sentinel] KILL FAILED for session "${sessionName}" in topic ${numericTopicId} — ` +
+                'the session was NOT killed. Stop custody and the run record still proceed.',
+              );
             }
             // Durable Inbound Message Queue §3.6: the stop reaches custody —
             // queued rows for this topic settle terminal (operator-stop),
@@ -5002,9 +5329,9 @@ export class TelegramAdapter implements MessagingAdapter {
             if (classification.reason) {
               console.log(`[sentinel] Stop reason: ${classification.reason}`);
             }
-            await this.sendToTopic(numericTopicId,
-              `Session terminated.\n\nSend a new message to start a fresh session.`
-            ).catch(() => {});
+            // The text a PERSON reads is keyed on the kill OUTCOME — it used to
+            // say "Session terminated." for a kill that failed (W26 lane 1).
+            await this.sendToTopic(numericTopicId, emergencyStopUserMessage(sessionName, killed)).catch(() => {});
           } else if (classification.category === 'pause' && sessionName) {
             console.log(`[sentinel] Pause for session "${sessionName}" in topic ${numericTopicId}`);
             if (this.onSentinelPauseSession) {
@@ -5326,7 +5653,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const text = this.formatPromptMessage(prompt);
 
-    let result: { message_id: number };
+    let result: { message_id: number; chat?: { id: number } };
 
     if (prompt.options && prompt.options.length > 0) {
       // Add numbered options to the message body so full text is visible.
@@ -5358,7 +5685,7 @@ export class TelegramAdapter implements MessagingAdapter {
         reply_markup: { inline_keyboard: [keyboard] },
         parse_mode: 'HTML',
         _formatMode: 'html',
-      }) as { message_id: number };
+      }) as { message_id: number; chat?: { id: number } };
     } else {
       // No options — text reply expected (clarifying question)
       result = await this.apiCall('sendMessage', {
@@ -5367,13 +5694,14 @@ export class TelegramAdapter implements MessagingAdapter {
         text,
         parse_mode: 'HTML',
         _formatMode: 'html',
-      }) as { message_id: number };
+      }) as { message_id: number; chat?: { id: number } };
     }
 
     // Track pending reply for text-input prompts
     this.pendingPromptReply.set(topicId, {
       prompt,
       relayMessageId: result.message_id,
+      relayChatId: result.chat?.id,
       createdAt: Date.now(),
     });
 
@@ -5424,10 +5752,30 @@ export class TelegramAdapter implements MessagingAdapter {
    * Handle a Telegram callback query from an inline keyboard button press.
    */
   private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    normalizeInboundThread(query.message as { chat?: { id?: number }; message_thread_id?: number } | undefined, this.topicSpace());
     if (!query.data) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
         text: 'Invalid button data',
+      }).catch(() => {});
+      return;
+    }
+
+    // ── Pairing-invite buttons. With a pairing handler wired, a tap read here (getUpdates) is
+    // authentic and goes to it, which checks owner, chat and token (a2a-pairing-invite-link §6.1
+    // r7); without one, the owner is pointed at the dashboard.
+    if (query.data.startsWith('pi:')) {
+      if (this.pairingHandler) {
+        await this.pairingHandler.onCallback({
+          callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
+          chatId: query.message?.chat?.id !== undefined ? String(query.message.chat.id) : undefined,
+          verified: true, // read from Telegram's own getUpdates
+        }).catch((err: unknown) => console.warn(`[telegram] pairing callback handler failed: ${err instanceof Error ? err.message : String(err)}`));
+        return;
+      }
+      await this.apiCall('answerCallbackQuery', {
+        callback_query_id: query.id,
+        text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
       }).catch(() => {});
       return;
     }
@@ -5523,7 +5871,9 @@ export class TelegramAdapter implements MessagingAdapter {
       if (query.message) {
         await this.editMessageWithRetry(
           query.message.message_id,
-          '\u274C Session expired before response received'
+          '\u274C Session expired before response received',
+          3,
+          query.message.chat?.id,
         );
       }
       return;
@@ -5549,7 +5899,9 @@ export class TelegramAdapter implements MessagingAdapter {
     if (query.message) {
       await this.editMessageWithRetry(
         query.message.message_id,
-        `\u2705 Responded: ${context.key}`
+        `\u2705 Responded: ${context.key}`,
+        3,
+        query.message.chat?.id,
       );
     }
 
@@ -5643,7 +5995,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Update the relay message to show it was answered
     this.editMessageWithRetry(
       pending.relayMessageId,
-      `\u2705 Answered: "${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''}"`
+      `\u2705 Answered: "${sanitized.slice(0, 100)}${sanitized.length > 100 ? '...' : ''}"`,
+      3,
+      pending.relayChatId,
     ).catch(() => {});
 
     console.log(`[prompt-gate] Text reply intercepted: session="${pending.prompt.sessionName}" text="${sanitized.slice(0, 50)}"`);
@@ -5664,6 +6018,8 @@ export class TelegramAdapter implements MessagingAdapter {
         });
         return;
       } catch (err) {
+        // The original outbox owns every retry after origin admission.
+        if (err instanceof TelegramOriginHoldError) throw err;
         if (attempt < retries - 1) {
           await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
         } else {
@@ -5687,7 +6043,9 @@ export class TelegramAdapter implements MessagingAdapter {
         // Update the relay message
         this.editMessageWithRetry(
           pending.relayMessageId,
-          '\u274C Session ended before response received'
+          '\u274C Session ended before response received',
+          3,
+          pending.relayChatId,
         ).catch(() => {});
       }
     }
@@ -5712,7 +6070,9 @@ export class TelegramAdapter implements MessagingAdapter {
         this.pendingPromptReply.delete(topicId);
         this.editMessageWithRetry(
           pending.relayMessageId,
-          '\u23f0 Prompt expired — no response received. Check the dashboard to respond manually.'
+          '\u23f0 Prompt expired — no response received. Check the dashboard to respond manually.',
+          3,
+          pending.relayChatId,
         ).catch(() => {});
 
         // Release relay lease
@@ -5768,6 +6128,10 @@ export class TelegramAdapter implements MessagingAdapter {
     // PR2: run the formatter on sendMessage / editMessageText when a non-legacy
     // mode is configured. Legacy-passthrough (default) preserves the caller's
     // parse_mode byte-for-byte. See docs/specs/TELEGRAM-MARKDOWN-RENDERER-SPEC.md.
+    // Issues-group topics carry internal ids in a disjoint range; route them to the
+    // issues chat with the real thread id (idempotent; no-op for main-group topics).
+    // docs/specs/telegram-issues-group.md
+    params = toWireParams(params, this.topicSpace());
     const sendParams = applyTelegramFormatter(
       method,
       params,
@@ -5786,22 +6150,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Long polling uses 30s timeout in params — give extra headroom
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    let response: Response;
-    try {
-      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
-      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
-      response = await telegramFetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sendParams.outgoingParams),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    // Origin review/storage/capacity must finish before this request's clock starts.
+    const response = await telegramFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sendParams.outgoingParams),
+      networkTimeoutMs: timeoutMs,
+    });
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after
@@ -5816,6 +6171,7 @@ export class TelegramAdapter implements MessagingAdapter {
           await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
           return this.apiCall(method, params, retryCount + 1);
         } catch (retryErr) {
+          if (retryErr instanceof TelegramOriginHoldError) throw retryErr;
           if (retryErr instanceof Error && retryErr.message.includes('after')) throw retryErr;
           throw new Error(`Telegram API rate limited ${safeUrl} (429)`);
         }
@@ -5844,7 +6200,13 @@ export class TelegramAdapter implements MessagingAdapter {
         delete retryParams.parse_mode;
         return this.apiCall(method, retryParams, retryCount);
       }
-      throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${text}`);
+      const error = new Error(`Telegram API error ${safeUrl} (${response.status}): ${text}`);
+      let body: unknown;
+      try { body = JSON.parse(text); }
+      catch { throw error; } // Malformed platform responses grant no replacement evidence.
+      throw recordTelegramEditRejection(error, response.status, body, {
+        method, accountId: typeof this.config.token === 'string' ? this.config.token.split(':')[0] : '', params: sendParams.outgoingParams,
+      });
     }
 
     const data = await response.json() as { ok: boolean; result: unknown };

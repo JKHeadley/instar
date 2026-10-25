@@ -33,6 +33,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -49,6 +50,105 @@ export function classifyDfSourceLocal(source: string): boolean {
 }
 
 /**
+ * Linux fstype allowlist — filesystems that are HOST-LOCAL *and* support the
+ * exclusive-create + atomic-rename semantics the holder lock is built on.
+ *
+ * WHY THIS EXISTS (2026-08-25, first non-CI Linux host — WSL2/Ubuntu 26.04).
+ * `classifyDfSourceLocal` reads the `df -P` *device-source* column, which only
+ * recognises a filesystem as local when it looks like a block device
+ * (`/dev/...`). Several perfectly ordinary local Linux filesystems do not name
+ * a device there, so they were classified as "possibly a shared network
+ * volume" and the two host semaphores degraded silently in OPPOSITE
+ * directions: the test-runner lane FAILS OPEN (admits the run unslotted — the
+ * bound reports itself present while guarding nothing), and the spawn lane
+ * FAILS CLOSED (stops reclaiming dead holders, so the cap slowly clogs until
+ * it blocks legitimate work). Neither announces itself.
+ *
+ * Misclassified before this fix, all commonplace:
+ *   tmpfs      — RAM-backed; Ubuntu's default /tmp. Cannot be shared by
+ *                construction.
+ *   overlay    — every Docker container's root filesystem. This one means any
+ *                containerised instar was in the misjudged set.
+ *   devtmpfs   — the kernel's own /dev.
+ *   zfs        — ZFS names a POOL (`rpool/ROOT/x`), never a device. Note the
+ *                pool-name SHAPE is deliberately NOT pattern-matched: FUSE
+ *                cloud mounts (gcsfuse/s3fs bucket names) share that shape and
+ *                are genuinely remote. Only the fstype settles it.
+ *
+ * DELIBERATELY ABSENT (these are correct rejections, not oversights):
+ *   9p / drvfs — WSL's translation layer onto the Windows drive. Same physical
+ *                machine, but exclusive-create and rename semantics are not
+ *                dependable across it, so it must not hold the lock.
+ *   virtiofs   — host-shared directory; may be mounted by sibling guests.
+ *   nfs/cifs/smb/fuse.sshfs/ceph/glusterfs/lustre/afs — network by definition.
+ *
+ * Anything not on this list keeps the pre-existing fail-closed behaviour.
+ */
+const LINUX_HOST_LOCAL_FSTYPES: ReadonlySet<string> = new Set([
+  // on-disk local filesystems
+  'ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'zfs', 'f2fs', 'jfs', 'reiserfs',
+  'bcachefs', 'nilfs2', 'squashfs', 'erofs', 'vfat', 'exfat', 'msdos',
+  // in-memory local filesystems
+  'tmpfs', 'ramfs', 'devtmpfs',
+  // container/union local filesystems
+  'overlay', 'overlayfs', 'aufs',
+]);
+
+/** Injectable reader for `/proc/self/mounts` (tests override; null when absent). */
+export type ProcMountsReader = () => string | null;
+
+/** Injectable `df -P <path>` runner (tests override; throws exactly as df failing does). */
+export type DfRunner = (p: string, timeoutMs: number) => string;
+
+const defaultProcMountsReader: ProcMountsReader = () => {
+  try {
+    return fs.readFileSync('/proc/self/mounts', 'utf-8');
+  } catch {
+    // @silent-fallback-ok: no procfs (non-Linux, or a jail without it) — the
+    // caller falls back to the df-source classifier, which is fail-closed.
+    return null;
+  }
+};
+
+/**
+ * Pure: given `/proc/self/mounts` content and an absolute path, return the
+ * fstype of the LONGEST mount-point prefix of that path, or null when nothing
+ * matches. Longest-prefix is required — `/` matches everything, so a shorter
+ * match would report the root filesystem for a path on a nested mount.
+ */
+export function fstypeForPath(procMounts: string, absPath: string): string | null {
+  let bestPoint = '';
+  let bestType: string | null = null;
+  for (const line of procMounts.split('\n')) {
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 3) continue;
+    // /proc/self/mounts octal-escapes spaces and friends in the mount point.
+    const point = parts[1].replace(/\\(\d{3})/g, (_m, o: string) => String.fromCharCode(parseInt(o, 8)));
+    const type = parts[2];
+    if (!point || !type) continue;
+    const isPrefix = absPath === point || point === '/' || absPath.startsWith(point.endsWith('/') ? point : `${point}/`);
+    if (!isPrefix) continue;
+    if (point.length >= bestPoint.length) {
+      bestPoint = point;
+      bestType = type;
+    }
+  }
+  return bestType;
+}
+
+/**
+ * Pure: classify a path as host-local from `/proc/self/mounts` content.
+ * Returns null when the fstype is unknown to the allowlist — the caller then
+ * falls back to the df-source classifier rather than inventing a verdict.
+ */
+export function classifyLinuxMountLocal(procMounts: string, absPath: string): boolean | null {
+  const type = fstypeForPath(procMounts, absPath);
+  if (!type) return null;
+  return LINUX_HOST_LOCAL_FSTYPES.has(type) ? true : null;
+}
+
+/**
  * Detailed df probe. Distinguishes a POSITIVE not-local classification from a
  * FAILED probe ('unknown') — the distinction the 2026-07-01 §1.2 root-cause
  * hinges on: the spawn lane memoizes a boolean, so a df TIMEOUT under load is
@@ -58,13 +158,16 @@ export function classifyDfSourceLocal(source: string): boolean {
 export function probeDfHostLocalDetailed(
   p: string,
   timeoutMs = 3000,
-): { status: 'local' | 'not-local' | 'unknown'; source?: string } {
+  deps: { platform?: NodeJS.Platform; readProcMounts?: ProcMountsReader; runDf?: DfRunner } = {},
+): { status: 'local' | 'not-local' | 'unknown'; source?: string; fstype?: string } {
   let out: string;
   try {
     // lint-allow-sync-spawn: a bounded (3s) one-shot host-FS classification,
     // run once per cold start and cached by callers on SUCCESS only — never on
     // the hot acquire path.
-    out = execFileSync('df', ['-P', p], { timeout: timeoutMs, encoding: 'utf-8' });
+    out = deps.runDf
+      ? deps.runDf(p, timeoutMs)
+      : execFileSync('df', ['-P', p], { timeout: timeoutMs, encoding: 'utf-8' });
   } catch {
     // @silent-fallback-ok: df unavailable/timed out ⇒ we could not PROBE — the
     // caller must treat this as unknown (reclaim disabled this pass), never
@@ -74,7 +177,25 @@ export function probeDfHostLocalDetailed(
   const lines = out.trim().split('\n');
   if (lines.length < 2) return { status: 'unknown' }; // unparseable → unknown
   const source = lines[1]?.trim().split(/\s+/)[0] ?? '';
-  return { status: classifyDfSourceLocal(source) ? 'local' : 'not-local', source };
+  if (classifyDfSourceLocal(source)) return { status: 'local', source };
+
+  // Linux second opinion. The df-source column cannot see tmpfs / overlay /
+  // devtmpfs / zfs as local because none of them names a block device, so the
+  // fstype is consulted before settling on 'not-local'. This can only ever
+  // UPGRADE not-local → local for an explicitly allowlisted fstype; it never
+  // downgrades a positive, and an unknown fstype leaves the fail-closed
+  // verdict exactly as it was.
+  const platform = deps.platform ?? process.platform;
+  if (platform === 'linux') {
+    const procMounts = (deps.readProcMounts ?? defaultProcMountsReader)();
+    if (procMounts) {
+      const abs = path.resolve(p);
+      if (classifyLinuxMountLocal(procMounts, abs) === true) {
+        return { status: 'local', source, fstype: fstypeForPath(procMounts, abs) ?? undefined };
+      }
+    }
+  }
+  return { status: 'not-local', source };
 }
 
 /**

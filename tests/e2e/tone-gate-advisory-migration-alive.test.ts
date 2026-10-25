@@ -23,16 +23,21 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { resolveToneGateOperatorConfig } from '../../src/core/MessagingToneGate.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
+import { getDecisionQualityRecorder } from '../../src/core/decisionQualityTypes.js';
+import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQualityRecorderImpl.js';
+import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
 
 function createMockSessionManager() {
   return {
@@ -58,6 +63,60 @@ function createStubTelegram() {
       return { ok: true };
     },
   };
+}
+
+function runInstalledReplyScript(opts: {
+  scriptPath: string;
+  agentHome: string;
+  decisionRef: string;
+}): Promise<{ status: number | null; body: any; stdout: string; stderr: string }> {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tone-advisory-client-e2e-bin-'));
+  const bodyPath = path.join(binDir, 'body.json');
+  const curlStub = path.join(binDir, 'curl');
+  fs.writeFileSync(curlStub, `#!/bin/sh
+prev=''
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then
+    printf '%s' "$arg" > '${bodyPath}'
+  fi
+  prev="$arg"
+done
+printf '%s\\n%s\\n' '{"ok":true}' '200'
+`);
+  fs.chmodSync(curlStub, 0o755);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [
+      opts.scriptPath,
+      '--tone-complied', 'B2_FILE_PATH',
+      '--tone-decision-ref', opts.decisionRef,
+      '9005',
+      'The revised answer avoids the raw path.',
+    ], {
+      cwd: opts.agentHome,
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        INSTAR_SENDER_CLASS: 'script',
+        INSTAR_AUTH_TOKEN: '',
+        INSTAR_PORT: '',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', c => { stdout += c.toString(); });
+    child.stderr.on('data', c => { stderr += c.toString(); });
+    child.on('error', reject);
+    child.on('close', status => {
+      const body = JSON.parse(fs.readFileSync(bodyPath, 'utf-8'));
+      SafeFsExecutor.safeRmSync(binDir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/e2e/tone-gate-advisory-migration-alive.test.ts:client-bin',
+      });
+      resolve({ status, body, stdout, stderr });
+    });
+  });
 }
 
 describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => {
@@ -94,6 +153,9 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
       sessionManager: createMockSessionManager() as any,
       state: new StateManager(stateDir),
       telegram: createStubTelegram() as any,
+      messagingToneGate: new MessagingToneGate({
+        evaluate: async () => JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' }),
+      } as never, { advisoryMigration: true }),
     });
     await server.start();
     app = server.getApp();
@@ -161,6 +223,78 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
     expect(decisionQualityRecordingLive()).toBe(true);
   });
 
+  it('a production machine-prefixed reaction lands and GET /decision-quality reports a settled grade', async () => {
+    const correlationId = 'd-m_03b30f-00000000-0000-4000-8000-000000000004';
+    const recorder = getDecisionQualityRecorder() as DecisionQualityRecorderImpl | null;
+    expect(recorder).not.toBeNull();
+    recorder!.recordSettlement({
+      correlationId,
+      mintedBy: 'router',
+      enrolled: true,
+      provenance: {
+        decisionPoint: DP_MESSAGING_TONE_GATE,
+        context: { channel: 'telegram' },
+        optionsPresented: ['pass', 'advisory'],
+        promptId: 'tone-gate-sigv1',
+      },
+      settledAttempt: { model: 'gpt-5.4-mini', framework: 'codex-cli', usage: { inputTokens: 5, outputTokens: 2 } },
+      verdictClass: 'advisory',
+      mintedAtMs: Date.now() - 100,
+      settledAtMs: Date.now(),
+    } as never);
+
+    const sentBefore = sent.length;
+    const reaction = await request(app)
+      .post('/telegram/reply/9004')
+      .set({ Authorization: `Bearer ${AUTH}` })
+      .send({
+        text: 'I revised the message to remove the unnecessary internal path.',
+        metadata: {
+          toneAdvisoryComplied: 'B2_FILE_PATH',
+          toneAdvisoryDecisionRef: correlationId,
+        },
+      });
+    expect(reaction.status).toBe(200);
+    expect(sent).toHaveLength(sentBefore + 1);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const read = await request(app).get('/decision-quality').set({ Authorization: `Bearer ${AUTH}` });
+    expect(read.status).toBe(200);
+    const point = read.body.points.find((row: { decisionPoint: string }) => row.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(point).toMatchObject({
+      settledGrades: 1,
+      gradeDistribution: { right: 1, wrong: 0, unknown: 0, selfReportOnly: true },
+      byRule: { 'tone-agent-complied-v1': { right: 1, wrong: 0, unknown: 0 } },
+    });
+    // Keep the pre-existing credential-wall assertions independent of this send.
+    sent.length = 0;
+  });
+
+  it('the production update path installs a reply client that preserves machine-prefixed decisionRefs', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({ port: 49999, projectName: 'e2e', agentName: 'E2E' }),
+    );
+    const migration = new PostUpdateMigrator({
+      projectDir: tmpDir,
+      stateDir,
+      port: 49999,
+      hasTelegram: true,
+      projectName: 'e2e',
+    }).migrate();
+    expect(migration.errors.filter(e => e.includes('telegram-reply'))).toEqual([]);
+
+    const decisionRef = 'd-m_03b30f-00000000-0000-4000-8000-000000000005';
+    const result = await runInstalledReplyScript({
+      scriptPath: path.join(stateDir, 'scripts', 'telegram-reply.sh'),
+      agentHome: tmpDir,
+      decisionRef,
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.body.metadata.toneAdvisoryDecisionRef).toBe(decisionRef);
+  });
+
   it('REJECTS an impostor annotator claiming the rule (self-report cannot be forged by another component)', () => {
     const res = annotateDecisionOutcome({
       correlationId: 'd-e2e-00000000-0000-4000-8000-000000000003',
@@ -200,6 +334,25 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
 
     expect(res.status).toBe(422);
     expect(res.body.blockedBy).toBe('credential-exposure-guard');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('the wall refuses the MODERN key formats on the real boot (sk-proj-, github_pat_)', async () => {
+    // Generated in the issued shape at test time — nothing committed.
+    const c = await import('node:crypto');
+    const keys = [
+      `sk-proj-${c.randomBytes(90).toString('base64url')}`,
+      `github_pat_${c.randomBytes(11).toString('hex')}_${c.randomBytes(30).toString('hex').slice(0, 59)}`,
+    ];
+    for (const [i, key] of keys.entries()) {
+      const res = await request(app)
+        .post(`/telegram/reply/${9010 + i}`)
+        .set({ Authorization: `Bearer ${AUTH}` })
+        .send({ text: `the key is ${key}` });
+      expect(res.status).toBe(422);
+      expect(res.body.blockedBy).toBe('credential-exposure-guard');
+      expect(JSON.stringify(res.body)).not.toContain(key.slice(0, 16));
+    }
     expect(sent).toHaveLength(0);
   });
 

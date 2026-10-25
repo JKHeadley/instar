@@ -8,12 +8,37 @@
  */
 
 import { EventEmitter } from 'node:events';
+import crypto from 'node:crypto';
 import type { AgentFingerprint, RelayClientConfig, MessageEnvelope } from '../relay/types.js';
 import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
+import { AUTO_ACK_TYPE, encodePlaintextPayload, decodePlaintextPayload } from '../autoAck.js';
 import { RelayClient } from './RelayClient.js';
+import { derivePairingIdV2, edPublicToX25519, isX25519BoundToIdentity } from '../ThreadlineCrypto.js';
+import { buildPairVerifyReceipt, PAIR_VERIFY_OP } from '../PairVerifyReceipt.js';
+import type { PeerPresenceRead } from '../peerDark.js';
 import { DEFAULT_RELAY_URL } from '../constants.js';
+import {
+  clampRelayReason, mapRelayReason, RELAY_BANNED_CODE,
+  type RelayVerdict, type RelayVerdictStatus,
+} from '../relayVerdict.js';
+
+/** Verdict dispatcher bounds (docs/specs/a2a-honest-delivery-outcomes.md §1, Frontloaded #5/#10). */
+const VERDICT_CACHE_TTL_MS = 60_000;
+const VERDICT_CACHE_MAX = 2000;
+const VERDICT_WAITERS_MAX = 1000;
+const SEND_SEQ_MAX = 2000;
+
+interface VerdictWaiter { resolve: (v: RelayVerdict | null) => void; timer: NodeJS.Timeout }
+
+export interface RelayVerdictCounters {
+  cacheEvictions: number;
+  waiterOverCap: number;
+  disconnectResolved: number;
+  unmappedReason: number;
+  unconfirmedSettled: number;
+}
 
 /**
  * Cooldown for the offline-triggered re-discovery in resolveAgent (§C of
@@ -48,6 +73,8 @@ export interface KnownAgent {
    * that never came through discovery).
    */
   online?: boolean;
+  /** When this row's presence (`online`) was last written (ms epoch) — the freshness stamp `peerConnectedNow` applies. */
+  presenceAt?: number;
 }
 
 export interface ReceivedMessage {
@@ -58,6 +85,10 @@ export interface ReceivedMessage {
   content: PlaintextMessage;
   timestamp: string;
   envelope: MessageEnvelope;
+  /** The identity key the envelope's signature was verified against (decrypted messages only).
+   *  The refuse-downgrade mark (spec threadline-standalone-pairing D6, step 6) is recorded only
+   *  when this is the peer's PINNED key. */
+  senderIdentityPub?: Buffer;
 }
 
 /**
@@ -80,13 +111,62 @@ interface ClientAffinityEntry {
   lastUsedAt: number;
 }
 
+/**
+ * A send that had to go encrypted to a peer's PINNED key (spec threadline-standalone-pairing
+ * D9) and could not be built or handed to the relay. Nothing went on the wire, and no
+ * plaintext or relay-key fallback is attempted. The relay-send route answers it 502.
+ */
+export class EncryptToPinnedSendError extends Error {
+  readonly code = 'encrypted-send-to-pinned-failed';
+  /** Why: the pin was unavailable (lookup-failed / resolver-error / malformed-pinned-key) or the encrypted send itself failed. */
+  readonly reason: EncryptToFailureKind | 'send-failed';
+  constructor(recipientId: string, cause: unknown, reason: EncryptToFailureKind | 'send-failed' = 'send-failed') {
+    super(`Encrypted send to pinned peer ${recipientId.slice(0, 12)} failed; not sent (no plaintext fallback): ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'EncryptToPinnedSendError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Returned by an encrypt-to resolver when the peer's pairing could not be looked up while
+ * encrypt-to-pinned ENFORCES (spec threadline-standalone-pairing D9: enforce fails closed on
+ * an unresolvable pinned peer). Distinct from null ("not a pinned peer, send as before").
+ */
+export const ENCRYPT_TO_LOOKUP_FAILED: unique symbol = Symbol.for('instar.threadline.encryptTo.lookupFailed') as never;
+
+/** What an encrypt-to resolver returns: the pinned key, null (not pinned), or the fail-closed sentinel. */
+export type EncryptToResolverResult = Buffer | null | typeof ENCRYPT_TO_LOOKUP_FAILED;
+export type EncryptToResolver = (fp: string, use?: 'send' | 'check') => EncryptToResolverResult;
+
+/** Why the client could not use what the resolver gave it. */
+export type EncryptToFailureKind = 'lookup-failed' | 'resolver-error' | 'malformed-pinned-key';
+
+export interface EncryptToResolverOptions {
+  /** Whether a resolver throw or a malformed pinned key must fail the send (enforce). Default: true. */
+  failClosed?: () => boolean;
+  /** Told about every client-side failure (resolver threw, malformed key), with the use. */
+  onFailure?: (kind: Exclude<EncryptToFailureKind, 'lookup-failed'>, use: 'send' | 'check') => void;
+}
+
+/** The client's own reading of the resolver for one recipient. */
+type EncryptToResolution =
+  | { kind: 'key'; key: Buffer }
+  | { kind: 'none' }
+  | { kind: 'fail'; reason: EncryptToFailureKind };
+
 export class ThreadlineClient extends EventEmitter {
   private readonly config: ThreadlineClientConfig;
   private readonly identityManager: IdentityManager;
   private encryptor: MessageEncryptor | null = null;
   private relayClient: RelayClient | null = null;
   private identity: IdentityInfo | null = null;
+  private pinnedKeyResolver: ((fp: string) => Buffer | null) | null = null;
+  /** The pinned key to ALWAYS encrypt ordinary chat to, or null (spec threadline-standalone-pairing D6, step 9). */
+  private encryptToResolver: EncryptToResolver | null = null;
+  private encryptToOptions: EncryptToResolverOptions = {};
   private readonly knownAgents = new Map<AgentFingerprint, KnownAgent>();
+  /** threadId of the most recent send()/sendPlaintext() envelope (synchronous; read by sendAutoWithThread). */
+  private lastWireThreadId: string | null = null;
 
   /**
    * E2E-path session affinity (§4.1 client side).
@@ -105,6 +185,28 @@ export class ThreadlineClient extends EventEmitter {
   private readonly lastRediscoverByName = new Map<string, number>();
   /** Test seam: override `Date.now()` for deterministic TTL tests. */
   private readonly nowFn: () => number;
+  /**
+   * When the last presence evidence (a `discover-result` or `presence-change`
+   * frame) arrived — the freshness bound `peerConnectedNow` applies (§3.2).
+   */
+  private lastPresenceFrameAt: number | null = null;
+  /** Monotonic count of presence frames ingested (a refresh is proven by a new frame, not by a clock tick). */
+  private presenceFrameSeq = 0;
+
+  // ── Relay verdict dispatcher (honest delivery, spec §1) ────────────────
+  /** Recent verdicts by messageId — closes the "relay answered before anyone waited" race. */
+  private readonly verdictCache = new Map<string, { verdict: RelayVerdict; at: number }>();
+  /** One pending wait per messageId. */
+  private readonly verdictWaiters = new Map<string, VerdictWaiter>();
+  /** messageId → process-local monotone send sequence (never reset). */
+  private readonly sendSeqById = new Map<string, number>();
+  private lastSendSeq = 0;
+  /** Set by a BANNED frame; a HINT only — never fed to the tracker as a verdict. */
+  private banActive = false;
+  private banSeq = 0;
+  readonly relayVerdictCounters: RelayVerdictCounters = {
+    cacheEvictions: 0, waiterOverCap: 0, disconnectResolved: 0, unmappedReason: 0, unconfirmedSettled: 0,
+  };
 
   constructor(config: ThreadlineClientConfig, nowFn?: () => number) {
     super();
@@ -161,6 +263,50 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Re-arm the existing relay connection after it was displaced (or otherwise
+   * stopped retrying). Reuses the same RelayClient so every event listener stays
+   * wired. A no-op when already connected; throws when no relay client exists.
+   */
+  async reconnectRelay(): Promise<string> {
+    if (!this.relayClient) throw new Error('relay client not created');
+    return this.relayClient.connect();
+  }
+
+  /**
+   * The fingerprint this client is CONNECTED as right now, or null when there is no live
+   * relay connection in this process (a2a-single-agent-identity §2.2: SELF contributes the
+   * on-disk value AND this one; a difference is itself a split — a file repaired while the
+   * process still speaks under the old key must never read as healthy).
+   */
+  get connectedAs(): AgentFingerprint | null {
+    return this.relayClient?.connectionState === 'connected' ? (this.identity?.fingerprint ?? null) : null;
+  }
+
+  /**
+   * The reload lever (a2a-single-agent-identity §1.2): drop the relay client built with the
+   * OLD key, re-read the identity from disk (the cache is invalidated, not reused), and — when
+   * `connect` is true — rebuild + connect a new relay client under the NEW key. Today's
+   * `reconnectRelay()` reuses the client built at construction and cannot change identity;
+   * this is the one path that can. Returns the fingerprint now on disk (null when none).
+   */
+  async reloadIdentity(opts: { connect: boolean }): Promise<AgentFingerprint | null> {
+    if (this.relayClient) {
+      try {
+        this.relayClient.disconnect();
+      } catch {
+        /* a client that cannot disconnect cleanly is dropped regardless */
+      }
+      this.relayClient = null;
+      this.encryptor = null;
+    }
+    this.identity = this.identityManager.reload();
+    if (!this.identity) return null;
+    this.encryptor = new MessageEncryptor(this.identity.privateKey, this.identity.publicKey);
+    if (opts.connect) await this.connect();
+    return this.identity.fingerprint;
+  }
+
+  /**
    * Connect to the relay and start communicating.
    */
   async connect(): Promise<string> {
@@ -187,27 +333,49 @@ export class ThreadlineClient extends EventEmitter {
     });
 
     this.relayClient.on('connected', (sessionId: string) => {
+      // Covers RelayClient's internal auto-reconnect as well as connect().
+      this.banActive = false;
       this.emit('connected', sessionId);
     });
 
     this.relayClient.on('disconnected', (reason: string) => {
+      this.resolveAllWaiters(null, 'disconnect');
       this.emit('disconnected', reason);
     });
 
     this.relayClient.on('displaced', (reason: string) => {
+      this.resolveAllWaiters(null, 'disconnect');
       this.emit('displaced', reason);
     });
 
     this.relayClient.on('error', (err: unknown) => {
+      this.handleRelayErrorFrame(err);
       this.emit('error', err);
+    });
+
+    // Honest delivery (spec §1): the relay's per-message verdicts. ONE
+    // subscription per inner client; consumers subscribe to THIS object's
+    // 'relay-verdict' once and survive reconnects.
+    this.relayClient.on('ack', (frame: { messageId?: string; status?: string; reason?: string; ttl?: number }) => {
+      this.handleRelayAckFrame(frame);
+    });
+    this.relayClient.on('delivery-expired', (frame: { messageId?: string; recipientId?: string }) => {
+      if (typeof frame?.messageId !== 'string') return;
+      this.dispatchVerdict({ messageId: frame.messageId, status: 'expired', recipientId: frame.recipientId });
     });
 
     this.relayClient.on('discover-result', (result: { agents: Array<KnownAgent & { status?: 'online' | 'offline' }> }) => {
       this.ingestDiscoveredAgents(result.agents);
+      this.lastPresenceFrameAt = this.nowFn();
+      this.presenceFrameSeq++;
       this.emit('discover-result', result);
     });
 
-    this.relayClient.on('presence-change', (change: { agentId: string; status: string }) => {
+    // §3.2: the relay already pushes presence changes; they now feed the SAME
+    // presence map `discover-result` fills (merge — never strip a keyed row), so
+    // `connectedNow` can be read without an inline discover on the send path.
+    this.relayClient.on('presence-change', (change: { agentId: string; status: string; metadata?: { name?: string } }) => {
+      this.ingestPresenceChange(change);
       this.emit('presence-change', change);
     });
 
@@ -245,6 +413,27 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string | PlaintextMessage,
     threadId?: string,
+    /** inbound-id ledger §5: one id on every route (echoed, minted only when absent). */
+    messageId?: string,
+    /** inbound-id ledger §5: mark a same-id resend inside the signed body. */
+    resend?: boolean,
+  ): string {
+    // D9: a pinned invite peer is encrypted to its PINNED key, never to a relay-supplied one.
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
+    if (pinned.kind !== 'none') {
+      const baseMessage: PlaintextMessage = typeof content === 'string' ? { content } : content;
+      return this.sendPinnedOrFail(recipientId, pinned, resend ? { ...baseMessage, resend: true } : baseMessage, threadId, messageId);
+    }
+    return this.sendEncryptedKnown(recipientId, content, threadId, messageId, resend);
+  }
+
+  /** `send()` without the pinned check (the caller already resolved it). */
+  private sendEncryptedKnown(
+    recipientId: AgentFingerprint,
+    content: string | PlaintextMessage,
+    threadId?: string,
+    messageId?: string,
+    resend?: boolean,
   ): string {
     if (!this.encryptor || !this.relayClient) {
       throw new Error('Not connected');
@@ -256,17 +445,20 @@ export class ThreadlineClient extends EventEmitter {
       throw new Error(`Unknown agent: ${recipientId}. Run discover() first.`);
     }
 
-    const message: PlaintextMessage = typeof content === 'string'
+    const baseMessage: PlaintextMessage = typeof content === 'string'
       ? { content }
       : content;
+    const message: PlaintextMessage = resend ? { ...baseMessage, resend: true } : baseMessage;
 
     // Authority precedence (§4.1): explicit caller threadId > client affinity > mint.
     const tId = threadId
       ?? this.peekClientAffinity(recipientId)
       ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
-    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message);
+    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message, messageId);
     this.relayClient.sendMessage(envelope);
+    this.noteSent(envelope.messageId);
     this.recordClientAffinity(recipientId, tId);
+    this.lastWireThreadId = tId;
 
     return envelope.messageId;
   }
@@ -282,19 +474,66 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string,
     threadId?: string,
+    /** inbound-id ledger §5: echo the caller's id; mint a UUID only when absent. */
+    callerMessageId?: string,
+    resend?: boolean,
+  ): string {
+    return this.sendPlaintextTyped('chat', recipientId, content, threadId, callerMessageId, resend);
+  }
+
+  /**
+   * Send the automatic "message received" acknowledgement
+   * (docs/specs/a2a-ack-never-acked.md). Same plaintext envelope as
+   * sendPlaintext(), but typed `ack` so the receiver records delivery and stops:
+   * an ack is never acked, never routed, and never spawns a session. A receiver
+   * that predates the type treats it exactly as it treated the `chat` ack.
+   */
+  sendAck(recipientId: AgentFingerprint, content: string, threadId?: string): string {
+    return this.sendPlaintextTyped(AUTO_ACK_TYPE, recipientId, content, threadId);
+  }
+
+  /**
+   * Every typed plaintext send funnels here. Ordinary chat (`type: 'chat'`) to a pinned invite
+   * peer is NEVER sent as plaintext (spec D9): when the pin resolves, it goes ENCRYPTED to the
+   * pinned key instead (same path as sendAuto); when it cannot be resolved or is malformed, it
+   * throws EncryptToPinnedSendError and nothing goes on the wire. Acks and invite-control ops
+   * keep their plaintext envelopes.
+   */
+  private sendPlaintextTyped(
+    type: string,
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
+  ): string {
+    if (type === 'chat') {
+      const pinned = this.resolveEncryptTo(recipientId, 'send');
+      if (pinned.kind !== 'none') {
+        return this.sendPinnedOrFail(recipientId, pinned, resend ? { content, resend: true } : { content }, threadId, callerMessageId);
+      }
+    }
+    return this.sendPlaintextRaw(type, recipientId, content, threadId, callerMessageId, resend);
+  }
+
+  /** The plaintext envelope itself, with no pinned check (callers have already decided). */
+  private sendPlaintextRaw(
+    type: string,
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
   ): string {
     if (!this.relayClient || !this.identity) {
       throw new Error('Not connected');
     }
 
     const tId = threadId ?? `thread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = callerMessageId || crypto.randomUUID();
 
     // Encode as base64 JSON payload (same format as inbound unknown-sender messages)
-    const payload = Buffer.from(JSON.stringify({
-      text: content,
-      type: 'chat',
-    })).toString('base64');
+    const payload = encodePlaintextPayload(content, type, resend);
 
     // Send as a raw envelope through the relay
     const envelope = {
@@ -307,6 +546,8 @@ export class ThreadlineClient extends EventEmitter {
     };
 
     this.relayClient.sendMessage(envelope as any);
+    this.noteSent(messageId);
+    this.lastWireThreadId = tId;
     return messageId;
   }
 
@@ -318,15 +559,139 @@ export class ThreadlineClient extends EventEmitter {
     recipientId: AgentFingerprint,
     content: string,
     threadId?: string,
+    messageId?: string,
+    resend?: boolean,
   ): string {
+    // A peer paired by invite is always sent encrypted, to the PINNED key, whether or not the
+    // relay has given us its keys this session (never a silent plaintext downgrade).
+    // If that send cannot be built or handed to the relay, it FAILS: it never falls through to
+    // the plaintext / relay-key paths below (spec D9).
+    // Enforce fails CLOSED: an unresolvable or malformed pin throws too.
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
+    if (pinned.kind !== 'none') {
+      return this.sendPinnedOrFail(recipientId, pinned, resend ? { content, resend: true } : { content }, threadId, messageId);
+    }
+
     // If we know the agent's keys, use encrypted send
     const known = this.knownAgents.get(recipientId);
     if (known?.publicKey && known?.x25519PublicKey) {
-      return this.send(recipientId, content, threadId);
+      return this.sendEncryptedKnown(recipientId, content, threadId, messageId, resend);
     }
 
-    // Otherwise, use plaintext relay send
-    return this.sendPlaintext(recipientId, content, threadId);
+    // Otherwise, use plaintext relay send (already resolved above: not a pinned peer)
+    return this.sendPlaintextRaw('chat', recipientId, content, threadId, messageId, resend);
+  }
+
+  /**
+   * `sendAuto`, also returning the threadId that actually went on the wire.
+   * When the caller passes no threadId, the client picks one (affinity or a
+   * fresh `thread-…` id); callers that record or wait on the thread must use
+   * THIS id, never the messageId — the peer replies on the wire thread
+   * (instar ACT-1304 fault 3: a `msg-…` id stored as the threadId matched no
+   * reply, so the sending session never saw the answer).
+   */
+  sendAutoWithThread(
+    recipientId: AgentFingerprint,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
+  ): { messageId: string; threadId: string } {
+    this.lastWireThreadId = null;
+    const messageId = this.sendAuto(recipientId, content, threadId, callerMessageId, resend);
+    const wireThreadId = this.lastWireThreadId as string | null;
+    return { messageId, threadId: wireThreadId ?? threadId ?? messageId };
+  }
+
+  /**
+   * Send a credential to a verified peer (spec §3.5 / FD4 v2). Encrypts to the PINNED
+   * identity key the operator verified and to the X25519 key derived from it — never to
+   * an encryption key held in the known-agent cache, which the relay may have supplied.
+   * There is no plaintext fallback: if the pinned key does not belong to this recipient,
+   * it throws.
+   */
+  sendCredentialToPinned(
+    recipientId: AgentFingerprint,
+    pinnedIdentityPubHex: string,
+    content: string,
+    threadId?: string,
+    callerMessageId?: string,
+    resend?: boolean,
+  ): { messageId: string; threadId: string } {
+    return this.sendToPinned(recipientId, pinnedIdentityPubHex, resend ? { content, resend: true } : { content }, threadId, callerMessageId);
+  }
+
+  /**
+   * Send a fixed server notice to a peer, ENCRYPTED to its PINNED identity key (never a key the
+   * relay supplied, never plaintext). Used to tell a paired peer that a plaintext message in its
+   * name was refused (spec threadline-standalone-pairing D6). Throws when it cannot be sent.
+   */
+  sendNoticeToPinned(recipientId: AgentFingerprint, pinnedIdentityPubHex: string, content: string): { messageId: string; threadId: string } {
+    return this.sendToPinned(recipientId, pinnedIdentityPubHex, { content });
+  }
+
+  /**
+   * Send the signed `pair-verify` receipt after this side's operator confirmed the words
+   * (spec §3.4). The receipt is signed with our identity key and travels encrypted to the
+   * peer's PINNED key, the same route as a credential: the receiver reads it from the
+   * decrypted content, which the plaintext path would flatten. It only ever sets the
+   * peer's optional `peerAcked` flag.
+   */
+  sendPairVerifyReceipt(
+    recipientId: AgentFingerprint,
+    pinnedIdentityPubHex: string,
+    args: { pairingId: string; sasFingerprint: string },
+  ): string {
+    if (!this.identity) throw new Error('Not connected');
+    const receipt = buildPairVerifyReceipt(this.identity.privateKey, {
+      pairingId: args.pairingId,
+      ownFp: this.identity.fingerprint,
+      peerFp: String(recipientId),
+      sasFingerprint: args.sasFingerprint,
+    });
+    return this.sendToPinned(recipientId, pinnedIdentityPubHex, { content: PAIR_VERIFY_OP, ...receipt }).messageId;
+  }
+
+  /**
+   * Invite pairing: send a control op ENCRYPTED to `keyHex` (spec §4: used, finish, ack). The
+   * recipient need not be pinned yet; the key's fingerprint must match `recipientId`.
+   */
+  sendInviteControlToKey(recipientId: AgentFingerprint, keyHex: string, op: string, payload: Record<string, unknown>): string {
+    return this.sendToPinned(recipientId, keyHex, { content: op, type: op, ...payload } as PlaintextMessage).messageId;
+  }
+
+  /**
+   * Invite pairing: send a control op as a PLAINTEXT relay message (spec §4.3, the accept).
+   * The inviter cannot decrypt before it knows our key, which is what the accept carries. Safe:
+   * no secret is in it, and it is self-authenticating (MAC with the invite secret + our signature).
+   */
+  sendInviteControlPlaintext(recipientId: AgentFingerprint, op: string, payload: Record<string, unknown>): string {
+    return this.sendPlaintextTyped(op, recipientId, JSON.stringify(payload));
+  }
+
+  private sendToPinned(
+    recipientId: AgentFingerprint,
+    pinnedIdentityPubHex: string,
+    message: PlaintextMessage,
+    threadId?: string,
+    callerMessageId?: string,
+  ): { messageId: string; threadId: string } {
+    if (!this.encryptor || !this.relayClient) {
+      throw new Error('Not connected');
+    }
+    const pinned = Buffer.from(pinnedIdentityPubHex, 'hex');
+    if (pinned.length !== 32 || pinned.subarray(0, 16).toString('hex') !== String(recipientId).toLowerCase()) {
+      throw new Error('Pinned identity key does not match the recipient fingerprint');
+    }
+    const tId = threadId
+      ?? this.peekClientAffinity(recipientId)
+      ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
+    const envelope = this.encryptor.encrypt(pinned, edPublicToX25519(pinned), tId, message, callerMessageId);
+    this.relayClient.sendMessage(envelope);
+    this.noteSent(envelope.messageId);
+    this.recordClientAffinity(recipientId, tId);
+    this.lastWireThreadId = tId;
+    return { messageId: envelope.messageId, threadId: tId };
   }
 
   /**
@@ -339,8 +704,70 @@ export class ThreadlineClient extends EventEmitter {
    * credential-bearing send when this returns false.
    */
   hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
+    const pinned = this.resolveEncryptTo(recipientId, 'check');
+    if (pinned.kind === 'key') return true;
+    // Fail closed: a pinned peer we cannot resolve has no encrypted path (its sends throw).
+    if (pinned.kind === 'fail') return false;
     const known = this.knownAgents.get(recipientId);
     return Boolean(known?.publicKey && known?.x25519PublicKey);
+  }
+
+  /**
+   * Fetch a peer's Ed25519 identity key from the relay's public A2A card
+   * (GET /v1/registry/agent/:fp/a2a-card → x-threadline.publicKey), for verified
+   * pairing v2 when the key is not in the known-agent cache (spec §3.0). The key is
+   * relay-supplied, which is acceptable for pairing: a substituted key yields different
+   * words, and the human comparison catches it. Returns null unless the key is 32 bytes
+   * and its first 16 bytes are exactly `recipientId` (the fingerprint rule). Never throws.
+   */
+  async fetchPeerIdentityKey(recipientId: AgentFingerprint, timeoutMs = 10_000): Promise<Buffer | null> {
+    try {
+      const fp = String(recipientId).toLowerCase();
+      if (!/^[0-9a-f]{32}$/.test(fp)) return null;
+      const wsUrl = new URL(this.config.relayUrl ?? DEFAULT_RELAY_URL);
+      const httpBase = `${wsUrl.protocol === 'ws:' ? 'http:' : 'https:'}//${wsUrl.host}`;
+      const res = await fetch(`${httpBase}/v1/registry/agent/${fp}/a2a-card`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return null;
+      const card = (await res.json()) as { 'x-threadline'?: { publicKey?: unknown } };
+      const b64 = card?.['x-threadline']?.publicKey;
+      if (typeof b64 !== 'string') return null;
+      const key = Buffer.from(b64, 'base64');
+      if (key.length !== 32 || key.subarray(0, 16).toString('hex') !== fp) return null;
+      return key;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the channel a credential would travel on is bound to the pairing a human
+   * verified (spec §3.5 / FD4 v2, issue #2117 gap I). TRUE only when ALL hold:
+   *  - the peer's currently-known Ed25519 key is exactly the pinned key the human verified;
+   *  - the peer's X25519 key (the one encrypt() would use) is the key DERIVED from that
+   *    identity key — a relay-supplied encryption key that does not match is never trusted;
+   *  - the pairingId recomputed from OUR current identity key and the pinned key equals the
+   *    recorded one, so a rotation of our own key since verification invalidates it.
+   * Never throws; any doubt is false (fail-closed, FD9).
+   */
+  isChannelBoundToPairing(recipientId: AgentFingerprint, pinnedIdentityPubHex: string, pairingId: string | null): boolean {
+    try {
+      const known = this.knownAgents.get(recipientId);
+      const own = this.identity?.publicKey;
+      if (!own || !pinnedIdentityPubHex) return false;
+      const pinned = Buffer.from(pinnedIdentityPubHex, 'hex');
+      if (pinned.length !== 32 || pinned.subarray(0, 16).toString('hex') !== String(recipientId).toLowerCase()) return false;
+      // The pinned key the operator verified is the authority (Echo's second review): an
+      // empty cache (e.g. after a restart) is fine, and only a DIFFERENT cached key refuses.
+      if (known?.publicKey && !crypto.timingSafeEqual(pinned, known.publicKey)) return false;
+      // The credential path encrypts to the key DERIVED from the pinned identity key (spec
+      // §3.5), so a relay-supplied X25519 key is irrelevant here; if one is cached and
+      // disagrees, that is a substitution signal and we refuse.
+      if (known?.x25519PublicKey && !isX25519BoundToIdentity(pinned, known.x25519PublicKey)) return false;
+      // An inherited pairing (pairingId null) binds on the pinned key alone.
+      return pairingId === null ? true : derivePairingIdV2(own, pinned) === pairingId;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -606,8 +1033,88 @@ export class ThreadlineClient extends EventEmitter {
         publicKey: agent.publicKey ?? existing?.publicKey,
         x25519PublicKey: agent.x25519PublicKey ?? existing?.x25519PublicKey,
         online: agent.status === 'online',
+        presenceAt: this.nowFn(),
       } as KnownAgent);
     }
+  }
+
+  /**
+   * Apply a relay `presence_change` frame to the presence map. Same merge rule
+   * as `ingestDiscoveredAgents`: an existing row keeps its keys; an unknown
+   * agent gets a keyless row (name from the frame's metadata when present).
+   */
+  private ingestPresenceChange(change: { agentId: string; status: string; metadata?: { name?: string } }): void {
+    if (!change || typeof change.agentId !== 'string' || !change.agentId) return;
+    if (change.status !== 'online' && change.status !== 'offline') return;
+    const existing = this.knownAgents.get(change.agentId);
+    this.knownAgents.set(change.agentId, {
+      ...existing,
+      agentId: change.agentId,
+      name: existing?.name ?? change.metadata?.name ?? change.agentId,
+      online: change.status === 'online',
+      presenceAt: this.nowFn(),
+    } as KnownAgent);
+    this.lastPresenceFrameAt = this.nowFn();
+    this.presenceFrameSeq++;
+  }
+
+  /** Default freshness bound for `peerConnectedNow`: the sentinel's 15-min tick (§3.2). */
+  static readonly PRESENCE_FRESH_MS = 15 * 60 * 1000;
+
+  /**
+   * §3.2 `connectedNow`, read from the presence map — never an inline discover.
+   * `true` when the peer's row says online, `false` when it says offline, `null`
+   * when there is no row, when my relay is not connected, or when no presence
+   * frame has arrived within `maxFrameAgeMs` (a rejected refresh leaves the map
+   * as it was, so a stale map answers null, never a stale boolean).
+   */
+  peerConnectedNow(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): boolean | null {
+    return this.peerPresence(agentId, opts).connectedNow;
+  }
+
+  /**
+   * The full presence read behind `connectedNow` (§3.2): the boolean, WHY it is
+   * null when it is (`relay-down` — my relay is not connected; `no-row` — the
+   * map has no record of this peer; `stale` — a record exists but no presence
+   * frame arrived within the freshness bound), and `connectedAsOf` — when this
+   * peer's own record was last written, so "connected" always carries its age.
+   */
+  peerPresence(agentId: AgentFingerprint, opts: { maxFrameAgeMs?: number } = {}): PeerPresenceRead {
+    const row = this.knownAgents.get(agentId);
+    const hasRow = !!row && typeof row.online === 'boolean';
+    const connectedAsOf = hasRow && typeof row!.presenceAt === 'number' ? new Date(row!.presenceAt).toISOString() : null;
+    if (this.connectionState !== 'connected') return { connectedNow: null, connectedNowReason: 'relay-down', connectedAsOf };
+    if (!hasRow) return { connectedNow: null, connectedNowReason: 'no-row', connectedAsOf: null };
+    const maxAge = opts.maxFrameAgeMs ?? ThreadlineClient.PRESENCE_FRESH_MS;
+    // Freshness is the LAST presence frame of any kind (§3.2: "no frame since
+    // the last sentinel tick" ⇒ null) — a connected relay with a silent map
+    // answers null, never a stale boolean.
+    const stamp = this.lastPresenceFrameAt;
+    if (stamp === null || this.nowFn() - stamp > maxAge) return { connectedNow: null, connectedNowReason: 'stale', connectedAsOf };
+    return { connectedNow: row!.online as boolean, connectedNowReason: null, connectedAsOf };
+  }
+
+  /** When the last presence frame arrived (ms epoch), or null before any. */
+  get presenceFrameAt(): number | null {
+    return this.lastPresenceFrameAt;
+  }
+
+  /**
+   * Refresh the presence map with ONE discover (§3.3 heal step 2). A rejected
+   * call (no relay client — the standby case) leaves the map untouched and
+   * answers `false`; a resolved call (even an empty/rate-limited `[]`) answers
+   * `true` only when a frame actually landed.
+   */
+  async refreshPresence(): Promise<boolean> {
+    const before = this.presenceFrameSeq;
+    try {
+      await this.discover();
+    } catch {
+      // @silent-fallback-ok — `Not connected` (no relay client, the standby case): the map
+      // is left untouched and the caller reads `false`; connectedNow then answers null.
+      return false;
+    }
+    return this.presenceFrameSeq !== before;
   }
 
   /** True if the per-name re-discovery cooldown (§C) has elapsed. */
@@ -626,6 +1133,98 @@ export class ThreadlineClient extends EventEmitter {
    */
   registerAgent(agent: KnownAgent): void {
     this.knownAgents.set(agent.agentId, agent);
+  }
+
+  /**
+   * Remember a peer's Ed25519 identity key learned while starting a verified pairing
+   * (spec FD4a). MERGES into the known-agent entry; it never sets or replaces an X25519
+   * key, because a derived encryption key would switch ordinary sends to encryption for
+   * peers that may not decrypt. Refuses a key whose first 16 bytes are not the fingerprint,
+   * and never overwrites a DIFFERENT cached identity key (that is a substitution signal for
+   * the operator, not something to resolve silently). Returns whether the key is now cached.
+   */
+  /**
+   * Where to find a peer's PINNED identity key (the one an operator verified) when the
+   * in-memory cache has none, as after every restart. Wired by the bootstrap to the trust
+   * manager. Returns null for a peer with no live pairing.
+   */
+  setPinnedKeyResolver(resolver: ((fp: string) => Buffer | null) | null): void {
+    this.pinnedKeyResolver = resolver;
+  }
+
+  /**
+   * Where ordinary chat to `fp` must always be encrypted: the pinned identity key when the
+   * pairing makes that safe (the bootstrap decides: invite-paired and mutual-verified), else null.
+   */
+  setEncryptToResolver(resolver: EncryptToResolver | null, options: EncryptToResolverOptions = {}): void {
+    this.encryptToResolver = resolver;
+    this.encryptToOptions = options;
+  }
+
+  /**
+   * `use`: 'send' for an actual send (counted by the bootstrap's watch mode), 'check' for a
+   * capability probe. Fails CLOSED in enforce (spec D9): the resolver's lookup-failed sentinel,
+   * a resolver that throws, and a pinned key that is not 32 bytes or does not belong to the
+   * recipient all come back as `fail`, which a send turns into EncryptToPinnedSendError. With
+   * `failClosed` false (watch/off) a throw or malformed key is reported and treated as `none`.
+   */
+  private resolveEncryptTo(fp: string, use: 'send' | 'check'): EncryptToResolution {
+    if (!this.encryptToResolver) return { kind: 'none' };
+    const want = String(fp).toLowerCase();
+    let failClosed = true;
+    try { failClosed = this.encryptToOptions.failClosed?.() ?? true; } catch { failClosed = true; /* @silent-fallback-ok — an unreadable mode fails closed */ }
+    const report = (kind: Exclude<EncryptToFailureKind, 'lookup-failed'>): EncryptToResolution => {
+      try { this.encryptToOptions.onFailure?.(kind, use); } catch { /* @silent-fallback-ok — counting never breaks a send */ }
+      return failClosed ? { kind: 'fail', reason: kind } : { kind: 'none' };
+    };
+    let got: EncryptToResolverResult;
+    try {
+      got = this.encryptToResolver(want, use) ?? null;
+    } catch {
+      return report('resolver-error');
+    }
+    if (got === ENCRYPT_TO_LOOKUP_FAILED) return { kind: 'fail', reason: 'lookup-failed' };
+    if (got === null) return { kind: 'none' };
+    if (!Buffer.isBuffer(got) || got.length !== 32 || got.subarray(0, 16).toString('hex') !== want) {
+      return report('malformed-pinned-key');
+    }
+    return { kind: 'key', key: got };
+  }
+
+  /** Send to the resolved pin, or throw EncryptToPinnedSendError (never plaintext). */
+  private sendPinnedOrFail(
+    recipientId: AgentFingerprint,
+    resolution: Exclude<EncryptToResolution, { kind: 'none' }>,
+    message: PlaintextMessage,
+    threadId?: string,
+    messageId?: string,
+  ): string {
+    if (resolution.kind === 'fail') {
+      throw new EncryptToPinnedSendError(String(recipientId), new Error(`pinned key unavailable (${resolution.reason})`), resolution.reason);
+    }
+    try {
+      return this.sendToPinned(recipientId, resolution.key.toString('hex'), message, threadId, messageId).messageId;
+    } catch (err) {
+      throw new EncryptToPinnedSendError(String(recipientId), err, 'send-failed');
+    }
+  }
+
+  private resolvePinnedKey(fp: string): Buffer | null {
+    try {
+      const key = this.pinnedKeyResolver?.(String(fp).toLowerCase()) ?? null;
+      return key && key.length === 32 && key.subarray(0, 16).toString('hex') === String(fp).toLowerCase() ? key : null;
+    } catch {
+      return null;
+    }
+  }
+
+  rememberPeerIdentityKey(agentId: AgentFingerprint, identityKey: Buffer, name?: string): boolean {
+    const fp = String(agentId).toLowerCase();
+    if (identityKey.length !== 32 || identityKey.subarray(0, 16).toString('hex') !== fp) return false;
+    const existing = this.knownAgents.get(fp);
+    if (existing?.publicKey) return crypto.timingSafeEqual(existing.publicKey, identityKey);
+    this.knownAgents.set(fp, { ...(existing ?? { agentId: fp, name: name ?? fp }), publicKey: identityKey } as KnownAgent);
+    return true;
   }
 
   /**
@@ -654,6 +1253,126 @@ export class ThreadlineClient extends EventEmitter {
   /**
    * Get connection state.
    */
+  // ── Relay verdict dispatcher (docs/specs/a2a-honest-delivery-outcomes.md §1) ──
+
+  /** Stamp a send with the process-local monotone sequence (bounded map, oldest evicted). */
+  private noteSent(messageId: string): void {
+    this.lastSendSeq += 1;
+    this.sendSeqById.set(messageId, this.lastSendSeq);
+    if (this.sendSeqById.size > SEND_SEQ_MAX) {
+      const oldest = this.sendSeqById.keys().next().value;
+      if (oldest !== undefined) this.sendSeqById.delete(oldest);
+    }
+  }
+
+  private handleRelayAckFrame(frame: { messageId?: string; status?: string; reason?: string; ttl?: number }): void {
+    if (!frame || typeof frame.messageId !== 'string') return;
+    const status = frame.status;
+    if (status !== 'delivered' && status !== 'queued' && status !== 'rejected') return;
+    // Any ack for a message sent AFTER the ban frame proves the gate passed.
+    // A flushed-queue `delivered` for an OLDER message does not consult the ban
+    // and must not clear the label; an unknown id never clears (conservative).
+    if (this.banActive) {
+      const seq = this.sendSeqById.get(frame.messageId);
+      if (seq !== undefined && seq > this.banSeq) this.banActive = false;
+    }
+    const verdict: RelayVerdict = { messageId: frame.messageId, status };
+    if (status === 'queued') verdict.ttlSec = typeof frame.ttl === 'number' ? frame.ttl : undefined;
+    if (status === 'rejected') {
+      const mapped = mapRelayReason(frame.reason);
+      verdict.reasonCode = mapped.code;
+      verdict.retryLater = mapped.retryLater;
+      verdict.reason = clampRelayReason(frame.reason);
+      if (mapped.unmapped) {
+        this.relayVerdictCounters.unmappedReason += 1;
+        this.emit('relay-unmapped-reason', { reason: verdict.reason ?? '' });
+      }
+    }
+    this.dispatchVerdict(verdict);
+  }
+
+  /**
+   * A relay `error` frame with code `banned` (lowercase wire value) says the
+   * SOCKET is banned — never which message. Every LIVE waiter resolves
+   * `unconfirmed` (reason `banned`, non-terminal); a send with no waiter yet
+   * reports the same on timeout via the `banActive` hint. Nothing here is a
+   * per-message verdict, so nothing terminal is ever recorded from it.
+   */
+  private handleRelayErrorFrame(frame: unknown): void {
+    const f = frame as { code?: string } | null;
+    if (!f || f.code !== RELAY_BANNED_CODE) return;
+    this.banActive = true;
+    this.banSeq = this.lastSendSeq;
+    for (const [messageId] of this.verdictWaiters) {
+      this.dispatchVerdict({ messageId, status: 'unconfirmed', reasonCode: 'banned', retryLater: null });
+    }
+  }
+
+  private dispatchVerdict(verdict: RelayVerdict): void {
+    const now = this.nowFn();
+    this.verdictCache.set(verdict.messageId, { verdict, at: now });
+    // Lazy TTL expiry on insert; cap by evicting oldest.
+    if (this.verdictCache.size > VERDICT_CACHE_MAX) {
+      for (const [id, entry] of this.verdictCache) {
+        if (now - entry.at > VERDICT_CACHE_TTL_MS || this.verdictCache.size > VERDICT_CACHE_MAX) {
+          this.verdictCache.delete(id);
+          this.relayVerdictCounters.cacheEvictions += 1;
+        }
+        if (this.verdictCache.size <= VERDICT_CACHE_MAX) break;
+      }
+    }
+    const waiter = this.verdictWaiters.get(verdict.messageId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      this.verdictWaiters.delete(verdict.messageId);
+      waiter.resolve(verdict);
+    }
+    this.emit('relay-verdict', verdict);
+  }
+
+  private resolveAllWaiters(value: RelayVerdict | null, cause: 'disconnect'): void {
+    for (const [id, w] of this.verdictWaiters) {
+      clearTimeout(w.timer);
+      this.verdictWaiters.delete(id);
+      if (cause === 'disconnect') this.relayVerdictCounters.disconnectResolved += 1;
+      w.resolve(value);
+    }
+  }
+
+  /**
+   * Wait for the relay's first verdict on `messageId`: cache first (a fast
+   * relay may have answered before anyone waited), then one bounded waiter.
+   * Resolves `null` on timeout, on disconnect/displacement, or when the waiter
+   * cap is reached (over-cap counts). Never throws.
+   */
+  awaitRelayAck(messageId: string, timeoutMs: number): Promise<RelayVerdict | null> {
+    const cached = this.verdictCache.get(messageId);
+    if (cached && this.nowFn() - cached.at <= VERDICT_CACHE_TTL_MS) return Promise.resolve(cached.verdict);
+    if (this.verdictWaiters.has(messageId)) return Promise.resolve(null);
+    if (this.verdictWaiters.size >= VERDICT_WAITERS_MAX) {
+      this.relayVerdictCounters.waiterOverCap += 1;
+      return Promise.resolve(null);
+    }
+    return new Promise<RelayVerdict | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.verdictWaiters.delete(messageId);
+        resolve(null);
+      }, Math.max(0, timeoutMs));
+      timer.unref?.();
+      this.verdictWaiters.set(messageId, { resolve, timer });
+    });
+  }
+
+  /** The hint for a route answer: a BANNED frame was seen and no later send has been acked. */
+  get banSuspected(): boolean {
+    return this.banActive;
+  }
+
+  /** Count a `relay-unconfirmed` outbox entry treated as settled (Frontloaded #9). */
+  noteUnconfirmedSettled(): void {
+    this.relayVerdictCounters.unconfirmedSettled += 1;
+  }
+
   get connectionState(): string {
     return this.relayClient?.connectionState ?? 'disconnected';
   }
@@ -670,25 +1389,56 @@ export class ThreadlineClient extends EventEmitter {
   private handleIncomingMessage(envelope: MessageEnvelope): void {
     if (!this.encryptor) return;
 
-    // Look up sender's public key
+    // The sender's identity key: the cached one, or else the key pinned by a verified
+    // pairing. The in-memory cache is empty after a restart, so the pinned key in the
+    // trust profile is the authority (spec FD4a).
     const sender = this.knownAgents.get(envelope.from);
-    if (!sender?.publicKey || !sender?.x25519PublicKey) {
+    const senderPub = sender?.publicKey ?? this.resolvePinnedKey(envelope.from);
+    if (!senderPub) {
       // Unknown sender — we can't decrypt without their keys
       this.emit('unknown-sender', envelope);
       return;
     }
 
-    try {
-      const plaintext = this.encryptor.decrypt(envelope, sender.publicKey, sender.x25519PublicKey);
+    let plaintext: PlaintextMessage;
+    if (sender?.publicKey && sender.x25519PublicKey) {
+      try {
+        plaintext = this.encryptor.decrypt(envelope, sender.publicKey, sender.x25519PublicKey);
+      } catch (err) {
+        // Narrow exception: an invite-pairing accept is deliberately PLAINTEXT (the inviter can't
+        // decrypt before it learns our key), so a sender whose keys we already cache must not have
+        // it dropped as undecryptable. Only plaintext envelopes typed pair-invite-* take this path.
+        const plain = decodePlaintextPayload(envelope.payload);
+        if (plain?.type && plain.type.startsWith('pair-invite-')) {
+          this.emit('unknown-sender', envelope);
+          return;
+        }
+        this.emit('decrypt-error', { envelope, error: err });
+        return;
+      }
+    } else {
+      // We hold only the sender's identity key. A credential or receipt from a paired peer
+      // arrives encrypted to keys derived from the two identity keys (spec FD4 v2), so try
+      // the key derived from it. Anything that does not open that way (every plaintext
+      // envelope) goes exactly where it went before: the unknown-sender path.
+      try {
+        plaintext = this.encryptor.decrypt(envelope, senderPub, edPublicToX25519(senderPub));
+      } catch {
+        this.emit('unknown-sender', envelope);
+        return;
+      }
+    }
 
+    try {
       const received: ReceivedMessage = {
         from: envelope.from,
-        fromName: sender.name,
+        fromName: sender?.name ?? envelope.from,
         threadId: envelope.threadId,
         messageId: envelope.messageId,
         content: plaintext,
         timestamp: envelope.timestamp,
         envelope,
+        senderIdentityPub: Buffer.from(sender?.publicKey && sender.x25519PublicKey ? sender.publicKey : senderPub),
       };
 
       this.emit('message', received);

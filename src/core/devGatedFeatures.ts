@@ -44,6 +44,24 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'identityReannounce',
+    configPath: 'multiMachine.identityReannounce.enabled',
+    description: 'Challenge-bound machine signing-key recovery with recovery-key continuity and exact epochs.',
+    justification: 'Ships dryRun:true; peer evaluation and quarantine are exercised but no trust anchor changes until deliberately promoted. Deterministic fail-closed authority, bounded attempts, no LLM or spend.',
+  },
+  {
+    name: 'observedEndpoints',
+    configPath: 'multiMachine.observedEndpoints.enabled',
+    description: 'Local-first direct source-address corroboration for VM/WSL peers that cannot self-advertise their host route.',
+    justification: 'Ships dryRun:true; requires full mesh signature verification, 3 observations over 30 minutes, no forwarded headers/shared egress, rotation quarantine, and signed dial-back before promotion.',
+  },
+  {
+    name: 'recoveryKeyEscrow',
+    configPath: 'multiMachine.recoveryKeyEscrow.enabled',
+    description: 'Keychain-only escrow for the per-machine recovery signing key.',
+    justification: 'Ships dryRun:true and never mints on a file-key-backed store. The private key stays sealed outside .instar/machine and signs only domain-separated rotations.',
+  },
+  {
     name: 'undatedActionResurfacer',
     configPath: 'evolutionActions.undatedResurfacer.enabled',
     description: 'Bounded resurfacing for pending high/critical evolution actions that have no due date.',
@@ -76,6 +94,18 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true; development agents exercise the exact state machine without canonical queue or Initiative mutation until operator promotion.',
   },
   {
+    name: 'feedbackFactoryTriage',
+    configPath: 'feedbackFactory.triage.enabled',
+    description: 'Frontier-model work/hold/ignore triage of feedback Initiatives within deterministic floors, with a ranked work queue and a daily operator action list.',
+    justification: 'Inert until the operator approves the triage authority with the dashboard PIN; every disposition is reversible (hold/ignore pause the Initiative, never archive), ignore ships in shadow until a separate PIN approval, model calls are capped per day and pause on subscription quota, and it never writes cluster or report status or takes an external action.',
+  },
+  {
+    name: 'feedbackFactoryExecute',
+    configPath: 'feedbackFactory.execute.enabled',
+    description: 'Feedback executor: confined build sessions turn top-ranked feedback work items into pull requests that merge only at the exact head the repository owner approves.',
+    justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
+  },
+  {
     name: 'mutualSsh',
     configPath: 'multiMachine.mutualSsh.enabled',
     description: 'Mutual SSH-subsystem bootstrap and continuous proof: dedicated Instar-only keys, restricted subsystem admissions, and source-local A→B/B→A evidence.',
@@ -92,6 +122,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'subscriptionPool.proactiveSwap.loginLoss.enabled',
     description: 'Login-loss extension for the existing live-session proactive account-swap funnel.',
     justification: 'Ships dryRun:true and fleet-dark. On a development agent it only records the exact would-swap while retaining target freshness, work-in-flight, dwell, breaker, cycle-cap, and kill-boundary source revalidation; a real session refresh requires an explicit dryRun:false promotion.',
+  },
+  {
+    name: 'proactiveSwapDefaultSlotRepoint',
+    configPath: 'subscriptionPool.proactiveSwap.defaultSlotRepoint.enabled',
+    description: 'Q3-safe pre-limit rescue for untagged sessions by re-pointing the existing default credential slot instead of changing a live session binding.',
+    justification: 'Ships dryRun:true and fleet-dark. On a development agent it selects the exact freshest eligible same-framework account and records the intended default-slot flip, but performs no credential write while dryRun holds. Live actuation requires an explicit dryRun:false promotion and delegates to the existing CredentialSwapExecutor set-default path, retaining its dark gate, single-mover funnel, identity checks, audit scrubber, and cooldown. It never changes a session binding.',
   },
   {
     name: 'ownershipGatedSpawn',
@@ -344,6 +380,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'multiMachine.seamlessness.ws41DurableAck',
     description: 'WS4.1 durable operator-bound /ack across machines — a pooled-attention ack whose owner is briefly offline is persisted with the authenticated operator principal and re-delivered when the owner returns.',
     justification: 'Coordinates between the operator\'s OWN machines only — no external egress; the persisted intent is bound to the AUTHENTICATED operator and the owner REVALIDATES at apply time (a stale resolve against a since-escalated item is rejected — current state wins); when dark the routes 503 and the precedence guard is inert; strict single-machine no-op (no peers). No destructive action, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'passkeys',
+    configPath: 'passkeys.enabled',
+    description: 'Agent-held Google passkeys (spec agent-held-google-passkey): grants, issuer set, passkey-cell mandate receiver, and the later enrollment/health surfaces.',
+    justification: 'Inert without grants; a grant is written only by the dashboard-PIN route or a verified passkey-cell mandate from a confirmed issuer, and enrollment is operator-initiated. No external egress or spend from the flag itself. Dev-live is the Rung 2 dogfooding decision (FD16, operator-ratified 2026-09-22).',
   },
   {
     name: 'accountFollowMe',
@@ -632,6 +674,42 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'jevSignalLive',
+    configPath: 'intelligence.jevSignalLive.enabled',
+    description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',
+    justification: 'Advisory input only — takes effect only where the tone gate\'s advisory migration makes B1–B7 overridable and decision-quality recording is live (so the route never hardens the advisory); never a new block; the deterministic degraded floor and the credential wall are untouched. Inert without the vault typesafe_api_key (only the dev agent holds one). Reuses the shadow\'s single Jev call (no extra calls while the shadow runs; after its soak, one Jev call per reviewed message), the Luna referee stays bound to the shadow\'s soak, text is secret-scrubbed before egress, the wait is bounded at timeoutMs+250ms, and a vendor-down breaker returns to the detector path. No destructive action.',
+  },
+  {
+    name: 'jevMemoryPicker',
+    configPath: 'intelligence.jevMemoryPicker.enabled',
+    description: 'Jev ranks the Claude Code memory index (MEMORY.md) against a session\'s opening topic at session start (jev-memory-picker.md); shadow mode (the default) only logs which lines it would add past the positional load cut.',
+    justification: 'Signal only — it chooses which already-saved index lines are offered to a session and cannot block, send or change anything; in shadow mode it changes nothing. Inert without the vault typesafe_api_key (only the dev agent holds one). One bounded Jev call per session start, only when the index overflows the load cut, under a daily call cap and at most 2 in flight; text is secret-scrubbed before egress; every failure is today\'s load. No destructive action.',
+  },
+  {
+    name: 'jevCorrectionShadow',
+    configPath: 'intelligence.jevCorrectionShadow.enabled',
+    description: 'Jev correction-detector shadow (jev-correction-shadow.md): for each inbound user message, asks Jev whether it is a correction, a standing preference, neither, or cannot tell, and logs a content-free row beside the correction sentinel\'s Layer-0 verdict.',
+    justification: 'Log-only — changes nothing the correction sentinel records, delivers nothing, and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Never awaited on the message seam; the message and the previous agent message are secret-scrubbed before egress; bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
+    name: 'jevCorrectionFeedSentinel',
+    configPath: 'intelligence.jevCorrectionShadow.feedSentinel',
+    description: 'Jev correction live input (jev-correction-live.md): a correction or standing preference Jev flags and Layer 0 missed is handed to the Correction & Preference Learning Sentinel as a learning signal (desk notes opening "From <agent>" and agent-signed messages excluded).',
+    justification: 'Signal into an existing authority-bounded pipeline: the sentinel\'s own distill can still call it noise, and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decides whether anything becomes a preference — which is itself an advisory, enveloped hint. Delivers nothing, blocks nothing. Inert unless the shadow is on and the sentinel is constructed; rides the sentinel\'s own LlmQueue daily cap, per-topic rate ceiling and load-shedding; kill switch read live. No destructive action.',
+  },
+  {
+    name: 'jevCirclesShadow',
+    configPath: 'intelligence.jevCirclesShadow.enabled',
+    description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',
+    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
+    name: 'jevReviewFlagShadow',
+    configPath: 'intelligence.jevReviewFlagShadow.enabled',
+    description: 'Jev review-flag shadow (jev-review-flag-shadow.md): once a minute, asks Jev whether each new agent Telegram reply needs the operator\'s review and logs a content-free would-flag row.',
+    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the agent\'s own Telegram history tail (512 KB), secret-scrubs reply and request before egress, one call at a time under a fetch timeout and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
@@ -703,6 +781,54 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: dev agents exercise record serialization and merge decisions without applying peer state. Replicates only scrubbed closed-enum lifecycle fields and observations, never raw correction learning; no external egress beyond the operator-owned encrypted mesh.',
   },
   {
+    name: 'a2aInboundIdLedger',
+    configPath: 'threadline.inboundIdLedger.enabled',
+    description: 'Durable A2A inbound message-id ledger: records receipt + hand-off per (sender, id); a verified no-reply row suppresses a resend, every other resend is delivered with a resent-copy notice.',
+    justification: 'Fails toward a labelled duplicate, never a loss: a database error, cooldown, full unverified namespace or unkeyed message delivers with no row; only a verified no-reply row suppresses; peer answers only word a notice. Machine-local SQLite with bounded retention, no LLM, no spend, no outbound messages.',
+  },
+  {
+    name: 'a2aBackupRoutes',
+    configPath: 'threadline.backupRoutes.enabled',
+    description: 'A2A backup routes: a relay fall-through after a local POST carries the same id, the local thread and a resend mark; a fingerprint-addressed send goes to a same-machine agent whose live health shows that fingerprint and a connected relay.',
+    justification: 'Sends nothing new and stores nothing: the mark only changes the receiver notice wording (over-marking is the safe direction), and the fingerprint branch falls to the relay path used today on any doubt (no match, two ports, absent/different fingerprint, relay not connected, credential). Stateless per send, no LLM, no spend.',
+  },
+  {
+    name: 'a2aRelayForward',
+    configPath: 'threadline.relayForward.enabled',
+    description: 'A2A cross-machine route: a relay standby forwards a send once, over the signed mesh, to my machine that holds the relay connection; a reply on a topic-bound thread is typed into that topic\'s live session on whichever of my machines has it.',
+    justification: 'Every failure degrades to behaviour that exists today: a forward that did not execute is the same 503, the holder\'s verdict is transcribed and never upgraded, a timeout is `unconfirmed`, and a reply that cannot be injected is the existing visible Telegram post — a topic-bound reply never spawns a session on the holder. Only my own registered machines can send the two verbs (signed, recipient-bound, nonce-guarded), credential sends never cross, nothing new is stored, one attempt with no retry or queue, no LLM, no spend.',
+  },
+  {
+    name: 'a2aLocalRouteTrust',
+    configPath: 'threadline.localRouteTrust.enabled',
+    description: 'Local-route trust: the same-machine A2A route resolves the sender\'s trust level from the trust manager and applies the relay gate\'s operation-permission check, instead of handling every sender as verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Reads in-memory trust profiles only: no writes, no LLM, no spend, no outbound messages; with no trust manager wired it is a counted no-op.',
+  },
+  {
+    name: 'a2aLocalRouteSignature',
+    configPath: 'threadline.localRouteSignature.enabled',
+    description: 'Local-route signed envelope: the same-machine A2A route verifies the sender\'s Ed25519 signature against the key held for its name, instead of taking the name in the request body on faith.',
+    justification: 'Ships dryRun:true: a dev agent verifies each inbound same-machine envelope, LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today. Refusing needs a deliberate dryRun:false. Writes no file and no durable state (the first-contact key cache, replay cache and counters are in memory). Its only outbound traffic is one loopback GET of a same-machine peer\'s /threadline/health when a SIGNED envelope arrives from a name with no key on record (at most 2.5 s on that request, five tries per peer per process). No LLM, no spend, no messages.',
+  },
+  {
+    name: 'telegramIngressLifelineSecret',
+    configPath: 'telegramIngress.lifelineSecret.enforce',
+    description: 'Lifeline ingress secret: the two internal Telegram routes refuse a request that does not carry the secret only the lifeline and the server hold, instead of trusting any caller with the ordinary Bearer token to name the sender.',
+    justification: 'No message is refused without proof: the guard refuses no message until the running lifeline has sent the valid secret at least once (persisted), so a lifeline still on older code has its messages accepted and counted; for its first 24 hours it is handled exactly as before, after that its messages are still delivered (without a sender identity) and only its button taps are refused. A refused request has had no effect (the check precedes every effect), a current lifeline re-reads the secret and otherwise holds the message in its durable queue with no drop budget burned, backs off (one minute doubling to fifteen) and tells the user once it has been refused for ten minutes. An unreadable server secret still delivers messages (without sender trust). Restart-signal writes are on a persisted 12 h / 24 h budget. Exact constant-time credential compare: no LLM, no spend; the only new outbound message is that one fixed lifeline notice per episode. bypass:true in the config file is the live full rollback.',
+  },
+  {
+    name: 'a2aPeerDarkNotice',
+    configPath: 'threadline.peerDarkNotice.enabled',
+    description: 'Honest sender-side reporting of a send that stays queued: a per-peer `dark` classification on the delivery ledger, a `peerDark` object + worded deliveryOutcome on a send to a dark peer, and ONE per-peer attention item (deterministic id, pool-scope raise/resolve, 12 h cooldown) through the reworked A2ARedeliverySentinel after the awake machine has healed its own side.',
+    justification: 'Ships dryRun:true: on a dev agent the sentinel runs the full dark pass and LOGS would-raise / would-sentence rows to logs/a2a-peer-dark.jsonl, but raises no item and changes no deliveryOutcome until a deliberate dryRun:false. Reads the local SQLite ledger and the presence map only (no inline discover, no new relay calls); the self-heal re-arms an already-built relay client and runs one discover on the awake machine only. Signal-only: never gates a send; a local relay outage collapses to ONE aggregated item; no LLM, no spend.',
+  },
+  {
+    name: 'a2aRelayUnknownSenderTrust',
+    configPath: 'threadline.relayUnknownSenderTrust.enabled',
+    description: 'Relay unknown-sender trust: a relay message from a sender whose keys this agent does not hold is judged at the trust level the trust manager holds for its fingerprint, with the relay gate\'s operation table, instead of being passed as verified; a new fingerprint profile is no longer created at verified.',
+    justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
@@ -767,6 +893,21 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'real-dollar spending authority (metered-door money gate + PIN caps/arming); dark for everyone incl. dev agents until an explicit operator enable — FD-16',
   },
   {
+    configPath: 'monitoring.windowRunLiveness.cadenceExecutor.enabled',
+    category: 'action-bearing',
+    reason: 'injects autonomous checkpoint prompts and sends operator-facing Telegram synthesis reports; requires an explicit per-agent rollout choice',
+  },
+  {
+    configPath: 'autonomousSessions.codexTaskContinuation.enabled',
+    category: 'action-bearing',
+    reason: 'automatically continues bounded Codex turns through the Stop hook; requires an explicit per-agent rollout choice',
+  },
+  {
+    configPath: 'subscriptionPool.assistedRelogin.enabled',
+    category: 'action-bearing',
+    reason: 'submits provider credentials and mutates a live Claude login; dark for everyone including development agents until reviewed approval and a disposable-identity canary',
+  },
+  {
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',
     reason: 'deletes git worktrees; off+dry-run for everyone',
@@ -785,6 +926,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'mentor.autonomousFix.enabled',
     category: 'cost-bearing',
     reason: 'spawns full-tool Opus fix sessions; ongoing spend',
+  },
+  {
+    configPath: 'autonomousSessions.codexTaskContinuation.enabled',
+    category: 'cost-bearing',
+    reason: 'continues bounded autonomous Codex turns and therefore consumes model capacity; explicit opt-in even on development agents',
   },
   {
     configPath: 'monitoring.resumeQueue.enabled',

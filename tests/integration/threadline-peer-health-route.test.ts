@@ -70,8 +70,10 @@ describe('GET /threadline/peers/health (integration)', () => {
   });
 
   it('honors the staleAfterMs query param to flag a stuck channel', async () => {
-    // Send with an old timestamp, then ask for a tiny stale window → stale.
-    tracker.recordSent({ messageId: 'm1', peerFp: FP, sentAt: '2000-01-01T00:00:00Z' });
+    // Send with an old timestamp (2 h ago — within the 30-day listing window
+    // allPeerHealth is bounded to, spec a2a-single-agent-identity §3.1), then
+    // ask for a tiny stale window → stale.
+    tracker.recordSent({ messageId: 'm1', peerFp: FP, sentAt: new Date(Date.now() - 2 * 3_600_000).toISOString() });
     const res = await request(app).get(`/threadline/peers/${FP}/health?staleAfterMs=1000`);
     expect(res.status).toBe(200);
     expect(res.body.stale).toBe(true);
@@ -80,7 +82,7 @@ describe('GET /threadline/peers/health (integration)', () => {
   });
 
   it('an unknown peer returns an all-null, not-stale health record (200, not 404)', async () => {
-    const res = await request(app).get('/threadline/peers/unknownfp/health');
+    const res = await request(app).get('/threadline/peers/0000ffff0000ffff/health') // well-formed hex, never seen (non-hex is 400 since honest delivery);
     expect(res.status).toBe(200);
     expect(res.body.lastSentAt).toBeNull();
     expect(res.body.pendingCount).toBe(0);

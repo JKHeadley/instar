@@ -414,9 +414,11 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
   # ── Tone-gate reaction metadata ─────────────────────────────────────────
   # Without these four the migration is inert through the only sanctioned send
   # path: the agent would be told by the 422 to override and have no way to do
-  # it. Values are charset-clamped — a rule id and a correlation id have narrow
-  # alphabets, and the reason is JSON-escaped via python3 (the only field that
-  # can contain arbitrary prose).
+  # it. Rule ids are charset-clamped; decision refs are accepted only in the
+  # router correlation-id shape (`d-<uuid>` / `d-<machine>-<uuid>`, same for
+  # `b-`) so production machine ids like `m_03b30f` survive byte-for-byte
+  # without admitting shell- or JSON-hostile text. The reason is JSON-escaped via
+  # python3 (the only field that can contain arbitrary prose).
   if [ -n "$TONE_ACK" ]; then
     TONE_ACK_CLEAN=$(printf '%s' "$TONE_ACK" | tr -cd 'A-Z0-9_' | cut -c1-64)
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
@@ -432,7 +434,13 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
     META_PARTS="${META_PARTS}\"toneAdvisoryComplied\":\"${TONE_COMPLIED_CLEAN}\""
   fi
   if [ -n "$TONE_DECISION_REF" ]; then
-    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | tr -cd 'a-zA-Z0-9-' | cut -c1-128)
+    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | python3 -c '
+import re, sys
+ref = sys.stdin.read()[:129]
+pat = re.compile(r"^[db]-(?:[A-Za-z0-9_]{1,64}-)?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+if len(ref) <= 128 and pat.fullmatch(ref):
+    sys.stdout.write(ref)
+' 2>/dev/null || printf '')
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"toneAdvisoryDecisionRef\":\"${TONE_REF_CLEAN}\""
   fi
@@ -496,6 +504,19 @@ fi
 if [ -n "$AGENT_ID" ]; then
   CURL_ARGS+=(-H "X-Instar-AgentId: ${AGENT_ID}")
 fi
+# A surviving session can be re-enrolled after a server update without killing
+# its process. Read only its own server-published tmux credential; never send a
+# destination topic's credential or print the value in diagnostics.
+if [ -n "${INSTAR_SESSION_NAME:-}" ] && command -v tmux >/dev/null 2>&1; then
+  ORIGIN_ENV_ROW=$(tmux show-environment -t "=${INSTAR_SESSION_NAME}" INSTAR_ORIGIN_TOKEN 2>/dev/null || true)
+  case "$ORIGIN_ENV_ROW" in
+    INSTAR_ORIGIN_TOKEN=ior1_*) INSTAR_ORIGIN_TOKEN="${ORIGIN_ENV_ROW#INSTAR_ORIGIN_TOKEN=}" ;;
+  esac
+  unset ORIGIN_ENV_ROW
+fi
+if [ -n "${INSTAR_ORIGIN_TOKEN:-}" ]; then
+  CURL_ARGS+=(-H "X-Instar-Origin-Session: ${INSTAR_ORIGIN_TOKEN}")
+fi
 if [ -n "$DELIVERY_ID" ]; then
   CURL_ARGS+=(-H "X-Instar-DeliveryId: ${DELIVERY_ID}")
 fi
@@ -509,9 +530,11 @@ CURL_STATUS=$?
 # call cannot complete silently, and never auto-enqueue/retry an unknown send.
 if [ "$CURL_STATUS" -ne 0 ]; then
   echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl ${CURL_STATUS})." >&2
-  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly or create a replacement send." >&2
+  echo "  Keep the delivery id and inspect the authoritative receipt/outbox state; hold while the outcome is unknown." >&2
+  echo "  Absence from the conversation is not proof of non-delivery." >&2
   [ -n "$DELIVERY_ID" ] && echo "  Delivery id: ${DELIVERY_ID}" >&2
-  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  echo "AMBIGUOUS: no HTTP outcome — hold pending authoritative receipt/outbox resolution"
   exit 0
 fi
 
@@ -533,11 +556,14 @@ elif [ "$HTTP_CODE" = "408" ]; then
   # the handler's async work continues after the middleware fires 408. Treating this
   # as a hard failure (exit 1) causes the agent to regenerate and retry, which
   # double-sends the message. Instead report the outcome as AMBIGUOUS and exit 0 —
-  # the agent should check the conversation before retrying.
+  # the agent must preserve the delivery identity and hold for receipt/outbox
+  # resolution. A missing message in the conversation is not non-delivery proof.
   echo "AMBIGUOUS (HTTP 408): server timed out; the message MAY have been delivered." >&2
-  echo "  Do NOT retry blindly — check the conversation to verify delivery before resending." >&2
-  echo "  If the message is there, proceed; if not, retry with a shorter/simpler version." >&2
-  echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
+  echo "  Do NOT retry blindly or create a replacement send." >&2
+  echo "  Keep the delivery id and inspect the authoritative receipt/outbox state; hold while the outcome is unknown." >&2
+  echo "  Absence from the conversation is not proof of non-delivery." >&2
+  [ -n "$DELIVERY_ID" ] && echo "  Delivery id: ${DELIVERY_ID}" >&2
+  echo "AMBIGUOUS (HTTP 408): outcome unknown — hold pending authoritative receipt/outbox resolution"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
   # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as

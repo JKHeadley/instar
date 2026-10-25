@@ -10,7 +10,7 @@
  * the session must be KEPT and the terminate is a no-op.
  *
  * Scope is the STATELESS guards only (deps-driven, no per-tick observation
- * state): protected, spawn-grace, recovery-in-flight, pending-injection,
+ * state): protected, standing-session, spawn-grace, recovery-in-flight, pending-injection,
  * relay-lease, recent-user-message, open-commitment, active-subagent,
  * structural-long-work, active-process, main-process-uninspectable/active.
  *
@@ -25,6 +25,7 @@
 
 import type { Session } from './types.js';
 import type { WorkEvidenceName } from './WorkEvidence.js';
+import { mergeDefaults } from './mergeDefaults.js';
 
 export type ReapConfidence = 'high' | 'low';
 
@@ -41,6 +42,13 @@ export interface ReapKeepReason {
  */
 export interface ReapGuardDeps {
   protectedSessions: () => string[];
+  /**
+   * Standing coordinator (`sessions.standingSessions`) — KEEP against every
+   * autonomous end. Optional; absent ⇒ no session is standing. Unlike
+   * `protectedSessions` it is consulted only here, never by `killSession`, so a
+   * kill-to-respawn still works.
+   */
+  isStandingSession?: (tmuxSession: string) => boolean;
   isRecoveryActive: (session: Session) => boolean;
   hasPendingInjection: (tmuxSession: string) => boolean;
   isRelayLeaseActive: (sessionId: string) => boolean;
@@ -88,7 +96,7 @@ export class ReapGuard {
 
   constructor(deps: ReapGuardDeps, opts?: Partial<ReapGuardOptions>) {
     this.deps = deps;
-    this.opts = { ...DEFAULT_REAP_GUARD_OPTIONS, ...(opts ?? {}) };
+    this.opts = mergeDefaults(DEFAULT_REAP_GUARD_OPTIONS, (opts ?? {}));
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -142,6 +150,13 @@ export class ReapGuard {
     //    authority from narrow flags that never include 'protected'.)
     if (this.deps.protectedSessions().includes(session.tmuxSession)) {
       const k = keep('protected');
+      if (k) return k;
+    }
+    // A2. Standing session — a long-lived coordinator that must never be
+    //     idle-reaped or age-reaped. Bypassable only by the authority for a
+    //     duplicate-removing close (topic moved / drained stand-down).
+    if (this.deps.isStandingSession?.(session.tmuxSession) === true) {
+      const k = keep('standing-session');
       if (k) return k;
     }
     // M. Spawn grace — a freshly-spawned session that hasn't had time to produce

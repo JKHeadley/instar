@@ -131,4 +131,17 @@ describe('Attention queue vocabulary lifecycle', () => {
     expect(filtered.body.count).toBe(1);
     expect(filtered.body.items[0]).toMatchObject({ id: 'att-e2e', status: 'DONE' });
   });
+
+  it('bounds the live HTTP read without truncating the underlying queue', async () => {
+    for (const id of ['bound-a', 'bound-b', 'bound-c']) {
+      await request(app).post('/attention').set(auth()).send({
+        id, title: id, summary: id, category: 'general', priority: 'NORMAL',
+      }).expect(201);
+    }
+    const bounded = await request(app).get('/attention?limit=2').set(auth()).expect(200);
+    const unbounded = await request(app).get('/attention').set(auth()).expect(200);
+    expect(bounded.body.count).toBe(2);
+    expect(bounded.body.items).toHaveLength(2);
+    expect(unbounded.body.count).toBeGreaterThanOrEqual(3);
+  });
 });

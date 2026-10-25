@@ -1,0 +1,38 @@
+import type { OutboundContentDedup } from '../OutboundContentDedup.js';
+import type { OriginSendPolicyAuthority } from './OriginSendPolicy.js';
+import type { TelegramOriginRecord } from './types.js';
+
+/** Shares the reply route's configured authority. Its configured forum keeps
+ * the existing numeric topic keys; other browser destinations are namespaced. */
+export function originContentDedup(dedup: OutboundContentDedup, configuredChatId: string | undefined): Pick<OriginSendPolicyAuthority, 'reserveContent' | 'completeContent' | 'releaseContent'> {
+  const destinationOf = (record: TelegramOriginRecord): number | string =>
+    record.destination.messageId === null ? key(record) : JSON.stringify([key(record), 'edit', record.destination.messageId]);
+  const key = (record: TelegramOriginRecord): number | string => {
+    const d = record.destination;
+    const chatId = d.chatId?.startsWith('channel:') ? `-100${d.chatId.slice(8)}` : d.chatId?.startsWith('chat:') ? `-${d.chatId.slice(5)}` : d.chatId;
+    if (configuredChatId && chatId === configuredChatId && (d.topicId === null || /^[0-9]+$/.test(d.topicId)) && Number.isSafeInteger(Number(d.topicId ?? 0))) return Number(d.topicId ?? 0);
+    return JSON.stringify(['telegram-origin', d.accountId, d.chatId, d.topicId, d.messageId]);
+  };
+  return {
+    reserveContent: async (record, input, deadlineAt, ownerToken) => {
+      // Editing an existing message is a distinct user action, not a duplicate
+      // new message. Include the target identity for edits and other namespaces.
+      const destination = destinationOf(record);
+      const result = dedup.reserveOrigin(destination, input.text, record.operationId, ownerToken, deadlineAt, record.createdAt);
+      if (result === 'reserved') return { ok: true };
+      // Another send of this text is still in flight: nothing is delivered yet,
+      // so this operation stays queued for the outbox's own retry.
+      if (result === 'pending') return { ok: false, status: 409, reason: 'content-reservation-pending',
+        body: { error: 'telegram-origin-held', reason: 'content-reservation-pending', outcome: 'held', originId: record.originId } };
+      if (result === 'duplicate') return { ok: false, status: 200, reason: 'duplicate-content',
+        body: { ok: true, suppressedDuplicate: true, originId: record.originId } };
+      return { ok: false, status: 409, reason: 'content-dedup-unavailable', body: { error: 'content-dedup-unavailable', retryable: false } };
+    },
+    completeContent: async (record, input) => {
+      dedup.completeOrigin(destinationOf(record), input.text, record.operationId);
+    },
+    releaseContent: async (record, input, ownerToken) => {
+      dedup.releaseOrigin(destinationOf(record), input.text, record.operationId, ownerToken);
+    },
+  };
+}

@@ -1,0 +1,45 @@
+{
+  "ts": "2026-10-15T20:20:03.074Z",
+  "slug": "relogin-unattended-agent-session-and-slow-retry",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 753,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginPolicy.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginService.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 691,
+    "deletedLines": 62
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under a provider that rejects forever each run spends at most 3 attempts and settles failed; the durable slowRetryCount cap (3) with 6h/24h delays bounds re-drives to 12 per incident, horizon-independent and restart-proof; the ratchet fails if the count grows with the horizon or exceeds 12 (controller subscription-relogin-redrive)"
+    }
+  },
+  "verdict": "pass"
+}

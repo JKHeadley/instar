@@ -13,7 +13,12 @@ import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { CommitmentTracker, type Commitment } from '../../src/monitoring/CommitmentTracker.js';
 import { LlmQueue } from '../../src/monitoring/LlmQueue.js';
-import { PromiseBeacon, type BeaconSendResult } from '../../src/monitoring/PromiseBeacon.js';
+import {
+  PromiseBeacon,
+  type BeaconSendResult,
+  type EscalationConfig,
+  type ReviveResult,
+} from '../../src/monitoring/PromiseBeacon.js';
 import { ProxyCoordinator } from '../../src/monitoring/ProxyCoordinator.js';
 
 describe('PromiseBeacon user output authority', () => {
@@ -59,6 +64,13 @@ describe('PromiseBeacon user output authority', () => {
     generated?: { count: number };
     agentOwnedFollowthrough?: () => { enabled: boolean; dryRun: boolean };
     now?: () => number;
+    quietHours?: { start: string; end: string };
+    maxDailyLlmSpendCents?: number;
+    currentMachineId?: string;
+    getSessionForTopic?: (topicId: number) => string | null;
+    getSessionEpoch?: (sessionName: string) => string | null;
+    escalation?: EscalationConfig;
+    requestRevive?: () => Promise<ReviveResult>;
   }): PromiseBeacon {
     return new PromiseBeacon({
       stateDir: dir,
@@ -66,8 +78,9 @@ describe('PromiseBeacon user output authority', () => {
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
       proxyCoordinator: new ProxyCoordinator(),
       captureSessionOutput: () => 'new terminal output',
-      getSessionForTopic: () => 'sess-1',
+      getSessionForTopic: opts.getSessionForTopic ?? (() => 'sess-1'),
       isSessionAlive: () => true,
+      getSessionEpoch: opts.getSessionEpoch,
       sendMessage: async (_topicId, text) => { opts.sent.push(text); },
       raiseAttention: (_id, detail) => { opts.attention.push(detail); },
       generateStatusLine: async () => {
@@ -76,6 +89,11 @@ describe('PromiseBeacon user output authority', () => {
       },
       agentOwnedFollowthrough: opts.agentOwnedFollowthrough,
       now: opts.now,
+      quietHours: opts.quietHours,
+      maxDailyLlmSpendCents: opts.maxDailyLlmSpendCents,
+      currentMachineId: opts.currentMachineId,
+      escalation: opts.escalation,
+      requestRevive: opts.requestRevive,
       ...(opts.userOutputEnabled === undefined
         ? {}
         : { userOutputEnabled: opts.userOutputEnabled }),
@@ -133,6 +151,156 @@ describe('PromiseBeacon user output authority', () => {
     expect(tracker.get(c.id)?.status).toBe('pending');
     expect(tracker.get(c.id)?.lastHeartbeatAt).toBeTruthy();
     beacon.stop();
+  });
+
+  it('keeps internal cadence bookkeeping alive through output-only quiet-hours and spend gates', async () => {
+    const sent: string[] = [];
+    const attention: string[] = [];
+    const generated = { count: 0 };
+    const now = Date.parse('2026-09-06T05:51:00.000Z');
+    const beacon = makeBeacon({
+      sent,
+      attention,
+      generated,
+      now: () => now,
+      quietHours: { start: '22:00', end: '08:00' },
+      maxDailyLlmSpendCents: 0,
+    });
+    beacon.start();
+    const c = tracker.record({
+      type: 'one-time-action',
+      userRequest: 'finish the quiet-hours work',
+      agentResponse: 'I will report back',
+      topicId: 42,
+      beaconEnabled: true,
+      cadenceMs: 60_000,
+      nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+
+    await beacon.fire(c.id);
+
+    expect(sent).toEqual([]);
+    expect(attention).toEqual([]);
+    expect(generated.count).toBe(0);
+    expect(tracker.get(c.id)).toMatchObject({
+      status: 'pending',
+      lastHeartbeatAt: '2026-09-06T05:51:00.000Z',
+    });
+    expect(tracker.get(c.id)?.beaconSuppressed).not.toBe(true);
+    beacon.stop();
+  });
+
+  it('remains cadence-bounded across repeated output-off fires under quiet hours and exhausted spend', async () => {
+    const sent: string[] = [];
+    const attention: string[] = [];
+    const generated = { count: 0 };
+    let now = Date.parse('2026-09-06T05:51:00.000Z');
+    const beacon = makeBeacon({
+      sent,
+      attention,
+      generated,
+      now: () => now,
+      quietHours: { start: '22:00', end: '08:00' },
+      maxDailyLlmSpendCents: 0,
+    });
+    const c = tracker.record({
+      type: 'one-time-action',
+      userRequest: 'finish the quiet-hours work',
+      agentResponse: 'I will report back',
+      topicId: 42,
+      beaconEnabled: true,
+      cadenceMs: 60_000,
+      nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+
+    await beacon.fire(c.id);
+    const firstHeartbeatAt = tracker.get(c.id)?.lastHeartbeatAt;
+    now += 60_000;
+    await beacon.fire(c.id);
+
+    expect(firstHeartbeatAt).toBe('2026-09-06T05:51:00.000Z');
+    expect(tracker.get(c.id)?.lastHeartbeatAt).toBe('2026-09-06T05:52:00.000Z');
+    expect(sent).toEqual([]);
+    expect(attention).toEqual([]);
+    expect(generated.count).toBe(0);
+  });
+
+  it('updates only the owning machine while output is off', async () => {
+    const sent: string[] = [];
+    const attention: string[] = [];
+    const ownerBeacon = makeBeacon({
+      sent,
+      attention,
+      currentMachineId: 'machine-a',
+      now: () => Date.parse('2026-09-06T05:51:00.000Z'),
+    });
+    const nonOwnerBeacon = makeBeacon({
+      sent,
+      attention,
+      currentMachineId: 'machine-b',
+      now: () => Date.parse('2026-09-06T05:52:00.000Z'),
+    });
+    const c = tracker.record({
+      type: 'one-time-action',
+      userRequest: 'finish owner-scoped work',
+      agentResponse: 'I will report back',
+      topicId: 42,
+      ownerMachineId: 'machine-a',
+      beaconEnabled: true,
+      cadenceMs: 60_000,
+      nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+
+    await nonOwnerBeacon.fire(c.id);
+    expect(tracker.get(c.id)?.lastHeartbeatAt).toBeUndefined();
+
+    await ownerBeacon.fire(c.id);
+    expect(tracker.get(c.id)?.lastHeartbeatAt).toBe('2026-09-06T05:51:00.000Z');
+    expect(sent).toEqual([]);
+    expect(attention).toEqual([]);
+  });
+
+  it('keeps session-loss revival internal through quiet hours and exhausted spend', async () => {
+    const sent: string[] = [];
+    const attention: string[] = [];
+    const generated = { count: 0 };
+    let reviveCalls = 0;
+    const beacon = makeBeacon({
+      sent,
+      attention,
+      generated,
+      now: () => Date.parse('2026-09-06T05:51:00.000Z'),
+      quietHours: { start: '22:00', end: '08:00' },
+      maxDailyLlmSpendCents: 0,
+      getSessionEpoch: () => 'NEW-EPOCH',
+      escalation: { enabled: true, dryRun: false },
+      requestRevive: async () => {
+        reviveCalls += 1;
+        return { sessionName: 'revived-session' };
+      },
+    });
+    const c = tracker.record({
+      type: 'one-time-action',
+      userRequest: 'recover the overnight executor',
+      agentResponse: 'I will keep the work alive',
+      topicId: 42,
+      sessionEpoch: 'OLD-EPOCH',
+      beaconEnabled: true,
+      cadenceMs: 60_000,
+      nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+
+    await beacon.fire(c.id);
+
+    expect(reviveCalls).toBe(1);
+    expect(tracker.get(c.id)).toMatchObject({
+      status: 'pending',
+      escalationAttempts: 1,
+      escalationInFlight: true,
+    });
+    expect(sent).toEqual([]);
+    expect(attention).toEqual([]);
+    expect(generated.count).toBe(0);
   });
 
   it('allows the old delivery path only after explicit opt-in', async () => {

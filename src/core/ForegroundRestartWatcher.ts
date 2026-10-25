@@ -25,8 +25,9 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 export interface RestartRequest {
   requestedAt: string;
   requestedBy: string;
-  targetVersion: string;
-  previousVersion: string;
+  /** Absent for a restart that applies a setting rather than an update (connect-enable, money-layer enable). */
+  targetVersion?: string;
+  previousVersion?: string;
   plannedRestart?: boolean;
   expiresAt?: string;
   pid?: number;
@@ -96,7 +97,9 @@ export class ForegroundRestartWatcher extends EventEmitter {
         console.warn(`[ForegroundRestartWatcher] Restart request EXPIRED but still acting on it — stale process is worse than late restart`);
       }
 
-      console.log(`[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} for v${data.targetVersion} (from v${data.previousVersion})`);
+      console.log(data.targetVersion
+        ? `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} for v${data.targetVersion} (from v${data.previousVersion})`
+        : `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} (no version change)`);
 
       // Clear the flag to prevent re-triggering on next startup
       try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:102' }); } catch { /* ignore */ }

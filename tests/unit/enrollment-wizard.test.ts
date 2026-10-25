@@ -256,11 +256,14 @@ describe('EnrollmentWizard', () => {
         configHome,
         verificationUrl: 'https://claude.com/oauth',
         ...(expectedEmail !== undefined ? { expectedEmail } : {}),
+        ...(expectedEmail !== undefined ? { authRevisionBaseline: 'before' } : {}),
       });
     }
     function build(opts: {
       oracle?: { resolveSlotTenant: (slot: string) => Promise<{ email?: string; unavailable?: boolean; reason?: string }> };
       emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
+      authRevisionWitness?: () => Promise<string | null> | string | null;
+      ensureReady?: (configHome: string) => { patched: boolean; reason: string };
     }) {
       return new EnrollmentWizard({
         store,
@@ -268,6 +271,8 @@ describe('EnrollmentWizard', () => {
         now: () => clock,
         oracle: opts.oracle,
         emitAttention: opts.emitAttention,
+        authRevisionWitness: opts.authRevisionWitness,
+        ensureReady: opts.ensureReady,
       });
     }
 
@@ -356,12 +361,35 @@ describe('EnrollmentWizard', () => {
 
     // ── D5 (topic 29836) — the already-authorized short-circuit completion sweep ──
     describe('sweepFollowMeCompletions', () => {
+      it('captures the auth revision before driving a follow-me login', async () => {
+        const order: string[] = [];
+        const w = new EnrollmentWizard({
+          store,
+          now: () => clock,
+          authRevisionWitness: async () => { order.push('baseline'); return 'before'; },
+          driveLogin: async () => {
+            order.push('drive');
+            return { verificationUrl: 'https://claude.com/oauth', ttlMs: 15 * 60_000 };
+          },
+        });
+
+        await w.start({
+          id: 'fm-1', label: 'main', provider: 'anthropic', framework: 'claude-code',
+          configHome: '/x/.claude-fm', expectedEmail: 'j@x.com',
+        });
+
+        expect(order).toEqual(['baseline', 'drive']);
+        expect(store.get('fm-1')?.authRevisionBaseline).toBe('before');
+      });
+
       it('a landed credential + matching identity → validated + onValidated (pool add) called', async () => {
         issueFollowMe('j@x.com');
         const onValidated = vi.fn();
-        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'after',
+        });
         const results = await w.sweepFollowMeCompletions({
-          credentialReady: () => true,
           onValidated,
         });
         expect(results).toEqual([{ id: 'fm-1', outcome: 'validated' }]);
@@ -374,8 +402,12 @@ describe('EnrollmentWizard', () => {
         issueFollowMe('approved@x.com');
         const onValidated = vi.fn();
         const emit = vi.fn();
-        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'other@x.com' }) }, emitAttention: emit });
-        const results = await w.sweepFollowMeCompletions({ credentialReady: () => true, onValidated });
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'other@x.com' }) },
+          emitAttention: emit,
+          authRevisionWitness: () => 'after',
+        });
+        const results = await w.sweepFollowMeCompletions({ onValidated });
         expect(results).toEqual([{ id: 'fm-1', outcome: 'held' }]);
         expect(onValidated).not.toHaveBeenCalled();
         expect(emit).toHaveBeenCalledTimes(1); // HIGH attention item raised
@@ -385,7 +417,7 @@ describe('EnrollmentWizard', () => {
         issueFollowMe('j@x.com');
         const onValidated = vi.fn();
         const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
-        const results = await w.sweepFollowMeCompletions({ credentialReady: () => false, onValidated });
+        const results = await w.sweepFollowMeCompletions({ onValidated });
         expect(results).toEqual([]);
         expect(onValidated).not.toHaveBeenCalled();
         expect(store.get('fm-1')?.status).toBe('pending');
@@ -398,20 +430,129 @@ describe('EnrollmentWizard', () => {
         });
         const onValidated = vi.fn();
         const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
-        const results = await w.sweepFollowMeCompletions({ credentialReady: () => true, onValidated });
+        const results = await w.sweepFollowMeCompletions({ onValidated });
         expect(results).toEqual([]);
         expect(store.get('plain-1')?.status).toBe('pending');
       });
 
-      it('a credentialReady probe that THROWS is treated as not-ready (never crashes the sweep)', async () => {
+      it('an auth revision probe that THROWS is treated as not-ready (never crashes the sweep)', async () => {
         issueFollowMe('j@x.com');
-        const w = build({ oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) } });
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => { throw new Error('keychain boom'); },
+        });
         const results = await w.sweepFollowMeCompletions({
-          credentialReady: () => { throw new Error('fs boom'); },
           onValidated: vi.fn(),
         });
         expect(results).toEqual([]);
         expect(store.get('fm-1')?.status).toBe('pending');
+      });
+
+      it('an unchanged existing credential is never mistaken for completion', async () => {
+        issueFollowMe('j@x.com');
+        const onValidated = vi.fn();
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'before',
+        });
+
+        const results = await w.sweepFollowMeCompletions({ onValidated });
+
+        expect(results).toEqual([]);
+        expect(onValidated).not.toHaveBeenCalled();
+        expect(store.get('fm-1')?.status).toBe('pending');
+      });
+
+      it('a legacy pending login with no captured baseline fails closed', async () => {
+        store.issue({
+          id: 'legacy', label: 'legacy', provider: 'anthropic', framework: 'claude-code',
+          kind: 'url-code-paste', configHome: '/x/.claude-legacy',
+          verificationUrl: 'https://claude.com/oauth', expectedEmail: 'j@x.com',
+        });
+        const onValidated = vi.fn();
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'after',
+        });
+
+        const results = await w.sweepFollowMeCompletions({ onValidated });
+
+        expect(results).toEqual([]);
+        expect(onValidated).not.toHaveBeenCalled();
+        expect(store.get('legacy')?.status).toBe('pending');
+      });
+
+      it('an unreadable baseline recorded as null cannot later masquerade as a credential change', async () => {
+        store.issue({
+          id: 'unreadable', label: 'unreadable', provider: 'anthropic', framework: 'claude-code',
+          kind: 'url-code-paste', configHome: '/x/.claude-unreadable',
+          verificationUrl: 'https://claude.com/oauth', expectedEmail: 'j@x.com',
+          authRevisionBaseline: null,
+        });
+        const onValidated = vi.fn();
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'now-readable',
+        });
+
+        expect(await w.sweepFollowMeCompletions({ onValidated })).toEqual([]);
+        expect(onValidated).not.toHaveBeenCalled();
+        expect(store.get('unreadable')?.status).toBe('pending');
+      });
+
+      it('a pool-finalization failure leaves the login pending and retries on the next sweep', async () => {
+        issueFollowMe('j@x.com');
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'after',
+        });
+        const onValidated = vi.fn()
+          .mockImplementationOnce(() => { throw new Error('pool write failed'); })
+          .mockImplementationOnce(() => {});
+
+        expect(await w.sweepFollowMeCompletions({ onValidated })).toEqual([]);
+        expect(store.get('fm-1')?.status).toBe('pending');
+        expect(await w.sweepFollowMeCompletions({ onValidated })).toEqual([{ id: 'fm-1', outcome: 'validated' }]);
+        expect(onValidated).toHaveBeenCalledTimes(2);
+        expect(store.get('fm-1')?.status).toBe('completed');
+      });
+
+      it('concurrent sweeps single-flight one login and finalize it exactly once', async () => {
+        issueFollowMe('j@x.com');
+        let releaseWitness!: () => void;
+        const witnessPaused = new Promise<void>((resolve) => { releaseWitness = resolve; });
+        let witnessEntered!: () => void;
+        const entered = new Promise<void>((resolve) => { witnessEntered = resolve; });
+        const onValidated = vi.fn();
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: async () => { witnessEntered(); await witnessPaused; return 'after'; },
+        });
+
+        const first = w.sweepFollowMeCompletions({ onValidated });
+        await entered;
+        const second = w.sweepFollowMeCompletions({ onValidated });
+        releaseWitness();
+
+        expect(await second).toEqual([]);
+        expect(await first).toEqual([{ id: 'fm-1', outcome: 'validated' }]);
+        expect(onValidated).toHaveBeenCalledTimes(1);
+      });
+
+      it('the winning sweep seeds Claude interactive readiness exactly once', async () => {
+        issueFollowMe('j@x.com');
+        const ensureReady = vi.fn(() => ({ patched: true, reason: 'seeded' }));
+        const w = build({
+          oracle: { resolveSlotTenant: async () => ({ email: 'j@x.com' }) },
+          authRevisionWitness: () => 'after',
+          ensureReady,
+        });
+
+        expect(await w.sweepFollowMeCompletions({ onValidated: vi.fn() }))
+          .toEqual([{ id: 'fm-1', outcome: 'validated' }]);
+        expect(await w.sweepFollowMeCompletions({ onValidated: vi.fn() })).toEqual([]);
+        expect(ensureReady).toHaveBeenCalledTimes(1);
+        expect(ensureReady).toHaveBeenCalledWith('/x/.claude-fm');
       });
     });
   });

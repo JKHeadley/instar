@@ -1,0 +1,36 @@
+# Ownership of the constitution.
+#
+# WHY (2026-08-22, topic 52222). The constitutional direction guard cannot
+# constrain the agent it governs: the agent holds `push` on this repository,
+# the `main` ruleset carried no pull_request rule, and the agent authors both
+# the checker and the workflow that runs it. The Ed25519 key the guard trusts
+# is subject to the same problem, because that key is a file in this repository.
+#
+# No check the agent writes can restrain the agent. Only repository settings
+# can — they need admin, which the agent does not hold (verified: a ruleset
+# write returns 404 for its identity). This file is the path-scoped half.
+#
+# TWO LINES, and that is deliberate. An earlier draft listed six, adding the
+# checker scripts and .github/** on the theory that breaking the checker would
+# let a registry change slip past. That theory is WRONG: the approval is
+# enforced by GitHub against the FILE PATH, not by the checker. Break the
+# checker all you like — a pull request touching the constitution still stops
+# and waits. Owning the checker bought nothing and cost the operator approvals
+# on unrelated work. Measured over the last 72 commits on main, the six-path
+# version would have asked for ~10 approvals; this asks for ~1.
+#
+# NOT COVERED, on the operator's explicit instruction: .github/** . A workflow
+# change can reach RELEASE_TOKEN, documented in publish.yml as a PAT that
+# bypasses branch protection. That is a real attack path and this file does not
+# close it. Excluded because it is a far more elaborate attack, a different
+# problem from constitutional approval, and guarding it would cost an approval
+# every week or two on ordinary work. Named here so the omission reads as a
+# decision rather than an oversight.
+#
+# Full reasoning: docs/specs/standards-approval-via-github-review.md
+
+# The constitution.
+docs/STANDARDS-REGISTRY.md   @JKHeadley
+
+# This file — so the line above cannot be quietly removed.
+.github/CODEOWNERS           @JKHeadley

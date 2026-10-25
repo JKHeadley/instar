@@ -12,6 +12,7 @@ import {
   listAutonomousJobs,
   activeAutonomousJobs,
   autonomousRunRemainingForTopic,
+  structuralLongWorkActive,
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
@@ -119,11 +120,24 @@ describe('canStartAutonomousJob — quota (refuse-new)', () => {
 });
 
 describe('stopping', () => {
-  it('stopAutonomousTopic removes exactly one', () => {
+  it('stopAutonomousTopic stops exactly one active run', () => {
     writeJob('a'); writeJob('b');
     expect(stopAutonomousTopic(stateDir, 'a')).toBe(true);
-    const jobs = listAutonomousJobs(stateDir);
-    expect(jobs.map((j) => j.topic)).toEqual(['b']);
+    expect(activeAutonomousJobs(stateDir).map((j) => j.topic)).toEqual(['b']);
+    expect(listAutonomousJobs(stateDir).map((j) => j.topic).sort()).toEqual(['a', 'b']);
+  });
+
+  it('stopAutonomousTopic preserves the topic record while making the run inactive', () => {
+    writeJob('a');
+    const file = path.join(stateDir, 'autonomous', 'a.local.md');
+    expect(fs.existsSync(file)).toBe(true);
+    expect(stopAutonomousTopic(stateDir, 'a')).toBe(true);
+    expect(fs.existsSync(file)).toBe(true);
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toMatch(/^active: false$/m);
+    expect(content).toMatch(/^stopped_at: "/m);
+    expect(content).toContain('task');
+    expect(activeAutonomousJobs(stateDir).map((j) => j.topic)).not.toContain('a');
   });
 
   it('stopAutonomousTopic returns false for unknown topic', () => {
@@ -132,12 +146,21 @@ describe('stopping', () => {
     expect(listAutonomousJobs(stateDir).length).toBe(1);
   });
 
-  it('stopAllAutonomousJobs clears every file + legacy and writes the emergency flag', () => {
+  it('stopAllAutonomousJobs stops every run, preserves records, and writes the emergency flag', () => {
     writeJob('a'); writeJob('b'); writeLegacy('555');
     const res = stopAllAutonomousJobs(stateDir);
     expect(res.stoppedTopics.sort()).toEqual(['a', 'b']);
     expect(res.stoppedLegacy).toBe(true);
-    expect(listAutonomousJobs(stateDir)).toEqual([]);
+    expect(activeAutonomousJobs(stateDir)).toEqual([]);
+    expect(listAutonomousJobs(stateDir).map((j) => j.topic).sort()).toEqual(['555', 'a', 'b']);
+    for (const file of [
+      path.join(stateDir, 'autonomous', 'a.local.md'),
+      path.join(stateDir, 'autonomous', 'b.local.md'),
+      path.join(stateDir, 'autonomous-state.local.md'),
+    ]) {
+      expect(fs.existsSync(file)).toBe(true);
+      expect(fs.readFileSync(file, 'utf8')).toMatch(/^active: false$/m);
+    }
     expect(fs.existsSync(path.join(stateDir, 'autonomous-emergency-stop'))).toBe(true);
   });
 });
@@ -276,5 +299,41 @@ describe('autonomousRunRemainingForTopic (honest-recycle helper)', () => {
     expect(autonomousRunRemainingForTopic(stateDir, 'paused', now)).toBeNull();
     writeRun('nodur', { durationSeconds: null });
     expect(autonomousRunRemainingForTopic(stateDir, 'nodur', now)).toBeNull();
+  });
+});
+
+describe('structuralLongWorkActive (ReapGuard buildOrAutonomousActive)', () => {
+  const now = Date.parse('2026-09-30T02:00:00Z');
+  function writeRun(topic: string, fm: string, mtimeMinutesAgo = 31) {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+    fs.writeFileSync(file, `---\n${fm}\nreport_topic: "${topic}"\n---\n\ntask\n`);
+    const t = new Date(Date.now() - mtimeMinutesAgo * 60_000);
+    fs.utimesSync(file, t, t);
+  }
+
+  it('an active run inside its window counts, however old its file is', () => {
+    writeRun('1', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 600);
+    expect(structuralLongWorkActive(stateDir, 1, now)).toBe(true);
+  });
+
+  it('inactive, paused, expired, unbounded and absent runs do not count, even with a fresh file', () => {
+    writeRun('2', 'active: false\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('3', 'active: true\npaused: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('4', 'active: true\nstarted_at: "2026-09-29T20:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('5', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"', 0);
+    for (const t of [2, 3, 4, 5, 6]) expect(structuralLongWorkActive(stateDir, t, now)).toBe(false);
+    expect(structuralLongWorkActive(stateDir, null, now)).toBe(false);
+  });
+
+  it('a /build state file counts only while written in the last 30 minutes', () => {
+    const dir = path.join(stateDir, 'state', 'build');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'build-state.json');
+    fs.writeFileSync(file, '{}');
+    expect(structuralLongWorkActive(stateDir, null)).toBe(true);
+    const old = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(file, old, old);
+    expect(structuralLongWorkActive(stateDir, null)).toBe(false);
   });
 });
