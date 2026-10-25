@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-25T19:28:05.038Z",
+  "slug": "session-monitor-peer-owned-topic",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/SessionMonitor.ts"
+    ],
+    "addedLines": 39,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

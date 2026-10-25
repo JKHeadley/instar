@@ -75,6 +75,14 @@ export interface SessionMonitorDeps {
    *  announced and re-posted "conversation too long" once per restart (the
    *  bounded residual confirmed twice on 2026-06-06: topics 16566 + 19437). */
   statePath?: string;
+  /** Optional: true when another machine in the session pool owns this topic.
+   *  A non-owner machine can keep a stale local topic→session mapping after a
+   *  topic moves; its local session is "dead" only because the conversation now
+   *  runs elsewhere. Such a topic is skipped entirely — no recovery, no triage,
+   *  and no "session has stopped, send a new message" notice (2026-10-25: the
+   *  Studio told the operator to resend a message the Mama PC was already
+   *  answering). A throw is treated as not-owned-elsewhere (today's behavior). */
+  isTopicOwnedByPeer?: (topicId: number) => boolean;
 }
 
 const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
@@ -220,6 +228,10 @@ export class SessionMonitor extends EventEmitter {
 
       // Check each active session
       for (const [topicId, sessionName] of activeTopics) {
+        if (this.ownedByPeer(topicId)) {
+          this.snapshots.delete(topicId);
+          continue;
+        }
         try {
           await this.checkSession(topicId, sessionName);
         } catch (err) {
@@ -228,6 +240,17 @@ export class SessionMonitor extends EventEmitter {
       }
     } finally {
       this.running = false;
+    }
+  }
+
+  private ownedByPeer(topicId: number): boolean {
+    if (!this.deps.isTopicOwnedByPeer) return false;
+    try {
+      return this.deps.isTopicOwnedByPeer(topicId) === true;
+    } catch {
+      // @silent-fallback-ok — ownership unknown (unreadable registry, or a read
+      // before the late-bound registry exists) → monitor as today.
+      return false;
     }
   }
 
