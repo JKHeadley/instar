@@ -14,6 +14,8 @@ Over the last 80 merged changes, half took under 2.7 hours from opening to mergi
 
 On the Mac Studio, unit tests run 8 at a time finished in under 4 minutes, every one passing. Integration and end-to-end tests have two known clashes (shared network ports, shared terminal sessions) that make them unsafe to run in parallel yet, so they stay one at a time for now: 15 and 24 minutes. A full check is therefore about 45 minutes, against over an hour today, and with no GitHub queue or billing limit in the way.
 
+**Update, 2026-10-22.** With the new system live, PRs queued for hours again, because each check took about 45 minutes and only one could run at a time. The check now runs its three groups of tests at the same time, and splits the slowest group in two. Each part gets its own private terminal sessions, so they can't interfere with each other. The machine still runs only one full check at a time. Measured on the Studio: about 20 minutes instead of 42, with every test passing except one timing test that assumed a busy machine; that test is fixed separately.
+
 ## What changes
 
 1. **Unit tests run in parallel**, and nothing runs twice any more.

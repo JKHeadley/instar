@@ -17,25 +17,50 @@
  * Stated limit (from the spec): tests registered through custom wrapper
  * functions are not seen.
  *
- * `typescript` is a devDependency of instar; it is present wherever a source
- * checkout exists (local-verify is repo-gated), but it is loaded lazily so that
- * importing this module never breaks a server that lacks it. Callers may also
- * inject the module.
+ * `typescript` is a devDependency of instar. The verify child runs from the
+ * agent server's installed copy, which has no devDependencies, so a bare
+ * `require('typescript')` from this file fails there (found 2026-10-23: 23 of
+ * 41 runs misclassified). `loadTypescript()` therefore tries the directories it
+ * is given first (the orchestrator passes the run worktree, where `npm ci` has
+ * just installed the merge tree's pinned typescript; a PR that changes that pin
+ * is itself harness-changing), then this module's own location. It is loaded
+ * lazily so that importing this module never breaks a server that lacks it.
+ * Callers may also inject the module.
  */
 
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import type * as TS from 'typescript';
 import { isInventoried } from './inventory.js';
 
-type TsModule = typeof TS;
+export type TsModule = typeof TS;
 
-let cachedTs: TsModule | null = null;
-function loadTs(): TsModule {
-  if (!cachedTs) {
-    const req = createRequire(import.meta.url);
-    cachedTs = req('typescript') as TsModule;
+const tsCache = new Map<string, TsModule>();
+
+/**
+ * Resolve `typescript` from each of `fromDirs` in order (as if required by a
+ * file in that directory), then from this module's own location. Throws one
+ * error naming every place tried when none has it.
+ */
+export function loadTypescript(fromDirs: readonly string[] = []): TsModule {
+  const anchors = [...fromDirs.map((d) => path.join(d, 'package.json')), import.meta.url];
+  const tried: string[] = [];
+  for (const anchor of anchors) {
+    const hit = tsCache.get(anchor);
+    if (hit) return hit;
+    try {
+      const ts = createRequire(anchor)('typescript') as TsModule;
+      tsCache.set(anchor, ts);
+      return ts;
+    } catch {
+      tried.push(anchor.startsWith('file:') ? 'verifier install' : path.dirname(anchor));
+    }
   }
-  return cachedTs;
+  throw new Error(`typescript not found (tried: ${tried.join(', ')})`);
+}
+
+function loadTs(): TsModule {
+  return loadTypescript();
 }
 
 const TEST_ROOTS = new Set(['it', 'test', 'xit', 'xtest', 'fit']);

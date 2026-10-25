@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "maturation-darkflag-inventory",
+  "sessionId": "fb32cc9f-6900-4e9a-b806-fd27ef2156b9",
+  "timestamp": "2026-10-23T23:44:53.879Z",
+  "artifactPath": "upgrades/side-effects/maturation-darkflag-inventory.md",
+  "artifactSha256": "04405945ed2417c07782c16acc14c8a9d1b3a2d81614ba561dc69f5e5ed767d5",
+  "specPath": "docs/specs/maturation-followthrough-fix.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/orphan-deferral-overrides.jsonl",
+    "docs/specs/maturation-followthrough-fix.md",
+    "src/monitoring/DarkFlagMaturationRegistry.ts",
+    "src/monitoring/GrowthMilestoneAnalyst.ts",
+    "tests/unit/DarkFlagMaturationRegistry.test.ts",
+    "tests/unit/growth-analyst-darkflag-r7.test.ts",
+    "upgrades/next/maturation-darkflag-inventory.md",
+    "upgrades/side-effects/maturation-darkflag-inventory.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New durable state file plus a new analyst rule and a new guard-manifest entry: a new capability with its own persistence. Matches the gate's suggestedTier=2 / riskFloor=2 signal.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

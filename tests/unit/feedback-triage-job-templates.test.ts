@@ -28,7 +28,7 @@ describe('feedback triage job templates', () => {
     expect(frontmatter('feedback-factory-triage.md')).toMatchObject({ schedule: '*/15 * * * *', supervision: 'tier1' });
     expect(frontmatter('feedback-factory-action-list.md')).toMatchObject({ schedule: '0 8 * * *' });
     // The executor job: every 30 minutes, tier-1 supervised; its body drives the execute tick and treats 503 as a silent exit.
-    expect(frontmatter('feedback-factory-execute.md')).toMatchObject({ schedule: '*/30 * * * *', supervision: 'tier1' });
+    expect(frontmatter('feedback-factory-execute.md')).toMatchObject({ schedule: '17,47 * * * *', supervision: 'tier1' });
     const body = fs.readFileSync(path.join(DIR, 'feedback-factory-execute.md'), 'utf8');
     expect(body).toContain('/feedback-factory/execute/tick');
     expect(body).toContain("if code == 503:");

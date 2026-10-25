@@ -127,7 +127,7 @@ does not assume it is the holder:
 - **Standby observes it** → sends one creation request to the holder (the same mesh call shape
   every other holder-only action uses) and records nothing itself.
 - **The holder is unreachable** → nothing is created; the peer has no homebase and routing falls
-  to rule 4. The next verification retries. There is no queue and no sweep in this version (§6).
+  to rule 4. The next message with that peer, or the next server start, retries (§6.1).
 
 Without this, a pairing verified on a standby would silently never get a topic — the normal
 path, not a crash path.
@@ -246,9 +246,9 @@ This spec adds **no new blocking authority** — it creates and binds; it gates 
 - `Conversation.boundTopicSource` additive + optional; absent must load unchanged.
 - CLAUDE.md: `generateClaudeMd()` **and** a content-sniffed `migrateClaudeMd()` section — an
   agent that does not know the topic exists will not use it.
-- Existing verified peers get a homebase on the next `markMutualVerified`, or when the operator
-  asks. No backfill sweep in this version (§6).
-- No config key.
+- Existing verified peers get a homebase from the bounded pass ~90s after server start
+  (`backfillPeerHomebases`), or on their next message in either direction (§6.1, built 2026-10-23).
+- Config key `threadline.peerHomebase.enabled`, default ON (§6.1); `false` turns it off.
 
 ## 6. Deliberately left behind (the long tail, with its risk named)
 
@@ -262,11 +262,29 @@ from the 21-round draft, and what it costs:
 | Duplicate-claim detection, durable winner/retirement records | If a duplicate does occur, nobody is told; the operator notices two similarly-named topics. |
 | Eager replication of the map + recovery by enumerating Telegram | A newly-promoted machine may not know a peer's homebase until the record replicates; peer notices fall back to existing routing in the meantime. |
 | Adapter capability preconditions + tests | Taken on trust that the existing create/post primitives work, which they demonstrably do elsewhere. |
-| A backfill sweep for peers paired before this shipped | They get a homebase on their next verify, or on request. |
 | Bounded/paginated rendering of a control post | No control post in this version — creation is automatic, so there is nothing to render. |
 | Per-conversation migration offers for multiple conversations with one peer | Only the peer's conversation binds (2.2); a second conversation with the same peer keeps its binding. |
 
 Each is recorded as a tracked item rather than forgotten. <!-- tracked: CMT-014 -->
+
+### 6.1 Backfill and default-on (built 2026-10-23, after the cut above proved wrong)
+
+The cut "they get a homebase on their next verify" left `pp` — paired 2026-10-21, a day before
+this merged — with no homebase forever, because a verified pair is never re-verified. And the
+dev-agent gate kept creation off on every fleet build, including the operator's own Mama PC.
+
+- **Backfill.** `PeerHomebaseBackfill` hangs off the canonical thread-log funnel
+  (`attachPeerContactHook` around `ThreadMessageRecorder.record`): a NEW leg, inbound or outbound, for a mutual-verified
+  peer with no recorded homebase calls the same `ensurePeerHomebase`. Peers that never write are
+  covered by the bounded boot pass `backfillPeerHomebases` (~90s after start, which also renames
+  legacy-named topics); the contact path forwards the same naming/adoption helpers. Same discipline: recorded id first, then
+  find-or-create by name; lease holder only (read live, so a lease move is handled); a stranger
+  (not mutual-verified) can never cause a topic; concurrent contacts share one creation; a failed
+  creation waits 10 minutes before that peer is tried again.
+- **Gate default ON.** `threadline.peerHomebase.enabled` now defaults on; explicit `false` is the
+  off switch. The operator asked for one topic per paired agent by name (§2.5), pairing is
+  human-gated, and the blast radius is one topic per peer, so the 7-day dev soak below bought
+  nothing worth the silence. This supersedes the maturation plan's dark-on-fleet stage.
 
 ## 7. Multi-machine posture
 
@@ -306,7 +324,8 @@ This feature creates a Telegram topic and re-points a conversation, so it gets a
 rather than shipping on or shipping dark forever.
 
 - **dark-window:** none. The feature is gated by `threadline.peerHomebase.enabled`, which
-  resolves **live on a development agent and off on the fleet** — the standing dev-gate shape.
+  defaults **on everywhere** since 2026-10-23 (§6.1); it first shipped live on a development
+  agent and off on the fleet.
   There is no dry-run stage: the action is "create one topic and bind one conversation", which
   cannot be usefully rehearsed without doing it, and its blast radius is one topic.
 - **test-agent-live:** a throwaway agent pairs with a throwaway peer; assert the topic appears,
@@ -316,8 +335,8 @@ rather than shipping on or shipping dark forever.
 - **dev-agent-live:** enabled on this agent (echo) immediately on merge, with `pp` as the first
   real case: `pp`'s conversation is re-homed by the operator's standing request and the result
   verified in his actual Telegram.
-- **fleet:** flip `threadline.peerHomebase.enabled` on by default after **7 days** live on the
-  dev agent with the graduation criterion met.
+- **fleet:** flipped on by default 2026-10-23 (§6.1) rather than after 7 days — the operator
+  asked for the behaviour by name.
 - **graduation criterion:** across the dev-agent window — every mutually-verified peer has
   exactly one homebase topic; **zero** operator-bound conversations were re-pointed (the
   invariant this design exists to protect); and no duplicate topic required manual cleanup. A

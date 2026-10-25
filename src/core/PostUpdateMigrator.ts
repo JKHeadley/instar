@@ -1,6 +1,6 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
-import { peerHomebaseAwareness } from './peerHomebaseAwareness.js';
+import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -7057,6 +7057,17 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + peerHomebaseAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
+    } else if (content.includes(PEER_HOMEBASE_AWARENESS_V1_LIMITS) || content.includes(PEER_HOMEBASE_AWARENESS_V2_LIMITS)) {
+      // The first card said there was no backfill, the second that a failed creation waited for
+      // the next server start; both are now wrong. Replace the whole card in
+      // place (it is the last thing up to the next heading) so the agent stops repeating it.
+      const start = content.indexOf("### Where a peer agent's notices go (per-peer homebase topic)");
+      const after = start >= 0 ? content.indexOf('\n#', start + 10) : -1;
+      if (start >= 0) {
+        content = content.slice(0, start) + peerHomebaseAwareness() + (after >= 0 ? content.slice(after) : '\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: refreshed per-peer homebase topic awareness (backfill)');
+      }
     }
     // The topic was renamed to "🤝 <peer>" — an agent holding the original card would keep
     // looking for the old "<peer> · Threadline · <fp6>" name, so swap the card in place.
@@ -8396,6 +8407,13 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(skillDrivenEnd, skillDrivenEnd + '\n' + "- **Failed sign-in repairs retry slowly** \u2014 a repair that ended `failed` on a budget or transient reason (not a safety refusal, not an operator cancel) tries again on its own while the account stays signed out: 6 hours after the failure, then 24 hours apart, at most 3 times per incident. Unattended identities restart with no tap; approval-mode accounts are re-offered for one tap. The next try time is `nextAttemptAt` on the episode in `GET /subscription-relogin` and shows on the dashboard cell. A failure notice is held while a retry will still follow; approval re-offers never go out 23:00–08:00 local; a helper-reported hard line (CAPTCHA, phone check, wrong account, unexpected site) or too few stored backup codes (fewer than a full run plus one; any backup-code account on the Mac helper path) holds the account at approval. Stop one repair's retries: \"Don't retry on its own\" on its failed cell. Off switch: `subscriptionPool.assistedRelogin.slowRetry.enabled: false`. When the user asks \"why did that repair start again by itself?\" \u2192 this.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
+      }
+      // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
+      const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
+      if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
+        content = content.replace(slowRetryEnd, slowRetryEnd + '\n' + "- **Last-resort sign-in model (one-subscription agents)** — the repair's own model calls (the step supervisor and the page navigator) run on the shared internal model first. On an agent with a single subscription that model runs on the very login that is dead, and on the Mac helper path there is no other healthy account to run the helper on, so until now the only account's expired sign-in always waited for you. Now, if the vault holds an Anthropic API key under the name `relogin_last_resort_anthropic_api_key`, a lightweight model over that key answers those calls when the shared model fails, and a repair with no other healthy account on this machine drives the server-side browser path with agent navigation instead of stopping at `no-healthy-seat` (its audit shows `last-resort-drive-started`). Placing the key under that name is the consent to spend; `ANTHROPIC_API_KEY` and the general `intelligenceProvider` setting are never read, every other internal call stays on the subscription, and the caps are 60 calls per drive and 300 per day (`subscriptionPool.assistedRelogin.lastResort`: `enabled`, `keyName`, `model`, `maxCallsPerDrive`, `maxCallsPerDay`; off with `enabled: false`). Success is still decided only by Instar (completed login, verified email, a real authenticated call). Two accounts need no key: the other account runs the helper, Claude or Codex, whichever provider it is. Registry First: `GET /subscription-relogin` → `lastResort` (available, model, calls today, caps; never the key). **When to use** (PROACTIVE): the user asks \"what happens when my only subscription signs out?\" / \"why did the repair wait for me instead of fixing it?\" → read `lastResort`; with no key, collect one through Secret Drop (never pasted into chat), then store it with `credential-store.mjs` under that exact vault name: a Secret Drop submission alone does not create the vault key.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added last-resort sign-in model awareness');
       }
     }
 
@@ -11077,6 +11095,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention Queue durable cross-machine remote-ack bullet (WS4.1 follow-up, CMT-1416)');
+    }
+
+    // Attention hub filter (operator report 2026-10-23: the Attention topic was
+    // "basically useless due to all the noise"). Tell deployed agents what now
+    // reaches the user's topic, and stop the old proactive line that told them
+    // to queue every failed job / CI failure. Sniff: 'attention-hub-held.jsonl'.
+    if (content.includes('**Attention Queue**') && !content.includes('attention-hub-held.jsonl')) {
+      const hubBullet = `- **What reaches the user's Attention topic (hub filter, default on)**: only urgent items, items YOU raise (\`source: "agent"\` is required — an item with no source is treated as automated), and items that need the user to decide or tap (sign-in repair, a duplicate conversation needing their call, the feedback action list, security events), plus notices that their messages may be lost. Routine automated status (health digests, worktree scans, machine-sync "healed/back" lines, self-healing repairs) stays in the attention store and the dashboard and is logged to \`logs/attention-hub-held.jsonl\` instead of posting. Posts are short: title and what to do. Rollback: \`messaging[].config.attentionHubFilter: "all"\`. If the user asks "why didn't X show up in Attention?" → read \`logs/attention-hub-held.jsonl\`.\n`;
+      content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${hubBullet}`);
+      for (const old of [
+        "- **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.",
+        "- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.",
+      ]) {
+        if (content.includes(old)) content = content.replace(old, '- **Proactive use**: queue an item only when the user must decide, tap or act, or something they care about is genuinely broken and you cannot fix it yourself — your items always reach their topic, so each one costs their attention. Routine status, things you are already fixing, and FYIs belong in logs or a normal reply, not here.');
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.

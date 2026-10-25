@@ -1108,6 +1108,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
+    lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -19729,11 +19731,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // vocabulary too — an explanation that uses those words re-trips the same check.)
     let homebaseTopicId: number | undefined;
     try {
-      const { ensurePeerHomebase, displayNameCollides } = await import('../threadline/peerHomebase.js');
-      const hbCfg = (ctx.config as { threadline?: { peerHomebase?: { enabled?: boolean } } }).threadline?.peerHomebase;
+      const { ensurePeerHomebase, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
       const confirmed = trustManager.getProfileByFingerprint(peerFp);
       const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
-        enabled: resolveDevAgentGate(hbCfg?.enabled, ctx.config),
+        enabled: peerHomebaseEnabled(ctx.config),
         // A standby that created one would mint a fresh topic per boot — the failure that
         // produced 41 duplicate "Updates" topics before the system-topic pattern existed.
         holdsLease: !ctx.state.readOnly,
@@ -22743,8 +22744,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the owner's session, land the target's claim (the queue-barrier release).
     //   · drain ok → proceed to pin+journal exactly as today (the place/claim
     //     repair below sees active@target and correctly no-ops).
-    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
-    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · aborted-emergency-stop / refused-close-failed → 409 failed-needs-retry,
+    //     NO pin — an abort leaves nothing split (the topic stays whole on its
+    //     current machine).
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
@@ -22781,6 +22783,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
             failedNeedsRetry: true,
             drain: drainLeg,
+          });
+          return;
+        }
+        // The owner could not close its session, so it aborted the transfer and
+        // kept ownership. Setting the pin now would re-place the topic on the
+        // target at the next message while the old session is still running —
+        // two live sessions on one conversation (2026-10-23). Stop here instead.
+        if (r.status === 'refused-close-failed') {
+          res.status(409).json({
+            error: `transfer aborted: the current machine could not close its session for this topic (${r.reason ?? 'close refused'}) — the topic stays whole on its current machine${drainRunSuspended ? '; its autonomous run was suspended for the move and stays suspended there' : ''}`,
+            failedNeedsRetry: true,
+            drain: drainLeg,
+            // Honest: the run was suspended BEFORE the close was attempted and is
+            // not un-suspended on abort (same as the emergency-stop abort).
+            autonomousRunSuspended: drainRunSuspended,
           });
           return;
         }
@@ -34393,7 +34410,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         accountId, limit,
       }) ?? [];
       if (req.query.scope !== 'pool') {
-        res.json({ enabled: true, episodes: localEpisodes });
+        res.json({ enabled: true, episodes: localEpisodes,
+          lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
       const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';

@@ -26,6 +26,7 @@ import type { QuotaPoller } from '../../src/core/QuotaPoller.js';
 import type { IdentityOracle } from '../../src/core/CredentialLocationLedger.js';
 import type { PlaywrightProfileRegistry } from '../../src/core/PlaywrightProfileRegistry.js';
 import type { ClaudePasteBackController } from '../../src/core/ClaudePasteBackController.js';
+import type { ReloginBrowserPort } from '../../src/core/AnthropicReloginBrowserDriver.js';
 
 const dirs: string[] = [];
 const servers: Array<() => Promise<void>> = [];
@@ -41,7 +42,9 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   brokenFramework?: 'claude-code' | 'codex-cli'; codexLiveReadAvailable?: boolean; identities?: string[];
   offsetMs?: { value: number }; hardLine?: string; backupCodes?: string;
   /** Quiet hours for approval re-offers. Tests default to OFF so they never depend on the wall-clock time of day. */
-  quietHours?: { startHour: number; endHour: number } | null } = {}) {
+  quietHours?: { startHour: number; endHour: number } | null;
+  /** Spec relogin-last-resort-model: a last-resort model port whose availability the test controls. */
+  lastResort?: { available: boolean } } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-')); dirs.push(stateDir);
   const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
   const accounts = new Map<string, SubscriptionAccount>();
@@ -99,6 +102,21 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
     return tmuxSession;
   });
   const kill = vi.fn((tmuxSession: string) => { tmux.set(tmuxSession, false); });
+  const navigateCalls: string[][] = [];
+  // The server-side driver's browser for a last-resort drive: a page the fixed table cannot
+  // read first (the agent must choose a control), then the success page.
+  let fallbackClicked = false;
+  const fallbackBrowser: ReloginBrowserPort = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
+    origin: 'https://claude.ai', pageClass: fallbackClicked ? 'success' as const : 'unknown' as const, expectedAccountVisible: true,
+    hasGoogleSignIn: false, hasNext: false, hasAuthorize: false, requestedScopes: [] as string[],
+  })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
+  readPasteCode: vi.fn(async () => CODE), wait: vi.fn(), close: vi.fn(async () => {}),
+  observeControls: vi.fn(async () => ({ title: 'Review our new terms', path: '/terms',
+    controls: [{ n: 1, text: 'Review our new terms', identities: [] }, { n: 2, text: 'I agree and continue', identities: [] }], inputKinds: [] })),
+  clickControl: vi.fn(async () => { fallbackClicked = true; }) };
+  const lastResortPort = { available: vi.fn(() => opts.lastResort?.available === true), beginDrive: vi.fn(), endDrive: vi.fn(),
+    status: () => ({ available: true as const, keyName: 'relogin_last_resort_anthropic_api_key', model: 'fast' as const, callsToday: 0,
+      maxCallsPerDay: 300, callsThisDrive: 0, maxCallsPerDrive: 60, driveEpisodeId: null, preferredThisDrive: false, lastUsedAt: null, lastError: null, capRefusals: 0 }) };
   runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1', mode: opts.mode ?? 'approval',
     unattendedPolicy: { identities: opts.identities ?? [broken.email], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
     slowRetry: { quietHours: opts.quietHours === undefined ? null : opts.quietHours },
@@ -106,14 +124,26 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
     pool, ledger, enrollment, profiles,
     quotaPoller: { pollAccount, loginCheck: (id: string) => loginChecks.get(id) ?? 'unavailable' } as unknown as QuotaPoller,
     identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: broken.email })) } as unknown as IdentityOracle,
-    pasteBack, createBrowser: () => { throw new Error('the driver browser must not open on the agent-session path'); },
-    resolveSecret: async (name: string) => name === 'google_backup_codes_person' ? (opts.backupCodes ?? null) : null, supervise: async () => { throw new Error('no supervisor on this path'); },
+    pasteBack,
+    // The server-side driver's browser: opened ONLY by a last-resort drive (spec relogin-last-resort-model).
+    createBrowser: () => {
+      if (!opts.lastResort?.available) throw new Error('the driver browser must not open on the agent-session path');
+      return fallbackBrowser;
+    },
+    resolveSecret: async (name: string) => name === 'google_backup_codes_person' ? (opts.backupCodes ?? null) : null,
+    supervise: async ({ allowedActions }) => {
+      if (!opts.lastResort?.available) throw new Error('no supervisor on this path');
+      return allowedActions[0]!;
+    },
+    // The fake agent: takes the "I agree and continue" control when offered, else the first offer.
+    navigate: async (input) => { navigateCalls.push(input.offered); return input.offered.includes('click:2') ? 'click:2' : (input.offered[0] ?? 'give-up'); },
+    ...(opts.lastResort ? { lastResort: lastResortPort } : {}),
     ...(opts.codexLiveReadAvailable !== undefined ? { codexLiveReadAvailable: opts.codexLiveReadAvailable } : {}),
     navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
     helperSession: { spawn, kill, isAlive: (t) => tmux.get(t) === true, listHelpers: () => [], hasCapacity: () => true, serverPort: 4042,
       codexLoginStatus: async () => opts.codexCli ?? 'signed-in', timing: { pollMs: 10, startGraceMs: 0, exitSettleMs: 0 } },
   });
-  return { runtime, spawn, kill, pasteBack, pollAccount, accounts, broken, loginChecks, enrollment,
+  return { runtime, spawn, kill, pasteBack, pollAccount, accounts, broken, loginChecks, enrollment, fallbackBrowser, lastResortPort, navigateCalls,
     replaceLogin: (patch: Record<string, unknown>) => { pending = { ...pending, ...patch }; } };
 }
 
@@ -355,6 +385,95 @@ describe('agent-session sign-in repair runtime', () => {
     await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
     expect(w.runtime.store.get(episode.id)).toMatchObject({ failureClass: 'no-healthy-seat', attemptCount: 0 });
     expect(w.spawn).not.toHaveBeenCalled();
+    w.runtime.close();
+  });
+
+  // Spec relogin-last-resort-model: the one-subscription case.
+  it('no other healthy account + the last-resort model available ⇒ the server-side driver runs the repair to verified success; no helper, audit says last-resort-drive-started', async () => {
+    const w = world({ helperAccounts: [{ status: 'needs-reauth' }] as never, lastResort: { available: true } });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    await w.runtime.service.approve(episode.id);
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    expect(w.spawn).not.toHaveBeenCalled();
+    expect(w.fallbackBrowser.open).toHaveBeenCalledWith('https://claude.ai/oauth/authorize?code=true');
+    expect(w.lastResortPort.beginDrive).toHaveBeenCalledWith(episode.id);
+    expect(w.lastResortPort.endDrive).toHaveBeenCalledWith(episode.id);
+    const events = w.runtime.store.listEvents(episode.id).map((e) => e.eventClass);
+    expect(events).toContain('last-resort-drive-started');
+    expect(events).not.toContain('agent-session-drive-started');
+    expect(events).toContain('authenticated-use-verified');
+    expect(w.accounts.get('acct-broken')!.status).toBe('active');
+    expect(w.pasteBack.finish).toHaveBeenCalledTimes(1); // the server-side driver's own code hand-off, unchanged
+    // Agent navigation really ran: the first page is one the fixed table cannot read, the agent
+    // chose a control from the offered list, and the driver clicked it.
+    expect(w.navigateCalls.length).toBeGreaterThan(0);
+    expect(w.navigateCalls[0]).toEqual(expect.arrayContaining(['click:1', 'click:2']));
+    expect(w.fallbackBrowser.clickControl).toHaveBeenCalled();
+    w.runtime.close();
+  });
+
+  it('no other healthy account + the last-resort model NOT available (no key) ⇒ no-healthy-seat exactly as before', async () => {
+    const w = world({ helperAccounts: [{ status: 'needs-reauth' }] as never, lastResort: { available: false } });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    await w.runtime.service.approve(episode.id);
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
+    expect(w.runtime.store.get(episode.id)).toMatchObject({ failureClass: 'no-healthy-seat', attemptCount: 0 });
+    expect(w.spawn).not.toHaveBeenCalled();
+    expect(w.fallbackBrowser.open).not.toHaveBeenCalled();
+    expect(w.lastResortPort.beginDrive).not.toHaveBeenCalled();
+    w.runtime.close();
+  });
+
+  it('with a healthy helper account the last-resort model is never used: the helper session runs the repair', async () => {
+    const w = world({ lastResort: { available: true } });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    await w.runtime.service.approve(episode.id);
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    expect(w.fallbackBrowser.open).not.toHaveBeenCalled();
+    expect(w.lastResortPort.beginDrive).not.toHaveBeenCalled();
+    expect(w.runtime.store.listEvents(episode.id).map((e) => e.eventClass)).toContain('agent-session-drive-started');
+    w.runtime.close();
+  });
+
+  it('the last-resort state is on GET /subscription-relogin (never a key); available:false when unconfigured', async () => {
+    for (const available of [true, false]) {
+      const w = world({ lastResort: { available } });
+      const { subscriptionReloginRouteContext } = await import('../../src/core/SubscriptionReloginRuntime.js');
+      const ctx = subscriptionReloginRouteContext(w.runtime);
+      expect(ctx.lastResortStatus()).toMatchObject(available
+        ? { available: true, model: 'fast', maxCallsPerDay: 300 }
+        : { available: false });
+      expect(JSON.stringify(ctx.lastResortStatus())).not.toMatch(/sk-ant/);
+      w.runtime.close();
+    }
+  });
+
+  // Two accounts, two providers: the other account runs the helper whichever provider it is.
+  it('a CLAUDE repair with only a Codex account to spare runs its helper on the Codex seat', async () => {
+    const w = world({ helperAccounts: [{ provider: 'openai', framework: 'codex-cli' }] as never, codexCli: 'signed-in', codexSource: 'codex-app-server' });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    expect(episode).toMatchObject({ provider: 'anthropic', framework: 'claude-code' });
+    await w.runtime.service.approve(episode.id);
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    expect(w.spawn.mock.calls[0]![0].seat).toMatchObject({ accountId: 'acct-helper-0', framework: 'codex-cli' });
+    expect(w.spawn.mock.calls[0]![0].seat.accountId).not.toBe('acct-broken');
+    w.runtime.close();
+  });
+
+  it('a CODEX repair with only a Claude account to spare runs its helper on the Claude seat', async () => {
+    const w = world({ brokenFramework: 'codex-cli', helperAccounts: [{}] as never });
+    await w.runtime.service.tick();
+    const episode = w.runtime.store.list()[0]!;
+    expect(episode).toMatchObject({ provider: 'openai', framework: 'codex-cli' });
+    await w.runtime.service.approve(episode.id);
+    await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(1));
+    expect(w.spawn.mock.calls[0]![0].seat).toMatchObject({ accountId: 'acct-helper-0', framework: 'claude-code' });
+    await vi.waitFor(() => expect(['succeeded', 'failed', 'waiting-operator-only']).toContain(w.runtime.store.get(episode.id)?.state));
     w.runtime.close();
   });
 

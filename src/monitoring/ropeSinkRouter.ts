@@ -34,6 +34,8 @@ export interface RopeSinkDeps {
   telegram: () => {
     createAttentionItem(item: { id: string; title: string; summary: string; description: string; category: string; priority: 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'; sourceContext: string }): Promise<unknown>;
     getAttentionItem(id: string): { topicId?: number } | undefined;
+    /** False when the Attention hub filter withholds this item (attentionHubPolicy). */
+    attentionHubAdmits?(id: string): boolean;
     sendToTopic(topicId: number, text: string, options?: { silent?: boolean }): Promise<unknown>;
   } | null;
   /** LIVE read: rope-health enabled AND digestTopicId configured. */
@@ -66,7 +68,7 @@ export function makeRopeSinkRouter(deps: RopeSinkDeps): (item: RopeSinkItem) => 
         st.count += 1;
         audit('deduped', { count: st.count });
         const existing = deps.telegram()?.getAttentionItem(st.itemId);
-        if (existing?.topicId !== undefined) {
+        if (existing?.topicId !== undefined && deps.telegram()?.attentionHubAdmits?.(st.itemId) !== false) {
           void deps.telegram()?.sendToTopic(existing.topicId, `${st.count}th ${cls} episode for this rope in 24 h — a recurring rope is worth a look at the link itself.`, { silent: true })?.catch?.(() => {});
         }
         return;

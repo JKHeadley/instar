@@ -17,6 +17,20 @@ import { resolveDevAgentGate } from './devAgentGate.js';
 import { validClaudePasteBackCode, type ClaudePasteBackController } from './ClaudePasteBackController.js';
 import { SubscriptionReloginHelper, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
 import type { CliLoginVerdict } from './CliLoginStatus.js';
+import type { ReloginLastResortStatus } from './ReloginLastResortProvider.js';
+
+/**
+ * The last-resort model port (spec relogin-last-resort-model): a lightweight model over an
+ * operator-placed API key that answers the repair's own model calls when the shared provider
+ * cannot. The runtime only asks whether it is available and brackets each drive for its caps;
+ * the evaluate itself is wired into `supervise` / `navigate` by the caller.
+ */
+export interface ReloginLastResortPort {
+  available(): boolean;
+  beginDrive(episodeId: string): void;
+  endDrive(episodeId: string): void;
+  status(): ReloginLastResortStatus;
+}
 
 export interface SubscriptionReloginRuntimeDeps {
   stateDir: string; projectDir: string; machineId: string;
@@ -52,6 +66,13 @@ export interface SubscriptionReloginRuntimeDeps {
   };
   /** The agent's chooser; required for `navigation: 'agent'` to take effect. */
   navigate?: (input: AgentNavigationInput) => Promise<string>;
+  /**
+   * The last-resort model (spec relogin-last-resort-model). With it available, an agent-session
+   * repair that finds NO other healthy account on this machine (`no-healthy-seat`) drives the
+   * server-side browser path with agent navigation instead of waiting on the operator; `navigate`
+   * is required for that. Absent or unavailable ⇒ the no-healthy-seat hand-off exactly as before.
+   */
+  lastResort?: ReloginLastResortPort;
   onSuggested?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
@@ -110,6 +131,8 @@ export interface SubscriptionReloginRuntime {
   store: SubscriptionReloginStore; service: SubscriptionReloginService;
   /** Present only on the agent-session path: the code route's handler. */
   helper: SubscriptionReloginHelper | null;
+  /** The last-resort model port when configured (spec relogin-last-resort-model). */
+  lastResort: ReloginLastResortPort | null;
   start(): void; stop(): void; close(): void;
 }
 
@@ -219,11 +242,25 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
   }) : null;
 
   const agentNavigation = deps.navigation === 'agent' && typeof deps.navigate === 'function';
+  // Episodes the agent-session path handed to the server-side driver because no other healthy
+  // account could run the helper and the last-resort model is available (spec
+  // relogin-last-resort-model). In-memory on purpose: a restart lands in `recoverUncertain`.
+  const lastResortDrives = new Set<string>();
+  const lastResortDriveAvailable = (): boolean =>
+    deps.lastResort?.available() === true && typeof deps.navigate === 'function';
   const orchestrator = new SubscriptionReloginOrchestrator({
     store,
-    driveEventClass: () => helper ? 'agent-session-drive-started' : agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
-    preAttempt: helper ? (episode, signal) => helper.preAttempt(episode, signal) : undefined,
-    releaseAttempt: helper ? (episode) => helper.releaseAttempt(episode) : undefined,
+    driveEventClass: (episode) => lastResortDrives.has(episode.id) ? 'last-resort-drive-started'
+      : helper ? 'agent-session-drive-started' : agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
+    preAttempt: helper ? async (episode, signal) => {
+      const verdict = await helper.preAttempt(episode, signal);
+      if (verdict.kind === 'no-healthy-seat' && lastResortDriveAvailable()) {
+        lastResortDrives.add(episode.id);
+        return { kind: 'ok' };
+      }
+      return verdict;
+    } : undefined,
+    releaseAttempt: helper ? (episode) => { lastResortDrives.delete(episode.id); helper.releaseAttempt(episode); } : undefined,
     authorityReady: () => deps.pool.getAvailability().state === 'ready',
     sourceIncidentOpen: (episode) => source(episode)?.closedAt === null,
     accountActive: (episode) => account(episode)?.status === 'active',
@@ -278,23 +315,35 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // §3.5–§3.8) is not on this build, so the drive boundary refuses by name; admission
       // already refuses unless the cell is `ready`, which nothing can produce here.
       if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
-      if (helper) {
-        if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
-          return { outcome: 'refused', failureClass: 'provider-rejected' };
-        return helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
+      if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
+        return { outcome: 'refused', failureClass: 'provider-rejected' };
+      if (helper && !lastResortDrives.has(episode.id)) {
+        const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
           provider: acct.provider, profileDir: detail.userDataDir,
           vaultBindingNames: Object.values(browserAccount.vaultBindings ?? {}).filter((name): name is string => typeof name === 'string'),
         }, signal);
+        // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
+        // helper with no seat; with the last resort available it falls through here too, instead
+        // of handing the operator a `no-healthy-seat` the pre-attempt path would have avoided.
+        if (!(result.outcome === 'operator-only' && result.failureClass === 'no-healthy-seat' && lastResortDriveAvailable())) return result;
+        lastResortDrives.add(episode.id);
       }
+      const lastResortDrive = lastResortDrives.has(episode.id);
+      // The server-side driver: the fixed page-class table, or agent navigation. A last-resort
+      // drive always navigates by agent (the fallback exists for a page the table cannot read);
+      // its model calls are capped per drive by the port, bracketed here.
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
-        navigation: agentNavigation ? 'agent' : 'closed', navigate: deps.navigate });
-      if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
-        return { outcome: 'refused', failureClass: 'provider-rejected' };
-      return driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
-        expectedIdentity: acct.email,
-        loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
-        allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
+        navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate });
+      deps.lastResort?.beginDrive(episode.id);
+      try {
+        return await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
+          expectedIdentity: acct.email,
+          loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
+          allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
+      } finally {
+        deps.lastResort?.endDrive(episode.id);
+      }
     },
     finishCli: async (episode, code, signal) => {
       const login = pending(episode.accountId); if (!login) throw new Error('login-artifact-unavailable');
@@ -460,7 +509,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
     } });
   serviceRef = service;
-  return { store, service, helper,
+  return { store, service, helper, lastResort: deps.lastResort ?? null,
     start: () => {
       // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
       if (helper) {
@@ -522,6 +571,9 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     ...(runtime.helper ? {
       helperSubmit: (episodeId: string, token: string, body: unknown) => runtime.helper!.submit(episodeId, token, body),
     } : {}),
+    // Registry First: the last-resort model's live state (never the key), or available:false.
+    lastResortStatus: (): ReloginLastResortStatus | { available: false } =>
+      runtime.lastResort?.available() ? runtime.lastResort.status() : { available: false },
     close: () => runtime.close(),
   };
 }

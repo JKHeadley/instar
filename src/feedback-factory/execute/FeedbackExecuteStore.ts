@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS execution (
   disarm_failed INTEGER NOT NULL DEFAULT 0, secret_files_json TEXT, codeowners_json TEXT, held_changeset_ref TEXT,
   notified_at INTEGER, release_tag TEXT, released_at INTEGER, verify_state TEXT, verify_session TEXT,
   spec_converge_session TEXT, spec_converge_state TEXT, graded_approval INTEGER NOT NULL DEFAULT 0,
+  review_sha TEXT, review_verdict TEXT, review_reason TEXT, reviewed_at INTEGER,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(initiative_id, attempt)
 );
@@ -84,6 +85,11 @@ export interface ExecutionRow {
   specConvergeSession: string | null;
   specConvergeState: string | null;
   gradedApproval: boolean;
+  /** The head the independent review last judged, its verdict (`pass` | `fail`) and reason. */
+  reviewSha: string | null;
+  reviewVerdict: string | null;
+  reviewReason: string | null;
+  reviewedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -99,7 +105,11 @@ const COLUMN: Record<keyof ExecutionPatch, string> = {
   secretFiles: 'secret_files_json', codeownersOutside: 'codeowners_json', heldChangesetRef: 'held_changeset_ref', notifiedAt: 'notified_at',
   releaseTag: 'release_tag', releasedAt: 'released_at', verifyState: 'verify_state', verifySession: 'verify_session',
   specConvergeSession: 'spec_converge_session', specConvergeState: 'spec_converge_state', gradedApproval: 'graded_approval',
+  reviewSha: 'review_sha', reviewVerdict: 'review_verdict', reviewReason: 'review_reason', reviewedAt: 'reviewed_at',
 };
+
+/** Columns added after the table first shipped; an existing database gains them in place. */
+const ADDED_COLUMNS: ReadonlyArray<[string, string]> = [['review_sha', 'TEXT'], ['review_verdict', 'TEXT'], ['review_reason', 'TEXT'], ['reviewed_at', 'INTEGER']];
 
 export class FeedbackExecuteStore {
   private readonly db: BetterSqliteDatabase;
@@ -109,6 +119,8 @@ export class FeedbackExecuteStore {
     this.db = drain.sharedDatabase();
     this.now = opts.clock ?? Date.now;
     this.db.exec(SCHEMA);
+    const have = new Set((this.db.prepare('PRAGMA table_info(execution)').all() as Array<{ name: string }>).map((c) => c.name));
+    for (const [column, type] of ADDED_COLUMNS) if (!have.has(column)) this.db.exec(`ALTER TABLE execution ADD COLUMN ${column} ${type}`);
   }
 
   /** Run `fn` in one immediate transaction under the triage owner fence (stale epoch → DrainConflictError). */
@@ -261,6 +273,7 @@ function fromRow(row: Record<string, unknown>): ExecutionRow {
     heldChangesetRef: str(row.held_changeset_ref), notifiedAt: num(row.notified_at), releaseTag: str(row.release_tag), releasedAt: num(row.released_at),
     verifyState: str(row.verify_state), verifySession: str(row.verify_session), specConvergeSession: str(row.spec_converge_session),
     specConvergeState: str(row.spec_converge_state), gradedApproval: Number(row.graded_approval) === 1,
+    reviewSha: str(row.review_sha), reviewVerdict: str(row.review_verdict), reviewReason: str(row.review_reason), reviewedAt: num(row.reviewed_at),
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
   };
 }

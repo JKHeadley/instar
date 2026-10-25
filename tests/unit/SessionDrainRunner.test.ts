@@ -210,12 +210,48 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     expect(out.autonomousRunSuspended).toBe(false);
   });
 
-  it('a vetoed close is carried in the outcome detail (never silently claimed closed)', async () => {
+  // 2026-10-23 incident: the close was refused (not-lease-holder on the old
+  // owner) but the claim landed anyway — ownership moved while the session
+  // stayed alive, and two sessions served one conversation. A refused close
+  // must abort the transfer: the topic stays with the session still running.
+  for (const skipped of ['protected', 'not-lease-holder', 'recent-user-message', 'active-subagent', 'in-flight']) {
+    it(`a REFUSED close (${skipped}) aborts the transfer — no target claim, topic stays here`, async () => {
+      const h = harness({
+        quietAfterPolls: 0,
+        deps: { terminateSession: vi.fn(async () => ({ terminated: false, skipped })) },
+      });
+      const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+      expect(out.status).toBe('refused-close-failed');
+      expect(out.claimLanded).toBeUndefined();
+      expect(h.casCalls.map((a) => a.type)).toEqual(['transfer', 'abort-transfer']);
+      expect(h.casCalls.some((a) => a.type === 'claim')).toBe(false);
+      expect(h.audits.some((a) => a.event === 'drain-aborted-close-failed')).toBe(true);
+    });
+  }
+
+  it('a THROWN close aborts the transfer too (an unknown close is not a closed session)', async () => {
     const h = harness({
-      quietAfterPolls: 0,
-      deps: { terminateSession: vi.fn(async () => ({ terminated: false, skipped: 'protected' })) },
+      quietAfterPolls: Infinity,
+      deps: { terminateSession: vi.fn(async () => { throw new Error('tmux gone weird'); }) },
     });
     const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
-    expect(out.detail).toContain('close-skipped:protected');
+    expect(out.status).toBe('refused-close-failed');
+    expect(h.casCalls.some((a) => a.type === 'claim')).toBe(false);
+    // No "moved mid-task" notice for a move that did not happen.
+    expect(h.notifyInterrupted).not.toHaveBeenCalled();
   });
+
+  for (const skipped of ['no-local-session', 'not-found', 'already-completed', 'already-killed']) {
+    it(`nothing left to close (${skipped}) is not a refusal — the claim still lands`, async () => {
+      const h = harness({
+        quietAfterPolls: 0,
+        deps: { terminateSession: vi.fn(async () => ({ terminated: false, skipped })) },
+      });
+      const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+      expect(out.status).toBe('drained');
+      expect(out.claimLanded).toBe(true);
+      expect(out.detail).toContain(`close-skipped:${skipped}`);
+      expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
+    });
+  }
 });

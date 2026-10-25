@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T02:20:22.516Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "1c641ac1b8fbf4f8eb22833104b773d327ace2cbbcaec578b423608cc88470ca",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorPorts.ts",
+    "tests/unit/feedback-factory/execute-attempt-git.test.ts",
+    "tests/unit/feedback-factory/execute-reroute-capacity.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bug fix in the executor's git port and claim loop plus an additive status field; no gate, authority, confinement or merge rule changes.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

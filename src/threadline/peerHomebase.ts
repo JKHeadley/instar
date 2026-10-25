@@ -292,3 +292,19 @@ export async function backfillPeerHomebases(
   }
   return out;
 }
+
+/**
+ * Is homebase creation on? DEFAULT ON — `threadline.peerHomebase.enabled: false` is the off
+ * switch.
+ *
+ * It shipped behind the development-agent gate (live on a dev agent, dark on the fleet), so a
+ * fleet build — and the operator's own Mama PC — never created one. The operator asked for one
+ * topic per paired agent by name (§2.5), the set is bounded by human-gated pairing, and the
+ * blast radius is one topic per peer, so the dev-gate soak bought nothing worth the silence.
+ * Decided 2026-10-23 (Echo Bugs topic, homebase backfill fix).
+ */
+export function peerHomebaseEnabled(config: unknown): boolean {
+  const enabled = (config as { threadline?: { peerHomebase?: { enabled?: boolean } } } | null | undefined)
+    ?.threadline?.peerHomebase?.enabled;
+  return enabled !== false;
+}

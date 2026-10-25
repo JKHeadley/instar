@@ -1,6 +1,29 @@
 # The Instar Standards Registry — A Living Constitution
 
-*The engineering principles that guide how Instar is built. Each one is a rule, what it means in practice, the failure it was earned from, and how it traces back to the one thing we're building. Seeded 2026-05-23 as the first tangible artifact of the [North Star — Continuous Working Awareness](./NORTH-STAR.md) doc. This document is meant to grow.*
+The master constitution for **both Instar 1.x and Instar 2.0** lives in the
+[Instar 2.0 purpose](https://github.com/JKHeadley/instar-2/blob/main/docs/00-the-purpose.md)
+and [Instar 2.0 rule book](https://github.com/JKHeadley/instar-2/blob/main/docs/01-the-rules.md),
+read in that order. Their Rules govern; their Values guide judgment. This registry
+preserves 1.x standards, incident histories and implementation references beneath
+that single authority. Where retained 1.x wording differs, the master governs;
+a correspondence in subject does not make the two wordings interchangeable.
+
+A reader or review that needs the constitution must read both master documents.
+This file alone is not the complete constitution. Naming the master here does not
+certify that existing loaders fetch it or that existing implementations enforce it.
+
+**Proposed 2.0 amendments** — these 1.x articles contain distinct obligations with
+no direct counterpart in the master. Their existing text and anchors are retained
+unchanged below, including their existing 1.x ratification status:
+
+- [Never Silently Cut the Data a Decision Depends On](#never-silently-cut-the-data-a-decision-depends-on) — remains pending operator ratification in 1.x.
+- [Telegram Message Origin Is Mandatory; Its Display Is Optional](#telegram-message-origin-is-mandatory-its-display-is-optional) — retains its recorded 1.x ratification; adoption into 2.0 is proposed.
+
+Listing an amendment here does not approve it in 2.0 or permit it to override the
+master. Changes to the master require Justin's code-owner approval in instar-2.
+Changes to this registry also require Justin's code-owner approval. The retained
+1.x articles remain applicable within the master; historical references below to
+this registry as the constitution do not create a second constitutional authority.
 
 ---
 
@@ -10,7 +33,7 @@ Instar has one founding goal: **build a coherent, self-evolving agent.** Almost 
 
 > **On the "earned from" stories.** Each one names the *crystallizing* instance — the moment the lesson finally hardened into a standard — but it is almost never the *first* instance. Behind nearly every standard here is a long tail of earlier recurrences. A standard typically emerges only after a pattern repeats often enough that the cost of re-paying it becomes obviously larger than the cost of enforcing against it structurally. That history isn't a weakness in the provenance; it's the *strength* of it. These rules earned their place by recurring, and the recurrence is the proof that structure — not willpower — is the only thing that ever stopped them. (The single incident is cited for legibility, not because it was the only time.)
 
-This registry is distinct from the Values & Identity doc. That one is about who an *agent* is (personal / relationship / organizational values). This one is about **how the Instar framework itself is engineered.** It is the constitution a spec or a build must be checked against.
+This registry is distinct from the Values & Identity doc. That one is about who an *agent* is (personal / relationship / organizational values). This one is about **how the Instar framework itself is engineered.** Its implementation references and incident histories support checks against the master constitution named above.
 
 It is also a working part of the machine, not just a reference:
 
@@ -1319,4 +1342,4 @@ This is the through-line of the entire registry: the Genesis taught that for an 
 
 ---
 
-*This document's canonical home is here in the Instar repo (`docs/`) — the source of truth the spec-review conformance gate and the runtime Usher read from. It's a beacon, not a stone tablet: it is meant to grow, and it amends itself through the loop described above (agent proposes with a story, operator ratifies).*
+*This document is the retained 1.x registry at `docs/STANDARDS-REGISTRY.md`. The master constitution is the pair of Instar 2.0 documents linked at the opening; this registry supplies 1.x context and proposed amendments beneath it.*

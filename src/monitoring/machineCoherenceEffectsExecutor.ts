@@ -21,6 +21,8 @@ export interface EffectsTelegram {
     category: string; priority: string; sourceContext?: string; silent?: boolean;
   }): Promise<unknown>;
   getAttentionItem(itemId: string): { topicId?: number } | undefined;
+  /** False when the Attention hub filter withholds this item (attentionHubPolicy). */
+  attentionHubAdmits?(itemId: string): boolean;
   sendToTopic(topicId: number, text: string, options?: { silent?: boolean }): Promise<unknown>;
   updateAttentionStatus(itemId: string, status: string, opts?: { silent?: boolean }): Promise<boolean>;
 }
@@ -52,10 +54,12 @@ export function executeMachineCoherenceEffects(effects: EpisodeEffect[], deps: E
           });
         } else if (eff.kind === 'append') {
           const item = tg?.getAttentionItem(eff.itemId);
-          if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.text, { silent: eff.silent === true });
+          // Follow-up lines go only where the item itself was posted: an item the
+          // Attention hub filter held stays held (attentionHubPolicy).
+          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await tg?.sendToTopic(item.topicId, eff.text, { silent: eff.silent === true });
         } else if (eff.kind === 'resolve') {
           const item = tg?.getAttentionItem(eff.itemId);
-          if (item?.topicId !== undefined) await tg?.sendToTopic(item.topicId, eff.note, { silent: eff.silent === true });
+          if (item?.topicId !== undefined && tg?.attentionHubAdmits?.(eff.itemId) !== false) await tg?.sendToTopic(item.topicId, eff.note, { silent: eff.silent === true });
           await tg?.updateAttentionStatus(eff.itemId, 'DONE', { silent: eff.silent === true });
         } else if (eff.kind === 'resolve-status') {
           // Orphan self-closeout arm: status-only DONE, no message ever.

@@ -20,6 +20,9 @@
  *      permits a non-target sender to land a claim NAMING the target — the
  *      established router-confirmClaim precedent), so the durable queue's
  *      barrier releases to the new owner exactly at drain completion.
+ *      If the close is REFUSED (a keep-guard, the lease gate, an error), the
+ *      transfer is aborted instead (`refused-close-failed`): ownership never
+ *      moves away from a session that is still running.
  *   5. On emergency stop: CAS abort-transfer — the topic STAYS HERE, the
  *      sender marks the transfer failed-needs-retry, nothing is left split.
  *
@@ -56,6 +59,7 @@ export type DrainStatus =
   | 'drained-interrupted'     // forced at the bound: closed mid-task, claim landed, notice sent
   | 'aborted-emergency-stop'  // emergency stop: transfer aborted, topic stays here
   | 'refused-ledger-transfer' // target did not durably accept encrypted delivery custody
+  | 'refused-close-failed'    // the local session could not be closed — transfer aborted, topic stays here
   | 'refused-not-owner'       // this machine does not own the topic
   | 'refused-stale-epoch'     // the sender's observed epoch no longer matches (replay / raced transfer)
   | 'refused-cas-lost';       // could not enter (or exit) transferring — a peer raced us
@@ -143,7 +147,11 @@ export class SessionDrainRunner {
     const d = this.deps;
     const audit = (event: string, detail: Record<string, unknown> = {}) =>
       d.audit?.({ event, sessionKey: req.sessionKey, target: req.target, ...detail });
-    const abortTransfer = (autonomousRunSuspended: boolean, status: 'aborted-emergency-stop' | 'refused-ledger-transfer', detail?: string): DrainOutcome => {
+    const abortTransfer = (
+      autonomousRunSuspended: boolean,
+      status: 'aborted-emergency-stop' | 'refused-ledger-transfer' | 'refused-close-failed',
+      detail?: string,
+    ): DrainOutcome => {
       const ab = d.cas(
         { type: 'abort-transfer', machineId: d.selfMachineId },
         { sessionKey: req.sessionKey, sender: d.selfMachineId, nonce: d.nonce() },
@@ -153,9 +161,16 @@ export class SessionDrainRunner {
         try { d.restoreDeliveryLedger?.({ sessionKey: req.sessionKey, transferEpoch: activeEpoch - 1, activeEpoch }); }
         catch { /* fail closed: restored ownership without restored ledger leaves effects fenced */ }
       }
-      audit(status === 'aborted-emergency-stop' ? 'drain-aborted-emergency-stop' : 'drain-aborted-ledger-transfer', {
-        abortLanded: ab.ok, casReason: ab.reason, detail,
-      });
+      audit(
+        status === 'aborted-emergency-stop'
+          ? 'drain-aborted-emergency-stop'
+          : status === 'refused-close-failed'
+            ? 'drain-aborted-close-failed'
+            : 'drain-aborted-ledger-transfer',
+        {
+          abortLanded: ab.ok, casReason: ab.reason, detail,
+        },
+      );
       return {
         status,
         autonomousRunSuspended,
@@ -248,11 +263,26 @@ export class SessionDrainRunner {
       ? `topic ${req.sessionKey} transferring to ${req.target} — drain bound reached, closing mid-task`
       : `topic ${req.sessionKey} transferring to ${req.target} — turn boundary reached, clean close`;
     let closeSkipped: string | undefined;
+    let closeRefused = false;
     try {
       const res = await d.terminateSession(req.sessionKey, reason, { force: interrupted });
-      if (!res.terminated) closeSkipped = res.skipped ?? 'unknown';
+      if (!res.terminated) {
+        closeSkipped = res.skipped ?? 'unknown';
+        closeRefused = !isNothingToClose(closeSkipped);
+      }
     } catch (err) {
       closeSkipped = err instanceof Error ? err.message : String(err);
+      closeRefused = true;
+    }
+    // A local session that is still alive must NEVER coexist with the target
+    // owning the topic: that is two live sessions serving one conversation
+    // (the 2026-10-23 incident — the close was refused, the claim landed
+    // anyway, and both copies ran the same destructive job). If the close was
+    // refused, abort the transfer so ownership stays with the session that is
+    // still running. "Nothing to close" skips (no local session, already
+    // ended) are not refusals — the claim may land.
+    if (closeRefused) {
+      return abortTransfer(autonomousRunSuspended, 'refused-close-failed', `close-refused:${closeSkipped}`);
     }
     // Termination is awaited and may take long enough for the operator's
     // emergency stop to arrive. Recheck at the final authority boundary,
@@ -288,4 +318,14 @@ export class SessionDrainRunner {
       ...(closeSkipped ? { detail: `close-skipped:${closeSkipped}` } : {}),
     };
   }
+}
+
+/**
+ * Terminate skips that mean there is no live local session left to retire, so
+ * landing the target claim cannot create a second live copy. Every other skip
+ * (protected, not-lease-holder, a KEEP guard, in-flight, unknown) leaves the
+ * local session running and must abort the transfer.
+ */
+export function isNothingToClose(skipped: string): boolean {
+  return skipped === 'no-local-session' || skipped === 'not-found' || skipped.startsWith('already-');
 }
