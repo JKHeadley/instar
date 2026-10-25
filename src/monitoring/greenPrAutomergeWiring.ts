@@ -37,6 +37,7 @@ import {
   type AuthenticatedGitHubCliRuntime,
 } from '../core/githubRuntime.js';
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
+import { DegradationReporter } from './DegradationReporter.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
@@ -82,6 +83,70 @@ export const PROTECTED_PATH_PREFIXES = [
 export const PROTECTED_GATE_SCRIPTS = [
   'scripts/safe-merge.mjs',
 ];
+
+/**
+ * The `--json` fields `gh pr view` / `gh pr list` accept (gh 2.97.0, `gh pr view
+ * --json` with no field list prints this set). A field outside it makes gh print
+ * `Unknown JSON field: "<name>"` and exit 1 — which `refetchPr` used to read as
+ * "the PR vanished", so EVERY pull request audited `skipped:vanished` and the
+ * watcher armed nothing (2026-10-24, PR #2334 sat green and unmerged: the list
+ * carried `mergeCommitOid`; the real field is `mergeCommit`, an object with
+ * `.oid`). The unit test pins every projection in this file to this set, so a
+ * field drift fails a test instead of silently nulling every PR.
+ */
+export const GH_PR_JSON_FIELDS: readonly string[] = [
+  'additions', 'assignees', 'author', 'autoMergeRequest', 'baseRefName', 'baseRefOid', 'body',
+  'changedFiles', 'closed', 'closedAt', 'closingIssuesReferences', 'comments', 'commits', 'createdAt',
+  'deletions', 'files', 'fullDatabaseId', 'headRefName', 'headRefOid', 'headRepository',
+  'headRepositoryOwner', 'id', 'isCrossRepository', 'isDraft', 'labels', 'latestReviews',
+  'maintainerCanModify', 'mergeCommit', 'mergeStateStatus', 'mergeable', 'mergedAt', 'mergedBy',
+  'milestone', 'number', 'potentialMergeCommit', 'projectCards', 'projectItems', 'reactionGroups',
+  'reviewDecision', 'reviewRequests', 'reviews', 'state', 'statusCheckRollup', 'title', 'updatedAt', 'url',
+];
+
+/** The `refetchPr` projection (act-time pre-arm gate + armed-episode reconciliation read). */
+export const REFETCH_PR_JSON_FIELDS: readonly string[] = [
+  'title', 'labels', 'isDraft', 'headRefOid', 'state', 'mergeCommit', 'autoMergeRequest',
+];
+
+/** The `listOpenPrs` projection. */
+export const LIST_PR_JSON_FIELDS: readonly string[] = [
+  'number', 'title', 'labels', 'isDraft', 'headRefName', 'headRefOid', 'baseRefName', 'mergeable',
+  'statusCheckRollup', 'autoMergeRequest', 'reviewDecision', 'createdAt',
+];
+
+const UNKNOWN_JSON_FIELD_RE = /Unknown JSON field:\s*"([^"]+)"/i;
+const reportedUnknownJsonFields = new Set<string>();
+
+/**
+ * A non-zero `gh ... --json` exit whose stderr names an unknown field is a FIELD
+ * DRIFT (our projection vs the installed gh), never a fact about the PR. Surface
+ * it loudly — once per field per process — through the degradation reporter and
+ * the wiring logger; the caller still fails toward NOT merging (returns null).
+ */
+export function reportUnknownGhJsonField(
+  stderr: string,
+  seam: string,
+  logger?: (msg: string) => void,
+  report: (event: Parameters<DegradationReporter['report']>[0]) => void = (e) => DegradationReporter.getInstance().report(e),
+): string | null {
+  const field = UNKNOWN_JSON_FIELD_RE.exec(stderr ?? '')?.[1] ?? null;
+  if (!field) return null;
+  const msg = `[green-pr-automerge] gh rejected the --json field "${field}" in ${seam}; every PR reads as vanished until the projection is fixed (gh: ${stderr.trim().split('\n')[0]})`;
+  if (reportedUnknownJsonFields.has(field)) return field;
+  reportedUnknownJsonFields.add(field);
+  try { logger?.(msg); } catch { /* @silent-fallback-ok: a logger failure must not hide the degradation report below */ }
+  try {
+    report({
+      feature: `GreenPrAutoMerger.${seam}.unknownJsonField`,
+      primary: `gh ${seam} read with the projection this build ships`,
+      fallback: 'the read returns null — the watcher audits skipped:vanished and arms/merges nothing',
+      reason: `Why: the installed gh does not know the --json field "${field}" (field drift between the wiring and gh).`,
+      impact: 'Green PRs are never armed or merged until the projection matches the installed gh.',
+    });
+  } catch { /* @silent-fallback-ok: the reporter may be unconfigured in tests; the logger line above already carried the field */ }
+  return field;
+}
 
 /**
  * The two paths the watcher is built from (ACT-150):
@@ -148,6 +213,8 @@ export interface GreenPrWiringOpts {
   logger?: (msg: string) => void;
   /** Test seam: override the gh exec. */
   ghExec?: (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
+  /** Test seam: where a gh `--json` field drift is reported (default: DegradationReporter). */
+  reportDegradation?: (event: Parameters<DegradationReporter['report']>[0]) => void;
   /** Test seam: explicit GitHub runtime shared by reads and safe-merge. */
   githubRuntime?: () => AuthenticatedGitHubCliRuntime;
 }
@@ -262,7 +329,7 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
         // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
         // extra field on the single oldest-first list call already made each tick
         // lets gather() skip an already-armed PR FREE, regardless of local state.
-        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,autoMergeRequest,reviewDecision,createdAt',
+        '--limit', '100', '--json', LIST_PR_JSON_FIELDS.join(','),
         '--search', 'sort:created-asc',
       ]);
       if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
@@ -327,20 +394,28 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       // and autoMergeRequest (present ⇔ armed; expectedHeadOid = the PR's final
       // head GitHub will merge — the head-pin comparison operand). Used by the
       // act-time pre-arm gate AND the armed-episode reconciliation read.
-      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'title,labels,isDraft,headRefOid,state,mergeCommitOid,autoMergeRequest']);
-      if (r.code !== 0) return null;
+      // gh's field is `mergeCommit` ({ oid }); the returned shape keeps `mergeCommitOid`
+      // so consumers are unchanged. The field list is pinned to GH_PR_JSON_FIELDS.
+      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', REFETCH_PR_JSON_FIELDS.join(',')]);
+      if (r.code !== 0) {
+        // An unknown-field exit is OUR drift, not a vanished PR — say so loudly
+        // (once per field) before failing toward not-merging.
+        reportUnknownGhJsonField(r.stderr, 'refetchPr', opts.logger, opts.reportDegradation);
+        return null;
+      }
       try {
         const j = JSON.parse(r.stdout);
         const amr = j.autoMergeRequest && typeof j.autoMergeRequest === 'object'
           ? { enabledAt: j.autoMergeRequest.enabledAt ?? null, expectedHeadOid: j.autoMergeRequest.expectedHeadOid ?? null }
           : null;
+        const mergeOid = j.mergeCommit && typeof j.mergeCommit === 'object' ? j.mergeCommit.oid : null;
         return {
           title: String(j.title ?? ''),
           labels: Array.isArray(j.labels) ? j.labels.map((l: { name?: string }) => l.name ?? '') : [],
           isDraft: !!j.isDraft,
           headRefOid: String(j.headRefOid ?? ''),
           state: String(j.state ?? 'UNKNOWN'),
-          mergeCommitOid: j.mergeCommitOid != null ? String(j.mergeCommitOid) : null,
+          mergeCommitOid: mergeOid != null ? String(mergeOid) : null,
           autoMergeRequest: amr,
         };
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return null; }

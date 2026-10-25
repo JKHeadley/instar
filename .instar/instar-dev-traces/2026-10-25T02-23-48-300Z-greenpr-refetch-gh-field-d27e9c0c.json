@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "greenpr-refetch-gh-field",
+  "sessionId": "8da0775f-0138-4aed-a265-6b7c1634d695",
+  "timestamp": "2026-10-25T02:23:48.300Z",
+  "artifactPath": "upgrades/side-effects/greenpr-refetch-gh-field.md",
+  "artifactSha256": "22195082e37a7a831849a765d5027de2acb9f3e40cd9a26396fd9d73bb764cb0",
+  "coveredFiles": [
+    "docs/eli16/greenpr-refetch-gh-field.eli16.md",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "tests/unit/green-pr-automerge-wiring.test.ts",
+    "upgrades/next/greenpr-refetch-gh-field.md",
+    "upgrades/side-effects/greenpr-refetch-gh-field.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One wrong gh --json field name in a read seam; the fix changes the field, pins the projections in a unit test and adds a signal-only degradation report. A revert fully undoes it; no state, no migration, no new authority.",
+  "eli16Path": "docs/eli16/greenpr-refetch-gh-field.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/greenpr-refetch-gh-field.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1893
+    ],
+    "notes": "PR #1893 (2026-08-14, mergerunner-auto-arm-handoff Blocker 4) widened refetchPr with the field name mergeCommitOid, which gh PR JSON never had (the field is mergeCommit {oid}). The view call has exited 1 (Unknown JSON field) ever since, and the seam read that as a vanished PR, so the watcher never armed anything on the act-time read. Latent until 2026-10-24, when PR #2334 sat green and unmerged and the audit showed skipped:vanished for every PR."
+  }
+}

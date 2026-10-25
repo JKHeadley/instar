@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 import { artifactSha256 } from '../../scripts/lib/instar-dev-trace.mjs';
-import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { buildGreenPrDeps, buildGuardLatchStore, isAnalyzableGreenPrRepo, resolveGreenPrAgentNamespace, resolveGreenPrPaths, GH_PR_JSON_FIELDS, LIST_PR_JSON_FIELDS, REFETCH_PR_JSON_FIELDS, reportUnknownGhJsonField, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { installedSafeMergePath } from '../../src/core/installedSafeMerge.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
@@ -151,8 +151,9 @@ describe('buildGreenPrDeps — widened projections (Blocker 4)', () => {
     expect(prs[1].autoMergeArmed).toBe(false);
   });
 
-  it('refetchPr returns the widened shape (state + mergeCommitOid + autoMergeRequest)', async () => {
-    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'MERGED', mergeCommitOid: 'squashBase', autoMergeRequest: { expectedHeadOid: 'h1' } });
+  it('refetchPr returns the widened shape (state + mergeCommitOid + autoMergeRequest), mapping gh\'s mergeCommit.oid', async () => {
+    // gh's PR JSON has `mergeCommit: { oid }` — there is NO `mergeCommitOid` field.
+    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'MERGED', mergeCommit: { oid: 'squashBase' }, autoMergeRequest: { expectedHeadOid: 'h1' } });
     const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view } });
     const latches = buildGuardLatchStore(baseOpts({ ghExec }));
     const deps = buildGreenPrDeps(baseOpts({ ghExec }), latches);
@@ -161,11 +162,77 @@ describe('buildGreenPrDeps — widened projections (Blocker 4)', () => {
     expect(r!.state).toBe('MERGED');
     expect(r!.mergeCommitOid).toBe('squashBase');
     expect(r!.autoMergeRequest?.expectedHeadOid).toBe('h1');
-    // The view projection requested the widened fields.
+    // The view projection requested the widened fields — by gh's names.
     const viewCall = calls.find((c) => c[0] === 'pr' && c[1] === 'view')!;
-    const jsonFields = viewCall[viewCall.indexOf('--json') + 1];
-    expect(jsonFields).toContain('mergeCommitOid');
+    const jsonFields = viewCall[viewCall.indexOf('--json') + 1].split(',');
+    expect(jsonFields).toContain('mergeCommit');
     expect(jsonFields).toContain('autoMergeRequest');
+    expect(jsonFields).not.toContain('mergeCommitOid');
+  });
+
+  it('refetchPr: an unmerged PR (mergeCommit null) yields mergeCommitOid null', async () => {
+    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'OPEN', mergeCommit: null, autoMergeRequest: null });
+    const { ghExec } = fakeGh({ 'pr view': { stdout: view } });
+    const deps = buildGreenPrDeps(baseOpts({ ghExec }), buildGuardLatchStore(baseOpts({ ghExec })));
+    const r = await deps.refetchPr(1);
+    expect(r!.state).toBe('OPEN');
+    expect(r!.mergeCommitOid).toBeNull();
+  });
+});
+
+describe('gh --json projections are pinned to fields gh actually supports (2026-10-24 vanished-every-PR fix)', () => {
+  // gh answers `Unknown JSON field: "<name>"` + exit 1 for a field outside this set;
+  // refetchPr then returned null and the watcher audited skipped:vanished for EVERY
+  // PR (PR #2334 sat green and unmerged). No network: the pin is a constant check.
+  it('every field in the refetchPr and listOpenPrs projections is a known gh PR JSON field', () => {
+    for (const f of REFETCH_PR_JSON_FIELDS) expect(GH_PR_JSON_FIELDS, `refetchPr field ${f}`).toContain(f);
+    for (const f of LIST_PR_JSON_FIELDS) expect(GH_PR_JSON_FIELDS, `listOpenPrs field ${f}`).toContain(f);
+    expect(GH_PR_JSON_FIELDS).not.toContain('mergeCommitOid');
+    expect(REFETCH_PR_JSON_FIELDS).toContain('mergeCommit');
+  });
+
+  it('the LIVE gh calls carry exactly the pinned projections (no stray literal field list)', async () => {
+    const view = JSON.stringify({ title: 't', labels: [], isDraft: false, headRefOid: 'h1', state: 'OPEN' });
+    const { ghExec, calls } = fakeGh({ 'pr view': { stdout: view }, 'pr list': { stdout: '[]' } });
+    const deps = buildGreenPrDeps(baseOpts({ ghExec }), buildGuardLatchStore(baseOpts({ ghExec })));
+    await deps.refetchPr(1);
+    await deps.listOpenPrs();
+    const fieldsOf = (c: string[]) => c[c.indexOf('--json') + 1].split(',');
+    const viewCall = calls.find((c) => c[0] === 'pr' && c[1] === 'view')!;
+    const listCall = calls.find((c) => c[0] === 'pr' && c[1] === 'list')!;
+    expect(fieldsOf(viewCall)).toEqual([...REFETCH_PR_JSON_FIELDS]);
+    expect(fieldsOf(listCall)).toEqual([...LIST_PR_JSON_FIELDS]);
+    for (const f of [...fieldsOf(viewCall), ...fieldsOf(listCall)]) expect(GH_PR_JSON_FIELDS).toContain(f);
+  });
+
+  it('an "Unknown JSON field" exit is a LOUD degradation naming the field (once per field), and still fails toward null', async () => {
+    const stderr = 'Unknown JSON field: "mergeCommitOid"\nAvailable fields:\n  additions\n';
+    const { ghExec } = fakeGh({ 'pr view': { stdout: '', stderr, code: 1 } });
+    const logged: string[] = [];
+    const reported: Array<{ feature: string; reason: string }> = [];
+    const opts = baseOpts({ ghExec, logger: (m) => logged.push(m), reportDegradation: (e) => reported.push({ feature: e.feature, reason: e.reason }) });
+    const deps = buildGreenPrDeps(opts, buildGuardLatchStore(opts));
+    expect(await deps.refetchPr(2334)).toBeNull(); // fail-safe direction kept: never merge on a bad read
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain('"mergeCommitOid"');
+    expect(logged[0]).toContain('refetchPr');
+    expect(reported).toHaveLength(1);
+    expect(reported[0].feature).toBe('GreenPrAutoMerger.refetchPr.unknownJsonField');
+    expect(reported[0].reason).toContain('"mergeCommitOid"');
+    // Same field again → the read still fails closed, but the report is not repeated.
+    expect(await deps.refetchPr(2335)).toBeNull();
+    expect(logged).toHaveLength(1);
+    expect(reported).toHaveLength(1);
+  });
+
+  it('a non-zero exit WITHOUT an unknown-field message (a vanished PR, auth failure) reports nothing', async () => {
+    const { ghExec } = fakeGh({ 'pr view': { stdout: '', stderr: 'GraphQL: Could not resolve to a PullRequest with the number of 99.', code: 1 } });
+    const reported: unknown[] = [];
+    const opts = baseOpts({ ghExec, reportDegradation: (e) => reported.push(e) });
+    const deps = buildGreenPrDeps(opts, buildGuardLatchStore(opts));
+    expect(await deps.refetchPr(99)).toBeNull();
+    expect(reported).toHaveLength(0);
+    expect(reportUnknownGhJsonField('some other error', 'refetchPr', undefined, () => { throw new Error('must not be called'); })).toBeNull();
   });
 });
 
