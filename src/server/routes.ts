@@ -15024,6 +15024,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // Clear the canary latch's WAIT so the next tick re-runs the sandbox check now.
+  // Halting is automatic; RESUMING had no lever at all — a latch at the top of the
+  // ladder stopped every fix attempt for a day even once its cause was fixed and
+  // installed. This drops the wait ONLY: the canary still runs and still has to
+  // pass, so it grants nothing a passing rehearsal would not.
+  router.post('/feedback-factory/execute/canary-retry', (req, res) => {
+    if (executeUnavailable(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (triageOwnerConflict(res)) return;
+    const result = ctx.feedbackExecute!.service.retryCanaryNow('api');
+    res.status(result.cleared ? 200 : 409).json(result);
+  });
+
   // The readiness signal. Read-only.
   router.get('/cutover-readiness', (_req, res) => {
     if (!ctx.cutoverReadiness) {

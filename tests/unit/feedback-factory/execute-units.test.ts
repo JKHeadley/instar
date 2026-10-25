@@ -13,12 +13,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath,
-  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CLAUDE_CONFINED_PERMISSION_ARGS,
+  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
-import { effectChecks, evaluateSessionCanary, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
+import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -316,8 +316,84 @@ describe('canary judgement', () => {
         expect(env.TMPDIR).toBe(p.tmpDir);
         expect(env.VITEST_CACHE_DIR.startsWith(p.agentHome + '/')).toBe(true);
         expect(env.VITEST_CACHE_DIR.startsWith(p.tmpDir)).toBe(true);
+        // base-unit-smoke runs through npx, which reads and writes npm's cache under HOME — denied
+        // by the confinement for the same reason as the two above.
+        expect(env.npm_config_cache).toBe(path.join(p.tmpDir, 'npm'));
+        expect(env.npm_config_cache.startsWith(p.tmpDir)).toBe(true);
+        expect(env.npm_config_update_notifier).toBe('false');
       }
     } finally { await fx.close(); }
+  });
+
+  it('a failed must-succeed probe carries its own output: the detail names the cause, not just the exit code', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const failingSmoke: ConfinedRunner = {
+      available: () => ({ ok: true, version: '0.0.77' }),
+      run: async (cmd) => (/^npx vitest/.test(cmd.command)
+        ? { exitCode: 1, signal: null, stdout: 'Test Files  1 failed', stderr: "EPERM: operation not permitted, mkdir '/home/agent/.npm'", timedOut: false, outputCapped: false }
+        : { exitCode: confinedOk(cmd.command), signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false }),
+    };
+    try {
+      const probes = await runRunnerCanary({ paths: p, fixture: fx, runner: failingSmoke, fullGate: { lintCommand: 'npm run lint', smokeTests: ['tests/a.test.ts'] } });
+      const smoke = probes.find((x) => x.probe === 'base-unit-smoke')!;
+      expect(smoke.ok).toBe(false);
+      // The whole point: five consecutive 24h latches were undiagnosable because this said only 'exit 1'.
+      expect(smoke.detail).toContain('exit 1');
+      expect(smoke.detail).toContain('EPERM');
+      expect(smoke.detail).toContain('Test Files  1 failed');
+    } finally { await fx.close(); }
+  });
+
+  it('a probe tail is bounded, redacts the canary nonce, and says so when there was no output', async () => {
+    const fx = { nonce: 'n0nce-abc' };
+    expect(failureTail({ stdout: '', stderr: '' }, fx)).toBe(' \u2014 no output');
+    expect(failureTail({ stdout: '  \n ', stderr: '' }, fx)).toBe(' \u2014 no output');
+    const tail = failureTail({ stdout: 'out-here', stderr: 'err-here' }, fx);
+    expect(tail.indexOf('err-here')).toBeLessThan(tail.indexOf('out-here'));
+    // A tail must never be the channel that carries the canary's own secret into durable state.
+    const leaky = failureTail({ stdout: `leaked canary-secret-${fx.nonce} and bare ${fx.nonce}`, stderr: '' }, fx);
+    expect(leaky).not.toContain(fx.nonce);
+    expect(leaky).toContain('[canary-nonce]');
+    // Bounded here, because scrubForStore withholds an oversize field wholesale.
+    const long = failureTail({ stdout: 'o'.repeat(5000), stderr: 'e'.repeat(5000) }, fx);
+    expect(long.length).toBeLessThanOrEqual(2 * PROBE_TAIL_CHARS + 40);
+    expect(long).toContain('e'.repeat(PROBE_TAIL_CHARS));
+    expect(long).not.toContain('e'.repeat(PROBE_TAIL_CHARS + 1));
+  });
+
+  it('the captured tail is coupled to the durable budget, and the real gate runs share the canary\'s cache redirect', () => {
+    // Raising PROBE_TAIL_CHARS past the store's budget would truncate the tail again — the exact
+    // defect the capture exists to fix — so the two move together or this fails. The worst case is
+    // DERIVED from the real format, never hand-counted: runCapped resolves exitCode null on the
+    // SIGKILL that the timeout path takes, so `null` and ` (timed out)` co-occur.
+    const worst = `exit ${String(null)} (timed out)${failureTail({ stdout: 'o'.repeat(5000), stderr: 'e'.repeat(5000) }, { nonce: 'n' })}`;
+    expect(worst.length).toBeLessThanOrEqual(CANARY_PROBE_DETAIL_BUDGET.maxChars);
+    expect(CANARY_PROBE_DETAIL_BUDGET.maxChars).toBeLessThanOrEqual(CANARY_PROBE_DETAIL_BUDGET.maxBytes);
+    // The scrubber EXPANDS where it redacts, so a credential-dense tail can still overflow. It then
+    // keeps the END (where a test runner and a shell both put the error) behind a visible marker,
+    // rather than silently dropping it the way a head-slice did.
+    expect(clampProbeDetail('x'.repeat(CANARY_PROBE_DETAIL_BUDGET.maxChars))).toBe('x'.repeat(CANARY_PROBE_DETAIL_BUDGET.maxChars));
+    const clamped = clampProbeDetail(`${'head'.repeat(600)}THE-REAL-ERROR`);
+    expect(clamped.length).toBe(CANARY_PROBE_DETAIL_BUDGET.maxChars);
+    expect(clamped.startsWith('[\u2026truncated] ')).toBe(true);
+    expect(clamped.endsWith('THE-REAL-ERROR')).toBe(true);
+    // The migration is read by ONE function, so availability and the clear lever cannot disagree.
+    expect(effectiveLatchUntil(null)).toBe(0);
+    expect(effectiveLatchUntil({ until: 5_000, failures: 3 })).toBe(5_000);
+    expect(effectiveLatchUntil({ until: 24 * 60 * 60_000 })).toBe(60 * 60_000);
+    // ONE helper for the canary and for verifyFix: the canary rehearses the very commands the real
+    // gate runs, so a redirect in one and not the other lets the rehearsal pass on a condition the
+    // real gate still hits — burning attempts under a misattributed reason.
+    const e = confinedCacheEnv('/t/run-tmp');
+    expect(e).toMatchObject({
+      TMPDIR: '/t/run-tmp',
+      VITEST_CACHE_DIR: path.join('/t/run-tmp', 'vitest'),
+      ESBUILD_CACHE_DIR: path.join('/t/run-tmp', 'esbuild'),
+      npm_config_cache: path.join('/t/run-tmp', 'npm'),
+      npm_config_update_notifier: 'false',
+    });
+    for (const v of Object.values(e)) if (v.startsWith('/')) expect(v.startsWith('/t/run-tmp')).toBe(true);
   });
 
   it('all must-fail probes refused and all must-succeed probes passing → ok; a broken runner (everything fails) is NOT ok', async () => {

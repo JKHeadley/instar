@@ -20,7 +20,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedEnv, type ConfinementPaths } from './executePolicy.js';
+import { CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, buildSandboxRuntimeSettings, confinedCacheEnv, confinedEnv, type ConfinementPaths } from './executePolicy.js';
 import { shq } from './executorSession.js';
 import type { ConfinedRunner } from './ConfinedRunner.js';
 
@@ -197,6 +197,35 @@ export function transcriptChecks(fx: Pick<CanaryFixture, 'nonce'>, transcriptPat
   ];
 }
 
+/** Bytes of a failing probe's output kept in its detail, split between stderr and stdout. */
+export const PROBE_TAIL_CHARS = 700;
+
+/**
+ * The tail of a failed must-succeed probe's own output, so the failure explains itself.
+ *
+ * Without this the detail was the bare `exit 1`: a `base-unit-smoke` failure latches the executor
+ * (1 h → 24 h on the retry ladder) and its workspace is deleted with the attempt, so the cause was
+ * unrecoverable after the fact — five consecutive latches over three days (2026-10-22 … 2026-10-24)
+ * were diagnosable only by hand-patching logging onto the running machine, which every update wiped.
+ *
+ * Bounded HERE, not downstream: `scrubForStore` replaces an oversize field wholesale, so an
+ * unbounded tail would have been withheld entirely. The bound is coupled to the store's budget by
+ * `CANARY_PROBE_DETAIL_BUDGET` and a ratchet test — raising it past the budget would silently
+ * re-truncate the tail and reintroduce exactly this defect. The canary's own secret nonce is redacted
+ * defensively — a probe tail must never become the channel that carries it into durable state.
+ */
+export function failureTail(r: { stdout: string; stderr: string }, fx: Pick<CanaryFixture, 'nonce'>): string {
+  // Redact BEFORE slicing, or a nonce straddling the window boundary leaves a readable fragment.
+  const redact = (text: string) => String(text ?? '').split(`canary-secret-${fx.nonce}`).join('[canary-nonce]').split(fx.nonce).join('[canary-nonce]');
+  const tail = (text: string) => redact(text).trimEnd().slice(-PROBE_TAIL_CHARS).trim();
+  const parts = [
+    ['stderr', tail(r.stderr)],
+    ['stdout', tail(r.stdout)],
+  ].filter(([, text]) => text.length > 0) as [string, string][];
+  if (parts.length === 0) return ' — no output';
+  return ` — ${parts.map(([name, text]) => `${name}: ${text}`).join(' | ')}`;
+}
+
 /** Runner path: probes executed through the sandbox runtime with the attempt's policy. */
 export async function runRunnerCanary(input: {
   paths: ConfinementPaths;
@@ -213,11 +242,7 @@ export async function runRunnerCanary(input: {
   // 24h, which no route can clear. The executor's own check runs already pass exactly these two
   // (FeedbackExecutorService: VITEST_CACHE_DIR/ESBUILD_CACHE_DIR under the attempt temp); the canary
   // was simply missing the same redirect.
-  const env = confinedEnv(process.env, {
-    TMPDIR: paths.tmpDir,
-    VITEST_CACHE_DIR: path.join(paths.tmpDir, 'vitest'),
-    ESBUILD_CACHE_DIR: path.join(paths.tmpDir, 'esbuild'),
-  });
+  const env = confinedEnv(process.env, confinedCacheEnv(paths.tmpDir));
   const run = (command: string, timeoutMs = 120_000) => runner.run({ command, cwd: paths.workspace, settings, env, timeoutMs });
   const node = (code: string) => `node -e ${shq(code)}`;
   const results: CanaryProbeResult[] = [];
@@ -229,7 +254,8 @@ export async function runRunnerCanary(input: {
   };
   const mustSucceed = async (probe: string, command: string, timeoutMs?: number) => {
     const r = await run(command, timeoutMs);
-    results.push({ probe, expect: 'succeed', ok: r.exitCode === 0 && !r.timedOut, detail: r.exitCode === 0 ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}` });
+    const ok = r.exitCode === 0 && !r.timedOut;
+    results.push({ probe, expect: 'succeed', ok, detail: ok ? 'ok' : `exit ${String(r.exitCode)}${r.timedOut ? ' (timed out)' : ''}${failureTail(r, fx)}` });
   };
   await mustFail('bash-read-agent-config', `cat ${shq(fx.configPath)}`);
   await mustFail('bash-read-secret', `cat ${shq(fx.noncePath)}`);

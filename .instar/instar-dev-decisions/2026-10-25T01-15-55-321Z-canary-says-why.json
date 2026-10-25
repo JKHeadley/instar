@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-25T01:15:55.321Z",
+  "slug": "canary-says-why",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 177,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/feedback-factory/execute/executePolicy.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 160,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

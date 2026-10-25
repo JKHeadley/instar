@@ -43,6 +43,58 @@ export const DEPS_RETRY_LADDER_MS = [30 * 60_000, HOUR_MS, 4 * HOUR_MS] as const
  * passes), so a fixed day-long stop only delayed the evidence. A pass resets the ladder.
  */
 export const CANARY_RETRY_LADDER_MS = [HOUR_MS, 2 * HOUR_MS, 4 * HOUR_MS, 8 * HOUR_MS, DAY_MS] as const;
+/**
+ * The shortest interval between two manual clears of the canary latch's wait.
+ *
+ * Halting is automatic and free; resuming had no lever at all, so a latch at the top of the ladder
+ * stopped every fix attempt for a day even after its cause was fixed and installed. A clear only
+ * drops the WAIT — the canary still runs and still has to pass — so the cooldown exists to stop a
+ * clear becoming a retry loop, not to ration authority.
+ */
+export const CANARY_CLEAR_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * The durable budget for ONE failed canary probe's detail, in the latch's `failedDetail`.
+ *
+ * Coupled to `PROBE_TAIL_CHARS` by a ratchet test: the canary bounds each captured stream, and this
+ * has to be wide enough to keep both of them plus the exit-code prefix. Raising the tail past this
+ * budget would silently truncate the captured output again — the defect the capture exists to fix —
+ * and going past `maxBytes` would make `scrubForStore` withhold the field wholesale.
+ */
+export const CANARY_PROBE_DETAIL_BUDGET = { maxBytes: 8192, maxChars: 2000 } as const;
+
+/**
+ * Read a canary latch's effective `until`. One reader, so the availability check and the clear lever
+ * can never disagree about whether a wait is in force.
+ *
+ * A latch written under the old flat-day rule carries no failure count; read it as one failure on
+ * the ladder (the day it asked for was set at `until - DAY_MS`) so a deploy does not keep an
+ * already-stale stop for the rest of its day.
+ */
+export function effectiveLatchUntil(latch: { until: number; failures?: number } | null | undefined): number {
+  if (!latch) return 0;
+  return latch.failures === undefined ? Math.min(latch.until, latch.until - DAY_MS + CANARY_RETRY_LADDER_MS[0]) : latch.until;
+}
+
+/**
+ * Clamp one stored probe detail to the budget, keeping its END.
+ *
+ * `scrubForStore` EXPANDS text where it redacts (`pwd:abcdefghijkl` → `pwd:[REDACTED:…]`), so a
+ * credential-dense tail can exceed `maxChars` even though the pre-scrub tail fit. Truncating the
+ * head rather than the tail is deliberate and is the same choice `failureTail` makes: a test runner
+ * and a shell both put the error LAST, so the end is the part worth keeping. The marker makes the
+ * truncation visible instead of leaving a silently shortened detail that reads as complete.
+ */
+export function clampProbeDetail(text: string): string {
+  const { maxChars } = CANARY_PROBE_DETAIL_BUDGET;
+  if (text.length <= maxChars) return text;
+  const marker = '[…truncated] ';
+  // Math.max guards the degenerate budget: at maxChars <= marker.length the subtraction goes
+  // negative and `slice(-negative)` silently becomes a HEAD slice that returns MORE than the
+  // budget. Unreachable at the pinned constant, but this is exported and reads as a general clamp.
+  const keep = Math.max(0, maxChars - marker.length);
+  return keep === 0 ? text.slice(-maxChars) : `${marker}${text.slice(-keep)}`;
+}
 /** The summary must show deps-unavailable within this long. */
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
@@ -326,6 +378,29 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
  * (PATH, HOME, LANG, TERM, SHELL, USER) rather than the full parent environment, then drops
  * anything credential-shaped even from that list.
  */
+/**
+ * The cache redirects every confined command needs, keyed to that run's own temp directory.
+ *
+ * vitest, esbuild and npm all write caches next to the nearest package root or under HOME — both
+ * denied by the confinement — so a healthy sandbox looks like a failing one (`EPERM … open
+ * '<agentHome>/package.json'`, a denied `~/.npm`). ONE helper on purpose: the canary rehearses the
+ * very commands `verifyFix` later runs (`cfg.lintCommand`, `cfg.baseSmokeTests`, `npx vitest`), so
+ * a redirect present in one and missing in the other would let the rehearsal pass on a condition
+ * the real gate still hits — burning attempts under a misattributed reason instead of latching once
+ * and honestly. Shared, they cannot drift.
+ */
+export function confinedCacheEnv(tmpDir: string): Record<string, string> {
+  return {
+    TMPDIR: tmpDir,
+    VITEST_CACHE_DIR: path.join(tmpDir, 'vitest'),
+    ESBUILD_CACHE_DIR: path.join(tmpDir, 'esbuild'),
+    npm_config_cache: path.join(tmpDir, 'npm'),
+    npm_config_update_notifier: 'false',
+    npm_config_fund: 'false',
+    npm_config_audit: 'false',
+  };
+}
+
 export function confinedEnv(parent: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const keep = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'SHELL', 'USER', 'LOGNAME', 'NODE_OPTIONS_SAFE'];
   const out: Record<string, string> = {};

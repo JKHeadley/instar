@@ -30,9 +30,9 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
+  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CONFINED_COMMAND_TIMEOUT_MS, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
-  buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
+  buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
@@ -240,6 +240,43 @@ export class FeedbackExecutorService {
     return true;
   }
 
+  /**
+   * Clear the canary latch's WAIT so the next tick re-runs the sandbox check now.
+   *
+   * Halting is cheap and automatic; RESUMING needed a lever and had none — `profileUnenforceable()`
+   * wrote a wait no route could clear, so a latch at the top of the ladder stopped every fix attempt
+   * for a full day even once the cause was fixed and installed (five consecutive latches,
+   * 2026-10-22 … 2026-10-24). This clears the wait ONLY: the canary itself still runs and still has
+   * to pass, so this grants nothing a passing rehearsal would not. `failures` is deliberately kept,
+   * so a sandbox that is genuinely broken climbs the same ladder instead of being reset by repeated
+   * clears, and a clear is refused inside the cooldown so it cannot become a retry loop.
+   */
+  retryCanaryNow(by: string): { cleared: boolean; reason?: string; retryAt?: number } {
+    // A clear during an in-flight tick would be overwritten by that tick's own latch write moments
+    // later while the caller was told the wait was dropped. Same refusal every other mutating entry
+    // point here uses.
+    if (this.running) return { cleared: false, reason: 'tick-in-flight' };
+    const latch = this.metaJson<{ until: number; episode: number; failures?: number }>('exec:profile_unenforceable');
+    // Read `until` exactly as refreshAvailability does, so a legacy latch already non-gating under
+    // the migration answers `not-latched` instead of reporting a clear of a wait not in force.
+    if (!latch || effectiveLatchUntil(latch) <= this.now()) return { cleared: false, reason: 'not-latched' };
+    // The cooldown lives in its OWN row on purpose. Keyed on a field inside the latch it would
+    // vanish the moment a failing canary rewrote the latch — releasing the brake in exactly the
+    // case that costs a full canary run, and binding it only when nothing had run.
+    const lastClear = this.metaJson<{ at: number }>('exec:canary_clear');
+    if (lastClear && this.now() - lastClear.at < CANARY_CLEAR_COOLDOWN_MS) {
+      return { cleared: false, reason: 'cleared-too-recently', retryAt: lastClear.at + CANARY_CLEAR_COOLDOWN_MS };
+    }
+    const epoch = this.opts.ownerEpoch();
+    // The WAIT first, the cooldown second. Reversed, a failure on the second fenced write would
+    // consume the brake without clearing the wait — spending the caller's only move for nothing.
+    this.setMeta(epoch, 'exec:profile_unenforceable', { ...latch, until: 0, waitClearedAt: this.now(), waitClearedBy: by.slice(0, 60) });
+    this.setMeta(epoch, 'exec:canary_clear', { at: this.now(), by: by.slice(0, 60), episode: latch.episode });
+    this.availability = null;
+    this.opts.audit.append('execute:canary-latch-cleared', { by: by.slice(0, 60), episode: latch.episode, failures: latch.failures ?? null });
+    return { cleared: true };
+  }
+
   /** Recompute availability from live facts (gh reads each call; nothing agent-writable chooses the approver). */
   async refreshAvailability(): Promise<ExecutorAvailability> {
     const at = this.now();
@@ -276,11 +313,7 @@ export class FeedbackExecutorService {
     const runner = this.opts.runner.available();
     if (!runner.ok) return out('profile-unenforceable', extra);
     const latch = this.metaJson<{ until: number; failures?: number }>('exec:profile_unenforceable');
-    // A latch written under the old flat-day rule carries no failure count; read it as one failure
-    // on the ladder (the day it asked for was set at until - DAY_MS) so a deploy does not keep an
-    // already-stale stop for the rest of its day.
-    const latchUntil = latch ? (latch.failures === undefined ? Math.min(latch.until, latch.until - DAY_MS + CANARY_RETRY_LADDER_MS[0]) : latch.until) : 0;
-    if (latch && latchUntil > at) return out('profile-unenforceable', extra);
+    if (latch && effectiveLatchUntil(latch) > at) return out('profile-unenforceable', extra);
     const deps = this.metaJson<{ nextRetryAt: number; failures: number }>('exec:deps');
     if (deps && deps.failures > 0 && deps.nextRetryAt > at) return out('deps-unavailable', extra);
     // Publication goes through a fork only (CI on a same-repository branch would run with the
@@ -758,9 +791,12 @@ export class FeedbackExecutorService {
     // canary report that explains it is deleted with the attempt tree — so without this the cause is
     // unrecoverable after the fact (it cost a full manual repro on 2026-10-21). Bounded and scrubbed:
     // a probe detail quotes sandbox output, which must never carry a credential into durable state.
+    // The canary bounds each probe tail (PROBE_TAIL_CHARS per stream), so the budget here only has
+    // to be wide enough to keep one: a 300-char slice truncated the captured stderr/stdout tail to
+    // the first line, which is the part that says least about why a test command failed.
     const failedDetail = probes.filter((p) => !p.ok).map((p) => {
-      const scrubbed = scrubForStore(p.detail, { maxBytes: 2048 });
-      return { probe: p.probe, detail: scrubbed.error ? '[detail withheld: scrub failed]' : scrubbed.text.slice(0, 300) };
+      const scrubbed = scrubForStore(p.detail, { maxBytes: CANARY_PROBE_DETAIL_BUDGET.maxBytes });
+      return { probe: p.probe, detail: scrubbed.error ? '[detail withheld: scrub failed]' : clampProbeDetail(scrubbed.text) };
     });
     this.setMeta(epoch, 'exec:profile_unenforceable', { until: this.now() + retryInMs, episode, failures, failed: probes.filter((p) => !p.ok).map((p) => p.probe), failedDetail });
     this.availability = null;
@@ -980,7 +1016,7 @@ export class FeedbackExecutorService {
       fs.mkdirSync(runTmp, { recursive: true, mode: 0o700 });
       return this.opts.runner.run({
         command, cwd, settings: buildSandboxRuntimeSettings(this.confinementPaths(cwd, p.publishClone, runTmp, depsDir)),
-        env: confinedEnv(process.env, { TMPDIR: runTmp, VITEST_CACHE_DIR: path.join(runTmp, 'vitest'), ESBUILD_CACHE_DIR: path.join(runTmp, 'esbuild') }), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
+        env: confinedEnv(process.env, confinedCacheEnv(runTmp)), timeoutMs: CONFINED_COMMAND_TIMEOUT_MS,
       });
     };
     const limit = (r: { timedOut: boolean; outputCapped: boolean }) => (r.timedOut ? 'limit:command-wall-clock' : r.outputCapped ? 'limit:output' : null);

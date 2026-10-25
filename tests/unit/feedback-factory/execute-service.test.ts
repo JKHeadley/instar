@@ -6,9 +6,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BASE_SHA, HEAD_SHA, createExecHarness, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
+import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
-import { EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { CANARY_PROBE_DETAIL_BUDGET, EVIDENCE_FILE, RESULT_FILE, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
+import { PROBE_TAIL_CHARS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 
 const DAY = 24 * 60 * 60_000;
 let h: ExecHarness;
@@ -267,6 +268,89 @@ describe('workspaces and the confined spawn', () => {
     h.fixWith({ 'src/thing.ts': 'x' });
     expect((await h.exec.refreshAvailability()).reason).toBe('ok');
     expect((await h.exec.tick()).started).toBe(1);
+  });
+
+  it('a failing base-unit-smoke probe stores its own output: the real latch write keeps the whole tail', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    // Padding first, the error last — a test runner and a shell both put the error at the END, which
+    // is why the tail is kept rather than the head.
+    const err = `${'E'.repeat(900)}\nEPERM: operation not permitted, mkdir '/home/agent/.npm'`;
+    const out = `${'O'.repeat(900)}\nTest Files  1 failed (1)`;
+    // The probe fails through the REAL canary, so profileUnenforceable's scrub + clamp is on the path.
+    // Also: a clear DURING an in-flight tick would be overwritten by that tick's own latch write
+    // while the caller was told the wait was dropped. The runner callback runs inside the tick.
+    let duringTick: unknown = null;
+    h.runScript.fn = (cmd) => {
+      duringTick ??= h.exec.retryCanaryNow('test');
+      return /^npx vitest run --no-cache/.test(cmd.command) ? { exitCode: 1, stdout: out, stderr: err } : defaultRun(cmd);
+    };
+    await h.exec.tick();
+    expect(duringTick).toEqual({ cleared: false, reason: 'tick-in-flight' });
+    expect(h.execStore.all()[0]).toMatchObject({ state: 'stopped', reason: 'profile-unenforceable' });
+    const latch = h.exec.summary().profileUnenforceable as { failedDetail: Array<{ probe: string; detail: string }> };
+    const detail = latch.failedDetail.find((d) => d.probe === 'base-unit-smoke')!.detail;
+    // Both streams survive the write. A 300-char slice (the pre-2026-10-24 budget) kept only the
+    // first line, which says the least about why a test command failed.
+    expect(detail).toContain('exit 1');
+    expect(detail).toContain('EPERM');
+    expect(detail).toContain('Test Files  1 failed');
+    // The oldest padding is dropped, so the capture is genuinely bounded, not just long.
+    expect(detail).toContain('E'.repeat(500));
+    expect(detail).not.toContain('E'.repeat(PROBE_TAIL_CHARS + 1));
+    expect(detail).toContain('O'.repeat(500));
+    expect(detail.length).toBeGreaterThan(1000);
+    expect(detail.length).toBeLessThanOrEqual(CANARY_PROBE_DETAIL_BUDGET.maxChars);
+  });
+
+  it('a credential-dense probe tail overflows the budget AFTER scrubbing, and the stored detail keeps its end', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    // The scrubber EXPANDS where it redacts, so a tail that FIT before scrubbing can overflow
+    // after it. This is C6's actual failure mode, and it is why the clamp has to be on the store
+    // path and not only unit-tested: without it the end — where the error is — was cut away.
+    const unit = 'pwd:abcdefghijkl ';
+    const err = `${unit.repeat(60)}EPERM-AT-THE-END`;
+    const out = `${unit.repeat(60)}FAILED-AT-THE-END`;
+    h.runScript.fn = (cmd) => (/^npx vitest run --no-cache/.test(cmd.command)
+      ? { exitCode: 1, stdout: out, stderr: err }
+      : defaultRun(cmd));
+    await h.exec.tick();
+    const latch = h.exec.summary().profileUnenforceable as { failedDetail: Array<{ probe: string; detail: string }> };
+    const detail = latch.failedDetail.find((d) => d.probe === 'base-unit-smoke')!.detail;
+    expect(detail).not.toContain('abcdefghijkl');
+    expect(detail).toContain('[REDACTED:labeled-secret]');
+    // Clamped to exactly the budget, from the front, with the truncation visible.
+    expect(detail.length).toBe(CANARY_PROBE_DETAIL_BUDGET.maxChars);
+    expect(detail.startsWith('[\u2026truncated] ')).toBe(true);
+    expect(detail.endsWith('FAILED-AT-THE-END')).toBe(true);
+  });
+
+  it('a clear drops only the wait, and its cooldown survives the canary re-latching', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    const latched = { until: h.now.value + 24 * 60 * 60_000, episode: 2, failures: 5, failed: ['base-unit-smoke'] };
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify(latched));
+    expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
+
+    expect(h.exec.retryCanaryNow('test')).toEqual({ cleared: true });
+    const after = h.exec.summary().profileUnenforceable as { until: number; episode: number; failures: number };
+    expect(after).toMatchObject({ until: 0, episode: 2, failures: 5 });
+    expect((await h.exec.refreshAvailability()).reason).toBe('ok');
+
+    // The brake has to hold across a re-latch. Keyed inside the latch it vanished the moment a
+    // failing canary rewrote the row — releasing exactly when a clear costs a whole canary run.
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 60 * 60_000, episode: 2, failures: 6, failed: ['base-unit-smoke'] }));
+    expect(h.exec.retryCanaryNow('test')).toMatchObject({ cleared: false, reason: 'cleared-too-recently' });
+    h.now.value += 11 * 60_000;
+    expect(h.exec.retryCanaryNow('test')).toEqual({ cleared: true });
+
+    // Nothing in force is said plainly, including a legacy latch the migration already expired.
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value - 1, episode: 2, failures: 6 }));
+    expect(h.exec.retryCanaryNow('test')).toEqual({ cleared: false, reason: 'not-latched' });
+    h.now.value += 11 * 60_000;
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value + 23 * 60 * 60_000, episode: 1 }));
+    expect(h.exec.retryCanaryNow('test')).toEqual({ cleared: false, reason: 'not-latched' });
   });
 
   it('a canary session that ends without its report records what its screen last showed', async () => {
