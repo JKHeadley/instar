@@ -883,6 +883,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - Remote: When a tunnel is running, the dashboard is accessible at \`{tunnelUrl}/dashboard\`
 - Authentication: Uses a 6-digit PIN (auto-generated in \`dashboardPin\` in \`.instar/config.json\`). NEVER mention "bearer tokens" or "auth tokens" to users — just give them the PIN.
 - Features: Real-time terminal streaming, session management, file browser/editor, model badges, mobile-responsive
+${CONSOLE_BULLET}
 - **One dashboard, every machine (Pool Dashboard Streaming)**: when you run on more than one machine, the dashboard lists sessions from ALL of them and you can CLICK any of them — including a session running on another machine — to stream its live terminal right there. No need to open that machine's dashboard separately. Watching is always available; TYPING into another machine's session is OFF by default (security) — enable it per machine via \`dashboard.poolStream.allowRemoteInput: true\` in that machine's \`.instar/config.json\`. Failure states are shown honestly on screen (unreachable / reconnecting / "remote typing disabled" / moved), never a frozen terminal. Proactive: if a user asks "why can't I click the Mac mini's session?" or wants to watch another machine's session — they now can, just click the tile; if typing doesn't work, that machine has remote input off.
 - **Sharing the dashboard**: When the user wants to check on sessions from their phone, give them the tunnel URL + PIN. Read the PIN from your config.json. Check tunnel status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
 - **Dashboard Telegram Topic**: A dedicated "Dashboard" topic is auto-created in your Telegram group on server startup. It always contains the latest dashboard URL + PIN, pinned for instant access. If your tunnel URL changes (quick tunnel restart), a new message is posted and pinned automatically. Users should check this topic for the current dashboard link. If you have a named tunnel (persistent URL), the link never changes.
@@ -2592,6 +2593,12 @@ export const READINESS_PAUSE_ALARM_MARKER = 'A paused sorter is announced once';
 export const READINESS_PAUSE_ALARM_BULLET = `- **${READINESS_PAUSE_ALARM_MARKER}**: when a safety brake pauses the readiness authority, the drain raises ONE attention item (\`feedback-drain:readiness-paused:<authority>:<generation>\`, "Feedback sorting is paused") naming the reason in plain words and that only the operator's approval on the dashboard Feedback Drain tab restores it. A pause found later (after a restart, or because the first notice failed) is told by the next refused drain tick; the same id never repeats. Nothing restores the authority automatically. If the operator asks "why didn't anyone tell me the sorter stopped?" — this item is that notice; if it is missing, check \`GET /attention\` and the server log.`;
 
 /** Content-sniff marker for the standing-sessions bullet (Migration Parity). */
+export const CONSOLE_MARKER = 'The new console runs beside the dashboard';
+
+/** Console makeover awareness bullet (docs/specs/console-makeover.md). Shared by
+ *  the generated CLAUDE.md and PostUpdateMigrator. */
+export const CONSOLE_BULLET = `- **${CONSOLE_MARKER}**: \`/dashboard/console/\` (same PIN, same tunnel) is the new home screen: one sentence on whether anything needs the operator, then what needs them, held replies, open promises, live sessions on every machine, machine states and safety checks, each saying "Can't tell" with the reason when its source does not answer. It is read-only; every tab still opens in the legacy \`/dashboard\`, which stays the default until the operator calls the console MVP. Proactive: the operator asks "what needs me?" or "is everything OK?" from a phone → send them \`{tunnelUrl}/dashboard/console/\` and the PIN.`;
+
 export const STANDING_SESSIONS_MARKER = 'Standing sessions are never closed by cleanup';
 
 /** Standing-sessions awareness bullet (`sessions.standingSessions`). Shared by

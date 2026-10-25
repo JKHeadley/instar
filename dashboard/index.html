@@ -613,6 +613,14 @@
        those three into `.tab-purpose` is a tracked migration (it changes their
        visual size, so it is done deliberately, not big-bang). Until then: reach
        for `.tab-purpose`; do not add a fifth variant or an inline-styled line. */
+    /* Console makeover (docs/specs/console-makeover.md, Rollout): the one link from
+       the legacy dashboard to the new console, which runs beside it until MVP. */
+    .new-console-link {
+      font-size: 12px; font-weight: 600; white-space: nowrap; padding: 3px 10px;
+      border: 1px solid var(--accent-dim, #2d6a6c); border-radius: 999px; color: var(--accent);
+      text-decoration: none;
+    }
+    .new-console-link:hover { background: var(--bg-hover); }
     .tab-purpose {
       font-size: 13px;
       color: var(--text-dim);
@@ -3072,6 +3080,7 @@
       <div class="header-left">
         <img class="logo" src="/dashboard/logo.png" alt="Instar">
         <h1>Instar Dashboard</h1>
+        <a class="new-console-link" href="/dashboard/console/">Try the new console</a>
         <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" onclick="toggleNavMenu()">&#9776; <span id="navToggleLabel">Sessions</span></button>
         <nav class="tab-bar" id="tabBar" aria-label="Dashboard sections">
           <div class="tab-group" role="group" aria-label="Runtime">

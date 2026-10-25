@@ -73,6 +73,8 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
+  CONSOLE_BULLET,
+  CONSOLE_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
   THREADLINE_PAIR_TOOL_MARKER,
 } from '../scaffold/templates.js';
@@ -7045,6 +7047,18 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    if (!content.includes(CONSOLE_MARKER)) {
+      // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
+      const anchor = '- Features: Real-time terminal streaming';
+      const at = content.indexOf(anchor);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + CONSOLE_BULLET + '\n' + content.slice(eol + 1)
+        : content + '\n' + CONSOLE_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the new console (beside the dashboard) awareness');
+    }
 
     if (!content.includes('### Telegram message origin')) {
       content += telegramOriginAwareness(port);
