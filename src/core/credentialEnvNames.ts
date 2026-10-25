@@ -23,5 +23,13 @@ export function isCredentialEnvName(name: string): boolean {
  * `dontAsk` refuses every tool use the settings do not allow (an allowlist — in bypass mode only
  * deny rules apply, and a write to a path created after spawn slipped through; the live canary
  * caught it), and only file and shell tools exist (no web, no MCP, no sub-agents).
+ *
+ * `--no-chrome` keeps the Claude in Chrome integration off. With the extension installed on the
+ * machine, Claude Code 2.1.303 opens an interactive offer at startup ("Yes, use my browser / No,
+ * keep browser tools off") even though the config home has `claudeInChromeDefaultEnabled: false`.
+ * On 2026-10-25 that offer appeared half a second after the trust dialog was answered; the startup
+ * state machine answers each dialog once, its Enter did not take, and the canary session ended
+ * with no report. A confined session must never reach a browser anyway (no MCP, no web), so the
+ * offer is removed at the source rather than answered.
  */
-export const CLAUDE_CONFINED_PERMISSION_ARGS = ['--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite'] as const;
+export const CLAUDE_CONFINED_PERMISSION_ARGS = ['--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite', '--no-chrome'] as const;
