@@ -42,15 +42,30 @@ import type { ApprovalLedger, ClassSummary, DivergenceCategory } from '../core/A
 import type { CorrectionLedger, CorrectionRecord } from './CorrectionLedger.js';
 import { DEV_GATED_FEATURES, getConfigByPath } from '../core/devGatedFeatures.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import type { GuardRow } from './guardPostureView.js';
+import type {
+  DarkFlagEntry,
+  DarkFlagMaturationRegistry,
+  DarkFlagOwner,
+  DarkFlagState,
+} from './DarkFlagMaturationRegistry.js';
 
 /** Risk tiers govern how long a feature may incubate before the window expires. */
 export type GrowthRiskTier = 'lowRisk' | 'standard' | 'highRisk';
 
-/** The six notify-rules. R1/R2 = feature maturity (the key lever); R3 =
+
+/** The seven notify-rules. R1/R2/R7 = feature maturity (the key lever); R3 =
  *  initiatives left behind; R4 = spec approve-vs-change pattern; R5 = correction
  *  pattern; R6 = dev-gate conformance (a registered dev-gated feature observed
- *  DARK on this dev agent — the forgot-the-gate / misconfig class). */
-export type GrowthRuleId = 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6';
+ *  DARK on this dev agent — the forgot-the-gate / misconfig class); R7 =
+ *  dark-flag maturity, read from the `/guards` posture inventory (Standard A of
+ *  `maturation-followthrough-fix`) rather than from specs that opted in.
+ *
+ *  Why R7 exists: R1/R2 can only see features whose SPEC registered a rollout
+ *  stage — 3 tracks out of 1,201 items — so the real inventory of dark and
+ *  dry-run switches aged out of sight entirely. R7 keys on the guard key, so a
+ *  staged switch is visible whether or not anyone remembered to register it. */
+export type GrowthRuleId = 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7';
 
 export type GrowthFindingPriority = 'low' | 'normal' | 'high';
 
@@ -75,6 +90,17 @@ export interface GrowthFinding {
   daysInStage?: number;
   windowDays?: number;
   proved?: boolean | 'unknown';
+  // R7 only: the guard keys this aggregate finding covers. R7 findings
+  // AGGREGATE by class (Bounded Notification Surface) — one row carrying the
+  // count and the list, never one row per flag, so a 100-flag backlog can
+  // never become a 100-item notification flood.
+  affected?: string[];
+  /** R7 only: how many of `affected` are un-owned — itself the Close-the-Loop gap. */
+  unowned?: number;
+  /** R7 only: subset of `affected` that G3 already grades as load-bearing, so a
+   *  consumer routes those to the EXISTING loadBearingGap surface instead of
+   *  raising a second competing row. */
+  loadBearingKeys?: string[];
 }
 
 export interface GrowthDigestCounts {
@@ -86,6 +112,19 @@ export interface GrowthDigestCounts {
   correctionPatterns: number;
   /** R6: dev-gated features observed DARK on this dev agent (should be live). */
   devGateDark: number;
+  /** R7: dark/dry-run guards inside their incubation window. */
+  darkIncubating: number;
+  /** R7: dark guards past their window WITH signs of life. NOT a readiness
+   *  verdict — readiness is D7's (`evaluateMaturation`); this only says the
+   *  window closed and the flag has fired. */
+  darkWindowElapsed: number;
+  /** R7: dark guards past their window WITHOUT proof → extend / fix / kill? */
+  darkExpiredUnproven: number;
+  /** R7: dark flags that were already dark at first registration — the
+   *  forgotten backlog, surfaced overdue rather than given a fresh window. */
+  darkLegacyUnproven: number;
+  /** R7: how many tracked dark flags have no accountable owner at all. */
+  darkUnowned: number;
 }
 
 export interface GrowthDigest {
@@ -115,6 +154,17 @@ export interface GrowthAnalystSettings {
     specPattern: boolean;
     correctionPattern: boolean;
     devGateConformance: boolean;
+    /** R7 — dark-flag maturity from the guard-posture inventory. */
+    darkFlagMaturity: boolean;
+  };
+  /** Standard A/B rollout flag. Dark-first: with `enabled:false` the analyst
+   *  reverts to exactly today's InitiativeTracker-only behavior, and R3 keeps
+   *  its place in the headline. `dryRun` computes and records the registry but
+   *  keeps R7 findings OUT of the digest, so the soak can be observed before the
+   *  engine's voice changes. */
+  darkFlagInventory: {
+    enabled: boolean;
+    dryRun: boolean;
   };
   /** R4: minimum decisions in a class before a spec-pattern is worth surfacing. */
   specPatternMinTotal: number;
@@ -143,7 +193,9 @@ export const DEFAULT_GROWTH_SETTINGS: GrowthAnalystSettings = {
     specPattern: true,
     correctionPattern: true,
     devGateConformance: true,
+    darkFlagMaturity: true,
   },
+  darkFlagInventory: { enabled: false, dryRun: true },
   specPatternMinTotal: 3,
   specPatternMinChangeRatio: 0.6,
   correctionPatternMinOccurrences: 3,
@@ -156,6 +208,7 @@ export function resolveGrowthSettings(raw?: Partial<GrowthAnalystSettings> | Rec
   const r = (raw ?? {}) as Partial<GrowthAnalystSettings>;
   const windows = (r.incubationWindows ?? {}) as Partial<Record<GrowthRiskTier, number>>;
   const rules = (r.rules ?? {}) as Partial<GrowthAnalystSettings['rules']>;
+  const darkFlag = (r.darkFlagInventory ?? {}) as Partial<GrowthAnalystSettings['darkFlagInventory']>;
   return {
     enabled: r.enabled === true,
     incubationWindows: {
@@ -171,6 +224,13 @@ export function resolveGrowthSettings(raw?: Partial<GrowthAnalystSettings> | Rec
       specPattern: rules.specPattern !== false,
       correctionPattern: rules.correctionPattern !== false,
       devGateConformance: rules.devGateConformance !== false,
+      darkFlagMaturity: rules.darkFlagMaturity !== false,
+    },
+    darkFlagInventory: {
+      // Dark-first: absent ⇒ OFF. Only an explicit `true` turns it on, and
+      // dryRun stays on unless explicitly set false (the canary ordering).
+      enabled: darkFlag.enabled === true,
+      dryRun: darkFlag.dryRun !== false,
     },
     specPatternMinTotal: numOr(r.specPatternMinTotal, DEFAULT_GROWTH_SETTINGS.specPatternMinTotal),
     specPatternMinChangeRatio: numOr(r.specPatternMinChangeRatio, DEFAULT_GROWTH_SETTINGS.specPatternMinChangeRatio),
@@ -232,6 +292,15 @@ export function riskTierForInitiative(init: Initiative): GrowthRiskTier {
   return 'standard';
 }
 
+/** Map a GUARD to a risk tier. A guard the manifest marks load-bearing sits on
+ *  a declared critical path, so it gets the highRisk window; everything else is
+ *  standard. PURE, and deliberately conservative — it never shortens a window
+ *  on a guess (a shorter window would expire a flag sooner and could promote it
+ *  on thinner evidence, so erring long is the safe direction). */
+export function riskTierForGuard(row: GuardRow): GrowthRiskTier {
+  return row.loadBearing ? 'highRisk' : 'standard';
+}
+
 /** The core verdict. PURE. `proofCount === undefined` ⇒ no evidence source wired
  *  ⇒ proved:'unknown' ⇒ cannot be promotion-ready (honest: never promote a
  *  feature we can't prove ran). */
@@ -280,6 +349,23 @@ export interface GrowthMilestoneAnalystDeps {
    *  meaningful on a development agent; absent/null ⇒ R6 is skipped. Read with
    *  getConfigByPath (which accepts unknown), so no index signature is required. */
   liveConfig?: { developmentAgent?: boolean } | null;
+  /** R7 (Standard A): the live `/guards` posture inventory — the code-derived
+   *  dark-flag source. Injected (not read here) so the analyst stays pure and
+   *  the inventory keeps its single funnel in `buildGuardInventory`. Absent or
+   *  returning null ⇒ R7 is skipped entirely. */
+  darkFlagInventory?: (() => GuardRow[] | null) | null;
+  /** R7/Standard B: the durable owner + deadline + proof-of-life registry.
+   *  Absent ⇒ R7 is skipped (we never classify a dark flag without somewhere
+   *  durable to anchor its window — an in-memory window cannot prove a soak). */
+  darkFlagRegistry?: Pick<DarkFlagMaturationRegistry, 'reconcile'> | null;
+  /** R7 proof-of-life counter. `undefined` ⇒ `'unknown'` (never asserted-proved). */
+  darkFlagEvidenceCounter?: (row: GuardRow) => number | undefined;
+  /** R7: owner derivation. Only ever a REAL code-derived source; returning null
+   *  leaves the flag un-owned, which is itself a surfaced finding. */
+  darkFlagOwnerFor?: (row: GuardRow) => DarkFlagOwner;
+  /** R7: optional old-key → new-key map so a renamed guard tombstones as
+   *  `superseded` instead of `killed`. */
+  darkFlagSupersededBy?: Record<string, string>;
 }
 
 export class GrowthMilestoneAnalyst {
@@ -524,12 +610,18 @@ export class GrowthMilestoneAnalyst {
   /** Run the full observation + computation pass. Returns all findings. */
   computeFindings(now: Date = this.now()): GrowthFinding[] {
     const journal = this.observeStages(now);
+    // Standard A ordering, kept IDENTICAL to buildDigest's: maturity signal
+    // first (R1 → R7 → R6 → R2), then patterns, and R3 (stalling) demoted last.
+    // These two aggregation points must never diverge — "the criterion lives in
+    // two places that disagree" is one of the defects this spec exists to fix,
+    // and a route that silently omitted R7 was exactly that bug reappearing.
     return [
       ...this.computeRolloutFindings(now, journal),
-      ...this.computeStallingFindings(now),
+      ...this.computeDarkFlagFindings(now).findings,
+      ...this.computeDevGateConformanceFindings(),
       ...this.computeSpecPatternFindings(),
       ...this.computeCorrectionFindings(now),
-      ...this.computeDevGateConformanceFindings(),
+      ...this.computeStallingFindings(now),
     ];
   }
 
@@ -578,6 +670,156 @@ export class GrowthMilestoneAnalyst {
     return findings;
   }
 
+  /**
+   * R7 (Standard A + B): dark-flag maturity, read from the guard-posture
+   * inventory rather than from specs that opted in.
+   *
+   * Returns AGGREGATE findings — at most one per class (promotion-ready /
+   * expired-unproven / legacy-unproven), each carrying its count and the list
+   * of guard keys. This is deliberate (Bounded Notification Surface): a
+   * 100-flag backlog must be one digest section and at most one coalesced
+   * attention row, never 100 notifications. The per-flag detail lives in the
+   * durable registry, which is the right place for it.
+   *
+   * Signal, never authority: this classifies and records. It does not flip a
+   * flag, accept a risk, or block anything.
+   */
+  computeDarkFlagFindings(now: Date = this.now()): { findings: GrowthFinding[]; entries: DarkFlagEntry[] } {
+    const empty = { findings: [] as GrowthFinding[], entries: [] as DarkFlagEntry[] };
+    if (!this.settings.darkFlagInventory.enabled) return empty;
+    if (!this.settings.rules.darkFlagMaturity) return empty;
+    const read = this.deps.darkFlagInventory;
+    const registry = this.deps.darkFlagRegistry;
+    if (!read || !registry) return empty;
+
+    let rows: GuardRow[] | null;
+    try {
+      rows = read();
+    } catch (err) {
+      // @silent-fallback-ok: input-read failure surfaced via onError. No rows
+      // ⇒ no R7 findings (the smaller, safe direction for an observe-only
+      // rule). It can never produce a wrong action because R7 takes none.
+      this.deps.onError?.('darkFlagInventory', err);
+      return empty;
+    }
+    if (!rows) return empty;
+
+    let entries: DarkFlagEntry[];
+    try {
+      entries = registry.reconcile({
+        rows,
+        now,
+        windowFor: (row) => {
+          const tier = riskTierForGuard(row);
+          return { tier, windowDays: this.settings.incubationWindows[tier] };
+        },
+        proofCountFor: (row) => {
+          try {
+            return this.deps.darkFlagEvidenceCounter?.(row);
+          } catch {
+            // @silent-fallback-ok: undefined ⇒ proved:'unknown', the honest
+            // conservative result — an unprovable flag is never promoted.
+            return undefined;
+          }
+        },
+        minProof: this.settings.proofOfLifeMinActivations,
+        ownerFor: (row) => {
+          try {
+            return this.deps.darkFlagOwnerFor?.(row) ?? null;
+          } catch {
+            // @silent-fallback-ok: null ⇒ un-owned ⇒ surfaced as a finding.
+            // Failing toward "needs an owner" can only over-surface, never hide.
+            return null;
+          }
+        },
+        ...(this.deps.darkFlagSupersededBy ? { supersededBy: this.deps.darkFlagSupersededBy } : {}),
+      });
+    } catch (err) {
+      this.deps.onError?.('darkFlagRegistry.reconcile', err);
+      return empty;
+    }
+
+    // dryRun: the registry IS written (so the soak accrues durable evidence
+    // from day one) but the engine's voice does not change yet.
+    if (this.settings.darkFlagInventory.dryRun) return { findings: [], entries };
+
+    const findings: GrowthFinding[] = [];
+    const classes: {
+      state: DarkFlagState;
+      rule: 'R7';
+      priority: GrowthFindingPriority;
+      action: GrowthSuggestedAction;
+      title: (n: number) => string;
+      lead: string;
+    }[] = [
+      {
+        state: 'window-elapsed',
+        rule: 'R7',
+        priority: 'normal',
+        action: 'promote',
+        title: (n) => `${n} staged switch${n === 1 ? ' has' : 'es have'} run and passed its trial window`,
+        lead: 'Each has fired at least once and its window has closed, so each is worth a decision. Whether it meets its own bar is scored separately.',
+      },
+      {
+        state: 'legacy-unproven',
+        rule: 'R7',
+        // The forgotten backlog is the headline by construction — this is the
+        // inventory the engine could not see, so it leads at high priority.
+        priority: 'high',
+        action: 'extend-fix-kill',
+        title: (n) => `${n} staged switch${n === 1 ? ' was' : 'es were'} already dark before anyone was watching`,
+        lead: 'These were dark at first registration, so their window cannot be anchored. They are overdue now, not newly incubating.',
+      },
+      {
+        state: 'expired-unproven',
+        rule: 'R7',
+        priority: 'normal',
+        action: 'extend-fix-kill',
+        title: (n) => `${n} staged switch${n === 1 ? '' : 'es'} past its window with nothing to show`,
+        lead: 'The window closed and there is no evidence it ever ran. Extend with a date, fix the evidence, or retire it.',
+      },
+    ];
+
+    for (const c of classes) {
+      const matching = entries.filter((e) => e.state === c.state);
+      if (matching.length === 0) continue;
+      const keys = matching.map((e) => e.guardKey).sort();
+      const unowned = matching.filter((e) => e.owner === null).length;
+      const loadBearingKeys = matching.filter((e) => e.loadBearing).map((e) => e.guardKey).sort();
+      const ownerNote = unowned === 0
+        ? ''
+        : unowned === matching.length
+          ? ' None of them has an owner.'
+          : ` ${unowned} of them have no owner.`;
+      // A load-bearing flag is NOT given a second competing row here — G3's
+      // GuardPostureProbe already owns that alarm. We name them so the consumer
+      // can route to the existing surface.
+      const lbNote = loadBearingKeys.length > 0
+        ? ` ${loadBearingKeys.length} sit on a critical path and are already tracked as a guard gap.`
+        : '';
+      findings.push({
+        rule: c.rule,
+        priority: c.priority,
+        subjectId: `dark-flags:${c.state}`,
+        title: c.title(matching.length),
+        // DELIBERATELY free of raw guard keys. `detail` is rendered verbatim
+        // into the weekly Telegram digest (GrowthDigestPublisher.renderFinding),
+        // and a dotted config path is exactly the literal the always-on tone
+        // gate blocks — it is what cost the 2026-06-29 digest window, which is
+        // the failure Standard C of this same spec exists to prevent. The keys
+        // travel in the structured `affected` field instead (consumed by the
+        // dashboard and the read routes, never rendered into a message), and
+        // the durable registry holds the per-flag detail.
+        detail: `${c.lead}${ownerNote}${lbNote} The full list is in your dashboard.`.trim(),
+        suggestedAction: c.action,
+        affected: keys,
+        unowned,
+        ...(loadBearingKeys.length > 0 ? { loadBearingKeys } : {}),
+      });
+    }
+    return { findings, entries };
+  }
+
   /** Build the operator-facing digest. Calm digests still render so the operator
    *  knows the analyst ran (fixes the old "near-silent → never speaks" failure). */
   buildDigest(now: Date = this.now()): GrowthDigest {
@@ -587,8 +829,11 @@ export class GrowthMilestoneAnalyst {
     const spec = this.computeSpecPatternFindings();
     const corr = this.computeCorrectionFindings(now);
     const devGate = this.computeDevGateConformanceFindings();
-    const findings = [...rollout, ...stalling, ...spec, ...corr, ...devGate];
+    const dark = this.computeDarkFlagFindings(now);
+    // Same order as computeFindings — maturity first, R3 demoted last.
+    const findings = [...rollout, ...dark.findings, ...devGate, ...spec, ...corr, ...stalling];
 
+    const darkBy = (state: DarkFlagState): number => dark.entries.filter((e) => e.state === state).length;
     const counts: GrowthDigestCounts = {
       incubating: this.countIncubating(now, journal),
       promotionReady: rollout.filter((f) => f.rule === 'R1').length,
@@ -597,6 +842,17 @@ export class GrowthMilestoneAnalyst {
       specPatterns: spec.length,
       correctionPatterns: corr.length,
       devGateDark: devGate.length,
+      darkIncubating: darkBy('incubating'),
+      darkWindowElapsed: darkBy('window-elapsed'),
+      darkExpiredUnproven: darkBy('expired-unproven'),
+      darkLegacyUnproven: darkBy('legacy-unproven'),
+      // Un-owned counts only LIVE dark flags: a tombstoned or graduated entry
+      // needs no owner, and counting those would manufacture a permanent,
+      // un-closable finding — the exact noise this rule replaces.
+      darkUnowned: dark.entries.filter(
+        (e) => e.owner === null
+          && e.state !== 'graduated' && e.state !== 'killed' && e.state !== 'superseded',
+      ).length,
     };
 
     const nextWindowClosesInDays = this.nextWindowClose(now, journal);
@@ -680,19 +936,35 @@ export class GrowthMilestoneAnalyst {
   }
 
   private calmSummary(counts: GrowthDigestCounts, nextClose?: number): string {
-    const base = `All healthy — ${counts.incubating} feature(s) incubating, nothing past its window.`;
+    const watched = counts.incubating + counts.darkIncubating;
+    const base = `All healthy — ${watched} feature(s) incubating, nothing past its window.`;
     if (nextClose !== undefined) return `${base} Next window closes in ${nextClose}d.`;
     return base;
   }
 
+  /**
+   * Standard A: the MATURITY signal leads the summary and R3 (initiative
+   * stalling) is demoted to the tail.
+   *
+   * R3 produced ~258 items of InitiativeTracker work-item noise and 0
+   * promotion-ready — which is how the engine ended up loud about the wrong
+   * thing and silent about the right one. R3 stays computable and still renders
+   * in the digest body; it simply no longer leads, and it is reported last so a
+   * reader sees maturity first.
+   */
   private activeSummary(counts: GrowthDigestCounts): string {
     const parts: string[] = [];
     if (counts.promotionReady) parts.push(`${counts.promotionReady} ready to promote`);
+    if (counts.darkWindowElapsed) parts.push(`${counts.darkWindowElapsed} staged switch(es) ready`);
+    if (counts.darkLegacyUnproven) parts.push(`${counts.darkLegacyUnproven} dark before anyone was watching`);
     if (counts.expiredUnproven) parts.push(`${counts.expiredUnproven} expired-unproven`);
-    if (counts.stalling) parts.push(`${counts.stalling} stalling`);
+    if (counts.darkExpiredUnproven) parts.push(`${counts.darkExpiredUnproven} staged switch(es) past window`);
+    if (counts.darkUnowned) parts.push(`${counts.darkUnowned} without an owner`);
     if (counts.specPatterns) parts.push(`${counts.specPatterns} spec pattern(s)`);
     if (counts.correctionPatterns) parts.push(`${counts.correctionPatterns} correction pattern(s)`);
     if (counts.devGateDark) parts.push(`${counts.devGateDark} dev-gated-dark`);
+    // Demoted: last, always.
+    if (counts.stalling) parts.push(`${counts.stalling} stalling`);
     return `Growth digest: ${parts.join(', ')}.`;
   }
 }

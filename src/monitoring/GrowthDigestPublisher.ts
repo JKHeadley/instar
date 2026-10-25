@@ -770,7 +770,12 @@ export interface FormatDigestOptions {
   detailCap?: number;
 }
 
-const RULE_ORDER: GrowthRuleId[] = ['R1', 'R6', 'R2', 'R3', 'R4', 'R5'];
+// Standard A: the maturity signal leads (R1 ready → R7 dark-flag maturity →
+// R6 dev-gate → R2 expired), and R3 (initiative-stalling) is DEMOTED to the
+// tail. R3's ~258-item flood is InitiativeTracker work-item noise, not feature
+// maturity — it stays computable and visible, but it no longer crowds out the
+// signal the engine exists to carry.
+const RULE_ORDER: GrowthRuleId[] = ['R1', 'R7', 'R6', 'R2', 'R4', 'R5', 'R3'];
 
 const RULE_HEADER: Record<GrowthRuleId, string> = {
   R1: '🔸 Ready to promote',
@@ -779,6 +784,7 @@ const RULE_HEADER: Record<GrowthRuleId, string> = {
   R4: '🔸 Spec patterns',
   R5: '🔸 Recurring corrections',
   R6: '🔸 Dev-gated features still dark',
+  R7: '🔸 Staged switches — owner, deadline, proof',
 };
 
 // C2 (maturation-followthrough-fix Standard C): the operator-facing footer must

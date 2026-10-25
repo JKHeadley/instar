@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T16:37:21.134Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "2e3896fa01e8384d394ab9bbb029a7c611002a83cd53a80da7c11d263399a379",
+  "coveredFiles": [
+    "docs/specs/executor-clone-base-objects.eli16.md",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fourth-round review fix: withhold credential-named lines from a diagnostic string instead of relying on scrubber shapes; unit tests cover punctuated and split values.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

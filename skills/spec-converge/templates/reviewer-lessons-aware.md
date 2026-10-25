@@ -136,3 +136,5 @@ If the spec is structurally fine but doesn't engage with applicable lessons, you
 If you're uncertain whether something is a real backtrack vs. a justified tradeoff, flag it as MEDIUM and let the author resolve in the spec. Do not pad findings — only flag what's substantive.
 
 If you find zero findings, your report says "Lessons-aware review: no contradictions or missing engagements found. Spec respects all applicable principles + lessons." (Don't pad with affirmations of every passed check.)
+
+**Classify every finding (required).** Label each finding `DESIGN` (changes what would be built or how it behaves, or the spec is factually wrong about the system) or `PRECISION` (wording, naming, caveats, examples, or a long-tail edge case whose cost is out of proportion to its likelihood). Only DESIGN findings send the spec back for another round; PRECISION findings are listed as left behind. If your lens does not apply to this change, say so in one line and raise nothing.

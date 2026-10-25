@@ -74,6 +74,7 @@ import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_L
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
+import { resolveIdleSinceSeed } from './idleSincePersistence.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
 import { toPaneTailLines, type PermissionPromptAutoResolver } from '../monitoring/PermissionPromptAutoResolver.js';
 
@@ -614,8 +615,12 @@ export interface SessionTerminateAuthorityOptions {
   /**
    * Trusted assertion from the topic-transfer drain (SessionDrainRunner): this
    * close retires the local copy of a topic that is moving to another machine.
-   * Lifts ONLY the `standing-session` keep (a standing coordinator must not stay
-   * live on both machines); every other keep-guard is still re-checked.
+   * Lifts the `standing-session` keep (a standing coordinator must not stay
+   * live on both machines), the `recent-user-message` keep (the conversation
+   * continues on the target, so the user's latest message is no reason to keep
+   * this copy), and the lease-holder gate (the owner closing its OWN copy on a
+   * fenced drain order — the old owner is usually not the lease holder). Every
+   * other keep-guard is still re-checked; a refusal aborts the transfer.
    */
   topicTransferClose?: boolean;
   workEvidence?: string[];
@@ -1887,6 +1892,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.standingTopicResolver = fn;
   }
 
+  /** Signal sink for "this session showed Claude Code's Login expired frame under this config
+   *  home". Wired by server.ts to the QuotaPoller, which alone decides pool status. */
+  private loginExpiredSink: ((input: { configHome: string; session: string }) => void) | null = null;
+
+  setLoginExpiredSink(fn: ((input: { configHome: string; session: string }) => void) | null): void {
+    this.loginExpiredSink = fn;
+  }
+
   /** The configured standing-session entries (tmux names and `topic:<id>`). */
   getStandingSessions(): string[] {
     return this.config.standingSessions ?? [];
@@ -1985,7 +1998,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return false;
     }
     if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return false;
-    const configHome = this.configHomeForSession(session.tmuxSession) ?? 'the default login';
+    // `defaultWhenUnset`: a session on the default login carries NO CLAUDE_CONFIG_DIR (the spawn
+    // falls back to the process env), so an explicitly-unset var resolves to the default home here;
+    // a tmux read FAILURE still yields undefined (never a guessed slot).
+    const liveConfigHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
+    const configHome = liveConfigHome ?? 'the default login';
+    if (liveConfigHome && this.loginExpiredSink) {
+      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession }); }
+      catch { /* @silent-fallback-ok — a signal sink failure must never block ending the session */ }
+    }
     console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
     // workEvidence: [] — the killer proved the session idle (a REPL at the login screen can do
     // nothing), so a live MCP child must not stamp it mid-work and queue a revival back onto
@@ -2167,8 +2188,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // A peer cannot perform that cleanup remotely, and the capability is not
       // part of terminateSession's public options. The literal reason check is
       // defense in depth against capability reuse for another kill class.
+      // Topic-transfer drain carve-out: the drain runner closes THIS machine's
+      // own copy of a topic it was ordered (fenced by the transferring CAS) to
+      // hand away. The old owner is usually not the lease holder, so without
+      // this the gate refused every remote drain close — and ownership moved
+      // while the session stayed alive (2026-10-23). Runtime-private flag.
+      const isAuthorizedTopicTransferClose = opts?.topicTransferClose === true;
       if (!holdsServingLease
           && !isAuthorizedTopicMovedCloseout
+          && !isAuthorizedTopicTransferClose
           && !isAuthorizedLocalAgeLimit) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
@@ -2194,7 +2222,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const bypassedReasons: string[] = [];
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
-        if (opts?.bypassRecentUserMessageForConfirmedMove) bypassedReasons.push('recent-user-message');
+        if (opts?.bypassRecentUserMessageForConfirmedMove || opts?.topicTransferClose === true) {
+          bypassedReasons.push('recent-user-message');
+        }
         // `standDownDrainedClose` (duplicate-session stand-down §Drained-close).
         // P20 — VERIFY THE STATE, NOT ITS SYMBOL: the caller's claim buys nothing
         // on its own. This authority asks its OWN probe whether the session is
@@ -3057,7 +3087,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
               this.idleThrottleSettle.delete(session.tmuxSession);
             }
             if (!this.idlePromptSince.has(session.id)) {
-              this.idlePromptSince.set(session.id, now);
+              // Seed from the DURABLE idle-start instant when the record carries a
+              // usable one, so a server restart does not reset the clock and leave a
+              // topic-bound session un-closable forever (see idleSincePersistence.ts).
+              this.seedIdleClock(session, now);
 
               // ── Pasted text stuck: detect unsubmitted paste and retry Enter ──
               // Claude Code shows "[Pasted text #N]" when bracketed paste content
@@ -3070,7 +3103,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                   this.pasteRetried.add(session.id);
                   console.log(`[SessionManager] Session "${session.name}" has unsubmitted pasted text — resending Enter.`);
                   await this.sendKeyMaybeAsync(session.tmuxSession, 'Enter');
-                  this.idlePromptSince.delete(session.id); // Reset idle timer
+                  this.clearIdleClock(session); // Reset idle timer (durable too)
                   this.idleKillBackoff?.reset(session.id);
                   continue; // Skip to next session
                 }
@@ -3142,7 +3175,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     // generalizes that proven recovery to the whole transient-API class.)
                     if (this.listenerCount('apiErrorAtIdle') > 0) {
                       this.emit('apiErrorAtIdle', session.tmuxSession);
-                      this.idlePromptSince.delete(session.id);
+                      this.clearIdleClock(session);
                       this.idleKillBackoff?.reset(session.id);
                       continue; // Skip to next session — sentinel owns recovery.
                     }
@@ -3151,7 +3184,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                     this.errorNudgeTotal.set(session.id, nudgeTotal + 1);
                     console.log(`[SessionManager] Session "${session.name}" idle after API error — nudging to continue (nudge #${nudgeTotal + 1} this session).`);
                     this.sendInput(session.tmuxSession, 'You hit an API error. Please continue your work — skip or work around the action that failed.');
-                    this.idlePromptSince.delete(session.id); // Reset idle timer
+                    this.clearIdleClock(session); // Reset idle timer (durable too)
                     this.idleKillBackoff?.reset(session.id);
                     continue; // Skip to next session
                   }
@@ -3173,7 +3206,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
                 // reset the idle clock so we don't race the recovery window.
                 if (this.activeRecoveryChecker && this.activeRecoveryChecker(session)) {
                   console.log(`[SessionManager] Skipping zombie kill for "${session.name}" — compaction recovery in flight.`);
-                  this.idlePromptSince.delete(session.id);
+                  this.clearIdleClock(session);
                   this.idleKillBackoff?.reset(session.id); // recovery window → re-evaluate fresh next tick
                   continue;
                 }
@@ -3205,7 +3238,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             // nudge worked, or the error cleared), so a FUTURE API-error episode in
             // this same long-running session deserves its own nudge. (errorNudgeTotal
             // is NOT cleared here — it's the lifetime runaway cap.)
-            this.idlePromptSince.delete(session.id);
+            this.clearIdleClock(session);
             this.idleKillBackoff?.reset(session.id); // resumed work → re-evaluate next tick, don't stay suppressed
             this.errorNudgedSessions.delete(session.id);
             this.idleErrorClassified.delete(session.id); // CMT-1785: re-arm the once-per-episode classify audit
@@ -5419,6 +5452,103 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
   private readonly closedHeadlessLaneDisclosed = new Set<string>();
 
+  /**
+   * Last-modified time of the session's framework transcript, in ms, or null when
+   * it cannot be read (no session id, no resolvable path, missing file, stat
+   * error). Used to corroborate a persisted idle-start instant: a transcript
+   * modified AFTER it proves the session worked since then.
+   */
+  transcriptMtimeMs(session: Session): number | null {
+    try {
+      const sessionId = session.claudeSessionId;
+      if (!sessionId) return null;
+      const jsonlPath = resolveFrameworkTranscriptPath({
+        framework: session.framework ?? 'claude-code',
+        sessionId,
+        projectDir: session.cwd ?? this.config.projectDir,
+      });
+      if (!jsonlPath) return null;
+      return fs.statSync(jsonlPath).mtimeMs;
+    } catch {
+      // @silent-fallback-ok — an unreadable transcript is NOT corroboration;
+      // resolveIdleSinceSeed treats null as "cannot refute", and the seed is
+      // still bounded by the persisted instant itself.
+      return null;
+    }
+  }
+
+  /**
+   * Start a session's idle clock, preferring the DURABLE instant on the record so
+   * the clock survives a server restart (the 2026-10-22 sagemind saturation: an
+   * in-memory-only clock never reaches the 240-minute topic-bound threshold on an
+   * agent that restarts every ~30 minutes, so idle conversations are never closed
+   * and every slot fills). Every uncertainty falls back to `now`, which is the
+   * pre-existing behaviour — a seeded clock only ever brings a kill FORWARD, so
+   * the safe direction is to start fresh.
+   */
+  private seedIdleClock(session: Session, now: number): void {
+    const verdict = resolveIdleSinceSeed({
+      persistedIdleSince: session.idleSince,
+      transcriptMtimeMs: this.transcriptMtimeMs(session),
+      now,
+    });
+    const seedAt = verdict.seedAtMs ?? now;
+    this.idlePromptSince.set(session.id, seedAt);
+    if (verdict.seedAtMs != null) {
+      console.log(
+        `[SessionManager] Session "${session.name}" idle clock resumed from its recorded start ` +
+        `(${Math.round((now - seedAt) / 60_000)}m idle across a restart).`
+      );
+      return;
+    }
+    // Fresh episode (or an unusable recorded value) — record this instant so the
+    // NEXT restart can resume from it. The snapshot is kept in sync so the rest
+    // of this tick sees the same value the disk holds.
+    const iso = new Date(seedAt).toISOString();
+    session.idleSince = iso;
+    this.persistIdleSince(session, iso);
+  }
+
+  /**
+   * End a session's idle episode: drop the in-memory clock AND the durable
+   * instant, so a later restart cannot resurrect a stale clock for a session that
+   * has since done work.
+   */
+  private clearIdleClock(session: Session): void {
+    this.idlePromptSince.delete(session.id);
+    delete session.idleSince;
+    this.persistIdleSince(session, undefined);
+  }
+
+  /**
+   * Write `idleSince` onto the FRESH on-disk record, never onto the monitor
+   * loop's snapshot. The loop's `session` is a shallow copy taken at tick start
+   * and can be seconds stale by the time a later session is reached; saving it
+   * back whole (status 'running' included) could resurrect a record that a
+   * mid-tick kill-to-respawn had already replaced under the SAME tmux name —
+   * `saveSession`'s supersede pass would then close the NEW live record and
+   * leave the pane tracked by the stale one (second-pass review finding). So:
+   * read the record as it is now, refuse unless it is still the same running
+   * session, change only this one field, and save that. `getSession` and
+   * `saveSession` have no await between them, so a concurrent in-process
+   * field write (claudeSessionId, confinedDeliveredAt) is not dropped either.
+   * A no-op when the field already holds the value.
+   */
+  private persistIdleSince(snapshot: Session, idleSince: string | undefined): void {
+    try {
+      const fresh = this.state.getSession(snapshot.id);
+      if (!fresh || fresh.status !== 'running' || fresh.tmuxSession !== snapshot.tmuxSession) return;
+      if ((fresh.idleSince ?? undefined) === idleSince) return;
+      if (idleSince == null) delete fresh.idleSince;
+      else fresh.idleSince = idleSince;
+      this.state.saveSession(fresh);
+    } catch {
+      // @silent-fallback-ok — a failed persist only costs the restart-resume of
+      // this one clock (today's behaviour), never a wrong kill; on a standby the
+      // save throws by design.
+    }
+  }
+
   isTranscriptRecentlyActive(session: Session, withinMs: number): boolean {
     try {
       const sessionId = session.claudeSessionId;
@@ -5680,7 +5810,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return configHome ? { configHome } : {};
   }
 
-  configHomeForSession(tmuxSession: string): string | undefined {
+  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean }): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
@@ -5688,6 +5818,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
       )).trim();
       const prefix = 'CLAUDE_CONFIG_DIR=';
+      if (out.startsWith('-CLAUDE_CONFIG_DIR') && opts?.defaultWhenUnset) {
+        // Explicitly unset in the session → the spawn used the process-level default.
+        return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      }
       if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
       const value = out.slice(prefix.length).trim();
       return value.length > 0 ? value : undefined;
@@ -8000,7 +8134,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const running = this.state.listSessions({ status: 'running' });
     const match = running.find(s => s.tmuxSession === tmuxSession);
     if (match) {
-      this.idlePromptSince.delete(match.id);
+      this.clearIdleClock(match);
       this.idleKillBackoff?.reset(match.id); // new input arriving → re-evaluate fresh, not a zombie
     }
 

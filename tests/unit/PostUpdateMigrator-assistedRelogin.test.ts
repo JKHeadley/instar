@@ -51,6 +51,12 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).not.toContain('Approval is forced on this path');
     expect(once).toContain('This path honors `mode` like every other');
     expect(once.match(/Failed sign-in repairs retry slowly/g)).toHaveLength(1);
+    // Spec relogin-last-resort-model: the one-subscription last-resort bullet lands once, after the slow-retry bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: added last-resort sign-in model awareness');
+    expect(once.match(/Last-resort sign-in model \(one-subscription agents\)/g)).toHaveLength(1);
+    expect(once).toContain('relogin_last_resort_anthropic_api_key');
+    expect(once).toContain('last-resort-drive-started');
+    expect(once.indexOf('Last-resort sign-in model')).toBeGreaterThan(once.indexOf('Failed sign-in repairs retry slowly'));
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });

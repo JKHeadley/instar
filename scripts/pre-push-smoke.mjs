@@ -12,6 +12,7 @@ import {
   failedTestFilesFromVitestJson,
   readSmokeLimits,
   resolvePrePushBase,
+  summarizeVitestFilesOnlyJson,
   summarizeVitestListJson,
 } from './lib/pre-push-scope.mjs';
 
@@ -45,13 +46,14 @@ function readFailedFiles(reportFile) {
   }
 }
 
-function listAffectedTests(baseRef) {
+function listAffectedTests(baseRef, { filesOnly = false } = {}) {
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-list-'));
   const reportFile = path.join(reportDir, 'vitest-list.json');
   try {
     const result = run('npx', [
       'vitest',
       'list',
+      ...(filesOnly ? ['--filesOnly'] : []),
       '--config',
       'vitest.push.config.ts',
       '--changed',
@@ -64,13 +66,39 @@ function listAffectedTests(baseRef) {
     if (result.status !== 0) return { result };
 
     try {
-      const selected = summarizeVitestListJson(fs.readFileSync(reportFile, 'utf-8'));
+      const text = fs.readFileSync(reportFile, 'utf-8');
+      const selected = filesOnly ? summarizeVitestFilesOnlyJson(text) : summarizeVitestListJson(text);
       return { result, selected };
     } catch (err) {
       return { result, selectionError: err };
     }
   } finally {
     fs.rmSync(reportDir, { recursive: true, force: true });
+  }
+}
+
+/** Shared handling of a listing run that did not produce a usable selection. */
+function exitOnUnusableListing(listed) {
+  const list = listed.result;
+  const listDisposition = classifyVitestListRun(list);
+  if (listDisposition.action === 'skip-indeterminate') {
+    process.stdout.write(list.stdout ?? '');
+    process.stderr.write(list.stderr ?? '');
+    printIndeterminateSkip(listDisposition.reason);
+    process.exit(0);
+  }
+  if (listDisposition.action === 'fail') {
+    process.stdout.write(list.stdout ?? '');
+    process.stderr.write(list.stderr ?? '');
+    process.exit(listDisposition.exitCode);
+  }
+  if (listed.selectionError || !listed.selected) {
+    process.stdout.write(list.stdout ?? '');
+    process.stderr.write(list.stderr ?? '');
+    console.error(
+      `pre-push smoke: could not determine the affected test set from Vitest JSON (${listed.selectionError instanceof Error ? listed.selectionError.message : listed.selectionError ?? 'missing structured result'}) — refusing a reassuring local pass.`,
+    );
+    process.exit(1);
   }
 }
 
@@ -138,31 +166,27 @@ if (breadth.skip) {
   process.exit(0);
 }
 
-const listed = listAffectedTests(base.ref);
-const list = listed.result;
-const listDisposition = classifyVitestListRun(list);
-
-if (listDisposition.action === 'skip-indeterminate') {
-  process.stdout.write(list.stdout ?? '');
-  process.stderr.write(list.stderr ?? '');
-  printIndeterminateSkip(listDisposition.reason);
+// Stage 1: file names only. It imports no test file, so a change that reaches
+// hundreds of tests is found too broad in seconds instead of timing out the
+// full listing (which then skipped the smoke tier with tests_run=0).
+const filesListed = listAffectedTests(base.ref, { filesOnly: true });
+exitOnUnusableListing(filesListed);
+breadth = evaluateSmokeBreadth(
+  { changedFileCount: changed.length, testFileCount: filesListed.selected.testFileCount, testCaseCount: 0 },
+  limits,
+);
+if (breadth.skip) {
+  printSkip(breadth.reason);
+  process.exit(0);
+}
+if (filesListed.selected.testFileCount === 0) {
+  console.log('✅ No affected tests selected by Vitest.');
   process.exit(0);
 }
 
-if (listDisposition.action === 'fail') {
-  process.stdout.write(list.stdout ?? '');
-  process.stderr.write(list.stderr ?? '');
-  process.exit(listDisposition.exitCode);
-}
-
-if (listed.selectionError || !listed.selected) {
-  process.stdout.write(list.stdout ?? '');
-  process.stderr.write(list.stderr ?? '');
-  console.error(
-    `pre-push smoke: could not determine the affected test set from Vitest JSON (${listed.selectionError instanceof Error ? listed.selectionError.message : listed.selectionError ?? 'missing structured result'}) — refusing a reassuring local pass.`,
-  );
-  process.exit(1);
-}
+// Stage 2: collect test cases, now bounded by the file cap.
+const listed = listAffectedTests(base.ref);
+exitOnUnusableListing(listed);
 
 const selected = listed.selected;
 console.log(`🧪 Smoke affected set: ${selected.testFileCount} test files / ${selected.testCaseCount} test cases.`);

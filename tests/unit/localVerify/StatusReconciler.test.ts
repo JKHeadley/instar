@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { evaluateRequiredContexts, ACTIONS_FLOOR_CONTEXTS, approverAcceptanceFromExecutorStatus } from '../../../scripts/safe-merge.mjs';
+import { evaluateRequiredContexts, ACTIONS_FLOOR_CONTEXTS } from '../../../scripts/safe-merge.mjs';
 import { FloorGate } from '../../../src/localVerify/floorGate.js';
 import type { LocalVerifyService } from '../../../src/localVerify/LocalVerifyService.js';
 import type { MainHealthState } from '../../../src/localVerify/mainHealth.js';
@@ -63,9 +63,6 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     holdsAtPost: null as null | (() => boolean),
     blockPosts: false,
     failPosts: false,
-    reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
-    executorBody: null as unknown,
-    acceptanceReads: 0,
   };
   const posts: Array<{ head: string; state: ProjectedState; description: string }> = [];
   /** What GitHub ends up holding: the order in which posts COMPLETE. */
@@ -101,7 +98,6 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     readMainHead: async () => st.mainHead,
     readCombinedStatus: async (h) => (st.combined.has(h) ? st.combined.get(h)! : { state: 'absent', creator: null, description: null }),
     readCheckRuns: async (h) => (st.checkRuns.has(h) ? st.checkRuns.get(h)! : greenRuns()),
-    readReviews: async () => st.reviews,
     postStatus: async (head, state, description) => {
       posts.push({ head, state, description });
       if (st.blockPosts) {
@@ -114,7 +110,6 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     holdsLease: () => (st.holdsAtPost && posts.length >= 0 ? st.holdsAtPost() : st.holds),
     leaseEpoch: () => st.epoch,
     leaseHolder: () => st.holder,
-    readApproverAcceptance: async () => { st.acceptanceReads++; return approverAcceptanceFromExecutorStatus(st.executorBody, 'JKHeadley'); },
     now: () => st.t,
     setTimer: (fn, ms) => { timers.push({ fn, ms }); },
     signal: (k) => { signals.push(k); },
@@ -483,26 +478,18 @@ describe('StatusReconciler — canaries and modes', () => {
 
 });
 
-describe('StatusReconciler — approval path (Decision 16) and the status contract', () => {
-  const flagged = () => record({ harnessChanging: true });
-  const approve = (head: string) => [{ login: 'JKHeadley', state: 'APPROVED', commitId: head, submittedAt: '2026-10-21T11:00:00Z' }];
-  const execBody = (ind: object) => ({ availability: { approver: 'JKHeadley', independence: ind } });
-
-  it('a harness-changing PR reaches success only with the operator approval at head AND the executor acceptance', async () => {
+describe('StatusReconciler — flagged records (independent review) and the status contract', () => {
+  it('a harness-changing PR stays pending without the recorded independent review and reaches success with it — no review or executor read', async () => {
     const s = setup();
-    s.st.records.set(`7:${sha('a')}`, flagged());
+    s.st.records.set(`7:${sha('a')}`, record({ harnessChanging: true }));
     await s.rec.pass(); await s.rec.drain();
-    expect(s.posts.at(-1)?.state).toBe('pending'); // no approval
-    expect(s.st.acceptanceReads).toBe(0);           // not read without an approval
+    expect(s.posts.at(-1)).toMatchObject({ state: 'pending' });
+    expect(s.posts.at(-1)?.description).toMatch(/^awaiting-independent-review/);
     s.st.prs = [pr({ rollup: [lvStatus('PENDING')] })];
-    s.st.reviews = approve(sha('a'));
-    s.st.executorBody = execBody({ independent: false, reasons: ['browser-profile-account'], accepted: false });
-    await s.rec.pass(); await s.rec.drain();
-    expect(s.posts).toHaveLength(1); // still pending: acceptance does not match
-    s.st.executorBody = execBody({ independent: false, reasons: ['browser-profile-account'], accepted: true });
+    s.st.records.set(`7:${sha('a')}`, record({ harnessChanging: true, independentReview: { trace: '.instar/instar-dev-traces/t.json', concurred: true } }));
     await s.rec.pass(); await s.rec.drain();
     expect(s.posts.at(-1)).toMatchObject({ state: 'success' });
-    expect(s.st.acceptanceReads).toBe(2); // once per pass, only when needed
+    expect((s.rec.status() as Record<string, unknown>).approverAcceptance).toBeUndefined();
   });
 
   it('status() carries the contract safe-merge reads, plus takeoverFloorCheck', async () => {

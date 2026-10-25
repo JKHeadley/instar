@@ -15,6 +15,7 @@ import type { ConfinedCommand, ConfinedResult, ConfinedRunner } from '../../src/
 import type { AttemptGit, GitHubGateway } from '../../src/feedback-factory/execute/executorPorts.js';
 import type { DepsCachePort } from '../../src/feedback-factory/execute/depsCache.js';
 import type { PrReview, RepoInfo } from '../../src/feedback-factory/execute/reviewGate.js';
+import type { ReviewerOutcome } from '../../src/feedback-factory/execute/independentReview.js';
 import type { AttentionInput } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
 
 export const BASE_SHA = 'a'.repeat(40);
@@ -38,6 +39,12 @@ export interface ExecHarness extends Harness {
   pushes: PushRecord[];
   prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; labels: string[]; title: string; body: string }>;
   reviews: Map<number, PrReview[]>;
+  /** The diff `prDiff` answers (null = gh error) and every comment left on a PR. */
+  prDiff: { value: string | null };
+  prFiles: { value: string[] | null };
+  comments: Array<{ pr: number; body: string }>;
+  /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
+  review: { outcomes: ReviewerOutcome[] | null; calls: string[] };
   disarmed: number[];
   merges: Array<{ pr: number; sha: string }>;
   safeMergeExit: { code: number | null; stdout: string };
@@ -46,7 +53,7 @@ export interface ExecHarness extends Harness {
   runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
   runnerAvailable: { value: boolean };
   deps: { ok: boolean; ensureCalls: number };
-  sessions: { alive: Set<string>; spawned: Array<{ name: string; prompt: string; cwd: string; settingsPath?: string; trusted: boolean }>; behavior: { fn: (workspace: string, prompt: string) => void }; stopped: string[]; remoteStops: Array<{ machine: string; name: string }>; canaryReport: { fn: ((reportPath: string, workspace: string, prompt: string) => void) | null };
+  sessions: { alive: Set<string>; spawned: Array<{ name: string; prompt: string; cwd: string; settingsPath?: string; trusted: boolean }>; behavior: { fn: (workspace: string, prompt: string) => void }; stopped: string[]; remoteStops: Array<{ machine: string; name: string }>; canaryReport: { fn: ((reportPath: string, workspace: string, prompt: string) => void) | null }; canaryTail: { value: string | null };
     /** The canary session's transcript lines (default: one tool result per step plus the report, no nonce). */
     canaryTranscript: { fn: ((prompt: string) => string[] | null) | null }; claudeHome: string };
   attentionExec: AttentionInput[];
@@ -87,7 +94,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, 'package.json'), '{"name":"fixture"}\n');
   fs.writeFileSync(path.join(h.sourceRepo, 'src', 'thing.ts'), 'export const thing = 1;\n');
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
-  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', ...(opts.config ?? {}) };
+  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', ...(opts.config ?? {}) };
   h.enabled = { value: true };
   h.epoch = { value: 1 };
   h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
@@ -97,6 +104,10 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.pushes = [];
   h.prs = new Map();
   h.reviews = new Map();
+  h.prDiff = { value: 'diff --git a/src/thing.ts b/src/thing.ts\n+++ b/src/thing.ts\n+x\n' };
+  h.prFiles = { value: ['src/thing.ts', 'tests/fix.test.ts'] };
+  h.comments = [];
+  h.review = { outcomes: [], calls: [] };
   h.disarmed = [];
   h.merges = [];
   h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
@@ -106,7 +117,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.runnerAvailable = { value: true };
   h.deps = { ok: true, ensureCalls: 0 };
   h.attentionExec = [];
-  h.sessions = { alive: new Set(), spawned: [], behavior: { fn: () => {} }, stopped: [], remoteStops: [], canaryReport: { fn: null }, canaryTranscript: { fn: null }, claudeHome: path.join(base.dir, 'claude-home') };
+  h.sessions = { alive: new Set(), spawned: [], behavior: { fn: () => {} }, stopped: [], remoteStops: [], canaryReport: { fn: null }, canaryTail: { value: null }, canaryTranscript: { fn: null }, claudeHome: path.join(base.dir, 'claude-home') };
 
   const git: AttemptGit = {
     fetchBase: async () => BASE_SHA,
@@ -148,6 +159,9 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     removeLabel: async (_slug, pr, label) => { const p = h.prs.get(pr); if (p) p.labels = p.labels.filter((l) => l !== label); return true; },
     disableAuto: async (_slug, pr) => { h.disarmed.push(pr); return true; },
     safeMerge: async (_slug, pr, sha) => { h.merges.push({ pr, sha }); return { exitCode: h.safeMergeExit.code, stdout: h.safeMergeExit.stdout }; },
+    prDiff: async () => h.prDiff.value,
+    prFiles: async () => h.prFiles.value,
+    comment: async (_slug, pr, body) => { h.comments.push({ pr, body }); return true; },
   };
   const runner: ConfinedRunner = {
     available: () => (h.runnerAvailable.value ? { ok: true, version: '0.0.77' } : { ok: false, reason: 'sandbox-runtime-not-installed' }),
@@ -189,6 +203,8 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
           fs.mkdirSync(dir, { recursive: true });
           fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${lines.join('\n')}\n`);
         }
+        // A canary session that shows a screen stays alive for one poll, then ends (captureTail below).
+        if (h.sessions.canaryTail.value !== null) h.sessions.alive.add(`tmux-${input.name}`);
         return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}`, transcript: { configHome: h.sessions.claudeHome, sessionUuid } };
       }
       h.sessions.alive.add(`tmux-${input.name}`);
@@ -204,10 +220,16 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     stop: async (name) => { h.sessions.stopped.push(name); h.sessions.alive.delete(name); return true; },
     remoteStop: async (machine, name) => { h.sessions.remoteStops.push({ machine, name }); return true; },
     frameworkVersion: async () => '2.1.295 (Claude Code)',
+    captureTail: async (name) => {
+      if (!name.startsWith('tmux-feedback-canary-')) return null;
+      h.sessions.alive.delete(name);
+      return h.sessions.canaryTail.value;
+    },
   };
   h.execStore = new FeedbackExecuteStore(h.drain, h.store, { clock: () => h.now.value });
   h.exec = new FeedbackExecutorService({
     triageStore: h.store, store: h.execStore, audit: h.audit,
+    review: { run: async ({ prompt }) => { h.review.calls.push(prompt); if (h.review.outcomes === null) throw new Error('reviewers-down'); return h.review.outcomes; } },
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },

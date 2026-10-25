@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-22T16:24:27.396Z",
+  "slug": "zero-checks-not-green",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 55,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrLogic.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

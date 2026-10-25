@@ -26,7 +26,8 @@ import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/E
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
-import { decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
+import { MAIN_FAIR_SHARE_MS, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
+import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
@@ -2228,7 +2229,7 @@ const localVerifyCapacityRequeue: SelfActionController = {
   perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 48,
   tickMs: 5 * 60_000,
-  eternalSentinel: { reason: 'a capacity-blocked verify re-queues after each full 30-minute wait in place; never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
+  eternalSentinel: { reason: 'a capacity-blocked verify re-queues (holders checked before every start; a busy suite slot at lane start re-queues); never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
   makeUnderPressure(f, sink) {
     const t0 = f.clock.nowMs();
     const queue = [201, 202].map((pr) => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, notBefore: undefined as number | undefined }));
@@ -2454,7 +2455,108 @@ const localVerifyStatusPassBackoff: SelfActionController = {
   },
 };
 
+
+/**
+ * local-verify-flake-rerun — the isolation re-run inside one verify: a lane whose only
+ * problem is 1..3 failed files re-runs exactly those files once each, and the cap (3)
+ * covers the whole verify. Pinned worst case (targetAlwaysRejects): every lane of every
+ * verify has 2 failing files and every re-run fails again. Per verify: lane 1 re-runs 2,
+ * lane 2 re-runs none (only 1 left of the cap), lane 3 none ⇒ ≤ 3 re-runs, each file
+ * once. The model drives ONE verify (verifies themselves are bounded by the queue's own
+ * controllers), so the bound is horizon-independent.
+ */
+const localVerifyFlakeRerun: SelfActionController = {
+  id: 'local-verify-flake-rerun',
+  actionVerb: 'retry-failed-test-file',
+  models: 'src/localVerify/orchestrator.ts (isolationRerun ← decideIsolationRerun, cap LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles per verify)',
+  modelsPath: 'src/localVerify/orchestrator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The re-run budget lives inside one verify run (the child process); a restart ends that run, and the next run is a new verify bounded by the queue controllers.' },
+  boundK: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles,
+  perTargetBoundK: 1,
+  ticks: 3, // one tick per lane of a single verify
+  tickMs: 10 * 60_000,
+  makeUnderPressure(f, sink) {
+    let budget = LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles;
+    let lane = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const files = [`tests/l${lane}/a.test.ts`, `tests/l${lane}/b.test.ts`];
+        const report: ParsedLaneReport = { files: new Map(files.map((x) => [x, { passed: 1, failed: f.targetAlwaysRejects() ? 1 : 0, skipped: 0, todo: 0 }])) };
+        lane += 1;
+        const d = decideIsolationRerun({ report, laneFiles: files, maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: budget });
+        budget -= d.rerun.length;
+        for (const file of d.rerun) sink.emit({ verb: 'retry-failed-test-file', target: file });
+      },
+    };
+  },
+};
+
+/**
+ * local-verify-main-fair-share — the single verify slot shared between `main` and PRs.
+ * Pinned worst case (targetAlwaysRejects): `main` gets a new head before every start and
+ * PR verifies are always waiting; each verify holds the slot 45 minutes. With `main`
+ * healthy a `main` verify goes ahead of waiting PRs only once its oldest unverified merge
+ * is ≥ 90 min old; a green main verify clears that age. So `main` starts are ≥ 90 min
+ * apart and PRs keep starting. Asserted in the model: a PR starts between any two `main`
+ * starts, and the oldest unverified merge never waits past 3 hours.
+ */
+const localVerifyMainFairShare: SelfActionController = {
+  id: 'local-verify-main-fair-share',
+  actionVerb: 'retry-main-verify',
+  models: 'src/localVerify/LocalVerifyService.ts (pump → decideStart with fairShare: oldestUnverifiedMainAt, lastStartWasMain, main health)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  delegatedGiveUp: 'none needed: with PRs waiting, a healthy main start is floored at 90 min of its oldest unverified merge (unhealthy: every other start); with no PR waiting the slot is otherwise idle',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The unverified-age clock restarts at boot (the boot main verify skips the debounce once), then the 90-minute rule applies again.' },
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 96,
+  tickMs: 15 * 60_000,
+  eternalSentinel: { reason: 'with PR verifies waiting and main healthy, main verifies start only once the oldest unverified merge is 90 min old', rateFloorMs: MAIN_FAIR_SHARE_MS },
+  makeUnderPressure(f, sink) {
+    let headN = 0;
+    let running: { kind?: 'main'; until: number } | null = null;
+    let oldestUnverifiedMainAt: number | null = null;
+    let lastStartWasMain = false;
+    let prSinceMain = true;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (oldestUnverifiedMainAt === null) oldestUnverifiedMainAt = now; // a new merge lands every pass
+        if (running && now >= running.until) {
+          if (running.kind === 'main') oldestUnverifiedMainAt = null; // its green verify covers the backlog
+          running = null;
+        }
+        if (oldestUnverifiedMainAt !== null && now - oldestUnverifiedMainAt > 3 * 60 * 60_000) {
+          throw new Error('local-verify let a healthy main wait past the 3 h unverified alarm');
+        }
+        if (running) return;
+        const queue: Array<{ kind?: 'main'; head?: string }> = [
+          { kind: 'main', head: (headN++).toString(16).padStart(40, '0') },
+          ...(f.targetAlwaysRejects() ? [{}, {}] : []),
+        ];
+        const d = decideStart({ foreignHolders: 0, queue, now, fairShare: { mainHealthy: true, oldestUnverifiedMainAt, lastStartWasMain } });
+        if (d.kind !== 'start') return;
+        const e = queue[d.index];
+        lastStartWasMain = e.kind === 'main';
+        running = { ...(e.kind ? { kind: e.kind } : {}), until: now + 45 * 60_000 };
+        if (e.kind === 'main') {
+          if (f.targetAlwaysRejects() && !prSinceMain) throw new Error('local-verify started two main verifies in a row while PRs waited');
+          prSinceMain = false;
+          sink.emit({ verb: 'retry-main-verify', target: e.head! });
+          sink.emitTimesMs.push(now);
+        } else {
+          prSinceMain = true;
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  localVerifyFlakeRerun,
+  localVerifyMainFairShare,
   localVerifyErrorRerun,
   localVerifyCapacityRequeue,
   localVerifyMainSchedule,

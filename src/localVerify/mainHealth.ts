@@ -117,6 +117,58 @@ export function decideMainHeadEnqueue(
   return { next, enqueue: true };
 }
 
+/** A `main` commit as GitHub describes it (subject, parents, files changed against its parent). */
+export interface CommitInfo {
+  subject: string;
+  parents: readonly string[];
+  /**
+   * Files the commit changes against its (only) parent, with GitHub's per-file `patch`
+   * (omitted by GitHub for large diffs); null/absent = unknown ⇒ verify.
+   */
+  files?: ReadonlyArray<{ filename: string; patch?: string | null }> | null;
+}
+
+const RELEASE_SUBJECT = /^chore: release v\S+ \[skip ci\]$/;
+/** What a release commit may touch to be collapsed into its parent's verify. */
+const RELEASE_FILES = [/^package-lock\.json$/, /^pnpm-lock\.yaml$/, /^CHANGELOG[^/]*$/, /^upgrades\/.+/];
+/** A package.json (root or workspace) counts as release-only only when its diff changes just the "version" line. */
+const PACKAGE_JSON = /^(?:packages\/[^/]+\/)?package\.json$/;
+const VERSION_LINE = /^[+-]\s*"version"\s*:\s*"[^"]*",?\s*$/;
+
+/** True when a unified-diff patch changes nothing but `"version"` lines (a missing patch is false). */
+export function patchChangesOnlyVersion(patch: string | null | undefined): boolean {
+  if (typeof patch !== 'string' || patch.length === 0) return false;
+  const changed = patch.split('\n').filter((l) => (l.startsWith('+') || l.startsWith('-')) && !l.startsWith('+++') && !l.startsWith('---'));
+  return changed.length > 0 && changed.every((l) => VERSION_LINE.test(l));
+}
+
+function isReleaseOnlyFile(f: { filename: string; patch?: string | null }): boolean {
+  if (PACKAGE_JSON.test(f.filename)) return patchChangesOnlyVersion(f.patch);
+  return RELEASE_FILES.some((re) => re.test(f.filename));
+}
+/** GitHub's commit API lists at most 300 files: a list that long may be truncated ⇒ verify. */
+const COMMIT_FILES_LIMIT = 300;
+
+/**
+ * A release commit (`chore: release v… [skip ci]`) whose ONLY parent this machine already
+ * holds a `main` record for (or has queued/running), and whose diff against that parent
+ * touches only release files (package-lock.json, pnpm-lock.yaml, CHANGELOG*, upgrades/**, and a
+ * root or workspace package.json whose patch changes only its "version" line — a missing
+ * patch is not release-only), changes nothing a verify checks beyond the parent's verify, so it never
+ * triggers a `main` verify on its own. Anything else — another file, an unknown or
+ * possibly-truncated file list, a parent with no record here (a force-pushed main) — is
+ * verified as usual. Returns the covered parent, or null. Pure.
+ */
+export function releaseCollapsesInto(info: CommitInfo | null, covered: ReadonlySet<string>): string | null {
+  if (!info || info.parents.length !== 1) return null;
+  if (!RELEASE_SUBJECT.test(info.subject.trim())) return null;
+  if (!covered.has(info.parents[0])) return null;
+  const files = info.files;
+  if (!files || files.length === 0 || files.length >= COMMIT_FILES_LIMIT) return null;
+  if (!files.every(isReleaseOnlyFile)) return null;
+  return info.parents[0];
+}
+
 export type MainEnqueueDecision = { action: 'skip' } | { action: 'push' } | { action: 'replace' };
 
 /**
@@ -204,7 +256,8 @@ export class MainHealth {
    *   'cleared'        — unhealthy → healthy (re-run failed PR verifies)
    *   'none'
    */
-  async onVerify(head: string, outcome: 'success' | 'failure' | 'error'): Promise<'rerun' | 'cleared' | 'none'> {
+  /** `detail` (bounded run-detail: reasons, failures, flaky re-runs) travels with the main-red signal. */
+  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>): Promise<'rerun' | 'cleared' | 'none'> {
     if (outcome === 'error') return 'none'; // only `failure` counts as red
     if (outcome === 'success') {
       if (this.snap.state === 'healthy') {
@@ -238,7 +291,7 @@ export class MainHealth {
     }
     // The re-run failed too (or a further head failed while already red).
     this.set({ ...this.snap, state: 'main-red', redHead: head, reason: 'rerun-failed' });
-    this.raise('local-verify:main-red', { redHead: head, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental" });
+    this.raise('local-verify:main-red', { redHead: head, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental", ...(detail ? { runDetail: detail } : {}) });
     return 'none';
   }
 

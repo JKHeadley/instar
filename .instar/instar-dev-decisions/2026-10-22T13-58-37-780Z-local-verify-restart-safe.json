@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-22T13:58:37.780Z",
+  "slug": "local-verify-restart-safe",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 529,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/runVerifyMain.ts",
+      "src/localVerify/verifierVersion.ts"
+    ],
+    "addedLines": 516,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The queue's decision functions are unchanged and still driven by the convergence models (local-verify-error-rerun, capacity-requeue, main-schedule); persisted errorRetries/attempts keep the one automatic error re-run bound across restarts, and an unclean-exit restore costs one error retry; new starts pause while an update is pending and this hold is the only delay."
+    }
+  },
+  "verdict": "pass"
+}

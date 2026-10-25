@@ -40,6 +40,7 @@ export function statusForResult(r: RequestResult): number {
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
     case 'main-unhealthy': return 409;
+    case 'stopping': return 503;
     default: return 500;
   }
 }
@@ -95,7 +96,8 @@ export function registerLocalVerifyRoutes(router: Router, deps: LocalVerifyRoute
       res.status(503).json({ error: 'local-verify status loop not configured (no instar source checkout, no GitHub login, or no safe-merge floor)' });
       return;
     }
-    res.json(rec.status());
+    // flakyFiles: file → { count, lastSeen, lane } for every file an isolation re-run found flaky.
+    res.json({ ...rec.status(), flakyFiles: deps.service()?.flakyFiles() ?? {} });
   });
 
   router.get('/local-verify/record', (req: Request, res: Response) => {

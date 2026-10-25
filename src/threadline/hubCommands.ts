@@ -147,7 +147,14 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
     }
 
     // Authoritative bind: conversation + commitment.
-    await conversationStore.mutate(threadId, (c) => { c.boundTopicId = topicId; return c; });
+    // Tagged `operator`: this is the deliberate bind the homebase feature must never
+    // override (peer-conversation-homebase-topic §2.2). An untagged bind would be
+    // indistinguishable from a legacy record, which is preserved but only out of caution.
+    await conversationStore.mutate(threadId, (c) => {
+      c.boundTopicId = topicId;
+      c.boundTopicSource = 'operator';
+      return c;
+    });
     const commitment = commitmentTracker?.findByThreadId(threadId);
     if (commitment && commitmentTracker) {
       try { await commitmentTracker.mutate(commitment.id, (c) => { c.topicId = topicId; return c; }); }

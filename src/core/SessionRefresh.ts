@@ -436,11 +436,36 @@ export class SessionRefresh {
    * unique, and restarting the wrong session is worse than a clear refusal.
    */
   private displayNameHint(sessionName: string): string {
-    const matches = this.deps.state.listSessions({ status: 'running' })
-      .filter(s => s.name === sessionName && s.tmuxSession && s.tmuxSession !== sessionName)
-      .map(s => s.tmuxSession);
-    if (matches.length === 0) return '';
-    return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${matches.map(m => `"${m}"`).join(', ')}; see tmuxSession in GET /sessions).`;
+    // One verdict per tmux name: a name with ANY non-terminal record is live;
+    // a name whose records are all terminal is named only when the topic still
+    // maps to it, so the hinted name actually works (the dead-bound respawn
+    // path). A dead name whose topic moved on is left out — hinting it would
+    // just trade one refusal for a session_not_found.
+    //
+    // The terminal arm is the 2026-10-22 Mama PC lesson: a dead topic session
+    // refreshed by its display name came back `not_telegram_bound` with no
+    // hint (only running sessions were matched), and the "checked in-memory +
+    // disk registry" wording was read as a LOST BINDING. The binding was fine;
+    // the name was wrong.
+    const liveByTmux = new Map<string, boolean>();
+    for (const s of this.deps.state.listSessions()) {
+      if (s.name !== sessionName || !s.tmuxSession || s.tmuxSession === sessionName) continue;
+      const terminal = s.status === 'completed' || s.status === 'failed' || s.status === 'killed';
+      liveByTmux.set(s.tmuxSession, (liveByTmux.get(s.tmuxSession) ?? false) || !terminal);
+    }
+    const live: string[] = [];
+    const deadBound: string[] = [];
+    for (const [tmux, isLive] of liveByTmux) {
+      if (isLive) live.push(tmux);
+      else if (this.deadBoundTopic(tmux) !== null) deadBound.push(tmux);
+    }
+    if (live.length === 0 && deadBound.length === 0) return '';
+    const q = (names: string[]) => names.map(m => `"${m}"`).join(', ');
+    if (deadBound.length === 0) {
+      return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${q(live)}; see tmuxSession in GET /sessions).`;
+    }
+    const liveClause = live.length > 0 ? `running: ${q(live)}; ` : '';
+    return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${liveClause}not running but still bound to its topic, so a refresh of it respawns from the saved conversation: ${q(deadBound)}; see tmuxSession in GET /sessions?include=all).`;
   }
 
   /** Detect phase shared by refreshSession() and precheckRefusal(). */

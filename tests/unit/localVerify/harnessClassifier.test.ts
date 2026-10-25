@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { classifyHarness, protectedPath, lifecycleScriptFiles } from '../../../src/localVerify/harnessClassifier.js';
+import { classifyHarness, protectedPath, protectedPathMatches, harnessReasonPaths, lifecycleScriptFiles } from '../../../src/localVerify/harnessClassifier.js';
 import { PROTECTED_PATH_PREFIXES } from '../../../src/monitoring/greenPrAutomergeWiring.js';
 
 const PKG = {
@@ -117,5 +117,19 @@ describe('protectedPath', () => {
   });
   it('an unreadable diff counts as protected', () => {
     expect(protectedPath(null, PROTECTED_PATH_PREFIXES)).toBe(true);
+  });
+});
+
+describe('flagged paths (what an independent review must cover)', () => {
+  it('protectedPathMatches names exactly the protected changed paths', () => {
+    expect(protectedPathMatches(['.github/workflows/ci.yml', 'src/core/x.ts', 'scripts/safe-merge.mjs'], PROTECTED_PATH_PREFIXES))
+      .toEqual(['.github/workflows/ci.yml', 'scripts/safe-merge.mjs']);
+    expect(protectedPathMatches(['src/core/x.ts'], PROTECTED_PATH_PREFIXES)).toEqual([]);
+  });
+  it('harnessReasonPaths maps each reason to its file; a pathless reason makes the set unknown', () => {
+    expect(harnessReasonPaths(['path:vitest.config.ts', 'lifecycle-script:scripts/x.cjs', 'package.json:scripts', 'package-lock.json:toolchain']))
+      .toEqual(['vitest.config.ts', 'scripts/x.cjs', 'package.json', 'package-lock.json']);
+    expect(harnessReasonPaths(['diff-unreadable'])).toBeNull();
+    expect(harnessReasonPaths([])).toEqual([]);
   });
 });

@@ -228,11 +228,57 @@ describe('workspaces and the confined spawn', () => {
     expect(h.sessions.spawned).toHaveLength(0);
     expect(h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:profile-unenforceable'))).toHaveLength(1);
     expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
-    // The latch clears after 24 h and the next attempt re-runs the canary.
+    // The first failure waits an hour (not a day); the next attempt re-runs the canary.
     h.runScript.fn = () => null;
-    h.now.value += 25 * 60 * 60_000;
+    h.now.value += 59 * 60_000;
+    expect((await h.exec.refreshAvailability()).reason).toBe('profile-unenforceable');
+    h.now.value += 2 * 60_000;
     h.fixWith({ 'src/thing.ts': 'x' });
     expect((await h.exec.tick()).started).toBe(1);
+  });
+
+  it('consecutive canary failures back off 1 h then 2 h, keep one Attention item per episode, and a pass resets the ladder', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    await h.workItem('c2');
+    h.runScript.fn = (cmd) => (/^cat /.test(cmd.command) ? { exitCode: 0, stdout: 'leaked' } : null);
+    await h.exec.tick();
+    h.now.value += 61 * 60_000;
+    await h.exec.tick();
+    const latch = h.exec.summary().profileUnenforceable as { failures: number; until: number; episode: number };
+    expect(latch.failures).toBe(2);
+    expect(latch.until - h.now.value).toBe(2 * 60 * 60_000);
+    // Both failures raise under the same episode id, which the Attention queue folds into one item.
+    expect(new Set(h.attentionExec.filter((a) => a.id.startsWith('feedback-execute:profile-unenforceable')).map((a) => a.id)).size).toBe(1);
+    // Passing after the wait clears the latch; a later failure starts a fresh episode at one hour.
+    h.runScript.fn = () => null;
+    h.now.value += 2 * 60 * 60_000 + 60_000;
+    h.fixWith({ 'src/thing.ts': 'x' });
+    expect((await h.exec.tick()).started).toBe(2);
+    const cleared = h.exec.summary().profileUnenforceable;
+    expect(cleared).toMatchObject({ failures: 0, until: 0 });
+  });
+
+  it('a latch written under the old flat-day rule expires an hour after it was set', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    // The old rule wrote { until: now + 24h } with no failure count, 90 minutes ago.
+    h.store.setMeta('exec:profile_unenforceable', JSON.stringify({ until: h.now.value - 90 * 60_000 + 24 * 60 * 60_000, episode: 1, failed: ['session-ran-every-probe'] }));
+    h.fixWith({ 'src/thing.ts': 'x' });
+    expect((await h.exec.refreshAvailability()).reason).toBe('ok');
+    expect((await h.exec.tick()).started).toBe(1);
+  });
+
+  it('a canary session that ends without its report records what its screen last showed', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.sessions.canaryReport.fn = () => { /* the session wrote nothing */ };
+    h.sessions.canaryTranscript.fn = () => null;
+    h.sessions.canaryTail.value = '\u001b[31mLogin expired\u001b[0m\n\nPlease run /login\n';
+    await h.exec.tick();
+    expect(h.execStore.all()[0]).toMatchObject({ state: 'stopped', reason: 'profile-unenforceable' });
+    const latch = h.exec.summary().profileUnenforceable as { failedDetail: Array<{ probe: string; detail: string }> };
+    expect(latch.failedDetail.find((d) => d.probe === 'session-last-screen')?.detail).toBe('screen: Login expired | Please run /login');
   });
 
   it('a session-path canary that skipped a probe fails closed', async () => {
@@ -480,6 +526,176 @@ describe('review gate and merge', () => {
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA });
     // A medium right grade once the operator approved.
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'medium' })]));
+  });
+
+  const PASS = () => [
+    { family: 'codex-cli', model: 'gpt-5.5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
+    { family: 'claude-code', model: 'claude-fable-5', status: 'ok' as const, verdict: 'MINOR ISSUES' as const, crossFamily: false, reason: null, body: 'Verdict: MINOR ISSUES\n- a nit' },
+  ];
+  const HOUR = 60 * 60_000;
+  // The review runs in the same tick that publishes the PR, so a test sets the reviewers' answers before `toPrOpen`.
+
+  it('independent review: a cross-family pass and a Claude pass admit the head with no owner review — hold removed, merge pinned to that SHA', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.review.calls[0]).toContain('--- DIFF (data) ---');
+    expect(h.review.calls[0]).toContain('+++ b/src/thing.ts');
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.prs.get(100)!.labels).not.toContain('hold');
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', approvedSha: HEAD_SHA, reviewSha: HEAD_SHA, reviewVerdict: 'pass', reviewReason: 'pass:codex-cli+claude-code' });
+    expect(h.comments).toHaveLength(0);
+    // Judged once per head: a later tick asks no reviewer again.
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
+  });
+
+  it('independent review: SERIOUS ISSUES from either reviewer refuses — a comment on the PR, the row stays open as review-failed, listed once, no merge; the owner\'s approval still merges it', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS().map((o) => (o.family === 'claude-code' ? { ...o, verdict: 'SERIOUS ISSUES' as const, body: 'Verdict: SERIOUS ISSUES\n- deletes a test' } : o));
+    const { initiativeId } = await toPrOpen();
+    expect(h.merges).toHaveLength(0);
+    expect(h.prs.get(100)!.labels).toContain('hold');
+    expect(h.comments).toHaveLength(1);
+    expect(h.comments[0].body).toContain('`serious:claude-code`');
+    expect(h.comments[0].body).toContain('deletes a test');
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'review-failed:serious:claude-code', reviewSha: HEAD_SHA, reviewVerdict: 'fail' });
+    expect(h.store.get(initiativeId)!.state).toBe('work');
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review \(serious:claude-code\)/);
+    // Judged once per head: later ticks ask nothing and comment nothing.
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.comments).toHaveLength(1);
+    // The owner's approval of that head merges it anyway.
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+  });
+
+  it('independent review: after a refusal, a new push is reviewed afresh and merges when it passes', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS().map((o) => ({ ...o, verdict: 'SERIOUS ISSUES' as const }));
+    const { initiativeId } = await toPrOpen();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'fail' });
+    h.prs.get(100)!.headRefOid = 'e'.repeat(40);
+    h.review.outcomes = PASS();
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.review.calls[1]).toContain('e'.repeat(40));
+    expect(h.merges).toEqual([{ pr: 100, sha: 'e'.repeat(40) }]);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', reviewSha: 'e'.repeat(40), reviewVerdict: 'pass' });
+  });
+
+  it('independent review: a reviewer that is away is not held against the change — no comment; a failing family is asked again after an hour, an absent one after a day', async () => {
+    h = await createExecHarness(); // no reviewers installed
+    const { initiativeId } = await toPrOpen();
+    expect(h.merges).toHaveLength(0);
+    expect(h.comments).toHaveLength(0);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'published', reviewSha: null, reviewVerdict: 'retry', reviewReason: 'cross-family-unavailable' });
+    expect(h.degradations).toContain('feedback-execute:reviewer-unavailable');
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/waiting for a reviewer \(cross-family-unavailable\)/);
+    h.review.outcomes = PASS();
+    h.now.value += HOUR + 1;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1); // absent family: not asked again within the day
+    h.now.value += DAY;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+  });
+
+  it('independent review: a degraded (failing) reviewer, or a reviewer port that throws, is retried after the merge-retry delay', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = null; // the port throws
+    const { initiativeId } = await toPrOpen();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'retry', reviewReason: 'cross-family-degraded' });
+    expect(h.comments).toHaveLength(0);
+    h.review.outcomes = [PASS()[0], { family: 'claude-code', model: null, status: 'degraded', verdict: null, crossFamily: false, reason: 'timeout', body: null }];
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1); // within the hour
+    h.now.value += HOUR + 1;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ reviewVerdict: 'retry', reviewReason: 'claude-reviewer-degraded' });
+    h.review.outcomes = PASS();
+    h.now.value += HOUR + 1;
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+  });
+
+  it('independent review: the owner\'s approval is not delayed by an absent reviewer', async () => {
+    h = await createExecHarness();
+    await toPrOpen();
+    expect(h.merges).toHaveLength(0);
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.review.calls).toHaveLength(1); // the owner route ran first; no second review
+  });
+
+  it('independent review: a diff that cannot be read admits nothing and records no verdict; a new head is reviewed again', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    h.prDiff.value = null;
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(0);
+    expect(h.merges).toHaveLength(0);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewSha: null, reviewVerdict: null });
+    h.prDiff.value = '+++ b/src/thing.ts\n+x\n';
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', reviewSha: HEAD_SHA });
+    // The head moves after arming: disarmed, and the new head is judged afresh.
+    h.prs.get(100)!.headRefOid = 'e'.repeat(40);
+    await h.exec.tick();
+    expect(h.disarmed).toContain(100);
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(2);
+    expect(h.review.calls[1]).toContain('e'.repeat(40));
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ reviewSha: 'e'.repeat(40), reviewVerdict: 'pass' });
+    expect(h.merges).toHaveLength(2);
+  });
+
+  it('independent review: a diff over the bound is refused unread (held, commented) — never merged', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    h.prDiff.value = `+++ b/src/thing.ts\n${'+x'.repeat(100_000)}\n`;
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(0);
+    expect(h.merges).toHaveLength(0);
+    expect(h.comments[0].body).toContain('`diff-too-large`');
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'review-failed:diff-too-large', reviewVerdict: 'fail' });
+  });
+
+  it('independent review: a path CODEOWNERS assigns to anyone — including the approver — is never admitted by the reviewers; that owner\'s approval is', async () => {
+    h = await createExecHarness();
+    fs.mkdirSync(path.join(h.sourceRepo, '.github'), { recursive: true });
+    fs.writeFileSync(path.join(h.sourceRepo, '.github', 'CODEOWNERS'), '/docs/STANDARDS-REGISTRY.md @Owner\n');
+    h.prFiles.value = ['docs/STANDARDS-REGISTRY.md'];
+    h.review.outcomes = PASS();
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls).toHaveLength(0);
+    expect(h.merges).toHaveLength(0);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: null, reviewReason: 'codeowners-owned' });
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/awaits your approval/);
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+  });
+
+  it('reviewGate: operator restores the owner-approval-only rule — the reviewers are never asked', async () => {
+    h = await createExecHarness({ config: { reviewGate: 'operator' } });
+    h.review.outcomes = PASS();
+    const { initiativeId } = await toPrOpen();
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(0);
+    expect(h.merges).toHaveLength(0);
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ reviewSha: null });
   });
 
   it('merge-armed is confirmed only by mergedAt + headRefOid equal to the approved SHA', async () => {

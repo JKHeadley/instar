@@ -754,6 +754,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // A fully-calm week is silent by default (no "all healthy" heartbeat — the
       // exact noise burnDetection was killed for).
       digestSendOnCalmWeeks: false,
+      // Standard A/B. `enabled` is deliberately OMITTED so the dev-agent gate
+      // governs it (resolveDevAgentGate): LIVE on a development agent — where
+      // the durable owner/deadline/proof record starts accruing real evidence
+      // immediately — and DARK fleet-wide. `dryRun` ships true regardless, so
+      // even on a dev agent the record fills while R7 stays out of the digest
+      // until the dry-run canary is deliberately cleared.
+      darkFlagInventory: { dryRun: true },
       incubationWindows: { lowRisk: 3, standard: 7, highRisk: 7 },
       proofOfLifeMinActivations: 1,
       rules: {

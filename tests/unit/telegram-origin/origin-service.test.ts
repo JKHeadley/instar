@@ -266,6 +266,18 @@ describe('origin service durable delivery', () => {
     expect(audit?.children).toHaveLength(hidden ? 1 : 2);
     if (!hidden) expect(JSON.parse(audit!.record.envelopeJson).childLinks[1].companionOf).toBe(audit!.children[0].childId);
   });
+  it('seals an issues-group send with the issues chat and the real thread id (wireParams)', async () => {
+    const h = await harness();
+    const { toWireParams, ISSUES_TOPIC_OFFSET } = await import('../../../src/messaging/telegramTopicSpace.js');
+    const service = new TelegramOriginService({ ...h.service.options,
+      wireParams: params => toWireParams(params, { mainChatId: '-100123', issuesChatId: '-100999' }) });
+    const operation = service.runAsAutomation('telegram-server', () => service.prepareBot({ method: 'sendMessage', accountId: 'bot-1',
+      params: { chat_id: '-100123', message_thread_id: ISSUES_TOPIC_OFFSET + 7, text: 'bug reply' } }));
+    const sealed = JSON.parse(JSON.parse(operation.admission.children[0].materializations[0].requestJson).body);
+    expect(sealed.chat_id).toBe('-100999');
+    expect(sealed.message_thread_id).toBe(7);
+    expect(operation.record.destination).toMatchObject({ chatId: '-100999', topicId: '7' });
+  });
   it('resumes a held companion after its parent receipt without sending the document again', async () => {
     const h = await harness();
     const operation = h.service.runAsAutomation('telegram-server', () => h.service.prepareBot({

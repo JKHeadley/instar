@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-22T22:52:28.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 3
+  },
+  "convergenceReport": "docs/specs/reports/standards-building-8020-triage-2026-10-22.md",
+  "convergenceSha256": "f7ca8ea47697710f32373ba5c78bc31232d6fd1353a35526eead301fb728b7b5",
+  "areas": {
+    "Building": {
+      "areaSha256": "be51d9c29b466d195839613ef45e7d0edbdf6f7e3599658f9f8606c83c699890",
+      "verdict": "accepted"
+    }
+  }
+}

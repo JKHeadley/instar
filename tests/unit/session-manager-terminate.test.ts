@@ -402,6 +402,39 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
+  // ── topic-transfer drain close (topicTransferClose, 2026-10-23 incident) ────
+  // The old owner closes its own copy on a fenced drain order. It is usually
+  // not the lease holder, and the user has usually just written, so the lease
+  // gate and recent-user-message used to refuse every remote drain close.
+  it('drain close on a NON-lease-holder with a recent user message ⇒ terminates', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-1');
+    const r = await terminateAuthority(s.id, 'topic 1 transferring to m_studio — turn boundary reached, clean close', {
+      via: 'ws12-drain',
+      topicTransferClose: true,
+    });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
+
+  it('without topicTransferClose the same close is lease-refused (public path unchanged)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-2');
+    const r = await manager.terminateSession(s.id, 'topic 1 transferring to m_studio');
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+  });
+
+  it('drain close still refuses a session with a live subagent (other keep-guards re-checked)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, activeSubagentCount: () => 1 }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-3');
+    const r = await terminateAuthority(s.id, 'topic 1 transferring', { topicTransferClose: true });
+    expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
   // ── runtime-private topic-moved closeout authority (F8) ─────────────────────
   // The machine a topic moves AWAY from is by definition usually NOT the
   // serving-lease holder, so the lease gate structurally vetoed the exact

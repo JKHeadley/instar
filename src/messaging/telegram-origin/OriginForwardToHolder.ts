@@ -97,6 +97,18 @@ export function classifyLeaseRoute(view: ForwardLeaseView): LeaseRoute {
   return { kind: 'peer', holder };
 }
 
+/** The adapter's send route for a token-holding machine. A confirmed, healthy
+ * holder on another machine is forwarded to at EVERY session-pool stage: a
+ * direct send from a non-holder is always held (`authorize` requires the
+ * lease), so answering `local` there muted the machine until the lease came
+ * back. Only an UNSETTLED lease keeps the dark-stage answer (send direct, no
+ * 15 s settle wait on a pool that is not rolled out). */
+export function decideHolderForward(input: { switchOn: boolean; poolStage: string; route: LeaseRoute }): 'forward' | 'local' | 'settling' {
+  if (!input.switchOn || input.route.kind === 'self') return 'local';
+  if (input.route.kind === 'peer') return 'forward';
+  return input.poolStage === 'dark' ? 'local' : 'settling';
+}
+
 export type SettledRoute = { kind: 'self' } | { kind: 'peer'; holder: string } | { kind: 'unsettled'; reason: LeaseRoute extends { reason: infer R } ? R : never };
 
 /** Re-read the lease with backoff for at most `timeoutMs` BEFORE writing

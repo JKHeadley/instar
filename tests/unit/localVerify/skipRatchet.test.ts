@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { countSkips, evaluateSkipRatchet } from '../../../src/localVerify/skipRatchet.js';
+import { countSkips, evaluateSkipRatchet, loadTypescript } from '../../../src/localVerify/skipRatchet.js';
 
 const BASE = `
 import { describe, it, expect } from 'vitest';
@@ -124,5 +124,28 @@ describe('evaluateSkipRatchet', () => {
       { path: 'tests/contract/live.test.ts', base: `it('x', () => {});`, head: null },
     ]);
     expect(r.testsRemoved).toBe(false);
+  });
+});
+
+describe('loadTypescript', () => {
+  // The verify child runs from an install without devDependencies (2026-10-23).
+  it('resolves typescript from a given directory before its own install', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lv-ts-'));
+    try {
+      const mod = path.join(dir, 'node_modules', 'typescript');
+      fs.mkdirSync(mod, { recursive: true });
+      fs.writeFileSync(path.join(mod, 'package.json'), JSON.stringify({ name: 'typescript', main: 'index.js' }));
+      fs.writeFileSync(path.join(mod, 'index.js'), 'module.exports = { marker: "run-worktree" };');
+      expect((loadTypescript([dir]) as unknown as { marker?: string }).marker).toBe('run-worktree');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('falls back to its own install when a given directory has none', () => {
+    const ts = loadTypescript(['/nonexistent-lv-dir']);
+    expect(typeof ts.createSourceFile).toBe('function');
   });
 });

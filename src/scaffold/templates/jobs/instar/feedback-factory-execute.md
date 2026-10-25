@@ -1,7 +1,7 @@
 ---
 name: Feedback-Factory Execute
 description: "Cadenced feedback executor. POST /feedback-factory/execute/tick reconciles running fix attempts (confined build sessions), drives executor pull requests through the review gate (merge only at the exact head the repository owner approved), follows merged fixes through release and 30 quiet days, and — within admission limits — starts new confined attempts on the top-ranked work items. Development-agent live; fleet dark; dry-run until feedbackFactory.execute.dryRun is false. Spec: docs/specs/feedback-triage-and-execution.md §4."
-schedule: "*/30 * * * *"
+schedule: "17,47 * * * *"
 priority: low
 expectedDurationMinutes: 2
 model: haiku

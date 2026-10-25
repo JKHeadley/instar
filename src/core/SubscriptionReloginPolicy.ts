@@ -11,6 +11,7 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'malformed-response',
   'still-authfailed-after-refresh',
   'cli-signed-out-auth-refused',
+  'cli-login-expired-observed',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
 const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);

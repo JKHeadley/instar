@@ -57,6 +57,15 @@ describe('validateRecord', () => {
     expect(validateRecord(rec({ outcome: 'error', errorStep: 'fetch', mergeTree: '' })).ok).toBe(true);
     expect(validateRecord(rec({ outcome: 'failure', mergeTree: '' })).ok).toBe(false);
   });
+  it('an independent review is optional; when present it must name a trace path and concur', () => {
+    expect(validateRecord(rec({ protectedPath: true, independentReview: { trace: '.instar/instar-dev-traces/t.json', concurred: true } })).ok).toBe(true);
+    for (const bad of [{ trace: 'docs/t.json', concurred: true }, { trace: '.instar/instar-dev-traces/t.json', concurred: false }, null, 'x']) {
+      const v = validateRecord({ ...rec(), independentReview: bad } as unknown);
+      expect(v.ok).toBe(false);
+      expect(!v.ok && v.errors).toContain('independentReview');
+    }
+  });
+
   it('rejects non-objects', () => {
     expect(validateRecord(null)).toEqual({ ok: false, errors: ['not-an-object'] });
   });

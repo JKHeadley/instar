@@ -128,9 +128,33 @@ export interface MergeRunner {
   reapOrphan(): Promise<{ reaped: boolean; outcome?: string }>;
 }
 
-export interface ProtectedPathsVerdict {
+/**
+ * Which changed files a CODEOWNERS rule owns (read at runtime from the base branch).
+ * Those PRs wait for GitHub's code-owner review: the operator's approval surface is
+ * the constitution, and only CODEOWNERS names it (directive 2026-10-22).
+ */
+/** safe-merge's local-floor refusal for a flagged record with no independent review. */
+export const NEEDS_INDEPENDENT_REVIEW = 'refused:needs-independent-review';
+
+export interface CodeOwnedPathsVerdict {
   touches: boolean;
+  /** The code-owned files the PR changes (empty when none). */
+  files: string[];
+  /**
+   * The changed files on the verifier's protected list (absent = not computed).
+   * On the actions floor there is no local-verify record to carry the independent
+   * review, so the watcher checks it itself for these (same judge, same rule).
+   */
+  protectedFiles?: string[];
   unverifiable: boolean;
+}
+
+/** An independent second-pass review of a PR head, read from the head on GitHub. */
+export interface IndependentReviewVerdict {
+  ok: boolean;
+  unverifiable: boolean;
+  /** Why not (the shared judge's reason), when !ok. */
+  problem?: string;
 }
 
 export interface GreenPrAutoMergerDeps {
@@ -138,8 +162,14 @@ export interface GreenPrAutoMergerDeps {
   leaseEpoch(): number;
   /** The single oldest-first GraphQL list call. Throws → tick-failed canary. */
   listOpenPrs(): Promise<PrSummary[]>;
-  /** Did this PR's diff touch protected paths? Enumerated to exhaustion. */
-  protectedPaths(pr: PrSummary): Promise<ProtectedPathsVerdict>;
+  /** Which code-owned files this PR's diff touches (enumerated to exhaustion). */
+  codeOwnedPaths(pr: PrSummary): Promise<CodeOwnedPathsVerdict>;
+  /**
+   * Actions floor only: does the PR head carry a concurring instar-dev trace covering
+   * `flaggedPaths` (scripts/lib/instar-dev-trace.mjs, the judge the verifier uses)?
+   * Absent ⇒ a protected-path PR on the actions floor waits (never merges unreviewed).
+   */
+  independentReviewAtHead?(pr: PrSummary, flaggedPaths: string[]): Promise<IndependentReviewVerdict>;
   /**
    * Re-fetch hold-relevant + state fields immediately before acting AND for the
    * armed-episode reconciliation read. null → vanished. Widened
@@ -193,8 +223,8 @@ export interface GreenPrSnapshotEntry {
   pr: number;
   headRefName: string;
   headRefOid: string;
-  /** 'mergeable' | 'protected-paths' — Layer 2 routes protected to the operator. */
-  kind: 'mergeable' | 'protected-paths';
+  /** 'mergeable' | 'code-owner-review' — a code-owned PR waits for GitHub's code-owner review. */
+  kind: 'mergeable' | 'code-owner-review';
 }
 
 export interface GreenPrState {
@@ -652,28 +682,61 @@ export class GreenPrAutoMerger extends EventEmitter {
         if (verdict.skip === 'held' && deb.transition === 'released') {
           this.deps.audit({ kind: 'green-pr-automerge', event: 'hold-released', pr: pr.number });
         }
+        if (verdict.skip === 'no-checks-ran') {
+          // Say so: zero GitHub Actions checks on this head is NOT green.
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
+        }
         continue;
       }
       // verdict.eligible but the hold debounce may still hold it back this tick.
       if (heldNow || !deb.resumeEligible) continue;
+      // This head was refused for want of an independent review: nothing changes until a
+      // new head (the committed trace) arrives, so do not spawn safe-merge again for it.
+      const prior = state.episodes[pr.number];
+      if (prior?.lastOutcome === NEEDS_INDEPENDENT_REVIEW && prior.headRefOid === pr.headRefOid) {
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
+        continue;
+      }
 
-      // Protected-paths gate (enumerated to exhaustion).
-      let pp: ProtectedPathsVerdict;
+      // Code-owner gate (enumerated to exhaustion). The ONLY PRs the watcher routes to the
+      // operator are those touching a CODEOWNERS-owned file (the constitution): they wait
+      // for GitHub's code-owner review. Protected-path and harness-changing PRs are no longer
+      // routed to the operator; the local floor admits them only with an independent second
+      // pass recorded by the verifier (directive 2026-10-22; spec local-verify-merge-authority).
+      let co: CodeOwnedPathsVerdict;
       try {
-        pp = await this.deps.protectedPaths(pr);
+        co = await this.deps.codeOwnedPaths(pr);
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
-        pp = { touches: false, unverifiable: true };
+        co = { touches: false, files: [], unverifiable: true };
       }
-      if (pp.unverifiable) {
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'protected-paths-unverifiable', pr: pr.number });
+      if (co.unverifiable) {
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
         continue;
       }
-      if (pp.touches) {
-        // Excluded from auto-merge; surfaced to the operator + included in the
-        // Layer-2 snapshot as the operator-routed variant (round-5/6).
-        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'protected-paths' });
-        await this.refreshAggregate(state, [`PR #${pr.number} is green but touches protected paths — it needs your manual review and merge`]);
+      if (co.touches && pr.reviewDecision !== 'APPROVED') {
+        // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
+        snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
+        await this.refreshAggregate(state, [`PR #${pr.number} changes ${co.files.slice(0, 3).join(', ')} — it waits for your code-owner review on GitHub`]);
         continue;
+      }
+      // The watcher's own-source protection, kept only as the SAME independent-review
+      // requirement: on the local floor the verifier's record carries it (safe-merge
+      // refuses without it); on the actions floor there is no record, so the watcher
+      // checks the head itself. Never routed to the operator.
+      if (floor === 'actions' && (co.protectedFiles?.length ?? 0) > 0) {
+        let rv: IndependentReviewVerdict;
+        try {
+          rv = this.deps.independentReviewAtHead
+            ? await this.deps.independentReviewAtHead(pr, co.protectedFiles!)
+            : { ok: false, unverifiable: true, problem: 'review-reader-unwired' };
+        } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge */
+          rv = { ok: false, unverifiable: true, problem: 'review-read-failed' };
+        }
+        if (!rv.ok) {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'needs-independent-review', pr: pr.number, head: pr.headRefOid, problem: rv.problem ?? null });
+          continue;
+        }
       }
       eligible.push(pr);
       snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
@@ -915,6 +978,21 @@ export class GreenPrAutoMerger extends EventEmitter {
       state.episodes[target.number] = ep;
       this.deps.audit({ kind: 'green-pr-automerge', event: 'auto-merge-unavailable', pr: target.number });
       void this.refreshAggregate(state, [`PR #${target.number} is green but I could not arm auto-merge — "Allow auto-merge" is disabled on the repo. Enable it, or set mergeStrategy:'admin'.`]);
+      return;
+    }
+
+    if (outcome === NEEDS_INDEPENDENT_REVIEW) {
+      // A flagged record (harness-changing / protected-path / skips / tests removed)
+      // without the independent second pass. That is the AGENT's work — run the second
+      // pass and commit its trace (a new head) — never an operator approval
+      // (directive 2026-10-22). Terminal for THIS head, no ladder, no attention item;
+      // gather() skips the head until it moves.
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.headRefOid = target.headRefOid;
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'needs-independent-review', pr: target.number, head: target.headRefOid });
       return;
     }
 

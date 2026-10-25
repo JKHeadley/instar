@@ -4,7 +4,7 @@
 **Slug:** `{{SPEC_SLUG}}`
 **Converged at:** {{CONVERGED_AT}}
 **Iterations:** {{ITERATION_COUNT}}
-**Final-round material findings:** 0
+**Final-round design findings:** 0
 
 ---
 
@@ -63,13 +63,23 @@ original finding text, resolution taken.
 
 {{FINDINGS_CATALOG}}
 
+## Proportion
+
+<!-- One line: change size (tier; files/LOC or spec lines), rounds used vs the
+tier cap (3 for Tier 1, 6 for Tier 2+). Flag plainly when out of line. Signal only. -->
+
+## Left behind
+
+<!-- Every PRECISION / long-tail finding not iterated on, one line each, plus any
+design finding accepted at the cap with its reason and the queue it went to. -->
+
 ## Convergence Verdict
 
 {{CONVERGENCE_VERDICT}}
 
 <!--
-Plain statement: "Converged at iteration N. The final review round
-produced zero material findings. Spec is ready for user review and
+Plain statement: "Converged at round N. The final review round
+found nothing that changes what gets built; M items left behind. Spec is ready for user review and
 approval. To approve: edit the spec's frontmatter to set approved: true
 (or run `instar spec approve {{SPEC_SLUG}}`), then /instar-dev can
 proceed with implementation."

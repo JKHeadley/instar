@@ -105,6 +105,23 @@ describe('SubscriptionLoginLedger', () => {
     });
   });
 
+  it('closes an open read window as ESCALATED (not resolved) when the absence is corroborated into needs-reauth', () => {
+    const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
+    for (const at of ['2026-10-22T11:10:00.000Z', '2026-10-22T11:25:00.000Z', '2026-10-22T11:40:00.000Z']) {
+      ledger.recordObservation({ accountId: 'acct-1', at,
+        outcome: { kind: 'observation-absence', causeClass: 'credential-token-shape-invalid' } });
+    }
+    expect(ledger.listCredentialReadWindows()).toMatchObject([{ closedAt: null }]);
+    ledger.recordObservation({ accountId: 'acct-1', at: '2026-10-22T12:00:00.000Z',
+      outcome: { kind: 'transition-to-needs-reauth', causeClass: 'cli-login-expired-observed', corroboration: 'exchange-corroborated' } });
+    expect(ledger.listCredentialReadWindows()[0]).toMatchObject({
+      closedAt: '2026-10-22T12:00:00.000Z', outcome: 'escalated-to-needs-reauth',
+    });
+    expect(ledger.listEpisodes()).toMatchObject([{
+      closedAt: null, causeClass: 'cli-login-expired-observed', corroboration: 'exchange-corroborated', provenance: 'observed',
+    }]);
+  });
+
   it('coalesces clean and absence evidence in either order into mixed coverage', () => {
     const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
     ledger.recordObservation({ accountId: 'acct-1', at: '2026-08-27T01:01:00.000Z', outcome: { kind: 'resolved-clean' } });

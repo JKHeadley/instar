@@ -18,8 +18,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { getHostTestRunnerSemaphore } from '../core/hostTestRunnerSemaphore.js';
+import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerStormCeilingError } from '../core/hostTestRunnerSemaphore.js';
+import { fileURLToPath } from 'node:url';
 import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams } from './orchestrator.js';
+import { localImportGraph } from './verifierVersion.js';
+
+/** The trusted unhandled-errors reporter installed next to this module (dist), or null. */
+export function installedUnhandledErrorsReporter(): string | null {
+  const f = path.join(path.dirname(fileURLToPath(import.meta.url)), 'unhandledErrorsReporter.js');
+  return fs.existsSync(f) ? f : null;
+}
 
 const OUTPUT_TAIL = 64 * 1024;
 const KILL_GRACE_MS = 5_000;
@@ -139,6 +147,52 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
         return [];
       }
     },
+    holdSuiteSlot: () => holdSuiteSlot(log),
     log,
+    importGraph: (files) => localImportGraph(files),
+    unhandledErrorsReporter: installedUnhandledErrorsReporter,
   };
+}
+
+/** How long the lane phase waits for its suite slot before re-queueing the verify. */
+const SUITE_SLOT_ACQUIRE_MS = 60_000;
+
+/**
+ * One full-suite slot for a verify's lane phase, held by the verify child process
+ * (runVerifyMain). The lanes are its children, so the bound's ancestry check nests each
+ * lane's own request under this slot; if the verify process dies, the slot is reclaimed
+ * with it (dead pid).
+ * Busy (another suite holds it) or an internal error of the bound ⇒ 'busy': the verify
+ * re-queues without counting an attempt. A fail-open admit (the bound cannot confirm a
+ * host-local disk) ⇒ null: the lanes run, and their own requests fail open the same way.
+ */
+async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Promise<(() => void) | 'busy' | null> {
+  const sem = getHostTestRunnerSemaphore();
+  try {
+    const out = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: SUITE_SLOT_ACQUIRE_MS });
+    if (out.kind !== 'acquired') {
+      log({ event: 'suite-slot', outcome: 'fail-open-admit', cause: out.cause });
+      return null;
+    }
+    log({ event: 'suite-slot', outcome: 'acquired', wouldBlock: out.wouldBlock });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      try { sem.release(out.id); } catch (e) {
+        // @silent-fallback-ok: a failed release is reclaimed by the bound (dead pid / TTL); logged.
+        log({ event: 'suite-slot', outcome: 'release-failed', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+      }
+    };
+  } catch (e) {
+    if (e instanceof TestRunnerCapacityTimeoutError || e instanceof TestRunnerStormCeilingError) {
+      log({ event: 'suite-slot', outcome: 'busy' });
+      return 'busy';
+    }
+    // An internal error of the bound: re-queue rather than run four lane processes that
+    // would each wait for the same cap-1 slot (a false failure). The starved signal covers
+    // a bound that keeps failing.
+    log({ event: 'suite-slot', outcome: 'error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+    return 'busy';
+  }
 }

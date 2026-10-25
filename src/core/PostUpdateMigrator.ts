@@ -1,4 +1,6 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
+import { poolReadSelectionAwareness } from './poolReadAwareness.js';
+import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -24,7 +26,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -66,6 +68,8 @@ import {
   REAPER_BACKGROUND_WORK_MARKER,
   REROUTED_LOGIN_EXPIRED_BULLET,
   REROUTED_LOGIN_EXPIRED_MARKER,
+  REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE,
+  REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
@@ -77,7 +81,7 @@ import { installBuiltinSkills, installBrowserScripts } from '../commands/init.js
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
-import { installAutoStart, installBootWrapper } from '../commands/setup.js';
+import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -95,6 +99,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { MachineIdentityManager } from './MachineIdentity.js';
@@ -136,6 +141,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Kept in lockstep with the ceiling written by `installAutoStart` in commands/setup.
  */
+/**
+ * Add `KillMode=process` to a systemd unit's [Service] section, leaving the rest
+ * of the file byte-identical. A unit that already declares ANY KillMode is
+ * returned untouched: an operator who chose one keeps it, and a re-run is a no-op.
+ * A unit with no [Service] section is returned untouched too (not one of ours).
+ */
+export function addSystemdKillModeProcess(unit: string): string {
+  if (/^\s*KillMode\s*=/m.test(unit)) return unit;
+  const m = /^\[Service\][ \t]*\r?\n/m.exec(unit);
+  if (!m) return unit;
+  const at = m.index + m[0].length;
+  return `${unit.slice(0, at)}${SYSTEMD_KILL_MODE_LINE}\n${unit.slice(at)}`;
+}
+
 export const LAUNCHD_PROCESS_CEILING_FLOOR = 2048;
 
 /** `<key>NumberOfProcesses</key>` followed by its `<integer>` value, whitespace-tolerant. */
@@ -1762,6 +1781,7 @@ export class PostUpdateMigrator {
     this.migrateAgentDataSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
     this.migrateLaunchdProcessCeiling(result);
+    this.migrateSystemdKillMode(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
@@ -1778,7 +1798,7 @@ export class PostUpdateMigrator {
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
-    this.migrateConvergeDesignClassCriterion(result);
+    this.migrateFractalEightyTwentyTriage(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
@@ -2243,51 +2263,51 @@ export class PostUpdateMigrator {
     }
   }
 
-  // Deliver the corrected CONVERGENCE STOP CRITERION to already-installed agents
-  // (Migration Parity, "updating existing skill content").
-  //
-  // PR #1673 replaced "no material new issues" with "no DESIGN-class findings for
-  // TWO consecutive rounds", because the old rule could not terminate on a spec
-  // that appends its own review history — the reviewable surface grows every
-  // round, so a diligent reviewer always finds precision to add.
-  //
-  // WHY THIS NEEDS ITS OWN MIGRATION, and it is the finding that produced it:
-  // migrateConformanceGateAutoInvoke above already delivers this same file, but
-  // its idempotency guard returns early once the installed copy contains the
-  // marker from THAT change. Every agent that took it is therefore permanently
-  // short-circuited for EVERY LATER change to spec-converge/SKILL.md — a one-shot
-  // wearing idempotent's clothes. Verified live on this agent 2026-07-27: the
-  // conformance marker present, the corrected criterion absent, so #1673 could
-  // never arrive. Caught one command before running the OLD criterion and
-  // reporting its verdict as evidence.
-  //
-  // This follows the established per-change pattern (each content change carries
-  // its own marker-keyed migration) rather than redesigning the guard — the
-  // general fix is a CONTENT-FINGERPRINT guard, which is fleet-migration
-  // machinery above this change's risk floor and is tracked as ACT-1420.
-  // Customized files stay untouched; idempotent; safe to run repeatedly.
-  private migrateConvergeDesignClassCriterion(result: MigrationResult): void {
-    const MARKER = 'No DESIGN-class findings for TWO consecutive rounds';
-    try {
-      const installed = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
-      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
-      const current = fs.readFileSync(installed, 'utf8');
-      if (current.includes(MARKER)) return; // already updated — idempotent
-      if (!current.includes('# /spec-converge')) {
-        result.skipped.push('spec-converge SKILL (design-class criterion): customized — left untouched');
-        return;
+  // Deliver fractal 80/20 convergence, plain size tiers, the found-problem triage
+  // rule and the proportion signal (CMT-917, operator-approved 2026-10-22, topic
+  // 127831) to already-installed agents (Migration Parity, "updating existing skill
+  // content"). Supersedes migrateConvergeDesignClassCriterion: its marker ("No
+  // DESIGN-class findings for TWO consecutive rounds") is gone from the bundled
+  // file, so it could never deliver again; this migration also reaches copies that
+  // carry it, because each change keys on its own marker (the lesson that migration
+  // recorded: a sibling's marker must never short-circuit a later change).
+  // Per file: re-copy the bundled version only when the installed copy lacks the
+  // marker and still looks stock (fingerprint guard); customized files are left
+  // untouched and reported. Idempotent. /autonomous is delivered by its own marker
+  // chain in migrateAutonomousSkill (FRACTAL_8020_TRIAGE step).
+  private migrateFractalEightyTwentyTriage(result: MigrationResult): void {
+    const MARKER = 'FRACTAL_8020_TRIAGE';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      { rel: ['skills', 'spec-converge', 'SKILL.md'], fingerprint: '# /spec-converge', label: 'spec-converge SKILL (fractal 80/20 convergence)' },
+      { rel: ['skills', 'instar-dev', 'SKILL.md'], fingerprint: '# /instar-dev', label: 'instar-dev SKILL (size tiers + found-problem triage)' },
+      { rel: ['skills', 'build', 'SKILL.md'], fingerprint: 'Rigorous Build Skill', label: 'build SKILL (size tiers + found-problem triage)' },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        // build ships from the package's .claude/skills; the others from skills/.
+        const bundled = f.rel[1] === 'build'
+          ? path.join(__dirname, '..', '..', '.claude', ...f.rel)
+          : path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
-      if (!fs.existsSync(bundled)) return;
-      const next = fs.readFileSync(bundled, 'utf8');
-      if (next.includes(MARKER)) {
-        fs.writeFileSync(installed, next);
-        result.upgraded.push('spec-converge SKILL (design-class convergence criterion)');
-      }
-    } catch (err) {
-      result.errors.push(`spec-converge SKILL (design-class criterion): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
 
   // ── WS3.2 commitment owner backfill (MULTI-MACHINE-SEAMLESSNESS-SPEC, F19) ──
   //
@@ -3830,6 +3850,63 @@ export class PostUpdateMigrator {
       const msg = err instanceof Error ? err.message : String(err);
       result.errors.push(`launchd process ceiling: ${msg}`);
     }
+  }
+
+  /**
+   * Give existing Linux installs `KillMode=process` (Migration Parity Standard —
+   * the template fix in setup.ts only reaches NEW agents).
+   *
+   * Without it, systemd's default kills every process in the service's cgroup on
+   * stop/restart, including the tmux server, so a routine `systemctl --user
+   * restart` destroyed every session (live autonomous runs included). Surgical
+   * insert, never a regenerate; any operator-set KillMode is left alone.
+   *
+   * `daemon-reload` makes the new KillMode apply to the RUNNING unit's next stop.
+   * It does not restart anything. Skipped under a test runner (same rule as
+   * launchctlLoadAllowed) so tests never touch the real user manager.
+   */
+  private migrateSystemdKillMode(result: MigrationResult): void {
+    if (process.platform !== 'linux') {
+      result.skipped.push('systemd KillMode: non-linux, no unit');
+      return;
+    }
+    const unitPath = path.join(
+      process.env.HOME ?? os.homedir(),
+      '.config', 'systemd', 'user',
+      `instar-${this.config.projectName}.service`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(unitPath, 'utf-8');
+    } catch {
+      result.skipped.push('systemd KillMode: no systemd unit present');
+      return;
+    }
+    const next = addSystemdKillModeProcess(content);
+    if (next === content) {
+      result.skipped.push('systemd KillMode: already declared (or no [Service] section)');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${unitPath}.bak-${Date.now()}`, content, 'utf-8');
+      fs.writeFileSync(unitPath, next, 'utf-8');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`systemd KillMode: ${msg}`);
+      return;
+    }
+    let reloaded = false;
+    if (!process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD) {
+      try {
+        withSyncOp(() => execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 10_000 }));
+        reloaded = true;
+      } catch { /* @silent-fallback-ok: reported below; the file is still fixed for the next manager start */ }
+    }
+    result.upgraded.push(
+      reloaded
+        ? 'systemd KillMode: set KillMode=process (a service restart no longer kills tmux sessions)'
+        : 'systemd KillMode: set KillMode=process on disk; takes effect after `systemctl --user daemon-reload` or next login',
+    );
   }
 
   // ── Conversational-action catalog Playbook manifest (v0.2) ─────────
@@ -5573,6 +5650,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'W32_PREPARING_LIVENESS',
       'skills/autonomous/SKILL.md (dash-bullet task checkboxes)',
     );
+    // FRACTAL_8020_TRIAGE (CMT-917): found problems are triaged (fix now / spin off /
+    // queue) instead of accreting into the run, and the final report carries a
+    // proportion line.
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'FRACTAL_8020_TRIAGE',
+      'CHECKBOX_TASK_LIST',
+      'skills/autonomous/SKILL.md (found-problem triage + proportion line)',
+    );
   }
 
   /**
@@ -6954,10 +7040,56 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // peer-credential-guard-tailscale-coherence — a pool read's failure reasons
+    // changed meaning (peer-unreachable is new; the CGNAT refusal is now named).
+    if (!content.includes('cgnat-plaintext-unsupported')) {
+      content += '\n' + poolReadSelectionAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pool-read selection + failure-reason awareness');
+    }
+
+    // peer-conversation-homebase-topic — where a peer agent's notices go.
+    // Its OWN sniff string, deliberately: nesting it under the pool-read guard above would
+    // mean an agent that already received that card could never receive this one, which is
+    // the Migration Parity defect the standard exists to prevent (a feature that only
+    // reaches new agents is a broken feature).
+    if (!content.includes('per-peer homebase topic')) {
+      content += '\n' + peerHomebaseAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
+    } else if (content.includes(PEER_HOMEBASE_AWARENESS_V1_LIMITS) || content.includes(PEER_HOMEBASE_AWARENESS_V2_LIMITS)) {
+      // The first card said there was no backfill, the second that a failed creation waited for
+      // the next server start; both are now wrong. Replace the whole card in
+      // place (it is the last thing up to the next heading) so the agent stops repeating it.
+      const start = content.indexOf("### Where a peer agent's notices go (per-peer homebase topic)");
+      const after = start >= 0 ? content.indexOf('\n#', start + 10) : -1;
+      if (start >= 0) {
+        content = content.slice(0, start) + peerHomebaseAwareness() + (after >= 0 ? content.slice(after) : '\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: refreshed per-peer homebase topic awareness (backfill)');
+      }
+    }
+    // The topic was renamed to "🤝 <peer>" — an agent holding the original card would keep
+    // looking for the old "<peer> · Threadline · <fp6>" name, so swap the card in place.
+    else if (content.includes('named `"<peer> · Threadline · <fp6>"`')) {
+      const replaced = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+      if (replaced !== content) {
+        content = replaced;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (🤝 <peer> naming)');
+      }
+    }
+
     if (!content.includes('/telegram/system-topics')) {
       content += '\n' + telegramSystemTopicsAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added agent-wide system topic record awareness');
+    }
+
+    if (content.includes('/telegram/system-topics') && !content.includes('Issue topics live in their own Telegram group')) {
+      content += '\n' + telegramIssuesGroupAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added issue-topic group ("<agent> Bugs") awareness');
     }
 
     if (!content.includes('Message origins on your phone:')) {
@@ -8275,6 +8407,13 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(skillDrivenEnd, skillDrivenEnd + '\n' + "- **Failed sign-in repairs retry slowly** \u2014 a repair that ended `failed` on a budget or transient reason (not a safety refusal, not an operator cancel) tries again on its own while the account stays signed out: 6 hours after the failure, then 24 hours apart, at most 3 times per incident. Unattended identities restart with no tap; approval-mode accounts are re-offered for one tap. The next try time is `nextAttemptAt` on the episode in `GET /subscription-relogin` and shows on the dashboard cell. A failure notice is held while a retry will still follow; approval re-offers never go out 23:00–08:00 local; a helper-reported hard line (CAPTCHA, phone check, wrong account, unexpected site) or too few stored backup codes (fewer than a full run plus one; any backup-code account on the Mac helper path) holds the account at approval. Stop one repair's retries: \"Don't retry on its own\" on its failed cell. Off switch: `subscriptionPool.assistedRelogin.slowRetry.enabled: false`. When the user asks \"why did that repair start again by itself?\" \u2192 this.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
+      }
+      // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
+      const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
+      if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
+        content = content.replace(slowRetryEnd, slowRetryEnd + '\n' + "- **Last-resort sign-in model (one-subscription agents)** — the repair's own model calls (the step supervisor and the page navigator) run on the shared internal model first. On an agent with a single subscription that model runs on the very login that is dead, and on the Mac helper path there is no other healthy account to run the helper on, so until now the only account's expired sign-in always waited for you. Now, if the vault holds an Anthropic API key under the name `relogin_last_resort_anthropic_api_key`, a lightweight model over that key answers those calls when the shared model fails, and a repair with no other healthy account on this machine drives the server-side browser path with agent navigation instead of stopping at `no-healthy-seat` (its audit shows `last-resort-drive-started`). Placing the key under that name is the consent to spend; `ANTHROPIC_API_KEY` and the general `intelligenceProvider` setting are never read, every other internal call stays on the subscription, and the caps are 60 calls per drive and 300 per day (`subscriptionPool.assistedRelogin.lastResort`: `enabled`, `keyName`, `model`, `maxCallsPerDrive`, `maxCallsPerDay`; off with `enabled: false`). Success is still decided only by Instar (completed login, verified email, a real authenticated call). Two accounts need no key: the other account runs the helper, Claude or Codex, whichever provider it is. Registry First: `GET /subscription-relogin` → `lastResort` (available, model, calls today, caps; never the key). **When to use** (PROACTIVE): the user asks \"what happens when my only subscription signs out?\" / \"why did the repair wait for me instead of fixing it?\" → read `lastResort`; with no key, collect one through Secret Drop (never pasted into chat), then store it with `credential-store.mjs` under that exact vault name: a Secret Drop submission alone does not create the vault key.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added last-resort sign-in model awareness');
       }
     }
 
@@ -10163,15 +10302,15 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
-- A green PR touching protected paths (\`.github/**\`, safe-merge, the watcher's own source) is NEVER auto-merged — it routes to the operator on the attention queue. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
-- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
+- **The operator approves constitution changes only.** A green PR touching a CODEOWNERS-owned file (the constitution) waits for the operator's code-owner review on GitHub — the only PR the watcher routes to the operator. A protected-path or harness-changing PR (safe-merge, the watcher's own source, the test harness) merges without the operator once the local verifier records an independent second-pass review of the exact head: an instar-dev trace committed in the PR whose second pass concurred and whose coveredFiles include every flagged file. Without one, safe-merge answers \`refused:needs-independent-review\` — run the second pass and commit its trace; never ask the operator to approve it. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
+- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? waiting on a code-owner review? needs-independent-review? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
 - **A human approval is required by the repo (approval-required):** when the base branch's ruleset demands a reviewer other than the pusher, safe-merge answers \`refused:approval-required\` and has ALREADY requested the operator's review. My only job is to hand the operator the direct link it prints (the PR's Files tab → "Review changes" → Approve) and merge the moment the approval lands — never loop, never ask them to "request a review". A reviewer-less PR is a process defect, not a step.
 `;
     if (!content.includes('/green-pr-automerge')) {
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10184,7 +10323,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
@@ -10361,6 +10500,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       result.upgraded.push('CLAUDE.md: added rerouted-job expired-login bullet');
     } else {
       result.skipped.push('CLAUDE.md: rerouted-job expired-login bullet already present');
+    }
+    // 2026-10-22: the sighting now feeds the quota poller (it can open the sign-in repair), so
+    // the old "never changes the account's pool status" sentence is rewritten in place.
+    if (content.includes(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE)) {
+      content = content.replace(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet now names the sign-in repair');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
@@ -10949,6 +11095,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention Queue durable cross-machine remote-ack bullet (WS4.1 follow-up, CMT-1416)');
+    }
+
+    // Attention hub filter (operator report 2026-10-23: the Attention topic was
+    // "basically useless due to all the noise"). Tell deployed agents what now
+    // reaches the user's topic, and stop the old proactive line that told them
+    // to queue every failed job / CI failure. Sniff: 'attention-hub-held.jsonl'.
+    if (content.includes('**Attention Queue**') && !content.includes('attention-hub-held.jsonl')) {
+      const hubBullet = `- **What reaches the user's Attention topic (hub filter, default on)**: only urgent items, items YOU raise (\`source: "agent"\` is required — an item with no source is treated as automated), and items that need the user to decide or tap (sign-in repair, a duplicate conversation needing their call, the feedback action list, security events), plus notices that their messages may be lost. Routine automated status (health digests, worktree scans, machine-sync "healed/back" lines, self-healing repairs) stays in the attention store and the dashboard and is logged to \`logs/attention-hub-held.jsonl\` instead of posting. Posts are short: title and what to do. Rollback: \`messaging[].config.attentionHubFilter: "all"\`. If the user asks "why didn't X show up in Attention?" → read \`logs/attention-hub-held.jsonl\`.\n`;
+      content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${hubBullet}`);
+      for (const old of [
+        "- **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.",
+        "- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.",
+      ]) {
+        if (content.includes(old)) content = content.replace(old, '- **Proactive use**: queue an item only when the user must decide, tap or act, or something they care about is genuinely broken and you cannot fix it yourself — your items always reach their topic, so each one costs their attention. Routine status, things you are already fixing, and FYIs belong in logs or a normal reply, not here.');
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
@@ -11904,9 +12067,21 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // switch via this appended section. Body mirrors generateClaudeMd()
     // byte-for-byte. Content-sniffed on the stable heading → idempotent.
     if (!content.includes('Test-Runner Concurrency Bound')) {
-      content += `\n**Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)** — A per-machine ticket counter bounds how many test suites run AT ONCE across every actor on this machine: full suites run one-at-a-time (default cap 1), while small targeted runs (≤5 named test files) get a roomier lane (default 6 slots, each clamped to ≤4 workers). It is the structural answer to the 2026-07-02 test-storm meltdown (29 concurrent vitest roots ≈ 300+ workers starving co-resident servers' event loops until their supervisors killed healthy processes). Ships WATCH-ONLY (dry-run) for a 14-day soak — it records what it WOULD have blocked but admits every run; blocking arrives only after the soak review flips the host tuning file.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter\` → \`{ cap, targetedCap, posture, ttlSignalArmed, liveHolders, targetedHolders, admittedOpen, suite: {available, saturated}, targeted: {...}, recentEvents, skipHistogram }\` (Registry First — read it, never guess).\n- **"Why is my test run waiting?" / a rejected \`git push\`** (PROACTIVE — this is the trigger): a push or suite that stalls or is refused may be CONTENTION (another suite holds the slot), NOT red tests — read \`GET /test-runner-limiter\` BEFORE assuming failure. The limiter's capacity-timeout error says "this is NOT a test failure" and names the holders.\n- Recovery lever: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter/prune\` — forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of ever hand-editing \`~/.instar/host-test-runner-holders.json\` (the 2026-07-01 stale-holder lesson).\n- A \`git push\` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.\n- Kill switch: env \`INSTAR_HOST_TEST_SEMAPHORE=off\` (the SOLE chokepoint lever — \`intelligence.testRunnerCap\` in config only tunes the route report/server tooling, never the bound). (Spec: \`docs/specs/test-runner-concurrency-bound.md\`; constitution: "Bounded Blast Radius".)\n`;
+      content += `\n**Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)** — A per-machine ticket counter bounds how many test suites run AT ONCE across every actor on this machine: full suites run one-at-a-time (default cap 1), while small targeted runs (≤5 named test files) get a roomier lane (default 6 slots, each clamped to ≤4 workers). It is the structural answer to the 2026-07-02 test-storm meltdown (29 concurrent vitest roots ≈ 300+ workers starving co-resident servers' event loops until their supervisors killed healthy processes). Ships WATCH-ONLY (dry-run) for a 14-day soak — it records what it WOULD have blocked but admits every run; blocking arrives only after the soak review flips the host tuning file.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter\` → \`{ cap, targetedCap, posture, ttlSignalArmed, liveHolders, targetedHolders, admittedOpen, suite: {available, saturated}, targeted: {...}, recentEvents, skipHistogram }\` (Registry First — read it, never guess).\n- **"Why is my test run waiting?" / a rejected \`git push\`** (PROACTIVE — this is the trigger): a push or suite that stalls or is refused may be CONTENTION (another suite holds the slot), NOT red tests — read \`GET /test-runner-limiter\` BEFORE assuming failure. The limiter's capacity-timeout error says "this is NOT a test failure" and names the holders.\n- Recovery lever: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter/prune\` — forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of ever hand-editing \`~/.instar/host-test-runner-holders.json\` (the 2026-07-01 stale-holder lesson).\n- A \`git push\` runs its tests in the small-run lane, so it waits at most about a minute for a slot. A full suite waits up to 45 min for its slot by default (host-wide override: \`acquireMs\` / \`acquireMsInteractive\` in milliseconds in \`~/.instar/host-test-runner-tuning.json\`). An OUTER command timeout around a test run must be ≥ that wait, or a correctly-WAITING run is killed by its own caller.\n- Kill switch: env \`INSTAR_HOST_TEST_SEMAPHORE=off\` (the SOLE chokepoint lever — \`intelligence.testRunnerCap\` in config only tunes the route report/server tooling, never the bound). (Spec: \`docs/specs/test-runner-concurrency-bound.md\`; constitution: "Bounded Blast Radius".)\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Test-Runner Concurrency Bound section');
+    }
+    // CMT-908: the suite-lane wait budget became host-tunable (45 min default) and the
+    // push config moved to the small-run lane. Replace the stale "default 10 min
+    // interactive" line in place on agents that already have the section. Idempotent:
+    // only fires while the old line is present.
+    {
+      const staleBudgetLine = `- A \`git push\` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.`;
+      if (content.includes(staleBudgetLine)) {
+        content = content.replace(staleBudgetLine, `- A \`git push\` runs its tests in the small-run lane, so it waits at most about a minute for a slot. A full suite waits up to 45 min for its slot by default (host-wide override: \`acquireMs\` / \`acquireMsInteractive\` in milliseconds in \`~/.instar/host-test-runner-tuning.json\`). An OUTER command timeout around a test run must be ≥ that wait, or a correctly-WAITING run is killed by its own caller.`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated Test-Runner Concurrency Bound wait-budget line');
+      }
     }
 
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
@@ -11976,6 +12151,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Telegram message origin',
+      // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
+      // are server-side and framework-neutral — a Codex/Gemini agent runs the
+      // same fan-out and must not report `url-rejected` and the new
+      // `peer-unreachable` interchangeably, nor promise an immediate fix for a
+      // dead-but-admissible rope.
+      'cgnat-plaintext-unsupported',
       // Hand-started Codex connect: the audience IS a Codex-framework operator, so
       // the AGENTS.md shadow must carry the command and the shared-entry caveat.
       '### Hand-started Codex: `instar codex connect <agent>`',
@@ -12304,6 +12485,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.
       '### Durable Conversation Identity',
+      // peer-conversation-homebase-topic: a paired peer's notices land in a
+      // specific topic, and the binding-provenance rule (an operator's choice is
+      // never overridden, an unknown one is preserved) is framework-neutral. A
+      // Codex/Gemini agent without this keeps reporting "I passed it on" while
+      // posting where the operator has no reason to look — the founding incident.
+      '### Where a peer agent\'s notices go (per-peer homebase topic)',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
@@ -20195,4 +20382,20 @@ setTimeout(() => {
 }, 2000);
 `;
   }
+}
+
+/**
+ * Replace the per-peer homebase card (from its heading to the next markdown heading or EOF)
+ * with `card`. Returns `content` unchanged when the heading is absent.
+ */
+export function replacePeerHomebaseCard(content: string, card: string): string {
+  const heading = "### Where a peer agent's notices go (per-peer homebase topic)";
+  const start = content.indexOf(heading);
+  if (start < 0) return content;
+  const rest = content.slice(start + heading.length);
+  const m = /\n#{1,3} /.exec(rest);
+  const end = m ? start + heading.length + m.index : content.length;
+  const tail = content.slice(end);
+  // Keep one blank line before the next heading; a card at EOF ends with a newline.
+  return content.slice(0, start) + card.trimEnd() + (tail ? '\n' + tail : '\n');
 }

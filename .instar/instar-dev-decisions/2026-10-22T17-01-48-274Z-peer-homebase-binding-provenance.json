@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-22T17:01:48.274Z",
+  "slug": "peer-homebase-binding-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/AgentTrustManager.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

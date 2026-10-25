@@ -29,6 +29,11 @@ describe('SessionWatchdog test-runner floor (ACT-069)', () => {
     'node (vitest)',
     'node (vitest 1)',
     'node (vitest 12)',
+    // How `ps` shows a running `npm test --silent` on each platform. macOS
+    // keeps the original argv; on Linux npm's process.title rewrites
+    // /proc/<pid>/cmdline to `npm` + its positional args (flags dropped).
+    'node /usr/local/bin/npm test --silent',
+    'npm run test:unit',
   ])('matches the test-runner argv contract: %s', (command) => {
     expect(classifyTestRunnerCommand(command)).toBe('test-runner');
     expect(classifyProtectedWait(command, '', 190_000)).toEqual({ protected: true, reason: 'test-runner' });
@@ -61,6 +66,9 @@ describe('SessionWatchdog test-runner floor (ACT-069)', () => {
     'python3 poll.py',
     'git pull',
     'sh -c npm test',
+    // Linux, npm's first ~second: entry.js sets the title to bare `npm`
+    // before config load sets `npm test`. Nothing in it names a test run.
+    'npm',
   ])('does not match a near-miss: %s', (command) => {
     expect(classifyTestRunnerCommand(command)).toBeNull();
     expect(classifyProtectedWait(command, '', 190_000)).toEqual({ protected: false });

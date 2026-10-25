@@ -75,7 +75,8 @@ describe('Single-alerts-topic routing (default mode)', () => {
   function makeAdapter(config: Partial<TelegramConfig> = {}): TelegramAdapter {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-single-topic-'));
     adapter = new TelegramAdapter(
-      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, ...config },
+      // Routing mechanics are tested with the hub filter off; the filter has its own block below.
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionHubFilter: 'all', ...config },
       tmpDir,
     );
     return adapter;
@@ -132,7 +133,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(adapter.getAttentionItems().length).toBe(priorities.length);
   });
 
-  it('the hub message carries title, category | priority, summary, clipped description, and source', async () => {
+  it('the hub message carries title, summary and clipped description — no category, priority or source labels', async () => {
     const HUB = 778;
     makeAdapter({ getAttentionHubTopicId: () => HUB });
     const rec = installApiStub(adapter);
@@ -149,11 +150,11 @@ describe('Single-alerts-topic routing (default mode)', () => {
 
     const [msg] = rec.messagesByThread.get(HUB)!;
     expect(msg).toContain('<b>A real &lt;escalation&gt;</b>');
-    expect(msg).toContain('general | Priority: HIGH');
+    expect(msg).not.toContain('Priority:');
     expect(msg).toContain('please look');
     expect(msg).toContain('x'.repeat(500));
     expect(msg).not.toContain('x'.repeat(501));
-    expect(msg).toContain('<i>Source: rope-recovery-probe</i>');
+    expect(msg).not.toContain('Source:');
   });
 
   it('the hub post rides parse_mode HTML + _formatMode html (the 2026-07-11 literal-tag fix)', async () => {
@@ -419,5 +420,89 @@ describe('attentionBodyBlocks (pure) — summary/description dedupe', () => {
   it('description is clipped to the slice bound', () => {
     const [only] = attentionBodyBlocks('s', 's' + 'x'.repeat(900), 500);
     expect(only.length).toBe(500);
+  });
+});
+
+describe('Attention hub filter (default "signal" mode, operator report 2026-10-23)', () => {
+  let adapter: TelegramAdapter;
+  let tmpDir: string;
+  const HUB = 4815;
+
+  function makeAdapter(): TelegramAdapter {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-hub-filter-'));
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, getAttentionHubTopicId: () => HUB },
+      tmpDir,
+    );
+    return adapter;
+  }
+
+  afterEach(async () => {
+    await adapter.stop();
+    vi.restoreAllMocks();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'hub-filter cleanup' });
+  });
+
+  it('routine automated status is stored and logged, never posted', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const item = await adapter.createAttentionItem({
+      id: 'passkey-health-digest', title: 'Passkey health: 0 cell(s) need attention', summary: 'Peers unobserved',
+      category: 'passkeys', priority: 'NORMAL', sourceContext: 'passkey-health',
+    });
+    expect(rec.messagesByThread.get(HUB)).toBeUndefined();
+    expect(item.hubHeld).toBe(true);
+    expect(adapter.getAttentionItem('passkey-health-digest')).toBeDefined();
+    expect(adapter.attentionHubAdmits('passkey-health-digest')).toBe(false);
+    const held = fs.readFileSync(path.join(tmpDir, 'logs', 'attention-hub-held.jsonl'), 'utf8');
+    expect(held).toContain('"reason":"automated-status"');
+    // An upsert refresh of the same status item stays held too.
+    await adapter.upsertAttentionItem({
+      id: 'passkey-health-digest', title: 'Passkey health: 1 cell(s) need attention', summary: 'changed', description: 'changed',
+      category: 'passkeys', priority: 'NORMAL', sourceContext: 'passkey-health',
+    });
+    expect(rec.messagesByThread.get(HUB)).toBeUndefined();
+  });
+
+  it('agent-raised, urgent and needs-user items are posted', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    await adapter.createAttentionItem({ id: 'a1', title: 'Folder can be cleared', summary: 'Reply yes', category: 'general', priority: 'LOW', sourceContext: 'agent' });
+    await adapter.createAttentionItem({ id: 'u1', title: 'Disk full', summary: 'now', category: 'system', priority: 'URGENT', sourceContext: 'disk' });
+    await adapter.createAttentionItem({ id: 'r1', title: 'Claude Code sign-in repair', summary: 'Tap Repair', category: 'subscription-relogin', priority: 'HIGH', sourceContext: 'assisted-subscription-relogin' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(3);
+  });
+
+  it('an upserted posted item is reposted at most once per 6 h unless it gets more urgent', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const base = { id: 'ag', title: 'Agent note', category: 'general', sourceContext: 'agent' };
+    await adapter.upsertAttentionItem({ ...base, summary: 'v1', description: 'v1', priority: 'NORMAL' });
+    await adapter.upsertAttentionItem({ ...base, summary: 'v2', description: 'v2', priority: 'NORMAL' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
+    await adapter.upsertAttentionItem({ ...base, summary: 'v3', description: 'v3', priority: 'HIGH' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(2);
+  });
+
+  it('a resolved item that is raised again posts at once — the throttle never hides a new episode', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const base = { id: 'rl', title: 'Claude Code sign-in repair', category: 'subscription-relogin', priority: 'HIGH' as const, sourceContext: 'assisted-subscription-relogin' };
+    await adapter.upsertAttentionItem({ ...base, summary: 'tap Repair', description: 'tap Repair' });
+    await adapter.updateAttentionStatus('rl', 'DONE', { silent: true });
+    await adapter.upsertAttentionItem({ ...base, summary: 'tap Repair', description: 'tap Repair' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(2);
+  });
+
+  it('a failed hub post does not start the repost throttle', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    // Both the injected hub and the self-heal fallback send fail: nothing was delivered.
+    const down = new Error('telegram down');
+    vi.spyOn(adapter, 'sendToTopic').mockRejectedValueOnce(down).mockRejectedValueOnce(down);
+    const base = { id: 'ag2', title: 'Agent note', category: 'general', sourceContext: 'agent', priority: 'NORMAL' as const };
+    await adapter.upsertAttentionItem({ ...base, summary: 'v1', description: 'v1' });
+    await adapter.upsertAttentionItem({ ...base, summary: 'v2', description: 'v2' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
   });
 });

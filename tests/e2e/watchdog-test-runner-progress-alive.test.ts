@@ -24,6 +24,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  classifyTestRunnerCommand,
   MAX_TEST_RUNNER_PROTECTION_MS,
   SessionWatchdog,
 } from '../../src/monitoring/SessionWatchdog.js';
@@ -54,12 +55,8 @@ describe('E2E: a real test run past the floor is spared while it is still workin
     // A real package whose `npm test` burns CPU — a genuine test-runner argv
     // with a genuine subtree below it, not a process pretending to be one.
     //
-    // The burner is a local `vitest` bin, so the subtree carries a recognisable
-    // runner below npm. On Linux npm's title is cut back to its first value,
-    // `npm` (entry.js sets that before the full `npm test`, and the kernel-side
-    // title cannot grow past it), so the npm row alone does not classify. A
-    // real suite is spared there through its vitest descendant, and this
-    // fixture now has one too.
+    // The burner is a local `vitest` bin, the shape of a real suite: a
+    // recognisable runner below npm.
     const bin = path.join(dir, 'node_modules', '.bin');
     fs.mkdirSync(bin, { recursive: true });
     fs.writeFileSync(path.join(bin, 'vitest'),
@@ -140,11 +137,24 @@ describe('E2E: a real test run past the floor is spared while it is still workin
     };
   }
 
+  /**
+   * Wait for the state any production judgment sees. On Linux, npm's
+   * process.title rewrites what `ps` shows: the original argv (`node
+   * /usr/bin/npm test --silent`), then bare `npm` (entry.js), then `npm test`
+   * once config has loaded (npm.js setTitle). The middle state lasts about a
+   * second, and the watchdog never judges a command under 3 minutes old, so
+   * production never sees it. This test ages the clock to 61 minutes, so it
+   * must not poll inside that window: CI runs 39753464476 / 39767066373 judged
+   * a 3-character `npm` row on poll 1, while the later test in the same run
+   * read `npm test`. macOS `ps` never shows the title, so it never raced.
+   */
   async function waitForSuite(snapshot: () => Promise<Row[]>): Promise<Row[]> {
     const deadline = performance.now() + 15_000;
     while (performance.now() < deadline) {
       const rows = await snapshot();
-      if (rows.some((r) => /(?:^|\/)vitest\b/.test(r.command))) return rows;
+      const npmClassifies = rows.some((r) => /(?:^|\/)npm\b/.test(r.command) && classifyTestRunnerCommand(r.command) !== null);
+      const vitestRunning = rows.some((r) => /(?:^|\/)vitest\b/.test(r.command));
+      if (npmClassifies && vitestRunning) return rows;
       await delay(100);
     }
     return [];

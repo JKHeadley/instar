@@ -40,3 +40,5 @@ Produce a SHORT report (under 400 words):
 - If issues: bullet them with specific spec-section references and recommended resolution for each.
 
 Be rigorous. Your job is to catch what the author missed. Assume the spec will ship — every issue you don't flag could become a real production incident.
+
+**Classify every finding (required).** Label each finding `DESIGN` (changes what would be built or how it behaves, or the spec is factually wrong about the system) or `PRECISION` (wording, naming, caveats, examples, or a long-tail edge case whose cost is out of proportion to its likelihood). Only DESIGN findings send the spec back for another round; PRECISION findings are listed as left behind. If your lens does not apply to this change, say so in one line and raise nothing.

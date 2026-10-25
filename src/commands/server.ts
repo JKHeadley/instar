@@ -170,7 +170,7 @@ import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/gua
 import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { AttentionConditionStore } from '../core/AttentionConditionStore.js';
-import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import { TriageOrchestrator } from '../monitoring/TriageOrchestrator.js';
@@ -185,7 +185,11 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
-import { resolveMeshPeerUrl } from '../core/resolveMeshPeerUrl.js';
+import {
+  resolveMeshPeerUrl,
+  resolveMeshPeerPreferredSelection,
+  type RopeRefusal,
+} from '../core/resolveMeshPeerUrl.js';
 import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -252,6 +256,7 @@ import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
+import { admitNoticeToHub, recordHeldHubPost, resolveHubFilterMode } from '../messaging/attentionHubPolicy.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier, BatcherQuietHours } from '../messaging/NotificationBatcher.js';
 import { resolveTelegramStartupTopology, wireTelegramSendSide } from '../messaging/telegramSendSideComposition.js';
@@ -779,7 +784,21 @@ let _ownershipReadForDrain: ((sessionKey: string) => import('../core/SessionOwne
 let _resolveRouterUrl: (() => string | null) | null = null;
 /** Every OTHER active machine with a known URL — backs GET /sessions?scope=pool
  *  (pool-wide session aggregation for the dashboard). Set in the same mesh block. */
-let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null = null;
+let _resolvePeerUrls:
+  | (() => Array<{
+      machineId: string;
+      url: string;
+      kind: PeerEndpointKind;
+      /** Ropes the credential guard skipped before this one was chosen. */
+      ropeRefusals: RopeRefusal[];
+    }>)
+  | null = null;
+/** The feedback arm of that same fix: reports each pool dial's outcome into the ONE
+ *  shared PeerEndpointResolver, so an admissible-but-dead rope stops being selected.
+ *  Set in the same mesh block; null on a single machine (no peers to learn about). */
+let _recordRopeResult:
+  | import('../server/poolPeerFetch.js').RopeResultRecorder
+  | null = null;
 // a2a-single-agent-identity §1–§2 — late-bound seams (the pieces are constructed in
 // different blocks; every consumer reads these lazily).
 let _identityLeaseEligible: () => boolean = () => true;
@@ -819,7 +838,7 @@ async function annotatePeerHandoff(
         .map((p) => ({ ...p, cap: _machinePoolRegistryForAnnotation?.getCapacity(p.machineId) ?? null }))
         .filter((p) => p.cap?.online !== false)
         .map((p) => ({ machineId: p.machineId, url: p.url, routerReceivedAt: p.cap?.routerReceivedAt ?? null })),
-      isUrlAllowed: (url) => isPeerUrlAllowedForCredentials(url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok,
+      isUrlAllowed: (url) => isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok,
       authToken: config.authToken ?? '',
       agentId: config.projectName,
       counters: {
@@ -1662,7 +1681,10 @@ async function respawnSessionForTopic(
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   if (!options?.silent) {
-    await telegram.sendToTopic(topicId, `Session respawned.`);
+    // The respawn already succeeded. A held or failed notice must not turn it
+    // into a reported failure (the caller would respawn again: a duplicate session).
+    try { await telegram.sendToTopic(topicId, `Session respawned.`); }
+    catch (err) { console.warn(`[telegram→session] Respawned for topic ${topicId}, but the "Session respawned." notice was not sent: ${err instanceof Error ? err.message : String(err)}`); }
   }
   console.log(`[telegram→session] Respawned "${newSessionName}" for topic ${topicId}`);
 }
@@ -4174,6 +4196,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // before. NOTE the key is TOP-LEVEL: `messaging` is an array of adapters, so a
   // key nested there is unreachable (same trap as `outboundAdvisory`).
   const nbCfg = (config as unknown as { notificationBatcher?: Record<string, unknown> }).notificationBatcher ?? {};
+  const attentionHubFilterMode = resolveHubFilterMode(
+    (config.messaging?.find((m) => m.type === 'telegram')?.config as { attentionHubFilter?: unknown } | undefined)?.attentionHubFilter,
+  );
   const notificationBatcher = new NotificationBatcher({
     enabled: (nbCfg.enabled as boolean | undefined) ?? true,
     summaryIntervalMinutes: (nbCfg.summaryIntervalMinutes as number | undefined) ?? 30,
@@ -4201,8 +4226,22 @@ export async function startServer(options: StartOptions): Promise<void> {
    * Interactive messages (session replies, user-facing responses) still use sendToTopic/sendToChannel directly.
    */
   function notify(tier: NotificationTier, category: string, message: string, topicId?: number, origin?: import('../messaging/NotificationBatcher.js').BatcherOrigin): void {
+    // Attention hub admission (src/messaging/attentionHubPolicy.ts): a notice
+    // bound for the user's Attention topic must carry user impact (lost
+    // messages, a reverted setting, a security event, exhausted quota). Routine
+    // automation status is logged instead — never posted to the hub or Slack.
+    const hubTopicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
+    if (!topicId || topicId === hubTopicId) {
+      const hubDecision = admitNoticeToHub(category, tier, attentionHubFilterMode);
+      if (!hubDecision.admit) {
+        recordHeldHubPost(path.join(config.stateDir, 'logs'), {
+          kind: 'notice', reason: hubDecision.reason, category, tier, title: message.split('\n')[0] ?? '',
+        });
+        return;
+      }
+    }
     // Telegram: via notification batcher
-    const resolvedTopicId = topicId ?? _notifyState?.get<number>('agent-attention-topic') ?? 0;
+    const resolvedTopicId = topicId ?? hubTopicId;
     if (resolvedTopicId) {
       notificationBatcher.enqueue({
         tier,
@@ -11734,6 +11773,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         const topicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
         if (!topicId || observerNoticeInFlight.has(episode.episodeId)) return;
         observerNoticeInFlight.add(episode.episodeId);
+        // Self-healing infra status: held from the Attention hub (attentionHubPolicy).
+        if (!admitNoticeToHub('codex-lifecycle', 'IMMEDIATE', attentionHubFilterMode).admit) {
+          recordHeldHubPost(path.join(config.stateDir, 'logs'), {
+            kind: 'notice', reason: 'automated-status', category: 'codex-lifecycle', tier: 'IMMEDIATE',
+            title: `Codex delivery verification sustained-failure episode ${episode.episodeId}`,
+          });
+          return;
+        }
         void notificationBatcher.enqueue({
           tier: 'IMMEDIATE', category: 'codex-lifecycle', timestamp: new Date(), topicId,
           message: `Codex delivery verification has entered sustained-failure episode ${episode.episodeId}. `
@@ -14927,6 +14974,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     });
     quotaPollerRef = quotaPoller;
+    // A session ended at Claude Code's "Login expired" screen is a signal to the poller, which
+    // alone decides whether that corroborates needs-reauth (and so opens the sign-in repair).
+    sessionManager.setLoginExpiredSink((input) => quotaPoller.noteCliLoginExpired(input));
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
@@ -15322,12 +15372,41 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
         const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
-          { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }] = await Promise.all([
+          { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }, { createReloginLastResort, withLastResort },
+          { createOneShotCompletion: createHeadlessOneShotCompletion }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
           import('../core/SecretStore.js'), import('../core/SecretSync.js'),
           import('../core/ClaudePasteBackController.js'), import('../core/PlainChromeReloginBrowser.js'),
+          import('../core/ReloginLastResortProvider.js'),
+          import('../providers/adapters/anthropic-headless/transport/oneShotCompletion.js'),
         ]);
         const vault = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+        // Last-resort model (spec relogin-last-resort-model): the repair's own model calls go to
+        // the shared provider first; when that fails (on a single-subscription agent it runs on
+        // the dead login itself) and the operator placed a key under the repair-specific vault
+        // name, the lightweight tier over that key answers instead, within per-drive/day caps.
+        // The call rides the anthropic-headless adapter's one-shot (`claude -p`, key in the child
+        // env only, a dedicated empty config home so the dead ambient login is never picked up).
+        const reloginLastResort = createReloginLastResort({ config: reloginCfg.lastResort,
+          readSecret: (name) => vault.get(name),
+          claudePath: resolveFrameworkBinaryPath({ framework: 'claude-code',
+            frameworkBinaryPaths: config.sessions.frameworkBinaryPaths, claudePath: config.sessions.claudePath,
+            configuredFramework: config.sessions.framework }) ?? 'claude',
+          tmuxPath: detectTmuxPath() ?? 'tmux', stateDir: config.stateDir,
+          createCompletion: createHeadlessOneShotCompletion });
+        const reloginEvaluate = withLastResort(
+          (prompt, options) => sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
+            ...options, signal,
+            // Both callers set it; the fallback keeps the ledger row attributed if a new caller forgets.
+            attribution: options?.attribution ?? { component: 'subscription-relogin-supervisor' },
+          }), 1),
+          reloginLastResort,
+          (reason) => { console.warn(`[subscription-relogin] shared model failed (${reason}); answering on the last-resort model`); },
+          // A dead login that HANGS (rather than fails fast) must not cost a 30 s timeout per
+          // step: the primary gets a short budget, and once the last resort has answered a
+          // drive's call it stays preferred for that drive (sticky).
+          { primaryTimeoutMs: 15_000 },
+        ).evaluate;
         const profiles = new PlaywrightProfileRegistry({ stateDir: config.stateDir, projectDir: config.projectDir,
           listVaultNames: () => {
             try { return secretKeyPaths(vault.read()); }
@@ -15404,8 +15483,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               `closedSnapshot=${JSON.stringify(snapshot)}`,
               `allowedActions=${JSON.stringify(allowedActions)}`,
             ].join('\n');
-            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
-              model: 'fast', maxTokens: 20, temperature: 0, signal,
+            const raw = await reloginEvaluate(prompt, {
+              model: 'fast', maxTokens: 20, temperature: 0,
               attribution: { component: 'subscription-relogin-supervisor' },
               provenance: {
                 decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
@@ -15413,7 +15492,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 optionsPresented: [...allowedActions],
                 promptId: 'subscription-relogin-action-v1',
               },
-            }), 1);
+            });
             const action = raw.trim() as import('../core/AnthropicReloginBrowserDriver.js').ReloginBrowserAction;
             if (!allowedActions.includes(action)) throw new Error('relogin-supervisor-invalid-action');
             return action;
@@ -15439,8 +15518,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 recentSteps: input.recentSteps })}`,
               `offered=${JSON.stringify(input.offered)}`,
             ].join('\n');
-            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
-              model: 'balanced', maxTokens: 20, temperature: 0, signal,
+            const raw = await reloginEvaluate(prompt, {
+              model: 'balanced', maxTokens: 20, temperature: 0,
               attribution: { component: 'subscription-relogin-supervisor' }, // same decision point: chooses one permitted browser action
               provenance: {
                 decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
@@ -15448,9 +15527,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 optionsPresented: [...input.offered],
                 promptId: 'subscription-relogin-navigate-v1',
               },
-            }), 1);
+            });
             return raw.trim().split(/\s+/)[0] ?? '';
           },
+          ...(reloginLastResort ? { lastResort: reloginLastResort } : {}),
           onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
@@ -15461,7 +15541,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           slowRetry: reloginCfg.slowRetry,
         });
         subscriptionReloginRuntime.start();
-        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'})`));
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
         console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);
@@ -17627,6 +17707,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       seenSetMaxThreads: _canonHist.seenSetMaxThreads,
     });
     threadLogForResume = threadLog;
+    // Late-bound: the trust manager the homebase backfill needs is built further down
+    // (Threadline bootstrap). Until then a contact is simply a no-op.
+    let _peerHomebaseBackfill: import('../threadline/peerHomebaseBackfill.js').PeerHomebaseBackfill | null = null;
     const threadMessageRecorder = new ThreadMessageRecorder({
       threadLog,
       conversationStore,
@@ -17636,6 +17719,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       appendFailureAlertThreshold: _canonHist.appendFailureAlertThreshold,
       inlineMaxBytes: _canonHist.inlineMaxBytes,
     });
+    {
+      const { attachPeerContactHook } = await import('../threadline/peerHomebaseBackfill.js');
+      attachPeerContactHook(threadMessageRecorder, (peer) => _peerHomebaseBackfill?.onContact(peer));
+    }
     // SA5/E1: close-only canonical-log retention — a non-pinned conversation
     // transitioning INTO resolved/failed deletes its log (via SafeFsExecutor inside
     // ThreadLog.deleteThread); a COLD archive/LRU eviction never fires this seam.
@@ -18554,7 +18641,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const m = _listPoolMachines().find((x) => x.machineId === machineId);
             if (!m?.lastKnownUrl) return null;
             const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-            if (!isPeerUrlAllowedForCredentials(m.lastKnownUrl, extra).ok) return null;
+            if (!isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extra).ok) return null;
             const r = await fetch(`${m.lastKnownUrl}/guards`, {
               headers: { Authorization: `Bearer ${config.authToken}` },
               signal: AbortSignal.timeout(5000),
@@ -18731,6 +18818,74 @@ export async function startServer(options: StartOptions): Promise<void> {
         } catch (err) {
           console.error(`Unified trust system init failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
+      }
+
+      // ── Per-peer homebase backfill (peer-conversation-homebase-topic) ──
+      // Homebases are created when a pairing becomes mutual-verified, so peers paired before
+      // the feature shipped never got one, and early ones carry the legacy
+      // "<peer> · Threadline · <fp>" name. One bounded, best-effort pass, delayed so the
+      // serving lease has settled; a standby does nothing (same rule as creation).
+      if (threadline.trustManager && telegram) {
+        const hbTrust = threadline.trustManager;
+        const hbTelegram = telegram;
+        const hbTimer = setTimeout(() => {
+          void (async () => {
+            try {
+              const { backfillPeerHomebases, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
+              const peers = hbTrust.listProfiles();
+              const r = await backfillPeerHomebases(peers, {
+                enabled: peerHomebaseEnabled(config),
+                holdsLease: !state.readOnly,
+                findOrCreateTopic: async (name) => {
+                  const t = await hbTelegram.findOrCreateForumTopic(name, undefined, { origin: 'user', label: 'peer-homebase' });
+                  return { topicId: t.topicId, reused: t.reused };
+                },
+                findTopicByName: (name) => hbTelegram.findTopicIdByName(name),
+                renameTopic: (topicId, name) => hbTelegram.editForumTopic(topicId, name),
+                nameCollides: (fp, name) => displayNameCollides(fp, name, peers),
+                topicNameOf: (topicId) => hbTelegram.getTopicName(topicId),
+                getRecorded: (fp) => hbTrust.getHomebaseTopic(fp),
+                record: (fp, topicId) => hbTrust.setHomebaseTopic(fp, topicId),
+                log: (m) => console.log(m),
+              });
+              if (r.created || r.renamed || r.failed) {
+                console.log(`[homebase] backfill: created ${r.created}, renamed ${r.renamed}, failed ${r.failed}`);
+              }
+            } catch (err) {
+              console.warn(`[homebase] backfill skipped: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          })();
+        }, 90_000);
+        hbTimer.unref?.();
+      }
+
+      // ── Per-peer homebase on CONTACT ── the boot pass above runs once; a peer still missing a
+      // homebase (its creation failed, or the lease arrived later) gets one on its next message
+      // in either direction. Same create-once / lease-holder-only discipline; every failure is
+      // logged, retried after 10 minutes, and never blocks a message.
+      if (threadline.trustManager && telegram) {
+        const tm = threadline.trustManager;
+        const tg = telegram;
+        const { PeerHomebaseBackfill } = await import('../threadline/peerHomebaseBackfill.js');
+        const { peerHomebaseEnabled, displayNameCollides } = await import('../threadline/peerHomebase.js');
+        const asPeer = (p: { agent: string; fingerprint?: string; pairingState?: string } | null) =>
+          p && p.fingerprint && p.pairingState === 'mutual-verified' ? { fingerprint: p.fingerprint, name: p.agent } : null;
+        _peerHomebaseBackfill = new PeerHomebaseBackfill({
+          enabled: () => peerHomebaseEnabled(config),
+          holdsLease: () => !state.readOnly,
+          resolveMutualVerified: (key) => asPeer(tm.getProfileByFingerprint(key) ?? tm.getProfile(key)),
+          listMutualVerified: () => tm.listProfiles().map(asPeer).filter((p): p is { fingerprint: string; name: string } => p !== null),
+          findOrCreateTopic: async (name) => {
+            const r = await tg.findOrCreateForumTopic(name, undefined, { origin: 'user', label: 'peer-homebase' });
+            return { topicId: r.topicId, reused: r.reused };
+          },
+          findTopicByName: (name) => tg.findTopicIdByName(name),
+          renameTopic: (topicId, name) => tg.editForumTopic(topicId, name),
+          nameCollides: (fp, name) => displayNameCollides(fp, name, tm.listProfiles()),
+          getRecorded: (fp) => tm.getHomebaseTopic(fp),
+          record: (fp, topicId) => tm.setHomebaseTopic(fp, topicId),
+          log: (m) => console.log(m),
+        });
       }
 
       // Secure A2A Verified Pairing §3.8 (FD11) — SEND-SIDE: attach the journal-backed
@@ -22130,10 +22285,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     let guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null = null;
     {
       const gpCfg = config.monitoring?.greenPrAutoMerge as Record<string, unknown> | undefined;
-      const repoPath = process.cwd();
-      const safeMergePath = path.join(repoPath, 'scripts', 'safe-merge.mjs');
       if (gpCfg?.enabled) {
         const wiring = await import('../monitoring/greenPrAutomergeWiring.js');
+        // repoPath: the instar source checkout the watcher's git reads need.
+        // safeMergePath: the INSTALLED safe-merge (the trusted side), never the
+        // working checkout's copy (local-verify-merge-authority §2; ACT-150).
+        const { repoPath, safeMergePath } = wiring.resolveGreenPrPaths(process.cwd());
         if (wiring.isAnalyzableGreenPrRepo(repoPath, safeMergePath)) {
           const gpMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
           const agentNamespace = wiring.resolveGreenPrAgentNamespace(
@@ -22237,6 +22394,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
+            // An automatic update restart waits for a running verify (a manual apply does not).
+            wiring.registerLocalVerifyRestartHold(autoUpdater, svc);
             localVerifyTimer = setInterval(() => { void svc.tick().catch(() => { /* a failed tick retries next interval */ }); }, 30_000);
             localVerifyTimer.unref();
             console.log(pc.green('  local-verify enabled (server-run test verification for merges)'));
@@ -22275,15 +22434,6 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               : { holdsLease: () => true, leaseEpoch: () => 0, leaseHolder: () => lvMachineId },
             signal: lvHooks.signal,
-            // Decision 16: the same executor status safe-merge reads (this agent's own server).
-            readExecutorStatus: async () => {
-              try {
-                const r = await fetch(`http://127.0.0.1:${config.port}/feedback-factory/execute/status`, {
-                  headers: { Authorization: `Bearer ${config.authToken ?? ''}` }, signal: AbortSignal.timeout(10_000),
-                });
-                return { status: r.status, body: r.ok ? await r.json() : null };
-              } catch { return null; } // @silent-fallback-ok — unreadable ⇒ the acceptance does not match (refuses)
-            },
           });
           if (st.reconciler) {
             localVerifyStatus = st.reconciler;
@@ -22808,7 +22958,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const entry = registry.machines?.[channelRoot];
             if (entry?.status === 'active' && !entry.revokedAt) {
               const url = entry.lastKnownUrl ?? entry.endpoints?.[0]?.url;
-              if (url && isPeerUrlAllowedForCredentials(url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) try {
+              if (url && isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) try {
                 const requestNonce = randomBytes(32).toString('hex');
                 const body = { requestNonce };
                 const headers = machineAuthMod.signRequest(meshSelfId, meshIdMgr.loadSigningKey(), body);
@@ -25139,13 +25289,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { timeoutMs: 50_000 },
               );
               if (res.ok) {
-                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
+                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; detail?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
                 const status = typeof r.status === 'string' ? r.status : undefined;
                 const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted');
+                // The mesh handler spreads the runner's outcome, whose reason
+                // field is `detail` (e.g. `close-refused:active-subagent`) —
+                // read it so a remote refusal reaches the route's 409 by name.
+                const reason = typeof r.reason === 'string' ? r.reason : typeof r.detail === 'string' ? r.detail : undefined;
                 return {
                   ok: r.ok === true,
                   status,
-                  reason: typeof r.reason === 'string' ? r.reason : undefined,
+                  reason,
                   runSuspended: r.autonomousRunSuspended === true,
                   claimLanded: completed && r.claimLanded === true,
                 };
@@ -25164,12 +25318,46 @@ export async function startServer(options: StartOptions): Promise<void> {
           // routing and lease traffic. A freshly enrolled peer can have live
           // LAN/Tailscale endpoints without the legacy lastKnownUrl field; the
           // old filter silently omitted that online machine from every pool view.
+          // Carries the endpoint KIND alongside the url: the credential guard
+          // requires it (so a caller cannot forget it), and selection now prefers
+          // the best ADMISSIBLE rope rather than the best rope — the fix for pool
+          // reads dead-ending on an inadmissible highest-ranked candidate.
+          // Selection without feedback cannot converge, it can only be lucky: the
+          // highest-priority ADMISSIBLE rope is chosen forever even when it never
+          // answers. Reporting each pool dial into the SAME resolver the lease
+          // transport feeds is what makes a dead rope demote itself.
+          _recordRopeResult = (machineId, kind, ok, latencyMs, url) =>
+            meshResolver.recordResult(machineId, kind, ok, latencyMs, url);
           _resolvePeerUrls = () =>
             meshIdMgr
               .getActiveMachines()
               .filter((m) => m.machineId !== meshSelfId)
-              .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) }))
-              .filter((m): m is { machineId: string; url: string } => m.url != null);
+              .map((m) => {
+                const entry = m.entry;
+                const selection = resolveMeshPeerPreferredSelection(
+                  meshResolver,
+                  m.machineId,
+                  entry?.endpoints,
+                  entry?.lastKnownUrl,
+                  (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+                );
+                return {
+                  machineId: m.machineId,
+                  url: selection?.selection.url ?? null,
+                  kind: selection?.selection.kind ?? null,
+                  // Which ropes the guard skipped on the way to this one — so a
+                  // caller can report them instead of them vanishing.
+                  ropeRefusals: selection?.refusals ?? [],
+                };
+              })
+              .filter(
+                (m): m is {
+                  machineId: string;
+                  url: string;
+                  kind: PeerEndpointKind;
+                  ropeRefusals: RopeRefusal[];
+                } => m.url != null && m.kind != null,
+              );
           // EVERY registered non-revoked machine — URL or not — so the /guards
           // pool view can account for each by name (no-known-url is a NAMED row,
           // never a silent omission — GUARD-POSTURE-ENDPOINT-SPEC §2.3).
@@ -27248,11 +27436,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (telegramOriginBoot && hasUsableBotToken && meshSelfId) {
               const runtime = telegramOriginBoot.runtime;
               telegram.holderForwardPolicy = {
-                decide: () => {
-                  if (!forwardSwitchOn() || _sessionPoolStage() === 'dark') return 'local';
-                  const route = originForwardMod.classifyLeaseRoute(forwardLease);
-                  return route.kind === 'self' ? 'local' : route.kind === 'peer' ? 'forward' : 'settling';
-                },
+                decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease) }),
               };
               // §4.2 — recovery re-forwards the SAME operation; an outcome-unknown
               // attempt is resolved at the old holder's receipt, never re-sent blind.
@@ -28503,7 +28687,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           })),
           fetchPeerState: async (peer, timeoutMs) => {
             if (!peer.url) return { ok: false, reason: 'no-known-url' };
-            if (!isPeerUrlAllowedForCredentials(peer.url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+            if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: 'last-known-url' }, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) return { ok: false, reason: 'url-rejected' };
             try {
               const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
                 headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-Machine-Id': pkSelfId }, signal: AbortSignal.timeout(timeoutMs),
@@ -28762,12 +28946,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.yellow(`  Agent identity runtime: not wired (${err instanceof Error ? err.message : String(err)})`));
     }
 
-    const server = new AgentServer({ config, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       return await Promise.all(peers.map(async (peer) => {
-        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) {
+        if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) {
           return { machineId: peer.machineId, status: 'url-rejected' };
         }
         try {
@@ -28898,7 +29082,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
         if (!peer) return 'pending';
         const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+        if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return 'pending';
         try {
           const manager = coordinator.managers.identityManager;
           const self = manager.loadIdentity();
@@ -28947,7 +29131,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
           if (!peer) return 'pending';
           const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return 'pending';
           try {
             const manager = coordinator.managers.identityManager;
             const self = manager.loadIdentity();
@@ -29212,7 +29396,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const peers = _resolvePeerUrls?.() ?? [];
         const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         await Promise.all(peers.map(async (peer) => {
-          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return;
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extra).ok) return;
           try {
             const projectionNonce = randomBytes(32).toString('hex');
             const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/projection/by-machine/${encodeURIComponent(machineId)}?nonce=${projectionNonce}`, {
@@ -30406,6 +30590,23 @@ export async function stopServer(options: { dir?: string }): Promise<void> {
  *
  * Without autostart, falls back to stop + start.
  */
+/**
+ * Stop the server's tmux session (`<project>-server`) if one exists; silent no-op
+ * otherwise (no tmux, or the server runs as the service's main process).
+ * Agent sessions live in their own tmux sessions and are not touched.
+ */
+async function stopServerSessionIfPresent(options: { dir?: string }): Promise<void> {
+  const config = loadConfig(options.dir);
+  const tmuxPath = detectTmuxPath();
+  if (!tmuxPath) return;
+  try {
+    execFileSync(tmuxPath, ['has-session', '-t', `=${config.projectName}-server`], { stdio: 'ignore' });
+  } catch {
+    return; // @silent-fallback-ok: no server tmux session — nothing to stop
+  }
+  await stopServer(options);
+}
+
 export async function restartServer(options: { dir?: string }): Promise<void> {
   const config = loadConfig(options.dir);
 
@@ -30424,6 +30625,11 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
 
       // Wait for process to die
       await new Promise(r => setTimeout(r, 1000));
+
+      // The lifeline runs the server in its own tmux session, which outlives the
+      // lifeline. Stop it too, or the new lifeline adopts the old server and this
+      // "restart" never loads new server code.
+      await stopServerSessionIfPresent(options);
 
       // Bootstrap it back (loads + starts)
       try {
@@ -30447,7 +30653,13 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
     if (fs.existsSync(servicePath)) {
       console.log(`  Restarting via systemd (${serviceName})...`);
       try {
-        execFileSync('systemctl', ['--user', 'restart', serviceName], { stdio: 'pipe' });
+        // stop → stop the server's own tmux session → start. With KillMode=process
+        // (the unit default since 2026-10-22) a plain `restart` only restarts the
+        // lifeline and the new lifeline would adopt the old server. Stopping the
+        // lifeline first means nothing respawns the server while it is going down.
+        execFileSync('systemctl', ['--user', 'stop', serviceName], { stdio: 'pipe' });
+        await stopServerSessionIfPresent(options);
+        execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'pipe' });
         console.log(pc.green(`  Server restarted via systemd (${serviceName})`));
       } catch (err) {
         console.log(pc.red(`  Failed to restart via systemd: ${err instanceof Error ? err.message : err}`));

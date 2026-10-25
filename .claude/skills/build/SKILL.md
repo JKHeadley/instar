@@ -26,6 +26,9 @@ Size determines protection level:
 - **STANDARD** (medium): 5 reinforcements, full observability + review
 - **LARGE** (heavy): 10 reinforcements, full observability + multi-agent review
 
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
+Pick the size by the change, not by habit: **SMALL** = reversible and narrow (a revert fully undoes it): short plan, one review pass, targeted tests. **LARGE** = irreversible, fleet-wide, or security-sensitive. Everything else is STANDARD. Apply fractal 80/20 at every level: stop refining when the next pass would not change what gets built.
+
 **Model routing**: Use **Opus** for all coding, testing, architecture, and verification. Haiku only for quick file searches.
 
 ---
@@ -163,6 +166,16 @@ Write Code -> Write Tests -> Run Tests -> Fix -> Verify Full Suite
 4. Run FULL test suite to catch regressions
 5. Record: `python3 playbook-scripts/build-state.py step-complete N "Description" TESTS PASSING`
 
+### Found problems: triage, never accrete
+
+Finding problems along the way is good. Triage each one on the spot; only the first kind joins this work:
+
+1. **Blocks the current work?** Fix it now.
+2. **A major issue** (broken for users, a safety/security/data-loss risk, or more than about a day of work)? Spin it off: a new topic with its own session (dashboard New Session, or `POST /sessions/create`) whose brief starts an `/autonomous` run to complete it under these same 80/20 + triage rules; tell the operator in one line.
+3. **Everything else** → a queue, and say which: an instar defect or improvement → the feedback queue (`/feedback`); an improvement to this agent's own process → the evolution queue (`/commit-action`).
+
+Never add a found problem to the task list silently, and never draft a spec or audit for a non-blocking one inside this run.
+
 ### Testing layers (non-negotiable):
 
 | Layer | Tests | When |
@@ -242,6 +255,12 @@ If verification fails: transition to fixing, max 3 cycles.
 - [Rule 2 - added critical missing functionality] <what + why — e.g. atomic-write, input validation>
 - [Rule 3 - auto-fixed blocking issue] <what>
 - [Rule 4 - architectural decision deferred/changed] <what + whether it needs user confirmation>
+
+## Found problems (triage)
+- <problem> → fixed here (blocked the work) / spun off to topic <id> / queued in <feedback|evolution queue>
+
+## Proportion
+- Size <SMALL|STANDARD|LARGE>, <files>/<LOC>; review passes <n>; commit/gate attempts <n>. Flag in one line if out of line with the size (signal only).
 
 ## Must-haves verification (from Phase 0.5)
 - <each truth> → VERIFIED / HOLLOW / ORPHANED (run /verify-claim per key_link)

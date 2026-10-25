@@ -78,16 +78,54 @@ describe('GitSync.configureCommitSigning — commits never break (signing regres
     return mgr.commitAndPush('chore(mesh): lease epoch', [f]);
   }
 
-  it('with the codebase PEM key (ssh-keygen cannot load it): disables signing, commit still lands', () => {
+  /**
+   * The product's OWN criterion, run the product's way: derive the public
+   * sibling, then sign a scratch file with `ssh-keygen -Y sign -n git`.
+   *
+   * Whether a PKCS#8 PEM passes is a HOST fact, not a product fact — GitSync
+   * says so itself ("not accepted by every ssh-keygen build"). Hard-coding the
+   * 'false' branch baked one host's ssh-keygen into the assertion, so the test
+   * failed on OpenSSH 10.x (which loads PKCS#8 happily) for a reason that has
+   * nothing to do with GitSync. Derive the expectation; keep the invariant.
+   */
+  function hostCanSshSign(keyPath: string): boolean {
+    const probe = `${keyPath}.testprobe`;
+    try {
+      if (!fs.existsSync(`${keyPath}.pub`)) {
+        const pub = execFileSync('ssh-keygen', ['-y', '-f', keyPath], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        fs.writeFileSync(`${keyPath}.pub`, pub, { mode: 0o644 });
+      }
+      fs.writeFileSync(probe, 'instar-test-sign-probe');
+      execFileSync('ssh-keygen', ['-Y', 'sign', '-n', 'git', '-f', keyPath, probe], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      const op = 'tests/unit/git-sync-commit-signing.test.ts:hostCanSshSign';
+      SafeFsExecutor.safeRmSync(probe, { force: true, operation: op });
+      SafeFsExecutor.safeRmSync(`${probe}.sig`, { force: true, operation: op });
+    }
+  }
+
+  it('with the codebase PEM key: signing is on only if the host can sign with it, and the commit lands either way', () => {
     const keys = generateSigningKeyPair(); // PKCS#8 PEM — the format the codebase generates
-    fs.writeFileSync(path.join(work, '.instar', 'machine', 'signing-key.pem'), keys.privateKey, { mode: 0o600 });
+    const keyPath = path.join(work, '.instar', 'machine', 'signing-key.pem');
+    fs.writeFileSync(keyPath, keys.privateKey, { mode: 0o600 });
 
     const mgr = manager();
     mgr.configureCommitSigning();
 
-    // Signing must be explicitly OFF (never left in a broken on-state).
-    expect(git(work, ['config', '--get', 'commit.gpgsign'])).toBe('false');
-    // The core guarantee: the commit lands.
+    // Never left in a broken ON state: 'true' is only permitted when this host
+    // can genuinely sign with this key, 'false' otherwise. That is the actual
+    // invariant — the host's ssh-keygen build is not under test.
+    const hostSigns = hostCanSshSign(keyPath);
+    expect(git(work, ['config', '--get', 'commit.gpgsign'])).toBe(hostSigns ? 'true' : 'false');
+    // The core guarantee, identical on both branches: the commit lands.
     expect(commitSucceeds(mgr)).toBe(true);
   });
 

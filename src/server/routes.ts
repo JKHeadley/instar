@@ -245,7 +245,8 @@ import {
 } from '../monitoring/guardAcceptedFallbacks.js';
 import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
-import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -1107,6 +1108,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
+    lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -1882,7 +1885,26 @@ export interface RouteContext {
   kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
-  resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
+  resolvePeerUrls?:
+    | (() => Array<{
+        machineId: string;
+        url: string;
+        kind: PeerEndpointKind;
+        ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+      }>)
+    | null;
+  /**
+   * The rope-health feedback arm of the pool-read selection fix
+   * (docs/specs/peer-credential-guard-tailscale-coherence.md §3.4(b)).
+   *
+   * Reports each pool dial's outcome to the SAME `PeerEndpointResolver` the
+   * lease transport and recovery prober feed, so a rope that is admissible but
+   * dead stops being selected. Without it, selection settles on the highest-
+   * priority admissible rope forever even when it never answers — measured on
+   * 2026-10-22 as a dead LAN rope chosen over a healthy tunnel. Absent/null on
+   * a single machine (no peers, nothing to learn).
+   */
+  recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder | null;
   /** WS4.4(f) global pool-cache unification (MULTI-MACHINE-SEAMLESSNESS-SPEC
    *  §WS4.4 clause (f)): the ONE shared per-peer poll cache that every
    *  pool-scope surface routes its per-peer fetch through, so a dashboard
@@ -9913,7 +9935,7 @@ export function createRoutes(ctx: RouteContext): Router {
         failed.push({ machineId: machine.machineId, error: 'offline' });
         return;
       }
-      if (!isPeerUrlAllowedForCredentials(url, extraAllowlist).ok) {
+      if (!isPeerUrlAllowedForCredentials({ url, kind: 'last-known-url' }, extraAllowlist).ok) {
         // Credentials are never attached to a rejected URL.
         failed.push({ machineId: machine.machineId, error: 'url-rejected' });
         return;
@@ -10524,7 +10546,7 @@ export function createRoutes(ctx: RouteContext): Router {
           failed.push({ machineId: m.machineId, reason: 'offline' });
           return;
         }
-        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        const verdict = isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist);
         if (!verdict.ok) {
           // The Bearer token was NEVER attached (spec §3(c)) — visible, named.
           failed.push({ machineId: m.machineId, reason: 'url-rejected' });
@@ -10953,7 +10975,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const peerQuery = includeAll ? '?include=all' : explicitStatus ? `?status=${explicitStatus}` : '';
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/sessions${peerQuery}`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/sessions${peerQuery}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
@@ -11330,7 +11352,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      const r = await fetch(`${peer.url}/topic-profile/options`, {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/topic-profile/options`, {
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName },
         signal: AbortSignal.timeout(5000),
       });
@@ -12050,7 +12072,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const nickname = ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machine.nickname;
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
       ?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) {
+    if (!isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist).ok) {
       // The pool Bearer token NEVER travels to a non-allowlisted URL —
       // stronger here than on the read fan-out because this verb is
       // destructive (§2.1 shipping dependency).
@@ -12221,7 +12243,7 @@ export function createRoutes(ctx: RouteContext): Router {
             }
             let verdict: { ok?: boolean; framework?: string; model?: string | null; code?: string; error?: string } = {};
             try {
-              const r = await fetch(`${peer.url}/topic-profile/validate-choice`, {
+              const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/topic-profile/validate-choice`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
                 body: JSON.stringify({ framework: want.framework, model: want.model }),
@@ -13384,7 +13406,7 @@ export function createRoutes(ctx: RouteContext): Router {
         if (!m.lastKnownUrl) { failed.push({ machineId: m.machineId, reason: 'no-known-url' }); return; }
         if (capacity && capacity.online === false) { failed.push({ machineId: m.machineId, reason: 'offline' }); return; }
         const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-        const verdict = isPeerUrlAllowedForCredentials(m.lastKnownUrl, extraAllowlist);
+        const verdict = isPeerUrlAllowedForCredentials({ url: m.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist);
         if (!verdict.ok) { failed.push({ machineId: m.machineId, reason: 'url-rejected' }); return; }
         peersQueried++;
         try {
@@ -16679,7 +16701,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try {
           // The actual peer fetch — called WITHOUT scope=pool (no recursion).
           const fetchPeerJobs = async () => {
-            const r = await fetch(`${p.url}/jobs`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/jobs`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(JOBS_PEER_TIMEOUT_MS),
             });
@@ -17866,7 +17888,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const { name, color, firstMessage } = req.body;
+    const { name, color, firstMessage, kind } = req.body;
+    if (kind !== undefined && kind !== 'issue' && kind !== 'conversation') {
+      res.status(400).json({ error: '"kind" must be "issue" or "conversation" when given' });
+      return;
+    }
     if (!name || typeof name !== 'string' || name.trim().length < 1) {
       res.status(400).json({ error: '"name" is required (non-empty string)' });
       return;
@@ -17896,7 +17922,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const iconColor = typeof color === 'number' ? color : 9367192;
 
     try {
-      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor, { origin: 'user' });
+      // An issue topic goes to the agent's issues group when one is configured
+      // (docs/specs/telegram-issues-group.md); otherwise the main group, as before.
+      const space = kind === 'issue' && ctx.telegram.hasIssuesGroup?.() === true ? 'issues' : 'main';
+      const topic = await ctx.telegram.findOrCreateForumTopic(name.trim(), iconColor, { origin: 'user', space });
 
       // Send initial message if provided — goes through sendToTopic so it's
       // properly logged to JSONL + TopicMemory. This ensures new sessions
@@ -17913,6 +17942,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         created: !topic.reused,
         reused: topic.reused,
         messageSent,
+        group: space,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -19127,7 +19157,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         try {
           const fetchPeer = async () => {
-            const r = await fetch(`${p.url}/threadline/pairing`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/threadline/pairing`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(PAIRING_PEER_TIMEOUT_MS),
             });
@@ -19569,7 +19599,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Operator confirm/deny of a pairing — PIN-GATED (FD7). The local human SAS
   // comparison is the load-bearing security event; the agent Bearer token CANNOT
   // confirm. checkMandatePin is the EXACT mechanism /mandate/issue uses.
-  router.post('/threadline/pairing/:peerFp/verify', (req, res) => {
+  router.post('/threadline/pairing/:peerFp/verify', async (req, res) => {
     if (!verifiedPairingRouteEnabled()) {
       res.status(503).json({ error: 'verified pairing not enabled' });
       return;
@@ -19687,7 +19717,50 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       console.warn(`[pairing] receipt to ${peerFp.slice(0, 12)} not sent: ${err instanceof Error ? err.message : String(err)}`);
     }
-    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent });
+    // ── Per-peer homebase topic (peer-conversation-homebase-topic §2.1) ──
+    // Downstream of the trust write and best-effort, exactly like the receipt above: a
+    // notice about a peer used to land in whatever topic its thread happened to start in
+    // (the 2026-10-21 `pp` incident), and the fix is a topic of its own. Creating a Telegram
+    // topic is an external side-effect, so a failure here must never fail or delay a
+    // confirmed pairing — every path returns a reason instead of throwing, and the peer
+    // simply has no homebase, which routes to existing behaviour.
+    // No `= null` initializer on purpose. The catch-block scanner reads each catch plus the
+    // following 19 lines, and a `| null = null` annotation matches its state-reset pattern,
+    // which made it flag the UNRELATED receipt catch above. `undefined` says "no homebase"
+    // just as well without the accidental match. (Keep this note free of the scanner's own
+    // vocabulary too — an explanation that uses those words re-trips the same check.)
+    let homebaseTopicId: number | undefined;
+    try {
+      const { ensurePeerHomebase, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
+      const confirmed = trustManager.getProfileByFingerprint(peerFp);
+      const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
+        enabled: peerHomebaseEnabled(ctx.config),
+        // A standby that created one would mint a fresh topic per boot — the failure that
+        // produced 41 duplicate "Updates" topics before the system-topic pattern existed.
+        holdsLease: !ctx.state.readOnly,
+        findOrCreateTopic: async (name) => {
+          if (!ctx.telegram) throw new Error('no telegram adapter');
+          const r = await ctx.telegram.findOrCreateForumTopic(name, undefined, {
+            // `user`: the operator asked for one topic per paired agent (§2.5 records his
+            // words). Pairing is human-gated, so the agent cannot grow the set on its own.
+            origin: 'user',
+            label: 'peer-homebase',
+          });
+          return { topicId: r.topicId, reused: r.reused };
+        },
+        findTopicByName: (name) => ctx.telegram?.findTopicIdByName(name),
+        renameTopic: async (topicId, name) => (ctx.telegram ? ctx.telegram.editForumTopic(topicId, name) : false),
+        nameCollides: (fp, name) => displayNameCollides(fp, name, trustManager.listProfiles()),
+        getRecorded: (fp) => trustManager.getHomebaseTopic(fp),
+        record: (fp, topicId) => trustManager.setHomebaseTopic(fp, topicId),
+        log: (m) => console.log(m),
+      });
+      if (outcome.created) homebaseTopicId = outcome.topicId;
+      else if (outcome.reason === 'already-recorded') homebaseTopicId = outcome.topicId;
+    } catch (err) {
+      console.warn(`[homebase] skipped for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent, ...(homebaseTopicId !== undefined ? { homebaseTopicId } : {}) });
   });
 
   // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
@@ -20222,7 +20295,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const machine = (ctx.listPoolMachines?.() ?? []).find((m) => m.machineId === intent.targetMachineId);
     if (!machine || !machine.lastKnownUrl) return 'queued';
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(machine.lastKnownUrl, extraAllowlist).ok) return 'queued';
+    if (!isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist).ok) return 'queued';
     try {
       const r = await fetch(`${machine.lastKnownUrl}/attention/${encodeURIComponent(intent.itemId)}`, {
         method: 'PATCH',
@@ -20306,7 +20379,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         try {
           const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-          const r = await fetch(`${p.url}/attention${qs}`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/attention${qs}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(ATTENTION_PEER_TIMEOUT_MS),
           });
@@ -21565,12 +21638,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remote: Array<Record<string, unknown>> = [];
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, jpExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, jpExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, error: 'url-rejected' });
             return;
           }
           try {
-            const r = await fetch(`${p.url}/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/judgment-provenance?limit=${limit}${sinceHours ? `&sinceHours=${sinceHours}` : ''}`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -21818,12 +21891,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remotePoints: Array<Record<string, unknown>> = [];
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, dqExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, dqExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, error: 'url-rejected' });
             return;
           }
           try {
-            const r = await fetch(`${p.url}/decision-quality${sinceHours ? `?sinceHours=${sinceHours}` : ''}`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/decision-quality${sinceHours ? `?sinceHours=${sinceHours}` : ''}`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -21961,12 +22034,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let peersOk = 0;
       await Promise.all(
         peers.map(async (p) => {
-          if (!isPeerUrlAllowedForCredentials(p.url, bdExtraAllowlist).ok) {
+          if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, bdExtraAllowlist).ok) {
             failed.push({ machineId: p.machineId, reason: 'url-rejected' });
             return;
           }
           const fetchPeerFindings = async (): Promise<{ findings?: unknown[] }> => {
-            const r = await fetch(`${p.url}/benchmark-divergence`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/benchmark-divergence`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(5000),
             });
@@ -22671,8 +22744,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the owner's session, land the target's claim (the queue-barrier release).
     //   · drain ok → proceed to pin+journal exactly as today (the place/claim
     //     repair below sees active@target and correctly no-ops).
-    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
-    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · aborted-emergency-stop / refused-close-failed → 409 failed-needs-retry,
+    //     NO pin — an abort leaves nothing split (the topic stays whole on its
+    //     current machine).
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
@@ -22709,6 +22783,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
             failedNeedsRetry: true,
             drain: drainLeg,
+          });
+          return;
+        }
+        // The owner could not close its session, so it aborted the transfer and
+        // kept ownership. Setting the pin now would re-place the topic on the
+        // target at the next message while the old session is still running —
+        // two live sessions on one conversation (2026-10-23). Stop here instead.
+        if (r.status === 'refused-close-failed') {
+          res.status(409).json({
+            error: `transfer aborted: the current machine could not close its session for this topic (${r.reason ?? 'close refused'}) — the topic stays whole on its current machine${drainRunSuspended ? '; its autonomous run was suspended for the move and stays suspended there' : ''}`,
+            failedNeedsRetry: true,
+            drain: drainLeg,
+            // Honest: the run was suspended BEFORE the close was attempted and is
+            // not un-suspended on abort (same as the emergency-stop abort).
+            autonomousRunSuspended: drainRunSuspended,
           });
           return;
         }
@@ -28909,7 +28998,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (ctx.fetchPasskeyPeerState) return ctx.fetchPasskeyPeerState(peer, timeoutMs);
     if (!peer.url) return { ok: false, reason: 'no-known-url' };
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-    if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) return { ok: false, reason: 'url-rejected' };
+    if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: 'last-known-url' }, extraAllowlist).ok) return { ok: false, reason: 'url-rejected' };
     try {
       const r = await fetch(`${peer.url.replace(/\/$/, '')}/passkeys/pool-state`, {
         headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'X-Instar-Machine-Id': passkeySelfMachineId() },
@@ -29763,11 +29852,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const failed: Array<{ machineId: string; error: string }> = [];
     let remainingBytes = 256 * 1024;
     await Promise.all(peers.map(async (peer) => {
-      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, extraAllowlist).ok) {
         failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
       }
       try {
-        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/completion-claim/audit?limit=${limit}&projection=pool`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
         });
         if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
@@ -32578,11 +32667,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (let i = 0; i < peers.length; i += 4) {
       await Promise.all(peers.slice(i, i + 4).map(async p => {
         if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
-        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, extraAllowlist).ok) {
           failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
         }
         try {
-          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/blocker-lifecycle/${kind}?${query}&scope=local`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
           });
           if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
@@ -33336,7 +33425,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (cap && cap.online === false) { failed.push({ machineId: p.machineId, error: 'offline' }); return; }
         try {
           const fetchPeer = async () => {
-            const r = await fetch(`${p.url}/standdown`, {
+            const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/standdown`, {
               headers: { Authorization: `Bearer ${ctx.config.authToken}` },
               signal: AbortSignal.timeout(4000),
             });
@@ -34104,7 +34193,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }> = [];
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/subscription-pool`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });
@@ -34248,6 +34337,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         credentialReadObservationWindows: {
           total: credentialReadObservationWindows.length,
           resolved: credentialReadObservationWindows.filter((row) => row.outcome === 'resolved-read-window').length,
+          escalated: credentialReadObservationWindows.filter((row) => row.outcome === 'escalated-to-needs-reauth').length,
           open: credentialReadObservationWindows.filter((row) => row.closedAt === null).length,
           evidenceMaturity: 'provisional-credential-read',
           floorPasses: 3,
@@ -34320,7 +34410,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         accountId, limit,
       }) ?? [];
       if (req.query.scope !== 'pool') {
-        res.json({ enabled: true, episodes: localEpisodes });
+        res.json({ enabled: true, episodes: localEpisodes,
+          lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
       const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
@@ -34342,7 +34433,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const suffix = query.size > 0 ? `?${query.toString()}` : '';
       await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async (peer) => {
         try {
-          const response = await fetch(`${peer.url}/subscription-relogin${suffix}`, {
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5_000),
           });
@@ -34751,7 +34842,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const remote: Record<string, unknown>[] = [];
       await Promise.all(peers.map(async (p) => {
         try {
-          const r = await fetch(`${p.url}/subscription-pool/pending-logins`, {
+          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/subscription-pool/pending-logins`, {
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5000),
           });

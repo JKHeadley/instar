@@ -204,3 +204,45 @@ export function evaluateRun(
 
   return { outcome: reasons.length === 0 ? 'success' : 'failure', reasons, lanes: totals, perFile };
 }
+
+// ── Isolation re-run of failed files (the evidence-per-run "known-flaky") ──
+
+export type IsolationRerunDecision =
+  | { rerun: string[]; reason: 'eligible' }
+  | { rerun: []; reason: 'no-report' | 'no-failures' | 'too-many-failures' | 'other-failure' | 'rerun-budget-spent' | 'unhandled-errors' | 'related-to-change' };
+
+/**
+ * Should a lane's failed files be re-run alone, once? Only when the lane's ONLY problem is
+ * 1..maxFiles failed files: a missing report, an inventoried file the lane never ran, a file
+ * that collected nothing, or an unhandled error (or an unknown unhandled-error count) is a
+ * different failure, and more than maxFiles failed files is a real break. A failed file in
+ * `ineligible` (a PR verify: the PR changed it, it imports a file the PR changed, or it did
+ * not pass cleanly in the last green `main` verify) is a real, possibly order-dependent
+ * failure: nothing re-runs. `budgetLeft` is what is left of the per-verify cap. Pure: the
+ * orchestrator calls it and the self-action registry drives it (local-verify-flake-rerun).
+ */
+export function decideIsolationRerun(i: {
+  report: ParsedLaneReport | null;
+  /** The inventoried files assigned to this lane. */
+  laneFiles: readonly string[];
+  maxFiles: number;
+  budgetLeft: number;
+  /** The lane run's unhandled-error count; null = unknown (never re-run). Absent = not checked (tests of the count rules). */
+  unhandledErrors?: number | null;
+  /** Failed files that must not be treated as possibly flaky. */
+  ineligible?: ReadonlySet<string>;
+}): IsolationRerunDecision {
+  if (!i.report) return { rerun: [], reason: 'no-report' };
+  const failed = [...i.report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f).sort();
+  if (failed.length === 0) return { rerun: [], reason: 'no-failures' };
+  if (i.unhandledErrors !== undefined && i.unhandledErrors !== 0) return { rerun: [], reason: 'unhandled-errors' };
+  if (failed.length > i.maxFiles) return { rerun: [], reason: 'too-many-failures' };
+  for (const f of i.laneFiles) {
+    const c = i.report.files.get(f);
+    if (!c) return { rerun: [], reason: 'other-failure' }; // file-not-run
+    if (c.failed === 0 && c.passed + c.skipped + c.todo === 0) return { rerun: [], reason: 'other-failure' }; // zero collected
+  }
+  if (i.ineligible && failed.some((f) => i.ineligible!.has(f))) return { rerun: [], reason: 'related-to-change' };
+  if (failed.length > i.budgetLeft) return { rerun: [], reason: 'rerun-budget-spent' };
+  return { rerun: failed, reason: 'eligible' };
+}

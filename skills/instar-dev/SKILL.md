@@ -188,10 +188,31 @@ The ONLY thing that stops the merge is a genuinely-red check **on this change**:
 
 Not every change is the same size or risk, so not every change pays the same process cost. The commit gate (`scripts/instar-dev-precommit.js`) prints a **tier SIGNAL** — a suggested tier from the change's size (LOC + files) and a **risk floor** raised by any safety-invariant, irreversibility, migration/fleet-rollout, or new-capability signal (`scripts/lib/classify-tier.mjs`). The signal **informs**; it never decides. **You DECLARE the tier** in the trace via `write-trace.mjs --tier <1|2|3> --tier-reasoning "<why>"`. This is the constitution's **The Body and the Mind** made executable (`docs/STANDARDS-REGISTRY.md` → The Substrate): the gate (body) informs, the agent (mind) decides, the decision is audited.
 
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
+**Size tiers in plain words** — pick by the change, not by habit; the full machinery is for changes that need it:
+
+- **Tier 1 — small and reversible** (a skill or doc wording change, a narrow bug fix, a flag-gated or dark addition, anything a revert fully undoes): a short spec or none, one review round (more only while a round still finds a design problem, never past `/spec-converge`'s Tier-1 cap of 3), targeted tests for what changed, side-effects + ELI16.
+- **Tier 2+ — large, irreversible, or security-sensitive** (fleet-wide state or config migration, auth/credentials/secrets, durable external side-effects, money, identity, a published interface, new authority to block or kill): the full chain — converged + approved spec (cap 6 rounds), second-pass review where required, full suite.
+- When unsure, ask: "if this is wrong, does a revert fix it?" Yes → Tier 1. No → Tier 2+.
+
 - **Tier 1 (small / low-risk):** lighter requirement set — a staged **ELI16** + a staged **side-effects** artifact, no pre-approved converged spec. Declare it with `--tier 1 --eli16-path <path> --side-effects-path <path>` (`--spec` is optional at Tier 1). The PR is the review surface. (Auto-merge-on-green is **not** a Tier-1 privilege — per Phase 7 it applies to EVERY tier; Tier 1 differs only in the lighter pre-merge gate, never in the merge behavior.)
 - **Tier 2+ (everything else):** the full chain above — converged + approved spec, ELI16, side-effects, fresh trace. A **Tier-3 project step** is just a Tier-2 spec; nothing extra is enforced at the gate. **No declared tier → Tier-2** (back-compatible).
 
 **The decision is audited.** Every in-scope commit appends one line to `.instar/instar-dev-decisions.jsonl` (signal, declared tier, risk floor + reasons). When you declare **under** the risk-signaled floor, the gate prints a loud `belowFloor` notice and records `belowFloor:true` — it does **not** block (you hold authority), but the override is now a reviewable record. Per **Close the Loop**, those `belowFloor` rates get reviewed on a cadence so the risk-floor list grows.
+
+## Found problems: triage, never accrete
+
+Finding problems along the way is good. Each one is triaged on the spot, and only the first kind joins the current work:
+
+1. **Blocks the current work?** Fix it now, as part of this change.
+2. **A major issue** (broken for users, a safety/security/data-loss risk, or more than about a day of work)? Spin it off: open a new topic with its own session (dashboard New Session, or `POST /sessions/create`) whose brief starts an `/autonomous` run to complete it under these same 80/20 + triage rules, and tell the operator in one line.
+3. **Everything else** goes to a queue, and the report names which: an instar defect or improvement → the feedback queue (`/feedback`); an improvement to this agent's own process or behavior → the evolution queue (`/commit-action`). Do not draft specs or audits for it inside the current run.
+
+A found problem is never silently added to the current task list. The run report lists each one with its triage.
+
+## Proportion signal
+
+The side-effects artifact's Summary and the PR body state the tier, the change size (files/LOC), and the effort spent: spec review rounds and commit/gate attempts. When those are out of line with the size (for example 3+ review rounds or 4+ commit attempts on a Tier-1 change), say so in one line with the reason. It is a signal for the reader and the retrospective, never a gate.
 
 ## The internal-only release-note lane
 

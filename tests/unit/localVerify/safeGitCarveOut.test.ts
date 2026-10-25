@@ -31,7 +31,10 @@ function rawGit(cwd: string, args: string[]): string {
 
 /** An instar-shaped agent home (itself a checkout) with base on main and head on a branch. */
 function agentHome(name = 'agent', root?: string): { root: string; home: string; base: string; head: string; verify: string; bare: string } {
-  const r = root ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'verify-carve-')));
+  // Under /tmp directly, never under TMPDIR: inside a local-verify run TMPDIR is itself
+  // an `lv-` temp dir, which the deletion scope admits, so the guard that refuses would
+  // change (found by the first server-run verify, PR 2294).
+  const r = root ?? fs.realpathSync(fs.mkdtempSync(path.join(localVerifyTempRoot(), 'verify-carve-')));
   if (!root) dirs.push(r);
   const home = path.join(r, name);
   fs.mkdirSync(home);
@@ -149,6 +152,18 @@ describe('localVerifyCloneOk', () => {
     expect(rawGit(home, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe('main');
   });
 
+  // 2026-10-23 (PR #2326): the independent-review head binding reads `git log` in the
+  // bare clone; `log` was not in the carve-out's verb set, so every flagged PR was
+  // refused `trace-commit-unreadable`.
+  it('admits `log` with a range and a pathspec in the bare clone; `rev-list` stays outside the set', () => {
+    const { home, base, head, verify, bare } = agentHome();
+    initBare(verify, bare, home);
+    const o = bareOpts(verify, bare);
+    SafeGitExecutor.run(['fetch', '--no-tags', 'origin', head, base], o);
+    expect(SafeGitExecutor.run(['log', '-1', '--format=%H', `${base}..${head}`, '--', 'src/b.ts'], o).trim()).toBe(head);
+    expect(SafeGitExecutor.run(['log', '--format=%H', `${head}..${head}`, '--', 'src/b.ts'], o).trim()).toBe('');
+    expect(() => SafeGitExecutor.run(['rev-list', `${base}..${head}`], o)).toThrow(SourceTreeGuardError);
+  });
   it('refuses a verb outside the enumerated set, and worktree remove --force', () => {
     const { home, base, head, verify, bare } = agentHome();
     initBare(verify, bare, home);

@@ -94,8 +94,16 @@ describe('Attention alerts — fleet default (no config) lifecycle', () => {
     // Every item is durably recorded and points at the hub.
     const items = adapter.getAttentionItems();
     expect(items.length).toBe(N);
-    expect(new Set(items.map(a => a.topicId)).size).toBe(1);
-    expect(items.every(a => a.coalesced === true)).toBe(true);
+    // Default hub filter (2026-10-23): only URGENT reaches Telegram here; the
+    // automated LOW/NORMAL/HIGH status items are held — still in the store,
+    // never posted. Everything that posts shares the ONE hub.
+    const posted = items.filter(a => !a.hubHeld);
+    const held = items.filter(a => a.hubHeld);
+    expect(posted.length).toBe(N / 4);
+    expect(posted.every(a => a.priority === 'URGENT')).toBe(true);
+    expect(new Set(posted.map(a => a.topicId)).size).toBe(1);
+    expect(posted.every(a => a.coalesced === true)).toBe(true);
+    expect(held.every(a => a.topicId === undefined)).toBe(true);
   });
 
   it('LEGACY opt-out (attentionRouting.mode per-item): the 2026-05-28 flood guard still caps a flooding source', async () => {

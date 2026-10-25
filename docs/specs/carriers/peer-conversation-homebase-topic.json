@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-10-22T16:16:13.535Z",
+  "slug": "peer-conversation-homebase-topic",
+  "carriers": {
+    "CMT-014": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Registered follow-up for peer-conversation-homebase-topic section 6: the deliberately-cut long tail. (a) no crash-ordering intent state machine, so a crash between creating a topic and recording its id combined with a peer display-name change can duplicate a topic; (b) topic identity rests on its NAME plus a 6-char fingerprint suffix, with no signed ownership marker, so a same-named human-created "
+    }
+  }
+}

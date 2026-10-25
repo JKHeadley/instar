@@ -198,7 +198,29 @@ export function classifyHarness(input: HarnessInput): HarnessVerdict {
  */
 export function protectedPath(changedPaths: readonly string[] | null, protectedList: readonly string[]): boolean {
   if (changedPaths == null) return true;
-  return changedPaths.map(normalizePath).some((f) =>
+  return protectedPathMatches(changedPaths, protectedList).length > 0;
+}
+
+/** The changed paths that match the protected list (the paths an independent review must cover). */
+export function protectedPathMatches(changedPaths: readonly string[], protectedList: readonly string[]): string[] {
+  return changedPaths.map(normalizePath).filter((f) =>
     protectedList.some((p) => (/[*?]/.test(p) ? matchesAny(f, [p]) : f === p || f.startsWith(p))),
   );
+}
+
+/**
+ * The paths a harness verdict names: `path:X` and `lifecycle-script:X` give X,
+ * a `package.json:` / `package-lock.json:` reason gives that file. null when a
+ * reason names no path (`diff-unreadable`): the flagged set is then unknown.
+ */
+export function harnessReasonPaths(reasons: readonly string[]): string[] | null {
+  const out = new Set<string>();
+  for (const r of reasons) {
+    const m = /^(?:path|lifecycle-script):(.+)$/.exec(r);
+    if (m) { out.add(m[1]); continue; }
+    if (r.startsWith('package.json:')) { out.add('package.json'); continue; }
+    if (r.startsWith('package-lock.json:')) { out.add('package-lock.json'); continue; }
+    return null;
+  }
+  return [...out];
 }
